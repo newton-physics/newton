@@ -9141,13 +9141,17 @@ add_function_test(
 )
 
 
-def _vbd_world_residual(model, iterations: int, use_contacts: bool) -> np.ndarray:
+def _vbd_world_residual(model, iterations: int, use_contacts: bool, nan_particle: bool = False) -> np.ndarray:
     """Step ``model`` a few times and return the final per-world VBD residual."""
     solver = newton.solvers.SolverVBD(model, iterations=iterations)
     observables = solver.observables({solver.ObservableKind.SOLVER_RESIDUAL})
     pipeline = newton.CollisionPipeline(model) if use_contacts else None
     contacts = pipeline.contacts() if use_contacts else None
     state_0, state_1 = model.state(), model.state()
+    if nan_particle:
+        particle_q = state_0.particle_q.numpy()
+        particle_q[-1] = np.nan
+        state_0.particle_q.assign(particle_q)
     control = model.control()
     for _ in range(5):
         if use_contacts:
@@ -9160,7 +9164,8 @@ def _vbd_world_residual(model, iterations: int, use_contacts: bool) -> np.ndarra
 def test_solver_residual_decreases_with_iterations(test, device):
     """Report per-world Newton decrements that shrink with more VBD iterations.
 
-    A cloth built without worlds is global and reports in the final entry. A
+    A cloth built without worlds is global and reports in the final entry, and a
+    NaN particle reports infinity instead of being dropped by the maximum. A
     two-world rigid stack on a shared static ground reports in its local entries.
     """
     with wp.ScopedDevice(device):
@@ -9197,6 +9202,7 @@ def test_solver_residual_decreases_with_iterations(test, device):
     test.assertEqual(few[0], 0.0)
     test.assertGreater(few[-1], 0.0)
     test.assertLess(many[-1], 0.1 * few[-1])
+    test.assertEqual(_vbd_world_residual(cloth, 2, use_contacts=False, nan_particle=True)[-1], np.inf)
 
     few = _vbd_world_residual(stack, 2, use_contacts=True)
     many = _vbd_world_residual(stack, 10, use_contacts=True)

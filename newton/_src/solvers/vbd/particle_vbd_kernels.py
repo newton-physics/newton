@@ -2935,7 +2935,8 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
                 + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
                 + particle_hessians[particle_index]
             )
-            if abs(wp.determinant(h_total)) > 1e-8:
+            det = wp.determinant(h_total)
+            if abs(det) > 1e-8:
                 h_inv = wp.inverse(h_total)
                 f_total = (
                     f_total
@@ -2946,6 +2947,9 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
                 particle_displacements[particle_index] = particle_displacements[particle_index] + dx
                 if world_residual:
                     record_world_residual(world_residual, particle_world[particle_index], wp.dot(f_total, dx))
+            elif world_residual and not wp.isfinite(det):
+                # A non-finite Hessian also skips the update; report it instead of dropping the particle.
+                record_world_residual(world_residual, particle_world[particle_index], wp.inf)
 
     return solve_elasticity_tile_kernel
 
@@ -3033,12 +3037,16 @@ def solve_elasticity(
     h = h + particle_hessians[particle_index]
     f = f + particle_forces[particle_index]
 
-    if abs(wp.determinant(h)) > 1e-8:
+    det = wp.determinant(h)
+    if abs(det) > 1e-8:
         h_inv = wp.inverse(h)
         dx = h_inv * f
         particle_displacements[particle_index] = particle_displacements[particle_index] + dx
         if world_residual:
             record_world_residual(world_residual, particle_world[particle_index], wp.dot(f, dx))
+    elif world_residual and not wp.isfinite(det):
+        # A non-finite Hessian also skips the update; report it instead of dropping the particle.
+        record_world_residual(world_residual, particle_world[particle_index], wp.inf)
 
 
 @wp.kernel

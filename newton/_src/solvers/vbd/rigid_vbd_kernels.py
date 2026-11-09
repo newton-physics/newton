@@ -6265,11 +6265,15 @@ def record_world_residual(world_residual: wp.array[float], world: int, decrement
     """Raise a world's residual to a local Newton decrement ``f · H⁻¹ f`` [J].
 
     Global world ``-1`` uses the final entry of the ``(world_count + 1,)`` array.
+    Non-finite decrements record infinity, because ``atomic_max`` drops NaN.
     """
     w = world
     if w < 0:
         w = world_residual.shape[0] - 1
-    wp.atomic_max(world_residual, w, wp.abs(decrement))
+    value = wp.abs(decrement)
+    if not wp.isfinite(value):
+        value = wp.inf
+    wp.atomic_max(world_residual, w, value)
 
 
 @functools.cache

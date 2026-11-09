@@ -226,7 +226,8 @@ and at most one when the world satisfies every tolerance:
   convergence check and does not support this observable.
 
 With a zero PADMM or DVI tolerance, a zero residual reports zero and any other
-residual infinity. Kamino does not simulate global
+residual infinity. Non-finite residuals in
+:attr:`~newton.solvers.SolverKamino.status` report infinity. Kamino does not simulate global
 dynamic entities, so the global entry stays zero.
 
 The residual components ``r_p``, ``r_d``, and ``r_c`` and the iteration counts
@@ -243,8 +244,9 @@ sampled just before its own update in the last Gauss-Seidel sweep, the value
 trails the final iterate by part of a sweep. Hard joints and contacts contribute
 their augmented-Lagrangian multiplier terms to ``f``, so the value measures
 stationarity of the current subproblem rather than constraint violation.
-Particles or bodies whose Hessian is nearly singular skip their update and do not
-contribute. Global particles and bodies, including every entity of a model built
+Particles whose Hessian is nearly singular skip their update and do not
+contribute; rigid bodies regularize their angular Hessian and always contribute.
+Non-finite decrements or particle Hessians report infinity. Global particles and bodies, including every entity of a model built
 without :meth:`~newton.ModelBuilder.begin_world`, report in the final entry.
 With ``iterations=0`` the array is zero, and with
 ``integrate_with_external_rigid_solver=True`` only particles contribute.

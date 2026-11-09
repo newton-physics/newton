@@ -31,6 +31,7 @@ from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMod
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.solvers import PADMMSolver
+from newton._src.solvers.kamino._src.solvers.common import tolerance_scaled_residual
 from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.examples import print_progress_bar
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
@@ -795,9 +796,21 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
 
 
 def _tolerance_scaled(residual: np.ndarray, tolerance: np.ndarray) -> np.ndarray:
-    """Divide by tolerance; a zero tolerance maps zero residuals to zero and others to infinity."""
+    """Divide by tolerance; a zero tolerance maps zero residuals to zero and others to infinity.
+
+    Non-finite residuals map to infinity.
+    """
     with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(tolerance > 0.0, residual / tolerance, np.where(residual > 0.0, np.inf, 0.0))
+        scaled = np.where(tolerance > 0.0, residual / tolerance, np.where(residual > 0.0, np.inf, 0.0))
+    return np.where(np.isfinite(residual), scaled, np.inf)
+
+
+@wp.kernel
+def _eval_tolerance_scaled_residual(
+    residual: wp.array[wp.float32], tolerance: wp.array[wp.float32], out: wp.array[wp.float32]
+):
+    i = wp.tid()
+    out[i] = tolerance_scaled_residual(residual[i], tolerance[i])
 
 
 class TestSolverKaminoStatus(unittest.TestCase):
@@ -883,6 +896,23 @@ class TestSolverKaminoStatus(unittest.TestCase):
             expected[status["apgd_line_search_failed"] != 0] = np.inf
             np.testing.assert_allclose(residual, expected, rtol=1e-6)
         np.testing.assert_array_equal(residual <= 1.0, status["converged"] == 1)
+
+    def test_tolerance_scaled_residual_edge_cases(self):
+        """Scale residuals by tolerance, keep zero tolerances finite, and never return NaN."""
+        residual = np.array([0.5, 0.0, 2.0, np.nan, np.nan, np.inf], dtype=np.float32)
+        tolerance = np.array([1.0, 0.0, 0.0, 1.0, 0.0, 1.0], dtype=np.float32)
+        out = wp.zeros(residual.shape[0], dtype=wp.float32, device=self.default_device)
+        wp.launch(
+            _eval_tolerance_scaled_residual,
+            dim=residual.shape[0],
+            inputs=[
+                wp.array(residual, dtype=wp.float32, device=self.default_device),
+                wp.array(tolerance, dtype=wp.float32, device=self.default_device),
+            ],
+            outputs=[out],
+            device=self.default_device,
+        )
+        np.testing.assert_array_equal(out.numpy(), [0.5, 0.0, np.inf, np.inf, np.inf, np.inf])
 
     def test_solver_residual_reports_unconverged_worlds(self):
         """Report residuals above one for worlds that exhaust their iteration budget.
