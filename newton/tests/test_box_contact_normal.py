@@ -817,5 +817,63 @@ add_function_test(
 )
 
 
+def test_near_parallel_plank_edge_contact(test, device):
+    """Keep a line contact between nearly parallel plank edges.
+
+    Neighboring planks in a resting Kapla arena touch along vertical edges
+    whose normal is far from every face, so both sampled features are
+    lines. Simulated edges are never parallel to float precision: a 0.1
+    degree crossing must still give contacts spread along the edges, while
+    a steep crossing keeps the single deepest contact.
+    """
+    hx, hy, hz = 0.004, 0.04995, 0.0125
+    yaw = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3)
+    pose_a = wp.transform(wp.vec3(3.95, 0.07, 0.05), yaw)
+    corner = wp.transform_point(pose_a, wp.vec3(hx, hy, 0.0))
+    normal = wp.quat_rotate(yaw, wp.normalize(wp.vec3(1.0, 1.0, 0.0)))
+    flipped = yaw * wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(wp.pi + np.radians(5.0)))
+    for crossing, expected_spread in ((np.radians(0.1), True), (np.radians(30.0), False)):
+        with test.subTest(crossing=crossing):
+            # Rotate plank B about the normal through its touching corner.
+            rotation = wp.quat_from_axis_angle(normal, float(crossing)) * flipped
+            corner_b = corner + 1.0e-4 * normal
+            pose_b = wp.transform(corner_b - wp.quat_rotate(rotation, wp.vec3(hx, hy, 0.0)), rotation)
+            builder = newton.ModelBuilder()
+            cfg = newton.ModelBuilder.ShapeConfig(gap=0.01)
+            builder.add_shape_box(-1, xform=pose_a, hx=hx, hy=hy, hz=hz, cfg=cfg)
+            body = builder.add_body(xform=pose_b)
+            builder.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg)
+            model = builder.finalize(device)
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0)
+            normals = contacts.rigid_contact_normal.numpy()[:count]
+            np.testing.assert_allclose(np.abs(normals @ np.asarray(normal)), 1.0, atol=1.0e-3)
+            # Static-shape points are world positions on plank A's edge.
+            shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+            points = np.where(
+                (shape0 == 0)[:, None],
+                contacts.rigid_contact_point0.numpy()[:count],
+                contacts.rigid_contact_point1.numpy()[:count],
+            )
+            spread = float(np.ptp(points[:, 2]))
+            if expected_spread:
+                test.assertGreaterEqual(count, 2)
+                test.assertGreater(spread, 5.0e-3)
+                np.testing.assert_allclose(points[:, 2], 0.05, atol=hz + 1.0e-5)
+            else:
+                test.assertEqual(count, 1)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_near_parallel_plank_edge_contact",
+    test_near_parallel_plank_edge_contact,
+    devices=get_test_devices(),
+)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

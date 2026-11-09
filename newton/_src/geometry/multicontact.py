@@ -473,17 +473,34 @@ def trim_all_in_place(
             other_start = loop[0]
             other_end = loop[1]
             other_direction = other_end - other_start
-            cross = direction[0] * other_direction[1] - direction[1] * other_direction[0]
-            if wp.abs(cross) > 1.0e-6 * wp.sqrt(length_sq * wp.length_sq(other_direction)):
-                # Two nonparallel line features have at most one contact;
-                # the caller uses the deepest GJK/MPR witness in this case.
-                return 0
             # The pair already has a GJK/MPR contact. Project parallel
             # supporting lines onto a shared tangent to tolerate normal error.
             t0 = wp.dot(other_start - start, direction) / length_sq
             t1 = wp.dot(other_end - start, direction) / length_sq
             lo = wp.max(lo, wp.min(t0, t1))
             hi = wp.min(hi, wp.max(t0, t1))
+            other_length_sq = wp.length_sq(other_direction)
+            cross = direction[0] * other_direction[1] - direction[1] * other_direction[0]
+            if other_length_sq > 0.0 and wp.abs(cross) > 1.0e-6 * wp.sqrt(length_sq * other_length_sq):
+                # Nonparallel lines meet at one crossing. Simulated edges are
+                # never parallel to float precision, so keep the part of the
+                # overlap where the lines stay within the sample resolution EPS
+                # [m] of each other. The band has half-length EPS / sin(angle).
+                inv_other_length = 1.0 / wp.sqrt(other_length_sq)
+                offset = (
+                    other_direction[0] * (start[1] - other_start[1]) - other_direction[1] * (start[0] - other_start[0])
+                ) * inv_other_length
+                slope = -cross * inv_other_length
+                band_lo = (-EPS - offset) / slope
+                band_hi = (EPS - offset) / slope
+                overlap = (hi - lo) * wp.sqrt(length_sq)
+                lo = wp.max(lo, wp.min(band_lo, band_hi))
+                hi = wp.min(hi, wp.max(band_lo, band_hi))
+                # Like clipped polygon vertices, endpoints closer than the merge
+                # radius (half the overlap, capped) form a single contact; the
+                # caller then uses the deepest GJK/MPR witness.
+                if (hi - lo) * wp.sqrt(length_sq) < wp.min(0.5 * overlap, MAX_CLIP_VERTEX_MERGE_DISTANCE):
+                    return 0
         else:
             polygon = trim_poly
             polygon_count = trim_poly_count
