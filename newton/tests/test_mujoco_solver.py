@@ -9646,7 +9646,11 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             builder.replicate(template, world_count)
             return builder.finalize()
 
-        for mode in (newton.JointTargetMode.POSITION, newton.JointTargetMode.VELOCITY):
+        for mode in (
+            newton.JointTargetMode.POSITION,
+            newton.JointTargetMode.VELOCITY,
+            newton.JointTargetMode.POSITION_VELOCITY,
+        ):
             for use_mujoco_cpu in (False, True):
                 with self.subTest(mode=mode, use_mujoco_cpu=use_mujoco_cpu):
                     model = make_model(1, mode)
@@ -9660,10 +9664,13 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "axis 2 has joint_effort_limit=0"):
                 SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
 
-        with self.subTest("no actuator"):
-            model = make_model(1, newton.JointTargetMode.NONE)
-            model.joint_effort_limit.zero_()
-            SolverMuJoCo(model, disable_contacts=True)
+        # NONE and EFFORT create no MuJoCo actuator, so a zero effort limit is allowed.
+        for mode in (newton.JointTargetMode.NONE, newton.JointTargetMode.EFFORT):
+            for use_mujoco_cpu in (False, True):
+                with self.subTest("no actuator", mode=mode, use_mujoco_cpu=use_mujoco_cpu):
+                    model = make_model(1, mode)
+                    model.joint_effort_limit.zero_()
+                    SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
 
 
 class TestMuJoCoSolverPairProperties(unittest.TestCase):

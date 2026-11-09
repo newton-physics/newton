@@ -7519,7 +7519,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
         # MuJoCo reads a zero force range as unset and rejects a limited one, so an actuated ball
-        # joint cannot express a zero effort limit. Loop joints get no MuJoCo actuators.
+        # joint cannot express a zero effort limit. Only position and velocity targets create MuJoCo
+        # actuators: EFFORT applies joint_f directly, and loop joints get no MuJoCo actuators.
+        actuated_modes = {
+            int(JointTargetMode.POSITION),
+            int(JointTargetMode.VELOCITY),
+            int(JointTargetMode.POSITION_VELOCITY),
+        }
         loop_joints = {int(j) for j in joints_loop}
         joints_per_world = model.joint_count // model.world_count
         for j in np.flatnonzero(joint_type == int(JointType.BALL)):
@@ -7527,11 +7533,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 continue
             for axis in range(3):
                 dof = int(joint_qd_start[j]) + axis
-                if joint_target_mode[dof] != int(JointTargetMode.NONE) and joint_effort_limit[dof] == 0.0:
+                if int(joint_target_mode[dof]) in actuated_modes and joint_effort_limit[dof] == 0.0:
                     raise ValueError(
                         f"Joint '{model.joint_label[j]}' axis {axis} has joint_effort_limit=0, which cannot be "
-                        "represented as a MuJoCo actuator force range. Set a positive effort limit, or set "
-                        "the joint target mode to NONE to disable the actuator."
+                        "represented as a MuJoCo actuator force range. Set a positive effort limit, or use "
+                        "JointTargetMode.NONE or EFFORT, which create no MuJoCo actuator."
                     )
 
         # Every selected body needs exactly one creation path before its shapes and state can be converted.
