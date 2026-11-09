@@ -10,7 +10,7 @@ from typing import Any, ClassVar
 import warp as wp
 
 from ..space import DriveOutputSpace
-from .base import _CONST_EFFORT_DUTY_MSG, DriveBase, _masked_zero_1d, _resolve_const_effort
+from .base import DriveBase, _masked_zero_1d
 
 
 @wp.func
@@ -166,14 +166,14 @@ class DrivePID(DriveBase):
         integral_max = args.get("integral_max", math.inf)
         if integral_max < 0:
             raise ValueError(f"integral_max must be non-negative, got {integral_max}")
-        resolved = {
+        return {
             "output_space": DriveOutputSpace(args.get("output_space", DriveOutputSpace.EFFORT)),
             "kp": kp,
             "ki": ki,
             "kd": kd,
             "integral_max": integral_max,
+            "const_effort": args.get("const_effort", 0.0),
         }
-        return _resolve_const_effort(resolved, args)
 
     def __init__(
         self,
@@ -192,8 +192,7 @@ class DrivePID(DriveBase):
             ki: Integral gains [N/(m·s) or N·m/(rad·s)]. Shape ``(N,)``.
             kd: Derivative gains [N·s/m or N·m·s/rad]. Shape ``(N,)``.
             integral_max: Anti-windup limits [m·s or rad·s]. Shape ``(N,)``.
-            const_effort: Constant bias effort [N or N·m]. Shape ``(N,)``. ``None`` to skip;
-                must be ``None`` with DUTY.
+            const_effort: Constant bias in the selected output units. Shape ``(N,)``. ``None`` to skip.
             output_space: EFFORT or DUTY. Gains and feedforward must produce
                 these units; DUTY gains use duty in place of N or N·m above.
         """
@@ -206,8 +205,6 @@ class DrivePID(DriveBase):
         if const_effort is not None and const_effort.shape != kp.shape:
             raise ValueError(f"const_effort shape {const_effort.shape} must match kp shape {kp.shape}")
         self.output_space = DriveOutputSpace(output_space)
-        if self.output_space is DriveOutputSpace.DUTY and const_effort is not None:
-            raise ValueError(_CONST_EFFORT_DUTY_MSG)
         self.kp = kp
         self.ki = ki
         self.kd = kd

@@ -5225,7 +5225,6 @@ class TestActuatorBuilder(unittest.TestCase):
                 },
                 "only clamp",
             ),
-            ({"motor": motor, "output_space": DriveOutputSpace.DUTY, "const_effort": 0.5}, "const_effort"),
             (
                 {
                     "motor": motor,
@@ -5266,8 +5265,6 @@ class TestActuatorBuilder(unittest.TestCase):
                 clamping=[ClampingMaxEffort(array(1.0))],
                 motor=MotorDC(array(0.5), array(2.0), array(12.0), supply_from_battery=array(0.0)),
             )
-        with self.assertRaisesRegex(ValueError, "const_effort"):
-            DrivePD(array(1.0), array(0.0), array(0.1), output_space=DriveOutputSpace.DUTY)
 
     @unittest.skipUnless(HAS_USD, "pxr not installed")
     def test_from_usd(self):

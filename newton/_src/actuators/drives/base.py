@@ -18,19 +18,6 @@ _COMPUTE_FORCES_DEPRECATION_MSG = (
 )
 
 
-_CONST_EFFORT_DUTY_MSG = "const_effort is not supported with output_space=DUTY"
-
-
-def _resolve_const_effort(resolved: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
-    """Add ``const_effort`` to *resolved* for EFFORT drives; reject a nonzero value for DUTY drives."""
-    const_effort = args.get("const_effort", 0.0)
-    if resolved["output_space"] is DriveOutputSpace.EFFORT:
-        resolved["const_effort"] = const_effort
-    elif const_effort != 0.0:
-        raise ValueError(_CONST_EFFORT_DUTY_MSG)
-    return resolved
-
-
 def _rename_compute_output(compute: Any, legacy: bool) -> Any:
     """Wrap a drive's ``compute`` so ``forces=`` and ``output=`` reach the name it declares."""
 
