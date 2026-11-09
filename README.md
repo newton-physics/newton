@@ -34,6 +34,13 @@ python -m newton.examples
 
 To install from source with [uv](https://docs.astral.sh/uv/), see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
 
+## Documentation
+
+Installed wheels include release-matched, searchable guides and API documentation.
+Run `python -m newton.docs` or call `newton.info()` to find them. Use
+`newton.info(newton.ModelBuilder)` for object help and
+`newton.info("ModelBuilder")` to locate its API page.
+
 ## Community Projects
 
 Explore community solvers, integrations, and applications through the [`newton-physics` topic on GitHub](https://github.com/topics/newton-physics).
