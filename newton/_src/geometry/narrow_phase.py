@@ -40,7 +40,7 @@ from ..geometry.collision_primitive import (
 )
 from ..geometry.contact_data import (
     CONTACT_SORT_CONVEX_SUB_KEY_BITS,
-    CONTACT_SORT_MAX_SHAPE_INDEX_BITS,
+    CONTACT_SORT_DEFAULT_SHAPE_INDEX_BITS,
     CONTACT_SORT_SUB_KEY_BITS,
     SHAPE_PAIR_HFIELD_BIT,
     ContactData,
@@ -2749,16 +2749,21 @@ class NarrowPhase:
             with wp.ScopedDevice(device):
                 self.shape_aabb_lower = wp.zeros(0, dtype=wp.vec3, device=device)
                 self.shape_aabb_upper = wp.zeros(0, dtype=wp.vec3, device=device)
-        self._contact_sort_shape_index_bits = (
-            contact_sort_shape_index_bits(self.shape_aabb_lower.shape[0])
-            if self.external_aabb
-            else CONTACT_SORT_MAX_SHAPE_INDEX_BITS
-        )
         self._contact_sort_sub_key_bits = (
             CONTACT_SORT_SUB_KEY_BITS
             if has_meshes or has_heightfields or hydroelastic_sdf is not None
             else CONTACT_SORT_CONVEX_SUB_KEY_BITS
         )
+        # Sort keys are written only in deterministic mode; external AABBs give the shape count.
+        if not deterministic:
+            self._contact_sort_shape_index_bits = 0
+        elif self.external_aabb:
+            self._contact_sort_shape_index_bits = contact_sort_shape_index_bits(
+                self.shape_aabb_lower.shape[0], self._contact_sort_sub_key_bits
+            )
+        else:
+            # launch() checks the shape count against this width.
+            self._contact_sort_shape_index_bits = CONTACT_SORT_DEFAULT_SHAPE_INDEX_BITS
         self.shape_voxel_resolution = shape_voxel_resolution
 
         # Determine the writer function
@@ -4230,6 +4235,11 @@ class NarrowPhase:
                 f"deterministic sort buffer size ({self._sort_key_array.shape[0]}). "
                 f"The sorter operates over fixed-capacity buffers for CUDA graph capture "
                 f"compatibility, so the sizes must match exactly."
+            )
+        if self.deterministic and shape_types.shape[0] > 1 << self._contact_sort_shape_index_bits:
+            raise ValueError(
+                f"Deterministic sort keys hold {self._contact_sort_shape_index_bits}-bit shape indices, got "
+                f"{shape_types.shape[0]} shapes; pass shape_aabb_lower/upper at construction to size them."
             )
 
         # Create ContactWriterData struct

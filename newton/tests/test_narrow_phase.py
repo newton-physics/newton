@@ -571,6 +571,86 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
         self.assertEqual(narrow_phase._contact_sort_sub_key_bits, 23)
         self.assertEqual(narrow_phase._contact_sorter._key_bit_count, 27)
 
+    def _launch_spheres_past_2_20(self):
+        """Collide the sphere pairs ``(2**20, 2**20 + 1)`` and ``(2, 3)`` among ``2**20 + 2`` shapes."""
+        shape_count = (1 << 20) + 2
+        far = 1 << 20
+        geom_data = np.zeros((shape_count, 4), dtype=np.float32)
+        geom_data[:, :3] = 1.0
+        transforms = np.zeros((shape_count, 7), dtype=np.float32)
+        transforms[:, 0] = 100.0 * np.arange(shape_count)
+        transforms[:, 6] = 1.0
+        transforms[[2, 3, far, far + 1], 0] = (0.0, 0.5, 10.0, 10.5)
+        contact_count = wp.zeros(1, dtype=int)
+        contact_pair = wp.zeros(20, dtype=wp.vec2i)
+        self.narrow_phase.launch(
+            candidate_pair=wp.array([(far, far + 1), (2, 3)], dtype=wp.vec2i),
+            candidate_pair_count=wp.array([2], dtype=wp.int32),
+            shape_types=wp.full(shape_count, int(GeoType.SPHERE), dtype=wp.int32),
+            shape_data=wp.array(geom_data, dtype=wp.vec4),
+            shape_transform=wp.array(transforms, dtype=wp.transform),
+            shape_source=wp.zeros(shape_count, dtype=wp.uint64),
+            shape_sdf_index=wp.full(shape_count, -1, dtype=wp.int32),
+            shape_gap=wp.zeros(shape_count, dtype=wp.float32),
+            shape_collision_radius=wp.ones(shape_count, dtype=wp.float32),
+            shape_flags=wp.full(shape_count, ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32),
+            shape_collision_aabb_lower=wp.zeros(0, dtype=wp.vec3),
+            shape_collision_aabb_upper=wp.zeros(0, dtype=wp.vec3),
+            shape_voxel_resolution=wp.full(shape_count, wp.vec3i(4, 4, 4), dtype=wp.vec3i),
+            contact_pair=contact_pair,
+            contact_position=wp.zeros(20, dtype=wp.vec3),
+            contact_normal=wp.zeros(20, dtype=wp.vec3),
+            contact_penetration=wp.zeros(20, dtype=float),
+            contact_count=contact_count,
+            contact_tangent=wp.zeros(20, dtype=wp.vec3),
+        )
+        count = int(contact_count.numpy()[0])
+        return contact_pair.numpy()[:count]
+
+    def test_deterministic_sort_keys_cover_more_than_2_20_shapes(self):
+        """Keep shape indices above 2**20 distinct in compact deterministic sort keys."""
+        shape_count = (1 << 20) + 2
+        self.narrow_phase = NarrowPhase(
+            max_candidate_pairs=2,
+            max_triangle_pairs=8,
+            reduce_contacts=False,
+            has_meshes=False,
+            deterministic=True,
+            contact_max=20,
+            verify_buffers=False,
+            shape_aabb_lower=wp.zeros(shape_count, dtype=wp.vec3),
+            shape_aabb_upper=wp.ones(shape_count, dtype=wp.vec3),
+        )
+
+        pairs = self._launch_spheres_past_2_20()
+
+        np.testing.assert_array_equal(pairs, [(2, 3), (1 << 20, (1 << 20) + 1)])
+        self.assertEqual(self.narrow_phase._contact_sorter._key_bit_count, 3 + 2 * 21)
+
+    def test_deterministic_sort_keys_reject_more_than_2_20_shapes(self):
+        """Reject shape counts the deterministic sort key can't hold instead of aliasing them."""
+        shape_count = (1 << 20) + 1
+        kwargs = {
+            "max_candidate_pairs": 2,
+            "max_triangle_pairs": 8,
+            "reduce_contacts": False,
+            "has_meshes": True,
+            "contact_max": 20,
+            "verify_buffers": False,
+        }
+        aabbs = {
+            "shape_aabb_lower": wp.zeros(shape_count, dtype=wp.vec3),
+            "shape_aabb_upper": wp.ones(shape_count, dtype=wp.vec3),
+        }
+        with self.assertRaisesRegex(ValueError, "at most 1048576 shapes"):
+            NarrowPhase(deterministic=True, **kwargs, **aabbs)
+        NarrowPhase(deterministic=False, **kwargs, **aabbs)
+
+        # Without AABBs the shape count is known only at launch.
+        self.narrow_phase = NarrowPhase(deterministic=True, **kwargs)
+        with self.assertRaisesRegex(ValueError, "20-bit shape indices"):
+            self._launch_spheres_past_2_20()
+
     def test_launch_without_shape_edge_range(self):
         geom_list = [
             {

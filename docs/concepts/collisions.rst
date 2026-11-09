@@ -2551,6 +2551,16 @@ The overhead is small: fingerprint storage per contact, modified packing in
 the reduction, and one radix sort + gather pass per frame.  The sort is
 fully CUDA-graph-capturable.
 
+The key keeps bit 63 clear, so the two shape indices and the sub-key share 63
+bits.  Models with only primitive and convex shapes use a 3-bit sub-key, which
+leaves room for ``2**30`` shapes.  Models with meshes, heightfields or
+hydroelastic shapes use a 23-bit sub-key and fit at most ``2**20`` shapes;
+above that, deterministic mode and contact matching raise ``ValueError`` at
+construction.  A deterministic :class:`~newton.geometry.NarrowPhase` built
+without ``shape_aabb_lower``/``shape_aabb_upper`` doesn't know the shape count,
+so it uses 20-bit shape fields and raises at launch for more than ``2**20``
+shapes.
+
 Hydroelastic contacts are covered by the same two mechanisms, using the
 marching-cubes voxel and face index as the fingerprint.  They additionally need
 a third one, because hydroelastic reduction is the only contact path that sums
