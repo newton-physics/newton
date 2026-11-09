@@ -366,6 +366,10 @@ def _capture_cached(condition, operation):
         operation()
 
 
+class _UnsupportedConditionalAllocations(ValueError):
+    """The installed Warp rejects allocation nodes in conditional graph bodies."""
+
+
 @cache
 def _require_conditional_allocations(device_alias: str) -> None:
     """Validate optional Warp allocation support once per device, before building guarded graphs."""
@@ -375,9 +379,14 @@ def _require_conditional_allocations(device_alias: str) -> None:
         with wp.ScopedCapture(device=device, force_module_load=False):
             wp.capture_if(condition, lambda: wp.zeros(1, device=device))
     except RuntimeError as error:
-        raise ValueError(
+        if str(error) not in (
+            "Conditional body graph contains an unsupported operation (memory allocation)",
+            "Conditional body graph contains an unsupported operation (memory deallocation)",
+        ):
+            raise
+        raise _UnsupportedConditionalAllocations(
             "Guarded MPM requires a Warp build supporting allocations in conditional graph callbacks "
-            "(NVIDIA/warp#2267). The setup capability check failed."
+            "(NVIDIA/warp#2269). The setup capability check failed."
         ) from error
 
 
@@ -2174,7 +2183,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         Args:
             enabled: Enable sleeping, or restore all eligible particles when false.
             patch_size: Activity patch edge length [m]. Defaults to two voxels;
-                must be at least two voxels to support the transfer stencil.
+                must be at least two voxels. The stationary support halo expands
+                to cover the velocity basis's shared-node stencil.
             velocity_threshold: Maximum quiet particle speed [m/s].
             strain_threshold: Maximum quiet velocity-gradient Frobenius norm [1/s].
                 Defaults to ``velocity_threshold / voxel_size``, bounding
@@ -2196,9 +2206,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 Particle sweeps also include two voxels of forward support.
             planning_interval: Number of substeps between full motion and stress
                 planning passes. Applied forces, fast particles, non-finite
-                velocities, and moving colliders are checked every substep.
-                Affine motion and stress, including non-finite values, are
-                evaluated on planning passes.
+                velocities, prescribed motion, and moving colliders are checked
+                every substep. Dynamic-particle affine motion and stress,
+                including non-finite values, are evaluated on planning passes.
             min_moving_particles: Ordinary translating particles required to
                 keep an activity patch awake. Prescribed and affine motion,
                 stress changes, and urgent requests bypass this count.
@@ -2265,8 +2275,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         if self._particle_activity is not None:
             self._particle_activity.restore()
+        basis_type, degree, discontinuous = _parse_grid_basis_name(self.velocity_basis)
+        # Two particles can share a B-spline node across degree + 1 voxels.
+        # Element-local bases share nodes only across adjacent cells.
+        support_width = degree + 1 if basis_type == "B" and not discontinuous else 2
         self._particle_activity = ParticleActivity(
-            self.model, self._mpm_model, voxel_size=self.voxel_size, **parameters
+            self.model,
+            self._mpm_model,
+            voxel_size=self.voxel_size,
+            support_radius=math.ceil(support_width * self.voxel_size / patch_size),
+            **parameters,
         )
 
     @property

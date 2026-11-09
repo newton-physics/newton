@@ -42,14 +42,16 @@ ordinary solver layouts retain their stepping path.
 Three-dimensional activity patches wake around moving particles, applied
 forces, and swept collider bounds. Velocity gradients and changing stress
 retain activity locally. Quiet-time hysteresis and an optional planning
-interval reduce membership churn; urgent collider, force, and fast-spill
-requests remain checked every step. Generated rigid-collider bounds are
-cached; mutable custom meshes retain their geometry checks. The solver-owned
+interval reduce membership churn. Collider, force, fast-spill, and prescribed-motion
+requests remain checked every step. Generated rigid-collider bounds are cached;
+mutable custom meshes retain their geometry checks. The solver-owned
 device array :attr:`~newton.solvers.SolverImplicitMPM.particle_activity` uses
 0 for sleeping, 1 for stationary support, and 2 for awake particles.
 
-A surrounding support halo freezes nearby material while retaining its
-history. These boundary conditions approximate settled material: they may
+A surrounding support halo covers the velocity basis's shared-node stencil,
+freezing nearby material while retaining its history. Wider B-spline bases
+therefore retain more support patches than linear bases at the same patch size.
+These boundary conditions approximate settled material: they may
 freeze creep or alter forces. Validate thresholds against a fully active
 reference for the intended material. Rendering and surface reconstruction
 continue to include sleeping material.

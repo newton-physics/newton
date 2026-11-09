@@ -236,23 +236,29 @@ def _request_particles(
     stress_elapsed[i] += dt
     velocity = velocities[i]
     speed = wp.length(velocity)
+    prescribed = base_density[i] <= 0.0 or (base_material_flags[i] & newton.ParticleFlags.ACTIVE) == 0
     forced = bool(False)
     if forces:
         force_squared = wp.length_sq(forces[i])
         forced = force_squared > 0.0 or not wp.isfinite(force_squared)
     if not planning:
-        # Retain awake material between planning passes, while urgent forces
-        # and fast particles can wake and sweep into new patches every tick.
-        if activity[i] == 2 and base_density[i] > 0.0 and (base_material_flags[i] & newton.ParticleFlags.ACTIVE) != 0:
+        # Prescribed particles are always classified awake, even when stationary.
+        # Check their motion rather than retaining that unconditional mode.
+        prescribed_motion = bool(False)
+        if prescribed:
+            gradient_norm = wp.sqrt(wp.ddot(gradients[i], gradients[i]))
+            prescribed_motion = (
+                speed > velocity_threshold or gradient_norm > strain_threshold or not wp.isfinite(gradient_norm)
+            )
+        if activity[i] == 2 and not prescribed:
             wp.atomic_max(table.requested, slot, 1)
-        if forced or not wp.isfinite(speed) or speed > spill_velocity_threshold:
+        if prescribed_motion or forced or not wp.isfinite(speed) or speed > spill_velocity_threshold:
             wp.atomic_max(table.requested, slot, 1)
             wp.atomic_max(table.urgent, slot, 1)
             quiet_time[i] = 0.0
-            if wp.isfinite(speed) and speed > 1.0e-12:
+            if speed > 1.0e-12 or not wp.isfinite(speed):
                 displacement = velocity * (wp.max(dt, lookahead) + travel_padding / speed)
-                if wp.isfinite(wp.length_sq(displacement)):
-                    _request_swept_patches(table, i, displacement)
+                _request_swept_patches(table, i, displacement)
         return
     raw_stress = stresses[i]
     stress = raw_stress
@@ -273,7 +279,6 @@ def _request_particles(
     gradient_norm = wp.sqrt(wp.ddot(gradients[i], gradients[i]))
     invalid = not wp.isfinite(speed) or not finite_stress or not wp.isfinite(gradient_norm)
     moving = speed > velocity_threshold or gradient_norm > strain_threshold
-    prescribed = base_density[i] <= 0.0 or (base_material_flags[i] & newton.ParticleFlags.ACTIVE) == 0
     bypass = (
         invalid
         or forced
@@ -303,15 +308,14 @@ def _request_particles(
     if direct:
         wp.atomic_max(table.urgent, slot, 1)
         wp.atomic_max(table.requested, slot, 1)
-        if speed > 1.0e-12 and wp.isfinite(speed):
+        if speed > 1.0e-12 or not wp.isfinite(speed):
             # Anticipate transport into sleeping material without waking an
             # isotropic ring around stationary affine motion or applied forces.
             displacement = velocity * (wp.max(planning_dt[0], lookahead) + travel_padding / speed)
             if not wp.isfinite(wp.length_sq(displacement)) and (forced or speed > spill_velocity_threshold):
                 # Retain urgent per-tick transport if the longer planning sweep overflows.
                 displacement = velocity * (wp.max(dt, lookahead) + travel_padding / speed)
-            if wp.isfinite(wp.length_sq(displacement)):
-                _request_swept_patches(table, i, displacement)
+            _request_swept_patches(table, i, displacement)
     elif moving:
         count = wp.atomic_add(table.motion_counts, slot, 1)
         table.motion_particles[i] = 1
@@ -347,10 +351,9 @@ def _request_motion_transport(
     if slot < 0 or table.motion_particles[i] == 0 or table.motion_counts[slot] < min_moving_particles:
         return
     speed = wp.length(velocities[i])
-    if speed > 1.0e-12 and wp.isfinite(speed):
+    if speed > 1.0e-12 or not wp.isfinite(speed):
         displacement = velocities[i] * (wp.max(planning_dt[0], lookahead) + travel_padding / speed)
-        if wp.isfinite(wp.length_sq(displacement)):
-            _request_swept_patches(table, i, displacement)
+        _request_swept_patches(table, i, displacement)
 
 
 @wp.kernel(enable_backward=False)
@@ -572,7 +575,7 @@ def _request_colliders_fallback(
 
 
 @wp.kernel(enable_backward=False)
-def _dilate_patches(table: _PatchTable, source: wp.array[int], destination: wp.array[int]):
+def _dilate_patches(table: _PatchTable, source: wp.array[int], destination: wp.array[int], radius: int):
     i = wp.tid()
     slot = table.particle_slot[i]
     if slot < 0 or table.slots[slot] != i:
@@ -587,14 +590,17 @@ def _dilate_patches(table: _PatchTable, source: wp.array[int], destination: wp.a
         table.urgent[slot] = 1
         destination[slot] = 1
         return
-    requested = int(0)
-    for x in range(-1, 2):
-        for y in range(-1, 2):
-            for z in range(-1, 2):
+    if source[slot] != 0:
+        destination[slot] = 1
+        return
+    for x in range(-radius, radius + 1):
+        for y in range(-radius, radius + 1):
+            for z in range(-radius, radius + 1):
                 neighbor = _find_patch(table, coordinates + wp.vec3i(x, y, z), world)
                 if neighbor >= 0 and source[neighbor] != 0:
-                    requested = 1
-    destination[slot] = requested
+                    destination[slot] = 1
+                    return
+    destination[slot] = 0
 
 
 @wp.kernel(enable_backward=False)
@@ -706,10 +712,12 @@ class ParticleActivity:
         planning_interval=1,
         min_moving_particles=1,
         spill_velocity_threshold=0.3,
+        support_radius=1,
     ):
         self.model = model
         self.voxel_size = voxel_size
         self.patch_size = patch_size
+        self.support_radius = support_radius
         self.velocity_threshold = velocity_threshold
         self.strain_threshold = strain_threshold
         self.stress_threshold = stress_threshold
@@ -1016,7 +1024,7 @@ class ParticleActivity:
         wp.launch(
             _dilate_patches,
             dim=count,
-            inputs=[table, table.requested, table.boundary],
+            inputs=[table, table.requested, table.boundary, self.support_radius],
             device=device,
         )
         wp.launch(

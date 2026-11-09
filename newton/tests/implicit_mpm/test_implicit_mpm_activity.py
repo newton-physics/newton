@@ -9,6 +9,12 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.implicit_mpm.implicit_mpm_model import ImplicitMPMModel
+from newton._src.solvers.implicit_mpm.particle_activity import ParticleActivity
+from newton._src.solvers.implicit_mpm.solver_implicit_mpm import (
+    _require_conditional_allocations,
+    _UnsupportedConditionalAllocations,
+)
 from newton.solvers import SolverImplicitMPM
 from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices
 
@@ -61,7 +67,7 @@ def _make_scene(device, *, worlds=1, collider=False, particle_bases=False, color
                 grid_type="sparse",
                 voxel_size=0.05,
                 max_active_cell_count=512,
-                velocity_basis="Q1",
+                velocity_basis="B2" if particle_bases else "Q1",
                 strain_basis="pic8" if particle_bases else "P0",
                 collider_basis="pic8" if particle_bases or colored_contacts else "Q1",
                 max_iterations=5,
@@ -108,6 +114,100 @@ def _require_capture(test, device):
         test.skipTest("CUDA graph capture requires the Warp memory pool")
     if not wp.is_conditional_graph_supported():
         test.skipTest("Guarded MPM requires CUDA conditional graphs")
+    try:
+        _require_conditional_allocations(wp.get_device(device).alias)
+    except _UnsupportedConditionalAllocations as error:
+        test.skipTest(str(error))
+
+
+def test_activity_request_safety(test, device):
+    """Exercise classification edge cases without requiring CUDA capture support."""
+    local = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    SolverImplicitMPM.register_custom_attributes(local)
+    for x in (0.0975, 0.1125, 0.2025, 0.4025):
+        local.add_particle(pos=(x, 0.0125, 0.0125), vel=(0.0, 0.0, 0.0), mass=0.01, radius=0.01)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    for _ in range(2):
+        builder.add_world(local)
+    model = builder.finalize(device=device)
+    mpm = ImplicitMPMModel(model, SolverImplicitMPM.Config(voxel_size=0.05, separate_worlds=True))
+    base_material_flags = wp.clone(mpm.material_particle_flags)
+    base_density = wp.clone(mpm.particle_density)
+
+    def make_activity(*, prescribed=False, **parameters):
+        mpm.particle_flags.assign(model.particle_flags)
+        mpm.material_particle_flags.assign(base_material_flags)
+        mpm.particle_density.assign(base_density)
+        if prescribed:
+            material_flags = base_material_flags.numpy()
+            material_flags[0] = 0
+            mpm.material_particle_flags.assign(material_flags)
+        activity = ParticleActivity(
+            model,
+            mpm,
+            voxel_size=0.05,
+            patch_size=0.1,
+            velocity_threshold=0.01,
+            strain_threshold=0.1,
+            stress_threshold=0.05,
+            sleep_time=0.0,
+            collider_margin=0.0,
+            collider_lookahead=0.0,
+            **parameters,
+        )
+        return activity, model.state()
+
+    def update(activity, state, dt=0.005):
+        activity.update(state, dt, mpm.collider, None, True)
+
+    # A prescribed particle remains classified awake even at rest. Its actual
+    # translation or affine motion, rather than that mode, must retain support.
+    for affine in (False, True):
+        activity, state = make_activity(prescribed=True, planning_interval=4)
+        if affine:
+            gradients = np.zeros((model.particle_count, 3, 3), dtype=np.float32)
+            gradients[0, 0, 0] = 0.2
+            state.mpm.particle_qd_grad.assign(gradients)
+        else:
+            velocities = np.zeros((model.particle_count, 3), dtype=np.float32)
+            velocities[0, 0] = -0.02  # Sweep away from the stationary neighbor.
+            state.particle_qd.assign(velocities)
+        for _ in range(4):
+            update(activity, state)
+            np.testing.assert_array_equal(activity.activity.numpy(), [2, 1, 0, 0, 0, 0, 0, 0])
+        state.particle_qd.zero_()
+        state.mpm.particle_qd_grad.zero_()
+        update(activity, state)
+        np.testing.assert_array_equal(activity.activity.numpy(), [2, 0, 0, 0, 0, 0, 0, 0])
+
+    # Both planning and urgent per-tick sweeps must fail conservatively within
+    # the particle's world when a finite velocity's displacement overflows.
+    for interval, min_count in ((1, 1), (4, 1), (1, 2)):
+        activity, state = make_activity(planning_interval=interval, min_moving_particles=min_count)
+        update(activity, state)
+        velocities = np.zeros((model.particle_count, 3), dtype=np.float32)
+        velocities[0, 0] = 1.0e19
+        dt = 20.0
+        if min_count > 1:
+            # Exercise count-gated transport separately from urgent spill motion.
+            positions = state.particle_q.numpy()
+            positions[1] = positions[0]
+            state.particle_q.assign(positions)
+            velocities[:2, 0] = 0.02
+            dt = 1.0e22
+        state.particle_qd.assign(velocities)
+        update(activity, state, dt=dt)
+        np.testing.assert_array_equal(activity.activity.numpy(), [2, 2, 2, 2, 0, 0, 0, 0])
+
+    # At two-voxel patch size, B2 and B3 particles at x=1.95h and 4.05h
+    # share node 3h despite being two patches apart; the latter is support.
+    activity, state = make_activity(support_radius=2)
+    forces = np.zeros((model.particle_count, 3), dtype=np.float32)
+    forces[0, 0] = 0.001
+    state.particle_f.assign(forces)
+    update(activity, state)
+    np.testing.assert_array_equal(activity.activity.numpy(), [2, 1, 1, 0, 0, 0, 0, 0])
 
 
 def test_captured_sleep_support_and_dirty_wake(test, device):
@@ -421,6 +521,14 @@ def test_material_change_retains_velocity_partition(test, device):
 class TestImplicitMPMActivity(unittest.TestCase):
     """Exercise graph replay through public sleeping, working-set, and reset APIs."""
 
+
+add_function_test(
+    TestImplicitMPMActivity,
+    "test_activity_request_safety",
+    test_activity_request_safety,
+    devices=["cpu"],
+    check_output=False,
+)
 
 for function in (
     test_captured_sleep_support_and_dirty_wake,
