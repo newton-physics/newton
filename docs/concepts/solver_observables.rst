@@ -141,7 +141,7 @@ Standard observables
        :class:`~newton.solvers.SolverKamino`, and :class:`~newton.solvers.SolverSteel`
    * - ``SOLVER_RESIDUAL`` / ``observables.solver_residual``
      - Per-world convergence residual of the step; see :ref:`solver_residual_observable`
-     - :class:`~newton.solvers.SolverKamino`
+     - :class:`~newton.solvers.SolverKamino` and :class:`~newton.solvers.SolverVBD`
 
 :class:`~newton.solvers.SolverKamino` computes acceleration as the discrete
 step-average ``(body_qd_out - body_qd_in) / dt``. Across an impact, this includes
@@ -231,6 +231,23 @@ dynamic entities, so the global entry stays zero.
 
 The residual components ``r_p``, ``r_d``, and ``r_c`` and the iteration counts
 remain available through :attr:`~newton.solvers.SolverKamino.status`.
+
+:class:`~newton.solvers.SolverVBD` reports the largest local Newton decrement
+``f · H⁻¹ f`` [J] of each world from its last iteration, where ``f`` is the force
+and ``H`` the Hessian of the step's incremental potential for one particle, or the
+force and torque and 6x6 Hessian of one rigid body. It is twice the energy
+decrease a full local Newton step would predict, so it combines translational and
+rotational residuals in one unit and is zero at equilibrium. VBD has no
+convergence tolerance, so the value is absolute. Because each particle or body is
+sampled just before its own update in the last Gauss-Seidel sweep, the value
+trails the final iterate by part of a sweep. Hard joints and contacts contribute
+their augmented-Lagrangian multiplier terms to ``f``, so the value measures
+stationarity of the current subproblem rather than constraint violation.
+Particles or bodies whose Hessian is nearly singular skip their update and do not
+contribute. Global particles and bodies, including every entity of a model built
+without :meth:`~newton.ModelBuilder.begin_world`, report in the final entry.
+With ``iterations=0`` the array is zero, and with
+``integrate_with_external_rigid_solver=True`` only particles contribute.
 
 Solver-specific observables
 ---------------------------

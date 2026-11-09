@@ -29,6 +29,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     find_vertex_triangle_separator,
     place_dat_division_plane,
     planar_truncation_t,
+    record_world_residual,
 )
 
 from ...geometry import ParticleFlags
@@ -2763,8 +2764,10 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
         particle_adjacency: MeshAdjacencyData,
         particle_forces: wp.array[wp.vec3],
         particle_hessians: wp.array[wp.mat33],
+        particle_world: wp.array[wp.int32],
         # output
         particle_displacements: wp.array[wp.vec3],
+        world_residual: wp.array[float],
     ):
         tid = wp.tid()
         particle_slot = tid // TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
@@ -2939,7 +2942,10 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
                     + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * dt_sqr_reciprocal
                     + particle_forces[particle_index]
                 )
-                particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f_total
+                dx = h_inv * f_total
+                particle_displacements[particle_index] = particle_displacements[particle_index] + dx
+                if world_residual:
+                    record_world_residual(world_residual, particle_world[particle_index], wp.dot(f_total, dx))
 
     return solve_elasticity_tile_kernel
 
@@ -2967,8 +2973,10 @@ def solve_elasticity(
     particle_adjacency: MeshAdjacencyData,
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
+    particle_world: wp.array[wp.int32],
     # output
     particle_displacements: wp.array[wp.vec3],
+    world_residual: wp.array[float],
 ):
     t_id = wp.tid()
 
@@ -3027,7 +3035,10 @@ def solve_elasticity(
 
     if abs(wp.determinant(h)) > 1e-8:
         h_inv = wp.inverse(h)
-        particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f
+        dx = h_inv * f
+        particle_displacements[particle_index] = particle_displacements[particle_index] + dx
+        if world_residual:
+            record_world_residual(world_residual, particle_world[particle_index], wp.dot(f, dx))
 
 
 @wp.kernel

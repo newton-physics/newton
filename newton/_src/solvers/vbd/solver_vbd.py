@@ -403,7 +403,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     supports_collision_pipeline = True
 
-    SUPPORTED_OBSERVABLES = frozenset({SolverBase.ObservableKind.CONTACT_F})
+    SUPPORTED_OBSERVABLES = frozenset({SolverBase.ObservableKind.CONTACT_F, SolverBase.ObservableKind.SOLVER_RESIDUAL})
 
     class JointSlot:
         """Named constraint slot indices for :meth:`set_joint_constraint_mode`.
@@ -2929,6 +2929,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             observables: Optional solver observable arrays allocated by :meth:`observables`.
                 When ``CONTACT_F`` is requested, evaluate one wrench per body-body and rigid-soft
                 contact record at the final configuration. See :ref:`vbd_contact_forces`.
+                When ``SOLVER_RESIDUAL`` is requested, record each world's largest local Newton
+                decrement of the last iteration. See :ref:`solver_residual_observable`.
 
         Raises:
             RuntimeError: If required rigid contact-matching data is unavailable, or contact-history storage would
@@ -2990,6 +2992,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             preserve_history=self.rigid_contact_history,
         )
 
+        world_residual = None
+        if observables is not None and observables.is_requested(SolverBase.ObservableKind.SOLVER_RESIDUAL):
+            world_residual = observables.solver_residual
+            world_residual.zero_()
+
         for iter_num in range(self.iterations):
             rigid_due = self.collision_pipeline is not None and self._rigid_collision_is_due(iter_num)
             soft_due = self.particle_enable_self_contact and self._self_contact_is_due(iter_num)
@@ -2999,8 +3006,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # Material can redistribute between fixed guides even without any rigid bodies.
             if self.tendon_segment_lambda is not None and not self.integrate_with_external_rigid_solver:
                 self._update_tendon_routing(state_in, dt, False)
-            self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
-            self._solve_particle_iteration(state_in, state_out, contacts, dt)
+            # Only the last sweep records the residual; the others pass None and skip it.
+            residual_out = world_residual if iter_num == self.iterations - 1 else None
+            self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt, residual_out)
+            self._solve_particle_iteration(state_in, state_out, contacts, dt, residual_out)
             if self.model.attachment_particle_body_count > 0:
                 wp.launch(
                     kernel=update_duals_particle_body_attachments,
@@ -4277,7 +4286,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         self._refresh_body_particle_contact_state(contacts, refresh)
 
-    def _solve_particle_iteration(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
+    def _solve_particle_iteration(
+        self,
+        state_in: State,
+        state_out: State,
+        contacts: Contacts | None,
+        dt: float,
+        world_residual: wp.array[float] | None = None,
+    ):
         """Solve one VBD iteration for particles."""
         model = self.model
 
@@ -4482,9 +4498,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.particle_adjacency,
                         self.particle_forces,
                         self.particle_hessians,
+                        self.model.particle_world,
                     ],
                     outputs=[
                         self.particle_displacements,
+                        world_residual,
                     ],
                     device=self.device,
                 )
@@ -4514,9 +4532,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.particle_adjacency,
                         self.particle_forces,
                         self.particle_hessians,
+                        self.model.particle_world,
                     ],
                     outputs=[
                         self.particle_displacements,
+                        world_residual,
                     ],
                     device=self.device,
                 )
@@ -4680,6 +4700,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         control: Control,
         contacts: Contacts | None,
         dt: float,
+        world_residual: wp.array[float] | None = None,
     ):
         """Solve one rigid-body VBD iteration (per-iteration phase).
 
@@ -4947,9 +4968,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.tendon_segment_active,
                     self.tendon_segment_active_guide_l,
                     self.tendon_segment_active_guide_r,
+                    model.body_world,
                 ],
                 outputs=[
                     state_in.body_q,
+                    world_residual,
                 ],
                 dim=color_group.size,
                 block_dim=solve_block_dim,
