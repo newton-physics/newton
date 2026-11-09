@@ -13,7 +13,7 @@ from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
-from newton._src.solvers.steel.friction import friction_pair_candidate
+from newton._src.solvers.steel.friction import FRICTION_PAIR_CUDA
 
 # Each benchmark body is a fixed 0.2 m cube of 1 kg built from tiles x tiles touching boxes, so the
 # contact count grows with tiles while the footprint, mass and load stay the same.
@@ -173,24 +173,40 @@ class SteelFrictionPatchBuild:
         wp.synchronize_device(self.scene.model.device)
 
 
+@wp.func_native(
+    "#if defined(__CUDA_ARCH__)\n"
+    + FRICTION_PAIR_CUDA
+    + """
+    const float2 pair = friction_pair_candidate(a, c, d, r0, r1, old0, old1, 1.0f, 1.0f);
+    const float length = sqrtf(pair.x * pair.x + pair.y * pair.y);
+    const float scale = length > 1.0f ? 1.0f / length : 1.0f;
+    out.data[2 * i] = pair.x * scale;
+    out.data[2 * i + 1] = pair.y * scale;
+#endif
+"""
+)
+def _friction_pair_cuda(
+    a: float, c: float, d: float, r0: float, r1: float, old0: float, old1: float, i: int, out: wp.array[float]
+): ...
+
+
 @wp.kernel
 def _friction_pair_update(
-    blocks: wp.array[wp.vec3], residuals: wp.array[wp.vec2], old: wp.array[wp.vec2], out: wp.array[wp.vec2]
+    blocks: wp.array[wp.vec3], residuals: wp.array[wp.vec2], old: wp.array[wp.vec2], out: wp.array[float]
 ):
     i = wp.tid()
     a = blocks[i]
-    x = friction_pair_candidate(a[0], a[1], a[2], residuals[i], old[i], 1.0, 1.0)
-    length = wp.length(x)
-    if length > 1.0:
-        x *= 1.0 / length
-    out[i] = x
+    r = residuals[i]
+    o = old[i]
+    _friction_pair_cuda(a[0], a[1], a[2], r[0], r[1], o[0], o[1], i, out)
 
 
 class SteelFrictionPair:
-    """20 captured launches of the coupled two-row tangent update on 65536 independent 2x2 blocks.
+    """20 captured launches of the CUDA coupled two-row tangent update on 65536 independent 2x2 blocks.
 
-    The blocks are positive definite with condition numbers from 1 to 8 and a unit friction radius;
-    ``sliding`` targets lie outside the radius and ``sticking`` targets inside it.
+    It runs ``FRICTION_PAIR_CUDA``, the snippet the CUDA solves splice in. The blocks are positive
+    definite with condition numbers from 1 to 8 and a unit friction radius; ``sliding`` targets lie
+    outside the radius and ``sticking`` targets inside it.
     """
 
     params = [["sticking", "sliding", "mixed"]]
@@ -217,6 +233,7 @@ class SteelFrictionPair:
         direction = rng.uniform(-np.pi, np.pi, n)
         sliding = np.full(n, case == "sliding") if case != "mixed" else rng.random(n) < 0.5
         target = np.column_stack((np.cos(direction), np.sin(direction))) * np.where(sliding, 2.0, 0.25)[:, None]
+        self.sliding, self.target = sliding, target
         delta = old - target
         residuals = np.column_stack(
             (
@@ -226,7 +243,7 @@ class SteelFrictionPair:
         ).astype(np.float32)
         with wp.ScopedDevice("cuda:0"):
             inputs = [wp.array(blocks, dtype=wp.vec3), wp.array(residuals, dtype=wp.vec2), wp.array(old, dtype=wp.vec2)]
-            self.out = wp.empty(n, dtype=wp.vec2)
+            self.out = wp.empty(2 * n, dtype=float)
             wp.launch(_friction_pair_update, dim=n, inputs=inputs, outputs=[self.out])
             with wp.ScopedCapture() as capture:
                 for _ in range(self.launches):
@@ -240,9 +257,12 @@ class SteelFrictionPair:
         wp.synchronize_device("cuda:0")
 
     def teardown(self, case):
-        norms = np.linalg.norm(self.out.numpy(), axis=1)
-        if not (np.isfinite(norms).all() and norms.max() <= 1.000002):
-            raise RuntimeError("Friction pair update left the friction disk")
+        out = self.out.numpy().reshape(-1, 2)
+        # Sliding ends on the unit disk's rim; sticking reaches its target inside the disk.
+        rim_error = np.abs(np.linalg.norm(out[self.sliding], axis=1) - 1.0)
+        target_error = np.abs(out[~self.sliding] - self.target[~self.sliding])
+        if not (np.isfinite(out).all() and np.all(rim_error < 1.0e-4) and np.all(target_error < 1.0e-4)):
+            raise RuntimeError("Friction pair update missed the friction disk solution")
 
 
 class SteelContactTorsionPreparation:
