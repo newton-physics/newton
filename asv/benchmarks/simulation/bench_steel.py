@@ -284,7 +284,7 @@ class SteelContactTorsionPreparation:
         _require_cuda_graphs()
         if getattr(self, "_key", None) != (contacts, patches):
             from newton._src.solvers.steel.contact_torsion_device import DeviceTorsionPreparation  # noqa: PLC0415
-            from newton.tests.steel.test_torsion import synthetic_fixture  # noqa: PLC0415
+            from newton.tests.steel._fixtures import synthetic_fixture  # noqa: PLC0415
 
             solver, state, augmented, contact_tables = synthetic_fixture(
                 worlds=1, witnesses=contacts, patches=patches, device="cuda:0"
