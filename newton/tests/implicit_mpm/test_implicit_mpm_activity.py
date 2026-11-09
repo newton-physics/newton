@@ -181,6 +181,14 @@ def test_activity_request_safety(test, device):
         update(activity, state)
         np.testing.assert_array_equal(activity.activity.numpy(), [2, 0, 0, 0, 0, 0, 0, 0])
 
+    # The next tick falls between planning passes. A force must wake previously
+    # sleeping dynamic material even with zero translation and affine motion.
+    forces = np.zeros((model.particle_count, 3), dtype=np.float32)
+    forces[1, 0] = 0.001
+    state.particle_f.assign(forces)
+    update(activity, state)
+    np.testing.assert_array_equal(activity.activity.numpy(), [2, 2, 1, 0, 0, 0, 0, 0])
+
     # Both planning and urgent per-tick sweeps must fail conservatively within
     # the particle's world when a finite velocity's displacement overflows.
     for interval, min_count in ((1, 1), (4, 1), (1, 2)):
