@@ -220,7 +220,7 @@ class Actuator:
             indices=indices,
             drive=DrivePD(kp=kp, kd=kd),
             input_processors=[InputProcessorDelay(delay_steps=wp.array([5, 5], dtype=wp.int32), max_delay=5)],
-            clamping=[ClampingSymmetric(limit=max_effort)],
+            clamping=[ClampingMaxEffort(max_effort=max_effort)],
         )
 
         # Simulation loop
@@ -444,7 +444,12 @@ class Actuator:
         """Input processors, applied in list order before the drive."""
         self._legacy_delay_updates = _legacy_delay_updates(input_processors)
         self.clamping = clamping or []
-        _validate_spaces(drive.output_space, (c.input_space for c in self.clamping), motor is not None)
+        _validate_spaces(
+            drive.output_space,
+            (c.input_space for c in self.clamping),
+            motor is not None,
+            (type(c) for c in self.clamping),
+        )
         self.num_actuators = len(indices)
 
         self.state_pos_attr = state_pos_attr

@@ -19,8 +19,8 @@ from .clamping import (
     ClampingBase,
     ClampingCurrentDuty,
     ClampingDCMotor,
+    ClampingMaxEffort,
     ClampingPositionBased,
-    ClampingSymmetric,
 )
 from .drives import (
     DriveBase,
@@ -33,7 +33,6 @@ from .drives import (
 from .input_processors import InputProcessorBase, InputProcessorEncoder
 from .input_processors.input_processor_delay import InputProcessorDelay
 from .motor_dc import MotorDC
-from .space import DriveOutputSpace
 from .utils import _ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG, _looks_like_torch_checkpoint, load_metadata
 
 _COMPONENT_KIND_DELAY_DEPRECATION_MSG = (
@@ -131,11 +130,10 @@ def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
     if schema_props is not None:
         if schema_name in ("NewtonPDControlAPI", "NewtonPIDControlAPI", "NewtonNeuralControlAPI"):
             schema_props.add("newton:outputSpace")
-        elif schema_name == "NewtonSymmetricClampingAPI":
-            schema_props.update(("newton:inputSpace", "newton:limit"))
         elif schema_name == "NewtonCurrentDutyClampingAPI":
             schema_props.update(
                 (
+                    "newton:maxDuty",
                     "newton:voltageSource",
                     "newton:nominalVoltage",
                     "newton:vMin",
@@ -235,7 +233,6 @@ class SchemaNames:
     DC_MOTOR_CLAMPING = "NewtonDCMotorClampingAPI"
     POSITION_BASED_CLAMPING = "NewtonPositionBasedClampingAPI"
     CURRENT_DUTY_CLAMPING = "NewtonCurrentDutyClampingAPI"
-    SYMMETRIC_CLAMPING = "NewtonSymmetricClampingAPI"
 
     DC_MOTOR = "NewtonDCMotorAPI"
 
@@ -247,11 +244,10 @@ _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
     SchemaNames.PD_CONTROL: _SchemaEntry(DrivePD, ComponentKind.DRIVE),
     SchemaNames.PID_CONTROL: _SchemaEntry(DrivePID, ComponentKind.DRIVE),
     SchemaNames.NEURAL_CONTROL: _SchemaEntry(_resolve_neural_drive, ComponentKind.DRIVE),
-    SchemaNames.MAX_EFFORT_CLAMPING: _SchemaEntry(ClampingSymmetric, ComponentKind.CLAMPING),
+    SchemaNames.MAX_EFFORT_CLAMPING: _SchemaEntry(ClampingMaxEffort, ComponentKind.CLAMPING),
     SchemaNames.DC_MOTOR_CLAMPING: _SchemaEntry(ClampingDCMotor, ComponentKind.CLAMPING),
     SchemaNames.POSITION_BASED_CLAMPING: _SchemaEntry(ClampingPositionBased, ComponentKind.CLAMPING),
     SchemaNames.CURRENT_DUTY_CLAMPING: _SchemaEntry(ClampingCurrentDuty, ComponentKind.CLAMPING),
-    SchemaNames.SYMMETRIC_CLAMPING: _SchemaEntry(ClampingSymmetric, ComponentKind.CLAMPING),
     SchemaNames.DC_MOTOR: _SchemaEntry(MotorDC, ComponentKind.MOTOR),
     SchemaNames.DELAY: _SchemaEntry(InputProcessorDelay, ComponentKind.INPUT_PROCESSOR),
     SchemaNames.ENCODER: _SchemaEntry(InputProcessorEncoder, ComponentKind.INPUT_PROCESSOR),
@@ -429,9 +425,6 @@ def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> Actuator
         detected.append(schema_name)
 
         kwargs = _read_schema_attrs(prim, schema_name)
-        if schema_name == SchemaNames.MAX_EFFORT_CLAMPING:
-            kwargs["limit"] = kwargs.pop("max_effort", float("inf"))
-            kwargs["input_space"] = DriveOutputSpace.EFFORT
         if (
             schema_name == SchemaNames.NEURAL_CONTROL
             and not allow_unsafe_torch_checkpoints

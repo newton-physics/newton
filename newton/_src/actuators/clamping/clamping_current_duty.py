@@ -18,6 +18,7 @@ def _current_duty_clamp_kernel(
     vel_indices: wp.array[wp.uint32],
     voltage_estimate: wp.array[float],
     max_current: wp.array[float],
+    max_duty: wp.array[float],
     v_min: wp.array[float],
     kt_estimate: wp.array[float],
     resistance_estimate: wp.array[float],
@@ -31,11 +32,11 @@ def _current_duty_clamp_kernel(
         back_emf = kt_estimate[i] * velocities[vel_indices[i]]
         span = resistance_estimate[i] * max_current[i]
         duty = wp.clamp(duty, (back_emf - span) / voltage, (back_emf + span) / voltage)
-    dst[i] = wp.clamp(duty, -1.0, 1.0)
+    dst[i] = wp.clamp(duty, -max_duty[i], max_duty[i])
 
 
 class ClampingCurrentDuty(ClampingBase):
-    r"""Limit signed duty using a DC-motor current estimate, then a duty bound.
+    r"""Limit signed duty using a DC-motor current estimate, then ``max_duty``.
 
     Input and output are dimensionless duty commands. For a voltage
     estimate ``V > v_min``, the current-derived duty window is::
@@ -43,7 +44,7 @@ class ClampingCurrentDuty(ClampingBase):
         lower = (kt_estimate * velocity - resistance_estimate * max_current) / V
         upper = (kt_estimate * velocity + resistance_estimate * max_current) / V
         duty = clamp(requested_duty, lower, upper)
-        duty = clamp(duty, -1, 1)
+        duty = clamp(duty, -max_duty, max_duty)
 
     ``voltage_source`` explicitly selects the estimate: ``INPUT`` reads the
     supplied voltage; ``NOMINAL`` uses ``nominal_voltage``. The actuator
@@ -56,10 +57,12 @@ class ClampingCurrentDuty(ClampingBase):
     A zero ``max_current`` disables the current window. An estimated voltage at or below
     ``v_min`` also skips it, avoiding division by a near-zero voltage. This
     threshold does not change the actual voltage delivered to the motor.
-    The fixed duty bound [-1, 1] always applies and takes precedence over the
-    current window. Overspeed or an inaccurate voltage estimate can therefore
+    The duty bound ``[-max_duty, max_duty]`` always applies and takes precedence
+    over the current window. Overspeed or an inaccurate voltage estimate can therefore
     cause motor current to exceed the limit.
     This is a quasi-static current estimate, not an inductive current controller.
+
+    This clamp must be the only clamp of its actuator.
     """
 
     class VoltageSource(str, Enum):
@@ -81,6 +84,7 @@ class ClampingCurrentDuty(ClampingBase):
         source = cls.VoltageSource(args.get("voltage_source", cls.VoltageSource.INPUT))
         resolved = {
             "max_current": args.get("max_current", 0.0),
+            "max_duty": args.get("max_duty", 1.0),
             "v_min": args.get("v_min", 1.0e-6),
             "voltage_source": source,
         }
@@ -93,6 +97,8 @@ class ClampingCurrentDuty(ClampingBase):
             raise ValueError("nominal_voltage requires voltage_source=NOMINAL; INPUT uses the supplied voltage")
         if resolved["max_current"] < 0.0:
             raise ValueError(f"max_current must be non-negative, got {resolved['max_current']}")
+        if not 0.0 <= resolved["max_duty"] <= 1.0:
+            raise ValueError(f"max_duty must be in [0, 1], got {resolved['max_duty']}")
         if not 0.0 < resolved["v_min"] < float("inf"):
             raise ValueError("v_min must be finite and positive")
         for name in ("kt_estimate", "resistance_estimate"):
@@ -108,6 +114,7 @@ class ClampingCurrentDuty(ClampingBase):
         kt_estimate: wp.array[float],
         resistance_estimate: wp.array[float],
         *,
+        max_duty: wp.array[float] | None = None,
         voltage_source: VoltageSource = VoltageSource.INPUT,
         nominal_voltage: wp.array[float] | None = None,
         v_min: wp.array[float] | None = None,
@@ -118,6 +125,7 @@ class ClampingCurrentDuty(ClampingBase):
             max_current: Current limit [A], shape (N,). Zero disables it.
             kt_estimate: Firmware estimate of the motor torque constant [N·m/A or N/A], shape (N,).
             resistance_estimate: Firmware estimate of the motor winding resistance [Ω], shape (N,).
+            max_duty: Largest duty magnitude in [0, 1], shape (N,). Defaults to 1 per slot.
             voltage_source: Select supplied or nominal voltage for the current
                 estimate. Shared by all slots in this component.
             nominal_voltage: Positive firmware voltage estimate [V], shape (N,).
@@ -142,6 +150,10 @@ class ClampingCurrentDuty(ClampingBase):
         """Nominal voltage estimate [V], shape (N,), or None in INPUT mode."""
         self.max_current = max_current
         """Current limit [A], shape (N,); zero disables current limiting."""
+        self.max_duty = (
+            wp.full(max_current.shape, 1.0, dtype=float, device=max_current.device) if max_duty is None else max_duty
+        )
+        """Largest duty magnitude, shape (N,)."""
         self.v_min = (
             wp.full(max_current.shape, 1.0e-6, dtype=float, device=max_current.device) if v_min is None else v_min
         )
@@ -150,7 +162,7 @@ class ClampingCurrentDuty(ClampingBase):
         """Firmware estimate of the motor torque constant [N·m/A or N/A], shape (N,)."""
         self.resistance_estimate = resistance_estimate
         """Firmware estimate of the motor winding resistance [Ω], shape (N,)."""
-        for name in ("kt_estimate", "resistance_estimate", "nominal_voltage", "v_min"):
+        for name in ("kt_estimate", "resistance_estimate", "max_duty", "nominal_voltage", "v_min"):
             value = getattr(self, name)
             if value is not None and value.shape != max_current.shape:
                 raise ValueError(f"{name} shape {value.shape} must match max_current shape {max_current.shape}")
@@ -194,6 +206,7 @@ class ClampingCurrentDuty(ClampingBase):
                 vel_indices,
                 estimate,
                 self.max_current,
+                self.max_duty,
                 self.v_min,
                 self.kt_estimate,
                 self.resistance_estimate,

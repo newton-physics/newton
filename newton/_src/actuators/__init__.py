@@ -9,7 +9,6 @@ from .clamping import (
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
-    ClampingSymmetric,
 )
 from .drives import (
     DriveBase,
@@ -48,7 +47,6 @@ __all__ = [
     "ClampingDCMotor",
     "ClampingMaxEffort",
     "ClampingPositionBased",
-    "ClampingSymmetric",
     "ComponentKind",
     "DriveBase",
     "DriveNeuralGRU",

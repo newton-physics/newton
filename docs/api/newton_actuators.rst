@@ -36,7 +36,6 @@ construction.
    ClampingDCMotor
    ClampingMaxEffort
    ClampingPositionBased
-   ClampingSymmetric
    ComponentKind
    DriveBase
    DriveNeuralGRU

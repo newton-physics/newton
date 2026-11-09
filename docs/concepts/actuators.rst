@@ -39,7 +39,7 @@ An actuator is composed of four building blocks, applied in this order:
    │   └── InputProcessorEncoder     (position encoder, e.g. behind an output joint)
    ├── Drive      (control law that computes raw effort, or the motor command)
    ├── Clamping[]  (bounds the drive output in its declared space)
-   │   ├── ClampingSymmetric       (±limit in EFFORT or DUTY)
+   │   ├── ClampingMaxEffort       (±max_effort symmetric clamp; EFFORT only)
    │   ├── ClampingCurrentDuty     (current estimate and duty limits; DUTY only)
    │   ├── ClampingDCMotor         (velocity-dependent saturation; EFFORT only)
    │   └── ClampingPositionBased   (position-dependent lookup table; EFFORT only)
@@ -67,9 +67,9 @@ An actuator is composed of four building blocks, applied in this order:
 
 **Clamping**
    Clamps the drive output in list order. Each clamp's ``input_space`` must
-   match the drive's ``output_space``. :class:`ClampingSymmetric` accepts either
-   space; physical effort clamps cannot be combined with a motor. There are
-   no post-motor effort clamps. Current limiting uses firmware estimates of
+   match the drive's ``output_space``. Effort clamps cannot be combined with a
+   motor, and :class:`ClampingCurrentDuty` must be the only clamp of its
+   actuator. There are no post-motor effort clamps. Current limiting uses firmware estimates of
    the motor parameters, configured independently of the physical motor.
 
 **Motor**
@@ -90,11 +90,6 @@ The per-step pipeline is:
 Drives, clamping objects, and input processors are pluggable: implement the
 :class:`DriveBase`, :class:`ClampingBase` or :class:`InputProcessorBase` class
 to add new models.
-
-.. deprecated:: 1.9
-
-   :class:`ClampingMaxEffort` is an effort-only compatibility wrapper for
-   ``ClampingSymmetric(limit=...)``.
 
 .. deprecated:: 1.9
 
@@ -746,17 +741,18 @@ See the API documentation for each drive's control-law equations.
 Clamping
 ^^^^^^^^
 
-* :class:`ClampingSymmetric` — symmetric clamp to ±limit in EFFORT or DUTY.
+* :class:`ClampingMaxEffort` — symmetric clamp to ±max_effort per actuator.
 * :class:`ClampingDCMotor` — velocity-dependent effort saturation using the DC
   motor effort-speed characteristic.
 * :class:`ClampingPositionBased` — position-dependent effort limits via
   interpolated lookup table (e.g. for linkage-driven joints).
 * :class:`ClampingCurrentDuty` — attempts current limiting, then bounds duty
-  to ``[-1, 1]``. The duty bound takes precedence, so current is not guaranteed
-  to remain within the limit.
+  to ``[-max_duty, max_duty]``. The duty bound takes precedence, so current is
+  not guaranteed to remain within the limit.
 
-Multiple clamping objects can be stacked on a single actuator; they are applied
-in sequence and must match its drive's output space.
+Multiple effort clamping objects can be stacked on a single actuator; they are
+applied in sequence and must match its drive's output space.
+:class:`ClampingCurrentDuty` must be the only clamp of its actuator.
 
 ``ClampingCurrentDuty.voltage_source`` selects ``VoltageSource.INPUT`` (the
 supplied voltage, by default) or ``NOMINAL`` (requiring ``nominal_voltage``).

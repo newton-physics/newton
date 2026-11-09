@@ -3591,6 +3591,7 @@ class ModelBuilder:
                 for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
             ),
             motor is not None,
+            clamping_classes,
         )
 
         # --- Build entry key: identifies a group of compatible actuators ---

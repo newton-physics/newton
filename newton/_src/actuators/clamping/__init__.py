@@ -6,7 +6,6 @@ from .clamping_current_duty import ClampingCurrentDuty
 from .clamping_dc_motor import ClampingDCMotor
 from .clamping_max_effort import ClampingMaxEffort
 from .clamping_position_based import ClampingPositionBased
-from .clamping_symmetric import ClampingSymmetric
 
 __all__ = [
     "ClampingBase",
@@ -14,5 +13,4 @@ __all__ = [
     "ClampingDCMotor",
     "ClampingMaxEffort",
     "ClampingPositionBased",
-    "ClampingSymmetric",
 ]

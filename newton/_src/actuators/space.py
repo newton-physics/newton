@@ -13,8 +13,13 @@ class DriveOutputSpace(str, Enum):
     """Dimensionless signed duty, converted to voltage by the actuator."""
 
 
-def _validate_spaces(output_space, clamp_spaces, has_motor):
+def _validate_spaces(output_space, clamp_spaces, has_motor, clamp_classes):
     """Reject mixed modeling paths before allocating or stepping components."""
+    from .clamping.clamping_current_duty import ClampingCurrentDuty  # noqa: PLC0415
+
+    clamp_classes = list(clamp_classes)
+    if len(clamp_classes) > 1 and ClampingCurrentDuty in clamp_classes:
+        raise ValueError("ClampingCurrentDuty must be the only clamp of an actuator")
     expected = DriveOutputSpace.DUTY if has_motor else DriveOutputSpace.EFFORT
     if DriveOutputSpace(output_space) is not expected:
         raise ValueError(

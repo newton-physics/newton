@@ -36,7 +36,6 @@ from newton.actuators import (
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
-    ClampingSymmetric,
     DriveBase,
     DriveNeuralGRU,
     DriveNeuralLSTM,
@@ -575,7 +574,7 @@ def _make_implicit_actuator(
     """
     clamping = None
     if max_effort is not None:
-        clamping = [ClampingSymmetric(limit=wp.array(max_effort, dtype=float, device=device))]
+        clamping = [ClampingMaxEffort(max_effort=wp.array(max_effort, dtype=float, device=device))]
     response = kwargs.setdefault("response", JointSpaceResponse(model))
     actuator = Actuator(
         indices=wp.array(_arm_dofs(model), dtype=wp.uint32, device=device),
@@ -2717,7 +2716,7 @@ class TestMotorDC(unittest.TestCase):
                     link = builder.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
                     joint = builder.add_joint_revolute(-1, link)
                     clamps = (
-                        [(ClampingSymmetric, {"limit": 0.5, "input_space": DriveOutputSpace.DUTY})]
+                        [(ClampingCurrentDuty, {"max_duty": 0.5, "kt_estimate": 0.5, "resistance_estimate": 2.0})]
                         if with_clamp
                         else []
                     )
@@ -2806,7 +2805,7 @@ class TestMotorDC(unittest.TestCase):
         its own batteries, and a masked reset restores the nominal voltage of
         world 0 only.
         """
-        kp, kt, resistance, vin, max_pwm, target, dt = 0.5, 0.6, 2.0, 6.0, 0.9, 1.0, 0.01
+        kp, kt, resistance, vin, max_duty, target, dt = 0.5, 0.6, 2.0, 6.0, 0.9, 1.0, 0.01
         nominal_voltage, min_voltage, battery_resistance = np.array([6.0, 4.0]), np.array([5.4, 3.0]), 1.0
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         links = [template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA) for _ in range(3)]
@@ -2827,7 +2826,9 @@ class TestMotorDC(unittest.TestCase):
         servo = {
             "kp": kp,
             "output_space": DriveOutputSpace.DUTY,
-            "clamping": [(ClampingSymmetric, {"limit": max_pwm, "input_space": DriveOutputSpace.DUTY})],
+            "clamping": [
+                (ClampingCurrentDuty, {"max_duty": max_duty, "kt_estimate": kt, "resistance_estimate": resistance})
+            ],
             "motor": (MotorDC, {"kt": kt, "resistance": resistance, "vin": vin, "supply_from_battery": True}),
         }
         knee_servo = template.add_actuator(
@@ -2867,7 +2868,7 @@ class TestMotorDC(unittest.TestCase):
         knees = dof % template.joint_dof_count == knee
         measured = q[dof]
         measured[knees] += q[dof[knees] + 1]
-        duty = np.clip(kp * (target - measured), -max_pwm, max_pwm)
+        duty = np.clip(kp * (target - measured), -max_duty, max_duty)
         nominal, minimum = np.tile(nominal_voltage, 2), np.tile(min_voltage, 2)
 
         drawn = np.zeros(4)
@@ -3360,27 +3361,14 @@ class TestClampingCurrentDuty(unittest.TestCase):
         np.testing.assert_array_equal(actuator.motor.resistance.numpy(), [2.0])
 
 
-class TestClampingSymmetric(unittest.TestCase):
+class TestClampingMaxEffort(unittest.TestCase):
     """ClampingMaxEffort: output is clamped to +/-max_effort."""
-
-    def test_legacy_effort_wrapper(self):
-        """Preserve the deprecated effort-only constructor, parameter alias and bound."""
-        limits = wp.array([0.5], dtype=float)
-        with self.assertWarnsRegex(NewtonDeprecationWarning, "ClampingMaxEffort"):
-            clamp = ClampingMaxEffort(max_effort=limits)
-        self.assertIs(clamp.max_effort, limits)
-        self.assertEqual(clamp.input_space, DriveOutputSpace.EFFORT)
-        values = wp.array([2.0], dtype=float)
-        result = wp.zeros(1, dtype=float)
-        index = wp.array([0], dtype=wp.uint32)
-        clamp.modify_forces(values, result, values, values, index, index)
-        np.testing.assert_allclose(result.numpy(), [0.5])
 
     def test_modify_forces(self):
         """Construct clamping directly and call modify_forces()."""
         max_f = 50.0
         n = 3
-        clamp = ClampingSymmetric(limit=wp.array([max_f] * n, dtype=wp.float32))
+        clamp = ClampingMaxEffort(max_effort=wp.array([max_f] * n, dtype=wp.float32))
 
         src_vals = [100.0, -80.0, 30.0]
         src = wp.array(src_vals, dtype=wp.float32)
@@ -3546,7 +3534,7 @@ def _pipeline_clamping(
         return wp.array(np.full(n, value, dtype=np.float32), dtype=float, device=device)
 
     if clamp == "max_effort":
-        clamping = [ClampingSymmetric(limit=_full(_MAX_EFFORT))]
+        clamping = [ClampingMaxEffort(max_effort=_full(_MAX_EFFORT))]
         return clamping, lambda q, qd: (-_MAX_EFFORT, _MAX_EFFORT)
 
     if clamp == "dc_motor":
@@ -3588,7 +3576,7 @@ def _pipeline_clamping(
             velocity_limit=_full(1.0e9),
             max_motor_effort=_full(1.0e9),
         )
-        bound = ClampingSymmetric(limit=_full(_MAX_EFFORT))
+        bound = ClampingMaxEffort(max_effort=_full(_MAX_EFFORT))
         order = [bound, open_clamp] if clamp == "max_effort_then_open" else [open_clamp, bound]
         return order, lambda q, qd: (-_MAX_EFFORT, _MAX_EFFORT)
 
@@ -3921,7 +3909,7 @@ class TestActuatorStep(unittest.TestCase):
             if clamp == "max_effort":
                 # Tightening the limit below the solved effort must bind on the next solve.
                 tight = 0.25 * np.abs(retuned[act_all.astype(np.int64)])
-                actuator.clamping[0].limit.assign(tight.astype(np.float32))
+                actuator.clamping[0].max_effort.assign(tight.astype(np.float32))
                 actuate()
                 np.testing.assert_allclose(
                     np.abs(control.joint_f.numpy()[act_all.astype(np.int64)]), tight, rtol=1.0e-4, atol=1.0e-5
@@ -5227,17 +5215,26 @@ class TestActuatorBuilder(unittest.TestCase):
         joint = builder.add_joint_revolute(-1, link)
         index = builder.joint_qd_start[joint]
         motor = (MotorDC, {"kt": 0.5, "resistance": 2.0, "vin": 12.0})
+        duty_clamp = {"kt_estimate": 0.5, "resistance_estimate": 2.0}
         invalid = [
             ({"motor": motor}, "DUTY drive"),
             ({"output_space": DriveOutputSpace.DUTY}, "requires a motor"),
-            ({"clamping": [(ClampingSymmetric, {"limit": 1.0, "input_space": DriveOutputSpace.DUTY})]}, "DUTY clamp"),
+            ({"clamping": [(ClampingCurrentDuty, duty_clamp)]}, "DUTY clamp"),
             (
                 {
                     "motor": motor,
                     "output_space": DriveOutputSpace.DUTY,
-                    "clamping": [(ClampingSymmetric, {"limit": 1.0})],
+                    "clamping": [(ClampingMaxEffort, {"max_effort": 1.0})],
                 },
                 "EFFORT clamps",
+            ),
+            (
+                {
+                    "motor": motor,
+                    "output_space": DriveOutputSpace.DUTY,
+                    "clamping": [(ClampingCurrentDuty, duty_clamp), (ClampingCurrentDuty, duty_clamp)],
+                },
+                "only clamp",
             ),
             (
                 {
@@ -5255,7 +5252,7 @@ class TestActuatorBuilder(unittest.TestCase):
             ClampingCurrentDuty.resolve_arguments({"input_space": DriveOutputSpace.EFFORT})
         with self.assertRaisesRegex(ValueError, "only EFFORT"):
             ClampingDCMotor.resolve_arguments({"input_space": DriveOutputSpace.DUTY})
-        builder.add_actuator(DrivePD, index=index, kp=1.0, clamping=[(ClampingSymmetric, {"limit": 0.1})])
+        builder.add_actuator(DrivePD, index=index, kp=1.0, clamping=[(ClampingMaxEffort, {"max_effort": 0.1})])
         builder.add_actuator(DrivePD, index=index, kp=1.0, output_space=DriveOutputSpace.DUTY, motor=motor)
         model = builder.finalize()
         self.assertEqual(len(model.actuators), 2)
@@ -5280,7 +5277,7 @@ class TestActuatorBuilder(unittest.TestCase):
             Actuator(
                 indices,
                 drive=DrivePD(array(1.0), array(0.0), output_space=DriveOutputSpace.DUTY),
-                clamping=[ClampingSymmetric(array(1.0))],
+                clamping=[ClampingMaxEffort(array(1.0))],
                 motor=MotorDC(array(0.5), array(2.0), array(12.0), array(0.0)),
             )
 
@@ -5310,8 +5307,8 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertEqual(clamped.num_actuators, 1)
         self.assertAlmostEqual(clamped.drive.kp.numpy()[0], 100.0, places=3)
         self.assertAlmostEqual(clamped.drive.kd.numpy()[0], 10.0, places=3)
-        self.assertIsInstance(clamped.clamping[0], ClampingSymmetric)
-        self.assertAlmostEqual(clamped.clamping[0].limit.numpy()[0], 50.0, places=3)
+        self.assertIsInstance(clamped.clamping[0], ClampingMaxEffort)
+        self.assertAlmostEqual(clamped.clamping[0].max_effort.numpy()[0], 50.0, places=3)
 
         self.assertEqual(delayed.num_actuators, 1)
         self.assertAlmostEqual(delayed.drive.kp.numpy()[0], 200.0, places=3)
@@ -5547,7 +5544,7 @@ class TestActuatorBuilder(unittest.TestCase):
             DrivePD,
             index=template.joint_qd_start[joints[0]],
             kp=1.0,
-            clamping=[(ClampingSymmetric, {"limit": 1.0})],
+            clamping=[(ClampingMaxEffort, {"max_effort": 1.0})],
         )
         servo = template.add_actuator(
             DrivePD,
@@ -5597,7 +5594,7 @@ class TestActuatorBuilder(unittest.TestCase):
         delay:
           knee_actuator: backlash hinge in series, draws from Battery
           ankle_actuator: draws from Battery
-          toe_actuator: fixed supply vin = 5 V
+          toe_actuator: fixed supply vin = 5 V, max duty 0.5
         The motor, processor and battery tokens may have no registered USD
         schema, so they must be found next to the registered schemas. The
         knee is its own actuator group because of its encoder and
@@ -5615,13 +5612,16 @@ class TestActuatorBuilder(unittest.TestCase):
         builder.replicate(template, 2)
         model = builder.finalize()
 
-        fixed_supply = next(a for a in model.actuators if not a.motor.uses_battery)
-        limiter = next(c for c in fixed_supply.clamping if isinstance(c, ClampingCurrentDuty))
-        np.testing.assert_allclose(limiter.kt_estimate.numpy(), [0.8, 0.8])
-        np.testing.assert_allclose(limiter.resistance_estimate.numpy(), [3.0, 3.0])
-        np.testing.assert_allclose(fixed_supply.motor.kt.numpy(), [0.6, 0.6])
-        np.testing.assert_allclose(fixed_supply.motor.resistance.numpy(), [2.0, 2.0])
-        self.assertEqual(len(model.actuators), 3)
+        ankle_and_toe = next(
+            a for a in model.actuators if not any(isinstance(p, InputProcessorEncoder) for p in a.input_processors)
+        )
+        limiter = next(c for c in ankle_and_toe.clamping if isinstance(c, ClampingCurrentDuty))
+        np.testing.assert_allclose(limiter.kt_estimate.numpy(), [0.6, 0.8, 0.6, 0.8])
+        np.testing.assert_allclose(limiter.resistance_estimate.numpy(), [2.0, 3.0, 2.0, 3.0])
+        np.testing.assert_allclose(limiter.max_duty.numpy(), [1.0, 0.5, 1.0, 0.5])
+        np.testing.assert_allclose(ankle_and_toe.motor.kt.numpy(), [0.6] * 4)
+        np.testing.assert_allclose(ankle_and_toe.motor.resistance.numpy(), [2.0] * 4)
+        self.assertEqual(len(model.actuators), 2)
         (batteries,) = model.batteries
         np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 2, 4])
         np.testing.assert_array_equal(batteries.actuators.numpy(), [0, 1, 3, 4])
@@ -5653,7 +5653,8 @@ class TestActuatorBuilder(unittest.TestCase):
 
             current_window = np.tile([2.0, 2.0, 3.0], 2) / supply
             duty = np.clip(0.5 * (targets[max(step - 2, 0)] - measured), -current_window, current_window)
-            duty = np.clip(duty, -1.0, 1.0)
+            max_duty = np.tile([1.0, 1.0, 0.5], 2)
+            duty = np.clip(duty, -max_duty, max_duty)
             expected = 0.6 * supply * duty / 2.0
             np.testing.assert_allclose(control.joint_f.numpy()[dof], expected, rtol=1e-5, err_msg=f"step {step}")
 
@@ -6215,7 +6216,7 @@ class TestDelayGraphCapture(unittest.TestCase):
             kp=200.0,
             kd=10.0,
             input_processors=[(InputProcessorDelay, {"delay_steps": max_delay})],
-            clamping=[(ClampingSymmetric, {"limit": 500.0})],
+            clamping=[(ClampingMaxEffort, {"max_effort": 500.0})],
         )
         model = builder.finalize()
         device = model.device

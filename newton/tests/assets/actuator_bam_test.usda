@@ -135,7 +135,6 @@ def Xform "World"
             prepend apiSchemas = [
                 "NewtonPDControlAPI",
                 "NewtonCurrentDutyClampingAPI",
-                "NewtonSymmetricClampingAPI",
                 "NewtonDCMotorAPI",
                 "NewtonActuatorDelayAPI",
             ]
@@ -144,8 +143,7 @@ def Xform "World"
             rel newton:targets = </World/Robot/toe>
             token newton:outputSpace = "duty"
             float newton:kp = 0.5
-            token newton:inputSpace = "duty"
-            float newton:limit = 1.0
+            float newton:maxDuty = 0.5
             float newton:ktEstimate = 0.8
             float newton:resistanceEstimate = 3.0
             float newton:kt = 0.6
