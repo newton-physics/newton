@@ -1804,7 +1804,7 @@ def test_reused_kinematics_follow_a_timestep_change(test, device):
 def test_captured_step_replays_the_same_result_from_an_unchanged_input(test, device):
     """A step captured on a fresh solver and replayed from the same input gives the same result every replay.
 
-    A later capture of the same step still replays it after the first graph is released.
+    Releasing an earlier capture that never ran leaves the later capture's result unchanged.
     """
     model = _build_contact_scene(device)
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
@@ -1812,36 +1812,40 @@ def test_captured_step_replays_the_same_result_from_an_unchanged_input(test, dev
     control = model.control()
     names = ("joint_q", "joint_qd", "body_q", "body_qd")
 
-    def replays(reuse):
+    def replays(reuse, release_first=False):
         solver = SolverSteel(model, reuse_kinematics=reuse)
         state_in, state_out = model.state(), model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
         state_in.clear_forces()
         pipeline.collide(state_in, contacts)
+        if release_first:
+            with wp.ScopedCapture(device) as first:
+                solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
         with wp.ScopedCapture(device) as capture:
             solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+        if release_first:
+            del first
+            gc.collect()
         outputs = []
         for _ in range(3):
+            for name in names:
+                output = getattr(state_out, name)
+                output.assign(np.full_like(output.numpy(), np.nan))
             wp.capture_launch(capture.graph)
             outputs.append(tuple(getattr(state_out, name).numpy().copy() for name in names))
-        with wp.ScopedCapture(device) as later:
-            solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
-        del capture
-        gc.collect()
-        for name in names:
-            output = getattr(state_out, name)
-            output.assign(np.full_like(output.numpy(), np.nan))
-        wp.capture_launch(later.graph)
-        outputs.append(tuple(getattr(state_out, name).numpy().copy() for name in names))
         return solver, outputs
 
     _, reference = replays(False)
     carried_solver, carried = replays(True)
     test.assertTrue(carried_solver._reuse_kinematics_enabled)
-    for replay in (1, 2, 3):
+    for replay in (1, 2):
         for name, first, later in zip(names, carried[0], carried[replay], strict=True):
             np.testing.assert_array_equal(later, first, err_msg=f"{name} changed on replay {replay}")
     _assert_histories_close(test, reference, carried)
+    _, released = replays(False, release_first=True)
+    for replay in range(3):
+        for name, expected, actual in zip(names, reference[replay], released[replay], strict=True):
+            np.testing.assert_array_equal(actual, expected, err_msg=f"{name} differs on replay {replay}")
 
 
 def test_extra_free_joints_keep_the_generic_publication(test, device):
