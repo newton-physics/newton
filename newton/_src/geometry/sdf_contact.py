@@ -1764,7 +1764,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 sdf_mesh_margin = shape_data[shape_b][3]
 
                                 contact_data = ContactData()
-                                contact_data.contact_point_center = point_world
+                                contact_data.contact_point_center = point_world - 0.5 * dist * direction_world
                                 contact_data.contact_normal_a_to_b = contact_normal
                                 contact_data.contact_distance = dist
                                 contact_data.radius_eff_a = 0.0
@@ -2224,6 +2224,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         direction_world = wp.vec3(0.0, 1.0, 0.0)
 
                                 contact_normal = -direction_world if mode == 0 else direction_world
+                                contact_center = point_world - 0.5 * dist * direction_world
                                 position_local_tri = wp.quat_rotate_inv(
                                     wp.transform_get_rotation(X_tri_ws),
                                     point_world - wp.transform_get_translation(X_tri_ws),
@@ -2246,11 +2247,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 contact_id = _export_and_reduce_contact_centered_two_spatial_depths(
                                     shape_a,
                                     shape_b,
-                                    point_world,
+                                    contact_center,
                                     contact_normal,
                                     dist,
                                     (my_edge_idx << 2) | (mode << 1),
-                                    point_world - midpoint,
+                                    contact_center - midpoint,
                                     inner_spatial_depth,
                                     outer_spatial_depth,
                                     position_local_tri,
@@ -2265,7 +2266,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         export_and_reduce_predictive_contact(
                                             shape_a,
                                             shape_b,
-                                            point_world,
+                                            contact_center,
                                             contact_normal,
                                             dist,
                                             margin_sum,
