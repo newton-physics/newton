@@ -9634,6 +9634,62 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 err = float(np.max(np.abs(tau_newton - expected)))
                 self.assertLess(err, 1e-5, f"got={tau_newton}, expected={expected}, err={err:.2e}")
 
+    def test_ball_joint_effort_limit_updates_actuator_force(self):
+        """Ball-joint actuator force follows joint_effort_limit, including zero and runtime changes."""
+        dt = 0.002
+
+        def make_model(world_count):
+            template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joint = template.add_joint_ball(-1, body, actuator_mode=newton.JointTargetMode.VELOCITY)
+            template.add_articulation([joint])
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            builder.replicate(template, world_count)
+            model = builder.finalize()
+            model.joint_target_kd.fill_(10.0)
+            return model
+
+        def step_qd(model, solver):
+            state_in, state_out = model.state(), model.state()
+            newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+            control = model.control()
+            control.joint_target_qd.fill_(1.0)
+            solver.step(state_in, state_out, control, None, dt)
+            return state_out.joint_qd.numpy().reshape(model.world_count, 3)
+
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                model = make_model(1)
+                model.joint_effort_limit.zero_()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                if use_mujoco_cpu:
+                    self.assertTrue(solver.mj_model.actuator_forcelimited.all())
+                np.testing.assert_array_equal(step_qd(model, solver), 0.0)
+
+                model.joint_effort_limit.fill_(2.0)
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                np.testing.assert_allclose(step_qd(model, solver), 2.0 * dt, rtol=1.0e-4)
+
+                model.joint_effort_limit.zero_()
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                np.testing.assert_array_equal(step_qd(model, solver), 0.0)
+
+        with self.subTest(world_count=2):
+            model = make_model(2)
+            model.joint_effort_limit.assign(np.array([0.0] * 3 + [5.0] * 3, dtype=np.float32))
+            solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+            qd = step_qd(model, solver)
+            np.testing.assert_array_equal(qd[0], 0.0)
+            np.testing.assert_allclose(qd[1], 5.0 * dt, rtol=1.0e-4)
+
+        with self.subTest("save_to_mjcf"):
+            model = make_model(1)
+            model.joint_effort_limit.zero_()
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "ball.xml")
+                with self.assertRaisesRegex(ValueError, "joint_effort_limit=0"):
+                    SolverMuJoCo(model, disable_contacts=True, save_to_mjcf=path)
+
 
 class TestMuJoCoSolverPairProperties(unittest.TestCase):
     """Test contact pair property conversion and runtime updates across multiple worlds."""
