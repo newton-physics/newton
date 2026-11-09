@@ -534,7 +534,8 @@ class TestMuJoCoActuators(unittest.TestCase):
     def test_actuator_damping_survives_property_updates(self):
         """Keep folded joint/tendon damping without double-counting it on the CPU."""
         mjcf = (
-            MJCF_DCMOTOR_SIMPLE.replace(
+            MJCF_DCMOTOR_SIMPLE.replace('<joint name="hinge"/>', '<joint name="hinge" springdamper="0.2 1.5"/>')
+            .replace(
                 "<actuator>", '<tendon><fixed name="drive"><joint joint="hinge" coef="1"/></fixed></tendon><actuator>'
             )
             .replace('resistance="2"', 'resistance="2" damping="0.7 0.2 0.1" gear="3"')
@@ -560,6 +561,9 @@ class TestMuJoCoActuators(unittest.TestCase):
                             SolverMuJoCo(model, disable_contacts=True)
                     model.mujoco.actuator_gear.assign(gears)
                 solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                np.testing.assert_allclose(
+                    solver.mj_model.dof_damping, model.joint_damping.numpy()[: solver.mj_model.nv]
+                )
                 model.joint_damping.fill_(0.4)
                 model.mujoco.tendon_damping.fill_(0.3)
                 for _ in range(2):

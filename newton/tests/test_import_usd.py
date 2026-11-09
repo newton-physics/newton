@@ -4437,9 +4437,8 @@ def Xform "NotPSD" (
         self.assertTrue(np.any(np.isclose(gravcomp, 0.5)))
         self.assertTrue(np.any(np.isclose(gravcomp, 0.0)))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_joint_stiffness_damping(self):
-        """Verify joint stiffness and damping are parsed correctly from USD."""
+    def _make_joint_stiffness_damping_model(self):
+        """Build the shared USD joint-gains fixture."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -4561,8 +4560,12 @@ def Xform "Articulation" (
         # mjc:damping resolves through SchemaResolverMjc into joint_damping;
         # mjc:stiffness resolves into core joint_stiffness.
         builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverMjc()])
-        model = builder.finalize()
+        return builder.finalize()
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_stiffness_damping(self):
+        """Verify joint stiffness and damping are parsed correctly from USD."""
+        model = self._make_joint_stiffness_damping_model()
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertFalse(hasattr(model.mujoco, "dof_passive_damping"))
 
@@ -4605,12 +4608,19 @@ def Xform "Articulation" (
         expected_springdamper[joint_qd_start[joint_names.index("/Articulation/Joint2")]] = [0.2, 1.5]
         np.testing.assert_allclose(springdamper, expected_springdamper)
 
-        mujoco, _ = SolverMuJoCo.import_mujoco()
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_springdamper_core_gains(self):
+        """Resolve the authored USD springdamper to the same gains as native MuJoCo."""
+        try:
+            mujoco, _ = SolverMuJoCo.import_mujoco()
+        except ImportError as error:
+            self.skipTest(str(error))
+        model = self._make_joint_stiffness_damping_model()
         with tempfile.TemporaryDirectory() as directory:
             filename = f"{directory}/model.xml"
             solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True, save_to_mjcf=filename)
             native_spec = mujoco.MjSpec.from_file(filename)
-        dof = joint_qd_start[joint_names.index("/Articulation/Joint2")]
+        dof = model.joint_qd_start.numpy()[model.joint_label.index("/Articulation/Joint2")]
         joint = np.flatnonzero(solver.mjc_jnt_to_newton_dof.numpy()[0] == dof)[0]
         native_spec.joints[joint].springdamper[:] = [0.2, 1.5]
         native = native_spec.compile()
