@@ -97,6 +97,7 @@ class SteelFrictionPatches:
     timeout = 600
     world_count = 64
     steps = 100
+    scene = None
 
     def setup(self, tiles, friction):
         _require_cuda_graphs()
@@ -119,7 +120,8 @@ class SteelFrictionPatches:
         wp.synchronize_device(self.scene.model.device)
 
     def teardown(self, tiles, friction):
-        self.scene.check_finite()
+        if self.scene is not None:
+            self.scene.check_finite()
 
 
 class SteelFrictionPatchBuild:
@@ -211,6 +213,7 @@ class SteelFrictionPair:
 
     params = [["sticking", "sliding", "mixed"]]
     param_names = ["case"]
+    out = None
     number = 1
     rounds = 2
     repeat = 5
@@ -257,6 +260,8 @@ class SteelFrictionPair:
         wp.synchronize_device("cuda:0")
 
     def teardown(self, case):
+        if self.out is None:
+            return
         out = self.out.numpy().reshape(-1, 2)
         # Sliding ends on the unit disk's rim; sticking reaches its target inside the disk.
         rim_error = np.abs(np.linalg.norm(out[self.sliding], axis=1) - 1.0)
