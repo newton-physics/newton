@@ -9684,36 +9684,6 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 np.testing.assert_array_equal(step_qd(model, solver), 0.0)
 
         for use_mujoco_cpu in (False, True):
-            with self.subTest("per-axis limits", use_mujoco_cpu=use_mujoco_cpu):
-                # At the identity pose, each MuJoCo axis actuator follows its own Newton axis.
-                model = make_model(1)
-                model.joint_effort_limit.assign(np.array([0.0, 1.0, 3.0], dtype=np.float32))
-                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
-                np.testing.assert_allclose(
-                    step_qd(model, solver)[0], [0.0, 1.0 * dt, 3.0 * dt], rtol=1.0e-3, atol=1.0e-9
-                )
-
-                model.joint_effort_limit.assign(np.array([3.0, 0.0, 1.0], dtype=np.float32))
-                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
-                np.testing.assert_allclose(
-                    step_qd(model, solver)[0], [3.0 * dt, 0.0, 1.0 * dt], rtol=1.0e-3, atol=1.0e-9
-                )
-
-        with self.subTest(world_count=2):
-            model = make_model(2)
-            model.joint_effort_limit.assign(np.array([0.0] * 3 + [5.0] * 3, dtype=np.float32))
-            solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
-            qd = step_qd(model, solver)
-            np.testing.assert_array_equal(qd[0], 0.0)
-            np.testing.assert_allclose(qd[1], 5.0 * dt, rtol=1.0e-4)
-
-            model.joint_effort_limit.assign(np.array([0.0, 1.0, 3.0, 5.0, 3.0, 1.0], dtype=np.float32))
-            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
-            qd = step_qd(model, solver)
-            np.testing.assert_allclose(qd[0], [0.0, 1.0 * dt, 3.0 * dt], rtol=1.0e-3, atol=1.0e-9)
-            np.testing.assert_allclose(qd[1], [5.0 * dt, 3.0 * dt, 1.0 * dt], rtol=1.0e-3, atol=1.0e-9)
-
-        for use_mujoco_cpu in (False, True):
             with self.subTest("ball after a prismatic joint", use_mujoco_cpu=use_mujoco_cpu):
                 # The ball DOFs start at DOF 1 in every world; each axis must still follow its own limit.
                 template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))

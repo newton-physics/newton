@@ -4529,7 +4529,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
                 .. deprecated:: 1.8
                     Passing any value is deprecated; Data will always be updated on every step.
-            save_to_mjcf: Optional path to save the generated MJCF model file.
+            save_to_mjcf: Optional path to save the generated MJCF model file. Raises :class:`ValueError` for an
+                actuated ball joint with ``joint_effort_limit == 0``, which MJCF cannot represent.
             use_mujoco_contacts: If True, use MuJoCo collision detection. If False, use Newton-generated contacts
                 supplied to :meth:`step`. Must be True with ``use_mujoco_cpu=True``.
             use_speculative_contacts: Add frictionless normal constraints for separated Newton
@@ -8223,8 +8224,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 for is_position in kinds:
                     joint_target_ranges[(dof, is_position)] = info
 
-        def joint_target_actuator_kwargs(base: dict[str, Any], dof: int, is_position: bool) -> dict[str, Any]:
-            """Merge the matching row's authored ranges and passive properties onto a sub-actuator."""
+        def joint_target_actuator_kwargs(
+            base: dict[str, Any], dof: int, is_position: bool, effort_limited: bool = False
+        ) -> dict[str, Any]:
+            """Merge the matching row's authored ranges and passive properties onto a sub-actuator.
+
+            ``effort_limited`` marks ball actuators whose force range comes from ``joint_effort_limit``;
+            an authored ``forcelimited`` then only applies together with an authored ``forcerange``.
+            """
             kwargs = dict(base)
             info = joint_target_ranges.get((dof, is_position))
             if info is None:
@@ -8235,9 +8242,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 kwargs["ctrllimited"] = info["ctrllimited"]
             if info["has_ctrlrange"] and info["ctrlrange"] is not None:
                 kwargs["ctrlrange"] = info["ctrlrange"]
-            # Ball actuators are limited by joint_effort_limit unless MJCF authored the range.
-            effort_limited = "forcelimited" in base and not info["has_forcerange"]
-            if info["forcelimited"] is not None and not effort_limited:
+            if info["forcelimited"] is not None and not (effort_limited and not info["has_forcerange"]):
                 kwargs["forcelimited"] = info["forcelimited"]
             if info["has_forcerange"] and info["forcerange"] is not None:
                 kwargs["forcerange"] = info["forcerange"]
@@ -8488,7 +8493,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
                             # A ball joint's authored range lives on a single source row
                             # (keyed by the joint base DOF); apply it to every axis actuator.
-                            spec.add_actuator(target=name, **joint_target_actuator_kwargs(args, qd_start, True))
+                            spec.add_actuator(
+                                target=name, **joint_target_actuator_kwargs(args, qd_start, True, effort_limited=True)
+                            )
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
@@ -8499,7 +8506,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         elif mode == JointTargetMode.POSITION_VELOCITY:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=name, **joint_target_actuator_kwargs(args, qd_start, True))
+                            spec.add_actuator(
+                                target=name, **joint_target_actuator_kwargs(args, qd_start, True, effort_limited=True)
+                            )
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
@@ -8511,7 +8520,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
                             args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=name, **joint_target_actuator_kwargs(args, qd_start, False))
+                            spec.add_actuator(
+                                target=name, **joint_target_actuator_kwargs(args, qd_start, False, effort_limited=True)
+                            )
                             axis_to_actuator[ai, 1] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(-(template_dof + 2))  # negative = velocity
@@ -9147,6 +9158,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
         actuator_custom_attr_idx = np.full(len(mjc_actuator_ctrl_source_list), -1, dtype=np.int32)
+        # Newton DOF whose effort limit drives each ball-joint actuator's force range (-1: none).
+        # Ranges authored in MJCF are kept as authored.
+        actuator_effort_dof = np.full(len(mjc_actuator_ctrl_source_list), -1, dtype=np.int32)
         for actuator, (ctrl_source, newton_idx) in enumerate(
             zip(mjc_actuator_ctrl_source_list, mjc_actuator_to_newton_idx_list, strict=True)
         ):
@@ -9154,25 +9168,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 is_position = newton_idx >= 0
                 dof = newton_idx if is_position else -(newton_idx + 2)
                 ball_joint = mjc_actuator_to_newton_ball_jnt_list[actuator]
+                axis_dof = dof
                 if ball_joint >= 0:
                     dof = int(joint_qd_start[ball_joint])
                 info = joint_target_ranges.get((dof, is_position))
                 if info is not None:
                     actuator_custom_attr_idx[actuator] = info["actuator_idx"]
+                if ball_joint >= 0 and (info is None or not info["has_forcerange"]):
+                    actuator_effort_dof[actuator] = axis_dof
             elif newton_idx >= 0:
                 actuator_custom_attr_idx[actuator] = newton_idx
-
-        # Newton DOF whose effort limit drives each ball-joint actuator's force range (-1: none).
-        # Ranges authored in MJCF are kept as authored.
-        actuator_effort_dof = np.full(len(mjc_actuator_ctrl_source_list), -1, dtype=np.int32)
-        for actuator, ball_joint in enumerate(mjc_actuator_to_newton_ball_jnt_list):
-            if ball_joint < 0:
-                continue
-            newton_idx = mjc_actuator_to_newton_idx_list[actuator]
-            is_position = newton_idx >= 0
-            info = joint_target_ranges.get((int(joint_qd_start[ball_joint]), is_position))
-            if info is None or not info["has_forcerange"]:
-                actuator_effort_dof[actuator] = newton_idx if is_position else -(newton_idx + 2)
 
         # Convert actuator mapping lists to warp arrays
         if mjc_actuator_ctrl_source_list:
