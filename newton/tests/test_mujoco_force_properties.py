@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import warnings
 from contextlib import ExitStack
+from itertools import product
 from unittest.mock import patch
 
 import numpy as np
@@ -120,7 +121,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
         np.testing.assert_array_equal(model.joint_damping.numpy(), 0.0)
 
     def test_imported_springdamper_per_world_physical_inertia(self):
-        """Resolve heterogeneous worlds without kinematic-lock armature on either backend."""
+        """Resolve physical gains in heterogeneous worlds with dynamic or kinematic roots."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
         xmls = [
             self.SPRINGDAMPER_XML,
@@ -135,27 +136,30 @@ class TestMuJoCoForceProperties(unittest.TestCase):
         backends = [(True, "cpu"), (False, "cpu")]
         if wp.get_device().is_cuda:
             backends.append((False, wp.get_device()))
-        for cpu, device in backends:
-            with self.subTest(native_cpu=cpu, device=device):
+        for (cpu, device), locked in product(backends, (False, True)):
+            with self.subTest(native_cpu=cpu, device=device, locked=locked):
                 builder = newton.ModelBuilder()
                 for xml in xmls:
                     source = newton.ModelBuilder()
                     source.add_mjcf(xml)
                     builder.add_world(source)
                 model = builder.finalize(device=device)
-                roots = model.joint_child.numpy()[model.joint_type.numpy() == newton.JointType.FREE]
-                flags = model.body_flags.numpy()
-                flags[roots] = int(newton.BodyFlags.KINEMATIC)
-                model.body_flags.assign(flags)
+                if locked:
+                    roots = model.joint_child.numpy()[model.joint_type.numpy() == newton.JointType.FREE]
+                    flags = model.body_flags.numpy()
+                    flags[roots] = int(newton.BodyFlags.KINEMATIC)
+                    model.body_flags.assign(flags)
                 solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, separate_worlds=True, disable_contacts=True)
                 np.testing.assert_allclose(model.joint_stiffness.numpy(), expected_k, rtol=2e-5)
                 np.testing.assert_allclose(model.joint_damping.numpy(), expected_d, rtol=2e-5)
                 np.testing.assert_allclose(solver.mj_model.jnt_stiffness, natives[0].jnt_stiffness, rtol=2e-5)
-                flags[roots] = int(newton.BodyFlags.DYNAMIC)
-                model.body_flags.assign(flags)
-                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-                np.testing.assert_allclose(model.joint_stiffness.numpy(), expected_k, rtol=2e-5)
-                np.testing.assert_allclose(model.joint_damping.numpy(), expected_d, rtol=2e-5)
+                np.testing.assert_allclose(solver.mj_model.dof_damping, natives[0].dof_damping, rtol=2e-5)
+                if locked:
+                    flags[roots] = int(newton.BodyFlags.DYNAMIC)
+                    model.body_flags.assign(flags)
+                    solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+                    np.testing.assert_allclose(model.joint_stiffness.numpy(), expected_k, rtol=2e-5)
+                    np.testing.assert_allclose(model.joint_damping.numpy(), expected_d, rtol=2e-5)
                 if not cpu:
                     np.testing.assert_allclose(
                         solver.mjw_model.jnt_stiffness.numpy(), [m.jnt_stiffness for m in natives], rtol=2e-5
