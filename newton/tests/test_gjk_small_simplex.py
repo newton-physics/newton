@@ -94,6 +94,42 @@ def test_short_segment_distance(test, device):
             np.testing.assert_allclose(actual[2:5], [0.0, 0.0, -1.0], atol=1e-6)
 
 
+def test_stalled_edge_does_not_become_zero_normal(test, device):
+    """Keep a positive sub-tolerance face gap and its unit normal."""
+    # Discarding this small simplex's face, whose edge distance is below the
+    # convergence tolerance, would report the positive face gap as overlap.
+    vertices = np.array(
+        [
+            [-0.00225319340825, -0.00759682059288, 0.00803601182997],
+            [-0.00664979964495, -0.0111039578915, 0.0170838627964],
+            [0.00106162205338, 0.00387127697468, -0.00424785725772],
+        ],
+        dtype=np.float64,
+    )
+    for scale in (0.5, 1.0, 2.0):
+        with test.subTest(scale=scale):
+            a, b, c = vertices * scale
+            normal = np.cross(b - a, c - a)
+            normal /= np.linalg.norm(normal)
+            signed_distance = float(normal @ a)
+            closest = signed_distance * normal
+            weights = np.linalg.lstsq(np.stack([b - a, c - a], axis=1), closest - a, rcond=None)[0]
+            test.assertGreater(float(weights.min()), 0.0)
+            test.assertLess(float(weights.sum()), 1.0)
+            output = wp.zeros(5, dtype=float, device=device)
+            wp.launch(
+                _query_triangle_point,
+                dim=1,
+                inputs=[wp.vec3(*vertex) for vertex in (a, b, c)],
+                outputs=[output],
+                device=device,
+            )
+            actual = output.numpy()
+            test.assertEqual(actual[0], 1.0)
+            test.assertAlmostEqual(float(actual[1]), abs(signed_distance), delta=1e-7 * scale)
+            np.testing.assert_allclose(actual[2:5], -closest / np.linalg.norm(closest), atol=2e-5)
+
+
 class TestGJKSmallSimplex(unittest.TestCase):
     """Preserve small, nondegenerate simplex faces during distance queries."""
 
@@ -108,6 +144,12 @@ add_function_test(
     TestGJKSmallSimplex,
     "test_short_segment_distance",
     test_short_segment_distance,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestGJKSmallSimplex,
+    "test_stalled_edge_does_not_become_zero_normal",
+    test_stalled_edge_does_not_become_zero_normal,
     devices=get_test_devices(),
 )
 

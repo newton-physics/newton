@@ -348,8 +348,36 @@ def test_unmatched_pipeline_clears_stale_contact_identity(test, device):
     test.assertTrue(np.all(contacts.rigid_contact_match_index.numpy()[:count] == -1))
 
 
+def test_first_step_capture_survives_a_released_graph(test, device):
+    """Capture a new solver's first step with no warmup, release that graph, and replay a later capture."""
+    model = _box_on_ground(device)
+    solver = SolverSteel(model)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_in, state_out, control = model.state(), model.state(), model.control()
+    pipeline.collide(state_in, contacts)
+    with wp.ScopedCapture(device) as first:
+        solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+    with wp.ScopedCapture(device) as second:
+        for _ in range(3):
+            solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+    del first
+    gc.collect()
+    wp.capture_launch(second.graph)
+    wp.synchronize_device(device)
+    test.assertTrue(np.all(np.isfinite(state_out.body_q.numpy())))
+
+
 class TestSteelSafety(unittest.TestCase):
     pass
+
+
+add_function_test(
+    TestSteelSafety,
+    "test_first_step_capture_survives_a_released_graph",
+    test_first_step_capture_survives_a_released_graph,
+    devices=get_cuda_test_devices(),
+)
 
 
 add_function_test(

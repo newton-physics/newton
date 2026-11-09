@@ -1,0 +1,1 @@
+Tests only: regression tests for GJK small-simplex normals, MJCF and USD joint-spring import, a kinematic free base pushing an articulation, and capturing a Steel solver's first step.
