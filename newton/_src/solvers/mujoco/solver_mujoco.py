@@ -4705,7 +4705,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         The control kernel uses this to read the current world's child-anchor rotation from
         ``joint_X_c[world * joints_per_world + jnt % joints_per_world]``.
         Shape ``[nu]``, dtype ``int32``."""
-        self.mjc_actuator_effort_dof: wp.array[wp.int32] | None = None
+        self._mjc_actuator_effort_dof: wp.array[wp.int32] | None = None
         """Per-actuator template-world Newton DOF whose ``joint_effort_limit`` sets the force range of a
         BALL-joint actuator, ``-1`` for other actuators and for force ranges authored in MJCF.
         Shape ``[nu]``, dtype ``int32``."""
@@ -9176,7 +9176,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         # Convert actuator mapping lists to warp arrays
         if mjc_actuator_ctrl_source_list:
-            self.mjc_actuator_effort_dof = wp.array(actuator_effort_dof, dtype=wp.int32, device=model.device)
+            self._mjc_actuator_effort_dof = wp.array(actuator_effort_dof, dtype=wp.int32, device=model.device)
             self.mjc_actuator_ctrl_source = wp.array(
                 np.array(mjc_actuator_ctrl_source_list, dtype=np.int32),
                 dtype=wp.int32,
@@ -9214,7 +9214,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_actuator_to_target_q_axis_idx = None
             self.mjc_actuator_to_newton_ball_jnt = None
             self.mjc_actuator_to_newton_actuator_idx = None
-            self.mjc_actuator_effort_dof = None
+            self._mjc_actuator_effort_dof = None
 
         # MuJoCo has no prescribed DOFs. A weld to the world without stiffness or damping
         # locks a kinematic root's acceleration, so it keeps the velocity pushed from Newton.
@@ -10580,7 +10580,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             wp.launch(
                 update_ball_actuator_forcerange_kernel,
                 dim=(nworld, nu),
-                inputs=[self.mjc_actuator_effort_dof, self.model.joint_effort_limit, dofs_per_world],
+                inputs=[self._mjc_actuator_effort_dof, self.model.joint_effort_limit, dofs_per_world],
                 outputs=[self.mjw_model.actuator_forcerange],
                 device=self.model.device,
             )
