@@ -66,10 +66,12 @@ An actuator is composed of four building blocks, applied in this order:
    does not convert them.
 
 **Clamping**
-   Clamps the drive output in list order. Each clamp's ``input_space`` must
-   match the drive's ``output_space``. Effort clamps cannot be combined with a
-   motor. There are no post-motor effort clamps. Current limiting uses firmware
-   estimates of the motor parameters, by default the motor's own.
+   Clamps the drive output. The actuator applies its clamps in list order, but
+   a USD import does not preserve their order, so a model should not depend on
+   it. Each clamp's ``input_space`` must match the drive's ``output_space``.
+   Effort clamps cannot be combined with a motor. There are no post-motor
+   effort clamps. Current limiting uses firmware estimates of the motor
+   parameters, by default the motor's own.
 
 **Motor**
    Provides the supply voltage, and turns the motor voltage into the effort a
@@ -749,8 +751,8 @@ Clamping
   to ``[-max_duty, max_duty]``. The duty bound takes precedence, so current is
   not guaranteed to remain within the limit.
 
-Multiple clamping objects can be stacked on a single actuator; they are
-applied in sequence and must match its drive's output space.
+Multiple clamping objects can be stacked on a single actuator; each must match
+its drive's output space.
 
 ``ClampingCurrentDuty.voltage_source`` selects ``VoltageSource.INPUT`` (the
 supplied voltage, by default) or ``NOMINAL`` (requiring ``nominal_voltage``).
