@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton import StateFlags
+from newton.exceptions import NewtonDeprecationWarning
 from newton.solvers import SolverMuJoCo
 
 
@@ -138,12 +139,14 @@ class TestMuJoCoReset(unittest.TestCase):
     def test_native_cpu_masked_joint_reset_preserves_template_state(self):
         """Preserve native MuJoCo coordinates when local world 0 is unselected."""
         self.model = _build_two_world_model(world_count=2)
-        solver = SolverMuJoCo(
-            self.model,
-            separate_worlds=True,
-            use_mujoco_cpu=True,
-            update_data_interval=0,
-        )
+        # TODO: remove with update_data_interval.
+        with self.assertWarns(NewtonDeprecationWarning):
+            solver = SolverMuJoCo(
+                self.model,
+                separate_worlds=True,
+                use_mujoco_cpu=True,
+                update_data_interval=0,
+            )
         state = self.model.state()
         flags = StateFlags.JOINT_Q | StateFlags.JOINT_QD
         coords_per_world = self.model.joint_coord_count // self.model.world_count
@@ -273,7 +276,9 @@ class TestMuJoCoReset(unittest.TestCase):
     def test_reset_syncs_qpos_when_interval_not_default(self):
         """With update_data_interval != 1, reset pushes joint state into qpos now."""
         model = _build_two_world_model(world_count=2)
-        solver = SolverMuJoCo(model, iterations=2, ls_iterations=2, update_data_interval=0)
+        # TODO: remove with update_data_interval.
+        with self.assertWarns(NewtonDeprecationWarning):
+            solver = SolverMuJoCo(model, iterations=2, ls_iterations=2, update_data_interval=0)
         state = model.state()
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 

@@ -1279,6 +1279,64 @@ Contact reduction is enabled by default. For scenes with many mesh-mesh interact
 
 To disable reduction, set ``reduce_contacts=False`` when creating the pipeline.
 
+**Body-pair contact reduction (opt-in):**
+
+Bodies built from many colliders (a foot made of several spheres or capsules, a
+hand of boxes) produce one manifold per shape pair, so a single physical patch
+can reach the solver as dozens of near-redundant contacts. Optional body-pair
+reduction reduces primitive and convex contacts per body pair in a group mode
+of the global contact reducer, before they are written. Enable it with
+``body_pair_reduction``:
+
+.. testcode:: body-pair-reduction
+
+    import newton
+
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    model = builder.finalize()
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(cell_size=0.25),
+    )
+    contacts = pipeline.contacts()
+
+Contacts are grouped by body pair, material class, normal bin and spatial cell.
+Each group keeps one depth representative, up to six sampled footprint extremes
+over all its contacts and up to six more over its touching contacts only, so
+speculative contacts cannot displace the support polygon. Mesh and
+heightfield contacts keep their per-shape-pair reduction. Only the kept
+contacts are written, and if a group cannot be registered in the table, the
+frame keeps every primitive and convex contact. It is an
+approximation: support is sampled, not exact, and keeping
+rim points can strengthen torsional friction. Selection is memoryless, so on
+curved or mesh supports the kept set can change between steps.
+
+Shapes on one body share a group only when their ``shape_material_*`` values
+and their per-shape custom attributes match;
+``BodyPairReductionConfig.material_attributes`` narrows
+the attributes that count. Call
+:meth:`~CollisionPipeline.refresh_body_pair_reduction_groups` after changing
+them at runtime.
+
+Buffers from the pipeline's :meth:`~CollisionPipeline.contacts` are stamped
+:attr:`~Contacts.rigid_contact_body_pair_reduced` when the scene has primitive
+or convex contact pairs; a scene of only meshes and heightfields reduces nothing
+by body pair and keeps unstamped buffers. Only a pipeline that stamps its buffers
+collides into a stamped buffer, and a solver accepts one only
+if it declares :attr:`~solvers.SolverBase.supports_body_pair_reduced_contacts`;
+the others raise in ``step()``, also during CUDA graph capture.
+:class:`~solvers.SolverSteel` supports it, except with ``contact_compliance``.
+Body-pair reduction doesn't support ``contact_matching="sticky"`` or
+hydroelastic contacts. Keep it off when it doesn't reduce the end-to-end step time.
+To check, compare the step time and :attr:`~Contacts.rigid_contact_count` with it
+on and off: a count that stays near its unreduced value means little was reduced,
+or the group table was too small and frames kept every contact (raise
+``BodyPairReductionConfig.hashtable_size_factor``).
+
+This body-pair reduction API is experimental and may change without prior notice.
+
 **Configuring contact reduction (HydroelasticSDF.Config):**
 
 For hydroelastic and SDF-based contacts, use :class:`~geometry.HydroelasticSDF.Config` to tune reduction behavior:
@@ -2517,6 +2575,9 @@ in contact-buffer order when constructed with
 
     pipeline = newton.CollisionPipeline(model, deterministic=True)
     solver = newton.solvers.SolverSteel(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
+
+See :doc:`determinism` for which solvers support deterministic mode and
+what it costs.
 
 .. note::
 

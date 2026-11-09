@@ -1,15 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Newton Cradle
-#
-# Builds a five-ball Newton's cradle with revolute-joint pendulums and
-# sphere-sphere contact.
-#
-# Command: python -m newton.examples newton_cradle
-#
-###########################################################################
+"""Example Newton Cradle
+
+Builds a five-ball Newton's cradle with revolute-joint pendulums and
+sphere-sphere contact.
+
+Success criteria:
+- Five aligned pendulum balls form a cradle and an initially displaced end ball swings into the row.
+- Contact transfers motion to the opposite end while balls remain attached and in the pendulum
+  plane.
+- The cradle continues bounded oscillation without explosive energy growth.
+
+Runs:
+- `python -m newton.examples newton_cradle`
+"""
 
 from __future__ import annotations
 
@@ -172,7 +177,7 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             if self.solver_name in NATIVE_CONTACT_SOLVERS:
@@ -181,7 +186,12 @@ class Example:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
                 contacts = self.contacts
             self.solver.step(self.state_0, self.state_1, self.control, contacts, self.sim_dt)
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            # With an odd substep count, copy instead of swapping on the last
+            # substep so every CUDA graph replay starts from state_0.
+            if self.sim_substeps % 2 == 1 and substep == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         if self.graph:

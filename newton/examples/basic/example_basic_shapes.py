@@ -1,19 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Shapes
-#
-# Shows how to programmatically create a variety of
-# collision shapes using the newton.ModelBuilder() API.
-# Supports XPBD (default), VBD, and Kamino DVI solvers.
-#
-# Command: python -m newton.examples basic_shapes
-# With VBD: python -m newton.examples basic_shapes --solver vbd
-# With Kamino DVI: python -m newton.examples basic_shapes --solver kamino
-#
-#
-###########################################################################
+"""Example Basic Shapes
+
+Shows how to programmatically create a variety of
+collision shapes using the newton.ModelBuilder() API.
+Supports XPBD (default), VBD, and Kamino DVI solvers.
+
+Success criteria:
+- Seven shapes appear: ellipsoid, cylinder, sphere, capsule, box, bunny, and cone.
+- The shapes fall onto the ground and settle without explosive motion or persistent visible jitter.
+
+Runs:
+- `python -m newton.examples basic_shapes --solver xpbd`
+- `python -m newton.examples basic_shapes --solver vbd`
+- `python -m newton.examples basic_shapes`
+- `python -m newton.examples basic_shapes --solver kamino`
+"""
 
 import warp as wp
 from pxr import Usd
@@ -126,6 +129,11 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
+        # Input state of the last substep, used to place rendered contacts.
+        self.contact_state = newton.State()
+        self.contact_state.body_q = wp.clone(self.state_0.body_q)
+        self.contact_state.body_qd = wp.clone(self.state_0.body_qd)
+
         if self.solver_type == "kamino":
             self.collision_interval = 2
             self.collision_pipeline = newton.CollisionPipeline(
@@ -176,17 +184,27 @@ class Example:
                     )
             else:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
+
+            last_substep = substep == self.sim_substeps - 1
+            if last_substep:
+                wp.copy(self.contact_state.body_q, self.state_0.body_q)
+                wp.copy(self.contact_state.body_qd, self.state_0.body_qd)
+
             self.solver.step(
                 self.state_0,
                 self.state_1,
                 self.control,
                 self.contacts,
                 self.sim_dt,
-                observables=self.solver_observables if substep == self.sim_substeps - 1 else None,
+                observables=self.solver_observables if last_substep else None,
             )
 
-            # swap states
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            # With an odd substep count, copy instead of swapping on the last
+            # substep so every CUDA graph replay starts from state_0.
+            if self.sim_substeps % 2 == 1 and last_substep:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         if self.graph:
@@ -269,7 +287,7 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         if self.contacts is not None:
-            self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
+            self.viewer.log_contacts(self.contacts, self.contact_state, observables=self.solver_observables)
         self.viewer.end_frame()
 
 

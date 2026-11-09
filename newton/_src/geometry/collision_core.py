@@ -10,7 +10,12 @@ import warp as wp
 
 from ..core.types import vec5
 from .broad_phase_common import binary_search
-from .collision_convex import create_solve_convex_multi_contact, create_solve_convex_single_contact
+from .collision_convex import (
+    create_plane_convex_query,
+    create_solve_convex_multi_contact,
+    create_solve_convex_single_contact,
+    create_write_convex_query_result,
+)
 from .contact_data import ContactData
 from .support_function import (
     GenericShapeData,
@@ -18,6 +23,8 @@ from .support_function import (
     SupportMapDataProvider,
     pack_mesh_ptr,
     support_map,
+    support_map_lean,
+    support_map_lean_accelerated,
     unpack_mesh_ptr,
 )
 from .types import GeoType
@@ -671,6 +678,13 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
     if post_process_contact is None:
         post_process_contact = post_process_axial_on_discrete_contact
 
+    plane_query = create_plane_convex_query(support_func)
+    # Keep the full support-map kernel's instruction footprint unchanged.
+    use_plane_convex_query = support_func in (support_map_lean, support_map_lean_accelerated)
+    write_query = create_write_convex_query_result(
+        support_func, writer_func, post_process_contact, use_precomputed_center=True
+    )
+
     @wp.func
     def find_contacts(
         pos_a: wp.vec3,
@@ -728,6 +742,36 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
             shape_data_a, pos_a_adjusted = convert_infinite_plane_to_cube(
                 shape_data_a, quat_a, pos_a, pos_b, bsphere_radius_b + rigid_gap
             )
+
+            if wp.static(use_plane_convex_query):
+                if shape_data_b.shape_type == GeoType.CONVEX_MESH:
+                    # An infinite plane has a known normal; only the hull support point is needed.
+                    result = wp.static(plane_query)(
+                        shape_data_b, quat_a, quat_b, pos_a_adjusted, pos_b, pos_a, data_provider
+                    )
+                    if result.signed_distance <= rigid_gap + margin_a + margin_b:
+                        contact = ContactData()
+                        contact.shape_a = shape_a
+                        contact.shape_b = shape_b
+                        contact.margin_a = margin_a
+                        contact.margin_b = margin_b
+                        contact.gap_sum = rigid_gap
+                        wp.static(write_query)(
+                            shape_data_a,
+                            shape_data_b,
+                            quat_a,
+                            quat_b,
+                            pos_a_adjusted,
+                            pos_b,
+                            wp.quat_inverse(quat_a) * quat_b,
+                            wp.quat_rotate_inv(quat_a, pos_b - pos_a_adjusted),
+                            result,
+                            data_provider,
+                            wp.static(not ENABLE_MULTI_CONTACT),
+                            writer_data,
+                            contact,
+                        )
+                    return
 
         pos_b_adjusted = pos_b
         if is_infinite_plane_b:
@@ -1218,21 +1262,9 @@ def mesh_vs_convex_midphase(
         if tri_index >= 0 and not _mesh_triangle_is_front_facing_local(mesh_id, center_in_bvh, tri_index):
             tri_index = -1
 
-        # Add this triangle pair to the output buffer if valid
-        # Store (mesh_shape, non_mesh_shape, tri_index) to guarantee mesh is always first
-        has_tri = 0
+        # Pair order is unconstrained; append without a block-wide scan and broadcast.
         if tri_index >= 0:
-            has_tri = 1
-        count_tile = wp.tile(has_tri)
-        inclusive_scan = wp.tile_scan_inclusive(count_tile)
-        offset = 0
-        if idx_in_thread_block == wp.block_dim() - 1:
-            offset = wp.atomic_add(triangle_pairs_count, 0, inclusive_scan[wp.block_dim() - 1])
-        offset_broadcast_tile = wp.tile(offset)
-        offset_broadcast = offset_broadcast_tile[wp.block_dim() - 1]
-
-        if tri_index >= 0:
-            out_idx = offset_broadcast + inclusive_scan[idx_in_thread_block] - has_tri
+            out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
             if out_idx < triangle_pairs.shape[0]:
                 triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
 
