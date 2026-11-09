@@ -102,6 +102,57 @@ failure evidence points to an interaction, test the smallest justified
 combination in a scripted reproduction and keep it only if the target metric and
 guardrails improve.
 
+.. _physical-success-checks:
+
+Check Physical Success
+----------------------
+
+A task reward or plausible animation does not establish physical success. Before
+changing parameters, define bounds in physical units for the task state and the
+failure modes the task could exploit: joint travel beyond authored limits,
+penetration of collision geometry, non-finite state, or excessive velocity and
+force. Check the effective imported limits and the selected solver's support in
+:ref:`Joint feature support`; a successfully parsed property may not be enforced
+by every backend. Use :doc:`collisions` to distinguish missing contacts from a
+solver response, and :doc:`solver_observables` for supported backend measurements.
+
+Sample these checks at the cadence needed to catch the failure, including between
+rendered frames or control updates when relevant. Record the worst violation and
+when it occurred, rather than only the final state or average reward. Do not
+count a rollout as successful if it reaches the target through disallowed
+penetration or joint overtravel. Fix the cause instead of clipping the reported
+state or excluding failing samples.
+
+.. _late-rollout-failures:
+
+Diagnose Late Rollout Failures
+------------------------------
+
+When invalid behavior appears only after many steps, preserve the failing seed,
+command and reset history, simulation and control timesteps, solver settings,
+backend, device, and package versions. Locate the first failed physical bound or
+non-finite value; the first visible explosion can occur after the causal error.
+Retain the preceding valid state, the failing input, and the resulting state.
+Include backend-owned state when required for replay; see :doc:`coupling` for
+solvers whose public state arrays alone do not define a complete restart.
+
+Check the input and effective model before increasing solver work. A controller
+can produce an invalid command, an importer can omit an expected drive or limit,
+and contact capacity can be exhausted only in a later configuration. Follow
+:doc:`usd_parsing`, :doc:`articulations`, the applicable importer API, and the
+selected solver's documentation to verify the properties actually consumed.
+For coupled simulations, inspect solver ownership and state synchronization in
+:doc:`coupling` before treating interface motion as a contact-tuning problem.
+
+Reduce the scene only while retaining the original failure and its triggering
+history. Replay a captured transition when the restart is complete; otherwise
+replay from initialization. Keep the smallest evidence-supported correction,
+record attempted changes and their effects, and rerun both the reduced and
+original cases through the original failure time and the required task horizon.
+Use the same acceptance bounds before and after the change. A short CPU replay
+does not verify a long GPU training run, and replacing NaNs or clamping output
+state does not demonstrate a repaired transition.
+
 Solver and Backend Changes
 --------------------------
 
