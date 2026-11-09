@@ -202,7 +202,7 @@ def _friction_pair_update(
 
 
 class SteelFrictionPair:
-    """20 captured launches of the CUDA coupled two-row tangent update on 65536 independent 2x2 blocks.
+    """20 captured launches of the CUDA coupled two-row tangent update on 2**20 independent 2x2 blocks.
 
     It runs ``FRICTION_PAIR_CUDA``, the snippet the CUDA solves splice in. The blocks are positive
     definite with condition numbers from 1 to 8 and a unit friction radius; ``sliding`` targets lie
@@ -216,7 +216,7 @@ class SteelFrictionPair:
     repeat = 5
     warmup_time = 0
     timeout = 300
-    pairs = 65536
+    pairs = 1 << 20
     launches = 20
 
     def setup(self, case):
