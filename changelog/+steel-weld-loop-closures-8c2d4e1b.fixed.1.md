@@ -1,0 +1,1 @@
+Scale the position of an MJCF weld's `relpose` with the importer's `scale`, like its anchor, and normalize its quaternion like the importer's other quaternions. The scaling changes the equality row `SolverMuJoCo` builds for a scaled model.

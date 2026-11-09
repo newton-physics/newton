@@ -1,0 +1,1 @@
+Speed up the `SolverSteel` matrix-free solve on CUDA when joint velocity limits are enabled: each sweep's velocity-limit pass visits only the span of a world's velocity-limit rows instead of every dense row, with bitwise identical results. No migration is required.

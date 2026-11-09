@@ -281,9 +281,11 @@ def parse_usd(
             colliders on bodies with visual-only geometry. Default is False.
         parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
-            joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-            equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
-            and finalize under ``model.mujoco.equality_constraint_*``.
+            joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
+            becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
+            and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+            ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
+            ``model.mujoco.equality_constraint_*``.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -2435,6 +2437,7 @@ def parse_usd(
             custom_attrs: dict[str, Any],
         ) -> None:
             try:
+                # A world-side weld anchor or relpose is in stage coordinates, which incoming_world_xform places.
                 _, joint_idx = mjc_add_equality_loop_joint(
                     builder,
                     eq_type,
@@ -2446,6 +2449,7 @@ def parse_usd(
                     joint_path,
                     enabled,
                     custom_attrs,
+                    world_xform=incoming_world_xform,
                 )
             except ValueError:
                 warnings.warn(
@@ -2537,7 +2541,9 @@ def parse_usd(
                         else site1_local_pos
                     )
                     relpose_rot = local_rot0 * wp.quat_inverse(local_rot1)
-                    relpose_pos = local_pos0 - wp.quat_rotate(relpose_rot, local_pos1)
+                    # MuJoCo's weld holds the anchor at relpose's position in body0's frame (not body1's origin
+                    # there), so use where the anchor sits when the joint's two frames coincide.
+                    relpose_pos = local_pos0 + wp.quat_rotate(relpose_rot, anchor - local_pos1)
                     torquescale_attr = joint_prim.GetAttribute("mjc:torqueScale")
                     torquescale = (
                         float(torquescale_attr.Get()) if torquescale_attr and torquescale_attr.HasValue() else 1.0
