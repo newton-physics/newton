@@ -40,6 +40,7 @@ import newton.tests.unittest_utils
 from newton.examples.multiphysics import (
     example_franka_cable_ik_pick_place,
     example_mujoco_franka_vbd_cable_admm_solver,
+    example_xpbd_mpm_coupled_solver,
 )
 from newton.examples.robot.example_robot_cartpole import Example as RobotCartpoleExample
 from newton.tests.unittest_utils import (
@@ -1765,36 +1766,54 @@ class TestCoupledExampleCapture(unittest.TestCase):
     pass
 
 
-def _test_cable_examples_odd_substep_capture_matches_eager(test, device):
-    """Replay a captured frame with an odd substep count like eager stepping in both cable pick-and-place examples."""
+def _test_coupled_examples_odd_substep_capture_matches_eager(test, device):
+    """Replay a captured frame with an odd substep count like eager stepping in the coupled multiphysics examples."""
     cases = (
-        (example_franka_cable_ik_pick_place, ["--world-count", "1"]),
+        (
+            example_franka_cable_ik_pick_place,
+            ["--world-count", "1", "--payload-segments", "3", "--vbd-iterations", "2", "--mujoco-iterations", "10"],
+            "body_q",
+        ),
         (
             example_mujoco_franka_vbd_cable_admm_solver,
             ["--world-count", "1", "--admm-iterations", "1", "--payload-segments", "3", "--xpbd-iterations", "2"],
+            "body_q",
+        ),
+        (
+            example_xpbd_mpm_coupled_solver,
+            [
+                *("--proxy-iterations", "1", "--xpbd-iterations", "2", "--mpm-iterations", "1", "--grid-padding", "8"),
+                *("--xpbd-dim-x", "2", "--xpbd-dim-y", "2", "--xpbd-dim-z", "2"),
+            ],
+            "particle_q",
         ),
     )
-    # The payloads only drift apart once the arm reaches them.
+    # The cable payloads only drift apart once the arm reaches them.
     frames = 20
-    for module, args in cases:
-        body_q = []
+    for module, args, field in cases:
+        values = []
         for capture in (True, False):
-            parsed = module.Example.create_parser().parse_args(
-                [*args, "--substeps", "3", *([] if capture else ["--no-graph-capture"])]
-            )
-            with wp.ScopedDevice(device):
+            parsed = module.Example.create_parser().parse_args([*args, "--substeps", "3"])
+            if not capture:
+                parsed.graph_capture = False
+            # The XPBD-MPM example always captures on CUDA, so its eager run skips capture().
+            skip_capture = not capture and module is example_xpbd_mpm_coupled_solver
+            with (
+                wp.ScopedDevice(device),
+                mock.patch.object(module.Example, "capture") if skip_capture else contextlib.nullcontext(),
+            ):
                 example = module.Example(ViewerNull(num_frames=frames), parsed)
                 test.assertEqual(example.graph is not None, capture)
                 for _ in range(frames):
                     example.step()
-                body_q.append(example.state_0.body_q.numpy())
-        np.testing.assert_allclose(body_q[0], body_q[1], atol=1.0e-5, err_msg=module.__name__)
+                values.append(getattr(example.state_0, field).numpy())
+        np.testing.assert_allclose(values[0], values[1], atol=1.0e-5, err_msg=module.__name__)
 
 
 add_function_test(
     TestCoupledExampleCapture,
-    "test_cable_examples_odd_substep_capture_matches_eager",
-    _test_cable_examples_odd_substep_capture_matches_eager,
+    "test_coupled_examples_odd_substep_capture_matches_eager",
+    _test_coupled_examples_odd_substep_capture_matches_eager,
     devices=cuda_test_devices,
     check_output=False,
 )
