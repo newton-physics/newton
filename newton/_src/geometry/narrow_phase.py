@@ -2657,7 +2657,8 @@ class NarrowPhase:
                 This is model-wide so mesh-SDF kernels require only two bounded static variants.
             deterministic: Make contact generation and ordering independent of
                 GPU thread scheduling. Adds deterministic hydroelastic atomics
-                and a radix sort + gather pass.
+                and a radix sort + gather pass. Limits the shape count; see
+                :ref:`Deterministic Contacts`.
             contact_max: Maximum number of contacts for the deterministic sort buffer.
                 Must match the ``contact_pair`` array size passed to :meth:`launch`.
                 Defaults to ``max_candidate_pairs``.  Set this to a larger value when
@@ -4237,9 +4238,14 @@ class NarrowPhase:
                 f"compatibility, so the sizes must match exactly."
             )
         if self.deterministic and shape_types.shape[0] > 1 << self._contact_sort_shape_index_bits:
+            hint = (
+                f"the shape AABBs passed at construction cover {self.shape_aabb_lower.shape[0]} shapes"
+                if self.external_aabb
+                else "pass shape_aabb_lower/upper at construction to size them"
+            )
             raise ValueError(
                 f"Deterministic sort keys hold {self._contact_sort_shape_index_bits}-bit shape indices, got "
-                f"{shape_types.shape[0]} shapes; pass shape_aabb_lower/upper at construction to size them."
+                f"{shape_types.shape[0]} shapes; {hint}."
             )
 
         # Create ContactWriterData struct

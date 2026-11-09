@@ -2553,8 +2553,9 @@ fully CUDA-graph-capturable.
 
 The key keeps bit 63 clear, so the two shape indices and the sub-key share 63
 bits.  Models with only primitive and convex shapes use a 3-bit sub-key, which
-leaves room for ``2**30`` shapes.  Models with meshes, heightfields or
-hydroelastic shapes use a 23-bit sub-key and fit at most ``2**20`` shapes;
+leaves room for ``2**30`` shapes.  Models with meshes, heightfields,
+hydroelastic shapes or primitive shapes with an SDF use a 23-bit sub-key and
+fit at most ``2**20`` shapes;
 above that, deterministic mode and contact matching raise ``ValueError`` at
 construction.  A deterministic :class:`~newton.geometry.NarrowPhase` built
 without ``shape_aabb_lower``/``shape_aabb_upper`` doesn't know the shape count,

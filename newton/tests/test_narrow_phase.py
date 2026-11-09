@@ -648,7 +648,16 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
 
         # Without AABBs the shape count is known only at launch.
         self.narrow_phase = NarrowPhase(deterministic=True, **kwargs)
-        with self.assertRaisesRegex(ValueError, "20-bit shape indices"):
+        with self.assertRaisesRegex(ValueError, "20-bit shape indices.*pass shape_aabb_lower"):
+            self._launch_spheres_past_2_20()
+
+        self.narrow_phase = NarrowPhase(
+            deterministic=True,
+            **kwargs,
+            shape_aabb_lower=wp.zeros(2, dtype=wp.vec3),
+            shape_aabb_upper=wp.ones(2, dtype=wp.vec3),
+        )
+        with self.assertRaisesRegex(ValueError, "AABBs passed at construction cover 2 shapes"):
             self._launch_spheres_past_2_20()
 
     def test_launch_without_shape_edge_range(self):

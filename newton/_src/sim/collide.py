@@ -1799,11 +1799,13 @@ class CollisionPipeline:
             deterministic: Sort contacts after the narrow phase so that results
                 are independent of GPU thread scheduling. This also enables
                 deterministic hydroelastic accumulation and contact allocation.
-                Adds a radix sort + gather pass.
+                Adds a radix sort + gather pass. Limits the shape count; see
+                :ref:`Deterministic Contacts`.
             contact_matching: Frame-to-frame contact matching mode.  One of
                 ``"disabled"``, ``"latest"``, or ``"sticky"``.  Any
-                non-disabled mode implies ``deterministic=True`` and
-                populates :attr:`Contacts.rigid_contact_match_index`.
+                non-disabled mode implies ``deterministic=True``, including
+                its shape-count limit, and populates
+                :attr:`Contacts.rigid_contact_match_index`.
                 Defaults to ``"disabled"``.
 
                 .. experimental::

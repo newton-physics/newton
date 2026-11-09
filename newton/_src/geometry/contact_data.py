@@ -30,7 +30,8 @@ def contact_sort_shape_index_bits(shape_count: int, sub_key_bits: int) -> int:
     max_bits = (63 - sub_key_bits) // 2
     if required_bits > max_bits:
         raise ValueError(
-            f"Contact sort keys with {sub_key_bits}-bit sub-keys support at most {1 << max_bits} shapes, got {shape_count}."
+            f"Deterministic contacts (deterministic=True or contact matching) support at most {1 << max_bits} shapes "
+            f"for this model's shape types, got {shape_count}; disable both or split the worlds across pipelines."
         )
     return required_bits
 
