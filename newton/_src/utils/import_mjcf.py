@@ -24,7 +24,7 @@ from ..geometry.utils import compute_aabb, compute_inertia_box, compute_inertia_
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import dcmotor
-from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
+from ..solvers.mujoco.collision_masks import compile_collision_masks
 from ..solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
     SOLREF_MODE_FORCE_SPACE,
@@ -735,16 +735,11 @@ def parse_mjcf(
     # Bit 1 in one MJCF file may describe different shapes than bit 1 in
     # another. Give every add_mjcf() call a domain so those equal numbers are
     # not mistaken for one shared collision rule. The domain is only a source
-    # label; it does not enable or disable collisions.
+    # label; it does not enable or disable collisions. Use the index of the
+    # first shape this call can add: shape index ranges never overlap, so the
+    # ID is unique, and builder merges offset it like any shape reference.
     collision_mask_domain_key = "mujoco:collision_mask_domain"
-    collision_mask_domain_attr = builder.custom_attributes[collision_mask_domain_key]
-    collision_mask_domain = (
-        max(
-            (int(value) for value in collision_mask_domain_attr.values.values()),
-            default=MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
-        )
-        + 1
-    )
+    collision_mask_domain = builder.shape_count
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(

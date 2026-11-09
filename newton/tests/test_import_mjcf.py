@@ -10962,6 +10962,41 @@ class TestContypeConaffinityZero(unittest.TestCase):
         )
         self.assertTrue(masks_allow_pair)
 
+    def test_collision_mask_domains_stay_distinct_across_merges(self):
+        """Give each MJCF import its own mask domain through merges and replication."""
+        mjcf = """<mujoco>
+            <worldbody>
+                <body name="body">
+                    <freejoint/>
+                    <geom name="shape_a" type="sphere" size="0.1"/>
+                    <geom name="shape_b" type="sphere" size="0.1" pos="0.2 0 0"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        source_a = newton.ModelBuilder()
+        # A shape without MJCF provenance keeps the unset domain.
+        source_a.add_shape_sphere(body=-1, radius=0.1)
+        source_a.add_mjcf(mjcf, parse_visuals=False)
+        source_b = newton.ModelBuilder()
+        source_b.add_mjcf(mjcf, parse_visuals=False)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+        builder.add_builder(source_b)
+        builder.replicate(source_a, 2)
+        model = builder.finalize(device="cpu")
+
+        domains = model.mujoco.collision_mask_domain.numpy()
+        # Direct import, merged source_b, and two replicated source_a worlds,
+        # each made of two MJCF shapes (and one unset shape for source_a).
+        expected_groups = [[0, 1], [2, 3], [5, 6], [8, 9]]
+        np.testing.assert_array_equal(domains[[4, 7]], [-1, -1])
+        for group in expected_groups:
+            self.assertEqual(len(set(domains[group].tolist())), 1)
+        group_domains = [int(domains[group[0]]) for group in expected_groups]
+        self.assertTrue(all(domain >= 0 for domain in group_domains))
+        self.assertEqual(len(set(group_domains)), len(expected_groups))
+
     def test_collision_group_zero_for_zero_contype(self):
         """Collision-class geoms with contype=conaffinity=0 get collision_group=0."""
         mjcf = """<mujoco>
