@@ -114,50 +114,57 @@ consider **speculative contacts with conditional collision
 refreshes** as a practical alternative to full continuous collision detection
 (CCD) for rigid contacts.
 
-Enable velocity-adapted gaps with a positive
-``CollisionPipeline(speculative_contact_gap_max=...)`` limit in meters. The
-pipeline uses relative linear and angular velocity at candidate contact points
-to retain separated contacts that can close within the collision-update
-horizon, subject to that limit. Pass the time until the next planned collision
-refresh as ``pipeline.collide(..., dt=collision_dt)``; this may span several
-solver substeps. Increasing the detection gap alone is insufficient if the
-solver cannot use the retained candidates to prevent crossing. XPBD resolves
-them after predicting body positions, without an additional speculative-response
-option. For MuJoCo Warp, separated-contact response requires
-``use_mujoco_contacts=False`` and the experimental
-``use_speculative_contacts=True`` option with Euler or implicitfast integration;
-see :doc:`/solvers/mujoco` for its response and capacity requirements.
+Newton can keep possible contacts between nearby objects before they touch.
+The experimental :class:`CollisionSubstepScheduler` reuses this information for
+several solver steps, checking again as the objects move. This can reduce
+collision-detection work while keeping the solver timestep small, including
+for falling and thrown objects.
 
-The experimental :class:`CollisionSubstepScheduler` varies collision frequency
-while keeping the number and duration of solver substeps fixed. It refreshes
-contacts at frame start, when the conservative relative-travel estimate would
-exhaust the reserved detection distance or when the previous prediction horizon
-expires. During its callback, the pipeline uses the configured limit as a
-distance reserve, retaining nearby candidates regardless of approach velocity.
-Gravity and small velocity changes alone therefore do not force
-a refresh. Selection stays on the device and supports conditional execution
-inside CUDA graphs. Use the callback setup in :ref:`speculative-contacts` with
-the same pipeline supplied to the scheduler. The scheduler requires two
-distinct state buffers, an even
-substep count, and capture-safe callbacks with preallocated storage.
+Tune these three controls together:
 
-Tune ``collision_dt_max`` to cap the time between refreshes, then measure
-collision cost and tunneling at the fastest expected motion. A larger
-``speculative_contact_gap_max`` allows longer intervals but can admit more
-contacts. Measure total runtime as well as refresh counts. Inspect
-``schedule.interval_overflow.numpy()[0]`` after a frame (this synchronizes CUDA):
-if set, increase the substep count or the speculative distance limit. Keep
-penetration and contact/constraint capacity within the task's bounds.
+* ``substeps``: how many solver steps run per frame. Increase this to resolve
+  faster motion and abrupt acceleration.
+* ``CollisionPipeline(speculative_contact_gap_max=...)``: how far ahead to look,
+  in meters. A larger positive distance can allow longer intervals between
+  collision checks, but can also create more contacts.
+* ``collision_dt_max``: the longest allowed time between collision checks.
+  Lower this cap if contacts need more frequent updates.
 
-This combination can mitigate tunneling while avoiding collision detection on
-every substep during slow or predictable motion, including gravity-driven
-motion. Fast scenes may still refresh every substep and incur scheduling
-overhead. It does not compute a time of impact or
-advance bodies to an impact pose, and it does not guarantee that tunneling is
-eliminated. Acceleration and impulses are observed only after a substep, so
-abrupt motion can still cross thin geometry within that substep; choose its
-duration accordingly. The scheduler does not support particles, and
-velocity-adapted speculative contacts apply to rigid, non-hydroelastic contacts.
+Ordinary velocity-adapted detection keeps possible contacts that current motion
+could close before the next check, up to the configured distance limit. Supply
+that time as ``pipeline.collide(..., dt=collision_dt)``. During scheduled checks,
+the pipeline instead keeps possible contacts throughout that distance, including
+between objects currently moving apart. This distance reserve lets the scheduler
+reuse contacts through small velocity changes without checking again immediately.
+See :ref:`speculative-contacts` for callback setup, CUDA graph requirements,
+refresh rules, and supported geometry.
+
+Choose a solver that uses these contacts:
+
+* **XPBD** checks retained contacts after predicting body positions; no extra
+  speculative-response option is needed.
+* **MuJoCo Warp** requires ``use_mujoco_contacts=False`` and the experimental
+  ``use_speculative_contacts=True`` with Euler or implicitfast integration.
+  See :doc:`/solvers/mujoco` for response and capacity requirements.
+* **Steel** supports separated contacts by default. ``contact_speculative_scale``
+  controls how much of the gap may close per step; ``contact_gap_gate`` can
+  discard farther contacts. See :class:`~newton.solvers.SolverSteel`.
+* **Kamino LOX** keeps separated contacts by default; other Kamino modes cull
+  them by default. See :doc:`/solvers/kamino` and
+  ``config.dynamics.cull_speculative_contacts``.
+
+Measure total runtime as well as collision-check counts at the fastest expected
+motion. Fast scenes may still check every substep and incur scheduling overhead;
+larger distances can increase contact-buffer and solver costs. Read
+``schedule.interval_overflow.numpy()[0]`` occasionally after a frame, outside
+CUDA graph capture; this synchronizes CUDA. If set, increase ``substeps`` or the
+speculative distance limit. Keep penetration and contact/constraint capacity
+within the task's bounds.
+
+This remains a tunneling mitigation, not full CCD. It does not compute a time of
+impact, and abrupt motion within one substep can still cross thin geometry.
+Choose the solver timestep accordingly; see :ref:`speculative-contacts` for the
+full limitations.
 
 Solver and Backend Changes
 --------------------------

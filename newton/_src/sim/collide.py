@@ -2919,7 +2919,8 @@ class CollisionPipeline:
             )
             search_gap = shape_gap
             speculative_active = False
-            collision_update_dt = 0.0
+            # Keep the horizon for predictive manifold reduction: nearby
+            # receding features must not displace approaching mesh/SDF features.
 
         # Rigid contact detection -- broad phase + narrow phase.
         # These kernels hardcode record_tape=False internally so they are
@@ -2966,7 +2967,9 @@ class CollisionPipeline:
             record_tape=False,
         )
 
-        if speculative_active:
+        # Scheduled passes need velocities for reduction, but their AABBs
+        # already include the full distance reserve.
+        if speculative_active or self._scheduled_gap_active:
             wp.launch(
                 kernel=compute_shape_velocities,
                 dim=model.shape_count,
@@ -2981,7 +2984,7 @@ class CollisionPipeline:
                     model.shape_collision_radius,
                     shape_gap,
                     collision_update_dt,
-                    max_speculative_extension,
+                    0.0 if self._scheduled_gap_active else max_speculative_extension,
                 ],
                 outputs=[
                     self._shape_linear_velocity,
