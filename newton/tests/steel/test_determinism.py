@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
-import ctypes
 import gc
 import hashlib
 import os
@@ -19,6 +18,7 @@ import warp as wp
 import newton
 import newton.examples
 import newton.tests.unittest_utils
+from newton._src.geometry.utils import scan_with_total
 from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_JOINT_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
@@ -28,7 +28,13 @@ from newton._src.solvers.steel.kernels import (
 )
 from newton.solvers import SolverSteel
 from newton.tests.steel._fixtures import _build_four_bar
-from newton.tests.unittest_utils import StdOutCapture, add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    StdOutCapture,
+    add_function_test,
+    capture_with_cuda_driver,
+    get_cuda_test_devices,
+    get_test_devices,
+)
 
 RUN_TO_RUN = wp.DeterministicMode.RUN_TO_RUN
 
@@ -398,46 +404,8 @@ def _capture_solve(device, solve, external):
         with wp.ScopedCapture(device=device) as capture:
             solve()
         return lambda: wp.capture_launch(capture.graph), lambda: None
-    cuda = ctypes.CDLL("libcuda.so.1")
-    handle = ctypes.c_void_p
-    cuda.cuStreamBeginCapture_v2.argtypes = [handle, ctypes.c_int]
-    cuda.cuStreamEndCapture.argtypes = [handle, ctypes.POINTER(handle)]
-    cuda.cuGraphInstantiateWithFlags.argtypes = [ctypes.POINTER(handle), handle, ctypes.c_ulonglong]
-    cuda.cuGraphLaunch.argtypes = [handle, handle]
-    cuda.cuGraphExecDestroy.argtypes = [handle]
-    cuda.cuGraphDestroy.argtypes = [handle]
-    stream = handle(wp.get_stream(device).cuda_stream)
-    graph, graph_exec = handle(), handle()
-    thread_local_mode = 1
-    began = cuda.cuStreamBeginCapture_v2(stream, thread_local_mode)
-    if began != 0:
-        raise RuntimeError(f"cuStreamBeginCapture failed with {began}")
-    try:
-        solve()
-    except BaseException:
-        if cuda.cuStreamEndCapture(stream, ctypes.byref(graph)) == 0:
-            cuda.cuGraphDestroy(graph)
-        raise
-    ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
-    if ended != 0:
-        raise RuntimeError(f"cuStreamEndCapture failed with {ended}")
-    # No instantiate flags: a graph holding an unfreed allocation fails to relaunch.
-    instantiated = cuda.cuGraphInstantiateWithFlags(ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(0))
-    if instantiated != 0:
-        cuda.cuGraphDestroy(graph)
-        raise RuntimeError(f"cuGraphInstantiateWithFlags failed with {instantiated}")
-
-    def replay():
-        launched = cuda.cuGraphLaunch(graph_exec, stream)
-        if launched != 0:
-            raise RuntimeError(f"cuGraphLaunch failed with {launched}")
-        wp.synchronize_stream(wp.get_stream(device))
-
-    def release():
-        cuda.cuGraphExecDestroy(graph_exec)
-        cuda.cuGraphDestroy(graph)
-
-    return replay, release
+    # No auto-free: a graph holding an unfreed allocation fails to relaunch.
+    return capture_with_cuda_driver(device, solve)
 
 
 def _check_propagation_coverage(test, model, options):
@@ -855,9 +823,10 @@ def _check_inherited_global_mode(device):
     from warp._src.context import Module, user_modules  # noqa: PLC0415
 
     assert wp.config.deterministic == RUN_TO_RUN
-    # Newton's collision kernels do not support Warp's deterministic lowering; only Steel's modules keep the global.
+    # Newton's collision kernels do not support Warp's deterministic lowering; Steel's modules and the
+    # geometry scan module Steel's step launches keep the global.
     for module in list(user_modules.values()):
-        if not _holds_steel_kernel(module):
+        if not _holds_steel_kernel(module) and module.name != scan_with_total.__module__:
             wp.set_module_options({"deterministic": wp.DeterministicMode.NOT_GUARANTEED}, module=module)
     model = _build_contact_scene(device)
 

@@ -1,0 +1,1 @@
+Fix `ModelBuilder.collapse_fixed_joints()` moving the point a MuJoCo weld holds when the weld's `body2` is merged into its parent: the remapped `relpose` now keeps its position (the anchor's held position in `body1`'s frame) and only its rotation picks up the merge transform.

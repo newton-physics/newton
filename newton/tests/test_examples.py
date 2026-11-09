@@ -639,25 +639,26 @@ add_example_batch(
     variants=[
         {
             "devices": test_devices,
-            "test_options": {"num-frames": 100, "solver": "xpbd"},
+            "test_options": {"num-frames": 600, "solver": "xpbd"},
+            "test_options_cpu": {"num-frames": 100},
             "test_suffix": "xpbd",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 100, "solver": "vbd"},
+            "test_options": {"num-frames": 600, "solver": "vbd"},
             "test_suffix": "vbd",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 100, "solver": "mujoco"},
+            "test_options": {"num-frames": 600, "solver": "mujoco"},
             "test_suffix": "mujoco",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 100, "solver": "kamino"},
+            "test_options": {"num-frames": 600, "solver": "kamino"},
             "test_suffix": "kamino",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
@@ -1046,14 +1047,14 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500},
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 18},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "world-count": 1, "solver": "kamino"},
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 2, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
 )
