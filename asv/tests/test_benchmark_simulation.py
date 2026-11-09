@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 import json
 import os
 import re
@@ -226,12 +227,18 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_steel.SteelFrictionPair.time_pair_update",
             "simulation.bench_steel.SteelContactTorsionPreparation.time_prepare",
         )
-        inventory = {entry["name"] for entry in self._discover_benchmarks(pr_gate=False)}
+        inventory = {entry["name"]: entry["params"] for entry in self._discover_benchmarks(pr_gate=False)}
         patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
         for benchmark_name in benchmark_names:
             with self.subTest(benchmark_name=benchmark_name):
                 self.assertIn(benchmark_name, inventory)
-                self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns))
+                # ASV also matches --bench against each parameterized name, e.g. "name(4, 'patch')".
+                names = [benchmark_name] + [
+                    f"{benchmark_name}({', '.join(case)})" for case in itertools.product(*inventory[benchmark_name])
+                ]
+                self.assertGreater(len(names), 1)
+                for name in names:
+                    self.assertFalse(any(pattern.search(name) for pattern in patterns), name)
 
     def test_deformable_rigid_collision_benchmarks_stay_out_of_pr_gate(self):
         """Keep nightly collisions out of the gate with finite timing statistics."""
