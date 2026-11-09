@@ -1918,16 +1918,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if array.device != device:
             raise ValueError(f"state.{name} is on device {array.device}, expected {device}.")
 
-    def _validate_reset_inputs(self, state: newton.State) -> None:
-        if state is None:
-            raise ValueError("'state' argument is required.")
-
+    def _validate_particle_count(self) -> None:
+        """Raise if ``model.particle_count`` differs from the count at construction."""
         particle_count = int(self.model.particle_count)
         if particle_count != self._initial_particle_count:
             raise RuntimeError(
                 "SolverImplicitMPM model.particle_count changed after construction: "
-                f"expected {self._initial_particle_count}, got {particle_count}."
+                f"expected {self._initial_particle_count}, got {particle_count}. "
+                "Construct a new solver for a model with a different particle count."
             )
+
+    def _validate_reset_inputs(self, state: newton.State) -> None:
+        if state is None:
+            raise ValueError("'state' argument is required.")
+
+        self._validate_particle_count()
         world_count = int(self.model.world_count)
         if world_count != self._initial_world_count:
             raise RuntimeError(
@@ -2226,6 +2231,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self._require_unreduced_contacts(contacts)
         model = self.model
 
+        # Pick the code paths from the current material extrema. A captured graph
+        # keeps the ones in effect now, so remember them to warn if they change.
+        self._mpm_model.sync_material_extrema()
+        if model.device.is_capturing:
+            self._mpm_model.record_captured_code_paths()
+
         with wp.ScopedDevice(model.device):
             last_step_data = self._last_step_data
             # Overlap history belongs to the state it was produced for, or the
@@ -2247,16 +2258,34 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Refresh solver data derived from the model.
 
-        ``ModelFlags.MODEL_PROPERTIES`` rebinds the particle material arrays and
-        recomputes volumes, material extrema and particle masks on the host.
-        ``ModelFlags.PARTICLE_FLAGS`` only refreshes the particle masks, in a
-        single kernel without host synchronization, so particles can be
-        activated or deactivated every step, including inside a CUDA graph.
+        ``ModelFlags.PARTICLE_PROPERTIES`` refreshes everything derived from
+        the particle flags, masses, radii and ``model.mpm.*`` material arrays:
+        particle volumes and densities, the transfer and material particle
+        masks, and the material extrema that select code paths (compliant
+        particles, hardening, viscosity, dilatancy). This only launches kernels
+        on existing arrays, so the notification may be issued every step and
+        recorded in a CUDA graph. Outside a graph capture it reads the extrema
+        back to the host, a copy of a few values.
+
+        ``ModelFlags.MODEL_PROPERTIES`` triggers the same refresh, for
+        compatibility with code that notified material changes this way.
+
+        Changing ``ParticleFlags.ACTIVE`` or ``ParticleFlags.PROXY`` never
+        changes the code paths: the extrema include inactive and proxy
+        particles. A material change that switches a code path on or off takes
+        effect on the next step run outside a graph. A CUDA graph that captured
+        :meth:`step` before the change keeps the previous code paths, and the
+        solver warns when this happens; capture the step again.
+
+        Raises:
+            RuntimeError: If either flag is set and ``model.particle_count``
+                differs from the count at construction. The solver keeps
+                per-particle state sized at construction, so a new particle
+                count requires a new solver.
         """
-        if flags & ModelFlags.MODEL_PROPERTIES:
+        if flags & (ModelFlags.MODEL_PROPERTIES | ModelFlags.PARTICLE_PROPERTIES):
+            self._validate_particle_count()
             self._mpm_model.notify_particle_material_changed()
-        elif flags & ModelFlags.PARTICLE_FLAGS:
-            self._mpm_model.refresh_particle_flags()
 
     @override
     def coupling_eval_gravity_acceleration(

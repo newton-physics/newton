@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 from types import SimpleNamespace
 from unittest import mock
 
@@ -534,8 +535,8 @@ def test_rebuildable_sparse_warmstarts_collider_impulses(test, device):
     np.testing.assert_allclose(settle(8192, capture=True), reference, atol=1.0e-6)
 
 
-def test_particle_flags_notify_refreshes_masks_in_place(test, device):
-    """Verify PARTICLE_FLAGS refreshes the particle masks in place, with flag-independent extrema."""
+def test_particle_properties_notify_refreshes_masks_in_place(test, device):
+    """Verify PARTICLE_PROPERTIES refreshes the particle masks in place, with flag-independent extrema."""
     active = int(newton.ParticleFlags.ACTIVE)
     proxy = int(newton.ParticleFlags.PROXY)
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
@@ -577,12 +578,12 @@ def test_particle_flags_notify_refreshes_masks_in_place(test, device):
     flags[0] &= ~active
     flags[2] |= active
     model.particle_flags.assign(flags)
-    solver.notify_model_changed(newton.ModelFlags.PARTICLE_FLAGS)
+    solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
     check_masks(flags)
 
     flags[3] &= ~proxy
     model.particle_flags.assign(flags)
-    solver.notify_model_changed(newton.ModelFlags.PARTICLE_FLAGS)
+    solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
     check_masks(flags)
 
     flags[1] &= ~active
@@ -591,7 +592,22 @@ def test_particle_flags_notify_refreshes_masks_in_place(test, device):
     check_masks(flags)
 
 
-def test_particle_flags_notify_in_cuda_graph(test, device):
+def test_notify_rejects_particle_count_change(test, device):
+    """Verify MODEL_PROPERTIES and PARTICLE_PROPERTIES notifications reject a changed particle count."""
+    model = _make_particle_model(device, [(0.01, 0.01, 0.01), (0.03, 0.01, 0.01)])
+    solver = _make_sparse_solver(model, max_active_cell_count=8)
+    masks = solver._mpm_model.particle_flags
+    model.particle_count += 1
+    for flag in (newton.ModelFlags.MODEL_PROPERTIES, newton.ModelFlags.PARTICLE_PROPERTIES):
+        with test.subTest(flag=flag.name):
+            with test.assertRaisesRegex(RuntimeError, "particle_count changed after construction"):
+                solver.notify_model_changed(flag)
+    test.assertIs(solver._mpm_model.particle_flags, masks)
+    model.particle_count -= 1
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+
+
+def test_particle_properties_notify_in_cuda_graph(test, device):
     """Verify particle activity notified inside a CUDA graph matches eager MODEL_PROPERTIES notifications."""
     if not wp.is_mempool_enabled(device):
         test.skipTest("CUDA graph capture requires the Warp memory pool")
@@ -619,7 +635,7 @@ def test_particle_flags_notify_in_cuda_graph(test, device):
         graph = None
         if capture:
             with wp.ScopedCapture(device=device) as scope:
-                solver.notify_model_changed(newton.ModelFlags.PARTICLE_FLAGS)
+                solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
                 two_steps()
             graph = scope.graph
 
@@ -644,6 +660,104 @@ def test_particle_flags_notify_in_cuda_graph(test, device):
         np.testing.assert_array_equal(graph_after[frozen], graph_before[frozen])
         test.assertTrue(np.all(graph_after[~frozen, 1] < graph_before[~frozen, 1]))
         np.testing.assert_allclose(graph_after, eager_after, rtol=1.0e-5, atol=1.0e-6)
+
+
+def _make_material_block_model(device, **custom_attributes):
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+    SolverImplicitMPM.register_custom_attributes(builder)
+    for i in range(2):
+        for j in range(2):
+            for k in range(2):
+                builder.add_particle(
+                    wp.vec3(0.01 + 0.02 * i, 0.5 + 0.02 * j, 0.01 + 0.02 * k),
+                    wp.vec3(0.0),
+                    mass=1.0,
+                    radius=0.01,
+                    custom_attributes=custom_attributes,
+                )
+    return builder.finalize(device=device)
+
+
+def test_particle_properties_notify_refreshes_material_extrema(test, device):
+    """Verify PARTICLE_PROPERTIES refreshes volumes and material extrema in place."""
+    model = _make_material_block_model(device)
+    solver = _make_sparse_solver(model, max_active_cell_count=8)
+    mpm_model = solver._mpm_model
+    arrays = (mpm_model._material_extrema, mpm_model.particle_volume, mpm_model.particle_density)
+    pointers = [array.ptr for array in arrays]
+    test.assertEqual(mpm_model.code_path_switches(), (False, False, False, False))
+
+    model.mpm.young_modulus.fill_(1.0e4)
+    model.mpm.hardening.fill_(5.0)
+    model.mpm.viscosity.fill_(2.0)
+    model.mpm.dilatancy.fill_(0.5)
+    model.particle_radius.fill_(0.02)
+    solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
+
+    test.assertAlmostEqual(mpm_model.min_young_modulus, 1.0e4, places=2)
+    test.assertAlmostEqual(mpm_model.max_hardening, 5.0, places=5)
+    test.assertEqual(mpm_model.code_path_switches(), (True, True, True, True))
+    np.testing.assert_allclose(mpm_model.particle_volume.numpy(), 8.0 * 0.02**3, rtol=1.0e-5)
+    test.assertEqual([array.ptr for array in arrays], pointers)
+
+
+def test_material_notify_in_cuda_graph_syncs_on_eager_step(test, device):
+    """Verify a material change notified inside a CUDA graph reaches the host on the next eager step."""
+    if not wp.is_mempool_enabled(device):
+        test.skipTest("CUDA graph capture requires the Warp memory pool")
+
+    model = _make_material_block_model(device)
+    solver = _make_sparse_solver(model, max_active_cell_count=64)
+    mpm_model = solver._mpm_model
+    state_0, state_1 = model.state(), model.state()
+    solver.step(state_0, state_1, None, None, 0.005)
+
+    with wp.ScopedCapture(device=device) as scope:
+        solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
+    graph = scope.graph
+
+    model.mpm.viscosity.fill_(2.0)
+    wp.capture_launch(graph)
+    # The host has not read the graph's extrema back yet.
+    test.assertFalse(mpm_model.has_viscosity)
+    solver.step(state_1, state_0, None, None, 0.005)
+    test.assertTrue(mpm_model.has_viscosity)
+
+    # Every eager step reads back once a notification was captured.
+    model.mpm.viscosity.zero_()
+    wp.capture_launch(graph)
+    solver.step(state_0, state_1, None, None, 0.005)
+    test.assertFalse(mpm_model.has_viscosity)
+
+
+def test_material_change_after_step_capture_warns(test, device):
+    """Verify switching a code path after capturing step() warns, and other material changes do not."""
+    if not wp.is_mempool_enabled(device):
+        test.skipTest("CUDA graph capture requires the Warp memory pool")
+
+    model = _make_material_block_model(device, **{"mpm:young_modulus": 1.0e4})
+    solver = _make_sparse_solver(model, max_active_cell_count=64)
+    state_0, state_1 = model.state(), model.state()
+    solver.step(state_0, state_1, None, None, 0.005)
+    with wp.ScopedCapture(device=device):
+        solver.step(state_1, state_0, None, None, 0.005)
+
+    # Values within the captured code paths are read at run time: no warning.
+    model.mpm.young_modulus.fill_(1.0e3)
+    model.mpm.friction.fill_(0.2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
+
+    model.mpm.viscosity.fill_(2.0)
+    with test.assertWarnsRegex(UserWarning, "viscosity on.*capture them again"):
+        solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
+
+    # Warned once per capture.
+    model.mpm.dilatancy.fill_(0.5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
 
 
 class TestImplicitMPMRebuildableSparse(unittest.TestCase):
@@ -790,15 +904,44 @@ add_function_test(
 
 add_function_test(
     TestImplicitMPMRebuildableSparse,
-    "test_particle_flags_notify_refreshes_masks_in_place",
-    test_particle_flags_notify_refreshes_masks_in_place,
+    "test_particle_properties_notify_refreshes_masks_in_place",
+    test_particle_properties_notify_refreshes_masks_in_place,
     devices=devices,
     check_output=False,
 )
 add_function_test(
     TestImplicitMPMRebuildableSparse,
-    "test_particle_flags_notify_in_cuda_graph",
-    test_particle_flags_notify_in_cuda_graph,
+    "test_notify_rejects_particle_count_change",
+    test_notify_rejects_particle_count_change,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestImplicitMPMRebuildableSparse,
+    "test_particle_properties_notify_in_cuda_graph",
+    test_particle_properties_notify_in_cuda_graph,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPMRebuildableSparse,
+    "test_particle_properties_notify_refreshes_material_extrema",
+    test_particle_properties_notify_refreshes_material_extrema,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestImplicitMPMRebuildableSparse,
+    "test_material_notify_in_cuda_graph_syncs_on_eager_step",
+    test_material_notify_in_cuda_graph_syncs_on_eager_step,
+    devices=cuda_devices,
+    check_output=False,
+)
+add_function_test(
+    TestImplicitMPMRebuildableSparse,
+    "test_material_change_after_step_capture_warns",
+    test_material_change_after_step_capture_warns,
     devices=cuda_devices,
     check_output=False,
 )

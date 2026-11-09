@@ -60,8 +60,8 @@ class ModelFlags(IntEnum):
         Body variants, including this flag, may change without a deprecation period.
     """
 
-    PARTICLE_FLAGS = 1 << 13
-    """Indicates particle_flags updates, such as particles activated or deactivated at runtime. Solvers that cache masks derived from particle_flags refresh them on the device, without host synchronization, so the notification may be issued every step and recorded in a CUDA graph."""
+    PARTICLE_PROPERTIES = 1 << 13
+    """Indicates particle property updates: particle_flags (for example particles activated or deactivated at runtime), particle_mass, particle_inv_mass, particle_radius, and per-particle solver attributes such as the ``mpm:*`` material parameters. :class:`~newton.solvers.SolverImplicitMPM` refreshes the data it derives from them on the device, so the notification may be issued every step and recorded in a CUDA graph."""
 
     ALL = (
         JOINT_PROPERTIES
@@ -77,7 +77,7 @@ class ModelFlags(IntEnum):
         | JOINT_DOF_INERTIAL_PROPERTIES
         | JOINT_REFERENCE_POSE_PROPERTIES
         | SHAPE_TYPE_AND_SOURCE
-        | PARTICLE_FLAGS
+        | PARTICLE_PROPERTIES
     )
     """Indicates all property updates."""
 

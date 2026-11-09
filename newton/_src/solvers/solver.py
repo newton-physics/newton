@@ -1236,11 +1236,12 @@ class SolverBase:
           properties have changed.
         * ``ModelFlags.ACTUATOR_PROPERTIES``: Actuator gains, biases, limits,
           or force properties have changed.
-        * ``ModelFlags.PARTICLE_FLAGS``: ``particle_flags`` have changed, for
-          example particles activated or deactivated at runtime. Solvers that
-          read ``particle_flags`` directly may ignore it; solvers that derive
-          masks from it refresh them on the device, so this notification may
-          be issued every step and recorded in a CUDA graph.
+        * ``ModelFlags.PARTICLE_PROPERTIES``: Particle flags, masses, radii, or
+          per-particle solver attributes have changed, for example particles
+          activated or deactivated at runtime. Solvers that read these arrays
+          directly may ignore it; solvers that derive data from them refresh
+          it, on the device where possible, so that this notification can be
+          issued every step and recorded in a CUDA graph.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` or custom ``int``

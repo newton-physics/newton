@@ -2891,7 +2891,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
     ) -> None:
         """Apply particle mass to the destination model view."""
         entry.view.set_particle_mass(particle_indices, particle_mass)
-        entry.solver.notify_model_changed(ModelFlags.MODEL_PROPERTIES)
+        entry.solver.notify_model_changed(ModelFlags.PARTICLE_PROPERTIES)
 
     # ------------------------------------------------------------------
     # Sub-solver access
@@ -3853,7 +3853,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             ):
                 entry.view.disable_joints(entry.joint_dynamics_disabled_local_indices)
 
-            if flags & int(ModelFlags.PARTICLE_FLAGS):
+            if flags & int(ModelFlags.PARTICLE_PROPERTIES):
                 self._refresh_particle_flag_view_overrides(entry)
 
             if flags & int(ModelFlags.SHAPE_PROPERTIES):

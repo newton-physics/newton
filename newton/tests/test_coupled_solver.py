@@ -4520,7 +4520,7 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         self.assertEqual(self.model.particle_flags.numpy()[0] & proxy_flag, 0)
 
     def test_particle_flags_notify_refreshes_view_flags_in_place(self):
-        """PARTICLE_FLAGS re-derives view-local particle flags while keeping disabled and proxy marks."""
+        """PARTICLE_PROPERTIES re-derives view-local particle flags while keeping disabled and proxy marks."""
         coupled = self._make_coupled()
         active = int(newton.ParticleFlags.ACTIVE)
         proxy = int(newton.ParticleFlags.PROXY)
@@ -4547,12 +4547,12 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
 
         flags[:] &= ~active
         self.model.particle_flags.assign(flags)
-        coupled.notify_model_changed(newton.ModelFlags.PARTICLE_FLAGS)
+        coupled.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
         check(flags)
 
         flags[:] |= active
         self.model.particle_flags.assign(flags)
-        coupled.notify_model_changed(newton.ModelFlags.PARTICLE_FLAGS)
+        coupled.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
         check(flags)
 
     def test_xpbd_ignores_proxy_proxy_particle_contacts(self):
