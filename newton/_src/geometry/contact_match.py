@@ -14,9 +14,10 @@ sorted keys for the ``(shape_a, shape_b)`` pair range — ignoring the
 range whose normal also passes the dot-product threshold.  "Closest" is
 measured in world space between the contact *midpoints*
 ``0.5 * (world(point0) + world(point1))``, i.e. symmetric in shape 0 and
-shape 1. In sticky mode, previous body-local witnesses are transformed with
-the current poses before comparison, so shared body motion does not age the
-contact history. The result is a per-contact match index:
+shape 1. In sticky mode, previous body-local witnesses are instead transformed
+with the current poses and the larger drift of the two witnesses is compared,
+so shared body motion and normal compression do not age the contact history
+while a jump to another feature of a body does. The result is a per-contact match index:
 
 - ``>= 0``: index of the matched contact in the previous frame's sorted buffer.
 - ``MATCH_NOT_FOUND (-1)``: shape pair has no prior contacts.
@@ -342,17 +343,21 @@ def _match_contacts_kernel(data: _MatchData):
     best_idx = int(-1)
     best_dist_sq = float(data.pos_threshold_sq)
     for old_idx in range(range_lo, range_hi):
-        old_pos = data.prev_pos_world[old_idx]
+        diff = new_pos_w - data.prev_pos_world[old_idx]
+        dist_sq = wp.dot(diff, diff)
         if data.sticky != 0:
+            # Transport the previous body-local witnesses with their bodies and
+            # take the larger drift of the two. Compression moves the witnesses
+            # apart along the normal but keeps each on its own surface, so it
+            # does not age a match; a witness that jumps to another feature of
+            # its body, such as the opposite face of a thin plate, does.
             old_p0 = data.prev_point0[old_idx]
             old_p1 = data.prev_point1[old_idx]
             if bid0 >= 0:
                 old_p0 = wp.transform_point(data.body_q[bid0], old_p0)
             if bid1 >= 0:
                 old_p1 = wp.transform_point(data.body_q[bid1], old_p1)
-            old_pos = 0.5 * (old_p0 + old_p1)
-        diff = new_pos_w - old_pos
-        dist_sq = wp.dot(diff, diff)
+            dist_sq = wp.max(wp.length_sq(p0w - old_p0), wp.length_sq(p1w - old_p1))
 
         if dist_sq <= best_dist_sq:
             old_n = data.prev_normal[old_idx]
