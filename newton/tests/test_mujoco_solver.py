@@ -40,7 +40,7 @@ from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqu
 from newton.examples import get_asset
 from newton.exceptions import NewtonDeprecationWarning, NewtonWarning
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, patch_sys_module
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, count_initial_contacts, patch_sys_module
 
 
 def _add_deprecated_mimic_constraint(
@@ -3128,6 +3128,96 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
         )
 
         self.assertTrue(result.skipped)
+
+    @staticmethod
+    def _excludes(solver):
+        """Newton body pairs that the conversion exported as MuJoCo excludes."""
+        to_newton = solver.mjc_body_to_newton.numpy()[0]
+        return {
+            tuple(sorted(int(to_newton[b]) for b in divmod(int(signature), 1 << 16)))
+            for signature in solver.mj_model.exclude_signature
+        }
+
+    @staticmethod
+    def _native_parent_filter_off(solver):
+        import mujoco
+
+        return bool(solver.mj_model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT))
+
+    def test_weld_group_filters_match_mujoco(self):
+        """MuJoCo filters a body pair exactly when Newton does, across welds and shapeless bodies.
+
+        Asset A: hand (free) > palm (no shapes, welded by a fixed joint or by a zero-DOF D6) > finger
+        (hinge). A filtering hinge makes the builder filter hand-finger through the weld, as MuJoCo's
+        own rule would; an opted-out hinge lets them touch in both pipelines. Asset B is a plain
+        parent-child pair that may opt out as well. Neither asset's choice reaches the other, and
+        MuJoCo's native rule stays off either way.
+        """
+
+        def add_hand(builder, x, weld_type, filter_parent):
+            hand = builder.add_link(
+                xform=wp.transform((x, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+            )
+            builder.add_shape_sphere(hand, radius=0.2)
+            palm = builder.add_link(
+                xform=wp.transform((x, 0.0, 1.05), wp.quat_identity()), mass=0.1, inertia=wp.mat33(np.eye(3))
+            )
+            finger = builder.add_link(
+                xform=wp.transform((x, 0.0, 1.1), wp.quat_identity()), mass=0.1, inertia=wp.mat33(np.eye(3))
+            )
+            builder.add_shape_sphere(finger, radius=0.2)
+            root = builder.add_joint_free(hand)
+            weld_xform = wp.transform((0.0, 0.0, 0.05), wp.quat_identity())
+            if weld_type == "fixed":
+                weld = builder.add_joint_fixed(hand, palm, parent_xform=weld_xform)
+            else:
+                weld = builder.add_joint_d6(hand, palm, linear_axes=[], angular_axes=[], parent_xform=weld_xform)
+            hinge = builder.add_joint_revolute(
+                palm,
+                finger,
+                axis=newton.Axis.Z,
+                parent_xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()),
+                collision_filter_parent=filter_parent,
+            )
+            builder.add_articulation([root, weld, hinge])
+            return hand, finger
+
+        def add_pair(builder, x, filter_parent):
+            parent = builder.add_link(
+                xform=wp.transform((x, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+            )
+            builder.add_shape_sphere(parent, radius=0.2)
+            child = builder.add_link(
+                xform=wp.transform((x, 0.0, 1.1), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+            )
+            builder.add_shape_sphere(child, radius=0.2)
+            root = builder.add_joint_free(parent)
+            hinge = builder.add_joint_revolute(
+                parent,
+                child,
+                axis=newton.Axis.Z,
+                parent_xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()),
+                collision_filter_parent=filter_parent,
+            )
+            builder.add_articulation([root, hinge])
+            return parent, child
+
+        cases = itertools.product(("fixed", "d6"), (True, False), (True, False))
+        for weld_type, hand_filters, pair_filters in cases:
+            with self.subTest(weld=weld_type, hand_hinge_filters=hand_filters, pair_filters=pair_filters):
+                builder = newton.ModelBuilder()
+                hand, finger = add_hand(builder, 0.0, weld_type, hand_filters)
+                parent, child = add_pair(builder, 5.0, pair_filters)
+                model = builder.finalize(device="cpu")
+
+                newton_contacts, mujoco_contacts, solver = count_initial_contacts(model)
+                self.assertTrue(self._native_parent_filter_off(solver))
+                # each pair touches in both pipelines exactly when its hinge opted out
+                expected = int(not hand_filters) + int(not pair_filters)
+                self.assertEqual((newton_contacts, mujoco_contacts), (expected, expected))
+                excludes = self._excludes(solver)
+                self.assertEqual((min(hand, finger), max(hand, finger)) in excludes, hand_filters)
+                self.assertEqual((min(parent, child), max(parent, child)) in excludes, pair_filters)
 
     def test_sparse_filters_query_only_selected_pairs(self):
         """Query filters only for pairs in the selected collision graph."""
@@ -15116,6 +15206,55 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
         solver.step(state, state_next, model.control(), contacts, 0.002)
         count = int(solver.mjw_data.nacon.numpy()[0])
         return solver.mjw_data.contact.worldid.numpy()[:count], solver.mjw_data.contact.dist.numpy()[:count]
+
+    def test_parent_filter_in_per_world_mesh_layout(self):
+        """Per-slot masks carry Newton's parent-child filters; MuJoCo's own rule is off here as well."""
+        import mujoco
+
+        def hull_world_with_finger(count, filter_parent):
+            builder = newton.ModelBuilder()
+            body = builder.add_link(
+                xform=wp.transform(wp.vec3(0.0, 0.0, 0.3), wp.quat_identity()),
+                mass=1.0,
+                inertia=wp.mat33(np.diag([0.02, 0.03, 0.04])),
+            )
+            mesh = newton.Mesh.create_box(0.25 / count, 0.1, 0.1, compute_inertia=False)
+            cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+            for i in range(count):
+                builder.add_shape_convex_hull(
+                    body,
+                    mesh=mesh,
+                    cfg=cfg,
+                    xform=wp.transform(wp.vec3(-0.25 + (i + 0.5) * 0.5 / count, 0.0, 0.0), wp.quat_identity()),
+                )
+            # a hinged sphere inside the hulls: it touches them only when the hinge does not filter
+            finger = builder.add_link(
+                xform=wp.transform(wp.vec3(0.0, 0.0, 0.3), wp.quat_identity()),
+                mass=0.1,
+                inertia=wp.mat33(np.eye(3) * 1.0e-3),
+            )
+            builder.add_shape_sphere(finger, radius=0.08, cfg=cfg)
+            root = builder.add_joint_free(child=body)
+            hinge = builder.add_joint_revolute(body, finger, axis=newton.Axis.Z, collision_filter_parent=filter_parent)
+            builder.add_articulation([root, hinge])
+            return builder
+
+        for filter_parent in (True, False):
+            with self.subTest(collision_filter_parent=filter_parent):
+                builder = newton.ModelBuilder()
+                builder.add_world(hull_world_with_finger(2, filter_parent))
+                builder.add_world(hull_world_with_finger(3, filter_parent))
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, nconmax=32, njmax=64)
+                self.assertEqual(solver.mjw_model.nmesh, 2)
+                self.assertEqual(solver.mj_model.nexclude, 0)
+                self.assertTrue(solver.mj_model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT))
+                worlds, dist = self._step_once(model, solver, native=True)
+                if filter_parent:
+                    self.assertEqual(len(worlds), 0)
+                else:
+                    np.testing.assert_array_equal(np.unique(worlds), [0, 1])
+                    self.assertLess(dist.min(), 0.0)
 
     def test_collision_flags_differ_across_worlds(self):
         """Share slots whose collision flags differ across worlds when Newton supplies contacts."""
