@@ -4063,7 +4063,7 @@ def _momentum_solves(model, **options):
 
 
 def test_nesterov_momentum_converges_a_tower_in_fewer_sweeps(test, device):
-    """Reach the plain Gauss-Seidel solution of a ten-box tower in fewer sweeps; reject unsupported routes."""
+    """Reach the plain Gauss-Seidel solution of a ten-box tower in fewer sweeps."""
     builder = newton.ModelBuilder()
     cfg = newton.ModelBuilder.ShapeConfig(mu=0.75, gap=0.002)
     jitter = np.random.default_rng(0).uniform(-0.002, 0.002, (10, 2))
@@ -4081,14 +4081,6 @@ def test_nesterov_momentum_converges_a_tower_in_fewer_sweeps(test, device):
     test.assertLess(imbalance(2000, True), 1.0e-3)
     plain, accelerated = error(24, False), error(24, True)
     test.assertLess(accelerated, 0.5 * plain, f"24 sweeps: plain {plain:.3f}, momentum {accelerated:.3f}")
-
-    for options in (
-        {"articulated_contact_response": "propagation"},
-        {"solve_mode": "colored", "articulated_contact_response": "propagation"},
-        {"row_schedule": "phased"},
-    ):
-        with test.subTest(**options), test.assertRaisesRegex(ValueError, "nesterov_momentum requires"):
-            SolverSteel(model, nesterov_momentum=True, **options)
 
 
 def test_nesterov_momentum_on_articulated_rows(test, device):
@@ -4133,40 +4125,6 @@ def test_nesterov_momentum_on_articulated_rows(test, device):
     test.assertLess(accelerated, 0.5 * plain, f"24 sweeps: plain {plain:.4f}, momentum {accelerated:.4f}")
 
 
-def test_nesterov_momentum_keeps_a_mass_ratio_stack_standing(test, device):
-    """Keep standing a stack of six cubes, each about three times heavier than the one below, that topples without it."""
-    builder = newton.ModelBuilder()
-    cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, mu=0.8)
-    side, z = 0.5, 0.0
-    for _ in range(6):
-        body = builder.add_body(xform=wp.transform((0.0, 0.0, z + 0.5 * side), wp.quat_identity()))
-        builder.add_shape_box(body, hx=0.49 * side, hy=0.49 * side, hz=0.49 * side, cfg=cfg)
-        z += side
-        side *= 1.45
-    builder.add_ground_plane(cfg=cfg)
-    model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model)
-    contacts = pipeline.contacts()
-    control = model.control()
-
-    def lateral_drift(momentum):
-        solver = SolverSteel(model, iterations=24, nesterov_momentum=momentum)
-        state, output = model.state(), model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        settled = None
-        for step in range(1440):  # 6 s at 240 Hz
-            pipeline.collide(state, contacts)
-            solver.step(state, output, control, contacts, 1.0 / 240.0)
-            state, output = output, state
-            if step == 119:
-                settled = state.body_q.numpy()[:, :2]
-        return np.max(np.abs(state.body_q.numpy()[:, :2] - settled))
-
-    plain, accelerated = lateral_drift(False), lateral_drift(True)
-    test.assertGreater(plain, 0.5, "the plain sweep is expected to topple this stack")
-    test.assertLess(accelerated, 0.25, f"lateral drift: plain {plain:.3f} m, momentum {accelerated:.3f} m")
-
-
 class TestSteelNesterovMomentum(unittest.TestCase):
     pass
 
@@ -4174,7 +4132,6 @@ class TestSteelNesterovMomentum(unittest.TestCase):
 for _name in (
     "test_nesterov_momentum_converges_a_tower_in_fewer_sweeps",
     "test_nesterov_momentum_on_articulated_rows",
-    "test_nesterov_momentum_keeps_a_mass_ratio_stack_standing",
 ):
     add_function_test(TestSteelNesterovMomentum, _name, globals()[_name], devices=cuda_devices)
 

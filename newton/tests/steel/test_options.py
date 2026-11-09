@@ -1218,7 +1218,11 @@ class TestSteelSolveModeOptions(unittest.TestCase):
         self.assertFalse(solver.nesterov_momentum)
         with self.assertRaises(AttributeError):
             solver.nesterov_momentum = True
-        for options in ({"articulated_contact_response": "propagation"}, {"row_schedule": "contact_then_internal"}):
+        for options in (
+            {"articulated_contact_response": "propagation"},
+            {"row_schedule": "contact_then_internal"},
+            {"row_schedule": "phased"},
+        ):
             with self.subTest(**options), self.assertRaisesRegex(ValueError, "nesterov_momentum requires"):
                 SolverSteel(model, nesterov_momentum=True, **options)
 
