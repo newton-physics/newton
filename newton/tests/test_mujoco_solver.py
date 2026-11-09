@@ -9638,28 +9638,35 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         """Ball-joint actuator force follows joint_effort_limit, including zero and runtime changes."""
         dt = 0.002
 
-        def make_model(world_count):
+        def make_model(world_count, mode=newton.JointTargetMode.VELOCITY):
             template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             body = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-            joint = template.add_joint_ball(-1, body, actuator_mode=newton.JointTargetMode.VELOCITY)
+            joint = template.add_joint_ball(-1, body, actuator_mode=mode)
             template.add_articulation([joint])
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             builder.replicate(template, world_count)
             model = builder.finalize()
-            model.joint_target_kd.fill_(10.0)
+            model.joint_target_kd.fill_(10.0 if mode == newton.JointTargetMode.VELOCITY else 0.0)
+            model.joint_target_ke.fill_(0.0 if mode == newton.JointTargetMode.VELOCITY else 10.0)
             return model
 
         def step_qd(model, solver):
             state_in, state_out = model.state(), model.state()
             newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
             control = model.control()
-            control.joint_target_qd.fill_(1.0)
+            if model.joint_target_mode.numpy()[0] == int(newton.JointTargetMode.VELOCITY):
+                control.joint_target_qd.fill_(1.0)
+            else:
+                # Rotate the target 0.5 rad about x so the position drive exceeds the limits below.
+                control.joint_target_q.assign(np.tile([math.sin(0.25), 0.0, 0.0, math.cos(0.25)], model.world_count))
             solver.step(state_in, state_out, control, None, dt)
             return state_out.joint_qd.numpy().reshape(model.world_count, 3)
 
-        for use_mujoco_cpu in (False, True):
-            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
-                model = make_model(1)
+        for mode, use_mujoco_cpu in itertools.product(
+            (newton.JointTargetMode.VELOCITY, newton.JointTargetMode.POSITION), (False, True)
+        ):
+            with self.subTest(mode=mode, use_mujoco_cpu=use_mujoco_cpu):
+                model = make_model(1, mode)
                 model.joint_effort_limit.zero_()
                 solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
                 if use_mujoco_cpu:
@@ -9668,7 +9675,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
                 model.joint_effort_limit.fill_(2.0)
                 solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
-                np.testing.assert_allclose(step_qd(model, solver), 2.0 * dt, rtol=1.0e-4)
+                # The position target rotates about x only, so the other axes stay at rest.
+                expected = [2.0 * dt] * 3 if mode == newton.JointTargetMode.VELOCITY else [2.0 * dt, 0.0, 0.0]
+                np.testing.assert_allclose(step_qd(model, solver)[0], expected, rtol=1.0e-3, atol=1.0e-7)
 
                 model.joint_effort_limit.zero_()
                 solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
@@ -9681,6 +9690,17 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             qd = step_qd(model, solver)
             np.testing.assert_array_equal(qd[0], 0.0)
             np.testing.assert_allclose(qd[1], 5.0 * dt, rtol=1.0e-4)
+
+        with self.subTest("authored forcelimited=false"):
+            mjcf = """<mujoco><worldbody><body><joint name="b" type="ball"/><geom size="0.1" mass="1"/></body></worldbody>
+            <actuator><velocity joint="b" kv="10" forcelimited="false"/></actuator></mujoco>"""
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            SolverMuJoCo.register_custom_attributes(builder)
+            builder.add_mjcf(mjcf)
+            model = builder.finalize()
+            model.joint_effort_limit.zero_()
+            solver = SolverMuJoCo(model, disable_contacts=True)
+            np.testing.assert_array_equal(step_qd(model, solver), 0.0)
 
         with self.subTest("save_to_mjcf"):
             model = make_model(1)

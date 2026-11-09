@@ -8235,7 +8235,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 kwargs["ctrllimited"] = info["ctrllimited"]
             if info["has_ctrlrange"] and info["ctrlrange"] is not None:
                 kwargs["ctrlrange"] = info["ctrlrange"]
-            if info["forcelimited"] is not None:
+            # Ball actuators are limited by joint_effort_limit unless MJCF authored the range.
+            effort_limited = "forcelimited" in base and not info["has_forcerange"]
+            if info["forcelimited"] is not None and not effort_limited:
                 kwargs["forcelimited"] = info["forcelimited"]
             if info["has_forcerange"] and info["forcerange"] is not None:
                 kwargs["forcerange"] = info["forcerange"]
@@ -9799,11 +9801,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.jnt_solref[:] = self.mjw_model.jnt_solref.numpy()[0]
 
             if target_filename and actuator_effort_dof.size:
-                # The exact zero range is written after compilation, but MJCF cannot hold it.
+                # The exported MJCF holds the template world, whose exact zero range MJCF cannot hold.
                 dofs_per_world = model.joint_dof_count // model.world_count
                 effort = joint_effort_limit.reshape(model.world_count, dofs_per_world)
                 for dof in np.unique(actuator_effort_dof[actuator_effort_dof >= 0]):
-                    if np.any(effort[:, dof] == 0.0):
+                    if effort[0, dof] == 0.0:
                         j = int(np.searchsorted(joint_qd_start, dof, side="right") - 1)
                         raise ValueError(
                             f"Joint '{model.joint_label[j]}' axis {int(dof - joint_qd_start[j])} has "
