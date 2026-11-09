@@ -42,6 +42,7 @@ from .equality import _add_equality_constraint
 from .mjcf_parameters import (
     _finalize_native_actuator_ranges,
     _finalize_native_core_parameters,
+    _finalize_native_tendon_spring_lengths,
     _finalize_native_weld_poses,
     _read_native_parameters,
     _register_native_attributes,
@@ -466,6 +467,8 @@ def _tendons(builder, spec, model, joints, dofs, geoms, sites, attributes, custo
                 f"Tendon {model.tendon(i).name!r} references filtered elements; skipping.", NewtonWarning, stacklevel=2
             )
             continue
+        if fixed:
+            builder._add_model_finalizer(_finalize_native_tendon_spring_lengths)
         frequency = "mujoco:tendon_joint" if fixed else "mujoco:tendon_wrap"
         start = builder._custom_frequency_counts.get(frequency, 0)
         for entry in entries:
@@ -474,6 +477,7 @@ def _tendons(builder, spec, model, joints, dofs, geoms, sites, attributes, custo
             tendon_label=model.tendon(i).name,
             tendon_world=builder.current_world,
             tendon_type=0 if fixed else 1,
+            native_tendon_fixed=fixed,
             tendon_joint_adr=start if fixed else 0,
             tendon_joint_num=num if fixed else 0,
             tendon_wrap_adr=0 if fixed else start,

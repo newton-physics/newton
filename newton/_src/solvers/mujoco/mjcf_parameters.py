@@ -135,6 +135,7 @@ def _register_native_attributes(builder: ModelBuilder) -> None:
             )
 
     for name, frequency, dtype, default, reference in (
+        ("native_tendon_fixed", "mujoco:tendon", wp.bool, False, None),
         ("native_tendon_joint_dof", "mujoco:tendon_joint", wp.int32, -1, "joint_dof"),
         ("native_tendon_stiffnesspoly", "mujoco:tendon", wp.vec2, (0.0, 0.0), None),
         ("native_tendon_dampingpoly", "mujoco:tendon", wp.vec2, (0.0, 0.0), None),
@@ -460,6 +461,28 @@ def _finalize_native_actuator_ranges(builder: ModelBuilder, model: Model) -> Non
     attrs.actuator_ctrlrange.assign(control)
     attrs.actuator_actrange.assign(activation)
     attrs.native_actuator_inheritrange.assign(factors)
+
+
+def _finalize_native_tendon_spring_lengths(builder: ModelBuilder, model: Model) -> None:
+    attrs = model.mujoco
+    lengths = attrs.tendon_springlength.numpy()
+    rows = np.flatnonzero(attrs.native_tendon_fixed.numpy() & np.all(lengths == -1, axis=1))
+    if not len(rows):
+        return
+    starts, counts = attrs.tendon_joint_adr.numpy(), attrs.tendon_joint_num.numpy()
+    joints, coefficients = attrs.tendon_joint.numpy(), attrs.tendon_coef.numpy()
+    dofs = attrs.native_tendon_joint_dof.numpy()
+    q_starts, qd_starts = model.joint_q_start.numpy(), model.joint_qd_start.numpy()
+    rest, refs = model.joint_rest_q.numpy(), attrs.dof_ref.numpy()
+    for row in rows:
+        length = 0.0
+        for entry in range(starts[row], starts[row] + counts[row]):
+            joint = joints[entry]
+            dof = dofs[entry] if dofs[entry] >= 0 else qd_starts[joint]
+            q = q_starts[joint] + dof - qd_starts[joint]
+            length += float(coefficients[entry]) * (float(rest[q]) + float(refs[dof]))
+        lengths[row] = length
+    attrs.tendon_springlength.assign(lengths)
 
 
 def _finalize_native_weld_poses(builder: ModelBuilder, model: Model) -> None:

@@ -3024,6 +3024,20 @@ def update_eq_properties_kernel(
 
 
 @wp.kernel
+def restore_native_tendon_springlength_kernel(
+    mapping: wp.array2d[wp.int32],
+    fixed: wp.array[wp.bool],
+    lengths: wp.array[wp.vec2],
+    output: wp.array2d[wp.vec2],
+):
+    world, tendon = wp.tid()
+    row = mapping[world, tendon]
+    if row >= 0 and fixed[row]:
+        length = lengths[row]
+        output[world, tendon] = wp.vec2(length[0], wp.max(length[0], length[1]))
+
+
+@wp.kernel
 def update_tendon_properties_kernel(
     mjc_tendon_to_newton_tendon: wp.array2d[wp.int32],
     # Newton tendon properties (inputs)

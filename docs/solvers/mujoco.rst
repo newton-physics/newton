@@ -176,15 +176,20 @@ Actuator ``dampratio`` and ``inheritrange``, joint ``springdamper``, muscle
 parameter placeholders, unspecified actuator length ranges, automatic tendon
 spring lengths, and automatic weld relative poses retain their authored values.
 Builder finalization resolves ``inheritrange`` from each world's joint or tendon
-limits and automatic weld poses from the assembled reference configuration.
+limits, fixed-tendon spring lengths from the assembled spring coordinates,
+and automatic weld poses from the assembled reference configuration.
 Weld resolution includes nonzero anchors and updates converted Newton loop-joint
-frames. The model receives concrete ranges and poses, so subsequent edits survive
+frames. Fixed-tendon lengths use ``joint_rest_q`` plus ``dof_ref``, including
+compound-joint mappings; initial joint state does not affect them.
+The model receives concrete ranges, lengths, and poses, so subsequent edits survive
 solver construction and rebuilding. The builder keeps its automatic declarations
-for later composition and re-finalization.
+for later composition and re-finalization. Fixed-tendon lengths remain fixed
+across solver constant refreshes, including signed lengths equal to ``-1``;
+rebuild the solver after editing these lengths on the model.
 Joint-target damping and passive ``springdamper`` resolve at builder finalization
 when the composed inertia is supported, as described below.
-Muscle placeholders, automatic actuator length ranges, and tendon spring lengths
-are resolved again when
+Muscle placeholders, automatic actuator length ranges, and spatial tendon spring
+lengths are resolved again when
 :class:`~newton.solvers.SolverMuJoCo` compiles the assembled builder. Attaching
 a hand therefore contributes its inertia to the arm's damping and muscle force
 scaling. Native parameters without a Newton core equivalent live in typed
@@ -224,8 +229,8 @@ otherwise MuJoCo's default is retained. Later gain edits use the existing
 ``JOINT_DOF_FORCE_PROPERTIES`` notification. Import performs two native
 parses to distinguish authored values from defaults, and one compilation.
 
-Resolved inherited control/activation ranges are published into the finalized
-model when the solver is constructed, including distinct per-world ranges.
+Inherited control/activation ranges resolve during builder finalization,
+including distinct per-world ranges.
 Subsequent explicit range edits use ``notify_model_changed(ACTUATOR_PROPERTIES)``.
 Scaling adjusts translational length ranges and servo controls while preserving
 force controls and angular ranges. Other solvers consume the Newton core
@@ -233,13 +238,14 @@ representation; MuJoCo-only parameters require ``SolverMuJoCo``.
 
 With ``ctrl_direct=False``, representable scalar position/velocity servos use
 Newton joint targets. Position-only ``dampratio`` servos retain joint-target
-control: the shared solver resolver publishes damping into ``joint_target_kd``
-after composition, using the assembled inertia and respecting explicit gain
-edits. One position servo and one velocity servo on the same DOF share
+control: builder finalization publishes damping into ``joint_target_kd``
+using the assembled inertia and respecting explicit gain edits. Unsupported
+core-inertia cases remain deferred to ``SolverMuJoCo``. One position servo and
+one velocity servo on the same DOF share
 ``POSITION_VELOCITY`` targets when the position servo has no damping of its
 own. Actuator ``group`` and ``inheritrange`` settings preserve joint-target
-control; inherited ranges resolve from the assembled joint limits during solver
-construction. Control limits apply to both control sources. MuJoCo-Warp does not
+control; inherited ranges resolve from the assembled joint limits during builder
+finalization. Control limits apply to both control sources. MuJoCo-Warp does not
 support group disabling; the solver warns when it is requested on that backend.
 Use ``use_mujoco_cpu=True`` to honor ``actuatorgroupdisable``.
 Control history (``delay``, ``nsample``, and ``interp``) also preserves joint-target

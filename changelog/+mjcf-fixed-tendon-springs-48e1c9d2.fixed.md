@@ -1,0 +1,1 @@
+Resolve native MJCF fixed-tendon spring lengths during builder finalization from each world's spring coordinates, preserving explicit values and signed lengths through solver rebuilding and constant refreshes.

@@ -1083,6 +1083,78 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
             builder.end_world()
         np.testing.assert_array_equal(builder.finalize().mujoco.impratio.numpy(), [2, 3])
 
+    def test_fixed_tendon_springlength_finalization(self):
+        import mujoco
+
+        xml = """<mujoco><compiler angle="radian"/><worldbody>
+            <body><freejoint/><geom size=".1"/></body>
+            <body><joint name="h" ref=".25" springref=".5"/>
+                <joint name="s" type="slide" axis="1 0 0" ref=".125" springref=".25"/>
+                <geom size=".1"/></body></worldbody><tendon>
+            <fixed><joint joint="h" coef="1"/><joint joint="s" coef="-6"/></fixed>
+            <fixed springlength="0"><joint joint="h" coef="1"/></fixed>
+            <fixed springlength=".2 .4"><joint joint="s" coef="1"/></fixed>
+            <fixed springlength="-1 .4"><joint joint="s" coef="1"/></fixed>
+            </tendon></mujoco>"""
+        asset = newton.ModelBuilder()
+        asset.add_mjcf_native(xml)
+        for cpu in (False, True):
+            with self.subTest(cpu=cpu):
+                builder = newton.ModelBuilder()
+                builder.replicate(asset, 1 if cpu else 2)
+                expected = []
+                for world in range(1 if cpu else 2):
+                    q = builder.joint_q_start[2 * world + 1]
+                    dof = builder.joint_qd_start[2 * world + 1]
+                    builder.joint_q[q : q + 2] = [7, 8]
+                    if world:
+                        builder.joint_rest_q[q : q + 2] = [0.5, 0.25]
+                        builder.custom_attributes["mujoco:dof_ref"].values[dof] = 0.25
+                        builder.custom_attributes["mujoco:dof_ref"].values[dof + 1] = 0.5
+                    source = (
+                        xml
+                        if not world
+                        else xml.replace('ref=".25" springref=".5"', 'ref=".5" springref=".75"').replace(
+                            'ref=".125" springref=".25"', 'ref=".25" springref=".75"'
+                        )
+                    )
+                    expected.append(mujoco.MjModel.from_xml_string(source).tendon_lengthspring)
+                expected = np.array(expected)
+                model = builder.finalize()
+                np.testing.assert_allclose(model.mujoco.tendon_springlength.numpy(), expected.reshape(-1, 2))
+                np.testing.assert_allclose(
+                    builder.finalize().mujoco.tendon_springlength.numpy(), expected.reshape(-1, 2)
+                )
+                np.testing.assert_array_equal(
+                    builder.custom_attributes["mujoco:tendon_springlength"].values[0], [-1, -1]
+                )
+                for _ in range(2):
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                    np.testing.assert_allclose(solver.mjw_model.tendon_lengthspring.numpy(), expected)
+                    np.testing.assert_allclose(solver.mj_model.tendon_lengthspring, expected[0])
+                    model.joint_rest_q.zero_()
+                    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+                    np.testing.assert_allclose(solver.mjw_model.tendon_lengthspring.numpy(), expected)
+                    if cpu:
+                        np.testing.assert_allclose(solver.mj_model.tendon_lengthspring, expected[0])
+                    elif model.device.is_cuda:
+                        with wp.ScopedCapture(device=model.device) as capture:
+                            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+                        wp.capture_launch(capture.graph)
+                        np.testing.assert_allclose(solver.mjw_model.tendon_lengthspring.numpy(), expected)
+
+    def test_fixed_tendon_springlength_scaling(self):
+        import mujoco
+
+        xml = """<mujoco><worldbody><body><joint name="s" type="slide" ref=".2" springref=".5"/>
+            <geom size=".1"/></body></worldbody><tendon>
+            <fixed><joint joint="s" coef="2"/></fixed>
+            <fixed springlength=".3"><joint joint="s" coef="1"/></fixed></tendon></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native(xml, scale=2)
+        expected = mujoco.MjModel.from_xml_string(xml).tendon_lengthspring * 2
+        np.testing.assert_allclose(builder.finalize().mujoco.tendon_springlength.numpy(), expected)
+
     def test_tendon_springlength_sentinels(self):
         """Recompute automatic tendon rest lengths while retaining explicit zero."""
         import mujoco

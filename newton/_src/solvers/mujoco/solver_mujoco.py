@@ -3816,6 +3816,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         tendon_armature_np = tendon_armature.numpy() if tendon_armature is not None else None
         tendon_springlength = getattr(mujoco_attrs, "tendon_springlength", None)
         tendon_springlength_np = tendon_springlength.numpy() if tendon_springlength is not None else None
+        native_fixed = getattr(mujoco_attrs, "native_tendon_fixed", None)
+        native_fixed = native_fixed.numpy() if native_fixed is not None else None
         tendon_label_arr = getattr(mujoco_attrs, "tendon_label", None)
 
         # Fixed tendon arrays
@@ -4053,7 +4055,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 t.solimp_friction = tendon_solimp_friction_np[i].tolist()
             if tendon_springlength_np is not None:
                 val = tendon_springlength_np[i]
-                has_automatic_length_computation = val[0] == -1.0
+                has_automatic_length_computation = val[0] == -1.0 and (native_fixed is None or not native_fixed[i])
                 has_dead_zone = val[1] >= val[0]
                 if has_automatic_length_computation:
                     t.springlength[0] = -1.0
@@ -4812,6 +4814,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._dampratio_inv_mass_moment: wp.array2d[float] | None = None
         self._notify_body_flags: wp.array[wp.int32] | None = None
         self._notify_joint_armature: wp.array[float] | None = None
+        self._native_tendon_springlength: wp.array[wp.vec2] | None = None
         self._notify_joint_rest_q: wp.array[float] | None = None
         self._joint_limit_solref_snapshot: wp.array[wp.vec2] | None = None
 
@@ -9864,6 +9867,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Keep the host template coherent after construction. Runtime
                 # GPU notifications intentionally update only device arrays.
                 self.mj_model.jnt_solref[:] = self.mjw_model.jnt_solref.numpy()[0]
+                if self._native_tendon_springlength is not None:
+                    self.mj_model.tendon_lengthspring[:] = self.mjw_model.tendon_lengthspring.numpy()[0]
 
             if target_filename:
                 # Only persist ``solreflimit`` for ``SOLREF_MODE_RAW`` joints
@@ -10081,6 +10086,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._notify_body_flags = wp.clone(self.model.body_flags)
         self._notify_joint_armature = wp.clone(self.model.joint_armature)
         self._notify_joint_rest_q = wp.clone(self.model.joint_rest_q)
+        native_fixed = getattr(getattr(self.model, "mujoco", None), "native_tendon_fixed", None)
+        if self.mjc_tendon_to_newton_tendon is not None and native_fixed is not None and np.any(native_fixed.numpy()):
+            self._native_tendon_springlength = wp.clone(self.model.mujoco.tendon_springlength)
         if self._kinematic_weld_eq is not None:
             shape = (self.mjc_dof_to_newton_dof.shape[0], self.mj_model.nv)
             self._physical_dof_M0 = wp.zeros(shape, dtype=float, device=self.model.device)
@@ -10285,11 +10293,32 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     outputs=[m.actuator_biasprm],
                     device=self.model.device,
                 )
+        self._restore_native_tendon_springlength()
         if not lock:
             return
         self._update_dof_armature()
         if self.use_mujoco_cpu:
             self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
+
+    def _restore_native_tendon_springlength(self) -> None:
+        if self._native_tendon_springlength is None:
+            return
+        # A concrete fixed-tendon length can equal MuJoCo's automatic (-1, -1) sentinel.
+        wp.launch(
+            kernels.restore_native_tendon_springlength_kernel,
+            dim=self.mjc_tendon_to_newton_tendon.shape,
+            inputs=[
+                self.mjc_tendon_to_newton_tendon,
+                self.model.mujoco.native_tendon_fixed,
+                self._native_tendon_springlength,
+            ],
+            outputs=[self.mjw_model.tendon_lengthspring],
+            device=self.model.device,
+        )
+        if self.use_mujoco_cpu:
+            rows = self.mjc_tendon_to_newton_tendon.numpy()[0]
+            fixed = (rows >= 0) & self.model.mujoco.native_tendon_fixed.numpy()[np.maximum(rows, 0)]
+            self.mj_model.tendon_lengthspring[fixed] = self.mjw_model.tendon_lengthspring.numpy()[0, fixed]
 
     def _allocate_dampratio_scratch(self) -> None:
         """Allocate the published ``dampratio`` placeholders and the scratch to resolve them."""
