@@ -822,8 +822,15 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                     )
                     self.assertEqual(builder.custom_attributes["mujoco:ctrl_source"].values[0], expected_source)
                     builder.joint_limit_lower[0], builder.joint_limit_upper[0] = -0.5, 0.7
-                    solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
                     reference = mujoco.MjModel.from_xml_string(xml.replace('range="-.2 .4"', 'range="-.5 .7"'))
+                    model = builder.finalize()
+                    for field in ("actuator_ctrlrange", "actuator_actrange"):
+                        np.testing.assert_allclose(
+                            getattr(model.mujoco, field).numpy(), getattr(reference, field), rtol=1e-6, atol=1e-7
+                        )
+                    np.testing.assert_array_equal(model.mujoco.native_actuator_inheritrange.numpy(), 0)
+                    self.assertGreater(builder.custom_attributes["mujoco:native_actuator_inheritrange"].values[0], 0)
+                    solver = SolverMuJoCo(model, disable_contacts=True)
                     for field in (
                         "actuator_ctrlrange",
                         "actuator_actrange",
@@ -879,6 +886,39 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 solver.step(state, model.state(), control, None, dt=0.001, observables=observables)
                 expected = [5, 6, 0, 0, 0] if disabled else [5, 7.5, *([1.2 / np.sqrt(3)] * 3)]
                 np.testing.assert_allclose(observables.qfrc_actuator.numpy().reshape(-1), expected, atol=1e-6)
+
+    def test_inherited_ranges_finalize_per_world(self):
+        """Resolve joint and tendon ranges before any solver and retain later explicit edits."""
+        xml = """<mujoco><compiler angle="radian"/><worldbody><body>
+            <joint name="j" range="-.2 .4" limited="false" ref=".1"/><geom size=".1"/>
+            </body></worldbody><tendon><fixed name="t" range="1 3"><joint joint="j" coef="1"/></fixed></tendon>
+            <actuator><position joint="j" kp="10" inheritrange=".8"/>
+                <intvelocity tendon="t" kp="10" inheritrange=".8"/></actuator></mujoco>"""
+        asset = newton.ModelBuilder()
+        asset.add_mjcf_native(xml, ctrl_direct=True)
+        builder = newton.ModelBuilder()
+        builder.replicate(asset, 2)
+        builder.joint_limit_lower[1], builder.joint_limit_upper[1] = -0.5, 0.7
+        builder.custom_attributes["mujoco:tendon_range"].values[1] = (2, 6)
+        model = builder.finalize()
+        ctrl = model.mujoco.actuator_ctrlrange.numpy().copy()
+        act = model.mujoco.actuator_actrange.numpy().copy()
+        np.testing.assert_allclose(ctrl[[0, 2]], [[-0.14, 0.34], [-0.28, 0.68]], atol=1e-7)
+        np.testing.assert_allclose(act[[1, 3]], [[1.2, 2.8], [2.4, 5.6]], atol=1e-6)
+        np.testing.assert_array_equal(model.mujoco.native_actuator_inheritrange.numpy(), 0)
+        np.testing.assert_array_equal(builder.finalize().mujoco.actuator_ctrlrange.numpy(), ctrl)
+        ctrl[0] = [-0.1, 0.2]
+        act[1] = [0.5, 1.5]
+        model.mujoco.actuator_ctrlrange.assign(ctrl)
+        model.mujoco.actuator_actrange.assign(act)
+        model.joint_limit_lower.fill_(-10)
+        model.joint_limit_upper.fill_(10)
+        for _ in range(2):
+            solver = SolverMuJoCo(model, disable_contacts=True)
+            np.testing.assert_array_equal(model.mujoco.actuator_ctrlrange.numpy(), ctrl)
+            np.testing.assert_array_equal(model.mujoco.actuator_actrange.numpy(), act)
+            np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy().reshape(-1, 2), ctrl)
+            np.testing.assert_allclose(solver.mjw_model.actuator_actrange.numpy().reshape(-1, 2), act)
 
     def test_inherited_ranges_cpu_updates(self):
         for actuator, field in (("position", "ctrlrange"), ("intvelocity", "actrange")):
@@ -1074,7 +1114,10 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
             expected.append(mujoco.MjModel.from_xml_string(xml).eq_data[0])
         expected = np.array(expected)
         expected[:, 11] = 0  # SolverMuJoCo freezes inferred weld poses after initialization.
-        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.mujoco.equality_constraint_relpose.numpy(), expected[:, [3, 4, 5, 7, 8, 9, 6]])
+        np.testing.assert_array_equal(model.mujoco.native_equality_auto_relpose.numpy(), False)
+        solver = SolverMuJoCo(model, disable_contacts=True)
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0], expected)
         solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0], expected)
@@ -1130,6 +1173,69 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 np.testing.assert_allclose(solver.mj_model.eq_data, reference.eq_data)
                 solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
                 np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0], reference.eq_data)
+
+    def test_weld_pose_finalization(self):
+        """Resolve anchored body/world welds and their loop frames from the composed reference pose."""
+        import mujoco
+
+        xml = """<mujoco><compiler angle="radian"/><worldbody>
+            <body name="root" pos="{root} 0 0" euler="0 0 .3"><freejoint/><geom size=".2"/>
+                <body name="child" pos="{child}"><joint name="j"/><geom size=".1"/></body></body>
+            </worldbody><equality><weld body1="child" body2="root" anchor=".2 -.1 .4"/>
+                <weld body1="child" anchor=".4 .2 -.1"/></equality></mujoco>"""
+        for convert in (False, True):
+            with self.subTest(convert=convert):
+                asset = newton.ModelBuilder()
+                warning = self.assertWarnsRegex(NewtonWarning, "Parallel joints") if convert else nullcontext()
+                with warning:
+                    asset.add_mjcf_native(xml.format(root=1, child="0 0 1"), convert_mjc_equality_constraints=convert)
+                asset.joint_X_p[1] = wp.transform((0.3, 0.2, 1), wp.quat_identity())
+                builder = newton.ModelBuilder()
+                builder.replicate(
+                    asset, 2, xforms=[wp.transform_identity(), wp.transform((2, 0, 0), wp.quat_identity())]
+                )
+                expected = np.array(
+                    [mujoco.MjModel.from_xml_string(xml.format(root=root, child=".3 .2 1")).eq_data for root in (1, 3)]
+                )
+                expected[..., 11] = 0
+                model = builder.finalize()
+                poses = model.mujoco.equality_constraint_relpose.numpy().copy()
+                np.testing.assert_allclose(poses, expected[..., [3, 4, 5, 7, 8, 9, 6]].reshape(-1, 7), atol=5e-7)
+                np.testing.assert_array_equal(model.mujoco.native_equality_auto_relpose.numpy(), False)
+                np.testing.assert_array_equal(builder.finalize().mujoco.equality_constraint_relpose.numpy(), poses)
+                if convert:
+                    qref = SolverMuJoCo._build_ref_q(model)
+                    bodies = SolverMuJoCo._compute_body_poses_at_qref(model, qref).numpy()
+                    parents, children = model.joint_parent.numpy(), model.joint_child.numpy()
+                    xp, xc = model.joint_X_p.numpy(), model.joint_X_c.numpy()
+                    for joint in model.mujoco.equality_constraint_target.numpy():
+                        parent = (
+                            wp.transform(*bodies[parents[joint]]) if parents[joint] >= 0 else wp.transform_identity()
+                        )
+                        np.testing.assert_allclose(
+                            parent * wp.transform(*xp[joint]),
+                            wp.transform(*bodies[children[joint]]) * wp.transform(*xc[joint]),
+                            atol=5e-7,
+                        )
+                for _ in range(2):
+                    solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
+                    np.testing.assert_array_equal(model.mujoco.equality_constraint_relpose.numpy(), poses)
+                    np.testing.assert_allclose(solver.mjw_model.eq_data.numpy(), expected, atol=5e-7)
+                    poses[0, 0] += 0.05
+                    expected[0, 0, 3] += 0.05
+                    model.mujoco.equality_constraint_relpose.assign(poses)
+
+    def test_weld_reference_pose_not_initial_state(self):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native(
+            """<mujoco><worldbody><body name="b" pos="1 0 0">
+            <freejoint/><geom size=".1"/></body></worldbody><equality><weld body1="b"/></equality></mujoco>""",
+            convert_mjc_equality_constraints=False,
+        )
+        builder.joint_q[0] = 2
+        model = builder.finalize()
+        np.testing.assert_allclose(model.mujoco.equality_constraint_relpose.numpy(), [[-1, 0, 0, 0, 0, 0, 1]])
+        self.assertEqual(model.joint_q.numpy()[0], 2)
 
 
 if __name__ == "__main__":

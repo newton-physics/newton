@@ -39,7 +39,13 @@ from .collision_masks import (
 from .constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from .enums import EqType
 from .equality import _add_equality_constraint
-from .mjcf_parameters import _finalize_native_core_parameters, _read_native_parameters, _register_native_attributes
+from .mjcf_parameters import (
+    _finalize_native_actuator_ranges,
+    _finalize_native_core_parameters,
+    _finalize_native_weld_poses,
+    _read_native_parameters,
+    _register_native_attributes,
+)
 from .solver_mujoco import SolverMuJoCo
 from .utils import mjc_add_equality_loop_joint, mjc_add_equality_mimic, mjc_polycoef_has_higher_order
 
@@ -592,6 +598,7 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, attr
             and not np.any(spec.equalities[i].data[6:10])
         ):
             attrs.update(attributes(native_equality_auto_relpose=True))
+            builder._add_model_finalizer(_finalize_native_weld_poses)
             pose1 = builder.body_q[body1] if body1 >= 0 else wp.transform_identity()
             pose2 = builder.body_q[body2] if body2 >= 0 else wp.transform_identity()
             relpose = wp.transform_inverse(pose1) * pose2
@@ -1325,6 +1332,8 @@ def parse_mjcf(
                 dof_count=3 if model.jnt_type[source_target] == mujoco.mjtJoint.mjJNT_BALL else 1,
             )
         values.update(custom("mujoco:actuator", spec.actuators[i]))
+        if values.get("mujoco:native_actuator_inheritrange", 0) > 0:
+            builder._add_model_finalizer(_finalize_native_actuator_ranges)
         builder.add_custom_values(**values)
 
     imported_actuators = builder._custom_frequency_counts.get("mujoco:actuator", 0) - actuator_start

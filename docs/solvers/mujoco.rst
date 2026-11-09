@@ -175,9 +175,16 @@ no cutoff for boxes. Newton's final inertia validation still applies.
 Actuator ``dampratio`` and ``inheritrange``, joint ``springdamper``, muscle
 parameter placeholders, unspecified actuator length ranges, automatic tendon
 spring lengths, and automatic weld relative poses retain their authored values.
+Builder finalization resolves ``inheritrange`` from each world's joint or tendon
+limits and automatic weld poses from the assembled reference configuration.
+Weld resolution includes nonzero anchors and updates converted Newton loop-joint
+frames. The model receives concrete ranges and poses, so subsequent edits survive
+solver construction and rebuilding. The builder keeps its automatic declarations
+for later composition and re-finalization.
 Joint-target damping and passive ``springdamper`` resolve at builder finalization
 when the composed inertia is supported, as described below.
-The other parameters are resolved again when
+Muscle placeholders, automatic actuator length ranges, and tendon spring lengths
+are resolved again when
 :class:`~newton.solvers.SolverMuJoCo` compiles the assembled builder. Attaching
 a hand therefore contributes its inertia to the arm's damping and muscle force
 scaling. Native parameters without a Newton core equivalent live in typed

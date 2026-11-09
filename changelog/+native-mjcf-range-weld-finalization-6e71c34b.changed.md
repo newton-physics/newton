@@ -1,0 +1,1 @@
+Resolve native MJCF inherited actuator ranges and automatic weld poses during builder finalization, including per-world limits, weld anchors, and converted loop-joint frames. Preserve the builder's automatic declarations and retain later model edits across solver construction and rebuilding.

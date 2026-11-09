@@ -1483,7 +1483,7 @@ class TestImportMjcfNative(unittest.TestCase):
                     else SolverMuJoCo.CtrlSource.CTRL_DIRECT
                 )
                 np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), source)
-                np.testing.assert_array_equal(getattr(model.mujoco, f"actuator_{field}range").numpy(), [[0, 0]])
+                np.testing.assert_allclose(getattr(model.mujoco, f"actuator_{field}range").numpy(), [[-0.6, 1]])
                 solver = SolverMuJoCo(model, disable_contacts=True)
                 np.testing.assert_allclose(getattr(solver.mj_model, f"actuator_{field}range"), [[-0.6, 1]])
                 np.testing.assert_allclose(getattr(model.mujoco, f"actuator_{field}range").numpy(), [[-0.6, 1]])

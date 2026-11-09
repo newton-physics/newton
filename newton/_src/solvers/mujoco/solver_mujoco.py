@@ -8878,7 +8878,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 return spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
             return spec.add_equality()
 
-        native_eq_auto_relpose = get_custom_attribute("native_equality_auto_relpose")
         native_eq_site1 = get_custom_attribute("native_equality_site1")
         native_eq_site2 = get_custom_attribute("native_equality_site2")
         mjc_eq_to_newton_eq_dict = {}
@@ -8949,8 +8948,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 eq.data[3:6] = wp.transform_get_translation(cns_relpose)
                 eq.data[6:10] = quat_to_mjc(wp.transform_get_rotation(cns_relpose))
                 eq.data[10] = eq_constraint_torquescale[i]
-                if native_eq_auto_relpose is not None and native_eq_auto_relpose[i]:
-                    eq.data[3:10] = 0.0
                 if eq_constraint_solref is not None:
                     eq.solref = eq_constraint_solref[i]
                 if eq_constraint_solimp is not None:
@@ -9280,7 +9277,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         from .mjcf_parameters import (  # noqa: PLC0415
             _apply_native_parameters,
             _resolve_native_joint_parameters,
-            _sync_native_parameters,
         )
 
         has_native_parameters = _apply_native_parameters(
@@ -9291,8 +9287,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if has_allowed_parent_collision(self.mj_model):
                 self.mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
                 spec.option.disableflags |= mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
-        if has_native_parameters:
-            _sync_native_parameters(model, self.mj_model, mjc_eq_to_newton_eq_dict)
         if not self.use_mujoco_cpu and self.mj_model.opt.disableactuator:
             warnings.warn(
                 "SolverMuJoCo's MuJoCo-Warp backend does not support actuator group disabling. "

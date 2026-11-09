@@ -119,12 +119,6 @@ def _apply_native_element_parameters(model, spec, shapes, actuator_indices):
             for name in fields:
                 value = values[name][index]
                 setattr(element, name, value.tolist())
-            if kind == "actuator" and element.inheritrange > 0:
-                # Model arrays hold resolved ranges after the first solver construction.
-                if element.dyntype == mujoco.mjtDyn.mjDYN_INTEGRATOR:
-                    element.actrange[:] = 0
-                else:
-                    element.ctrlrange[:] = 0
 
 
 def _register_native_attributes(builder: ModelBuilder) -> None:
@@ -430,7 +424,7 @@ def _resolve_native_joint_parameters(solver, spec: mujoco.MjSpec) -> None:
     native.dof_damping[:] = solver.mjw_model.dof_damping.numpy()[0]
 
 
-def _sync_native_actuator_ranges(model: Model) -> None:
+def _finalize_native_actuator_ranges(builder: ModelBuilder, model: Model) -> None:
     from .solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
     attrs = model.mujoco
@@ -449,7 +443,6 @@ def _sync_native_actuator_ranges(model: Model) -> None:
     control, activation = attrs.actuator_ctrlrange.numpy(), attrs.actuator_actrange.numpy()
     for row in np.flatnonzero(factors > 0):
         dof = targets[row]
-        # The compiler only builds the first world; resolve each world's own limits.
         if transmissions[row] == SolverMuJoCo.TrnType.JOINT:
             bounds = (
                 native_ranges[dof]
@@ -463,28 +456,61 @@ def _sync_native_actuator_ranges(model: Model) -> None:
         center, radius = np.mean(bounds), (bounds[1] - bounds[0]) * factors[row] / 2
         ranges = activation if dynamics[row] == 1 else control
         ranges[row] = [center - radius, center + radius]
+        factors[row] = 0
     attrs.actuator_ctrlrange.assign(control)
     attrs.actuator_actrange.assign(activation)
+    attrs.native_actuator_inheritrange.assign(factors)
 
 
-def _sync_native_equality_parameters(model, native, equality_rows):
+def _finalize_native_weld_poses(builder: ModelBuilder, model: Model) -> None:
+    from ...sim.enums import JointType  # noqa: PLC0415
+    from .equality import MjcEqualityTargetKind  # noqa: PLC0415
+    from .solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+    from .utils import mjc_loop_joint_xforms  # noqa: PLC0415
+
     automatic = getattr(model.mujoco, "native_equality_auto_relpose", None)
     if automatic is None:
         return
     automatic = automatic.numpy()
+    if not np.any(automatic):
+        return
     poses = model.mujoco.equality_constraint_relpose.numpy()
+    qref = SolverMuJoCo._build_ref_q(model)
+    q = qref.numpy()
     bodies = model.body_q.numpy()
+    parent_frames, child_frames = model.joint_X_p.numpy(), model.joint_X_c.numpy()
+    parents, children = model.joint_parent.numpy(), model.joint_child.numpy()
+    starts = model.joint_q_start.numpy()
+    # Free-body reference poses come from body_q, independently of the initial joint state.
+    for joint in np.flatnonzero(model.joint_type.numpy() == JointType.FREE):
+        parent = wp.transform(*parent_frames[joint])
+        if parents[joint] >= 0:
+            parent = wp.transform(*bodies[parents[joint]]) * parent
+        q[starts[joint] : starts[joint] + 7] = (
+            wp.transform_inverse(parent) * wp.transform(*bodies[children[joint]]) * wp.transform(*child_frames[joint])
+        )
+    qref.assign(q)
+    bodies = SolverMuJoCo._compute_body_poses_at_qref(model, qref, ref_body_q=wp.clone(model.body_q)).numpy()
     body1 = model.mujoco.equality_constraint_body1.numpy()
     body2 = model.mujoco.equality_constraint_body2.numpy()
+    anchors = model.mujoco.equality_constraint_anchor.numpy()
+    kinds = model.mujoco.equality_constraint_target_kind.numpy()
+    targets = model.mujoco.equality_constraint_target.numpy()
     for row in np.flatnonzero(automatic):
         first = wp.transform(*bodies[body1[row]]) if body1[row] >= 0 else wp.transform_identity()
         second = wp.transform(*bodies[body2[row]]) if body2[row] >= 0 else wp.transform_identity()
-        poses[row] = wp.transform_inverse(first) * second
-    for equality, row in equality_rows.items():
-        if automatic[row]:
-            data = native.eq_data[equality]
-            poses[row] = np.concatenate((data[3:6], data[7:10], data[6:7]))
+        anchor = wp.vec3(anchors[row])
+        poses[row] = wp.transform_inverse(first) * second * wp.transform(anchor, wp.quat_identity())
+        joint = targets[row]
+        if kinds[row] == MjcEqualityTargetKind.JOINT and joint >= 0:
+            _, _, parent_frames[joint], child_frames[joint] = mjc_loop_joint_xforms(
+                builder, int(body1[row]), int(body2[row]), anchor, wp.transform(*poses[row]), weld=True
+            )
+        automatic[row] = False
     model.mujoco.equality_constraint_relpose.assign(poses)
+    model.mujoco.native_equality_auto_relpose.assign(automatic)
+    model.joint_X_p.assign(parent_frames)
+    model.joint_X_c.assign(child_frames)
 
 
 def _apply_native_parameters(model, spec, dof_to_joint, shapes, actuator_indices):
@@ -493,8 +519,3 @@ def _apply_native_parameters(model, spec, dof_to_joint, shapes, actuator_indices
     _apply_native_joint_parameters(model, spec, dof_to_joint)
     _apply_native_element_parameters(model, spec, shapes, actuator_indices)
     return True
-
-
-def _sync_native_parameters(model, native, equality_rows):
-    _sync_native_equality_parameters(model, native, equality_rows)
-    _sync_native_actuator_ranges(model)
