@@ -634,25 +634,26 @@ add_example_batch(
     variants=[
         {
             "devices": test_devices,
-            "test_options": {"num-frames": 100, "solver": "xpbd"},
+            "test_options": {"num-frames": 600, "solver": "xpbd"},
+            "test_options_cpu": {"num-frames": 100},
             "test_suffix": "xpbd",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 100, "solver": "vbd"},
+            "test_options": {"num-frames": 600, "solver": "vbd"},
             "test_suffix": "vbd",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 100, "solver": "mujoco"},
+            "test_options": {"num-frames": 600, "solver": "mujoco"},
             "test_suffix": "mujoco",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 100, "solver": "kamino"},
+            "test_options": {"num-frames": 600, "solver": "kamino"},
             "test_suffix": "kamino",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
@@ -1041,14 +1042,14 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500},
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 18},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "world-count": 1, "solver": "kamino"},
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 2, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
 )
@@ -1940,6 +1941,16 @@ add_example_test(
     name="softbody.example_softbody_franka",
     devices=cuda_test_devices,
     test_options={"usd_required": True},
+    use_viewer=True,
+)
+# 120 frames reaches the first engagement (~1.0 s) and holds the panel well past the seal settling,
+# so test_final can assert that the pads latched and the seal quality stayed healthy. test_final is valid
+# for any run length, but the default plays the whole ~26 s recording, which is too slow for CI.
+add_example_test(
+    TestUSDDependentExamples,
+    name="surface_gripper.example_surface_gripper",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 120},
     use_viewer=True,
 )
 for example_name in (
