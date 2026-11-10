@@ -17,7 +17,6 @@ from newton._src.solvers.vbd.particle_vbd_kernels import (
 )
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     accumulate_body_particle_contacts_per_body,
-    update_duals_body_particle_contacts,
 )
 from newton.solvers import SolverSemiImplicit, SolverVBD
 from newton.solvers.experimental.coupled import SolverCoupled
@@ -97,8 +96,7 @@ def _evaluate(solver, state, contacts, gather, buffers):
     particle_f, particle_h, body_f, body_t, body_ll, body_al, body_aa, exported, feedback, mapping, bodies = buffers
     for array in buffers[:9]:
         array.zero_()
-    solver.body_particle_contact_penalty_k.fill_(100.0)
-    solver.body_particle_contact_material_ke.fill_(1000.0)
+    solver.body_particle_contact_material_ke.fill_(100.0)
     solver.body_particle_contact_material_kd.zero_()
     solver.body_particle_contact_material_mu.zero_()
     wp.copy(solver.particle_q_prev, state.particle_q)
@@ -106,7 +104,7 @@ def _evaluate(solver, state, contacts, gather, buffers):
     wp.copy(solver._coupling_body_q_prev_snapshot, state.body_q)
     data = _make_soft_contact_filter_data(model, contacts, state.particle_q, state.body_q)
     material_and_body = [
-        solver.body_particle_contact_penalty_k,
+        solver.body_particle_contact_material_ke,
         solver.body_particle_contact_material_kd,
         solver.body_particle_contact_material_mu,
         model.shape_body,
@@ -184,7 +182,6 @@ def _evaluate(solver, state, contacts, gather, buffers):
             model.shape_body,
             solver.friction_epsilon,
             False,
-            solver.body_particle_contact_penalty_k,
             solver.body_particle_contact_material_ke,
             solver.body_particle_contact_material_kd,
             solver.body_particle_contact_material_mu,
@@ -213,28 +210,6 @@ def _evaluate(solver, state, contacts, gather, buffers):
         state_out=state,
         contacts=contacts,
         dt=0.01,
-    )
-    wp.launch(
-        update_duals_body_particle_contacts,
-        dim=contacts.soft_contact_max,
-        inputs=[
-            contacts.soft_contact_count,
-            data,
-            contacts.soft_contact_indices,
-            contacts.soft_contact_shape,
-            contacts.soft_contact_body_pos,
-            contacts.soft_contact_normal,
-            contacts.soft_contact_barycentric,
-            state.particle_q,
-            model.particle_radius,
-            model.shape_body,
-            model.shape_margin,
-            state.body_q,
-            solver.body_particle_contact_material_ke,
-            100.0,
-            solver.body_particle_contact_penalty_k,
-        ],
-        device=device,
     )
 
 
@@ -308,11 +283,6 @@ def test_current_mesh_filter_consumers(test, device):
             forces.append(actual.copy())
             np.testing.assert_allclose(actual[rows], reference_buffers[7].numpy()[: len(rows)], rtol=2e-5, atol=1e-5)
             np.testing.assert_array_equal(actual[~mask], 0.0)
-            penalty = solver.body_particle_contact_penalty_k.numpy()
-            np.testing.assert_allclose(
-                penalty[rows], reference.body_particle_contact_penalty_k.numpy()[: len(rows)], atol=1e-6
-            )
-            np.testing.assert_array_equal(penalty[~mask], 100.0)
             np.testing.assert_allclose(full_buffers[8].numpy()[:, :3], full_buffers[2].numpy(), rtol=3e-5, atol=3e-4)
             np.testing.assert_allclose(full_buffers[8].numpy()[:, 3:], full_buffers[3].numpy(), rtol=3e-5, atol=3e-4)
             for name, value in original.items():
@@ -322,7 +292,6 @@ def test_current_mesh_filter_consumers(test, device):
         # and unchanged forces from ACTIVE particles with zero inverse mass.
         # The graph was captured before these in-place changes to particle flags.
         baseline = [array.numpy().copy() for array in full_buffers[:9]]
-        baseline_penalty_np = solver.body_particle_contact_penalty_k.numpy().copy()
         particle_flags_np = model.particle_flags.numpy().copy()
         particle_inv_mass_np = model.particle_inv_mass.numpy().copy()
         soft_contact_indices_np = original["soft_contact_indices"][:count]
@@ -346,11 +315,9 @@ def test_current_mesh_filter_consumers(test, device):
                     wp.capture_launch(capture.graph)
                 else:
                     _evaluate(solver, state, contacts, gather, full_buffers)
-                penalty_np = solver.body_particle_contact_penalty_k.numpy()
                 if activity == "inactive":
                     for array in full_buffers[:9]:
                         np.testing.assert_array_equal(array.numpy(), 0.0)
-                    np.testing.assert_array_equal(penalty_np, 100.0)
                 elif activity == "mixed":
                     active_np = np.any(
                         (soft_contact_indices_np >= 0)
@@ -366,7 +333,6 @@ def test_current_mesh_filter_consumers(test, device):
                     test.assertTrue(np.any(~active_np))
                     exported_np = full_buffers[7].numpy()[:count]
                     np.testing.assert_array_equal(exported_np[~active_np], 0.0)
-                    np.testing.assert_array_equal(penalty_np[:count][~active_np], 100.0)
                     retained_np = active_np & stable_owner_np
                     test.assertTrue(np.any(np.linalg.norm(baseline[7][:count][retained_np], axis=1) > 0.0))
                     np.testing.assert_allclose(
@@ -376,7 +342,6 @@ def test_current_mesh_filter_consumers(test, device):
                     test.assertGreater(np.linalg.norm(baseline[2]), 0.0)
                     for array, expected in zip(full_buffers[:9], baseline, strict=True):
                         np.testing.assert_allclose(array.numpy(), expected, rtol=3e-5, atol=3e-4)
-                    np.testing.assert_allclose(penalty_np, baseline_penalty_np, atol=1e-6)
                 for name, value in original.items():
                     np.testing.assert_array_equal(getattr(contacts, name).numpy(), value)
                 test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), count)

@@ -211,10 +211,9 @@ deprecation warning, so always pass both.
 
 .. _vbd-rigid-compliance:
 
-Compliant ALM is the default for rigid constraints. Initially keep
-``rigid_avbd_alpha`` and ``rigid_avbd_gamma`` at their defaults. Legacy AVBD
-is deprecated and will be removed in a future release. Revalidate scenes
-when migrating; the same settings can produce different behavior.
+Rigid constraints use compliant ALM. Initially keep ``rigid_avbd_alpha`` and
+``rigid_avbd_gamma`` at their defaults. Scenes tuned for the removed legacy
+AVBD path need revalidation; the same settings can produce different behavior.
 
 Finite stiffness permits some stretch, joint displacement, or contact
 penetration even after convergence. If deformation is larger than expected,
@@ -401,9 +400,9 @@ and rest geometry (``rest_points``, ``rest_quaternions``) are distinct; rest
 defaults to the initial shape. For an ordered chain, ``rest_straight=True``
 sets zero intrinsic bend and twist without changing the initial geometry
 or segment lengths. Do not supply explicit rest inputs with it. With nonzero
-bending stiffness, the cable then tends toward straight. The default
-``body_frame_origin="com"`` places the body origin at the segment midpoint;
-use the corresponding local offset for an endpoint attachment.
+bending stiffness, the cable then tends toward straight. Each segment's body
+origin is at the segment midpoint; use the corresponding local offset for an
+endpoint attachment.
 
 **Attachments and fitting.** Before tuning stiffness, check the initial and
 rest orientations and how the cable ends are attached. Fixing only an

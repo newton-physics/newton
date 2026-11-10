@@ -235,7 +235,7 @@ The maximal-coordinate solvers (:class:`~newton.solvers.SolverSemiImplicit`,
 :class:`~newton.solvers.SolverXPBD`, and :class:`~newton.solvers.SolverKamino`)
 enforce joints as pairwise body constraints but do not use the articulation kinematic-tree structure.
 :class:`~newton.solvers.SolverVBD` supports a subset of joint types through maximal-coordinate
-constraints, with unified compliant ALM by default and a deprecated legacy AVBD path.
+constraints, using a compliant augmented-Lagrangian (ALM) formulation.
 :class:`~newton.solvers.SolverStyle3D` and :class:`~newton.solvers.SolverImplicitMPM` do not support joints.
 
 **Joint types**

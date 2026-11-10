@@ -1,0 +1,1 @@
+Fix the `SolverVBD` deprecation warnings for `particle_self_contact_radius`, `particle_self_contact_margin` without `particle_self_contact_gap`, `particle_collision_detection_interval`, and `particle_conservative_bound_relaxation`: they pointed one frame above the caller, so Python's default warning filters hid them from scripts. They are now reported at the calling line.

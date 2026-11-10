@@ -350,7 +350,6 @@ def test_coloring_rigid_body_cable_chain(test, device):
             stretch_stiffness=1.0e6,
             stretch_damping=1.0e-2,
             label="test_cable",
-            body_frame_origin="com",
         )
 
         # Apply coloring
@@ -423,7 +422,6 @@ def test_coloring_rigid_body_color_algorithms(test, device):
                 stretch_stiffness=1.0e6,
                 stretch_damping=1.0e-2,
                 label="test_cable",
-                body_frame_origin="com",
             )
 
         # Test MCS algorithm

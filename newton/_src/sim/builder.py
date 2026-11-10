@@ -127,6 +127,16 @@ else:
 logger = logging.getLogger(__name__)
 
 
+class _BodyFrameOriginUnset:
+    """Mark an omitted deprecated ``add_rod`` body-frame origin."""
+
+    def __repr__(self) -> str:
+        return "_DEPRECATED_BODY_FRAME_ORIGIN_UNSET"
+
+
+_DEPRECATED_BODY_FRAME_ORIGIN_UNSET: Any = _BodyFrameOriginUnset()
+
+
 def _convex_hull_interior_point(vertices: np.ndarray, indices: np.ndarray | None) -> np.ndarray:
     """Return the volume centroid of a convex hull mesh [m], in its unscaled local frame.
 
@@ -867,15 +877,6 @@ class ModelBuilder:
         if color is None:
             return None
         return (float(color[0]), float(color[1]), float(color[2]))
-
-    @staticmethod
-    def _resolve_rod_body_frame_origin(
-        method_name: str,
-        body_frame_origin: Literal["start", "com"],
-    ) -> Literal["start", "com"]:
-        if body_frame_origin not in ("start", "com"):
-            raise ValueError(f"{method_name}: body_frame_origin must be 'start' or 'com', got {body_frame_origin!r}")
-        return body_frame_origin
 
     @staticmethod
     def _rod_segment_direction(start: Vec3, end: Vec3) -> tuple[wp.vec3, float]:
@@ -10322,7 +10323,7 @@ class ModelBuilder:
         wrap_in_articulation: bool,
         junction_collision_filter: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"],
+        warn_deprecated_body_frame_origin: bool = False,
     ) -> tuple[list[int], list[int]]:
         """Add a Rod object through the established chain or graph path."""
         radius = rod._resolve_radius()
@@ -10336,7 +10337,6 @@ class ModelBuilder:
             bend_stiffness=bend_stiffness,
             twist_stiffness=twist_stiffness,
         )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
 
         rod_points, rod_edges, rod_frames = rod._normalize_and_validate_geometry()
         rest_positions, rest_quaternions = rod._normalize_and_validate_rest_geometry(rod_points, rod_edges)
@@ -10394,7 +10394,7 @@ class ModelBuilder:
                 label=label,
                 wrap_in_articulation=wrap_in_articulation,
                 color=color,
-                body_frame_origin=body_frame_origin,
+                warn_deprecated_body_frame_origin=warn_deprecated_body_frame_origin,
             )
         else:
             link_bodies, link_joints = self._add_rod_graph(
@@ -10417,7 +10417,7 @@ class ModelBuilder:
                 quaternions=rod_quaternions,
                 junction_collision_filter=junction_collision_filter,
                 color=color,
-                body_frame_origin=body_frame_origin,
+                warn_deprecated_body_frame_origin=warn_deprecated_body_frame_origin,
             )
 
         # Material rigidities are discretized using structural-rest lengths.
@@ -10460,7 +10460,7 @@ class ModelBuilder:
         label: str | None,
         wrap_in_articulation: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"],
+        warn_deprecated_body_frame_origin: bool = False,
     ) -> tuple[list[int], list[int]]:
         """Add an ordered point chain through the established graph path."""
         if cfg is None:
@@ -10508,7 +10508,7 @@ class ModelBuilder:
             rest_quaternions=rest_quaternions,
             junction_collision_filter=True,
             color=color,
-            body_frame_origin=body_frame_origin,
+            warn_deprecated_body_frame_origin=warn_deprecated_body_frame_origin,
         )
 
         # For closed loops, add one extra loop-closing rod joint that is intentionally
@@ -10537,12 +10537,8 @@ class ModelBuilder:
                 if L_first <= min_segment_length:
                     L_first = min_segment_length
 
-                if body_frame_origin == "com":
-                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * L_last), wp.quat_identity())
-                    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * L_first), wp.quat_identity())
-                else:
-                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
-                    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+                parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * L_last), wp.quat_identity())
+                child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * L_first), wp.quat_identity())
 
                 def _closed_rest_quaternion(segment: int) -> wp.quat:
                     rest_dir, _ = self._rod_segment_direction(
@@ -10620,7 +10616,7 @@ class ModelBuilder:
         label: str | None = None,
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] = "com",
+        body_frame_origin: Literal["com"] = _DEPRECATED_BODY_FRAME_ORIGIN_UNSET,
         junction_collision_filter: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
@@ -10670,17 +10666,14 @@ class ModelBuilder:
                 See the Articulations section below.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
                 capsule shapes. If None, the rod uses the default rod color.
-            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` places
-                the origin at the local start of the rest-sized capsule, with the COM/shape
-                offset by half its rest length. The world-space origin equals the initial
-                segment start only when initial and rest lengths match. ``"com"`` places
-                the body origin at the initial segment midpoint so the
-                body origin and COM coincide. Defaults to ``"com"``.
+            body_frame_origin: Deprecated; omit it. Explicit ``"com"`` uses the default
+                body origin at the initial segment midpoint and emits a
+                :class:`~newton.exceptions.NewtonDeprecationWarning`. The ``"start"``
+                origin, deprecated in 1.8, has been removed and raises
+                :class:`ValueError`; for manually authored body-local anchors, subtract
+                the old ``body_com`` offset.
 
-                .. deprecated:: 1.8
-                    ``"start"`` emits a :class:`~newton.exceptions.NewtonDeprecationWarning`.
-                    Use ``"com"`` instead. For manually authored body-local anchors,
-                    subtract the old ``body_com`` offset.
+                .. deprecated:: 1.9
             junction_collision_filter: Whether to suppress self-collisions
                 between incident, non-jointed segments at graph junctions.
                 Has no effect for an ordered chain.
@@ -10711,7 +10704,7 @@ class ModelBuilder:
                 non-finite or too-short edges, or invalid frame alignment.
             ValueError: If the structural-rest centerline of a closed chain does not close.
             ValueError: If the Rod uses ``rest_straight`` with explicit rest inputs or a graph.
-            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
+            ValueError: If ``body_frame_origin`` is passed with a value other than ``"com"``.
             ValueError: If automatic section-rigidity discretization is requested
                 for branching topology or for a wrapped explicit cycle.
 
@@ -10726,16 +10719,22 @@ class ModelBuilder:
               arguments override the derived value per mode.
             - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
               the cylindrical centerline, excluding the hemispherical caps.
-            - With ``body_frame_origin="start"``, the body origin is at the local start of the rest-sized
-              capsule centerline. The COM and shape are at local ``(0, 0, half_height)``, and the other
-              centerline endpoint is at ``(0, 0, 2 * half_height)``. These offsets use rest lengths; the
-              world-space body origin equals the initial segment start only when the initial and rest lengths match.
-            - With ``body_frame_origin="com"``, the body origin and COM coincide at the segment
-              midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
-              ``(0, 0, half_height)``.
+            - The body origin and COM coincide at the segment midpoint, and centerline endpoints are at
+              local ``(0, 0, -half_height)`` and ``(0, 0, half_height)``.
         """
         if not isinstance(rod, Rod):
             raise TypeError(f"add_rod: rod must be a Rod, got {type(rod).__name__}")
+        if body_frame_origin is not _DEPRECATED_BODY_FRAME_ORIGIN_UNSET:
+            if body_frame_origin == "start":
+                raise ValueError(
+                    'add_rod: body_frame_origin="start" was deprecated in Newton 1.8 and has been removed. '
+                    'Omit the argument to use the "com" origin. For manually authored body-local anchors, '
+                    "subtract the old body_com offset."
+                )
+            if body_frame_origin != "com":
+                raise ValueError(
+                    f"add_rod: body_frame_origin={body_frame_origin!r} is not supported; omit the argument."
+                )
 
         start_body = self.body_count
         start_joint = self.joint_count
@@ -10754,7 +10753,7 @@ class ModelBuilder:
             wrap_in_articulation=wrap_in_articulation,
             junction_collision_filter=junction_collision_filter,
             color=color,
-            body_frame_origin=body_frame_origin,
+            warn_deprecated_body_frame_origin=body_frame_origin is not _DEPRECATED_BODY_FRAME_ORIGIN_UNSET,
         )
         self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
         return result
@@ -10781,9 +10780,9 @@ class ModelBuilder:
         quaternions: list[Quat] | None,
         junction_collision_filter: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"],
         articulation_root_node: int | None = None,
         articulation_root_joint_factory: Callable[[int, Transform], int] | None = None,
+        warn_deprecated_body_frame_origin: bool = False,
     ) -> tuple[list[int], list[int]]:
         """Build a rod graph, optionally using an importer-provided articulation root joint."""
         if cfg is None:
@@ -10804,7 +10803,6 @@ class ModelBuilder:
             bend_stiffness=bend_stiffness,
             twist_stiffness=twist_stiffness,
         )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
         if len(node_positions) < 2:
             raise ValueError("add_rod: node_positions must contain at least 2 nodes")
         if len(edges) < 1:
@@ -10856,10 +10854,9 @@ class ModelBuilder:
         edge_v: list[int] = []
         edge_len: list[float] = []
         edge_rest_q: list[wp.quat] = []
-        edge_body_data: list[tuple[wp.transform, wp.vec3, wp.transform]] = []
+        edge_body_q: list[wp.transform] = []
         edge_bodies: list[int] = []
         rod_color = color if color is not None else ModelBuilder._DEFAULT_ROD_COLOR
-        use_com_origin = body_frame_origin == "com"
 
         # Validate all edge geometry and frames before adding bodies.
         for e_idx, (u, v) in enumerate(edges):
@@ -10920,24 +10917,13 @@ class ModelBuilder:
                 q_rest = q
             edge_rest_q.append(q_rest)
 
-            half_height = 0.5 * rest_seg_length
+            # Place the body origin at the initial segment center so origin and COM coincide.
             initial_center = wp.vec3(*(0.5 * (float(p0[i]) + float(p1[i])) for i in range(3)))
-
-            if use_com_origin:
-                # Place the body origin at the segment center so origin and COM coincide.
-                body_q = wp.transform(initial_center, q)
-                com_offset = wp.vec3(0.0)
-                capsule_xform = wp.transform()
-            else:
-                body_origin = wp.vec3(*(float(initial_center[i]) - float(seg_dir[i]) * half_height for i in range(3)))
-                body_q = wp.transform(body_origin, q)
-                com_offset = wp.vec3(0.0, 0.0, half_height)
-                capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
 
             edge_u.append(u)
             edge_v.append(v)
             edge_len.append(rest_seg_length)
-            edge_body_data.append((body_q, com_offset, capsule_xform))
+            edge_body_q.append(wp.transform(initial_center, q))
 
             node_incidence[u].append(e_idx)
             node_incidence[v].append(e_idx)
@@ -10948,25 +10934,23 @@ class ModelBuilder:
             cfg._validate_site(shape_label)
 
         # Warn after validation but before mutating the builder.
-        if body_frame_origin == "start":
+        if warn_deprecated_body_frame_origin:
             warnings.warn(
-                'add_rod(body_frame_origin="start") is deprecated as of Newton 1.8. '
-                'Use the default "com" origin. For manually authored body-local anchors, '
-                "subtract the old body_com offset.",
+                'add_rod(body_frame_origin="com") is deprecated as of Newton 1.9 and has no effect; '
+                "omit the argument. Rod body frames are always centered at the segment midpoint.",
                 NewtonDeprecationWarning,
                 stacklevel=_external_warning_stacklevel(),
             )
 
         # Create all edge bodies first.
-        for e_idx, (body_q, com_offset, capsule_xform) in enumerate(edge_body_data):
+        for e_idx, body_q in enumerate(edge_body_q):
             body_label = f"{label}_edge_body_{e_idx}" if label else None
             shape_label = f"{label}_edge_capsule_{e_idx}" if label else None
 
-            body_id = self.add_link(xform=body_q, com=com_offset, label=body_label)
+            body_id = self.add_link(xform=body_q, label=body_label)
 
             self.add_shape_capsule(
                 body_id,
-                xform=capsule_xform,
                 radius=radius,
                 half_height=0.5 * edge_len[e_idx],
                 cfg=cfg,
@@ -10981,9 +10965,9 @@ class ModelBuilder:
 
         def _edge_anchor_xform(e_idx: int, node_idx: int, reverse_tangent: bool = False) -> wp.transform:
             if node_idx == edge_u[e_idx]:
-                z = -0.5 * edge_len[e_idx] if use_com_origin else 0.0
+                z = -0.5 * edge_len[e_idx]
             elif node_idx == edge_v[e_idx]:
-                z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
+                z = 0.5 * edge_len[e_idx]
             else:
                 raise RuntimeError("add_rod: internal error (node not incident to edge)")
             rotation = _reverse_tangent_rotation if reverse_tangent else _identity_rotation

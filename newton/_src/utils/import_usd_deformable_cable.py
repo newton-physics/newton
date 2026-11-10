@@ -1442,7 +1442,6 @@ def _deformable_import_cable(
                     twist_damping=None,
                     label=label,
                     wrap_in_articulation=True,
-                    body_frame_origin="com",
                     junction_collision_filter=True,
                     color=None,
                     articulation_root_node=articulation_root.cable_point,
