@@ -1570,20 +1570,28 @@ def _warn_full_surface_fallbacks(model: Model, capable: np.ndarray) -> None:
     )
 
 
-def _shape_volume_sdf_mask(model: Model) -> np.ndarray:
-    """Boolean mask over shapes: ``True`` where the shape carries a sampleable volume SDF.
+def _volume_sdf_mask(sdf_index: np.ndarray, coarse_textures: list | None) -> np.ndarray:
+    """Boolean mask over SDF indices: ``True`` where the index names a sampleable volume SDF.
 
-    A nonnegative ``_shape_sdf_index`` can still point at an empty descriptor whose coarse
-    texture is ``None``, so the texture itself is checked.
+    A nonnegative index can still point at an empty descriptor whose coarse texture is ``None``,
+    so the texture itself is checked.
     """
-    mask = np.zeros(model.shape_count, dtype=bool)
-    sdf_index = getattr(model, "_shape_sdf_index", None)
-    coarse_textures = getattr(model, "_texture_sdf_coarse_textures", None)
-    if sdf_index is None or coarse_textures is None:
+    sdf_index = np.asarray(sdf_index)
+    mask = np.zeros(len(sdf_index), dtype=bool)
+    if coarse_textures is None or len(coarse_textures) == 0:
         return mask
-    for shape, index in enumerate(sdf_index.numpy()):
-        mask[shape] = 0 <= index < len(coarse_textures) and coarse_textures[index] is not None
+    has_texture = np.fromiter((texture is not None for texture in coarse_textures), dtype=bool)
+    valid = (sdf_index >= 0) & (sdf_index < len(has_texture))
+    mask[valid] = has_texture[sdf_index[valid]]
     return mask
+
+
+def _shape_volume_sdf_mask(model: Model) -> np.ndarray:
+    """Boolean mask over shapes: ``True`` where the shape carries a sampleable volume SDF."""
+    sdf_index = getattr(model, "_shape_sdf_index", None)
+    if sdf_index is None:
+        return np.zeros(model.shape_count, dtype=bool)
+    return _volume_sdf_mask(sdf_index.numpy(), getattr(model, "_texture_sdf_coarse_textures", None))
 
 
 def _warn_mesh_sdf_backend_fallbacks(model: Model, fallback: np.ndarray) -> None:
@@ -1921,6 +1929,12 @@ class CollisionPipeline:
             :func:`newton.eval_rigid_contact_kinematics` may change
             without prior notice; see :meth:`collide`.
         """
+        if rigid_soft_full_surface_mesh_backend not in ("bvh", "sdf"):
+            raise ValueError(
+                "rigid_soft_full_surface_mesh_backend must be 'bvh' or 'sdf', "
+                f"got {rigid_soft_full_surface_mesh_backend!r}"
+            )
+        self.rigid_soft_full_surface_mesh_backend = rigid_soft_full_surface_mesh_backend
         if contact_matching not in ("disabled", "latest", "sticky"):
             raise ValueError(
                 f"contact_matching must be one of 'disabled', 'latest', 'sticky', got {contact_matching!r}"
@@ -2222,13 +2236,7 @@ class CollisionPipeline:
                     )
                     coarse_textures = getattr(model, "_texture_sdf_coarse_textures", None)
                     if coarse_textures is not None and len(coarse_textures) > 0:
-                        has_texture_sdf = np.array(
-                            [
-                                sdf_idx >= 0 and sdf_idx < len(coarse_textures) and coarse_textures[sdf_idx] is not None
-                                for sdf_idx in shape_sdf_index
-                            ],
-                            dtype=bool,
-                        )
+                        has_texture_sdf = _volume_sdf_mask(shape_sdf_index, coarse_textures)
                         mesh_sdf_texture_only = bool(
                             np.any(mesh_sdf_shapes) and np.all(has_texture_sdf[mesh_sdf_shapes])
                         )
@@ -2493,12 +2501,6 @@ class CollisionPipeline:
 
         # Built here (not in finalize) so models/tasks that never collide don't pay for it.
         # Host-side, so not graph-capture-safe -- construct the pipeline before any capture.
-        if rigid_soft_full_surface_mesh_backend not in ("bvh", "sdf"):
-            raise ValueError(
-                "rigid_soft_full_surface_mesh_backend must be 'bvh' or 'sdf', "
-                f"got {rigid_soft_full_surface_mesh_backend!r}"
-            )
-        self.rigid_soft_full_surface_mesh_backend = rigid_soft_full_surface_mesh_backend
         is_mesh = np.zeros(model.shape_count, dtype=bool)
         mesh_mask = is_mesh
         # Meshes whose vertex, edge, and face contacts sample their volume SDF.

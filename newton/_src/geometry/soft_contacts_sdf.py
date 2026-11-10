@@ -824,11 +824,13 @@ def _create_soft_sdf_contact_kernel(geo_filter: int, *, edge: bool = False):
     return create_soft_sdf_contacts
 
 
-# The common face-pair stream contains only analytic shapes. Specializing its compact fallback
-# removes the runtime SDF dispatch from every inner Frank-Wolfe/line-search iteration.
+# The common face-pair stream contains analytic shapes and, with the SDF mesh back-end, meshes
+# that sample a volume SDF. This kernel dispatches on the shape type at runtime. Specializing the
+# compact fallback per analytic type removes that dispatch from every inner Frank-Wolfe/line-search
+# iteration.
 create_soft_face_sdf_contacts = _create_soft_sdf_contact_kernel(_SDF_ANY_GEO)
-# Meshes on the SDF path share the pair stream with analytic shapes. The geometry-specialized
-# kernels skip them, so this kernel processes the queued volume-SDF pairs.
+# The geometry-specialized kernels skip volume-SDF pairs, so this kernel processes them when the
+# specialized kernels are selected.
 create_soft_face_volume_sdf_contacts = _create_soft_sdf_contact_kernel(_SDF_VOLUME_GEO)
 _SDF_SPECIALIZED_GEO_TYPES = (
     GeoType.BOX,

@@ -873,8 +873,11 @@ the signed-distance derivative for rows that start inside the plane's band;
 ``rigid_soft_dat_use_interval_arithmetic`` additionally certifies the sampled
 prefix with interval arithmetic (experimental). Without it, a crossing that
 happens and reverses between two sample points can be missed. Full-surface
-mesh contacts name the exact rigid triangle, edge or vertex through
-:attr:`~newton.Contacts.soft_contact_rigid_indices`; analytic SDF contacts and
+mesh contacts from the default ``"bvh"`` mesh back-end name the exact rigid
+triangle, edge or vertex through
+:attr:`~newton.Contacts.soft_contact_rigid_indices`; analytic SDF contacts,
+mesh contacts from the ``"sdf"`` mesh back-end
+(``CollisionPipeline(rigid_soft_full_surface_mesh_backend="sdf")``), and
 penetration-recovery contacts truncate only their stored rigid surface point.
 Each body then scales its whole pose update, translation and rotation about
 the centre of mass, by the smallest factor of its contacts

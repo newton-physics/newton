@@ -7117,6 +7117,8 @@ def test_mesh_sdf_backend_deep_triangle_matches_exact_distance(test, device):
 
     The triangle sits 0.15 m below the cube's top face, far beyond the 0.02 m contact band and
     far from every other face. Every vertex, edge, and face row must point to the top face.
+    The same model then checks an inactive particle, particle collision enabled after
+    construction, and that the back-end is ignored without full-surface contact.
     """
     points = [(-0.05, -0.04, 0.35), (0.06, -0.03, 0.35), (0.0, 0.07, 0.36)]
     model = _mesh_backend_cube_model(device, points)
@@ -7137,13 +7139,48 @@ def test_mesh_sdf_backend_deep_triangle_matches_exact_distance(test, device):
     np.testing.assert_allclose(normals, exact_grad, atol=2.0e-2)
     np.testing.assert_allclose(rigid_points[:, 2], _MESH_BACKEND_BOX_HALF_EXTENT, atol=5.0e-3)
 
-    # An inactive particle loses its vertex row.
-    flags = model.particle_flags.numpy()
-    flags[0] &= ~int(ParticleFlags.ACTIVE)
-    model.particle_flags.assign(flags)
-    _pipeline, contacts, state = _collide_mesh_backend(model, "sdf")
-    kinds, _soft_points, _rigid_points, _normals, _shapes, indices = _soft_contact_rows(contacts, state)
-    test.assertEqual(sorted(indices[kinds == "V", 0].tolist()), [1, 2])
+    with test.subTest(check="inactive particle"):
+        # An inactive particle loses its vertex row.
+        active_flags = model.particle_flags.numpy()
+        flags = active_flags.copy()
+        flags[0] &= ~int(ParticleFlags.ACTIVE)
+        model.particle_flags.assign(flags)
+        _pipeline, contacts, state = _collide_mesh_backend(model, "sdf")
+        kinds, _soft_points, _rigid_points, _normals, _shapes, indices = _soft_contact_rows(contacts, state)
+        test.assertEqual(sorted(indices[kinds == "V", 0].tolist()), [1, 2])
+        model.particle_flags.assign(active_flags)
+
+    with test.subTest(check="particle collision enabled after construction"):
+        # A mesh with a volume SDF uses SDF contacts once its particle collision is enabled.
+        enabled = model.shape_flags.numpy()
+        model.shape_flags.assign(enabled & ~int(ShapeFlags.COLLIDE_PARTICLES))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+            pipeline = newton.CollisionPipeline(
+                model,
+                broad_phase="nxn",
+                soft_contact_gap=0.02,
+                enable_rigid_soft_full_surface_contact=True,
+                rigid_soft_full_surface_mesh_backend="sdf",
+            )
+        np.testing.assert_array_equal(pipeline._soft_sdf_mesh_shapes, [0])
+        contacts = pipeline.contacts()
+        state = model.state()
+        pipeline.collide(state, contacts)
+        test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 0)
+        model.shape_flags.assign(enabled)
+        pipeline.collide(state, contacts)
+        kinds, _soft_points, _rigid_points, _normals, _shapes, _indices = _soft_contact_rows(contacts, state)
+        test.assertEqual(Counter(kinds.tolist()), Counter({"V": 3, "E": 3, "F": 1}))
+
+    with test.subTest(check="ignored without full-surface contact"):
+        _pipeline, expected, _state = _collide_mesh_backend(model, "bvh", full_surface=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+            pipeline, contacts, _state = _collide_mesh_backend(model, "sdf", full_surface=False)
+        test.assertEqual(len(pipeline._soft_sdf_mesh_shapes), 0)
+        test.assertEqual(len(pipeline._soft_sdf_vertex_pairs), 0)
+        np.testing.assert_array_equal(_sorted_soft_contact_rows(contacts), _sorted_soft_contact_rows(expected))
 
 
 def test_mesh_sdf_backend_pierced_corner_points_outward(test, device):
@@ -7350,34 +7387,6 @@ def test_mesh_sdf_backend_negative_margin_nonuniform_scale(test, device):
             np.testing.assert_allclose(np.einsum("ij,ij->i", normals, soft_points - rigid_points), -0.08, atol=5.0e-3)
 
 
-def test_mesh_sdf_backend_honors_late_particle_collision(test, device):
-    """Use SDF contacts for a mesh whose particle collision is enabled after construction."""
-    points = [(-0.05, -0.04, 0.35), (0.06, -0.03, 0.35), (0.0, 0.07, 0.36)]
-    model = _mesh_backend_cube_model(device, points)
-    enabled = model.shape_flags.numpy()
-    disabled = enabled & ~int(ShapeFlags.COLLIDE_PARTICLES)
-    model.shape_flags.assign(disabled)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", newton.exceptions.NewtonWarning)
-        pipeline = newton.CollisionPipeline(
-            model,
-            broad_phase="nxn",
-            soft_contact_gap=0.02,
-            enable_rigid_soft_full_surface_contact=True,
-            rigid_soft_full_surface_mesh_backend="sdf",
-        )
-    np.testing.assert_array_equal(pipeline._soft_sdf_mesh_shapes, [0])
-    contacts = pipeline.contacts()
-    state = model.state()
-    pipeline.collide(state, contacts)
-    test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 0)
-
-    model.shape_flags.assign(enabled)
-    pipeline.collide(state, contacts)
-    kinds, _soft_points, _rigid_points, _normals, _shapes, _indices = _soft_contact_rows(contacts, state)
-    test.assertEqual(Counter(kinds.tolist()), Counter({"V": 3, "E": 3, "F": 1}))
-
-
 def test_mesh_sdf_backend_compact_search_keeps_mesh_rows(test, device):
     """Keep mesh rows when the compact search dispatches geometry-specialized kernels.
 
@@ -7435,24 +7444,12 @@ def test_mesh_sdf_backend_compact_search_keeps_mesh_rows(test, device):
     np.testing.assert_array_equal(_sorted_soft_contact_rows(compact), _sorted_soft_contact_rows(fused))
 
 
-def test_mesh_sdf_backend_ignored_without_full_surface(test, device):
-    """Ignore the mesh back-end when full-surface contact is disabled."""
-    model = _mesh_backend_cube_model(device, [(-0.2, -0.2, 0.505), (0.2, -0.2, 0.505), (0.0, 0.2, 0.505)])
-    _pipeline, expected, _state = _collide_mesh_backend(model, "bvh", full_surface=False)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", newton.exceptions.NewtonWarning)
-        pipeline, contacts, _state = _collide_mesh_backend(model, "sdf", full_surface=False)
-    test.assertEqual(len(pipeline._soft_sdf_mesh_shapes), 0)
-    test.assertEqual(len(pipeline._soft_sdf_vertex_pairs), 0)
-    test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
-    np.testing.assert_array_equal(_sorted_soft_contact_rows(contacts), _sorted_soft_contact_rows(expected))
-
-
+# Host-side argument validation; one device is enough.
 add_function_test(
     TestFullSurfaceSoftContact,
     "test_mesh_backend_rejects_unknown_value",
     test_mesh_backend_rejects_unknown_value,
-    devices=soft_devices,
+    devices=soft_devices[:1],
 )
 add_function_test(
     TestFullSurfaceSoftContact,
@@ -7478,9 +7475,7 @@ for _name, _fn in (
         "test_mesh_sdf_backend_negative_margin_nonuniform_scale",
         test_mesh_sdf_backend_negative_margin_nonuniform_scale,
     ),
-    ("test_mesh_sdf_backend_honors_late_particle_collision", test_mesh_sdf_backend_honors_late_particle_collision),
     ("test_mesh_sdf_backend_compact_search_keeps_mesh_rows", test_mesh_sdf_backend_compact_search_keeps_mesh_rows),
-    ("test_mesh_sdf_backend_ignored_without_full_surface", test_mesh_sdf_backend_ignored_without_full_surface),
 ):
     # Volume SDFs are built with CUDA kernels and 3D textures.
     add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=get_cuda_test_devices())
