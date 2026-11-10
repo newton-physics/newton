@@ -2688,17 +2688,18 @@ class TestContactCountEstimator(unittest.TestCase):
                 model = self._make_single_box_model()
                 kwargs = {}
                 if source == "argument":
-                    kwargs["rigid_contact_max"] = 1000
+                    kwargs["rigid_contact_max"] = 4321
                 else:
-                    model.rigid_contact_max = 1000
+                    model.rigid_contact_max = 4321
 
                 with mock.patch("newton._src.sim.collide._RIGID_CONTACT_LARGE_BUFFER_BYTES", 1):
                     with warnings.catch_warnings(record=True) as caught:
                         warnings.simplefilter("always")
-                        CollisionPipeline(model, **kwargs)
+                        pipeline = CollisionPipeline(model, **kwargs)
 
                 large_buffer_warnings = [warning for warning in caught if "rigid contact slots" in str(warning.message)]
                 self.assertEqual(large_buffer_warnings, [])
+                self.assertEqual(pipeline.rigid_contact_max, 4321)
 
     def test_visual_only_meshes_do_not_inflate_estimate(self):
         """Visual meshes should not affect rigid contact capacity estimates."""
@@ -2722,8 +2723,8 @@ class TestContactCountEstimator(unittest.TestCase):
         estimate = _estimate_rigid_contact_max(model)
         self.assertEqual(estimate, 1000)
 
-    def test_heuristic_caps_large_pair_count(self):
-        """When pair count is huge, the heuristic provides a tighter bound."""
+    def test_neighbor_heuristic_weights_meshes(self):
+        """Without contact pairs, the neighbor heuristic weights mesh shapes by their per-pair budget."""
         model = newton.Model()
         model.world_count = 1
 
@@ -2731,7 +2732,7 @@ class TestContactCountEstimator(unittest.TestCase):
         # non-plane: (4*20*5 + 3*20*40) // 2 = (400 + 2400) // 2 = 1400
         # weighted_plane_cpp: (4*5 + 3*40) // 7 = 140 // 7 = 20
         # plane (per-world): 2*7 pairs * 20 = 280
-        # heuristic = 1680, pair = huge => min = 1680
+        # heuristic = 1680
         shape_type = np.array(
             [int(GeoType.BOX)] * 4 + [int(GeoType.MESH)] * 3 + [int(GeoType.PLANE)] * 2,
             dtype=np.int32,
@@ -2741,11 +2742,7 @@ class TestContactCountEstimator(unittest.TestCase):
         model.shape_type = wp.array(shape_type, dtype=wp.int32)
         model.shape_world = wp.array(shape_world, dtype=wp.int32)
 
-        with mock.patch.object(
-            newton.Model, "shape_contact_pair_count", new_callable=mock.PropertyMock, return_value=999999
-        ):
-            estimate = _estimate_rigid_contact_max(model)
-        self.assertEqual(estimate, 1680)
+        self.assertEqual(_estimate_rigid_contact_max(model), 1680)
 
     def test_world_aware_plane_estimate(self):
         """Per-world plane computation avoids quadratic cross-world overcount."""
@@ -2769,61 +2766,6 @@ class TestContactCountEstimator(unittest.TestCase):
         estimate = _estimate_rigid_contact_max(model)
         self.assertEqual(estimate, 4000)
 
-    def test_pair_count_tighter_than_heuristic(self):
-        """When precomputed pair count is tighter than the heuristic, it is used."""
-        model = newton.Model()
-        model.world_count = 4
-
-        # 40 boxes (CPP=5) across 4 worlds, no planes.
-        # heuristic: (40*20*5) // 2 = 2000
-        # weighted_cpp: max(5, 5) = 5
-        # pair-based: 300 * 5 = 1500
-        # min(2000, 1500) = 1500
-        shape_type = np.array(
-            [int(GeoType.BOX)] * 40,
-            dtype=np.int32,
-        )
-        shape_world = np.repeat(np.arange(4, dtype=np.int32), 10)
-
-        model.shape_type = wp.array(shape_type, dtype=wp.int32)
-        model.shape_world = wp.array(shape_world, dtype=wp.int32)
-
-        with mock.patch.object(
-            newton.Model, "shape_contact_pair_count", new_callable=mock.PropertyMock, return_value=300
-        ):
-            estimate = _estimate_rigid_contact_max(model)
-        self.assertEqual(estimate, 1500)
-
-    @staticmethod
-    def _cube_mesh(hs: float = 0.1) -> newton.Mesh:
-        vertices = np.array(
-            [
-                [-hs, -hs, -hs],
-                [hs, -hs, -hs],
-                [hs, hs, -hs],
-                [-hs, hs, -hs],
-                [-hs, -hs, hs],
-                [hs, -hs, hs],
-                [hs, hs, hs],
-                [-hs, hs, hs],
-            ],
-            dtype=np.float32,
-        )
-        # fmt: off
-        indices = np.array(
-            [
-                0, 3, 2, 0, 2, 1,  # -z
-                4, 5, 6, 4, 6, 7,  # +z
-                0, 1, 5, 0, 5, 4,  # -y
-                2, 3, 7, 2, 7, 6,  # +y
-                0, 4, 7, 0, 7, 3,  # -x
-                1, 2, 6, 1, 6, 5,  # +x
-            ],
-            dtype=np.int32,
-        )
-        # fmt: on
-        return newton.Mesh(vertices, indices)
-
     @classmethod
     def _build_multi_world_scene(
         cls, num_worlds: int, boxes_per_world: int, mesh_per_world: bool = False
@@ -2838,7 +2780,7 @@ class TestContactCountEstimator(unittest.TestCase):
                 builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
             if mesh_per_world:
                 b = builder.add_body(xform=wp.transform(wp.vec3(-1.0, 0.0, 0.5), wp.quat_identity()))
-                builder.add_shape_mesh(body=b, mesh=cls._cube_mesh())
+                builder.add_shape_mesh(body=b, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
             builder.end_world()
         return builder.finalize(device="cpu")
 
@@ -2861,7 +2803,7 @@ class TestContactCountEstimator(unittest.TestCase):
             if mesh_mode == "visual":
                 cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False)
             b = builder.add_body(xform=wp.transform(wp.vec3(-1.0, 0.0, 0.5), wp.quat_identity()))
-            builder.add_shape_mesh(body=b, mesh=cls._cube_mesh(), cfg=cfg)
+            builder.add_shape_mesh(body=b, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1), cfg=cfg)
         return builder.finalize(device="cpu")
 
     def test_pair_aware_sum_of_budgets(self):
@@ -2915,13 +2857,6 @@ class TestContactCountEstimator(unittest.TestCase):
         # plus one anchor contact per normal bin; the locality cap (which also
         # uses the hydro budget per shape) stays larger, so the sum binds.
         self.assertEqual(_estimate_rigid_contact_max(model), 150 * _HYDRO_PAIR_MAX_CONTACTS)
-
-    def test_explicit_rigid_contact_max_override_wins(self):
-        """An explicit model.rigid_contact_max (>0) bypasses the estimator."""
-        model = self._build_box_scene(num_boxes=4)
-        model.rigid_contact_max = 777777
-        pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
-        self.assertEqual(pipeline.rigid_contact_max, 777777)
 
     def test_minimum_allocation_floor(self):
         """Small pair sums are floored at the 1000-contact minimum allocation."""
@@ -4385,24 +4320,37 @@ def test_convex_convex_with_sdf_routes_to_sdf_contact(test, device):
 
 
 def test_mesh_face_contacts_fit_automatic_capacity(test, device):
-    """Hold every contact of mesh pairs that keep many reduced contacts in the automatic capacity."""
+    """Hold every contact of mesh pairs that keep many reduced contacts in the automatic capacity.
+
+    Also for a supplied pair array whose ground meshes have collision off, since the narrow phase routes them too.
+    """
     ground = _flat_mesh(8)
     plate = newton.Mesh.create_box(0.9, 0.9, 0.02, duplicate_vertices=False, compute_inertia=False)
-    builder = newton.ModelBuilder()
-    for _ in range(32):
-        builder.begin_world()
-        builder.add_shape_mesh(body=-1, mesh=ground)
-        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.019), wp.quat_identity()))
-        builder.add_shape_mesh(body=body, mesh=plate)
-        builder.end_world()
-    model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model)
-    contacts = pipeline.contacts()
-    pipeline.collide(model.state(), contacts)
-    count = int(contacts.rigid_contact_count.numpy()[0])
-    # Each resting plate keeps far more contacts than a typical mesh pair.
-    test.assertGreater(count, 2 * 32 * 40)
-    test.assertLessEqual(count, contacts.rigid_contact_max)
+    for supplied in (False, True):
+        with test.subTest(supplied=supplied):
+            ground_cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=not supplied)
+            builder = newton.ModelBuilder()
+            pairs = []
+            for _ in range(32):
+                builder.begin_world()
+                ground_shape = builder.add_shape_mesh(body=-1, mesh=ground, cfg=ground_cfg)
+                body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.019), wp.quat_identity()))
+                if supplied:
+                    plate_shape = builder.add_shape_box(body=body, hx=0.9, hy=0.9, hz=0.02)
+                else:
+                    plate_shape = builder.add_shape_mesh(body=body, mesh=plate)
+                pairs.append((ground_shape, plate_shape))
+                builder.end_world()
+            model = builder.finalize(device=device)
+            if supplied:
+                model.shape_contact_pairs = wp.array(pairs, dtype=wp.vec2i, device=device)
+            pipeline = newton.CollisionPipeline(model, broad_phase="explicit" if supplied else None)
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            # Each resting plate keeps far more contacts than a typical mesh pair.
+            test.assertGreater(count, 2 * 32 * 40)
+            test.assertLessEqual(count, contacts.rigid_contact_max)
 
 
 def test_sdf_edge_pairs_get_mesh_pair_budget(test, device):

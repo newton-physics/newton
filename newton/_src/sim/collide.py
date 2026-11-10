@@ -744,7 +744,7 @@ class _RigidContactCountEstimate:
     plane_count: int
     pair_count: int
     pair_estimate_contacts_per_pair: int
-    source: Literal["fallback", "minimum", "neighbor heuristic", "precomputed pairs", "pair caps", "pair locality"]
+    source: Literal["fallback", "minimum", "neighbor heuristic", "pair caps", "pair locality"]
 
 
 def _estimate_rigid_contact_details(model: Model) -> _RigidContactCountEstimate:
@@ -785,15 +785,11 @@ def _estimate_rigid_contact_details(model: Model) -> _RigidContactCountEstimate:
     # Slot rows count as meshes if they can hold one.
     variant_options = _variant_options(model)
     colliding_mask = _shape_collide_mask(model, len(shape_types))
+    may_be_mesh = _shape_may_be_mesh(model, shape_types, variant_options)
+    if pair_count > 0:
+        return _estimate_rigid_contact_from_pair_caps(model, shape_types, variant_options, colliding_mask, may_be_mesh)
 
-    mesh_mask = colliding_mask & _shape_may_be_mesh(model, shape_types, variant_options)
-    if pair_count > 0 and int(getattr(model, "shape_count", 0) or 0) == len(shape_types):
-        estimate = _estimate_rigid_contact_from_pair_caps(
-            model, shape_types, variant_options, colliding_mask, mesh_mask
-        )
-        if estimate is not None:
-            return estimate
-
+    mesh_mask = colliding_mask & may_be_mesh
     plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
     non_plane_mask = colliding_mask & ~plane_mask
     num_meshes = int(np.count_nonzero(mesh_mask))
@@ -857,17 +853,8 @@ def _estimate_rigid_contact_details(model: Model) -> _RigidContactCountEstimate:
                 num_primitives * _RIGID_CONTACTS_PER_PRIMITIVE_PAIR + num_meshes * _RIGID_CONTACTS_PER_MESH_PAIR
             )
 
-    heuristic_contacts = non_plane_contacts + plane_contacts
-    total_contacts = heuristic_contacts
+    total_contacts = non_plane_contacts + plane_contacts
     source = "neighbor heuristic"
-
-    # When precomputed contact pairs are available, use as a tighter bound.
-    if pair_count > 0:
-        weighted_cpp = max(avg_cpp, _RIGID_CONTACTS_PER_PRIMITIVE_PAIR)
-        pair_contacts = pair_count * weighted_cpp
-        total_contacts = min(total_contacts, pair_contacts)
-        if pair_contacts < heuristic_contacts:
-            source = "precomputed pairs"
 
     # Ensure minimum allocation
     capacity = max(_RIGID_CONTACT_MIN_CAPACITY, total_contacts)
@@ -890,12 +877,20 @@ def _estimate_rigid_contact_from_pair_caps(
     shape_types: np.ndarray,
     variant_options: _VariantOptions | None,
     colliding_mask: np.ndarray,
-    mesh_mask: np.ndarray,
-) -> _RigidContactCountEstimate | None:
+    may_be_mesh: np.ndarray,
+) -> _RigidContactCountEstimate:
     """Sum the per-pair contact caps over the model's contact pairs, capped by a spatial-locality budget."""
     shape_count = len(shape_types)
+    _, supplied_pairs = _shape_contact_pair_override(model)
+    if supplied_pairs is not None:
+        # The narrow phase routes every endpoint of a supplied pair array, also shapes whose collision flags are off.
+        routed_mask = np.zeros(shape_count, dtype=bool)
+        routed_mask[supplied_pairs.numpy().ravel()] = True
+    else:
+        routed_mask = colliding_mask
+    mesh_mask = routed_mask & may_be_mesh
     # Pairs of two shapes with SDF edges, except box-box pairs, take the mesh-mesh SDF path.
-    sdf_edge_mask = colliding_mask & ~mesh_mask & _shape_may_have_sdf_edges(model, shape_count, variant_options)
+    sdf_edge_mask = routed_mask & ~mesh_mask & _shape_may_have_sdf_edges(model, shape_count, variant_options)
     fixed_box_mask = shape_types == int(GeoType.BOX)
     if variant_options is not None:
         fixed_box_mask &= ~variant_options.row_mask
@@ -924,8 +919,6 @@ def _estimate_rigid_contact_from_pair_caps(
         return pairs, caps
 
     total_pairs, pair_contacts = pair_caps(np.ones(shape_count, dtype=bool))
-    if total_pairs == 0:
-        return None
 
     # Dense pair graphs grow quadratically while a shape only touches a few neighbors at once. Plane pairs keep
     # their caps, since a ground plane can touch every shape on it; each non-plane shape gets
@@ -934,15 +927,7 @@ def _estimate_rigid_contact_from_pair_caps(
     nonplane_pairs, nonplane_pair_contacts = pair_caps(~plane_shape)
     nonplane_locality = 0
     if nonplane_pairs > 0:
-        supplied, supplied_pairs = _shape_contact_pair_override(model)
-        if supplied and supplied_pairs is not None:
-            # A supplied pair array also pairs shapes whose collision flags are off.
-            pairs = supplied_pairs.numpy().reshape(-1, 2)
-            pairs = pairs[~(plane_shape[pairs[:, 0]] | plane_shape[pairs[:, 1]])]
-            active = np.zeros(shape_count, dtype=bool)
-            active[pairs.ravel()] = True
-        else:
-            active = colliding_mask & ~plane_shape
+        active = routed_mask & ~plane_shape
         shape_cap = np.full(int(np.count_nonzero(active)), _CONVEX_PAIR_MAX_CONTACTS, dtype=np.int64)
         shape_cap[(mesh_mask | sdf_edge_mask)[active]] = _MESH_PAIR_MAX_CONTACTS
         shape_cap[hydro_mask[active]] = _HYDRO_PAIR_MAX_CONTACTS
@@ -953,12 +938,12 @@ def _estimate_rigid_contact_from_pair_caps(
     source = "pair caps" if pair_contacts <= locality_cap else "pair locality"
     if total_contacts < _RIGID_CONTACT_MIN_CAPACITY:
         source = "minimum"
-    plane_count = int(np.count_nonzero(colliding_mask & plane_shape))
+    plane_count = int(np.count_nonzero(routed_mask & plane_shape))
     mesh_count = int(np.count_nonzero(mesh_mask))
     return _RigidContactCountEstimate(
         capacity=max(_RIGID_CONTACT_MIN_CAPACITY, total_contacts),
         world_count=int(getattr(model, "world_count", 0) or 0),
-        primitive_count=int(np.count_nonzero(colliding_mask)) - plane_count - mesh_count,
+        primitive_count=int(np.count_nonzero(routed_mask)) - plane_count - mesh_count,
         mesh_count=mesh_count,
         plane_count=plane_count,
         pair_count=int(model.shape_contact_pair_count),
