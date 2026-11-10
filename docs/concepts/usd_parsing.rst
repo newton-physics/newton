@@ -43,6 +43,30 @@ Revolute ``mjc:ref`` and ``mjc:springref`` instead follow the PhysicsScene's
 ``mjc:compiler:angle`` setting (degrees by default). The importer converts these
 values to radians or radians/s.
 
+**USD joint direction:** Newton imports ``physics:body0`` as the parent body and
+``physics:body1`` as the child body. UsdPhysics measures the joint position from
+the ``physics:body0`` joint frame to the ``physics:body1`` joint frame. If
+``physics:body1`` is not an imported rigid body, for example because it is empty
+(the world) or a static prim, the importer swaps the two ends: the world becomes
+the parent and ``physics:body0`` becomes the child. The swap reverses the
+direction in which the joint position is measured, so the importer negates the
+axis of a swapped revolute or prismatic joint. Limits, drive targets, initial
+joint state, and other per-joint values keep their authored signs, and
+``joint_q`` equals the authored joint position. For these joints,
+:attr:`newton.Model.joint_axis` holds the negated authored axis.
+
+The importer reverses a swapped D6 joint, or single-axis joints merged into one
+D6 joint, the same way when the joint has no rotational axis, or one rotational
+axis with every translational axis parallel to it. Negating three translational
+axes flips their handedness, so a swapped D6 joint with X, Y, and Z translational
+axes gets a left-handed axis set, which :class:`~newton.solvers.SolverKamino`
+rejects. Newton cannot reverse any other swapped D6 or merged joint. It keeps
+the authored axes and emits a :class:`~newton.exceptions.NewtonWarning`, because
+any limits, drives, or initial state may act in the mirrored direction. Author
+the joint with the rigid body as ``physics:body1`` to avoid this. A swapped spherical joint keeps its axes, so its ``joint_q`` holds the
+inverse of the authored joint rotation. This does not change its motion, because
+Newton imports no limits or drives for spherical joints.
+
 Particle Simulation Geometry
 ----------------------------
 
@@ -69,7 +93,7 @@ The importer uses standard point and material representations:
   precedence and follows normal indexed, inherited, and interpolation rules.
   Widths become radii using ``width / 2`` after stage units and the prim's
   uniform world scale are applied. Non-uniform scale and shear are rejected.
-* ``physics:masses`` supplies per-point masses and takes precedence over
+* ``newton:masses`` supplies per-point masses and takes precedence over
   ``PhysicsDeformableBodyAPI`` mass or density and material density. Its length
   must match ``points``. A body-total ``physics:mass`` is otherwise distributed
   using the density-derived particle weights.
@@ -81,7 +105,7 @@ The importer uses standard point and material representations:
   Until the solver stores absolute damping directly, the importer divides it by
   the resolved Young's modulus. ``newton:mpm:initialPlasticVolumeStrain`` seeds
   the per-particle ``mpm:particle_Jp`` state and is preserved by solver resets.
-* When ``physics:masses`` is unauthored, mass uses a cubical MPM support volume:
+* When ``newton:masses`` is unauthored, mass uses a cubical MPM support volume:
   ``mass = density * transformed_width**3``. If widths are absent, Newton uses
   :attr:`newton.ModelBuilder.default_particle_radius` and a support width of
   twice that radius.
@@ -311,7 +335,7 @@ The first release deliberately supports a narrow, predictable set of inputs:
 * Hard cable-to-xform point attachments, and hard cable-to-cable junctions whose initial
   points coincide. See cable attachment positions below for cases where initial and rest
   segment lengths differ.
-* Finite-stiffness cloth/volume ``point`` to rigid-body ``xform`` attachments.
+* Cloth/volume ``point`` to rigid-body ``xform`` attachments, including hard constraints in VBD.
 * ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
   of their two sources (imported cables, rigid bodies, or collider prims; a count of ``0`` or
   an empty counts array selects all elements). Cloth and volume element sources warn and are
@@ -380,12 +404,10 @@ Known gaps of the experimental importer, tracked as follow-ups:
   They are preserved in ``path_attachment_attrs`` with their authored stiffness and damping
   (silently hardening them would change the authored physics); only hard cable attachments
   (unauthored or infinite stiffness; damping does not affect hardness) become joints.
-* **Hard cloth/volume attachments** -- Newton's particle-body attachments are compliant.
-  Cloth or volume attachments with unauthored or infinite stiffness warn and are preserved in
-  ``path_attachment_attrs`` with an ``unsupported_reason``; no attachment is created. Author a
-  finite stiffness to request a compliant attachment. Only ``point`` sites attached to an
-  ``xform`` under an imported rigid body are imported; other site types and targets with no
-  rigid body (static xforms, the world) also warn and are preserved.
+* **Cloth/volume attachment targets** -- only ``point`` sites attached to an ``xform`` under an
+  imported rigid body are imported. Other site types and targets with no rigid body (static
+  xforms, the world) warn and are preserved in ``path_attachment_attrs`` with an
+  ``unsupported_reason``. Hard attachments require both endpoints in :class:`~newton.solvers.SolverVBD`.
 * **Body state** -- ``startsAsleep`` and ``simulationOwner`` are not read. Kinematic
   deformables are skipped rather than simulated.
 * **Per-element materials** -- ``GeomSubset`` physics material bindings warn and are
@@ -489,14 +511,15 @@ body -- each site is a single point-point constraint) to the target: an xform, a
 compliant cable attachments warn and are preserved as metadata instead of becoming joints.
 
 When ``src0`` is an imported cloth or volume deformable, ``type0`` is ``point``, ``type1`` is
-``xform`` under an imported rigid body, and stiffness is finite, each ``indices0`` simulation
+``xform`` under an imported rigid body, each ``indices0`` simulation
 point becomes one particle-body attachment (see
 :meth:`~newton.ModelBuilder.add_attachment_particle_body`) to the ``coords1`` anchor in the
 ``src1`` xform frame. The authored stiffness, damping, and ``attachmentEnabled`` state are kept,
 including disabled attachments and zero stiffness. The created attachment indices are listed
 under ``attachment_particle_body_indices`` in that prim's ``path_attachment_attrs`` entry.
-Hard attachments (unauthored or infinite stiffness) warn and are preserved as unsupported
-metadata instead of becoming compliant springs.
+Unauthored or infinite stiffness creates a hard point constraint in
+:class:`~newton.solvers.SolverVBD`, with damping ignored. Finite stiffness creates a compliant
+attachment. See :ref:`Particle-body attachments` for solver support and convergence limits.
 
 With ``override_root_xform=True``, only the articulation is moved to the import ``xform``.
 Cloth and volume deformables keep their composed USD pose. The attachment anchor is
@@ -690,7 +713,11 @@ to display/sRGB. If the attribute has authored ``colorSpace`` metadata or
 inherits a color space through ``UsdColorSpaceAPI``, Newton uses
 ``Usd.ColorSpaceAPI.ComputeColorSpaceName`` to determine the effective color
 space. Linear/raw color spaces are converted to display/sRGB; display/sRGB
-colors such as ``srgb_rec709_scene`` are kept as authored.
+colors such as ``srgb_rec709_scene`` are kept as authored. Authored color
+components outside [0, 1] are clamped and non-finite colors are ignored; Newton
+logs each case at ``WARNING`` on the ``newton`` logger with the path of the
+attribute the value came from (see :ref:`diagnostics`). Imported opacity is
+handled the same way.
 
 Texture inputs are handled similarly at the color-texture boundary. Newton reads
 ``UsdUVTexture.sourceColorSpace`` first, falls back to color-space metadata on
