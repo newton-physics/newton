@@ -290,8 +290,10 @@ repository examples spend tuning effort, not a shared solver API.
        impulses. ``contact_gap_gate`` and ``contact_speculative_scale`` bound
        the work and the closing allowance of speculative contacts.
        The opt-in ``nesterov_momentum`` accelerates the serial sweep with
-       Nesterov momentum and restart, which reaches a given residual in fewer
-       ``iterations`` on stacks, large mass ratios and long chains. It requires
+       Nesterov momentum and restart, which can reduce the ``iterations``
+       needed on stacks, large mass ratios and long chains. Velocity-limit rows
+       are not extrapolated, so measure convergence on the scene before
+       lowering ``iterations``. It requires
        ``articulated_contact_response="immediate"`` and
        ``row_schedule="interleaved"``, and every world then runs the general
        sweep with dense factors; the specialized sparse-factor, diagonal,
