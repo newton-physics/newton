@@ -14,8 +14,9 @@ settings. For custom Warp kernels, see Warp's `performance guide
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance.html>`__.
 
 Establish the required simulation behavior before optimizing (see
-:ref:`Simulation Tuning`). Execution changes should preserve that behavior;
-changes to geometry, contact models, or solver settings need an accuracy check.
+:ref:`Simulation Tuning`). The performance improvements below should preserve
+the existing simulation behavior; changes to geometry, contact models, or
+solver settings need an accuracy check.
 
 Measuring Performance
 ---------------------
@@ -52,11 +53,13 @@ at least once before starting the timer. Synchronize the device before and
 after the timed region so that the measurement includes GPU execution. Time
 several frames together to reduce measurement overhead. Report setup time,
 including model construction and kernel compilation, separately from stepping.
+Warp's `benchmarking guidance
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#cold-start-benchmarking-approaches>`__
+covers timing with CUDA events and measuring cold starts.
 
 GPU clock speeds change with temperature and power limits, so short runs and
 runs on a shared machine vary. Run long enough for the timing to settle, repeat
-the measurement, and report the spread. In benchmark mode, the examples raise
-the process priority; ``--realtime`` raises it further.
+the measurement, and report the spread.
 
 Record the hardware and software versions, world count, timestep, substeps,
 solver settings, and collision frequency. State whether rendering, sensors,
@@ -94,13 +97,12 @@ Stepping
 How you profile the step depends on whether it runs eagerly or as a captured
 graph.
 
-When the step runs eagerly, :class:`warp.ScopedTimer` with ``synchronize=True``
-measures a region, and its ``cuda_filter`` option records the duration of each
-kernel and memory operation (see Warp's `CUDA activity profiling
-<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#cuda-activity-profiling>`__).
+When the step runs eagerly, :class:`warp.ScopedTimer` can time regions and
+individual kernels (see Warp's `ScopedTimer documentation
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#scopedtimer>`__).
 :class:`~utils.EventTracer` uses CUDA events to time functions decorated with
-:func:`~utils.event_scope`, including the step of :class:`~solvers.SolverMuJoCo`.
-You can apply the decorator to your own functions.
+:func:`~utils.event_scope`.
+Apply the decorator to your own functions the same way to get timings for them.
 
 For captured steps, Warp's activity timing reports the graph launch as a
 single operation. Time the graph as a whole, profile the eager version, or
@@ -117,8 +119,11 @@ the same instrumentation, or none, on both sides.
 Nsight Systems
 ^^^^^^^^^^^^^^
 
-For a timeline of the whole application, run it under NVIDIA Nsight Systems
-without a viewer:
+NVIDIA Nsight Systems records a timeline of CPU and GPU activity across the
+application. To profile the simulation itself, run without a viewer: rendering
+adds its own work and host synchronization, which would hide the gaps and
+readbacks of the step. Profile with the viewer enabled when you suspect
+rendering is the bottleneck.
 
 .. code-block:: console
 
@@ -139,9 +144,9 @@ Open ``h1.nsys-rep`` in the Nsight Systems GUI, or print summaries with
 - **Startup**: compilation, module loading, and graph capture before the first
   replay, kept separate from the steady state.
 
-Pass ``use_nvtx=True`` to :class:`warp.ScopedTimer` to label regions on the
-timeline. To record only steady-state stepping, see Warp's guide to `limiting
-the profiler capture range
+To label regions on the timeline, use :class:`warp.ScopedTimer` with
+``use_nvtx=True``. To record only steady-state stepping, see Warp's guide to
+`limiting the profiler capture range
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#limiting-the-profiler-capture-range>`__.
 By default, Nsight Systems shows each graph launch as one range. To see the
 kernels inside the graph, add ``--cuda-graph-trace=node``. Node-level
@@ -152,9 +157,8 @@ the step takes.
 Nsight Compute
 ^^^^^^^^^^^^^^
 
-Once you know which kernel dominates, use Nsight Compute to analyze it.
-Profile only a few launches of that kernel, because Nsight Compute replays each
-profiled kernel many times:
+Once you know which kernel dominates, use Nsight Compute to analyze a few of
+its launches:
 
 .. code-block:: console
 
@@ -162,17 +166,15 @@ profiled kernel many times:
         uv run -m newton.examples robot_h1 --viewer null --num-frames 20
 
 Reading GPU performance counters can require administrator privileges. For
-interpreting the report and correlating it with kernel source code, see Warp's
+the options and for correlating the report with kernel source code, see Warp's
 `Nsight Compute guide
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#nsight-compute-profiling>`__.
 
 Memory
 ^^^^^^
 
-:func:`warp.get_mempool_used_mem_high` reports the high-water mark of memory
-used from a device's Warp memory pool. This excludes allocations outside that
-pool. The process memory reported by ``nvidia-smi`` also includes reserved pool
-memory and other CUDA allocations. See Warp's `memory management guide
+To measure peak memory use, and how it differs from what ``nvidia-smi``
+reports, see Warp's `memory management guide
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/memory_management.html#querying-memory-usage>`__.
 
 .. _performance-debug-settings:
@@ -180,11 +182,9 @@ memory and other CUDA allocations. See Warp's `memory management guide
 Debug and Gradient Settings
 ---------------------------
 
-Warp's debugging options make every launch much slower. Before timing, check
-that ``warp.config.mode`` is ``"release"`` and that ``verify_cuda``,
-``verify_fp``, and ``print_launches`` are disabled. The examples set Warp
-options with ``--warp-config KEY=VALUE``, so check the command line as well as
-the code.
+Warp's debugging options, such as debug-mode compilation and CUDA error
+verification, make launches much slower. Disable them before timing (see Warp's
+`debugging guide <https://nvidia.github.io/warp/stable/user_guide/debugging.html>`__).
 
 Enable gradients only for differentiable simulation.
 ``ModelBuilder.finalize(requires_grad=True)`` allocates gradient arrays for the
@@ -197,10 +197,9 @@ shortens compilation (see Warp's `module settings
 <https://nvidia.github.io/warp/stable/user_guide/configuration.html#module-settings>`__).
 Set it per module or per kernel, not globally through
 ``warp.config.enable_backward``. Some Newton features use automatic
-differentiation during the forward simulation, such as the default autodiff
-Jacobians of :class:`~ik.IKSolver` and the linearization of neural actuator
-drives. With backward code disabled, Warp computes zero gradients without
-raising an error, so these features silently produce wrong results.
+differentiation during the forward simulation. With backward code disabled,
+Warp computes zero gradients without raising an error, so these features
+silently produce wrong results.
 
 .. _performance-graph-capture:
 
@@ -325,13 +324,9 @@ Kernels outside the graph still incur individual host launch costs.
 
 For your own kernels that must run outside a graph, for example on the CPU or
 in code that branches on the host, Warp's `launch objects
-<https://nvidia.github.io/warp/stable/user_guide/runtime.html#launch-objects>`__
-reduce the Python cost of each launch. Calling :func:`warp.launch` with
-``record_cmd=True`` returns a :class:`warp.Launch` that can be launched again
-with updated parameters. Each replay is still a separate kernel launch, so
-launch objects do not replace graph capture. They also apply only to kernels
-you launch yourself; Newton's solvers and collision pipeline launch their own
-kernels, so capturing the step is the way to reduce their launch overhead.
+<https://nvidia.github.io/warp/stable/user_guide/runtime.html#launch-objects>`__ reduce the Python cost of each launch.
+They do not replace graph capture, and they do not apply to the kernels that
+Newton's solvers and collision pipeline launch internally.
 
 The example uses CUDA graphs on CUDA devices and runs the frame directly on the
 CPU. If the captured code allocates memory, capture also requires the device's
@@ -389,14 +384,14 @@ For odd counts, there are three options:
   shows this pattern.
 
 Other double-buffered data in the graph, such as :ref:`actuator state
-<stateful-actuators>`, behaves the same way. :class:`CollisionSubstepScheduler`
-always swaps its two states and therefore requires an even substep count.
+<stateful-actuators>`, behaves the same way.
 
 What a Graph Records
 ^^^^^^^^^^^^^^^^^^^^
 
-A graph records memory addresses and launch parameters, not Python code. When
-it replays, Python does not run. To update inputs between replays, write into
+A graph records memory addresses and launch parameters, not Python code (see
+Warp's `graph documentation <https://nvidia.github.io/warp/stable/user_guide/runtime.html#graphs>`__). When it replays,
+Python does not run. To update inputs between replays, write into
 the captured arrays. Array addresses, launch dimensions, scalar arguments such
 as ``dt``, and the outcome of any Python ``if`` stay as they were during
 capture.
@@ -419,17 +414,14 @@ For a reusable graph:
   index into a trajectory, has to live in a device array and be incremented by
   a kernel inside the graph. A Python integer would be frozen at its value
   during capture.
-- Settings that the solver evaluates in Python are frozen as well. Capture the
-  graph again after changing solver update intervals, the collision schedule
-  set with :meth:`~solvers.SolverBase.set_collision_frequency`, the ``dt``
-  argument of :meth:`CollisionPipeline.collide`, the flag set by
-  :meth:`~solvers.SolverVBD.set_rigid_history_update`, or the size of any
-  buffer.
+- Settings that the solver evaluates in Python, such as update intervals,
+  collision schedules, and buffer sizes, are frozen as well. Capture the graph
+  again after changing them.
 
 For updates scheduled by a Python step counter, capture a complete repeating
-schedule. For example, the number of steps in a graph should be a multiple of
-Featherstone's ``update_mass_matrix_interval``. Otherwise, replay repeats the
-captured update pattern at a different frequency from eager execution.
+schedule: the number of steps in the graph should be a multiple of the update
+interval. Otherwise, replay repeats the captured update pattern at a different
+frequency from eager execution.
 
 For supported in-place model edits, such as changes to masses or gains, call
 :meth:`~solvers.SolverBase.notify_model_changed` outside the graph with the
@@ -441,14 +433,8 @@ Whether an existing graph picks up the change depends on what the solver does
 in response. If it only rewrites the contents of existing device arrays, the
 graph reads the new values on its next replay. If the solver replaces buffers,
 or decides on the host which kernels to launch, the graph keeps replaying what
-it recorded and you need to capture it again. For example,
-:class:`~solvers.SolverFeatherstone` reacts to inertial changes by recomputing
-the mass matrix on its next :meth:`~solvers.SolverBase.step`, but that decision
-is made in Python. With ``update_mass_matrix_interval`` greater than 1, a graph
-captured before the change can keep using the old mass matrix on the substeps
-where the update was skipped during capture. Use an interval of 1 or recapture
-after notifying the solver. If a solver's documentation does not say that its
-model updates are capture-safe, recapture after calling
+it recorded and you need to capture it again. If a solver's documentation
+does not say that its model updates are capture-safe, recapture after calling
 :meth:`~solvers.SolverBase.notify_model_changed`.
 
 Sensors, actuators, selection views, and some solvers have further capture
@@ -469,9 +455,9 @@ also prevent CUDA graph capture. Warp's `concurrency guide
 describes which operations run asynchronously and how to synchronize with as
 little blocking as possible.
 
-Common sources of synchronization are ``array.numpy()``, printing an array,
-converting a PyTorch tensor to a Python number, and reading a contact count to
-decide how many threads to launch. Host-side setters that accept NumPy arrays,
+Besides the operations listed in Warp's guide, such as ``array.numpy()``,
+common sources in a Newton loop are reading a contact count to decide how many
+threads to launch and converting a PyTorch tensor to a Python number. Host-side setters that accept NumPy arrays,
 such as :meth:`Model.set_gravity`, copy data to the device and can read data
 back; they are meant for setup or occasional changes, not for every step.
 
@@ -483,19 +469,18 @@ device and read them periodically or at the end of a run. To find reads you did
 not expect, profile the run with Nsight Systems, which shows synchronization on
 its timeline.
 
-When the host needs data every frame, copy it asynchronously into a pinned
-host array (``wp.empty(..., device="cpu", pinned=True)``) and read the copy a
-frame later, after an event or the next synchronization point shows that it is
-complete. When passing data to PyTorch, :func:`warp.to_torch` shares the device
-memory without a copy. Keep the result on the device: calls such as
+When the host needs data every frame, copy it asynchronously into pinned host
+memory and read it a frame later (see Warp's `synchronization guidance
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/concurrency.html#synchronization-guidance>`__).
+When passing data to PyTorch, keep it on the device: calls such as
 ``tensor.item()`` or ``tensor.cpu()`` synchronize.
 
 Render once per frame, after the simulation step, to avoid repeating viewer
 work in every substep. Some viewers read data back to the host when logging. In
 particular, :meth:`~viewer.ViewerBase.log_contacts` reads the contact count
 whenever contacts are drawn. With many worlds, rendering only a few of them
-with :meth:`~viewer.ViewerBase.set_visible_worlds`, or the examples'
-``--max-worlds`` option, keeps the viewer from dominating the frame. To time
+with :meth:`~viewer.ViewerBase.set_visible_worlds` keeps the viewer from
+dominating the frame. To time
 the simulation without rendering, use :class:`~viewer.ViewerNull` (``--viewer
 null`` in the examples). See :ref:`choosing-a-viewer`.
 
@@ -514,19 +499,16 @@ Size the buffers from measurement. Run a worst-case scene at the world count
 you intend to use, record the peak contact and constraint counts, and set the
 capacities to that peak plus a margin.
 
-The capacities of :class:`CollisionPipeline`, such as ``rigid_contact_max``,
-``soft_contact_max``, ``shape_pairs_max``, and ``max_triangle_pairs`` (for
-mesh and heightfield contacts), are totals over all worlds.
-Automatic contact-capacity estimates are not worst-case bounds. In contrast,
-the NxN and SAP broad phases default to a worst-case shape-pair bound summed
-over worlds, including shared global shapes. This can reserve much more memory
-than the scene needs. MuJoCo's contact and constraint capacities, by contrast,
-are set per world (see :doc:`/solvers/mujoco`), and the solver can report
-overflow per world (see :ref:`mujoco_overflow_observable`).
+Check each component's documentation for how its capacities are defined.
+Some are totals over all worlds, such as those of :class:`CollisionPipeline`,
+while others are set per world, such as those of
+:class:`~solvers.SolverMuJoCo`. Default capacities can be automatic estimates
+that are not worst-case bounds, or worst-case bounds that reserve much more
+memory than the scene needs.
 
 With ``verify_buffers=True``, the collision pipeline reports overflow. Keep it
 enabled while sizing buffers. Once capacities have been validated, disabling
-the check removes one diagnostic kernel per collision pass. Recheck capacities
+the check removes a small diagnostic pass. Recheck capacities
 when changing the scene, world count, or contact settings.
 
 Collision Detection
@@ -536,20 +518,11 @@ Reduce candidate pairs before changing collision accuracy. Use collision groups
 and filters to exclude pairs that should not interact, and choose a broad phase
 suited to the scene (see the :ref:`collision performance notes
 <Performance>`). Shared shapes (world ``-1``) collide with every world, so
-their cost grows with the world count. If static and kinematic shapes do not
-need contacts with each other, pass ``include_static_kinematic_pairs=False``
-to :class:`CollisionPipeline`. See :ref:`Collision Pipeline Details`.
+their cost grows with the world count. See :ref:`Collision Pipeline Details`.
 
-Several :class:`CollisionPipeline` options add work and are worth enabling only
-when needed:
-
-- ``deterministic=True`` sorts the contacts after every collision pass, and any
-  ``contact_matching`` mode other than ``"disabled"`` implies it.
-- ``dynamic_shape_scale=True`` makes SDF queries read the current shape scale
-  on every call, which is slower than the precompiled unit-scale path.
-- ``enable_rigid_soft_full_surface_contact=True`` can generate many more soft
-  contacts than particle contacts alone; see
-  :ref:`full-surface-mesh-contact-costs`.
+Some :class:`CollisionPipeline` options add work, such as deterministic contact
+ordering. Enable them only when needed; their API documentation describes the
+cost.
 
 Request contact sensors and solver observables only when the application
 needs their output. Simpler geometry and less frequent detection trade accuracy
@@ -591,9 +564,8 @@ Collision geometry
 
 Contact model
     SDF queries and hydroelastic contact generation can add collision work.
-    Hydroelastic contacts represent contact patches and pressure distributions;
-    use them where the task needs that behavior. Enable expensive models only
-    on the shapes that need them. See :ref:`Hydroelastic Contacts`.
+    Hydroelastic contacts represent contact patches and pressure distributions. 
+    Enable expensive models only on the shapes that need them. See :ref:`Hydroelastic Contacts`.
 
 Substeps, iterations, and tolerances
     Solver cost scales with substeps and iterations. Reduce iterations, or let
@@ -604,11 +576,10 @@ Substeps, iterations, and tolerances
     do not imply equal accuracy. See the tuning order in
     :ref:`Simulation Tuning` and :ref:`Tuning Solver Reference`.
 
-    A convergence check that runs on the host prevents graph capture. Inside
-    a graph, an early exit needs a conditional node such as
-    :func:`warp.capture_while`, with the loop condition stored in a device
-    array. Otherwise, the captured graph always runs the iteration count
-    recorded during capture.
+    A convergence check that runs on the host prevents graph capture, and a
+    captured graph always runs the iteration count recorded during capture.
+    To stop early inside a graph, use Warp's `conditional
+    execution <https://nvidia.github.io/warp/stable/user_guide/runtime.html#conditional-execution>`__.
 
 Sleeping
     Some solvers can stop simulating islands of bodies that have come to rest
@@ -620,10 +591,8 @@ Sleeping
 
 Solver choice and solver options
     Solvers differ in cost and in the effects they model, and many expose
-    options that trade accuracy for speed. For example,
-    :class:`~solvers.SolverImplicitMPM` can transfer velocities with PIC, which
-    is cheaper but more dissipative than the default APIC scheme. See the
-    :doc:`solver overview </solvers/index>` and the solver's API reference.
+    options that trade accuracy for speed. See the :doc:`solver overview
+    </solvers/index>` and the solver's API reference.
 
 Multiple Worlds
 ---------------
