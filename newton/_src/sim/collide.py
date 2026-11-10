@@ -107,9 +107,12 @@ class _VariantOptions:
         mask[self.row_shapes[variant_mask[self.variant_shapes]]] = True
         return mask
 
-    def may_be(self, shape_types: np.ndarray, types: tuple[int, ...]) -> np.ndarray:
-        """Per shape, whether it is or can become one of ``types``, counting only colliding variant shapes."""
-        return np.isin(shape_types, types) | self.any(self.variant_collides & np.isin(self.variant_types, types))
+    def may_be(self, shape_types: np.ndarray, types: tuple[int, ...], colliding_only: bool = True) -> np.ndarray:
+        """Per shape, whether it is or can become one of ``types``, counting only colliding variant shapes by default."""
+        variant_mask = np.isin(self.variant_types, types)
+        if colliding_only:
+            variant_mask &= self.variant_collides
+        return np.isin(shape_types, types) | self.any(variant_mask)
 
     def reachable(self, shape_mask: np.ndarray) -> np.ndarray:
         """Per variant shape, whether a variant row in ``shape_mask`` can hold it."""
@@ -148,23 +151,29 @@ def _variant_options(model: Model) -> _VariantOptions | None:
     )
 
 
-def _shape_may_be_mesh(model: Model, shape_types: np.ndarray, variant_options: _VariantOptions | None) -> np.ndarray:
+def _shape_may_be_mesh(
+    model: Model, shape_types: np.ndarray, variant_options: _VariantOptions | None, colliding_only: bool = True
+) -> np.ndarray:
     """Shapes that are, or as variant rows can become, meshes or heightfields."""
     mesh_types = (int(GeoType.MESH), int(GeoType.HFIELD))
-    return (
-        np.isin(shape_types, mesh_types) if variant_options is None else variant_options.may_be(shape_types, mesh_types)
-    )
+    if variant_options is None:
+        return np.isin(shape_types, mesh_types)
+    return variant_options.may_be(shape_types, mesh_types, colliding_only)
 
 
-def _shape_may_have_sdf_edges(model: Model, shape_count: int, variant_options: _VariantOptions | None) -> np.ndarray:
-    """Shapes that have, or as variant rows can hold a colliding shape with, texture-SDF edge data."""
+def _shape_may_have_sdf_edges(
+    model: Model, shape_count: int, variant_options: _VariantOptions | None, colliding_only: bool = True
+) -> np.ndarray:
+    """Shapes that have, or as variant rows can hold a shape with, texture-SDF edge data."""
     if getattr(model, "_shape_sdf_index", None) is None or getattr(model, "_shape_edge_range", None) is None:
         return np.zeros(shape_count, dtype=bool)
     mask = (model._shape_sdf_index.numpy() >= 0) & (model._shape_edge_range.numpy()[:, 1] > 0)
     if variant_options is not None:
         geometry = model._variant_shape_geometry
         variant_edges = (geometry["_shape_sdf_index"].numpy() >= 0) & (geometry["_shape_edge_range"].numpy()[:, 1] > 0)
-        mask |= variant_options.any(variant_options.variant_collides & variant_edges)
+        if colliding_only:
+            variant_edges &= variant_options.variant_collides
+        mask |= variant_options.any(variant_edges)
     return mask
 
 
@@ -785,11 +794,10 @@ def _estimate_rigid_contact_details(model: Model) -> _RigidContactCountEstimate:
     # Slot rows count as meshes if they can hold one.
     variant_options = _variant_options(model)
     colliding_mask = _shape_collide_mask(model, len(shape_types))
-    may_be_mesh = _shape_may_be_mesh(model, shape_types, variant_options)
     if pair_count > 0:
-        return _estimate_rigid_contact_from_pair_caps(model, shape_types, variant_options, colliding_mask, may_be_mesh)
+        return _estimate_rigid_contact_from_pair_caps(model, shape_types, variant_options, colliding_mask)
 
-    mesh_mask = colliding_mask & may_be_mesh
+    mesh_mask = colliding_mask & _shape_may_be_mesh(model, shape_types, variant_options)
     plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
     non_plane_mask = colliding_mask & ~plane_mask
     num_meshes = int(np.count_nonzero(mesh_mask))
@@ -877,20 +885,22 @@ def _estimate_rigid_contact_from_pair_caps(
     shape_types: np.ndarray,
     variant_options: _VariantOptions | None,
     colliding_mask: np.ndarray,
-    may_be_mesh: np.ndarray,
 ) -> _RigidContactCountEstimate:
     """Sum the per-pair contact caps over the model's contact pairs, capped by a spatial-locality budget."""
     shape_count = len(shape_types)
     _, supplied_pairs = _shape_contact_pair_override(model)
-    if supplied_pairs is not None:
-        # The narrow phase routes every endpoint of a supplied pair array, also shapes whose collision flags are off.
+    supplied = supplied_pairs is not None
+    if supplied:
+        # The narrow phase routes every endpoint of a supplied pair array, and every variant shape such a row can
+        # hold, also when their collision flags are off.
         routed_mask = np.zeros(shape_count, dtype=bool)
         routed_mask[supplied_pairs.numpy().ravel()] = True
     else:
         routed_mask = colliding_mask
-    mesh_mask = routed_mask & may_be_mesh
+    mesh_mask = routed_mask & _shape_may_be_mesh(model, shape_types, variant_options, colliding_only=not supplied)
     # Pairs of two shapes with SDF edges, except box-box pairs, take the mesh-mesh SDF path.
-    sdf_edge_mask = routed_mask & ~mesh_mask & _shape_may_have_sdf_edges(model, shape_count, variant_options)
+    sdf_edges = _shape_may_have_sdf_edges(model, shape_count, variant_options, colliding_only=not supplied)
+    sdf_edge_mask = routed_mask & ~mesh_mask & sdf_edges
     fixed_box_mask = shape_types == int(GeoType.BOX)
     if variant_options is not None:
         fixed_box_mask &= ~variant_options.row_mask

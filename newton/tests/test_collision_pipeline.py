@@ -2662,6 +2662,42 @@ class TestContactCountEstimator(unittest.TestCase):
             with self.subTest(source=type(source).__name__):
                 self.assertGreaterEqual(_estimate_rigid_contact_max(source), count)
 
+    def test_supplied_pairs_budget_noncolliding_mesh_variants(self):
+        """Budget a supplied pair at the mesh cap when its row can later hold a non-colliding mesh variant."""
+        ground = _flat_mesh(8)
+        variants = []
+        for use_mesh in (False, True):
+            variant = newton.ModelBuilder()
+            body = variant.add_body(mass=1.0, inertia=wp.diag(wp.vec3(1.0)))
+            cfg = variant.ShapeConfig(has_shape_collision=False, density=0.0)
+            if use_mesh:
+                variant.add_shape_mesh(body, mesh=ground, cfg=cfg)
+            else:
+                variant.add_shape_box(body, hx=1.0, hy=1.0, hz=0.001, cfg=cfg)
+            variants.append(variant)
+        builder = newton.ModelBuilder()
+        pairs, ground_bodies = [], []
+        for _ in range(32):
+            builder.begin_world()
+            body = builder.add_body(mass=1.0, inertia=wp.diag(wp.vec3(1.0)))
+            builder.add_body_variants(body, variants, initial=0)
+            ground_bodies.append(body)
+            plate = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.019), wp.quat_identity()))
+            pairs.append((builder.body_shapes[body][0], builder.add_shape_box(plate, hx=0.9, hy=0.9, hz=0.02)))
+            builder.end_world()
+        model = builder.finalize(device="cpu")
+        model.shape_contact_pairs = wp.array(pairs, dtype=wp.vec2i, device="cpu")
+        pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+        contacts = pipeline.contacts()
+        model.select_body_variants(
+            wp.array(np.ones(len(ground_bodies)), dtype=wp.int32, device="cpu"),
+            bodies=wp.array(ground_bodies, dtype=wp.int32, device="cpu"),
+        )
+        pipeline.collide(model.state(), contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(count, 2 * 32 * 40)
+        self.assertLessEqual(count, contacts.rigid_contact_max)
+
     @staticmethod
     def _make_single_box_model():
         """Build a minimal model that exercises automatic contact sizing."""
