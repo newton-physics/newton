@@ -242,12 +242,14 @@ class Example:
         if self.dynamics_solver == "lox":
             assert not self.solver.status.numpy()["failed"].any(), "The LOX backend failed"
         if not self.animated:
+            pelvis_ids = [i for i, label in enumerate(self.model.body_label) if label.endswith("/pelvis")]
+            assert pelvis_ids, "No body label ends with '/pelvis'"
             newton.examples.test_body_state(
                 self.model,
                 self.state_0,
                 "robots are standing",
                 lambda q, qd: q[2] > 0.25,
-                indices=[i for i, label in enumerate(self.model.body_label) if label.endswith("/pelvis")],
+                indices=pelvis_ids,
             )
 
     def _init_animation(self, model_asset: str, animation_asset: str):

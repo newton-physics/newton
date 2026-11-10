@@ -176,12 +176,14 @@ class Example:
             "all bodies are above the ground",
             lambda q, qd: q[2] > -0.006,
         )
+        base_ids = [i for i, label in enumerate(self.model.body_label) if label.endswith("/base")]
+        assert base_ids, "No body label ends with '/base'"
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "robots are standing",
             lambda q, qd: q[2] > 0.6,
-            indices=[i for i, label in enumerate(self.model.body_label) if label.endswith("/base")],
+            indices=base_ids,
         )
         # Only check velocities on CUDA, where example tests run enough frames to settle.
         # Short CPU smoke runs may still be falling when they finish.
