@@ -1967,6 +1967,7 @@ def test_mesh_vertex_fallback_sign(test, device):
                 0.01,
                 False,
                 False,
+                False,
                 penalty,
                 zero_material,
                 zero_material,

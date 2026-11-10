@@ -2471,7 +2471,8 @@ def _sticky_soft_contacts_stop_without_springback(test, device, full_surface):
     VBD drags them to within the friction regularization length after each step.
     """
     with wp.ScopedDevice(device):
-        positions = _soft_block_on_tilted_box((1.5,) + (0.0,) * 30, full_surface, True, 5, (0.12,) + (0.01,) * 30)
+        # Let the initial normal damping transient settle before removing the load.
+        positions = _soft_block_on_tilted_box((2.0,) + (0.0,) * 30, full_surface, True, 5, (0.3,) + (0.01,) * 30)
     xs = np.array([p[0] for p in positions[1:]])
     test.assertGreater(xs.max() - positions[0][0], 5.0e-4)
     test.assertLess(xs.max() - xs[-1], 1.0e-4)
