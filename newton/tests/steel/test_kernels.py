@@ -1802,7 +1802,7 @@ def test_reused_kinematics_follow_a_timestep_change(test, device):
 
 
 def test_captured_step_replays_the_same_result_from_an_unchanged_input(test, device):
-    """A step captured on a fresh solver and replayed from the same input gives the same result every replay.
+    """Check that a step captured on a fresh solver replays the same result from an unchanged input.
 
     Releasing an earlier capture that never ran leaves the later capture's result unchanged.
     """

@@ -546,7 +546,7 @@ def test_kinematic_free_base_drives_dense_articulation(
     device,
     solver_fn,
 ):
-    """A prescribed kinematic free base pushes a dense articulation's probe without sinking into it."""
+    """Check that a prescribed kinematic free base pushes a dense articulation's probe without sinking into it."""
     model, kinematic_body, probe_body, kinematic_joint, probe_joint = _build_free_root_to_prismatic_scene(device)
     solver = solver_fn(model)
     collision_pipeline, contacts = _create_contacts(model, solver)
