@@ -251,6 +251,26 @@ def test_adaptive_sweeps_replenished_donor(test, device):
             np.testing.assert_allclose(rest.sum(), initial.sum(), atol=2.0e-7, rtol=0)
             test.assertGreater(rest[1], 1.0e-6)
 
+    # A nanometre-scale refill can still change a stiff neighbor's force by
+    # several newtons. It must not be classified as an exhausted donor.
+    for reverse in (False, True):
+        tensions = [40.0, 19.99, 0.0]
+        expected = np.array([23.988, 19.99, 19.99 / 1.2])
+        if reverse:
+            tensions, expected = tensions[::-1], expected[::-1]
+        with test.subTest(tiny_refill=True, reverse=reverse):
+            force, rest, initial, count = solve_material_case(
+                device,
+                tensions,
+                [1.2, 1.2],
+                segment_lengths=[0.001, 0.002, 0.001],
+                segment_compliance=[1.0e-10, 1.0e-4, 1.0e-10],
+                tol=1.0e-3,
+            )
+            np.testing.assert_allclose(force, expected, atol=1.0e-4, rtol=1.0e-3)
+            np.testing.assert_allclose(rest.sum(), initial.sum(), atol=1.0e-9, rtol=0)
+            test.assertLess(count, 256)
+
 
 def test_adaptive_sweeps_rest_floor_roundoff(test, device):
     """Accept depleted-span convergence without a false material-exhaustion error."""
@@ -328,6 +348,7 @@ def test_adaptive_sweeps_coincident_pinholes(test, device):
                 if device.is_cuda:
                     with wp.ScopedCapture(device=device) as captured:
                         solver.step(state, output, control, None, 0.01)
+                    solver.tendon_segment_stretch.zero_()
                     wp.capture_launch(captured.graph)
                     np.testing.assert_array_equal(
                         np.maximum(solver.tendon_segment_stretch.numpy() / 0.01, 0.0), tension

@@ -267,7 +267,9 @@ def _rolling_spin_axis_component(
         bound = wp.length(radial) * beta * (tension + neighbor_tension)
         # The two spans pull in opposite route directions at this guide.
         net_moment = tension * moment - neighbor_tension * neighbor_moment
-        spin_scale = wp.min(1.0, bound / wp.max(wp.abs(net_moment), 1.0e-8))
+        spin_scale = float(1.0)
+        if wp.abs(net_moment) > bound:
+            spin_scale = bound / wp.abs(net_moment)
 
     return (1.0 - spin_scale) * moment * normal
 

@@ -2731,6 +2731,29 @@ def test_xpbd_spin_reaction_bounds_accumulated_impulse(test, device):
                 wp.launch(solve_tendon_slip, dim=3, inputs=inputs, outputs=[deltas])
                 np.testing.assert_array_equal(deltas.numpy(), 0.0)
 
+        # Exercise the stretch solver's multipliers too: a hard tendon must
+        # transmit its finite load to a movable roller, without using d/c.
+        for mu in (0.0, 0.1):
+            with test.subTest(full_solver=True, mu=mu):
+                model, _, _, pulley = build_dynamic_pulley_atwood(mu=mu, compliance=0.0)
+                solver = newton.solvers.SolverXPBD(
+                    model, iterations=32, joint_linear_relaxation=1.0, joint_angular_relaxation=1.0
+                )
+                state, output = model.state(), model.state()
+                solver.step(state, output, model.control(), None, 1.0 / 60.0)
+                lambdas = solver.tendon_segment_lambda.numpy()
+                test.assertTrue(np.all(lambdas < 0.0), "Both hard spans must carry load")
+                rho = float(solver.tendon_guide_cap_ratio.numpy()[1])
+                bound = 0.15 * (rho - 1.0) / (rho + 1.0) * float(-lambdas.sum())
+                expected = np.clip(0.15 * float(lambdas[0] - lambdas[1]), -bound, bound)
+                inertia = float(model.body_inertia.numpy()[pulley, 1, 1])
+                angular_impulse = inertia * float(output.body_qd.numpy()[pulley, 4])
+                test.assertAlmostEqual(angular_impulse, expected, delta=1.0e-5)
+                if mu > 0.0:
+                    test.assertGreater(angular_impulse, 1.0e-3)
+                else:
+                    test.assertAlmostEqual(angular_impulse, 0.0, delta=1.0e-7)
+
 
 def test_tendon_slip_uses_active_route_segments(test, device):
     """The slip cone should use the current routed neighbors and their physical tension."""

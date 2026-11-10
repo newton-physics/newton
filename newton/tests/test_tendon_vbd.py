@@ -87,6 +87,7 @@ def _make_tendon_vbd_solver(test, model, **overrides):
 @wp.kernel
 def _evaluate_roller_reaction(
     poses: wp.array[wp.transform],
+    prev_poses: wp.array[wp.transform],
     com: wp.array[wp.vec3],
     adjacency: TendonForceElementAdjacencyInfo,
     guide_body: wp.array[int],
@@ -110,7 +111,7 @@ def _evaluate_roller_reaction(
         0,
         1.0 / 60.0,
         poses,
-        poses,
+        prev_poses,
         com,
         adjacency,
         guide_body,
@@ -148,10 +149,11 @@ def test_vbd_spin_reaction_matches_capstan_projection(test, device):
         (np.exp(0.001 * np.pi), [10, 10], 0.0, np.pi / 4, 0.2),
         (1.0, [10, 10], np.pi / 4, 0.0, 0.2),
         (2.0, [4, 3], np.pi / 4, 0.0, 1.0),
+        (2.0, [0.004, 0.003], 0.0, 0.0, 1.0e-6),
     ]
     for rho, tensions, angle_l, angle_r, radius in cases:
         with test.subTest(rho=rho, tensions=tensions, angle_l=angle_l, angle_r=angle_r, radius=radius):
-            center = np.array([0.5, 0, 0])
+            center = np.array([0.5, 0, 0]) if radius > 1.0e-4 else np.zeros(3)
             contact_l, contact_r = center + np.array([0, radius, 0]), center + np.array([radius, 0, 0])
             direction_l = np.array([np.cos(angle_l), np.sin(angle_l), 0])
             direction_r = np.array([np.sin(angle_r), -np.cos(angle_r), 0])
@@ -159,6 +161,7 @@ def test_vbd_spin_reaction_matches_capstan_projection(test, device):
             output = wp.zeros(2, dtype=wp.vec3, device=device)
             inputs = [
                 wp.array([wp.transform_identity()], dtype=wp.transform, device=device),
+                wp.array([wp.transform(wp.vec3(0.03, -0.04, 0.0))], dtype=wp.transform, device=device),
                 wp.zeros(1, dtype=wp.vec3, device=device),
                 adjacency,
                 wp.array([-1, 0, -1], dtype=int, device=device),
@@ -167,7 +170,7 @@ def test_vbd_spin_reaction_matches_capstan_projection(test, device):
                     dtype=int,
                     device=device,
                 ),
-                wp.array([[0, 0, 0], [0.5, 0, 0], [0, 0, 0]], dtype=wp.vec3, device=device),
+                wp.array([np.zeros(3), center, np.zeros(3)], dtype=wp.vec3, device=device),
                 wp.array([[0, 0, 1]] * 3, dtype=wp.vec3, device=device),
                 wp.array([-1, 0, -1], dtype=int, device=device),
                 wp.array([-1, 1, -1], dtype=int, device=device),
@@ -187,12 +190,16 @@ def test_vbd_spin_reaction_matches_capstan_projection(test, device):
             bound = radius * (rho - 1.0) / (rho + 1.0) * sum(tensions)
             rim_torque = radius * (tensions[0] * np.cos(angle_l) - tensions[1] * np.cos(angle_r))
             expected_torque = np.cross(center, expected_force) + np.array([0, 0, np.clip(rim_torque, -bound, bound)])
-            np.testing.assert_allclose(output.numpy(), [expected_force, expected_torque], atol=2.0e-5, rtol=0)
+            torque_tol = 2.0e-5 * (np.linalg.norm(center) + radius)
+            np.testing.assert_allclose(output.numpy()[0], expected_force, atol=2.0e-5, rtol=0)
+            np.testing.assert_allclose(output.numpy()[1], expected_torque, atol=torque_tol, rtol=0)
             if device.is_cuda:
                 with wp.ScopedCapture(device=device) as capture:
                     wp.launch(_evaluate_roller_reaction, dim=1, inputs=inputs, device=device)
+                output.zero_()
                 wp.capture_launch(capture.graph)
-                np.testing.assert_allclose(output.numpy(), [expected_force, expected_torque], atol=2.0e-5, rtol=0)
+                np.testing.assert_allclose(output.numpy()[0], expected_force, atol=2.0e-5, rtol=0)
+                np.testing.assert_allclose(output.numpy()[1], expected_torque, atol=torque_tol, rtol=0)
 
 
 def test_vbd_no_tendon_specialization(test, device):

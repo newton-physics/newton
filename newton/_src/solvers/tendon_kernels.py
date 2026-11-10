@@ -59,17 +59,15 @@ def _material_sweep_guide_converged(
     damping_r = damping[right] if compliance[right] > 0.0 else 0.0
     tension_l = wp.max(stretch[left] / wp.max(compliance[left], 1.0e-30) + damping_l, 0.0)
     tension_r = wp.max(stretch[right] / wp.max(compliance[right], 1.0e-30) + damping_r, 0.0)
-    # Allow a few float32 ulps at stretch scale when classifying a donor bound.
-    # Exact comparisons can keep requesting material from a depleted span.
-    roundoff_l = 1.0e-6 * wp.max(wp.max(wp.abs(length[left]), wp.abs(stretch[left])), min_rest)
-    roundoff_r = 1.0e-6 * wp.max(wp.max(wp.abs(length[right]), wp.abs(stretch[right])), min_rest)
+    # Bounds are applied at stretch scale in the pair update. Any remaining
+    # transferable material can still matter for a stiff neighboring span.
     error = _material_sweep_contact_error(
         tension_l,
         tension_r,
         ratio[guide],
         transfer[guide],
-        (length[left] - min_rest) - stretch[left] > roundoff_l,
-        (length[right] - min_rest) - stretch[right] > roundoff_r,
+        stretch[left] < length[left] - min_rest,
+        stretch[right] < length[right] - min_rest,
     )
     return error <= atol + rtol * wp.max(tension_l, tension_r)
 
@@ -1417,12 +1415,12 @@ def solve_tendon_material(
                 change_lower = current_l - limit_l
                 change_upper = limit_r - current_r
                 if change_lower <= change_upper:
-                    if change <= change_lower or next_l > limit_l:
+                    if change <= change_lower or next_l > limit_l or (lower <= upper and delta <= lower):
                         change = change_lower
                         next_l = limit_l
                         next_r = current_r + change
                         delta = previous_transfer + change
-                    elif change >= change_upper or next_r > limit_r:
+                    elif change >= change_upper or next_r > limit_r or (lower <= upper and delta >= upper):
                         change = change_upper
                         next_l = current_l - change
                         next_r = limit_r
