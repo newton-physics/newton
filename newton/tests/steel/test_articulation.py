@@ -2285,9 +2285,14 @@ def test_springs_skip_unsupported_joint_types(test, device, solve_mode="serial")
         builder.add_joint_revolute(parent=links[1], child=links[2], parent_xform=hinge, axis=newton.Axis.Z),
     ]
     builder.add_articulation(joints)
+    # A REVOLUTE joint in no articulation, whose child is in none either, is not simulated.
+    unowned_link = builder.add_link(
+        xform=wp.transform(wp.vec3(5.0, 0.0, 1.0), wp.quat_identity()), mass=0.5, inertia=inertia
+    )
+    builder.add_joint_revolute(parent=-1, child=unowned_link, axis=newton.Axis.Z)
     builder.joint_stiffness = [5.0] * builder.joint_dof_count
     model = builder.finalize(device=device)
-    # The square's four tree hinges and the finger hinge carry springs; the loop, FREE and BALL joints do not.
+    # The square's four tree hinges and the finger hinge carry springs; the loop, FREE, BALL and unowned joints do not.
     qd_start = model.joint_qd_start.numpy()
     sprung = np.zeros(model.joint_dof_count, dtype=bool)
     sprung[qd_start[joints[2]]] = True
@@ -2299,14 +2304,14 @@ def test_springs_skip_unsupported_joint_types(test, device, solve_mode="serial")
             result = call()
         return result, " | ".join(str(w.message) for w in caught)
 
-    # The FREE and BALL joints' 9 DOFs warn here; the REVOLUTE loop warns about its own inputs.
+    # The FREE, BALL and unowned joints' 10 DOFs warn here; the REVOLUTE loop warns about its own inputs.
     solver, messages = warnings_of(lambda: SolverSteel(model, solve_mode=solve_mode))
-    test.assertRegex(messages, "stiffness on 9 DOF")
+    test.assertRegex(messages, "stiffness on 10 DOF")
     test.assertRegex(messages, "loop-closing REVOLUTE joint .* spring stiffness")
     np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 5.0, 0.0))
     model.joint_stiffness.fill_(7.0)
     _, messages = warnings_of(lambda: solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES))
-    test.assertRegex(messages, "stiffness on 9 DOF")
+    test.assertRegex(messages, "stiffness on 10 DOF")
     np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 7.0, 0.0))
 
     builder, _ = _build_square_loop("ball")

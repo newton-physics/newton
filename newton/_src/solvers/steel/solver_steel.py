@@ -1415,7 +1415,8 @@ class SolverSteel(SolverBase, CouplingInterface):
       explicitly as ``stiffness * (rest_q - q)`` like :class:`~newton.solvers.SolverFeatherstone`,
       independently of drives and joint limits. Unlike the implicit drives, explicit springs
       stay stable only for roughly ``dt * sqrt(stiffness / m_eff) < 2`` per DOF. Construction and
-      :meth:`notify_model_changed` warn about stiffness on other DOFs, which is ignored.
+      eager :meth:`notify_model_changed` calls warn about stiffness on other DOFs, which is ignored; a
+      notification during CUDA graph capture skips the check.
     - Joint limits: with ``enable_joint_limits=True``, every finite
       :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
@@ -3242,8 +3243,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         :attr:`~newton.Model.joint_friction` and ``steel:joint_friction_load_coefficient`` on the host and
         raises :class:`ValueError` for invalid values, after applying every other update. With loop-closing
         REVOLUTE joints, an eager joint, joint DOF, DOF force or DOF inertial notification also reads their
-        DOF inputs and axes on the host to warn about the ones a closure ignores. A captured notification
-        skips both checks.
+        DOF inputs and axes on the host to warn about the ones a closure ignores. An eager joint DOF or DOF
+        force notification also warns about spring stiffness Steel ignores. A captured notification skips
+        all three checks.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -4589,7 +4591,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             joint_type = model.joint_type.numpy()
             qd_start = model.joint_qd_start.numpy()
             sprung = np.isin(joint_type, [int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)])
-            sprung &= self._model_plan.loop_joint_articulation < 0
+            sprung &= model.joint_articulation.numpy() >= 0
             for joint in np.flatnonzero(sprung):
                 spring_dof_mask[qd_start[joint] : qd_start[joint + 1]] = 1
             # Loop-closing REVOLUTE joints warn about their ignored inputs separately.
