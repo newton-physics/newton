@@ -1796,13 +1796,15 @@ def _test_coupled_examples_odd_substep_capture_matches_eager(test, device):
             parsed = module.Example.create_parser().parse_args([*args, "--substeps", "3"])
             if not capture:
                 parsed.graph_capture = False
-            # The XPBD-MPM example always captures on CUDA, so its eager run skips capture().
+            # The XPBD-MPM example always captures on CUDA, so its eager run skips capture() and swaps every substep.
             skip_capture = not capture and module is example_xpbd_mpm_coupled_solver
             with (
                 wp.ScopedDevice(device),
                 mock.patch.object(module.Example, "capture") if skip_capture else contextlib.nullcontext(),
             ):
                 example = module.Example(ViewerNull(num_frames=frames), parsed)
+                if skip_capture:
+                    example.use_graph = False
                 test.assertEqual(example.graph is not None, capture)
                 for _ in range(frames):
                     example.step()
