@@ -40,7 +40,8 @@ An actuator is composed from three building blocks, applied in this order:
    └── Clamping[]  (clamps raw effort based on motor-limit modeling)
        ├── ClampingMaxEffort        (±max_effort symmetric clamp)
        ├── ClampingDCMotor         (velocity-dependent saturation)
-       └── ClampingPositionBased   (position-dependent lookup table)
+       ├── ClampingPositionBased   (position-dependent lookup table)
+       └── ClampingThermal         (motor heating, derating, and cut-off)
 
 **Delay**
    Optionally delays command inputs (control targets and feedforward terms)
@@ -67,7 +68,8 @@ The per-step pipeline is:
 
 .. code-block:: text
 
-   Delay read → Drive → Clamping → Scatter-add → State updates (drive + delay write)
+   Delay read → Clamping prepare → Drive → Clamping → Scatter-add
+              → State updates (clamping + drive + delay write)
 
 Drives and clamping objects are pluggable: implement the
 :class:`DriveBase` or :class:`ClampingBase` class to add new models.
@@ -76,8 +78,8 @@ Drives and clamping objects are pluggable: implement the
 
    **Current limitations:** the first version does not include a transmission
    model (gear ratios / linkage transforms), supports only one DOF per
-   actuator, and does not model
-   actuator dynamics (inertia, friction, thermal effects).
+   actuator, and does not model actuator inertia or friction. Thermal effects
+   are modeled by :class:`ClampingThermal`.
 
 Usage
 -----
@@ -91,7 +93,7 @@ when the model is finalized:
    import warp as wp
    import newton
    from newton.actuators import (
-       Actuator, ClampingMaxEffort, DrivePD, Delay,
+       Actuator, ClampingDCMotor, ClampingMaxEffort, ClampingThermal, DrivePD, Delay,
    )
 
    builder = newton.ModelBuilder()
@@ -166,7 +168,8 @@ Stateful Actuators
 
 Drives that maintain internal state (e.g. :class:`DrivePID` with an
 integral accumulator, :class:`DriveNeuralGRU` with hidden state, or
-:class:`DriveNeuralLSTM` with hidden/cell state) and
+:class:`DriveNeuralLSTM` with hidden/cell state), stateful clamps such as
+:class:`ClampingThermal`, and
 actuators with a :class:`Delay` require explicit double-buffered state
 management.  Create two state objects with :meth:`Actuator.state` and swap them
 after each step:
@@ -675,9 +678,79 @@ Clamping
   motor effort-speed characteristic.
 * :class:`ClampingPositionBased` — position-dependent effort limits via
   interpolated lookup table (e.g. for linkage-driven joints).
+* :class:`ClampingThermal` — two-node winding/housing thermal model that
+  derates and cuts off effort as the motor heats (stateful).
 
 Multiple clamping objects can be stacked on a single actuator; they are applied
 in sequence.
+
+.. _thermal-clamping:
+
+Thermal Limits
+--------------
+
+:class:`ClampingThermal` heats a winding and a housing node per actuator with
+the copper loss of the effort it applied, ``R(T) · (effort / torque_constant)²``,
+and an optional iron loss proportional to the squared joint speed. The heat
+flows to the ambient air through two thermal resistances. As the winding
+heats, the effort limit falls linearly between ``temperature_derating_start``
+and ``temperature_derating_end``, and a latched cut-off holds it at zero from
+``temperature_cutoff`` until the winding cools to ``temperature_release``.
+
+Place it after :class:`ClampingDCMotor`, so the effort–speed envelope and the
+thermal limit both apply and the heat comes from the final effort:
+
+.. testcode:: actuator-usage
+
+   builder = newton.ModelBuilder()
+   link = builder.add_link()
+   joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+   builder.add_articulation([joint])
+   builder.add_actuator(
+       DrivePD,
+       index=builder.joint_qd_start[joint],
+       kp=100.0,
+       kd=2.0,
+       clamping=[
+           (ClampingDCMotor, {"saturation_effort": 120.0, "velocity_limit": 32.0, "max_motor_effort": 88.0}),
+           (
+               ClampingThermal,
+               {
+                   "max_effort": 88.0,
+                   "torque_constant": 1.43,
+                   "winding_resistance": 0.11,
+                   "heat_capacity_winding": 45.0,
+                   "heat_capacity_housing": 320.0,
+                   "thermal_resistance_winding_housing": 0.55,
+                   "thermal_resistance_housing_ambient": 1.3,
+                   "temperature_derating_start": 80.0,
+                   "temperature_derating_end": 105.0,
+               },
+           ),
+       ],
+   )
+   model = builder.finalize()
+
+   actuator = model.actuators[0]
+   act_0, act_1 = actuator.state(), actuator.state()
+   thermal = act_0.clamping_states[1]  # one entry per clamp; None for stateless ones
+   print(thermal.temperature_winding.numpy())
+
+.. testoutput:: actuator-usage
+
+   [25.]
+
+Temperatures live in the actuator state, so they swap, reset, and replay
+under CUDA graph capture like any other actuator state. Read or write them for
+a batch of worlds with
+:meth:`~newton.selection.ArticulationView.get_actuator_parameter` and
+:meth:`~newton.selection.ArticulationView.set_actuator_parameter`, passing the
+clamp state as the component; e.g. to observe the winding temperature or
+start an episode with a warm motor. Every parameter is a live per-actuator
+array, so per-world randomization or airflow cooling are writes to e.g.
+``temperature_ambient`` or ``thermal_resistance_housing_ambient``.
+:attr:`Actuator.applied_effort` exposes the effort the actuator applied in the
+last step, separately from other contributions to the output array.
 
 Customization
 -------------
@@ -778,6 +851,16 @@ Torch-backed neural checkpoint. Leaving
 Similarly, a custom clamping stage subclasses :class:`ClampingBase` and
 implements :meth:`~ClampingBase.modify_forces` (which reads effort from a source
 buffer and writes bounded effort to a destination buffer).
+
+A clamp whose bound depends on a quantity that evolves over time defines a
+dataclass subclass of :class:`ClampingBase.State` and overrides
+:meth:`~ClampingBase.is_stateful`, :meth:`~ClampingBase.state`,
+:meth:`~ClampingBase.prepare`, and :meth:`~ClampingBase.update_state`.
+:meth:`~ClampingBase.prepare` runs before the drive and writes the bound into
+the clamp's own parameter arrays, which :meth:`~ClampingBase.modify_forces`
+and the implicit solve both read. :meth:`~ClampingBase.update_state` then
+advances the state from the final applied effort.
+:class:`ClampingThermal` is the reference implementation.
 
 See Also
 --------

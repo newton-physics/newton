@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import functools
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, make_dataclass
 from typing import TYPE_CHECKING, Any
@@ -183,14 +184,17 @@ class Actuator:
     class State:
         """Composed state for an :class:`Actuator`.
 
-        Holds the delay state (if a delay is present) and the drive
-        state. Clamping objects are stateless.
+        Holds the delay state (if a delay is present), the drive
+        state, and the states of stateful clamps.
         """
 
         delay_state: Delay.State | None = None
         """Delay buffer state, or ``None`` if no delay is used."""
         drive_state: DriveBase.State | None = None
         """Drive-specific state, or ``None`` if stateless."""
+        clamping_states: tuple[ClampingBase.State | None, ...] = ()
+        """One entry per clamp in :attr:`Actuator.clamping` order: its state,
+        or ``None`` for a stateless clamp. Empty when no clamp is stateful."""
 
         controller_state = RemovedAttribute("drive_state", removed_in="1.8")
 
@@ -205,6 +209,9 @@ class Actuator:
                 self.delay_state.reset(mask)
             if self.drive_state is not None:
                 self.drive_state.reset(mask)
+            for clamping_state in self.clamping_states:
+                if clamping_state is not None:
+                    clamping_state.reset(mask)
 
         def assign(self, other: Actuator.State) -> None:
             """Copy the state held by *other* into this one.
@@ -232,6 +239,13 @@ class Actuator:
             """
             _assign_component_state(self.delay_state, other.delay_state, "delay_state")
             _assign_component_state(self.drive_state, other.drive_state, "drive_state")
+            if len(self.clamping_states) != len(other.clamping_states):
+                raise ValueError(
+                    f"Cannot assign 'clamping_states': {len(self.clamping_states)} and "
+                    f"{len(other.clamping_states)} entries."
+                )
+            for i, (dst, src) in enumerate(zip(self.clamping_states, other.clamping_states, strict=True)):
+                _assign_component_state(dst, src, f"clamping_states[{i}]")
 
     def __init__(
         self,
@@ -259,6 +273,9 @@ class Actuator:
             drive: Drive that computes raw effort.
             delay: Optional Delay instance for input delay.
             clamping: List of Clamping objects (post-drive effort bounds).
+                Clamps appended to :attr:`clamping` later take effect in the
+                explicit mode once finalized; create actuator states and call
+                :meth:`set_effort_mode_implicit` after appending.
             pos_indices: Indices into coordinate-shaped arrays (positions =
                 ``state.joint_q``). Defaults to *indices*. Differs from
                 *indices* when position and velocity arrays have different
@@ -330,6 +347,7 @@ class Actuator:
             delay.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
+        self._last_applied_effort: wp.array[float] | None = None
 
         self._effort_mode = _EffortModeExplicit(drive, self.clamping, self.device)
 
@@ -448,13 +466,22 @@ class Actuator:
         """Switch effort computation back to the default explicit mode."""
         self._effort_mode = _EffortModeExplicit(self.drive, self.clamping, self.device)
 
+    @property
+    def _stateful_clamping(self) -> tuple[tuple[int, ClampingBase], ...]:
+        """Stateful clamps and their positions in :attr:`clamping`.
+
+        Evaluated on access so clamps appended to :attr:`clamping` after
+        construction are included.
+        """
+        return tuple((index, clamp) for index, clamp in enumerate(self.clamping) if clamp.is_stateful())
+
     def is_stateful(self) -> bool:
-        """Return True if the delay or drive maintains internal state."""
-        return self.delay is not None or self.drive.is_stateful()
+        """Return True if the delay, drive, or a clamp maintains internal state."""
+        return self.delay is not None or self.drive.is_stateful() or bool(self._stateful_clamping)
 
     def is_graphable(self) -> bool:
         """Return True if all components can be captured in a CUDA graph."""
-        return self._effort_mode.is_graphable()
+        return self._effort_mode.is_graphable() and all(clamp.is_graphable() for clamp in self.clamping)
 
     def state(self) -> Actuator.State | None:
         """Return a new composed state, or None if fully stateless."""
@@ -463,7 +490,39 @@ class Actuator:
         return Actuator.State(
             delay_state=(self.delay.state(self.num_actuators, self.device) if self.delay is not None else None),
             drive_state=(self.drive.state(self.num_actuators, self.device) if self.drive.is_stateful() else None),
+            clamping_states=(
+                tuple(
+                    clamp.state(self.num_actuators, self.device) if clamp.is_stateful() else None
+                    for clamp in self.clamping
+                )
+                if self._stateful_clamping
+                else ()
+            ),
         )
+
+    @property
+    def computed_effort(self) -> wp.array[float]:
+        """Raw drive effort of the last :meth:`step`, before clamping [N or N·m].
+
+        One entry per actuator slot, in :attr:`indices` order. The buffer is
+        reused by every step, so its address is stable under CUDA graph capture.
+        """
+        return self._computed_forces
+
+    @property
+    def applied_effort(self) -> wp.array[float]:
+        """Final effort the last :meth:`step` added to the output [N or N·m].
+
+        One entry per actuator slot, in :attr:`indices` order, after every
+        clamp. Unlike the output array, it holds only this actuator's
+        contribution. The buffer is reused by every step, so its address is
+        stable under CUDA graph capture.
+        """
+        if self._last_applied_effort is not None:
+            return self._last_applied_effort
+        if isinstance(self._effort_mode, _EffortModeExplicit) and not self.clamping:
+            return self._computed_forces
+        return self._applied_forces
 
     @property
     def _required_attributes(self) -> dict[str, tuple[str, ...]]:
@@ -500,16 +559,19 @@ class Actuator:
         1. **Delay read** — read per-DOF delayed targets from
            ``current_state`` (falls back to current targets when
            the buffer is empty).
-        2. **Effort** — raw effort into ``_computed_forces`` (explicit control
-           law, or the implicit end-of-step solve).
-        3. **Clamping** — bounded effort into ``_applied_forces``. Explicit
+        2. **Clamp preparation** — stateful clamps refresh their bounds from
+           ``current_state`` (:meth:`ClampingBase.prepare`).
+        3. **Effort** — raw effort into :attr:`computed_effort` (explicit
+           control law, or the implicit end-of-step solve).
+        4. **Clamping** — bounded effort into :attr:`applied_effort`. Explicit
            clamps after the drive law; implicit enforces them inside the
            solve.
-        4. **Scatter-add** — *accumulate* applied (and optionally computed)
+        5. **Scatter-add** — *accumulate* applied (and optionally computed)
            effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
-        5. **State updates** — drive state update, then delay
-           buffer write (push current targets into ``next_state``).
+        6. **State updates** — stateful clamps advance from the applied
+           effort, then the drive state update, then the delay buffer write
+           (push current targets into ``next_state``).
 
         Args:
             sim_state: Object or mapping carrying the arrays named by
@@ -520,7 +582,7 @@ class Actuator:
                 with :meth:`sim_control`.
             current_act_state: Current composed state (None if stateless).
             next_act_state: Next composed state (None if stateless).
-            dt: Timestep [s].
+            dt: Timestep [s]. Required when a clamp is stateful.
             bias_force: Optional per-DOF bias force ``C qd + g`` of the
                 manipulator equation ``tau = M qdd + bias_force``, indexed like
                 ``joint_qd`` [N or N·m, depending on joint type]: the force the
@@ -540,6 +602,16 @@ class Actuator:
             raise ValueError(
                 "Stateful actuator requires both current_act_state and next_act_state; create them via actuator.state()"
             )
+        stateful_clamping = self._stateful_clamping
+        if stateful_clamping:
+            if dt is None or not math.isfinite(dt) or dt <= 0.0:
+                raise ValueError(f"Actuators with stateful clamping require a positive, finite dt, got {dt}.")
+            for act_state in (current_act_state, next_act_state):
+                if len(act_state.clamping_states) != len(self.clamping):
+                    raise ValueError(
+                        "Actuator state was created for a different clamping list; "
+                        "create it again with actuator.state()."
+                    )
 
         positions = _require_array(sim_state, self.state_pos_attr)
         velocities = _require_array(sim_state, self.state_vel_attr)
@@ -570,7 +642,19 @@ class Actuator:
             target_pos_indices = self._sequential_indices
             target_vel_indices = self._sequential_indices
 
-        # --- 2+3. Effort mode: compute raw effort and clamp ---
+        # --- 2. Refresh state-dependent clamp bounds (read by both effort modes) ---
+        for index, clamp in stateful_clamping:
+            clamp.prepare(
+                current_act_state.clamping_states[index],
+                positions,
+                velocities,
+                self.pos_indices,
+                self.indices,
+                dt,
+                device=self.device,
+            )
+
+        # --- 3+4. Effort mode: compute raw effort and clamp ---
         drive_state = current_act_state.drive_state if current_act_state else None
         custom_inputs = _collect_custom_inputs(sim_control, self.drive.custom_inputs)
         output_forces = self._effort_mode.compute_force(
@@ -592,7 +676,9 @@ class Actuator:
             bias_force,
         )
 
-        # --- 4. Scatter-add to output ---
+        self._last_applied_effort = output_forces
+
+        # --- 5. Scatter-add to output ---
         applied_output = _require_array(sim_control, self.control_output_attr)
         computed_output = None
         if (
@@ -608,7 +694,19 @@ class Actuator:
             device=self.device,
         )
 
-        # --- 5. State updates (write to next_state) ---
+        # --- 6. State updates (write to next_state) ---
+        for index, clamp in stateful_clamping:
+            clamp.update_state(
+                current_act_state.clamping_states[index],
+                next_act_state.clamping_states[index],
+                output_forces,
+                positions,
+                velocities,
+                self.pos_indices,
+                self.indices,
+                dt,
+                device=self.device,
+            )
         if self.drive.is_stateful():
             self.drive.update_state(
                 current_act_state.drive_state,
