@@ -384,7 +384,7 @@ def test_solver_flags_deactivate_zero_mass_without_mutating_model(test, device):
 
 
 def test_solver_flags_track_runtime_model_changes(test, device):
-    """Refresh solver activity after model masses and flags change."""
+    """Refresh particle and affine block flags after model masses and flags change."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverStyle3D.register_custom_attributes(builder)
     newton.solvers.style3d.add_cloth_grid(
@@ -398,6 +398,12 @@ def test_solver_flags_track_runtime_model_changes(test, device):
         cell_y=0.1,
         mass=0.1,
     )
+    for body in range(4):
+        builder.add_link(
+            mass=0.0 if body == 2 else 1.0,
+            inertia=wp.mat33(0.0) if body == 2 else wp.mat33(np.eye(3)),
+            is_kinematic=body == 1,
+        )
     model = builder.finalize(device=device)
     solver = newton.solvers.SolverStyle3D(
         model, config=newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=1)
@@ -422,6 +428,59 @@ def test_solver_flags_track_runtime_model_changes(test, device):
     test.assertEqual(int(solver_flags[1]), 0)
     test.assertNotEqual(int(solver_flags[2]) & active, 0)
     np.testing.assert_array_equal(model.particle_flags.numpy(), model_flags)
+
+    # Reuse the same model to check the shared flag buffer at both possible body offsets.
+    dynamics = newton.solvers.SolverStyle3D.Dynamics
+    solvers = [solver] + [
+        newton.solvers.SolverStyle3D(model, dynamics=mode) for mode in (dynamics.ALL, dynamics.AFFINE_BODY)
+    ]
+    dynamic = int(newton.BodyFlags.DYNAMIC)
+    kinematic = int(newton.BodyFlags.KINEMATIC)
+    body_proxy = int(newton.BodyFlags.PROXY)
+    proxy = int(newton.ParticleFlags.PROXY)
+    graphs = {}
+    cases = (
+        ([dynamic, kinematic, dynamic, dynamic | body_proxy], [1.0, 1.0, 0.0, 1.0], [active, 0, 0, active | proxy]),
+        ([kinematic, dynamic, dynamic, kinematic | body_proxy], [1.0, 1.0, 1.0, 1.0], [0, active, active, proxy]),
+        ([dynamic, kinematic, dynamic, dynamic], [1.0, 1.0, -1.0, 1.0], [active, 0, 0, active]),
+    )
+    for frame, (source_body_flags, source_body_masses, expected_body_flags) in enumerate(cases):
+        body_flags = np.array(source_body_flags, dtype=np.int32)
+        body_masses = np.array(source_body_masses, dtype=np.float32)
+        model.body_flags.assign(body_flags)
+        model.body_mass.assign(body_masses)
+        if frame == 1:
+            masses[0] = 0.1
+            model_flags[1] = active | proxy
+        elif frame == 2:
+            model_flags[2] = 0
+        model.particle_mass.assign(masses)
+        model.particle_flags.assign(model_flags)
+        expected_particle_flags = model_flags.copy()
+        expected_particle_flags[masses <= 0.0] &= ~active
+
+        for current in solvers:
+            with test.subTest(frame=frame, dynamics=current.dynamics):
+                if current in graphs:
+                    wp.capture_launch(graphs[current])
+                else:
+                    current._to_internal_state(state_0)
+                    if wp.get_device(device).is_cuda:
+                        with wp.ScopedCapture(device=device) as capture:
+                            current._to_internal_state(state_0)
+                        graphs[current] = capture.graph
+                expected = np.concatenate(
+                    (
+                        expected_particle_flags[: current._particle_count],
+                        np.repeat(expected_body_flags[: current._affine_body_count], 4),
+                    )
+                )
+                np.testing.assert_array_equal(current._particle_flags.numpy(), expected)
+
+        np.testing.assert_array_equal(model.particle_flags.numpy(), model_flags)
+        np.testing.assert_array_equal(model.particle_mass.numpy(), masses)
+        np.testing.assert_array_equal(model.body_flags.numpy(), body_flags)
+        np.testing.assert_array_equal(model.body_mass.numpy(), body_masses)
 
 
 def test_global_particles_use_global_gravity(test, device):

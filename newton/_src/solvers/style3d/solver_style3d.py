@@ -18,7 +18,7 @@ from .builder import PDMatrixBuilder, _compute_max_neighbors
 from .collision import Collision
 from .kernels import (
     accumulate_dragging_pd_diag_kernel,
-    deactivate_zero_mass_particles_kernel,
+    compute_solver_flags_kernel,
     eval_bend_kernel,
     eval_drag_force_kernel,
     eval_stretch_kernel,
@@ -330,7 +330,7 @@ class SolverStyle3D(SolverBase):
         self._dof_block_count = self._particle_count + self._affine_body_count * 4
         self._linear_solver = PcgSolver(self._dof_block_count, self.device)
 
-        # Keep solver-specific activity constraints out of the shared model.
+        # ParticleFlags for every particle and affine block, separate from model flags.
         self._particle_flags = wp.zeros(self._dof_block_count, dtype=int, device=self.device)
 
         # Fixed PD matrix
@@ -659,15 +659,21 @@ class SolverStyle3D(SolverBase):
             self._pd_diag, self._pd_off_diag.num_nz, self._pd_off_diag.nz_ell = pd_matrix_builder.finalize(self.device)
 
     def _to_internal_state(self, state: State):
-        """Populate internal solver state and refresh particle activity flags."""
+        """Populate internal solver state and refresh flags for all DOF blocks."""
         if self._particle_count > 0:
             wp.copy(self._x, state.particle_q, count=self._particle_count)
             wp.copy(self._v, state.particle_qd, count=self._particle_count)
-            wp.copy(self._particle_flags, self.model.particle_flags, count=self._particle_count)
+        if self._dof_block_count > 0:
             wp.launch(
-                deactivate_zero_mass_particles_kernel,
-                dim=self._particle_count,
-                inputs=[self.model.particle_mass],
+                compute_solver_flags_kernel,
+                dim=self._particle_count + self._affine_body_count,
+                inputs=[
+                    self._particle_count,
+                    self.model.particle_mass,
+                    self.model.particle_flags,
+                    self.model.body_mass,
+                    self.model.body_flags,
+                ],
                 outputs=[self._particle_flags],
                 device=self.device,
             )

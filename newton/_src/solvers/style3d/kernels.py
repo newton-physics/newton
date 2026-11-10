@@ -4,16 +4,45 @@
 import warp as wp
 
 from ...geometry import ParticleFlags
+from ...sim import BodyFlags
 
 
 @wp.kernel
-def deactivate_zero_mass_particles_kernel(
+def compute_solver_flags_kernel(
+    particle_count: int,
     particle_masses: wp.array[float],
     particle_flags: wp.array[wp.int32],
+    body_masses: wp.array[float],
+    body_flags: wp.array[wp.int32],
+    # outputs
+    solver_flags: wp.array[wp.int32],
 ):
+    """Build ParticleFlags for each particle and all four affine blocks per body."""
     tid = wp.tid()
-    if particle_masses[tid] <= 0.0:
-        particle_flags[tid] = particle_flags[tid] & ~ParticleFlags.ACTIVE
+    if tid < particle_count:
+        flags = particle_flags[tid]
+        if particle_masses[tid] <= 0.0:
+            flags = flags & ~ParticleFlags.ACTIVE
+        solver_flags[tid] = flags
+    else:
+        flags = wp.int32(0)
+        body = tid - particle_count
+        source_flags = body_flags[body]
+        if (
+            body_masses[body] > 0.0
+            and (source_flags & BodyFlags.DYNAMIC) != 0
+            and (source_flags & BodyFlags.KINEMATIC) == 0
+        ):
+            flags = ParticleFlags.ACTIVE
+        # Translate explicitly because the body and particle enums use different bit positions.
+        if (source_flags & BodyFlags.PROXY) != 0:
+            flags = flags | ParticleFlags.PROXY
+
+        start = particle_count + 4 * body
+        solver_flags[start + 0] = flags
+        solver_flags[start + 1] = flags
+        solver_flags[start + 2] = flags
+        solver_flags[start + 3] = flags
 
 
 @wp.func
