@@ -562,7 +562,13 @@ cover them. After editing state attributes, for example to teleport bodies, call
 flags for built-in attributes and for custom attributes such as ``"mujoco:solref"``. ``NONE`` means
 that solvers read the attribute at every step, as for most :class:`~newton.Control` and all
 :class:`~newton.Contacts` attributes, and ``None`` means that no flag covers the attribute, so
-solvers that cache it must be recreated.
+solvers that cache it must be recreated. Some model attributes, such as
+:attr:`~newton.Model.joint_target_q`, only provide initial values for new :class:`~newton.State` or
+:class:`~newton.Control` objects, which copy them by default. Editing such a model attribute does not
+change existing objects; edit their copy directly, or create new ones.
+Coupled solvers hold copies of the model arrays in their entry views, so after editing an
+attribute whose flags are ``NONE``, notify them with the flags of the attribute's entity, such as
+:attr:`~newton.ModelFlags.BODY_PROPERTIES` for a per-body attribute.
 
 Whether a notification can be captured in a CUDA graph depends on the solver, its configuration,
 and the model. :meth:`~newton.solvers.SolverBase.is_notify_model_changed_graphable` answers it

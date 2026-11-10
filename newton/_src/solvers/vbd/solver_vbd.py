@@ -2587,7 +2587,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         Dahl rod friction is enabled per joint only where both
         ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` are authored
-        positive; the attributes default to zero.
+        positive; the attributes default to zero. The solver skips Dahl friction
+        entirely when no joint enables it at construction, so reconstruct the
+        solver after making them positive.
 
         Args:
             builder: Model builder to register attributes on.
@@ -2620,7 +2622,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_eps_max",
-                update_flags=ModelFlags.NONE,
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -2631,7 +2632,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_tau",
-                update_flags=ModelFlags.NONE,
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,

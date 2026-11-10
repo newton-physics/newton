@@ -18,7 +18,7 @@ from bisect import bisect_left
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from os import PathLike
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -1520,7 +1520,7 @@ class ModelBuilder:
         default: Any = None
         """Default value for the attribute. If None, the default value is determined based on the dtype."""
 
-        update_flags: int | None = None
+        update_flags: int | None = field(default=None, kw_only=True)
         """Flags announcing an edit of the attribute in a finalized :class:`~newton.Model`, or ``None``
         when no flag covers it, for example because solvers read the attribute only at construction.
 

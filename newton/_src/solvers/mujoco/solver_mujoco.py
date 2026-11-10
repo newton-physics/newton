@@ -818,6 +818,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Determines where an actuator gets its control input from:
 
         - :attr:`JOINT_TARGET`: Maps from Newton's :attr:`~newton.Control.joint_target_q`/:attr:`~newton.Control.joint_target_qd` arrays.
+          Runtime edits to ``actuator_ctrlrange`` apply to these rows; runtime edits to their other
+          ``mujoco:actuator_*`` parameters, including ``actuator_forcerange``, are ignored.
         - :attr:`CTRL_DIRECT`: Uses ``control.mujoco.ctrl`` directly (for MuJoCo-native control)
         """
 
@@ -3160,7 +3162,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="ctrl_type",
-                update_flags=ModelFlags.ACTUATOR_PROPERTIES,
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
@@ -3581,7 +3582,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         )
 
-    def _init_pairs(self, model: Model, spec: Any, shape_mapping: dict[int, str], template_world: int) -> None:
+    def _init_pairs(
+        self, model: Model, spec: Any, shape_mapping: dict[int, str], template_world: int
+    ) -> list[tuple[str, str]]:
         """
         Initialize MuJoCo contact pairs from custom attributes.
 
@@ -3594,10 +3597,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             spec: The MuJoCo spec to add pairs to.
             shape_mapping: Mapping from Newton shape index to MuJoCo geom name.
             template_world: The world index to use as the template (typically first_group).
+
+        Returns:
+            The geom names of the added pairs, in the order they were added.
         """
+        added_pairs: list[tuple[str, str]] = []
         pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
         if pair_count == 0:
-            return
+            return added_pairs
 
         mujoco_attrs = model.mujoco
 
@@ -3609,7 +3616,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         pair_geom1 = get_numpy("pair_geom1")
         pair_geom2 = get_numpy("pair_geom2")
         if pair_world is None or pair_geom1 is None or pair_geom2 is None:
-            return
+            return added_pairs
 
         pair_condim = get_numpy("pair_condim")
         pair_solref = get_numpy("pair_solref")
@@ -3687,6 +3694,38 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 pair_kwargs["friction"] = pair_friction[i].tolist()
 
             spec.add_pair(**pair_kwargs)
+            added_pairs.append((geom_name1, geom_name2))
+
+        return added_pairs
+
+    def _map_compiled_pairs(self, added_pairs: list[tuple[str, str]], device: wp.DeviceLike) -> wp.array | None:
+        """Map compiled MuJoCo pairs to the order in which :meth:`_init_pairs` added them.
+
+        MuJoCo sorts pairs by body-pair signature during compilation, so a compiled pair index
+        generally differs from the authored row. It may also swap the geoms of a pair, so pairs are
+        matched by their unordered geoms.
+        """
+        if self.mj_model.npair == 0:
+            return None
+
+        def key(geom1: int, geom2: int) -> tuple[int, int]:
+            return (min(geom1, geom2), max(geom1, geom2))
+
+        rows_by_geoms: dict[tuple[int, int], list[int]] = {}
+        for row, (geom_name1, geom_name2) in enumerate(added_pairs):
+            pair_key = key(self.mj_model.geom(geom_name1).id, self.mj_model.geom(geom_name2).id)
+            rows_by_geoms.setdefault(pair_key, []).append(row)
+        # The sort is stable, so pairs between the same geoms keep their order.
+        for rows in rows_by_geoms.values():
+            rows.reverse()
+        mapping = np.array(
+            [
+                rows_by_geoms[key(int(geom1), int(geom2))].pop()
+                for geom1, geom2 in zip(self.mj_model.pair_geom1, self.mj_model.pair_geom2, strict=True)
+            ],
+            dtype=np.int32,
+        )
+        return wp.array(mapping, dtype=wp.int32, device=device)
 
     @staticmethod
     def _validate_tendon_attributes(model: Model) -> tuple[int, int, int]:
@@ -9151,7 +9190,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             spec.add_exclude(bodyname1=spec.bodies[mb1].name, bodyname2=spec.bodies[mb2].name)
 
         # add explicit contact pairs from custom attributes
-        self._init_pairs(model, spec, shape_mapping, first_world)
+        added_pairs = self._init_pairs(model, spec, shape_mapping, first_world)
 
         selected_tendons, mjc_tendon_names = self._init_tendons(
             model, spec, joint_mapping, shape_mapping, site_mapping, first_world
@@ -9270,6 +9309,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             kinematic_welds.append(eq)
 
         self.mj_model = spec.compile()
+        self._mjc_pair_to_newton_pair = self._map_compiled_pairs(added_pairs, model.device)
         if not self.use_mujoco_cpu and np.any(self.mj_model.actuator_armature != 0.0):
             warnings.warn(
                 "SolverMuJoCo's MuJoCo-Warp backend does not support actuator armature. "
@@ -11270,6 +11310,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dim=(world_count, npair),
                 inputs=[
                     pairs_per_world,
+                    self._mjc_pair_to_newton_pair,
                     pair_solref,
                     pair_solreffriction,
                     pair_solimp,

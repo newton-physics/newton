@@ -9975,6 +9975,44 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         np.testing.assert_allclose(solver.mj_model.pair_solimp, [[0.8, 0.9, 0.002, 0.4, 3.0]], rtol=1e-6)
         np.testing.assert_allclose(solver.mj_model.pair_friction, [[0.3, 0.3, 0.004, 0.0002, 0.0002]], rtol=1e-6)
 
+    def test_pair_properties_follow_compiled_pair_order(self):
+        """Pair properties reach the right pair after MuJoCo sorts pairs by body signature."""
+        world = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(world)
+        shapes = [world.add_shape_sphere(body=world.add_body(), radius=0.1) for _ in range(3)]
+        # Authored in reverse body-signature order, so compilation swaps them.
+        for shape_a, shape_b, damping in ((shapes[1], shapes[2], 0.7), (shapes[0], shapes[1], 0.3)):
+            world.add_custom_values(
+                **{
+                    "mujoco:pair_geom1": shape_a,
+                    "mujoco:pair_geom2": shape_b,
+                    "mujoco:pair_solref": wp.vec2(0.02, damping),
+                }
+            )
+        # The CPU backend supports a single world only.
+        for use_mujoco_cpu, world_count in ((False, 2), (True, 1)):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.replicate(world, world_count)
+                model = builder.finalize(device="cpu" if use_mujoco_cpu else None)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
+                # The pair between the first two bodies sorts first.
+                expected = np.array([[[0.02, 0.3], [0.02, 0.7]]] * world_count)
+                np.testing.assert_allclose(solver.mjw_model.pair_solref.numpy(), expected, rtol=1e-6)
+                if use_mujoco_cpu:
+                    np.testing.assert_allclose(solver.mj_model.pair_solref, expected[0], rtol=1e-6)
+
+                solref = model.mujoco.pair_solref.numpy()
+                solref[:, 1] = [0.8, 0.4, 0.9, 0.5][: 2 * world_count]
+                model.mujoco.pair_solref.assign(solref)
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+                np.testing.assert_allclose(
+                    solver.mjw_model.pair_solref.numpy()[..., 1], [[0.4, 0.8], [0.5, 0.9]][:world_count], rtol=1e-6
+                )
+                if use_mujoco_cpu:
+                    np.testing.assert_allclose(solver.mj_model.pair_solref[:, 1], [0.4, 0.8], rtol=1e-6)
+
     def test_global_pair_exported_to_spec(self):
         """Pairs with pair_world=-1 (global) should be included in the MuJoCo spec.
 

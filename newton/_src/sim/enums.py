@@ -23,13 +23,13 @@ class ModelFlags(IntEnum):
     """Indicates no model updates."""
 
     JOINT_PROPERTIES = 1 << 0
-    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis."""
+    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis, joint_enabled."""
 
     JOINT_DOF_PROPERTIES = 1 << 1
     """Indicates all joint DOF updates, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_stiffness, joint_rest_q, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
 
     BODY_PROPERTIES = 1 << 2
-    """Indicates body property updates: body_q, body_qd, body_flags."""
+    """Indicates body property updates: body_q (together with :attr:`JOINT_REFERENCE_POSE_PROPERTIES`), body_qd, body_flags."""
 
     BODY_INERTIAL_PROPERTIES = 1 << 3
     """Indicates body inertial property updates: body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass."""
@@ -38,7 +38,7 @@ class ModelFlags(IntEnum):
     """Indicates shape property updates: shape_transform, shape_scale, shape_margin, shape_gap, shape_collision_radius, shape_is_solid, and the shape_material_* coefficients such as shape_material_mu, shape_material_mu_static, shape_material_restitution, shape_material_ke, shape_material_kd, shape_material_mu_torsional, and shape_material_mu_rolling."""
 
     MODEL_PROPERTIES = 1 << 5
-    """Indicates model property updates: gravity and other global parameters."""
+    """Indicates model property updates: gravity, particle_mass, particle_radius, particle_flags, and other global parameters."""
 
     CONSTRAINT_PROPERTIES = 1 << 6
     """Indicates constraint property updates: equality constraints (mujoco.equality_constraint_anchor, mujoco.equality_constraint_relpose, mujoco.equality_constraint_polycoef, mujoco.equality_constraint_torquescale, mujoco.equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp), mimic relationships (joint_mimic_coeffs and the deprecated constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled arrays), and particle-body attachments (attachment_particle_body_stiffness, attachment_particle_body_damping, attachment_particle_body_enabled)."""
@@ -56,7 +56,7 @@ class ModelFlags(IntEnum):
     """Indicates joint_armature updates. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
     JOINT_REFERENCE_POSE_PROPERTIES = 1 << 11
-    """Indicates joint reference-pose and spring-reference updates, including joint_rest_q for passive springs and Rod rest configurations. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
+    """Indicates joint reference-pose and spring-reference updates, including joint_rest_q for passive springs, Rod rest configurations, and body_q, from which MuJoCo derives free-joint reference poses. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
     SHAPE_TYPE_AND_SOURCE = 1 << 12
     """Indicates that shapes changed type or source (shape_type, shape_source_ptr) together with the collision data derived from them, or were emptied: variant rows took other variant shapes in :meth:`~newton.Model.select_body_variants`. Viewers and solvers that cache shape geometry must refresh it. Edits of shape_transform or shape_scale alone are :attr:`SHAPE_PROPERTIES`. Use at reset rather than every step.

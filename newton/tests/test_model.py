@@ -206,7 +206,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
             ("user:label_id", None, None),
         ):
             with self.subTest(attribute=name, assignment=attribute_assignment):
-                result = model.get_attribute_update_flags(name, attribute_assignment)
+                result = model.get_attribute_update_flags(name, assignment=attribute_assignment)
                 self.assertEqual(result, expected)
                 if expected is not None:
                     self.assertIs(type(result), type(expected))
@@ -218,7 +218,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
         ):
             with self.subTest(missing=name, assignment=attribute_assignment):
                 with self.assertRaises(KeyError):
-                    model.get_attribute_update_flags(name, attribute_assignment)
+                    model.get_attribute_update_flags(name, assignment=attribute_assignment)
 
         # Built-in flags name attributes of their objects.
         blank, state, control = newton.Model(device="cpu"), newton.State(), newton.Control()

@@ -458,7 +458,10 @@ class Model:
         Coupled model views use it for the rows they synthesize.
         """
         dtype: Any = field(default=None, compare=False)
-        """Warp dtype of the values, or ``None`` when unspecified.
+        """Warp dtype of a built-in attribute that :meth:`ModelBuilder.finalize()
+        <newton.ModelBuilder.finalize>` converts generically, or ``None`` for other attributes,
+        including custom attributes, whose dtype is given by
+        :attr:`ModelBuilder.CustomAttribute.dtype <newton.ModelBuilder.CustomAttribute.dtype>`.
 
         :class:`ModelBuilder <newton.ModelBuilder>` keeps list attributes with a dtype as NumPy arrays
         between replication and finalization.
@@ -477,8 +480,9 @@ class Model:
         :class:`~newton.Control` attribute of this name, or ``None`` when solvers read it at every step.
         """
         differentiable: bool | None = field(default=None, compare=False)
-        """Whether :meth:`ModelBuilder.finalize() <newton.ModelBuilder.finalize>` allocates gradients for
-        the attribute when called with ``requires_grad=True``.
+        """For attributes with a :attr:`dtype`, whether :meth:`ModelBuilder.finalize()
+        <newton.ModelBuilder.finalize>` allocates gradients for the attribute when called with
+        ``requires_grad=True``. Not meaningful for attributes without a :attr:`dtype`.
 
         ``None`` resolves to whether :attr:`dtype` has a floating-point scalar type.
         """
@@ -3336,6 +3340,7 @@ class Model:
         assignment: Model.AttributeAssignment | None = None,
         namespace: str | None = None,
         references: Model.AttributeFrequency | str | None = None,
+        *,
         update_flags: int | None = None,
     ):
         """
@@ -3436,7 +3441,7 @@ class Model:
         return spec.frequency
 
     def get_attribute_update_flags(
-        self, name: str, assignment: Model.AttributeAssignment | None = None
+        self, name: str, *, assignment: Model.AttributeAssignment | None = None
     ) -> ModelFlags | StateFlags | int | None:
         """Get the flags that announce an edit of an attribute to solvers.
 
@@ -3465,7 +3470,7 @@ class Model:
                 print(model.get_attribute_update_flags("shape_material_mu").name)
                 print(model.get_attribute_update_flags("mujoco:solref").name)
                 print(model.get_attribute_update_flags("mujoco:condim"))
-                print(repr(model.get_attribute_update_flags("body_q", newton.Model.AttributeAssignment.STATE)))
+                print(repr(model.get_attribute_update_flags("body_q", assignment=newton.Model.AttributeAssignment.STATE)))
 
             .. testoutput::
 
