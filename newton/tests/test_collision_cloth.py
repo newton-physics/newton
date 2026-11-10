@@ -1554,6 +1554,7 @@ def test_edge_topology_reciprocity(test, device):
                         0.1,
                         1.5,
                         0.001,
+                        False,
                         1.0e-5,
                     ],
                     outputs=[forces, hessians],

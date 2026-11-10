@@ -3443,7 +3443,9 @@ def _harvest_comoving_proxy_contact(
     """Harvest the proxy force of one particle resting on a box that moves up at ``speed``.
 
     Without gravity, the particle slightly penetrates the box top and moves up at
-    ``particle_speed``, which defaults to ``speed`` (no relative motion). With ``proxy="body"``
+    ``particle_speed``, which defaults to ``speed`` (no relative motion). The VBD entry uses
+    closing-only contact damping: the penalty pushes the particle out of the box over the step, and
+    the default two-sided damping would damp that separation. With ``proxy="body"``
     the box is the proxy and the VBD destination entry simulates the particle; the harvested
     proxy-body force is returned. With ``proxy="particle"`` the roles are swapped and the
     harvested proxy-particle force is returned.
@@ -3482,7 +3484,7 @@ def _harvest_comoving_proxy_contact(
             ),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda view: _RecordingVBD(view, iterations=4),
+                solver=lambda view: _RecordingVBD(view, iterations=4, soft_contact_damping_bidirectional=False),
                 bodies=[] if proxy_bodies else [body],
                 particles=[] if proxy_particles else [0],
                 substeps=vbd_substeps,

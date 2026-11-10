@@ -905,13 +905,14 @@ def test_anchored_articulations_sleep_and_wake(test, device):
 
     # Pushing the first articulation restores its rows and leaves the second asleep.
     force = np.zeros((model.body_count, 6), dtype=np.float32)
-    force[0, 0] = 20.0
+    # Exceed the fixture's static friction limit (approximately 235 N).
+    force[0, 0] = 500.0
     for _ in range(5):
         states[0].body_f.assign(force)
         _advance(pipeline, solver, states, control, 1, clear=False)
     np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 1, 0, 0])
     test.assertEqual(int(solver._constraint_count.numpy()[0]), awake_rows // 2)
-    test.assertGreater(states[0].body_q.numpy()[0, 0], frozen[0, 0])
+    test.assertGreater(states[0].body_q.numpy()[0, 0] - frozen[0, 0], 1.0e-3)
     np.testing.assert_array_equal(states[0].body_q.numpy()[2:], frozen[2:])
 
     _advance(pipeline, solver, states, control, 600)

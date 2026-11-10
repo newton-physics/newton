@@ -269,6 +269,25 @@ class TestImportMjcfBasic(unittest.TestCase):
                 solver = SolverMuJoCo(builder.finalize())
                 self.assertEqual(solver.mj_model.opt.enableflags, 0)
 
+    def test_geom_friction_replaces_the_friction_pair(self):
+        """An MJCF geom friction is one coefficient: it sets mu and mu_static together, and the builder's
+        default mu_static only applies to geoms without one (#3560)."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body><freejoint/><geom type="sphere" size="0.1" friction="1.0"/></body>
+        <body pos="1 0 0"><freejoint/><geom type="sphere" size="0.1"/></body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.mu = 0.5
+        builder.default_shape_cfg.mu_static = 0.8
+        builder.add_mjcf(mjcf)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), [1.0, 0.5])
+        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [1.0, 0.8])
+
     def test_constructor_overrides_imported_option_flags(self):
         """Resolve explicit arguments before MJCF or USD flags and Newton defaults."""
         mjcf = """
@@ -3176,6 +3195,28 @@ f 4 5 8
             solreflimit_mode,
             [SOLREF_MODE_RAW, SOLREF_MODE_RAW, SOLREF_MODE_FORCE_SPACE],
         )
+
+    def test_solref_shorthand_pads_default_dampratio(self):
+        """A one-value solref-type attribute means (timeconst, 1.0) in MuJoCo, as ``MjSpec.to_xml()`` writes it."""
+        mjcf_content = """<mujoco><worldbody><body pos="0 0 1">
+    <joint name="j" type="hinge" limited="true" range="-1 1" solreflimit="0.005" solreffriction="0.004"/>
+    <geom name="g" type="sphere" size="0.1" mass="1" solref="0.003"/>
+</body></worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], [0.005, 1.0], rtol=1.0e-6)
+        np.testing.assert_allclose(model.mujoco.solreffriction.numpy()[0], [0.004, 1.0], rtol=1.0e-6)
+        np.testing.assert_allclose(model.mujoco.solref.numpy()[0], [0.003, 1.0], rtol=1.0e-6)
+        self.assertEqual(model.mujoco.solreflimit_mode.numpy()[0], SOLREF_MODE_RAW)
+
+        # The solver passes the values on without an "invalid components" warning.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        self.assertFalse([w for w in caught if "invalid components" in str(w.message)])
+        np.testing.assert_allclose(solver.mj_model.jnt_solref[0], [0.005, 1.0], rtol=1.0e-6)
+        np.testing.assert_allclose(solver.mj_model.geom_solref[0], [0.003, 1.0], rtol=1.0e-6)
 
     def test_single_mujoco_fixed_tendon_parsing(self):
         """Test that tendon parameters can be parsed from mjcf"""

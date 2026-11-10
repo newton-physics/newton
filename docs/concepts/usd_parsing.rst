@@ -93,7 +93,7 @@ The importer uses standard point and material representations:
   precedence and follows normal indexed, inherited, and interpolation rules.
   Widths become radii using ``width / 2`` after stage units and the prim's
   uniform world scale are applied. Non-uniform scale and shear are rejected.
-* ``physics:masses`` supplies per-point masses and takes precedence over
+* ``newton:masses`` supplies per-point masses and takes precedence over
   ``PhysicsDeformableBodyAPI`` mass or density and material density. Its length
   must match ``points``. A body-total ``physics:mass`` is otherwise distributed
   using the density-derived particle weights.
@@ -105,7 +105,7 @@ The importer uses standard point and material representations:
   Until the solver stores absolute damping directly, the importer divides it by
   the resolved Young's modulus. ``newton:mpm:initialPlasticVolumeStrain`` seeds
   the per-particle ``mpm:particle_Jp`` state and is preserved by solver resets.
-* When ``physics:masses`` is unauthored, mass uses a cubical MPM support volume:
+* When ``newton:masses`` is unauthored, mass uses a cubical MPM support volume:
   ``mass = density * transformed_width**3``. If widths are absent, Newton uses
   :attr:`newton.ModelBuilder.default_particle_radius` and a support width of
   twice that radius.

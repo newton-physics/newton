@@ -467,9 +467,10 @@ final configuration of the step -- the forces the last iteration balanced -- not
 averages; records without penetration are zero.
 
 For soft contacts this is the penalty law at the contact's mixed material stiffness, damping
-while the contact point approaches the surface, and regularized Coulomb friction on the step's
-slip, bounded by the elastic normal load. Body-body contacts use the compliant ALM contact law
-with its multipliers. Both evaluations retain the step-start pose history used
+on the normal gap rate (while the contact point approaches the surface and, with the default
+``soft_contact_damping_bidirectional=True``, while it separates), and regularized Coulomb
+friction on the step's slip, bounded by the elastic normal load. Body-body contacts use the
+compliant ALM contact law with its multipliers. Both evaluations retain the step-start pose history used
 by the iterations.
 
 Soft self-contact forces are not exported. :class:`~newton.sensors.SensorContact` reads the

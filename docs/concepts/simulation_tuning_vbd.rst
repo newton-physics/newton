@@ -292,7 +292,7 @@ formulas they enter are in :ref:`vbd-energy-terms`.
      - Keep within about 10x the elastic stiffness; see
        :ref:`vbd-fail-contact-stiffness`.
    * - :attr:`~newton.Model.soft_contact_kd`
-     - Contact damping on the gap rate, active only while approaching.
+     - Contact damping on the gap rate.
      - Contact jitter; second knob of the jitter pipeline.
      - Shrinks each correction by enlarging the local matrix; too much slows
        settling.
@@ -637,10 +637,11 @@ buffers. Keep the gap at about half to one margin unless speed asks for more.
 **Stiffness, damping and friction together.** The contact stiffness sets how
 far a contact penetrates under load and how stiff the local system becomes.
 Keep it within about 10x the elastic stiffness of the material it presses on.
-Contact damping only acts while the gap closes and mostly shrinks the per
-iteration correction, so it is a second-order knob. Friction scales with the
-normal force; a contact that is too soft also has too little friction, which
-shows as slipping in grasps.
+Contact damping mostly shrinks the per iteration correction, so for jitter it
+is a second-order knob; for a bouncing stack see step 2 of
+:ref:`vbd-jitter-pipeline`. Friction scales with the normal force; a contact
+that is too soft also has too little friction, which shows as slipping in
+grasps.
 
 .. _vbd-rigid-contacts:
 
@@ -861,7 +862,20 @@ Work through these steps in order and stop at the first one that fixes it.
    elasticity stiffness: :attr:`~newton.Model.soft_contact_ke` against :attr:`tri_ke <newton.Model.tri_materials>` for cloth or
    :attr:`k_mu <newton.Model.tet_materials>` for soft bodies. This is the stiffness ratio
    (:ref:`vbd-stiffness-ratio`).
-2. If not fixed, tune the self-contact damping, :attr:`~newton.Model.soft_contact_kd`.
+2. If not fixed, tune the self-contact damping, :attr:`~newton.Model.soft_contact_kd`,
+   and keep ``soft_contact_damping_bidirectional`` at its default ``True``.
+   This damper acts on the rate at which the distance of a contact pair
+   changes. With ``True`` it acts while the pair closes and while it opens, so the rebound
+   is damped too. With ``False`` it acts only while the pair closes and
+   leaves the rebound undamped. With that
+   closing-only damper a stack of thin layers, such as the cards in
+   ``example_cloth_poker_cards``, kept bouncing, and raising
+   :attr:`~newton.Model.soft_contact_kd` made it worse instead of better.
+   Potential artifact of ``True``: the damper also resists separation, so
+   contacts can look viscous. It can delay release, and a large damping
+   coefficient can hold a separating pair for a moment. The effect grows with
+   :attr:`~newton.Model.soft_contact_kd` relative to
+   :attr:`~newton.Model.soft_contact_ke`.
 3. If it is still not fixed, or there is no contact, increase the elasticity
    damping: bending damping :attr:`edge_kd <newton.Model.edge_bending_properties>` for cloth, tet damping :attr:`k_damp <newton.Model.tet_materials>` for
    soft bodies.
