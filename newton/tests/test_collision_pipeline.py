@@ -7441,7 +7441,8 @@ def test_mesh_sdf_backend_compact_search_keeps_mesh_rows(test, device):
     for shape in (0, 1):
         for kind in ("E", "F"):
             test.assertGreater(int(np.count_nonzero((shapes == shape) & (kinds == kind))), 0, (shape, kind))
-    np.testing.assert_array_equal(_sorted_soft_contact_rows(compact), _sorted_soft_contact_rows(fused))
+    # The fused and compact kernels are separately compiled variants of the same math.
+    np.testing.assert_allclose(_sorted_soft_contact_rows(compact), _sorted_soft_contact_rows(fused), atol=1.0e-6)
 
 
 # Host-side argument validation; one device is enough.
