@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning
+from ..geometry.shape_filter import ShapeFilter
 from ..sim import Contacts, Model, State
 from ..sim.contacts import contact_surface_point
 from ..solvers.solver import SolverBase
@@ -21,6 +22,13 @@ logger = logging.getLogger(__name__)
 
 _SENSING_KIND_SHAPE = 1
 _SENSING_KIND_BODY = 2
+
+
+def _select_shapes(model: Model, shapes: str | list[str] | re.Pattern[str] | list[int] | ShapeFilter) -> list[int]:
+    """Indices of the shapes of ``model`` matching a label selector or shape filter."""
+    if isinstance(shapes, ShapeFilter):
+        return shapes.select(model).tolist()
+    return match_labels(model.shape_label, shapes)
 
 
 @wp.kernel(enable_backward=False)
@@ -400,9 +408,9 @@ class SensorContact:
         model: Model,
         *,
         sensing_bodies: str | list[str] | re.Pattern[str] | list[int] | None = None,
-        sensing_shapes: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        sensing_shapes: str | list[str] | re.Pattern[str] | list[int] | ShapeFilter | None = None,
         counterpart_bodies: str | list[str] | re.Pattern[str] | list[int] | None = None,
-        counterpart_shapes: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        counterpart_shapes: str | list[str] | re.Pattern[str] | list[int] | ShapeFilter | None = None,
         measure_total: bool = True,
         verbose: bool | None = None,
         request_contact_attributes: bool = True,
@@ -419,11 +427,13 @@ class SensorContact:
             sensing_bodies: Glob pattern, list of glob patterns, compiled regular-expression pattern to match against
                 body labels, or list of body indices. Regular expressions use full matching.
             sensing_shapes: Glob pattern, list of glob patterns, compiled regular-expression pattern to match against
-                shape labels, or list of shape indices. Regular expressions use full matching.
+                shape labels, list of shape indices, or :class:`~newton.ShapeFilter`. Regular expressions use full
+                matching.
             counterpart_bodies: Glob pattern, list of glob patterns, compiled regular-expression pattern to match
                 against body labels, or list of body indices. Regular expressions use full matching.
             counterpart_shapes: Glob pattern, list of glob patterns, compiled regular-expression pattern to match
-                against shape labels, or list of shape indices. Regular expressions use full matching.
+                against shape labels, list of shape indices, or :class:`~newton.ShapeFilter`. Regular expressions use
+                full matching.
             measure_total: If True (default), :attr:`total_force` and :attr:`total_force_friction` are allocated.
                 If False, both are None.
             verbose: If True, log details. If False, suppress details. If None, log details when
@@ -463,7 +473,7 @@ class SensorContact:
             s_shapes = []
         else:
             s_bodies = []
-            s_shapes = match_labels(model.shape_label, sensing_shapes)
+            s_shapes = _select_shapes(model, sensing_shapes)
             _check_index_bounds(s_shapes, len(model.shape_label), "sensing_shapes", "shapes")
 
         using_counterparts = True
@@ -473,7 +483,7 @@ class SensorContact:
             c_shapes = []
         elif counterpart_shapes is not None:
             c_bodies = []
-            c_shapes = match_labels(model.shape_label, counterpart_shapes)
+            c_shapes = _select_shapes(model, counterpart_shapes)
             _check_index_bounds(c_shapes, len(model.shape_label), "counterpart_shapes", "shapes")
         else:
             c_shapes = []

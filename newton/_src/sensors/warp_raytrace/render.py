@@ -97,7 +97,7 @@ def create_kernel(
         # Shapes BVH
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
+        bvh_shapes_group_roots: wp.array2d[wp.int32],
         # Shapes
         shape_enabled: wp.array[wp.uint32],
         shape_types: wp.array[wp.int32],

@@ -354,7 +354,7 @@ class RenderContext:
                     # Shape BVH
                     model.bvh_shape_count_enabled,
                     model.bvh_shapes.id if model.bvh_shapes is not None else 0,
-                    model.bvh_shapes_group_roots,
+                    model._bvh_shape_filter(None).roots if has_shapes else None,
                     # Shapes
                     model.bvh_shape_enabled,
                     self.shape_render_type,  # HFIELD remapped to MESH; renderer treats heightfields as meshes

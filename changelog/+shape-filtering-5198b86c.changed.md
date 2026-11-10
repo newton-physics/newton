@@ -1,0 +1,1 @@
+Index `Model.bvh_shapes_group_roots` by world and shape class, `world * class_count + class`, when shape filters are registered with `ModelBuilder.add_shape_filter()`. Models without registered filters have one class, so the entries remain per-world roots; code that traverses `Model.bvh_shapes` directly in models with filters should iterate over the classes of each world.

@@ -1432,6 +1432,37 @@ class TestSensorCamera(unittest.TestCase):
         self.assertGreater(float(depth_a.numpy()[0, height // 2, width // 2]), 0.0)
         self.assertGreater(float(depth_b.numpy()[0, height // 2, width // 2]), 0.0)
 
+    def test_shape_filter_selects_rendered_shapes(self) -> None:
+        """A camera given a shape filter renders, shades, and shadows only the shapes the filter selects."""
+        width, height = 4, 4
+        builder = self._sphere_world_builder()
+        builder.add_shape_group("markers", shapes=[0])
+        far = builder.add_shape_box(
+            builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -5.0), q=wp.quat_identity())),
+            hx=2.0,
+            hy=2.0,
+            hz=0.1,
+        )
+        no_markers = builder.add_shape_filter(
+            newton.ShapeFilter(flags=newton.ShapeFlags.VISIBLE, exclude_groups=["markers"])
+        )
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        rays = self._rays(width, height)
+
+        for shape_filter, expected_shape in ((None, 0), (no_markers, far)):
+            with self.subTest(shape_filter=shape_filter):
+                camera = self._camera_with_model(model, shape_filter=shape_filter)
+                shape_index = camera.allocate_image_shape_index(1, width, height)
+                color = camera.allocate_image_color(1, width, height)
+                camera.update(
+                    state, self._identity_transforms(1), rays, shape_index_image=shape_index, color_image=color
+                )
+                self.assertEqual(int(shape_index.numpy()[0, height // 2, width // 2]), expected_shape)
+
+        with self.assertRaisesRegex(ValueError, "Unknown shape filter id 2"):
+            self._camera_with_model(model, shape_filter=2)
+
     # --- Rendering output channels (ported from SensorTiledCamera coverage) ---
 
     @staticmethod

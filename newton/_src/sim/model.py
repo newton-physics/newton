@@ -19,9 +19,11 @@ import warp as wp
 
 from ..core.types import Devicelike
 from ..exceptions import NewtonDeprecationWarning
+from ..geometry.bvh import _ShapeFilterBvh
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
+from ..geometry.shape_filter import ShapeFilter
 from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
@@ -87,6 +89,33 @@ _SHAPE_VARIANT_ATTRIBUTES = (
 data derived from it in :meth:`ModelBuilder.finalize`, flags, color, opacity, and materials. Everything
 else, such as body, world, label, and collision group, belongs to the row. Model-assigned shape
 custom attributes are copied as well."""
+
+
+def _shape_classes(selected: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Group shapes by the set of filters that select them.
+
+    Args:
+        selected: Whether each filter selects each shape, shape ``[shape_count, filter_count]``.
+
+    Returns:
+        The filters of each class, shape ``[class_count, filter_count]``, and the class of each shape.
+    """
+    shape_count, filter_count = selected.shape
+    if filter_count == 1:
+        # Only the default filter: the shapes it selects form a single class.
+        return np.ones((min(shape_count, 1), 1), dtype=bool), np.zeros(shape_count, dtype=np.int32)
+    if filter_count <= 16:
+        # Few filters: index the classes by their signature bits in linear time.
+        keys = selected.astype(np.int64) @ (np.int64(1) << np.arange(filter_count, dtype=np.int64))
+        signatures = np.flatnonzero(np.bincount(keys, minlength=1 << filter_count))
+        lookup = np.zeros(1 << filter_count, dtype=np.int32)
+        lookup[signatures] = np.arange(len(signatures), dtype=np.int32)
+        class_filters = (signatures[:, None] >> np.arange(filter_count)) & 1 != 0
+        return class_filters, lookup[keys]
+    classes, shape_class = np.unique(np.packbits(selected, axis=1), axis=0, return_inverse=True)
+    class_filters = np.unpackbits(classes, axis=1, count=filter_count).astype(bool)
+    return class_filters, shape_class.reshape(-1).astype(np.int32)
+
 
 _EMPTY_ROW_CLEARED_FLAGS = wp.constant(
     int(ShapeFlags.COLLIDE_SHAPES) | int(ShapeFlags.COLLIDE_PARTICLES) | int(ShapeFlags.VISIBLE)
@@ -565,6 +594,9 @@ class Model:
             references=AttributeFrequency.BODY,
         ),
         "shape_flags": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_groups": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_group_names": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_shape_filters": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
         "shape_material_ke": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_kd": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_kf": AttributeSpec(AttributeFrequency.SHAPE),
@@ -1020,6 +1052,13 @@ class Model:
         """Rigid shape body index, shape [shape_count], int."""
         self.shape_flags: wp.array[wp.int32] | None = None
         """Rigid shape flags, shape [shape_count], int."""
+        self.shape_groups: wp.array[wp.uint32] | None = None
+        """Shape group membership, shape [shape_count], uint32. Bit ``i`` is set when the shape belongs to the
+        group named :attr:`shape_group_names` ``[i]``; see :meth:`ModelBuilder.add_shape_group`."""
+        self.shape_group_names: list[str] = []
+        """Names of the shape groups, indexed by bit of :attr:`shape_groups`."""
+        self._shape_filters: list[ShapeFilter] = []
+        """Shape filters registered with :meth:`ModelBuilder.add_shape_filter`; filter id ``i`` is entry ``i - 1``."""
         self.body_shapes: dict[int, list[int]] = {}
         """Mapping from body index to list of attached shape indices."""
 
@@ -1143,16 +1182,21 @@ class Model:
         self.bvh_shapes: wp.Bvh | None = None
         """BVH over selected shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
         self.bvh_shapes_group_roots: wp.array[wp.int32] | None = None
-        """Per-world BVH group roots for shapes, shape ``[world_count + 1]`` (last slot is global)."""
+        """BVH group roots for shapes, shape ``[(world_count + 1) * class_count]``, where entry
+        ``world * class_count + c`` is the root of the shapes of world ``world`` (``world_count`` for
+        the global world) in shape class ``c``, or ``-1`` if there are none. Shapes share a class when
+        the same shape filters select them (see :meth:`ModelBuilder.add_shape_filter`); without
+        registered filters there is a single class, so the entries are per-world roots."""
         self.bvh_shape_enabled: wp.array[wp.uint32] | None = None
         """Shape indices included in the shape BVH, shape ``[bvh_shape_count_enabled]``."""
-        self._bvh_shape_active_leaves: wp.array[wp.uint32] | None = None
-        """:attr:`bvh_shape_enabled` with empty variant rows (see :meth:`select_body_variants`) replaced by ``0xFFFFFFFF``,
-        which ray queries skip; updated by :meth:`bvh_build_shapes` and :meth:`bvh_refit_shapes`."""
         self.bvh_shape_count_enabled: int = 0
         """Number of shapes included in the shape BVH."""
-        self._bvh_shape_flags_mask: int = int(ShapeFlags.VISIBLE)
-        """Shape flags mask the shape BVH was built with."""
+        self._bvh_shape_class: wp.array[wp.int32] | None = None
+        """Shape class of each shape BVH leaf, shape ``[bvh_shape_count_enabled]``."""
+        self._bvh_shape_class_count: int = 1
+        """Number of shape classes in the shape BVH."""
+        self._bvh_shape_filters: list[_ShapeFilterBvh] = []
+        """Traversal data of each shape filter id, built by :meth:`bvh_build_shapes`."""
         self.bvh_shape_bounds: wp.array2d[wp.vec3f] | None = None
         """Local-space AABB per shape (min/max) for mesh and gaussian shapes, shape ``[shape_count, 2]`` [m]."""
         self.bvh_shape_world_transforms: wp.array[wp.transformf] | None = None
@@ -2243,25 +2287,34 @@ class Model:
         Allocates :attr:`bvh_shapes` and related fields from the current
         shape data and *state*. :meth:`ModelBuilder.finalize` calls this for
         the initial model state. Call it again to rebuild with a custom
-        ``bvh_constructor`` or after structural changes. For ordinary state
+        ``bvh_constructor`` or after structural changes, such as edits to
+        :attr:`shape_flags` or :attr:`shape_groups`. For ordinary state
         changes, use :meth:`bvh_refit_shapes`.
+
+        The BVH holds the shapes selected by the default shape filter or by
+        any shape filter registered with :meth:`ModelBuilder.add_shape_filter`,
+        partitioned so that a query with a filter visits only the shapes it
+        selects.
 
         Args:
             state: Current simulation state with body transforms.
             bvh_constructor: Warp BVH construction algorithm. Valid choices
                 are ``"sah"``, ``"median"``, ``"lbvh"``, or ``None`` to use
                 Warp's device-dependent default.
-            shape_flags: Mask of :class:`~newton.ShapeFlags`; a shape is
-                included in the BVH if any of its flags are set in the mask.
+            shape_flags: Mask of :class:`~newton.ShapeFlags` of the default
+                shape filter, which queries use when they are not given one; it
+                selects a shape if any of its flags are set in the mask.
         """
         from ..geometry.bvh import (  # noqa: PLC0415
+            BVH_SUPPORTED_SHAPE_TYPES,
             SHAPE_BOUNDS_BLOCK_DIM,
             compute_bvh_group_roots,
-            compute_enabled_shapes,
             compute_shape_bvh_bounds_launch,
+            compute_shape_filter_roots,
             compute_shape_local_bounds,
             compute_shape_world_transforms_launch,
         )
+        from ..geometry.shape_filter import _shape_filter_mask  # noqa: PLC0415
 
         if self.shape_count == 0:
             return
@@ -2286,34 +2339,42 @@ class Model:
 
         # Variant rows get a leaf if any variant shape they can hold would, whatever the opacity of the
         # one they hold now; ray queries skip rows that are empty or transparent at the last refit.
-        enabled_flags = self.shape_flags
-        enabled_opacity = self.shape_opacity
-        if self._has_variant_rows:
-            enabled_flags = wp.array(self._shape_option_flags(), dtype=wp.int32, device=device)
-            if enabled_opacity is not None:
-                opacity = enabled_opacity.numpy().copy()
-                opacity[self._variant_row_shapes.numpy()] = 1.0
-                enabled_opacity = wp.array(opacity, dtype=wp.float32, device=device)
-        self._bvh_shape_flags_mask = int(shape_flags)
-        self.bvh_shape_enabled = wp.empty(shape_count, dtype=wp.uint32, device=device)
-        num_enabled = wp.zeros(1, dtype=wp.int32, device=device)
-        wp.launch(
-            kernel=compute_enabled_shapes,
-            dim=shape_count,
-            inputs=[
-                self.shape_type,
-                enabled_flags,
-                int(shape_flags),
-                enabled_opacity if enabled_opacity is not None else wp.empty(0, dtype=wp.float32, device=device),
-                self.bvh_shape_enabled,
-                num_enabled,
+        flags = self._shape_option_flags()
+        if self.shape_opacity is not None:
+            # A fully transparent shape (e.g. an MJCF helper geom with rgba alpha 0) is not visible, so it must
+            # not occlude other shapes. Clear VISIBLE before filtering so shapes selected otherwise are kept.
+            transparent = self.shape_opacity.numpy() <= 0.0
+            if self._has_variant_rows:
+                transparent[self._variant_row_shapes.numpy()] = False
+            flags = np.where(transparent, flags & ~int(ShapeFlags.VISIBLE), flags)
+
+        # Each filter selects a set of shapes; shapes selected by the same filters form a class, whose
+        # shapes of one world share a BVH group, so that a filter only traverses the groups of its classes.
+        shape_filters = [ShapeFilter(flags=shape_flags), *self._shape_filters]
+        groups = self.shape_groups.numpy() if self.shape_groups is not None else None
+        selected = np.stack(
+            [
+                _shape_filter_mask(
+                    shape_filter,
+                    flags=flags,
+                    groups=groups,
+                    labels=self.shape_label,
+                    group_names=self.shape_group_names,
+                )
+                for shape_filter in shape_filters
             ],
-            device=device,
+            axis=1,
         )
-        self.bvh_shape_count_enabled = int(num_enabled.numpy()[0])
+        selected &= np.isin(self.shape_type.numpy(), [int(t) for t in BVH_SUPPORTED_SHAPE_TYPES])[:, None]
+        enabled = np.flatnonzero(selected.any(axis=1))
+        class_filters, shape_class = _shape_classes(selected[enabled])
+        filter_classes = [np.flatnonzero(class_filters[:, i]).astype(np.int32) for i in range(len(shape_filters))]
+
+        self.bvh_shape_count_enabled = len(enabled)
+        self.bvh_shape_enabled = wp.array(enabled, dtype=wp.uint32, device=device)
+        self._bvh_shape_class = wp.array(shape_class, dtype=wp.int32, device=device)
+        self._bvh_shape_class_count = max(len(class_filters), 1)
         self.bvh_shape_world_transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
-        # Leaves of empty shapes stay in the BVH; ray queries read a copy masked per refit.
-        self._bvh_shape_active_leaves = wp.empty_like(self.bvh_shape_enabled)
         if self._has_variant_rows:
             self._bvh_variant_bounds = wp.empty((self._variant_shape_count, 2), dtype=wp.vec3f, ndim=2, device=device)
             wp.launch_tiled(
@@ -2333,6 +2394,14 @@ class Model:
             # drop any BVH from a previous build, it would index stale shapes
             self.bvh_shapes = None
             self.bvh_shapes_group_roots = None
+            self._bvh_shape_filters = [
+                _ShapeFilterBvh(
+                    roots=wp.empty((world_count_total, 0), dtype=wp.int32, device=device),
+                    leaves=self.bvh_shape_enabled,
+                    flags_mask=0,
+                )
+                for _ in shape_filters
+            ]
             return
 
         compute_shape_world_transforms_launch(self, state)
@@ -2343,13 +2412,41 @@ class Model:
         compute_shape_bvh_bounds_launch(self, lowers, uppers, groups)
         self.bvh_shapes = wp.Bvh(lowers, uppers, constructor=bvh_constructor, groups=groups)
 
-        self.bvh_shapes_group_roots = wp.zeros(world_count_total, dtype=wp.int32, device=device)
+        self.bvh_shapes_group_roots = wp.zeros(
+            world_count_total * self._bvh_shape_class_count, dtype=wp.int32, device=device
+        )
         wp.launch(
             kernel=compute_bvh_group_roots,
-            dim=world_count_total,
+            dim=self.bvh_shapes_group_roots.shape[0],
             inputs=[self.bvh_shapes.id, self.bvh_shapes_group_roots],
             device=device,
         )
+
+        self._bvh_shape_filters = []
+        for shape_filter, classes_of_filter in zip(shape_filters, filter_classes, strict=True):
+            roots = wp.empty((world_count_total, len(classes_of_filter)), dtype=wp.int32, device=device)
+            if len(classes_of_filter):
+                wp.launch(
+                    kernel=compute_shape_filter_roots,
+                    dim=roots.shape,
+                    inputs=[
+                        self.bvh_shapes.id,
+                        self._bvh_shape_class_count,
+                        wp.array(classes_of_filter, dtype=wp.int32, device=device),
+                    ],
+                    outputs=[roots],
+                    device=device,
+                )
+            # Only variant rows change which leaves a filter keeps; without them all filters share the leaves.
+            self._bvh_shape_filters.append(
+                _ShapeFilterBvh(
+                    roots=roots,
+                    leaves=wp.empty_like(self.bvh_shape_enabled) if self._has_variant_rows else self.bvh_shape_enabled,
+                    flags_mask=int(shape_filter.flags)
+                    if shape_filter.flags is not None
+                    else int(_EMPTY_ROW_CLEARED_FLAGS),
+                )
+            )
         self._mark_inactive_bvh_shapes()
 
     def bvh_refit_shapes(self, state: State) -> None:
@@ -2384,29 +2481,49 @@ class Model:
         self._mark_inactive_bvh_shapes()
 
     def _mark_inactive_bvh_shapes(self) -> None:
-        """Mark the BVH leaves of empty or transparent variant rows on the device, so it also works in CUDA graphs."""
+        """Mark, per shape filter, the BVH leaves of variant rows the filter does not select now, such as empty
+        or transparent rows, on the device, so it also works in CUDA graphs."""
         from ..geometry.bvh import mark_inactive_bvh_shapes  # noqa: PLC0415
 
-        if self.bvh_shape_count_enabled == 0:
+        if self.bvh_shape_count_enabled == 0 or not self._has_variant_rows:
             return
-        if not self._has_variant_rows:
-            wp.copy(self._bvh_shape_active_leaves, self.bvh_shape_enabled)
-            return
-        wp.launch(
-            mark_inactive_bvh_shapes,
-            dim=self.bvh_shape_count_enabled,
-            inputs=[
-                self.bvh_shape_enabled,
-                self._shape_variant_row,
-                self.shape_flags,
-                self._bvh_shape_flags_mask,
-                self.shape_opacity
-                if self.shape_opacity is not None
-                else wp.empty(0, dtype=wp.float32, device=self.device),
-            ],
-            outputs=[self._bvh_shape_active_leaves],
-            device=self.device,
+        opacity = (
+            self.shape_opacity if self.shape_opacity is not None else wp.empty(0, dtype=wp.float32, device=self.device)
         )
+        for shape_filter in self._bvh_shape_filters:
+            wp.launch(
+                mark_inactive_bvh_shapes,
+                dim=self.bvh_shape_count_enabled,
+                inputs=[
+                    self.bvh_shape_enabled,
+                    self._shape_variant_row,
+                    self.shape_flags,
+                    shape_filter.flags_mask,
+                    opacity,
+                ],
+                outputs=[shape_filter.leaves],
+                device=self.device,
+            )
+
+    def _shape_filter_index(self, shape_filter: int | None) -> int:
+        """Validated shape filter id, ``None`` meaning the default filter ``0``."""
+        index = 0 if shape_filter is None else operator.index(shape_filter)
+        if not 0 <= index <= len(self._shape_filters):
+            raise ValueError(
+                f"Unknown shape filter id {shape_filter}; this model has {len(self._shape_filters)} shape "
+                "filters registered with ModelBuilder.add_shape_filter()."
+            )
+        return index
+
+    def _bvh_shape_filter(self, shape_filter: int | None) -> _ShapeFilterBvh:
+        """Shape BVH traversal data of a shape filter id, ``None`` meaning the default filter."""
+        index = self._shape_filter_index(shape_filter)
+        if not self._bvh_shape_filters:
+            raise RuntimeError(
+                "Shape queries require a shape BVH built for the queried state. ModelBuilder.finalize() builds "
+                "one for the initial state; call model.bvh_build_shapes(state) for manually populated models."
+            )
+        return self._bvh_shape_filters[index]
 
     def _variant_row_options(self) -> tuple[np.ndarray, np.ndarray]:
         """Each variant row with each variant shape it can hold, on the host."""

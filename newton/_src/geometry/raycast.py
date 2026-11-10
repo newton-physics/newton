@@ -930,6 +930,7 @@ def intersect_ray(
     ray_directions: wp.array[wp.vec3],
     ray_worlds: wp.array[wp.int32],
     enable_global_world: bool = True,
+    shape_filter: int | None = None,
     out_dist: wp.array[float] | None = None,
     out_shape_id: wp.array[wp.int32] | None = None,
     out_normal: wp.array[wp.vec3] | None = None,
@@ -948,6 +949,13 @@ def intersect_ray(
     which are accessible from every world. A ray whose world is ``-1`` is cast
     against the global world only.
 
+    ``shape_filter`` selects the shapes rays can hit by the id of a shape
+    filter registered with :meth:`~newton.ModelBuilder.add_shape_filter`
+    before finalizing the model. The shape BVH is partitioned by the
+    registered filters, so a ray only visits the shapes its filter selects.
+    The call allocates nothing and does not synchronize with the device, so
+    it can be captured in a CUDA graph.
+
     ``out_dist``, ``out_shape_id`` and ``out_normal`` are optional outputs.
     Pass ``None`` to skip writing a channel.
 
@@ -959,11 +967,20 @@ def intersect_ray(
         ray_worlds: Per-ray world index, shape [ray_count]. Use ``-1`` for the
             global world.
         enable_global_world: Whether to enable global world raycasting.
+        shape_filter: Id of the shape filter selecting the shapes to
+            intersect, or ``None`` for the model's default filter, the shapes
+            with any of :attr:`ModelBuilder.BvhConfig.shape_flags
+            <newton.ModelBuilder.BvhConfig.shape_flags>` (the visible shapes by
+            default).
         out_dist: Optional output hit distances [m], shape [ray_count]. ``-1`` on miss.
         out_shape_id: Optional output hit shape indices, shape [ray_count]. ``-1`` on miss.
         out_normal: Optional output hit normals, shape [ray_count, 3].
         fast_math: Whether to compile the intersection kernel with fast math enabled.
+
+    Raises:
+        ValueError: If ``shape_filter`` is not a shape filter id of ``model``.
     """
+    model._shape_filter_index(shape_filter)
 
     if model.bvh_shape_enabled is not None and model.bvh_shape_count_enabled == 0:
         # The shape BVH was built but no shape was selected, so every ray misses.
@@ -990,7 +1007,7 @@ def intersect_ray(
     @wp.kernel(enable_backward=False, module="unique", module_options={"fast_math": fast_math})
     def _intersect_ray_kernel(
         bvh_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
+        bvh_shape_group_roots: wp.array2d[wp.int32],
         bvh_shape_enabled: wp.array[wp.uint32],
         shape_transform_world: wp.array[wp.transform],
         shape_type: wp.array[int],
@@ -1012,51 +1029,53 @@ def intersect_ray(
         min_shape_id = wp.int32(-1)
         min_normal = wp.vec3(0.0)
 
-        # Pass 0 queries the ray's own world; pass 1 the global world shared by all.
+        # Traverse the filter's classes of the ray's own world, then of the global world shared by all.
+        # The world loop is unrolled; the class loop is not, so the traversal state is not duplicated.
         for i in range(wp.static(2 if enable_global_world else 1)):
-            groupid = ray_world[rayid] if i == 0 else bvh_shapes_group_roots.shape[0] - 1
+            world = ray_world[rayid] if i == 0 else bvh_shape_group_roots.shape[0] - 1
 
-            bvh_root = bvh_shapes_group_roots[groupid]
-            if bvh_root < 0:
-                continue
+            for c in range(bvh_shape_group_roots.shape[1]):
+                bvh_root = bvh_shape_group_roots[world, c]
+                if bvh_root < 0:
+                    continue
 
-            query = wp.bvh_query_ray(bvh_id, origin, direction, bvh_root)
-            bvh_shape_id = wp.int32(0)
+                query = wp.bvh_query_ray(bvh_id, origin, direction, bvh_root)
+                bvh_shape_id = wp.int32(0)
 
-            while wp.bvh_query_next(query, bvh_shape_id, min_dist):
-                if bvh_shape_enabled[bvh_shape_id] != BVH_SHAPE_INACTIVE:
-                    shape_id = wp.int32(bvh_shape_enabled[bvh_shape_id])
-                    geom_type = shape_type[shape_id]
+                while wp.bvh_query_next(query, bvh_shape_id, min_dist):
+                    if bvh_shape_enabled[bvh_shape_id] != BVH_SHAPE_INACTIVE:
+                        shape_id = wp.int32(bvh_shape_enabled[bvh_shape_id])
+                        geom_type = shape_type[shape_id]
 
-                    if geom_type == GeoType.MESH or geom_type == GeoType.CONVEX_MESH or geom_type == GeoType.HFIELD:
-                        geom_to_world = shape_transform_world[shape_id]
-                        ray_origin_local, ray_direction_local = map_ray_to_local(
-                            geom_to_world, origin, direction, shape_scale[shape_id]
-                        )
-                        hit_dist, hit_normal_local, _u, _v, _face = ray_intersect_mesh(
-                            ray_origin_local,
-                            ray_direction_local,
-                            shape_scale[shape_id],
-                            shape_source_ptr[shape_id],
-                            False,
-                            min_dist,
-                        )
-                        hit_normal = wp.vec3(0.0)
-                        if hit_dist >= 0.0:
-                            hit_normal = wp.normalize(wp.transform_vector(geom_to_world, hit_normal_local))
-                    else:
-                        hit_dist, hit_normal = ray_intersect_shape(
-                            shape_transform_world[shape_id],
-                            shape_scale[shape_id],
-                            geom_type,
-                            origin,
-                            direction,
-                            False,
-                        )
-                    if hit_dist >= 0.0 and hit_dist < min_dist:
-                        min_dist = hit_dist
-                        min_shape_id = shape_id
-                        min_normal = hit_normal
+                        if geom_type == GeoType.MESH or geom_type == GeoType.CONVEX_MESH or geom_type == GeoType.HFIELD:
+                            geom_to_world = shape_transform_world[shape_id]
+                            ray_origin_local, ray_direction_local = map_ray_to_local(
+                                geom_to_world, origin, direction, shape_scale[shape_id]
+                            )
+                            hit_dist, hit_normal_local, _u, _v, _face = ray_intersect_mesh(
+                                ray_origin_local,
+                                ray_direction_local,
+                                shape_scale[shape_id],
+                                shape_source_ptr[shape_id],
+                                False,
+                                min_dist,
+                            )
+                            hit_normal = wp.vec3(0.0)
+                            if hit_dist >= 0.0:
+                                hit_normal = wp.normalize(wp.transform_vector(geom_to_world, hit_normal_local))
+                        else:
+                            hit_dist, hit_normal = ray_intersect_shape(
+                                shape_transform_world[shape_id],
+                                shape_scale[shape_id],
+                                geom_type,
+                                origin,
+                                direction,
+                                False,
+                            )
+                        if hit_dist >= 0.0 and hit_dist < min_dist:
+                            min_dist = hit_dist
+                            min_shape_id = shape_id
+                            min_normal = hit_normal
 
         if wp.static(write_dist):
             out_dist[rayid] = wp.where(min_shape_id < 0, -1.0, min_dist)
@@ -1065,13 +1084,14 @@ def intersect_ray(
         if wp.static(write_normal):
             out_normal[rayid] = min_normal
 
+    shape_bvh = model._bvh_shape_filter(shape_filter)
     wp.launch(
         kernel=_intersect_ray_kernel,
         dim=ray_origins.shape[0],
         inputs=[
             model.bvh_shapes.id,
-            model.bvh_shapes_group_roots,
-            model._bvh_shape_active_leaves,
+            shape_bvh.roots,
+            shape_bvh.leaves,
             model.bvh_shape_world_transforms,
             model.shape_type,
             model.shape_scale,

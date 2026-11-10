@@ -103,6 +103,55 @@ link filters are matched against the final path component of each label.
    # list of indices: explicit selection
    SensorFrameTransform(model, shapes=[0, 3, 7], reference_sites=[1])
 
+.. _shape-filtering:
+
+Shape Groups and Filters
+------------------------
+
+Ray casts and cameras often need only some of a scene's shapes. A height scanner usually hits the terrain only,
+and a camera should not trace collision proxies. Newton selects such subsets with **shape groups** and
+**shape filters**:
+
+- A **shape group** is a named set of shapes, such as ``"terrain"`` or ``"robot"``. A shape can belong to several
+  groups. Add shapes to groups through :attr:`ModelBuilder.ShapeConfig.groups <newton.ModelBuilder.ShapeConfig.groups>`
+  or by label with :meth:`ModelBuilder.add_shape_group() <newton.ModelBuilder.add_shape_group>`. The groups of a model
+  are stored as a bit mask per shape in :attr:`Model.shape_groups <newton.Model.shape_groups>`, so a model holds at
+  most 32 groups.
+- A :class:`~newton.ShapeFilter` describes a set of shapes by :class:`~newton.ShapeFlags`, shape groups, and
+  :ref:`label patterns <label-matching>`, with exclusions. A shape must satisfy every criterion that is set.
+
+Register the filters that queries use with
+:meth:`ModelBuilder.add_shape_filter() <newton.ModelBuilder.add_shape_filter>` before finalizing. The method returns
+an integer id that :func:`~newton.intersect_ray` and :class:`~newton.sensors.SensorCamera` accept:
+
+.. code-block:: python
+
+   builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(groups=("terrain",)))
+   builder.add_shape_group("robot", shapes="*/Robot/*")
+   builder.replicate(env, world_count)
+
+   height_scan = builder.add_shape_filter(newton.ShapeFilter(groups=["terrain"]))
+   lidar = builder.add_shape_filter(
+       newton.ShapeFilter(flags=newton.ShapeFlags.COLLIDE_SHAPES, exclude_groups=["robot"])
+   )
+   model = builder.finalize()
+
+   newton.intersect_ray(model, ray_origins=..., ray_directions=..., ray_worlds=..., shape_filter=height_scan)
+   camera = SensorCamera(model)  # default filter: the visible shapes
+
+:meth:`ModelBuilder.finalize() <newton.ModelBuilder.finalize>` partitions the model's shape BVH by the registered
+filters. Shapes that the same filters select share a BVH group in each world, and a query traverses only the groups
+of its filter. A ray of a terrain height scan therefore never visits the robots, and a camera never visits
+collision-only shapes, while all queries share one BVH build and refit. Queries that take a filter id do not
+allocate or synchronize, so they can be captured in a CUDA graph. Without registered filters, the BVH and its
+traversal are the same as before.
+
+Queries that omit the filter use the default filter, which selects the shapes with any of
+:attr:`ModelBuilder.BvhConfig.shape_flags <newton.ModelBuilder.BvhConfig.shape_flags>` (the visible shapes by
+default). Host-side APIs resolve filters directly: :meth:`ShapeFilter.select() <newton.ShapeFilter.select>` returns
+the selected shape indices, and :class:`~newton.sensors.SensorContact` accepts a filter for ``sensing_shapes`` and
+``counterpart_shapes``.
+
 Available Sensors
 -----------------
 
