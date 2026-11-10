@@ -343,8 +343,7 @@ def _match_contacts_kernel(data: _MatchData):
     best_idx = int(-1)
     best_dist_sq = float(data.pos_threshold_sq)
     for old_idx in range(range_lo, range_hi):
-        diff = new_pos_w - data.prev_pos_world[old_idx]
-        dist_sq = wp.dot(diff, diff)
+        dist_sq = float(0.0)
         if data.sticky != 0:
             # Transport the previous body-local witnesses with their bodies and
             # take the larger drift of the two. Compression moves the witnesses
@@ -358,6 +357,9 @@ def _match_contacts_kernel(data: _MatchData):
             if bid1 >= 0:
                 old_p1 = wp.transform_point(data.body_q[bid1], old_p1)
             dist_sq = wp.max(wp.length_sq(p0w - old_p0), wp.length_sq(p1w - old_p1))
+        else:
+            diff = new_pos_w - data.prev_pos_world[old_idx]
+            dist_sq = wp.dot(diff, diff)
 
         if dist_sq <= best_dist_sq:
             old_n = data.prev_normal[old_idx]
@@ -553,7 +555,6 @@ class _ReplayData:
     margin1: wp.array[wp.float32]
     body_q: wp.array[wp.transform]
     shape_body: wp.array[wp.int32]
-    pos_threshold_sq: float
 
 
 @wp.kernel(enable_backward=False)
@@ -578,18 +579,7 @@ def _replay_matched_kernel(data: _ReplayData):
     if fresh_gap > wp.float32(0.0):
         return
 
-    # Body-local witnesses can leave the fresh contact when a body rotates.
-    a0_world = data.prev_point0[idx]
-    a1_world = data.prev_point1[idx]
-    if body0 >= wp.int32(0):
-        a0_world = wp.transform_point(data.body_q[body0], a0_world)
-    if body1 >= wp.int32(0):
-        a1_world = wp.transform_point(data.body_q[body1], a1_world)
-    if wp.length_sq(a0_world - p0_world) > data.pos_threshold_sq:
-        return
-    if wp.length_sq(a1_world - p1_world) > data.pos_threshold_sq:
-        return
-
+    # Sticky matching already bounds each transported witness's drift.
     data.point0[tid] = data.prev_point0[idx]
     data.point1[tid] = data.prev_point1[idx]
     data.offset0[tid] = data.prev_offset0[idx]
@@ -680,10 +670,10 @@ class ContactMatcher:
         pos_threshold: World-space distance threshold [m] between the
             previous and current contact midpoints
             ``0.5 * (world(point0) + world(point1))``.  Contacts whose midpoint
-            moved more than this between frames are considered broken. Sticky mode
-            transports previous body-local witnesses with the current poses before
-            comparing midpoints. It also bounds the distance between each saved
-            witness and its fresh contact point.
+            moved more than this between frames are considered broken. In sticky
+            mode, the previous body-local witnesses are instead transformed by the
+            current body poses, and each must lie within this distance of its
+            fresh contact point for a match.
         normal_dot_threshold: Minimum dot product between old and new contact
             normals.  Below this the contact is considered broken.
         contact_report: Allocate the ``prev_was_matched`` flag array needed
@@ -857,8 +847,9 @@ class ContactMatcher:
 
         Distance is measured between world-space contact midpoints
         (``0.5 * (world(point0) + world(point1))``) so the metric is symmetric
-        in shape 0 / shape 1. Sticky mode transforms previous body-local witnesses
-        with the current poses before comparison, excluding shared body motion.
+        in shape 0 / shape 1. Sticky mode instead measures the larger distance
+        from each previous body-local witness, transformed by its current body
+        pose, to its fresh contact point. This excludes shared body motion.
 
         Args:
             sort_keys: Current frame's sorted int64 keys (use
@@ -1045,8 +1036,8 @@ class ContactMatcher:
         run **after** :meth:`ContactSorter.sort_full` and **before**
         :meth:`save_sorted_state`.  Unmatched rows (``match_index < 0``) are
         left untouched so new contacts keep their fresh narrow-phase geometry.
-        Separated contacts and rows whose saved witnesses move more than
-        ``pos_threshold`` from the fresh witnesses also retain fresh geometry.
+        Matched separated contacts also retain fresh geometry. Sticky matching
+        must already have checked the transported witnesses against ``pos_threshold``.
         Only ``point0``/``point1``/``offset0``/``offset1``/``normal`` are
         restored; other fields (``shape0``/``shape1``, margins, ...) are
         already identical for a matched contact.
@@ -1057,7 +1048,7 @@ class ContactMatcher:
             point0, point1, offset0, offset1, normal: Current-frame sorted
                 contact record to be overwritten on matched penetrating rows.
             shape0, shape1, margin0, margin1, body_q, shape_body: Current-frame
-                arrays used to validate separation and saved witness positions.
+                arrays used to validate separation.
             device: Device to launch on.
         """
         if not self._sticky:
@@ -1083,7 +1074,6 @@ class ContactMatcher:
         data.body_q = body_q
         data.shape_body = shape_body
 
-        data.pos_threshold_sq = self._pos_threshold_sq
         wp.launch(_replay_matched_kernel, dim=self._capacity, inputs=[data], device=device)
 
     def build_report(

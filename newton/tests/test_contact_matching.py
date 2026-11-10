@@ -1222,8 +1222,8 @@ def _check_sticky_rotated_witness(test, device, *, plane_first, threshold, use_c
         test.assertEqual(count, int(contacts.rigid_contact_count.numpy()[0]))
         match_index = contacts.rigid_contact_match_index.numpy()[:count]
         # Rotation moves the saved material witnesses even when the geometric
-        # surface stays put. Match only while their transported midpoint remains
-        # inside the configured radius; otherwise retain the fresh geometry.
+        # surface stays put. Match only while each transported witness remains
+        # inside the configured radius; otherwise report the contact as broken.
         if expect_replay:
             test.assertTrue(np.all(match_index >= 0))
         else:

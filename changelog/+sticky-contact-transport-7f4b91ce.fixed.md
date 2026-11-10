@@ -1,1 +1,1 @@
-Preserve sticky contact matching during shared body motion by comparing fresh witnesses with previous body-local witnesses transformed by the current poses.
+Preserve sticky contact matching during shared body motion by comparing each fresh witness with its previous body-local witness transformed by the current pose.
