@@ -1036,7 +1036,13 @@ class ModelBuilder:
         :class:`~newton.solvers.SolverFeatherstone`. ``0`` disables adhesion. See
         :ref:`Contact friction gain and adhesion`."""
         mu: float = 1.0
-        """The coefficient of friction."""
+        """The coefficient of friction [dimensionless]; the dynamic (kinetic) coefficient when
+        :attr:`mu_static` is set."""
+        mu_static: float | None = None
+        """The coefficient of static friction [dimensionless], the break-away threshold for sticking
+        contacts. ``None`` uses :attr:`mu` (no static/dynamic distinction); a set value must not be
+        below :attr:`mu`, so code that overrides :attr:`mu` alone has to resolve this field as well.
+        No built-in solver models stick-slip friction yet; the value is stored for solvers that do."""
         restitution: float = 0.0
         """The coefficient of restitution.
 
@@ -1189,6 +1195,14 @@ class ModelBuilder:
                 )
             if not math.isfinite(self.density) or self.density < 0.0:
                 raise ValueError(f"density must be finite and >= 0 (got {self.density}).")
+            if self.mu_static is not None:
+                if not math.isfinite(self.mu_static) or self.mu_static < 0.0:
+                    raise ValueError(f"mu_static must be finite and >= 0 (got mu_static={self.mu_static}).")
+                if self.mu_static < self.mu:
+                    raise ValueError(
+                        f"mu_static must be >= mu (got mu_static={self.mu_static}, mu={self.mu}). "
+                        "Leave mu_static as None for a single friction coefficient."
+                    )
 
             if self.sdf_target_voxel_size is not None and (
                 not math.isfinite(self.sdf_target_voxel_size) or self.sdf_target_voxel_size <= 0.0
@@ -2032,6 +2046,10 @@ class ModelBuilder:
         """Friction coefficients accumulated for :attr:`Model.shape_material_mu`."""
         self.shape_material_restitution: list[float] = []
         """Restitution coefficients accumulated for :attr:`Model.shape_material_restitution`."""
+        self.shape_material_mu_static: list[float | None] = []
+        """Static friction coefficients accumulated for :attr:`Model.shape_material_mu_static`. ``None`` means
+        "same as ``mu``" and is resolved in :meth:`finalize`, so a direct edit of :attr:`shape_material_mu` keeps a
+        single coefficient for such shapes; an explicit value is checked against the final ``mu`` there."""
         self.shape_material_mu_torsional: list[float] = []
         """Torsional friction coefficients accumulated for :attr:`Model.shape_material_mu_torsional`."""
         self.shape_material_mu_rolling: list[float] = []
@@ -9062,6 +9080,7 @@ class ModelBuilder:
         self.shape_material_kf.append(cfg.kf)
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
+        self.shape_material_mu_static.append(cfg.mu_static)
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_material_mu_torsional.append(cfg.mu_torsional)
         self.shape_material_mu_rolling.append(cfg.mu_rolling)
@@ -10145,6 +10164,7 @@ class ModelBuilder:
                             kf=self.shape_material_kf[shape],
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
+                            mu_static=self.shape_material_mu_static[shape],
                             restitution=self.shape_material_restitution[shape],
                             mu_torsional=self.shape_material_mu_torsional[shape],
                             mu_rolling=self.shape_material_mu_rolling[shape],
@@ -14882,6 +14902,27 @@ class ModelBuilder:
         batches.meshes = tuple(meshes)
         return batches.meshes, batches
 
+    def _resolve_shape_material_mu_static(self) -> list[float]:
+        """Static friction coefficients for :attr:`Model.shape_material_mu_static`.
+
+        An unset :attr:`ShapeConfig.mu_static` follows the shape's final ``mu``, including direct edits of
+        :attr:`shape_material_mu` made after :meth:`add_shape`. An explicit value below that ``mu`` is rejected
+        rather than corrected quietly.
+        """
+        shape_material_mu = _list_for_iteration(self.shape_material_mu)
+        shape_material_mu_static = _list_for_iteration(self.shape_material_mu_static)
+        resolved = [
+            mu if mu_static is None else mu_static
+            for mu, mu_static in zip(shape_material_mu, shape_material_mu_static, strict=True)
+        ]
+        for shape, (mu, mu_static) in enumerate(zip(shape_material_mu, resolved, strict=True)):
+            if mu_static < mu:
+                raise ValueError(
+                    f"shape_material_mu_static[{shape}] = {mu_static} is below shape_material_mu[{shape}] = {mu}. "
+                    "Update both when editing mu after add_shape, or leave mu_static None for a single coefficient."
+                )
+        return resolved
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -15360,6 +15401,9 @@ class ModelBuilder:
             m.shape_material_mu = wp.array(self.shape_material_mu, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
+            )
+            m.shape_material_mu_static = wp.array(
+                self._resolve_shape_material_mu_static(), dtype=wp.float32, requires_grad=requires_grad
             )
             m.shape_material_mu_torsional = wp.array(
                 self.shape_material_mu_torsional, dtype=wp.float32, requires_grad=requires_grad
@@ -16644,6 +16688,8 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "shape_material_kf": wp.float32,
     "shape_material_ka": wp.float32,
     "shape_material_mu": wp.float32,
+    # Holds None for "same as mu" until finalize() resolves it, so the merged array is an object array.
+    "shape_material_mu_static": wp.float32,
     "shape_material_restitution": wp.float32,
     "shape_material_mu_torsional": wp.float32,
     "shape_material_mu_rolling": wp.float32,
