@@ -1799,11 +1799,13 @@ class CollisionPipeline:
             deterministic: Sort contacts after the narrow phase so that results
                 are independent of GPU thread scheduling. This also enables
                 deterministic hydroelastic accumulation and contact allocation.
-                Adds a radix sort + gather pass.
+                Adds a radix sort + gather pass. Limits the shape count; see
+                :ref:`Deterministic Contacts`.
             contact_matching: Frame-to-frame contact matching mode.  One of
                 ``"disabled"``, ``"latest"``, or ``"sticky"``.  Any
-                non-disabled mode implies ``deterministic=True`` and
-                populates :attr:`Contacts.rigid_contact_match_index`.
+                non-disabled mode implies ``deterministic=True``, including
+                its shape-count limit, and populates
+                :attr:`Contacts.rigid_contact_match_index`.
                 Defaults to ``"disabled"``.
 
                 .. experimental::
@@ -1916,7 +1918,6 @@ class CollisionPipeline:
             properties is not None and np.any(properties.numpy() & int(MeshProperties.SURFACE_VELOCITY))
             for properties in mesh_properties
         )
-        self._contact_sort_shape_index_bits = contact_sort_shape_index_bits(shape_count)
         device = model.device
         using_expert_components = broad_phase_instance is not None or narrow_phase is not None
 
@@ -2373,6 +2374,10 @@ class CollisionPipeline:
         # matching; complex contact families retain the full fingerprint width.
         self._contact_sort_sub_key_bits = getattr(
             self.narrow_phase, "_contact_sort_sub_key_bits", CONTACT_SORT_SUB_KEY_BITS
+        )
+        # Sort keys are written only in deterministic mode, which contact matching implies.
+        self._contact_sort_shape_index_bits = (
+            contact_sort_shape_index_bits(shape_count, self._contact_sort_sub_key_bits) if deterministic else 0
         )
 
         self._hydro_shape_sdf_data_prepared = self.hydroelastic_sdf is not None
