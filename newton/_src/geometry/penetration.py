@@ -72,12 +72,15 @@ def _box_triangle_depth(
     The triangle may degenerate to a segment or a point. The returned unit
     direction moves the triangle out of the box by the returned depth.
     For a one-sided mesh triangle, directions must not move the box behind
-    the triangle's front side. Partner-point certificates remain
+    the triangle's front side. A candidate that leans behind it is replaced
+    by its projection onto the triangle's plane, at the travel that clears
+    the same axis, so the box may still slide off an edge of the triangle.
+    A separating axis is kept on either side. Partner-point certificates remain
     two-sided so their depths still bound the full Minkowski body from below.
     """
     front = wp.vec3(0.0)
     if one_sided:
-        front = wp.cross(second - first, third - first)
+        front = wp.normalize(wp.cross(second - first, third - first))
     depth = float(1.0e30)
     direction = wp.vec3(1.0, 0.0, 0.0)
     for index in range(13):
@@ -92,10 +95,21 @@ def _box_triangle_depth(
             positive = radius - wp.min(d0, wp.min(d1, d2))
             negative = radius + wp.max(d0, wp.max(d1, d2))
             side = wp.dot(axis, front)
-            if positive < depth and side <= 0.0:
+            # In-plane part of the axis; moving along it by ``depth / lateral``
+            # clears the axis as moving along the axis by ``depth`` does.
+            lateral = wp.sqrt(wp.max(1.0 - side * side, 0.0))
+            if side > 0.0 and positive > 0.0:
+                if lateral > 1.0e-6 and positive < depth * lateral:
+                    depth = positive / lateral
+                    direction = (axis - side * front) / lateral
+            elif positive < depth:
                 depth = positive
                 direction = axis
-            if negative < depth and side >= 0.0:
+            if side < 0.0 and negative > 0.0:
+                if lateral > 1.0e-6 and negative < depth * lateral:
+                    depth = negative / lateral
+                    direction = (side * front - axis) / lateral
+            elif negative < depth:
                 depth = negative
                 direction = -axis
     return depth, direction
@@ -254,8 +268,8 @@ def create_solve_box_penetration(support: Any):
     """Find minimum depth for a box against a box, triangle, or convex mesh.
 
     Box and triangle pairs use the closed-form separating-axis test. Mesh
-    triangles restrict box-separation directions to their front side, consistent
-    with midphase back-face culling. Convex meshes first try cheap certificates:
+    triangles restrict box-separation directions to their front side or their own
+    plane, consistent with midphase back-face culling. Convex meshes first try cheap certificates:
     a box plus a triangle of genuine partner points is an inner Minkowski body,
     so its depth bounds the minimum from below, and a support plane bounds it from above; matching
     bounds certify the minimum with a few support queries. Verified hulls
