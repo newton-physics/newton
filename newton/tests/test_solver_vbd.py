@@ -619,6 +619,7 @@ def accumulate_particle_body_contact_force_and_hessian(
                 dt,
                 use_log_barrier,
                 False,  # unanchored friction
+                -1.0,
                 False,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
@@ -650,6 +651,7 @@ def accumulate_particle_body_contact_force_and_hessian(
             dt,
             use_log_barrier,
             False,  # unanchored friction
+            -1.0,
             False,
         )
         for i in range(3):
@@ -798,10 +800,34 @@ def _eval_separating_contact_damping_kernel(
     # Rigid-soft: the shared body-particle force law with a separating relative translation.
     relative_translation = wp.vec3(0.0, 0.0, 0.01)
     body_particle_force_damped, body_particle_hessian_damped = _compute_body_particle_contact_force(
-        0.05, 0.1, normal, relative_translation, relative_translation, 100.0, 20.0, 0.0, 0.01, dt, False, bidirectional
+        0.05,
+        0.1,
+        normal,
+        relative_translation,
+        relative_translation,
+        -1.0,
+        100.0,
+        20.0,
+        0.0,
+        0.01,
+        dt,
+        False,
+        bidirectional,
     )
     body_particle_force_undamped, body_particle_hessian_undamped = _compute_body_particle_contact_force(
-        0.05, 0.1, normal, relative_translation, relative_translation, 100.0, 0.0, 0.0, 0.01, dt, False, bidirectional
+        0.05,
+        0.1,
+        normal,
+        relative_translation,
+        relative_translation,
+        -1.0,
+        100.0,
+        0.0,
+        0.0,
+        0.01,
+        dt,
+        False,
+        bidirectional,
     )
     damping_forces[mode, 1] = body_particle_force_damped - body_particle_force_undamped
     damping_hessians[mode, 1] = body_particle_hessian_damped - body_particle_hessian_undamped
@@ -2384,7 +2410,14 @@ def _body_particle_contact_damping_is_absolute(test, device):
         np.testing.assert_allclose(damping_low_ke, [0.0, 0.0, 2.0], rtol=1.0e-6, atol=1.0e-6)
 
 
-def _soft_block_on_tilted_box(load: float | tuple, full_surface: bool, sticky: bool, substeps: int, seconds: tuple):
+def _soft_block_on_tilted_box(
+    load: float | tuple,
+    full_surface: bool,
+    sticky: bool,
+    substeps: int,
+    seconds: tuple,
+    damping_bidirectional: bool = True,
+):
     """Mean positions of a soft block resting on a static box under gravity tilted along x.
 
     The tangential load is ``load`` times the friction limit mu * N. Returns the block's mean position
@@ -2423,7 +2456,7 @@ def _soft_block_on_tilted_box(load: float | tuple, full_surface: bool, sticky: b
         enable_rigid_soft_full_surface_contact=full_surface,
         contact_matching="sticky" if sticky else "disabled",
     )
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, soft_contact_damping_bidirectional=damping_bidirectional)
     state_0, state_1, contacts = model.state(), model.state(), pipeline.contacts()
 
     positions = []
@@ -2455,12 +2488,34 @@ def _sticky_soft_contacts_hold_static_load(test, device, full_surface, substeps)
 
 
 def _sticky_soft_contacts_slide_beyond_friction_cone(test, device):
-    """Sticky soft contacts slide like fresh ones once the tangential load exceeds mu * N."""
+    """Kept contact points do not pin a block once the tangential load exceeds mu * N.
+
+    The block slides at least as far as with fresh contacts. Fresh contacts bound friction by the elastic force,
+    which two-sided damping raises while the block's back edge lifts, so they slide less.
+    """
     with wp.ScopedDevice(device):
         (fresh,) = _soft_block_on_tilted_box(1.5, False, False, 5, (0.3,))
         (sticky,) = _soft_block_on_tilted_box(1.5, False, True, 5, (0.3,))
     test.assertGreater(fresh[0], 0.05)
-    np.testing.assert_allclose(sticky[0], fresh[0], rtol=0.02)
+    test.assertGreaterEqual(sticky[0], 0.98 * fresh[0])
+
+
+def _sticky_soft_contacts_slide_independent_of_normal_damping(test, device, full_surface):
+    """A settled block under a load beyond the friction cone slides as far with two-sided as with closing-only damping.
+
+    Damping carries part of the normal load. With the friction cone from the elastic force alone, two-sided
+    damping widened it while the block's back edge lifted, and the block slid 73-82% as far as with
+    closing-only damping.
+    """
+    slides = []
+    with wp.ScopedDevice(device):
+        for damping_bidirectional in (False, True):
+            settled, loaded = _soft_block_on_tilted_box(
+                (0.0, 1.5), full_surface, True, 5, (0.5, 0.1), damping_bidirectional=damping_bidirectional
+            )
+            slides.append(loaded[0] - settled[0])
+    test.assertGreater(slides[0], 5.0e-3)
+    test.assertAlmostEqual(slides[1] / slides[0], 1.0, delta=0.05)
 
 
 def _sticky_soft_contacts_stop_without_springback(test, device, full_surface):
@@ -2471,8 +2526,7 @@ def _sticky_soft_contacts_stop_without_springback(test, device, full_surface):
     VBD drags them to within the friction regularization length after each step.
     """
     with wp.ScopedDevice(device):
-        # Let the initial normal damping transient settle before removing the load.
-        positions = _soft_block_on_tilted_box((2.0,) + (0.0,) * 30, full_surface, True, 5, (0.3,) + (0.01,) * 30)
+        positions = _soft_block_on_tilted_box((1.5,) + (0.0,) * 30, full_surface, True, 5, (0.12,) + (0.01,) * 30)
     xs = np.array([p[0] for p in positions[1:]])
     test.assertGreater(xs.max() - positions[0][0], 5.0e-4)
     test.assertLess(xs.max() - xs[-1], 1.0e-4)
@@ -2643,6 +2697,7 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
                 0.01,
                 False,  # legacy quadratic rigid-soft normal law
                 False,  # rigid_body_particle_contact_anchored_friction
+                wp.empty(0, dtype=float, device=device),  # soft_contact_normal_force, unread when unanchored
                 False,  # one-sided contact damping
                 particle_radius,
                 contact_indices,
@@ -2782,6 +2837,7 @@ def _launch_particle_contact_gather(data, contact_count, contact_head, contact_n
                 1.0,
                 False,  # rigid_body_particle_contact_use_log_barrier
                 False,  # rigid_body_particle_contact_anchored_friction
+                wp.empty(0, dtype=float, device=device),  # soft_contact_normal_force, unread when unanchored
                 False,  # contact_damping_bidirectional
                 data["particle_radius"],
                 data["contact_indices"],
@@ -2846,6 +2902,7 @@ def _particle_contact_gather_order_pinned(test, device):
                     1.0,
                     False,  # rigid_body_particle_contact_use_log_barrier
                     False,  # rigid_body_particle_contact_anchored_friction
+                    wp.empty(0, dtype=float, device=device),  # soft_contact_normal_force, unread when unanchored
                     False,  # contact_damping_bidirectional
                     data["particle_radius"],
                     data["contact_indices"],
@@ -3090,6 +3147,7 @@ def _launch_particle_contact_scatter(data, contact_count, worker_count, forces, 
                 1.0,
                 False,  # rigid_body_particle_contact_use_log_barrier
                 False,  # rigid_body_particle_contact_anchored_friction
+                wp.empty(0, dtype=float, device=device),  # soft_contact_normal_force, unread when unanchored
                 False,  # contact_damping_bidirectional
                 data["particle_radius"],
                 data["contact_indices"],
@@ -7161,6 +7219,20 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
+    "test_sticky_soft_contacts_slide_independent_of_normal_damping",
+    _sticky_soft_contacts_slide_independent_of_normal_damping,
+    devices=devices,
+    full_surface=False,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_sticky_soft_contacts_slide_independent_of_normal_damping_full_surface",
+    _sticky_soft_contacts_slide_independent_of_normal_damping,
+    devices=devices,
+    full_surface=True,
+)
+add_function_test(
+    TestSolverVBD,
     "test_sticky_soft_contacts_stop_without_springback",
     _sticky_soft_contacts_stop_without_springback,
     devices=devices,
@@ -7784,6 +7856,7 @@ def _run_face_section2(device, shape_margin):
             1.0,  # friction_epsilon
             False,  # rigid_body_particle_contact_use_log_barrier
             False,  # rigid_body_particle_contact_anchored_friction
+            wp.empty(0, dtype=float, device=device),  # soft_contact_normal_force, unread when unanchored
             False,  # contact_damping_bidirectional
             model.particle_radius,
             contacts.soft_contact_indices,

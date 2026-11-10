@@ -5030,6 +5030,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
             wp.array([wp.vec3i(3, 4, 5)], dtype=wp.vec3i, device=device),  # src_rigid_indices
             wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device),  # src_barycentric
             None,  # mesh feature records
+            wp.zeros(1, dtype=float, device=device),  # src_normal_force
             wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),  # shape_flags
             wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),  # particle_flags
             int(ShapeFlags.COLLIDE_PARTICLES),
@@ -5045,6 +5046,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
             dst_rigid_indices,
             dst_barycentric,
             None,  # mesh feature records
+            wp.zeros(1, dtype=float, device=device),  # dst_normal_force
             wp.full(1, -1, dtype=wp.int32, device=device),  # src_to_dst
         ],
         device=device,

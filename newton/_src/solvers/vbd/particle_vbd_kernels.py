@@ -22,6 +22,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _eval_body_particle_contact,
     _eval_body_particle_contact_mixed_mu,
     _eval_soft_ef_contact,
+    _kept_normal_force,
     _reset_world_selected,
     dat_separation_epsilon,
     evaluate_body_particle_attachment_particle_force_hessian,
@@ -2244,6 +2245,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
                 dt,
                 False,
                 False,
+                -1.0,
                 contact_damping_bidirectional,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
@@ -2538,6 +2540,7 @@ def gather_particle_body_contact_force_and_hessian(
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
     rigid_body_particle_contact_anchored_friction: bool,
+    soft_contact_normal_force: wp.array[float],
     contact_damping_bidirectional: bool,
     particle_radius: wp.array[float],
     body_particle_contact_indices: wp.array[wp.vec3i],
@@ -2621,6 +2624,9 @@ def gather_particle_body_contact_force_and_hessian(
                 dt,
                 rigid_body_particle_contact_use_log_barrier,
                 rigid_body_particle_contact_anchored_friction,
+                _kept_normal_force(
+                    rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, contact_index
+                ),
                 contact_damping_bidirectional,
             )
             force += contact_force
@@ -2651,6 +2657,9 @@ def gather_particle_body_contact_force_and_hessian(
                 dt,
                 rigid_body_particle_contact_use_log_barrier,
                 rigid_body_particle_contact_anchored_friction,
+                _kept_normal_force(
+                    rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, contact_index
+                ),
                 contact_damping_bidirectional,
             )
             weight = bary[corner]
@@ -2676,6 +2685,7 @@ def scatter_particle_body_contact_force_and_hessian(
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
     rigid_body_particle_contact_anchored_friction: bool,
+    soft_contact_normal_force: wp.array[float],
     contact_damping_bidirectional: bool,
     particle_radius: wp.array[float],
     body_particle_contact_indices: wp.array[wp.vec3i],
@@ -2750,6 +2760,9 @@ def scatter_particle_body_contact_force_and_hessian(
                     dt,
                     rigid_body_particle_contact_use_log_barrier,
                     rigid_body_particle_contact_anchored_friction,
+                    _kept_normal_force(
+                        rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, contact_index
+                    ),
                     contact_damping_bidirectional,
                 )
                 wp.atomic_add(particle_forces, particle_index, contact_force)
@@ -2788,6 +2801,9 @@ def scatter_particle_body_contact_force_and_hessian(
                     dt,
                     rigid_body_particle_contact_use_log_barrier,
                     rigid_body_particle_contact_anchored_friction,
+                    _kept_normal_force(
+                        rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, contact_index
+                    ),
                     contact_damping_bidirectional,
                 )
                 for i in range(3):

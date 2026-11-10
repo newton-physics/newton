@@ -2736,7 +2736,10 @@ drift between the kept points, so soft bodies hold static tangential loads that
 the regularized friction law would otherwise let them creep under.  After each
 step it drags the kept body points to within ``friction_epsilon * dt`` of their
 soft points: drift beyond that within a step is sliding, and friction then does
-not pull a body back once it stops.  Other solvers
+not pull a body back once it stops.  It bounds the friction of a kept record by
+the normal load the record carried at the end of the previous step, elastic and
+damping together, so the damping mode does not change how far a contact slides;
+a record without one, such as a new contact, uses its elastic force.  Other solvers
 read the kept points as contact geometry; their contact point may then lag the
 closest point by up to the threshold.
 
@@ -2753,11 +2756,11 @@ adjustment of either parameter.
 Both enabled modes keep the previous frame's sorted keys, uniqueness claims,
 contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
 ``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
-``contact_report=True`` adds 4.  With particles, ``"sticky"`` also keeps 60 bytes
-per ``soft_contact_max`` slot (72 with full-surface mesh records) and 16 bytes per
+``contact_report=True`` adds 4.  With particles, ``"sticky"`` also keeps 64 bytes
+per ``soft_contact_max`` slot (76 with full-surface mesh records) and 16 bytes per
 particle for rigid-soft records.  Every :class:`~newton.Contacts` buffer carries
-16 bytes per ``soft_contact_max`` slot for the reset stamp and body-frame normal
-of its records.
+20 bytes per ``soft_contact_max`` slot for the reset stamp, body-frame normal, and
+kept normal load of its records.
 ``"disabled"`` allocates no matching history.
 
 The deterministic pipeline's sorter omits the unused simple-layout scratch,

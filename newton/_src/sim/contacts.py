@@ -467,6 +467,9 @@ class Contacts:
             self._soft_contact_reset_stamp = wp.zeros(soft_contact_max, dtype=wp.int32)
             # Keep normals in the body frame so replay can distinguish opposing faces even after rotation.
             self._soft_contact_normal_body = wp.zeros(soft_contact_max, dtype=wp.vec3)
+            # Normal load each kept record carried at the end of the previous step (-1 without one); VBD
+            # bounds its friction by it.
+            self._soft_contact_normal_force = wp.full(soft_contact_max, -1.0, dtype=float)
             # Replay index array for differentiable backward: recorded per launch *thread*, not per
             # contact, so it must span the full particle+edge+face candidate-pair space -- which can
             # exceed soft_contact_max when the caller overrides that capacity. Sized independently so a

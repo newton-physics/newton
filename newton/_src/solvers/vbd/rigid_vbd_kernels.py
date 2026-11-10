@@ -2154,6 +2154,14 @@ def _body_particle_friction_translation(
     return relative_translation
 
 
+@wp.func
+def _kept_normal_force(anchored: bool, contact_normal_force: wp.array[float], contact_index: int):
+    """Normal force a persistent record carried at the end of the previous step, or -1 without one."""
+    if anchored:
+        return contact_normal_force[contact_index]
+    return -1.0
+
+
 @wp.kernel(enable_backward=False)
 def relax_body_particle_contact_anchors(
     max_slip: float,
@@ -2199,6 +2207,76 @@ def relax_body_particle_contact_anchors(
             soft_contact_body_pos[i] = wp.transform_point(wp.transform_inverse(X_wb), bx)
 
 
+@wp.kernel(enable_backward=False)
+def record_body_particle_contact_normal_forces(
+    dt: float,
+    worker_count: int,
+    particle_q: wp.array[wp.vec3],
+    particle_q_prev: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    soft_contact_count: wp.array[int],
+    soft_contact_max: int,
+    contact_filter: _SoftContactFilterData,
+    soft_contact_indices: wp.array[wp.vec3i],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    soft_contact_shape: wp.array[int],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_body_vel: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
+    contact_ke: wp.array[float],
+    contact_kd: wp.array[float],
+    use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
+    # out
+    soft_contact_normal_force: wp.array[float],
+):
+    """Store each record's elastic and damping load at the end of the step for the next step's friction cone.
+
+    Damping carries part of the normal load, so a cone from the elastic force alone is too wide while a
+    contact opens and too narrow while it closes. Evaluated at the end of the step, the load does not follow
+    the iterates, whose inertial start overstates penetration and damping.
+    """
+    for i in range(wp.tid(), wp.min(soft_contact_count[0], soft_contact_max), worker_count):
+        corners = soft_contact_indices[i]
+        if corners[0] < 0 or not _soft_contact_force_enabled(i, contact_filter):
+            soft_contact_normal_force[i] = -1.0
+            continue
+        normal_force, _hessian, _bx = _eval_soft_ef_contact(
+            i,
+            corners,
+            soft_contact_barycentric[i],
+            particle_q,
+            particle_q_prev,
+            particle_radius,
+            contact_ke[i],
+            contact_kd[i],
+            0.0,
+            1.0,
+            shape_body,
+            body_q,
+            body_q_prev,
+            body_qd,
+            body_com,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
+            shape_margin,
+            dt,
+            use_log_barrier,
+            False,
+            -1.0,
+            contact_damping_bidirectional,
+        )
+        soft_contact_normal_force[i] = wp.max(wp.dot(normal_force, soft_contact_normal[i]), 0.0)
+
+
 @wp.func
 def _compute_body_particle_contact_force(
     distance: float,
@@ -2206,6 +2284,7 @@ def _compute_body_particle_contact_force(
     n: wp.vec3,
     relative_translation: wp.vec3,
     friction_translation: wp.vec3,
+    kept_normal_force: float,
     ke: float,
     kd: float,
     mu: float,
@@ -2222,6 +2301,9 @@ def _compute_body_particle_contact_force(
     on ``friction_translation``.
     Damping acts on a closing gap only, or in both
     directions when ``contact_damping_bidirectional`` is set.
+    The friction cone is ``mu`` times ``kept_normal_force``, the elastic and damping load the record
+    carried at the end of the previous step, or the elastic force alone for a record without one
+    (``kept_normal_force < 0``).
     """
     dE_dD, d2E_dDdD = _evaluate_rigid_soft_contact_force_norm(distance, collision_radius, ke, use_log_barrier)
     f_n = -dE_dD
@@ -2233,8 +2315,13 @@ def _compute_body_particle_contact_force(
         hessian = hessian + damping_hessian
         force = force - damping_hessian * relative_translation
 
+    cone_normal_force = f_n
+    if kept_normal_force >= 0.0:
+        cone_normal_force = kept_normal_force
     eps_u = friction_epsilon * dt
-    friction_force, friction_hessian = compute_projected_isotropic_friction(mu, f_n, n, friction_translation, eps_u)
+    friction_force, friction_hessian = compute_projected_isotropic_friction(
+        mu, cone_normal_force, n, friction_translation, eps_u
+    )
     force = force + friction_force
     hessian = hessian + friction_hessian
 
@@ -2265,6 +2352,7 @@ def _eval_body_particle_contact(
     dt: float,
     use_log_barrier: bool,
     anchored: bool,
+    kept_normal_force: float,
     contact_damping_bidirectional: bool,
 ):
     """Particle-rigid contact force/Hessian - resolves geometry from arrays then
@@ -2322,6 +2410,7 @@ def _eval_body_particle_contact(
             n,
             relative_translation,
             friction_translation,
+            kept_normal_force,
             body_particle_contact_ke,
             body_particle_contact_kd,
             friction_mu,
@@ -2359,6 +2448,7 @@ def _eval_soft_ef_contact(
     dt: float,
     use_log_barrier: bool,
     anchored: bool,
+    kept_normal_force: float,
     contact_damping_bidirectional: bool,
 ):
     """Soft-contact force/Hessian at a barycentric contact point over a record's soft particles.
@@ -2443,6 +2533,7 @@ def _eval_soft_ef_contact(
             n,
             relative_translation,
             friction_translation,
+            kept_normal_force,
             contact_ke,
             contact_kd,
             contact_mu,
@@ -2510,6 +2601,7 @@ def _eval_body_particle_contact_mixed_mu(
         dt,
         False,
         False,  # unanchored friction for per-shape mu callers
+        -1.0,
         contact_damping_bidirectional,
     )
 
@@ -6118,6 +6210,7 @@ def accumulate_body_particle_contacts_per_body(
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
     rigid_body_particle_contact_anchored_friction: bool,
+    soft_contact_normal_force: wp.array[float],
     contact_damping_bidirectional: bool,
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_ke: wp.array[float],
@@ -6249,6 +6342,9 @@ def accumulate_body_particle_contacts_per_body(
                 n,
                 relative_translation,
                 friction_translation,
+                _kept_normal_force(
+                    rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, contact_idx
+                ),
                 body_particle_contact_penalty_k[contact_idx],
                 body_particle_contact_material_kd[contact_idx],
                 body_particle_contact_material_mu[contact_idx],
@@ -6285,6 +6381,9 @@ def accumulate_body_particle_contacts_per_body(
                 dt,
                 rigid_body_particle_contact_use_log_barrier,
                 rigid_body_particle_contact_anchored_friction,
+                _kept_normal_force(
+                    rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, contact_idx
+                ),
                 contact_damping_bidirectional,
             )
 
@@ -6323,6 +6422,7 @@ def compute_body_particle_contact_forces(
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
     rigid_body_particle_contact_anchored_friction: bool,
+    soft_contact_normal_force: wp.array[float],
     contact_damping_bidirectional: bool,
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
@@ -6400,6 +6500,7 @@ def compute_body_particle_contact_forces(
             dt,
             rigid_body_particle_contact_use_log_barrier,
             rigid_body_particle_contact_anchored_friction,
+            _kept_normal_force(rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, tid),
             contact_damping_bidirectional,
         )
         cp_world = wp.transform_point(X_wb, body_particle_contact_body_pos[tid])
@@ -6429,6 +6530,7 @@ def compute_body_particle_contact_forces(
             dt,
             rigid_body_particle_contact_use_log_barrier,
             rigid_body_particle_contact_anchored_friction,
+            _kept_normal_force(rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, tid),
             contact_damping_bidirectional,
         )
 

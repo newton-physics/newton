@@ -1967,6 +1967,7 @@ def test_mesh_vertex_fallback_sign(test, device):
                 0.01,
                 False,
                 False,
+                contacts._soft_contact_normal_force,
                 False,
                 penalty,
                 zero_material,

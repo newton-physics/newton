@@ -17,7 +17,9 @@ also restart a record, even when a thin wall's two faces fit within the position
 on a moving surface (nonzero ``soft_contact_body_vel``) keep fresh points, since the surface material moves away from any
 body-frame point. The fresh normal is kept, so a rotating body still pushes along its current surface
 normal. Consumers can then measure tangential slip as the drift between the two replayed points, which
-persists across collision passes, rather than as the motion since the last one.
+persists across collision passes, rather than as the motion since the last one. A kept record also keeps
+the normal load its consumer left on it (``Contacts._soft_contact_normal_force``); every other record
+starts without one.
 
 The matcher saves a buffer's records as the consumers left them, so a solver may move the kept points
 between passes; VBD drags them along once a contact slides. Each buffer therefore replays its own
@@ -126,9 +128,11 @@ def _replay_soft_contacts_kernel(
     prev_barycentric: wp.array[wp.vec3],
     prev_body_pos: wp.array[wp.vec3],
     prev_normal_body: wp.array[wp.vec3],
-    # out: every record's reset stamp
+    prev_normal_force: wp.array[float],
+    # out: every record's reset stamp and kept normal load
     contact_reset_stamp: wp.array[wp.int32],
     contact_normal_body: wp.array[wp.vec3],
+    contact_normal_force: wp.array[float],
     # in/out: matched rows are overwritten with the previous contact points
     contact_barycentric: wp.array[wp.vec3],
     contact_body_pos: wp.array[wp.vec3],
@@ -147,6 +151,7 @@ def _replay_soft_contacts_kernel(
         n = contact_normal[i]
         normal_body = wp.transform_vector(wp.transform_inverse(X_wb), n)
         contact_normal_body[i] = normal_body
+        contact_normal_force[i] = -1.0
         # A moving surface (conveyor) carries its material away from any point fixed in the body frame.
         if wp.length_sq(contact_body_vel[i]) > 0.0:
             continue
@@ -189,6 +194,7 @@ def _replay_soft_contacts_kernel(
         if best >= 0:
             contact_barycentric[i] = prev_barycentric[best]
             contact_body_pos[i] = prev_body_pos[best]
+            contact_normal_force[i] = prev_normal_force[best]
 
 
 @wp.kernel(enable_backward=False)
@@ -205,6 +211,7 @@ def _save_soft_contacts_kernel(
     contact_barycentric: wp.array[wp.vec3],
     contact_body_pos: wp.array[wp.vec3],
     contact_normal_body: wp.array[wp.vec3],
+    contact_normal_force: wp.array[float],
     prev_head: wp.array[wp.int32],
     prev_next: wp.array[wp.int32],
     prev_indices: wp.array[wp.vec3i],
@@ -214,6 +221,7 @@ def _save_soft_contacts_kernel(
     prev_barycentric: wp.array[wp.vec3],
     prev_body_pos: wp.array[wp.vec3],
     prev_normal_body: wp.array[wp.vec3],
+    prev_normal_force: wp.array[float],
 ):
     if history_owner[0] != owner:
         return
@@ -227,6 +235,7 @@ def _save_soft_contacts_kernel(
         prev_barycentric[i] = contact_barycentric[i]
         prev_body_pos[i] = contact_body_pos[i]
         prev_normal_body[i] = contact_normal_body[i]
+        prev_normal_force[i] = contact_normal_force[i]
         slot = _key_slot(corners, contact_shape[i], _record_feature(contact_features, i))
         prev_next[i] = wp.atomic_exch(prev_head, slot, wp.int32(i))
 
@@ -277,6 +286,7 @@ class SoftContactMatcher:
             self._prev_barycentric = wp.zeros(capacity, dtype=wp.vec3)
             self._prev_body_pos = wp.zeros(capacity, dtype=wp.vec3)
             self._prev_normal_body = wp.zeros(capacity, dtype=wp.vec3)
+            self._prev_normal_force = wp.zeros(capacity, dtype=float)
             self._empty_features = wp.empty(0, dtype=wp.vec3i)
             self._empty_body_q = wp.empty(0, dtype=wp.transform)
 
@@ -308,6 +318,7 @@ class SoftContactMatcher:
                 contacts.soft_contact_barycentric,
                 contacts.soft_contact_body_pos,
                 contacts._soft_contact_normal_body,
+                contacts._soft_contact_normal_force,
             ],
             outputs=[
                 self._prev_head,
@@ -319,6 +330,7 @@ class SoftContactMatcher:
                 self._prev_barycentric,
                 self._prev_body_pos,
                 self._prev_normal_body,
+                self._prev_normal_force,
             ],
             device=contacts.soft_contact_count.device,
         )
@@ -356,10 +368,12 @@ class SoftContactMatcher:
                 self._prev_barycentric,
                 self._prev_body_pos,
                 self._prev_normal_body,
+                self._prev_normal_force,
             ],
             outputs=[
                 contacts._soft_contact_reset_stamp,
                 contacts._soft_contact_normal_body,
+                contacts._soft_contact_normal_force,
                 contacts.soft_contact_barycentric,
                 contacts.soft_contact_body_pos,
             ],

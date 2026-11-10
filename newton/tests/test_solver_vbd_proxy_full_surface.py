@@ -80,6 +80,7 @@ def _run_proxy_harvest(device, corners, bary):
             1.0,  # friction_epsilon
             False,  # rigid_body_particle_contact_use_log_barrier
             False,  # rigid_body_particle_contact_anchored_friction
+            wp.empty(0, dtype=float, device=device),  # soft_contact_normal_force, unread when unanchored
             False,  # contact_damping_bidirectional
             wp.full(smax, _KE, dtype=float, device=device),
             wp.zeros(smax, dtype=float, device=device),  # material_kd

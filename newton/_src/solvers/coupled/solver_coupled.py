@@ -3566,16 +3566,21 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _write_back_kept_soft_contact_points(
         self, entry: SolverEntry, source: Contacts | None, filtered: Contacts | None
     ) -> Contacts | None:
-        """Copy the entry's kept body points back, so the collision pipeline replays what it left."""
+        """Copy the entry's kept body points and normal loads back, so the collision pipeline replays what it left."""
         if source is None or filtered is source or not filtered._soft_contact_points_persist:
             return filtered
         src_to_dst = self._entry_soft_contact_src_to_dst.get(entry.name)
         if src_to_dst is not None and source.soft_contact_max > 0:
             wp.launch(
-                _write_back_soft_contact_body_pos_kernel,
+                _write_back_kept_soft_contacts_kernel,
                 dim=source.soft_contact_max,
-                inputs=[source.soft_contact_count, src_to_dst, filtered.soft_contact_body_pos],
-                outputs=[source.soft_contact_body_pos],
+                inputs=[
+                    source.soft_contact_count,
+                    src_to_dst,
+                    filtered.soft_contact_body_pos,
+                    filtered._soft_contact_normal_force,
+                ],
+                outputs=[source.soft_contact_body_pos, source._soft_contact_normal_force],
                 device=self.model.device,
             )
         return filtered
@@ -3734,6 +3739,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     contacts.soft_contact_rigid_indices,
                     contacts.soft_contact_barycentric,
                     contacts._soft_contact_mesh_features,
+                    contacts._soft_contact_normal_force,
                     entry.view.shape_flags,
                     entry.view.particle_flags,
                     int(ShapeFlags.COLLIDE_PARTICLES),
@@ -3749,6 +3755,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     filtered.soft_contact_rigid_indices,
                     filtered.soft_contact_barycentric,
                     filtered._soft_contact_mesh_features,
+                    filtered._soft_contact_normal_force,
                     soft_src_to_dst,
                 ],
                 device=self.model.device,
@@ -4488,11 +4495,13 @@ def _add_mapped_particle_forces_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _write_back_soft_contact_body_pos_kernel(
+def _write_back_kept_soft_contacts_kernel(
     src_count: wp.array[int],
     src_to_dst: wp.array[wp.int32],
     dst_body_pos: wp.array[wp.vec3],
+    dst_normal_force: wp.array[float],
     src_body_pos: wp.array[wp.vec3],
+    src_normal_force: wp.array[float],
 ):
     contact_id = wp.tid()
     if contact_id >= src_count[0]:
@@ -4500,6 +4509,7 @@ def _write_back_soft_contact_body_pos_kernel(
     dst_id = src_to_dst[contact_id]
     if dst_id >= 0:
         src_body_pos[contact_id] = dst_body_pos[dst_id]
+        src_normal_force[contact_id] = dst_normal_force[dst_id]
 
 
 @wp.kernel(enable_backward=False)
@@ -4721,6 +4731,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     src_rigid_indices: wp.array[wp.vec3i],
     src_barycentric: wp.array[wp.vec3],
     src_mesh_features: wp.array[wp.vec3i],
+    src_normal_force: wp.array[float],
     shape_flags: wp.array[wp.int32],
     particle_flags: wp.array[wp.int32],
     collide_particles_mask: int,
@@ -4736,6 +4747,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_rigid_indices: wp.array[wp.vec3i],
     dst_barycentric: wp.array[wp.vec3],
     dst_mesh_features: wp.array[wp.vec3i],
+    dst_normal_force: wp.array[float],
     src_to_dst: wp.array[wp.int32],
 ):
     if update_filter[0] == 0:
@@ -4772,6 +4784,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_pos[dst_id] = src_body_pos[contact_id]
     dst_body_vel[dst_id] = src_body_vel[contact_id]
     dst_normal[dst_id] = src_normal[contact_id]
+    dst_normal_force[dst_id] = src_normal_force[contact_id]
     # soft_contact_tids is indexed by candidate thread, not by contact, and full-surface mesh
     # contacts are appended past the candidate range, so the source array can be shorter than
     # soft_contact_count.

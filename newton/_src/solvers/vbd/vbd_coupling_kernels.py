@@ -19,7 +19,12 @@ from .particle_vbd_kernels import (
     evaluate_edge_edge_contact_2_vertices,
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
 )
-from .rigid_vbd_kernels import _NUM_CONTACT_THREADS_PER_BODY, _eval_body_particle_contact, _eval_soft_ef_contact
+from .rigid_vbd_kernels import (
+    _NUM_CONTACT_THREADS_PER_BODY,
+    _eval_body_particle_contact,
+    _eval_soft_ef_contact,
+    _kept_normal_force,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -145,6 +150,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
     rigid_body_particle_contact_anchored_friction: bool,
+    soft_contact_normal_force: wp.array[float],
     contact_damping_bidirectional: bool,
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
@@ -240,6 +246,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
             dt,
             rigid_body_particle_contact_use_log_barrier,
             rigid_body_particle_contact_anchored_friction,
+            _kept_normal_force(rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, contact_idx),
             contact_damping_bidirectional,
         )
 
@@ -327,6 +334,7 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
     rigid_body_particle_contact_anchored_friction: bool,
+    soft_contact_normal_force: wp.array[float],
     contact_damping_bidirectional: bool,
     particle_radius: wp.array[float],
     body_particle_contact_count: wp.array[int],
@@ -395,6 +403,7 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
         dt,
         rigid_body_particle_contact_use_log_barrier,
         rigid_body_particle_contact_anchored_friction,
+        _kept_normal_force(rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, contact_idx),
         contact_damping_bidirectional,
     )
     _vbd_add_proxy_particle_force(particle_idx, body_contact_force, particle_local_to_proxy_global, out_particle_f)
