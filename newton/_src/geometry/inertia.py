@@ -816,6 +816,10 @@ def compute_inertia_shape(
         elif type == GeoType.MESH or type == GeoType.CONVEX_MESH:
             assert isinstance(src, Mesh), "src must be a Mesh for mesh or convex hull shapes"
             # fall back to computing inertia from mesh geometry
+            if not is_solid and np.isscalar(thickness):
+                thickness = _validate_hollow_thickness("mesh", thickness, ())
+                if thickness == 0.0:
+                    return 0.0, wp.vec3(), wp.mat33()
             vertices = np.array(src.vertices) * np.array(scale)
             m, c, I, _vol = compute_inertia_mesh(density, vertices, src.indices, is_solid, thickness)
             return m, c, I

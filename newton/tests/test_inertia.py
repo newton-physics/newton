@@ -486,6 +486,25 @@ class TestInertia(unittest.TestCase):
                 assert_np_equal(np.array(com), np.array(com_ref), tol=1e-6)
                 assert_np_equal(np.array(I), np.array(I_ref), tol=1e-4 * np.abs(np.array(I_ref)).max())
 
+    def test_hollow_mesh_thickness_is_validated(self):
+        """Verify hollow meshes warn on zero thickness and reject negative or non-finite thickness."""
+        box = newton.Mesh.create_box(0.5, 0.75, 1.0, duplicate_vertices=False, compute_inertia=False)
+        hollow = newton.Mesh(box.vertices, box.indices, is_solid=False)
+
+        with self.assertWarnsRegex(UserWarning, "zero mass and inertia"):
+            m, _com, I = compute_inertia_shape(
+                GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=0.0
+            )
+        self.assertEqual(m, 0.0)
+        self.assertFalse(np.any(np.array(I)))
+
+        for thickness in (-0.01, float("nan")):
+            with self.subTest(thickness=thickness):
+                with self.assertRaisesRegex(ValueError, "thickness"):
+                    compute_inertia_shape(
+                        GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=thickness
+                    )
+
     def test_hollow_primitive_thickness_must_fit_inside_shape(self):
         cases = [
             (GeoType.SPHERE, (0.5, 0.0, 0.0), 0.5, "sphere radius"),
