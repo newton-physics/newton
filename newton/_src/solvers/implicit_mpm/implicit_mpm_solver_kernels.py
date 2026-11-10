@@ -1468,7 +1468,7 @@ def voxel_coordinates(
     voxel_size: float,
     padding_voxels: int = 0,
     *,
-    point_mask: wp.array[wp.int32] | None = None,
+    point_mask: "wp.array[wp.int32] | None" = None,
 ) -> wp.array[wp.vec3i]:
     if particle_q.shape[0] == 0:
         return wp.empty(0, dtype=wp.vec3i, device=particle_q.device)
