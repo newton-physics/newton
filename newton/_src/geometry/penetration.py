@@ -75,6 +75,7 @@ def _box_triangle_depth(
     the triangle's front side. A candidate that leans behind it is replaced
     by its projection onto the triangle's plane, at the travel that clears
     the same axis, so the box may still slide off an edge of the triangle.
+    A candidate within 30 degrees of the triangle's normal is skipped instead.
     A separating axis is kept on either side. Partner-point certificates remain
     two-sided so their depths still bound the full Minkowski body from below.
     """
@@ -97,16 +98,18 @@ def _box_triangle_depth(
             side = wp.dot(axis, front)
             # Length of the axis's in-plane part; moving along that part by
             # ``depth / lateral`` clears the axis as moving along the axis by ``depth`` does.
+            # Near the triangle normal, that part is nearly perpendicular to the axis, and a contact
+            # built along it can be far deeper than the travel, so ``lateral`` must exceed 0.5.
             lateral = wp.sqrt(wp.max(1.0 - side * side, 0.0))
             if side > 0.0 and positive > 0.0:
-                if lateral > 1.0e-6 and positive < depth * lateral:
+                if lateral > 0.5 and positive < depth * lateral:
                     depth = positive / lateral
                     direction = (axis - side * front) / lateral
             elif positive < depth:
                 depth = positive
                 direction = axis
             if side < 0.0 and negative > 0.0:
-                if lateral > 1.0e-6 and negative < depth * lateral:
+                if lateral > 0.5 and negative < depth * lateral:
                     depth = negative / lateral
                     direction = (side * front - axis) / lateral
             elif negative < depth:

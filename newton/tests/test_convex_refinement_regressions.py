@@ -359,6 +359,26 @@ def test_refinement_triangle_box_tilted_rest(test, device):
             np.testing.assert_allclose(pa[:, 2], half[2], atol=1.0e-5)
 
 
+def test_refinement_triangle_thin_box_face(test, device):
+    """Push a thin box through its thickness when a triangle is nearly parallel to its face.
+
+    The triangle tilts 0.7 mrad from the box's +x face, so projecting the +x axis onto
+    its plane gives a direction along the box's 2 m length.
+    """
+    half = np.array([0.0007, 2.0, 0.1])
+    vertices = np.array(
+        [[0.0006992, -0.999, -0.05], [0.0006992, -0.999, 0.05], [0.0007006, -1.001, -0.05]], dtype=np.float32
+    )
+    for swap in (False, True):
+        with test.subTest(swap=swap):
+            pa, pb, normals = _contacts(
+                test, device, half, vertices, [0, 1, 2], wp.transform_identity(), np.ones(3), swap=swap, triangle=True
+            )
+            depths = np.sum((pa - pb) * normals, axis=1)
+            test.assertAlmostEqual(float(np.max(depths)), 1.4e-3, delta=1.0e-5)
+            np.testing.assert_allclose(normals, np.tile([-1.0, 0.0, 0.0], (len(normals), 1)), atol=1.0e-3)
+
+
 def test_refinement_triangle_above_wide_ground(test, device):
     """Report the true gap for a small triangle hovering above a wide ground.
 
@@ -573,6 +593,7 @@ for function in (
     test_refinement_triangle_box_depth,
     test_refinement_triangle_box_seam,
     test_refinement_triangle_box_tilted_rest,
+    test_refinement_triangle_thin_box_face,
     test_refinement_triangle_above_wide_ground,
     test_refinement_resting_box_stack,
     test_refinement_box_hull_depth,
