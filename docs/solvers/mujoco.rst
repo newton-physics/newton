@@ -1017,7 +1017,8 @@ whose final entry belongs to global world ``-1`` (see :ref:`Per-world attributes
 Separate MuJoCo worlds read the entry of their Newton world. A single MuJoCo world
 reads world ``0`` when that world owns bodies and the global entry otherwise, as in
 models built without :meth:`~newton.ModelBuilder.begin_world`, where importers store
-options in the global entry.
+options in the global entry. :attr:`~newton.Model.gravity` follows the same rule;
+bodies of another Newton world receive their own gravity as a correction force.
 
 These values are read once during :class:`~newton.solvers.SolverMuJoCo`
 construction. Editing ``model.mujoco.<option>`` afterwards has no

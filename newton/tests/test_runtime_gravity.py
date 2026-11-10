@@ -574,6 +574,28 @@ def test_set_gravity_global_world(test, device):
     np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -6.0), (0.0, 0.0, -6.0)), atol=1.0e-6)
 
 
+def test_global_gravity_mujoco_option(test, device, solver_fn):
+    """Apply global gravity to a single MuJoCo world that simulates global bodies."""
+    builder = newton.ModelBuilder()
+    builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+
+    model.set_gravity((1.0, 2.0, -3.0), world=-1)
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+    if solver.use_mujoco_cpu:
+        mujoco_gravity = solver.mj_model.opt.gravity
+    else:
+        mujoco_gravity = solver.mjw_model.opt.gravity.numpy()[0]
+    np.testing.assert_allclose(mujoco_gravity, (1.0, 2.0, -3.0), atol=1.0e-6)
+
+    # Without the correction force from body_f, MuJoCo's own gravity moves the global body.
+    state_in, state_out = model.state(), model.state()
+    state_in.body_f = None
+    solver.step(state_in, state_out, model.control(), None, 0.1)
+    np.testing.assert_allclose(state_out.body_qd.numpy()[0, :3], (0.1, 0.2, -0.3), atol=1.0e-5)
+
+
 def test_set_gravity_implicit_world_global_entry(test, device):
     """Keep global gravity distinct from world 0 in a model without explicit worlds."""
     builder = newton.ModelBuilder()
@@ -895,6 +917,17 @@ for device in devices:
             test_global_gravity_bodies,
             devices=[device],
             solver_fn=solver_fn,
+        )
+
+    for solver_name in ("mujoco_cpu", "mujoco_warp"):
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        add_function_test(
+            TestRuntimeGravity,
+            f"test_global_gravity_mujoco_option_{solver_name}",
+            test_global_gravity_mujoco_option,
+            devices=[device],
+            solver_fn=solvers_bodies[solver_name],
         )
 
     for solver_name in ("semi_implicit", "mujoco_cpu", "mujoco_warp"):

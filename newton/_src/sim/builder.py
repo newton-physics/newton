@@ -4270,6 +4270,10 @@ class ModelBuilder:
 
         counts = self._builder_merge_counts(builder)
         self._validate_builder_merge(builder, set(counts))
+        # Values can change without a schema change, so check them before copying entities.
+        for full_key, attr in builder.custom_attributes.items():
+            if attr.frequency == Model.AttributeFrequency.WORLD:
+                self._check_merged_world_values(full_key, attr.values)
         attribute_specs = self._builder_merge_attribute_specs()
         bases = self._builder_merge_counts(self)
 
@@ -4623,23 +4627,15 @@ class ModelBuilder:
         return self.current_world if attribute.frequency == Model.AttributeFrequency.WORLD else 0
 
     def _check_merged_world_values(self, key: str, values: dict[int, Any] | None) -> None:
-        """Reject source ``WORLD`` values that a merge cannot keep.
-
-        A merge places all source entities in one destination world, so the source
-        contributes one value: its global value (key ``-1``), or else its world-0 value.
-        """
+        """Reject different source ``WORLD`` values, which a merge into one destination world cannot keep."""
         if not values:
             return
-        other_worlds = sorted(world for world in values if world not in (-1, 0))
-        if other_worlds:
+        worlds = sorted(values)
+        first = values[worlds[0]]
+        if any(not self._custom_attribute_defaults_match(first, values[world]) for world in worlds[1:]):
             raise ValueError(
-                f"Custom attribute '{key}' has values for source worlds {other_worlds}. Merging places all "
-                "source entities in one world, so only the source's world 0 or global (-1) value can be kept."
-            )
-        if -1 in values and 0 in values and not self._custom_attribute_defaults_match(values[-1], values[0]):
-            raise ValueError(
-                f"Custom attribute '{key}' has different values for source world 0 and global world -1, "
-                "which merge into the same destination world."
+                f"Custom attribute '{key}' has different values for source worlds {worlds}, which merge into "
+                "one destination world."
             )
 
     @staticmethod
@@ -5960,7 +5956,6 @@ class ModelBuilder:
             elif attr.frequency == Model.AttributeFrequency.WORLD:
                 # The destination entry: the destination world, or global world -1.
                 index_offset = world
-                self._check_merged_world_values(full_key, attr.values)
             else:
                 index_offset = get_offset(attr.frequency)
 
@@ -6098,11 +6093,11 @@ class ModelBuilder:
                     source_values = attr._values_with_defaults(count)
 
             if freq_key == Model.AttributeFrequency.WORLD:
-                # All source entities join one destination entry, which takes the source's
-                # global value, or else its world-0 value.
-                source_key = -1 if -1 in source_values else 0
+                # All source entities join one destination entry. Explicit source values agree,
+                # so take the global value, or else that of an explicit world, or else the default.
                 enum_values = {}
-                if source_key in source_values:
+                if source_values:
+                    source_key = -1 if -1 in source_values else min(attr.values or source_values)
                     value = source_values[source_key]
                     enum_values[index_offset] = transform_enum_value(source_key, value) if needs_remap else value
             elif not isinstance(freq_key, str):

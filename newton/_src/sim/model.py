@@ -2761,6 +2761,9 @@ class Model:
         Models built without :meth:`ModelBuilder.begin_world` place every entity in global
         world ``-1``, whose gravity entry is separate from world ``0``.
         """
+        # Only single-world models can be fully global; skip the host scan for larger ones.
+        if self.world_count != 1:
+            return
         worlds = [
             array.numpy()
             for array in (self.body_world, self.particle_world)

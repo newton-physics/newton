@@ -699,10 +699,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         """Per-world capacity-overflow bitmask of :class:`SolverMuJoCo.OverflowBits` for the latest step, shape ``(world_count + 1,)``.
 
-        Entries follow the Newton world each MuJoCo world simulates. A single MuJoCo
-        world that simulates global entities, as in models built without
-        :meth:`~newton.ModelBuilder.begin_world`, reports in the final entry, for
-        global world ``-1``; otherwise the final entry is zero.
+        Entries follow the Newton world whose options each MuJoCo world uses. A single
+        MuJoCo world reports in entry ``0`` when world ``0`` owns bodies, also if it
+        simulates global bodies too, and otherwise in the final entry, for global world
+        ``-1``, as in models built without :meth:`~newton.ModelBuilder.begin_world`.
+        Separate MuJoCo worlds leave the final entry zero.
         """
 
     class OverflowBits(IntFlag):
@@ -6254,6 +6255,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     model.body_world,
                     model.gravity,
                     self.mjw_model.body_gravcomp,
+                    self._option_world,
                 ],
                 outputs=[
                     xfrc,
@@ -7246,7 +7248,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         spec = mujoco.MjSpec()
         spec.option.enableflags = enableflags
         spec.option.disableflags = disableflags
-        spec.option.gravity = np.array([*model.gravity.numpy()[0]])
+        spec.option.gravity = np.array([*model.gravity.numpy()[self._option_world]])
         spec.option.solver = solver
         spec.option.integrator = integrator
         spec.option.iterations = iterations
@@ -11263,7 +11265,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _update_model_properties(self):
         """Update model properties including gravity in the MuJoCo model."""
         if self.use_mujoco_cpu:
-            self.mj_model.opt.gravity[:] = np.array([*self.model.gravity.numpy()[0]])
+            self.mj_model.opt.gravity[:] = np.array([*self.model.gravity.numpy()[self._option_world]])
         else:
             if hasattr(self, "mjw_data"):
                 wp.launch(
@@ -11271,6 +11273,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     dim=self.mjw_data.nworld,
                     inputs=[
                         self.model.gravity,
+                        self._option_world,
                     ],
                     outputs=[
                         self.mjw_model.opt.gravity,
