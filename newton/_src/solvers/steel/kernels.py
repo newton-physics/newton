@@ -61,7 +61,7 @@ CONTACT_GENERATION_NONE = wp.constant(GENERATION_SENTINEL)
 
 # Row-slot reservation modes of the joint-row families. ATOMIC reserves from the per-world counter, so a
 # family's rows land in thread-scheduling order. COUNT and WRITE run a family twice around a scan of the
-# counted rows (:func:`assign_world_row_slots`), so each element's rows land in world-element order.
+# counted rows (:func:`reserve_world_row_slots`), so each element's rows land in world-element order.
 ROW_SLOTS_ATOMIC = wp.constant(0)
 ROW_SLOTS_COUNT = wp.constant(1)
 ROW_SLOTS_WRITE = wp.constant(2)
@@ -91,49 +91,102 @@ def reserve_world_rows(
     return first
 
 
-@wp.kernel
-def gather_world_row_requests(
-    world_elements: wp.array[int],
-    element_row_cursor: wp.array[int],
-    # outputs
-    row_requests: wp.array[int],
-):
-    """List the row counts of a COUNT pass in world-element order, followed by a zero."""
-    i = wp.tid()
-    count = int(0)
-    if i < world_elements.shape[0]:
-        count = element_row_cursor[world_elements[i]]
-    row_requests[i] = count
-
-
-@wp.kernel
-def assign_world_row_slots(
+@wp.func_native("""
+#if defined(__CUDA_ARCH__)
+    __shared__ int warp_totals[32];
+    const int lane = thread & 31;
+    const int warp = thread >> 5;
+    const int warp_count = blockDim.x >> 5;
+    const int start = world_element_start.data[world];
+    const int end = world_element_start.data[world + 1];
+    int slot = world_slot_counter.data[world];
+    for (int base = start; base < end; base += blockDim.x) {
+        const int i = base + thread;
+        int element = -1;
+        int count = 0;
+        if (i < end) {
+            element = world_elements.data[i];
+            count = element_row_cursor.data[element];
+        }
+        int inclusive = count;
+        for (int offset = 1; offset < 32; offset <<= 1) {
+            const int below = __shfl_up_sync(0xFFFFFFFF, inclusive, offset);
+            if (lane >= offset) inclusive += below;
+        }
+        if (warp_count == 1) {
+            // One warp: the shuffle total carries the chunk, with no shared totals or barriers.
+            if (i < end) element_row_cursor.data[element] = slot + inclusive - count;
+            slot += __shfl_sync(0xFFFFFFFF, inclusive, 31);
+            continue;
+        }
+        if (lane == 31) warp_totals[warp] = inclusive;
+        __syncthreads();
+        if (warp == 0) {
+            int total = lane < warp_count ? warp_totals[lane] : 0;
+            for (int offset = 1; offset < 32; offset <<= 1) {
+                const int below = __shfl_up_sync(0xFFFFFFFF, total, offset);
+                if (lane >= offset) total += below;
+            }
+            warp_totals[lane] = total;
+        }
+        __syncthreads();
+        const int warp_offset = warp > 0 ? warp_totals[warp - 1] : 0;
+        if (i < end) element_row_cursor.data[element] = slot + warp_offset + inclusive - count;
+        slot += warp_totals[warp_count - 1];
+        // Every thread reads the totals before the next chunk overwrites them.
+        __syncthreads();
+    }
+    if (thread == 0) world_slot_counter.data[world] = slot;
+#endif
+""")
+def _reserve_world_row_slots(
+    world: int,
+    thread: int,
     world_element_start: wp.array[int],
     world_elements: wp.array[int],
-    element_world: wp.array[int],
-    row_offsets: wp.array[int],
     world_slot_counter: wp.array[int],
-    # outputs
     element_row_cursor: wp.array[int],
 ):
-    """Give each element the first slot of its rows: its world's counter plus the earlier requests of that world."""
-    i = wp.tid()
-    world = element_world[i]
-    element_row_cursor[world_elements[i]] = (
-        world_slot_counter[world] + row_offsets[i] - row_offsets[world_element_start[world]]
+    """Scan one world's element row counts into first slots with one block, a block's width at a time."""
+
+
+# Its own module: each launch block size compiles this kernel alone, not all of the Steel kernels.
+@wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)
+def reserve_world_row_slots(
+    worlds: wp.array[int],
+    world_element_start: wp.array[int],
+    world_elements: wp.array[int],
+    # in/out
+    world_slot_counter: wp.array[int],
+    element_row_cursor: wp.array[int],
+):
+    """Turn a COUNT pass's row counts into first slots in world-element order and advance the world counters.
+
+    Launch tiled with one block per entry of ``worlds`` and a multiple of 32 threads, at most 1024 (CUDA only).
+    """
+    block, thread = wp.tid()
+    _reserve_world_row_slots(
+        worlds[block], thread, world_element_start, world_elements, world_slot_counter, element_row_cursor
     )
 
 
-@wp.kernel
-def advance_world_row_counters(
+@wp.kernel(enable_backward=False)
+def reserve_world_row_slots_serial(
     world_element_start: wp.array[int],
-    row_offsets: wp.array[int],
+    world_elements: wp.array[int],
     # in/out
     world_slot_counter: wp.array[int],
+    element_row_cursor: wp.array[int],
 ):
-    """Advance each world's counter past the rows its elements requested."""
+    """The one-thread-per-world form of :func:`reserve_world_row_slots`, for CPU."""
     world = wp.tid()
-    world_slot_counter[world] += row_offsets[world_element_start[world + 1]] - row_offsets[world_element_start[world]]
+    slot = world_slot_counter[world]
+    for i in range(world_element_start[world], world_element_start[world + 1]):
+        element = world_elements[i]
+        count = element_row_cursor[element]
+        element_row_cursor[element] = slot
+        slot += count
+    world_slot_counter[world] = slot
 
 
 @wp.kernel
@@ -142,12 +195,19 @@ def fill_contact_family_sort_keys(
     contact_path: wp.array[int],
     contact_world: wp.array[int],
     segment_count: int,
+    contact_max: int,
     # outputs
     keys: wp.array[int],
     values: wp.array[int],
+    slot_scan_length: wp.array[int],
 ):
-    """Key every contact by its solve world and row family; contacts without rows sort last."""
+    """Key every contact by its solve world and row family; contacts without rows sort last.
+
+    ``slot_scan_length`` gets the active contact count plus one, the sorted row counts the reservation reads.
+    """
     c = wp.tid()
+    if c == 0:
+        slot_scan_length[0] = wp.clamp(contact_count[0], 0, contact_max) + 1
     key = segment_count
     if c < contact_count[0] and contact_path[c] >= 0:
         key = contact_world[c] * CONTACT_ROW_FAMILIES + contact_path[c]
@@ -1069,6 +1129,55 @@ def compute_link_kinematics(
 
 
 @wp.func
+def write_body_dynamics(
+    body: int,
+    origin: wp.vec3,
+    gravity: wp.vec3,
+    X_sm: wp.transform,
+    mass: float,
+    inertia: wp.mat33,
+    v_s: wp.spatial_vector,
+    a_s: wp.spatial_vector,
+    write_body_inertia: int,
+    write_body_inertia_terms: int,
+    body_I_s: wp.array[wp.spatial_matrix],
+    body_inertia_terms: wp.array2d[float],
+    body_f_s: wp.array[wp.spatial_vector],
+):
+    """Form a body's spatial inertia, inertia terms and bias wrench in the solve frame centred at ``origin``.
+
+    The fused FK/ID kernel calls this inside its per-joint loop and :func:`finalize_body_dynamics`
+    one body per thread, so the two paths share one arithmetic.
+    """
+    X_sm_local = wp.transform(
+        wp.transform_get_translation(X_sm) - origin,
+        wp.transform_get_rotation(X_sm),
+    )
+    # gravity and external forces (expressed in frame aligned with s but centered at body mass)
+    f_g = mass * gravity
+    com, inertia_origin = transform_com_inertia_terms(X_sm_local, mass, inertia)
+    f_g_s = wp.spatial_vector(f_g, wp.cross(com, f_g))
+
+    if write_body_inertia != 0:
+        body_I_s[body] = assemble_com_spatial_inertia(mass, com, inertia_origin)
+    if write_body_inertia_terms != 0:
+        body_inertia_terms[body, 0] = com[0]
+        body_inertia_terms[body, 1] = com[1]
+        body_inertia_terms[body, 2] = com[2]
+        for row in range(3):
+            for col in range(3):
+                body_inertia_terms[body, 3 + 3 * row + col] = inertia_origin[row, col]
+
+    # The root's linear inertial wrench is NOT spurious: the solve frame is centred on a material
+    # point of the root body, so that point accelerates as the body rotates and this term is what
+    # carries it. SolverFeatherstone keeps it and conserves momentum; zeroing it here leaked
+    # momentum on every rotating multi-link articulation.
+    coriolis = spatial_cross_dual(v_s, mul_com_spatial_inertia(mass, com, inertia_origin, v_s))
+    f_b_s = mul_com_spatial_inertia(mass, com, inertia_origin, a_s) + coriolis
+    body_f_s[body] = f_b_s - f_g_s
+
+
+@wp.func
 def compute_link_velocity(
     i: int,
     parent: int,
@@ -1120,39 +1229,21 @@ def compute_link_velocity(
         body_a_s,
     )
 
-    # compute body forces
-    X_sm = body_q_com[child]
-    X_sm_local = wp.transform(
-        wp.transform_get_translation(X_sm) - origin,
-        wp.transform_get_rotation(X_sm),
+    write_body_dynamics(
+        child,
+        origin,
+        gravity,
+        body_q_com[child],
+        body_mass[child],
+        body_inertia[child],
+        v_s,
+        a_s,
+        write_body_inertia,
+        write_body_inertia_terms,
+        body_I_s,
+        body_inertia_terms,
+        body_f_s,
     )
-    mass = body_mass[child]
-
-    # gravity and external forces (expressed in frame aligned with s but centered at body mass)
-    f_g = mass * gravity
-    com, inertia_origin = transform_com_inertia_terms(X_sm_local, mass, body_inertia[child])
-    f_g_s = wp.spatial_vector(f_g, wp.cross(com, f_g))
-
-    # body forces
-    if write_body_inertia != 0:
-        body_I_s[child] = assemble_com_spatial_inertia(mass, com, inertia_origin)
-    if write_body_inertia_terms != 0:
-        body_inertia_terms[child, 0] = com[0]
-        body_inertia_terms[child, 1] = com[1]
-        body_inertia_terms[child, 2] = com[2]
-        for row in range(3):
-            for col in range(3):
-                body_inertia_terms[child, 3 + 3 * row + col] = inertia_origin[row, col]
-
-    # The root's linear inertial wrench is NOT spurious: the solve frame is centred on a material
-    # point of the root body, so that point accelerates as the body rotates and this term is what
-    # carries it. SolverFeatherstone keeps it and conserves momentum; zeroing it here leaked
-    # momentum on every rotating multi-link articulation.
-    coriolis = spatial_cross_dual(v_s, mul_com_spatial_inertia(mass, com, inertia_origin, v_s))
-
-    f_b_s = mul_com_spatial_inertia(mass, com, inertia_origin, a_s) + coriolis
-
-    body_f_s[child] = f_b_s - f_g_s
     return v_s, a_s
 
 
@@ -1192,7 +1283,12 @@ def eval_rigid_fk_id(
     body_f_s: wp.array[wp.spatial_vector],
     body_a_s: wp.array[wp.spatial_vector],
 ):
-    """Evaluate articulation poses and the inverse-dynamics bias wrenches."""
+    """Evaluate articulation poses and the inverse-dynamics bias wrenches in one serial pass.
+
+    The solver runs :func:`eval_rigid_fk_kinematics` and :func:`finalize_body_dynamics` instead, and the
+    parallel tree has kernels of its own over :func:`compute_link_velocity`; this fused kernel remains the
+    bitwise reference the split is tested against.
+    """
     index = wp.tid()
     if articulation_active[index] == 0:
         return
@@ -1273,6 +1369,199 @@ def eval_rigid_fk_id(
             body_a_s,
         )
         cached_child = child
+
+
+@wp.kernel(module=_KINEMATICS_KERNEL_MODULE, enable_backward=False)
+def eval_rigid_fk_kinematics(
+    articulation_start: wp.array[int],
+    articulation_joint_end: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_X_com: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_com: wp.array[wp.vec3],
+    articulation_active: wp.array[int],
+    reuse_valid: wp.array[int],
+    # outputs
+    body_q: wp.array[wp.transform],
+    body_q_com: wp.array[wp.transform],
+    articulation_origin: wp.array[wp.vec3],
+    joint_S_s: wp.array[wp.spatial_vector],
+    body_v_s: wp.array[wp.spatial_vector],
+    body_a_s: wp.array[wp.spatial_vector],
+    valid_out: wp.array[int],
+):
+    """Propagate articulation poses, motion subspaces, velocities and accelerations.
+
+    The serial part of :func:`eval_rigid_fk_id`; :func:`finalize_body_dynamics` forms the
+    per-body inertias and bias wrenches from these results in parallel. An articulation whose
+    ``reuse_valid`` entry is set keeps its stored results; every computed articulation sets its
+    ``valid_out`` entry.
+    """
+    index = wp.tid()
+    if articulation_active[index] == 0:
+        return
+    if reuse_valid[index] != 0:
+        return
+    start = articulation_start[index]
+    end = articulation_joint_end[index]
+
+    for i in range(start, end):
+        compute_link_transform(
+            i,
+            joint_type,
+            joint_parent,
+            joint_child,
+            joint_q_start,
+            joint_qd_start,
+            joint_q,
+            joint_X_p,
+            joint_X_c,
+            body_X_com,
+            joint_axis,
+            joint_dof_dim,
+            body_q,
+            body_q_com,
+        )
+
+    origin = wp.vec3()
+    if start < articulation_start[index + 1]:
+        root_body = joint_child[start]
+        if root_body >= 0:
+            origin = wp.transform_point(body_q[root_body], body_com[root_body])
+    articulation_origin[index] = origin
+
+    cached_child = int(-1)
+    cached_v_s = wp.spatial_vector()
+    cached_a_s = wp.spatial_vector()
+    for i in range(start, end):
+        parent = joint_parent[i]
+        child = joint_child[i]
+        parent_v_s = wp.spatial_vector()
+        parent_a_s = wp.spatial_vector()
+        if parent >= 0:
+            if parent == cached_child:
+                parent_v_s = cached_v_s
+                parent_a_s = cached_a_s
+            else:
+                parent_v_s = body_v_s[parent]
+                parent_a_s = body_a_s[parent]
+        cached_v_s, cached_a_s = compute_link_kinematics(
+            i,
+            parent,
+            child,
+            parent_v_s,
+            parent_a_s,
+            origin,
+            joint_type,
+            joint_q_start,
+            joint_qd_start,
+            joint_q,
+            joint_qd,
+            joint_axis,
+            joint_dof_dim,
+            body_q,
+            joint_X_p,
+            joint_S_s,
+            body_v_s,
+            body_a_s,
+        )
+        cached_child = child
+    valid_out[index] = 1
+
+
+@wp.kernel(module=_KINEMATICS_KERNEL_MODULE, enable_backward=False)
+def finalize_body_dynamics(
+    body_to_articulation: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_com: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    is_free_rigid: wp.array[int],
+    articulation_origin: wp.array[wp.vec3],
+    materialize_all_body_inertia: int,
+    materialize_body_inertia_terms: int,
+    body_world: wp.array[int],
+    gravity: wp.array[wp.vec3],
+    body_v_s: wp.array[wp.spatial_vector],
+    body_a_s: wp.array[wp.spatial_vector],
+    body_active: wp.array[int],
+    articulation_reuse: wp.array[int],
+    # outputs
+    body_I_s: wp.array[wp.spatial_matrix],
+    body_inertia_terms: wp.array2d[float],
+    body_f_s: wp.array[wp.spatial_vector],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    """Form each articulated body's spatial inertia and bias wrench, and publish its COM velocity.
+
+    One thread per body, after :func:`eval_rigid_fk_kinematics`; the same arithmetic as the
+    per-joint tail of :func:`eval_rigid_fk_id` plus :func:`update_body_qd_from_featherstone`.
+    Bodies outside every articulation are left to copy_unarticulated_body_state; bodies of an
+    articulation whose ``articulation_reuse`` entry is set keep their stored results.
+    """
+    body = wp.tid()
+    articulation = body_to_articulation[body]
+    if body_active[body] == 0 or articulation < 0:
+        return
+    if articulation_reuse[articulation] != 0:
+        return
+    origin = articulation_origin[articulation]
+    write_body_inertia = materialize_all_body_inertia
+    if is_free_rigid[articulation] != 0:
+        write_body_inertia = 1
+    v_s = body_v_s[body]
+    write_body_dynamics(
+        body,
+        origin,
+        gravity[body_world[body]],
+        body_q_com[body],
+        body_mass[body],
+        body_inertia[body],
+        v_s,
+        body_a_s[body],
+        write_body_inertia,
+        materialize_body_inertia_terms,
+        body_I_s,
+        body_inertia_terms,
+        body_f_s,
+    )
+
+    com_world = wp.transform_point(body_q[body], body_com[body])
+    com_rel = com_world - origin
+    v_com = wp.spatial_top(v_s) + wp.cross(wp.spatial_bottom(v_s), com_rel)
+    body_qd[body] = wp.spatial_vector(v_com, wp.spatial_bottom(v_s))
+
+
+@wp.kernel(enable_backward=False)
+def check_fk_id_source(
+    source_token: int,
+    published_token: wp.array[int],
+    # outputs
+    valid: wp.array[int],
+):
+    """Drop every carried articulation unless the input state is the one the terms were published into."""
+    if published_token[0] != source_token:
+        valid[wp.tid()] = 0
+
+
+@wp.kernel(enable_backward=False)
+def publish_fk_id_source(
+    source_token: int,
+    # outputs
+    published_token: wp.array[int],
+):
+    """Record the state the carried kinematics were published into."""
+    published_token[0] = source_token
 
 
 @wp.func_native("""
@@ -2757,7 +3046,7 @@ def accumulate_connect_wrenches_from_impulses(
     maps back to the force ``e * lambda * inv_norm / dt``: ``+`` on the parent and ``-`` on the
     child, at the points the row's Jacobian uses (the anchors' midpoint where the row builder set
     ``connect_at_midpoint``, otherwise each body's own anchor). A REVOLUTE closure's two hinge rows
-    map back to the couple ``e_i * lambda * inv_norm / dt`` the same way.
+    and a FIXED closure's three rotation rows map back to the couple ``e_i * lambda * inv_norm / dt`` the same way.
     """
     k = wp.tid()
     base_slot = connect_slot[k]
@@ -2786,22 +3075,20 @@ def accumulate_connect_wrenches_from_impulses(
         force = e * (world_impulses[world, slot] * inv_dt * inv_norm)
         _add_point_force(body_p, force, p_a, body_to_articulation, articulation_origin, body_contact_wrench)
         _add_point_force(body_c, -force, p_b, body_to_articulation, articulation_origin, body_contact_wrench)
-    if connect_rows[k] < 5:
+    rows = connect_rows[k]
+    if rows < 5:
         return
-    _a_p, _a_c, e1, e2 = _connect_hinge_frame(
-        body_p, body_c, joint, joint_axis[joint_qd_start[joint]], joint_X_p, joint_X_c, body_q
+    dirs, _phi = _connect_rotation_rows(
+        rows, body_p, body_c, joint, joint_axis, joint_qd_start, joint_X_p, joint_X_c, body_q
     )
-    for i in range(2):
+    for i in range(rows - 3):
         slot = base_slot + 3 + i
         if slot >= world_constraint_count[world] or world_row_type[world, slot] != PGS_CONSTRAINT_TYPE_CONNECT:
             continue
         inv_norm = connect_row_inv_norm[k, 3 + i]
         if inv_norm == 0.0:
             continue
-        e = e1
-        if i == 1:
-            e = e2
-        torque = e * (world_impulses[world, slot] * inv_dt * inv_norm)
+        torque = dirs[i] * (world_impulses[world, slot] * inv_dt * inv_norm)
         if body_p >= 0:
             wp.atomic_add(body_contact_wrench, body_p, wp.spatial_vector(wp.vec3(0.0), torque))
         wp.atomic_add(body_contact_wrench, body_c, wp.spatial_vector(wp.vec3(0.0), -torque))
@@ -3163,9 +3450,10 @@ def build_mass_update_mask(
 # =============================================================================
 # Mimic rows enforce ``q_follower = coef0 + coef1 * q_leader`` between two DOFs of
 # one articulation, one row per follower coordinate. Connect rows close a kinematic
-# loop: three rows per loop-closing BALL or REVOLUTE joint pin its parent and child
-# anchors together, and a REVOLUTE closure adds two hinge-axis rows. Both are bilateral
-# equality rows with an unbounded impulse and the Baumgarte bias ``baumgarte * phi / dt``.
+# loop: three rows per loop-closing BALL, REVOLUTE or FIXED joint pin its parent and child
+# anchors together, a REVOLUTE closure adds two hinge-axis rows and a FIXED closure three
+# rotation rows. Both are bilateral equality rows with an unbounded impulse and the
+# Baumgarte bias ``baumgarte * phi / dt``.
 # Coefficients, enable flags and anchors are read from device arrays every step, so
 # runtime changes need no re-initialization and stay compatible with CUDA graph capture.
 
@@ -3323,7 +3611,7 @@ def allocate_connect_slots(
 ):
     """Allocate consecutive dense rows per loop closure enabled in ``Model.joint_enabled``.
 
-    A BALL closure takes three rows and a REVOLUTE closure five (``connect_rows``). A
+    A BALL closure takes three rows, a REVOLUTE closure five and a FIXED closure six (``connect_rows``). A
     closure that does not fit is dropped whole (``connect_slot = -1``) rather than
     enforced along some axes only.
     """
@@ -3370,6 +3658,64 @@ def _connect_hinge_frame(
     t1 = wp.normalize(wp.cross(u, helper))
     t2 = wp.cross(u, t1)
     return wp.quat_rotate(q_p, u), wp.quat_rotate(q_c, u), wp.quat_rotate(q_p, t1), wp.quat_rotate(q_p, t2)
+
+
+@wp.func
+def _connect_weld_rotation(
+    body_p: int,
+    body_c: int,
+    joint: int,
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+):
+    """Return the world rotation vector [rad] of a FIXED closure's parent anchor frame relative to its child's.
+
+    Its rate is ``omega_parent - omega_child`` for a small misalignment, the sign convention of the hinge rows.
+    """
+    q_p = wp.transform_get_rotation(joint_X_p[joint])
+    if body_p >= 0:
+        q_p = wp.transform_get_rotation(body_q[body_p]) * q_p
+    q_c = wp.transform_get_rotation(body_q[body_c]) * wp.transform_get_rotation(joint_X_c[joint])
+    q = q_p * wp.quat_inverse(q_c)
+    v = wp.vec3(q[0], q[1], q[2])
+    w = q[3]
+    if w < 0.0:
+        v = -v
+        w = -w
+    s = wp.length(v)
+    if s < 1.0e-9:
+        return 2.0 * v
+    return v * (2.0 * wp.atan2(s, w) / s)
+
+
+@wp.func
+def _connect_rotation_rows(
+    rows: int,
+    body_p: int,
+    body_c: int,
+    joint: int,
+    joint_axis: wp.array[wp.vec3],
+    joint_qd_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+):
+    """Return the directions (matrix rows) and position errors of a closure's rotation rows.
+
+    REVOLUTE (5 rows): the two normals of the live hinge axis, realigning toward the nearer axis direction.
+    FIXED (6 rows): the three world axes, ``phi = r`` with ``r`` the weld's rotation vector.
+    """
+    if rows == 5:
+        a_p, a_c, e1, e2 = _connect_hinge_frame(
+            body_p, body_c, joint, joint_axis[joint_qd_start[joint]], joint_X_p, joint_X_c, body_q
+        )
+        misalign = wp.cross(a_c, a_p)
+        # A closure has no joint coordinate, so it holds the hinge line and realigns toward the nearer direction.
+        if wp.dot(a_c, a_p) < 0.0:
+            misalign = -misalign
+        return wp.matrix_from_rows(e1, e2, wp.vec3(0.0)), wp.vec3(wp.dot(e1, misalign), wp.dot(e2, misalign), 0.0)
+    return wp.identity(n=3, dtype=float), _connect_weld_rotation(body_p, body_c, joint, joint_X_p, joint_X_c, body_q)
 
 
 @wp.func
@@ -3513,8 +3859,10 @@ def populate_connect_J_for_size(
     A REVOLUTE closure adds two rows ``J = e_i . (omega_parent - omega_child)`` for the two
     directions ``e_i`` perpendicular to the hinge axis, with ``phi_i = e_i . (a_child x a_parent)``,
     the small rotation that realigns the child's hinge axis with the parent's, or with its reverse
-    when they are more than 90 degrees apart. These rows are pure couples. The axis is read from
-    ``Model.joint_axis`` every step.
+    when they are more than 90 degrees apart. The axis is read from ``Model.joint_axis`` every step.
+    A FIXED (weld) closure adds three rows, one per world axis ``e_k``, with ``phi_k = e_k . r`` and
+    ``r`` the rotation vector of the parent anchor frame relative to the child's. These rows are
+    pure couples.
 
     Each row is normalized. On a planar linkage one axis is nearly redundant with the
     tree (``|J|`` around ``1e-4``), and an unnormalized row would relax a real velocity
@@ -3608,23 +3956,19 @@ def populate_connect_J_for_size(
                 world_target_velocity,
             )
 
-        if connect_rows[k] < 5:
+        rows = connect_rows[k]
+        if rows < 5:
             continue
-        a_p, a_c, e1, e2 = _connect_hinge_frame(
-            body_p, body_c, joint, joint_axis[joint_qd_start[joint]], joint_X_p, joint_X_c, body_q
+        dirs, phis = _connect_rotation_rows(
+            rows, body_p, body_c, joint, joint_axis, joint_qd_start, joint_X_p, joint_X_c, body_q
         )
-        misalign = wp.cross(a_c, a_p)
-        # A closure has no joint coordinate, so it holds the hinge line and realigns toward the nearer direction.
-        if wp.dot(a_c, a_p) < 0.0:
-            misalign = -misalign
         omega_a = wp.vec3(0.0, 0.0, 0.0)
         if prescribed and body_p >= 0:
             omega_a = wp.spatial_bottom(body_qd[body_p])
-        for i in range(2):
+        # Rotation rows: two hinge-alignment rows for REVOLUTE, three weld rows for FIXED.
+        for i in range(rows - 3):
             slot = base_slot + 3 + i
-            e = e1
-            if i == 1:
-                e = e2
+            e = dirs[i]
             target = float(0.0)
             if prescribed:
                 target = -wp.dot(e, omega_a)
@@ -3660,7 +4004,7 @@ def populate_connect_J_for_size(
                 slot,
                 n_dofs,
                 world,
-                wp.dot(e, misalign),
+                phis[i],
                 target,
                 J_group,
                 world_row_type,
@@ -10022,10 +10366,8 @@ def classify_local_solve_worlds(
     local_residual_mf_max_constraints: int,
     # outputs
     local_solve_owner: wp.array[int],
-    general_world_count: wp.array[int],
-    general_worlds: wp.array[int],
 ):
-    """Assign each world's solver owner and compact the worlds left to the general sweep.
+    """Assign each world's solver owner.
 
     A world whose dense rows are all internal (no contact rows) and fit the articulation's
     DOF count goes to the single-articulation solve; a world whose articulation also touches
@@ -10077,9 +10419,6 @@ def classify_local_solve_worlds(
     ):
         owner = PGS_LOCAL_SOLVE_OWNER_PAIR_RESIDUAL
     local_solve_owner[world] = owner
-    if owner == PGS_LOCAL_SOLVE_OWNER_GENERAL and (row_count > 0 or mf_count > 0):
-        general_index = wp.atomic_add(general_world_count, 0, 1)
-        general_worlds[general_index] = world
 
 
 @wp.kernel

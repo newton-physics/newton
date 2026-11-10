@@ -68,8 +68,8 @@ class Control:
         """
         Array of muscle activations [dimensionless, 0 to 1] with shape ``(muscle_count,)`` and type ``float``.
 
-        .. note::
-            Support for muscle dynamics is not yet implemented.
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`newton.ModelBuilder.add_muscle`.
         """
 
     def clear(self, model: Model | None = None) -> None:

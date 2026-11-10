@@ -1046,6 +1046,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return int(lower_value)
 
     @staticmethod
+    def _solref_value_transformer(value: str, context: dict[str, Any] | None = None) -> wp.vec2:
+        """Parse an MJCF solref-type value with MuJoCo's shorthand semantics.
+
+        MuJoCo keeps its default ``(0.02, 1.0)`` for missing trailing components, so
+        ``solreflimit="0.005"`` means ``(0.005, 1.0)``; ``MjSpec.to_xml()`` writes this form.
+        The generic custom-attribute parser pads from the attribute's registered default
+        instead, which for ``mujoco:solref`` and ``mujoco:solreflimit`` is the ``(0, 0)``
+        "not authored" sentinel: the shorthand would become dampratio 0.
+
+        ``parse_vec`` in ``import_mjcf.py`` applies the same rule to ``_SOLREF_SHORTHAND_KEYS``;
+        keep the two in step.
+        """
+        parts = [float(x) for x in str(value).split()]
+        if not 1 <= len(parts) <= 2:
+            raise ValueError(f"Expected 1 or 2 solref values, got {value!r}.")
+        return wp.vec2(*parts, *DEFAULT_LIMIT_SOLREF[len(parts) :])
+
+    @staticmethod
     def _angle_value_transformer(value: str, context: dict[str, Any] | None) -> float:
         """Transform angle values from MJCF, converting deg to rad for angular joints.
 
@@ -1693,6 +1711,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="mjc:solref",
                 mjcf_attribute_name="solref",
+                mjcf_value_transformer=cls._solref_value_transformer,
             )
         )
         builder.add_custom_attribute(
@@ -1750,6 +1769,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="mjc:solreflimit",
                 mjcf_attribute_name="solreflimit",
+                mjcf_value_transformer=cls._solref_value_transformer,
             )
         )
         builder.add_custom_attribute(
@@ -2037,6 +2057,30 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="mjc:option:ls_iterations",
                 mjcf_attribute_name="ls_iterations",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="noslip_iterations",
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,  # MuJoCo default: noslip off
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:noslip_iterations",
+                mjcf_attribute_name="noslip_iterations",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="noslip_tolerance",
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=1e-6,  # MuJoCo default
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:noslip_tolerance",
+                mjcf_attribute_name="noslip_tolerance",
             )
         )
         builder.add_custom_attribute(
@@ -4411,6 +4455,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ccd_iterations: int | None = None,
         sdf_iterations: int | None = None,
         sdf_initpoints: int | None = None,
+        noslip_iterations: int | None = None,
+        noslip_tolerance: float | None = None,
         solver: int | str | None = None,
         integrator: int | str | None = None,
         cone: int | str | None = None,
@@ -4477,6 +4523,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ccd_iterations: Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (35).
             sdf_iterations: Maximum SDF iterations. If None, uses model custom attribute or MuJoCo's default (10).
             sdf_initpoints: Number of SDF initialization points. If None, uses model custom attribute or MuJoCo's default (40).
+            noslip_iterations: Maximum noslip solver iterations; 0 disables the noslip solver. If None, uses model custom attribute or MuJoCo's default (0).
+            noslip_tolerance: Noslip solver tolerance for early termination. If None, uses model custom attribute or MuJoCo's default (1e-6).
             solver: Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("newton").
             integrator: Integrator type. Can be "euler", "rk4", "implicit", "implicitfast", or "discrete", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("implicitfast").
             cone: The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("pyramidal").
@@ -4490,7 +4538,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             wind: Wind velocity vector (x, y, z) for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0, 0, 0).
             magnetic: Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
             use_mujoco_cpu: If True, use MuJoCo's C implementation instead of `mujoco_warp`.
-            enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). If False, disable it. If None, use the model custom attribute or disable it by default. Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag.
+            enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). If False, disable it. If None, use the model custom attribute or disable it by default. Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag. With the MuJoCo Warp backend and ``use_mujoco_contacts=True``, all geom and pair margins are zeroed when the model has box geoms and NATIVECCD (the default) or multi-CCD is enabled, or has mesh geoms and multi-CCD is enabled; see *Margin zeroing* in the MuJoCo solver docs. The CPU backend keeps them.
             enable_sleeping: Whether to enable MuJoCo Warp's sleeping optimization. If None, uses the model custom attribute or defaults to False. Sleeping requires the GPU backend, the Newton solver, MuJoCo contact handling, island detection, and a non-RK4 integrator.
             nvmax: Maximum number of active degrees of freedom per world when sleeping is enabled. Must accommodate every initially awake degree of freedom. If None, allocates space for every degree of freedom, which is safe but provides no compact-solver memory savings.
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
@@ -4769,8 +4817,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._use_mujoco_contacts = use_mujoco_contacts
         """Whether MuJoCo handles collision detection.
 
-        Controls margin zeroing: when True, geom/pair margins on the MuJoCo
-        model are kept at zero for NATIVECCD compatibility (#2106)."""
+        Controls margin zeroing: when True with the MuJoCo Warp backend, geom/pair
+        margins on the MuJoCo model are kept at zero for NATIVECCD compatibility (#2106)."""
 
         flags = {
             name: bool(getattr(mujoco_attrs, f"flag_{name}").numpy()[0])
@@ -4800,16 +4848,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             int(getattr(mujoco.mjtEnableBit, f"mjENBL_{name.upper()}")) for name in self._ENABLE_FLAGS if flags[name]
         )
 
-        # mujoco_warp.put_model() rejects non-zero margins on box-box pairs
-        # (default NATIVECCD path) or any box/mesh pair when MULTICCD is enabled.
-        # Skip the workaround entirely when no such geom types exist in the model.
+        # Earlier mujoco_warp releases rejected non-zero margins at put_model() on
+        # box-box pairs (default NATIVECCD path) and on box/mesh pairs with MULTICCD.
+        # MuJoCo Warp 3.17 accepts them, so the CPU backend keeps the authored margins
+        # (its put_model() call for mjw_model included); the Warp backend still zeroes
+        # them until its contacts with margins are validated on GPU. Skip the
+        # workaround when no such geom types exist in the model.
         shape_types_arr = model.shape_type.numpy()
         has_box = bool(np.any(shape_types_arr == GeoType.BOX))
         has_mesh = bool(np.any((shape_types_arr == GeoType.MESH) | (shape_types_arr == GeoType.CONVEX_MESH)))
-        self._zero_margins_for_native_ccd = (has_box and (flags["nativeccd"] or enable_multiccd)) or (
-            enable_multiccd and has_mesh
+        self._zero_margins_for_native_ccd = not use_mujoco_cpu and (
+            (has_box and (flags["nativeccd"] or enable_multiccd)) or (enable_multiccd and has_mesh)
         )
-        """True when the NATIVECCD/MULTICCD margin workaround applies (#2106)."""
+        """True when the MuJoCo Warp NATIVECCD/MULTICCD margin workaround applies (#2106)."""
 
         if enable_sleeping:
             enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
@@ -4922,6 +4973,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ccd_iterations=ccd_iterations,
                 sdf_iterations=sdf_iterations,
                 sdf_initpoints=sdf_initpoints,
+                noslip_iterations=noslip_iterations,
+                noslip_tolerance=noslip_tolerance,
                 cone=cone,
                 jacobian=jacobian,
                 impratio=impratio,
@@ -6920,6 +6973,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ccd_iterations: int | None = None,
         sdf_iterations: int | None = None,
         sdf_initpoints: int | None = None,
+        noslip_iterations: int | None = None,
+        noslip_tolerance: float | None = None,
         njmax: int | None = None,  # number of constraints per world
         njmax_nnz: int | None = None,
         nconmax: int | None = None,
@@ -7136,6 +7191,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             sdf_iterations = int(mujoco_attrs.sdf_iterations.numpy()[0])
         if sdf_initpoints is None and mujoco_attrs and hasattr(mujoco_attrs, "sdf_initpoints"):
             sdf_initpoints = int(mujoco_attrs.sdf_initpoints.numpy()[0])
+        if noslip_iterations is None and mujoco_attrs and hasattr(mujoco_attrs, "noslip_iterations"):
+            noslip_iterations = int(mujoco_attrs.noslip_iterations.numpy()[0])
+        if noslip_tolerance is None and mujoco_attrs and hasattr(mujoco_attrs, "noslip_tolerance"):
+            noslip_tolerance = float(mujoco_attrs.noslip_tolerance.numpy()[0])
 
         # Set defaults for numeric options if still None (use MuJoCo defaults)
         if iterations is None:
@@ -7185,6 +7244,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             spec.option.sdf_iterations = sdf_iterations
         if sdf_initpoints is not None:
             spec.option.sdf_initpoints = sdf_initpoints
+        if noslip_iterations is not None:
+            spec.option.noslip_iterations = noslip_iterations
+        if noslip_tolerance is not None:
+            spec.option.noslip_tolerance = noslip_tolerance
 
         # Set WORLD frequency options (use MuJoCo defaults if None)
         if impratio is not None:
