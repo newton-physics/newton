@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from .flags import ShapeFlags
+from .flags import ParticleFlags, ShapeFlags
 from .kernels import (
     counter_increment,
     sdf_box,
@@ -52,6 +52,10 @@ _SDF_SPECIALIZATION_MIN_PAIRS_PER_GEO = 1024 * 1024
 _SDF_EDGE_MIXED_SPECIALIZATION_MIN_PAIRS_PER_GEO = 5 * 1024 * 1024
 # Bound the compact optimization grid while keeping enough blocks to fill large GPUs.
 _SDF_FALLBACK_GRID_SIZE = 262144
+# Compact-kernel geometry filters: a nonnegative value keeps one analytic GeoType, ``_SDF_ANY_GEO``
+# keeps every queued pair, and ``_SDF_VOLUME_GEO`` keeps only shapes that sample a volume SDF.
+_SDF_ANY_GEO = -1
+_SDF_VOLUME_GEO = -2
 
 
 @wp.func
@@ -213,6 +217,18 @@ def _closest_face_plane(scale: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3, dept
 
 
 @wp.func
+def _scaled_sdf_lower_bound(dist: float, scale: wp.vec3):
+    """Lower bound on a query-time-scaled SDF value [m].
+
+    The shape-local distance is ``dist`` times a factor in ``[min|scale|, max|scale|]``, so the
+    smallest factor bounds a positive distance from below and the largest bounds a negative one.
+    """
+    if dist < 0.0:
+        return dist * wp.max(wp.abs(scale))
+    return dist * wp.min(wp.abs(scale))
+
+
+@wp.func
 def _eval_shape_sdf_lower(
     geo: wp.int32,
     scale: wp.vec3,
@@ -241,7 +257,7 @@ def _eval_shape_sdf_lower(
     if tex.scale_baked:
         return texture_sample_sdf(tex, x_local)
     dist = texture_sample_sdf(tex, wp.cw_div(x_local, scale))
-    return dist * wp.min(wp.abs(scale))
+    return _scaled_sdf_lower_bound(dist, scale)
 
 
 @wp.func
@@ -260,7 +276,9 @@ def eval_shape_sdf(
     drop a real contact (the reject happens in the narrow phase on ``phi``). The two coincide for
     analytic primitives (closed form, exact) and for a uniform scale; they differ only for a
     nonuniformly scaled volume SDF, where the local distance stretches along the surface normal
-    (``phi``) while the smallest scale magnitude is a cheap lower bound (``phi_lower``). ``grad`` is
+    (``phi``) while the extreme scale magnitudes give a cheap lower bound (``phi_lower``). Query-time
+    scaling keeps the nearest feature of the unscaled shape, so deep inside a nonuniformly scaled
+    shape it can report a farther exit than the scaled geometry's nearest surface. ``grad`` is
     the unit outward gradient. Analytic primitives evaluate closed-form (Z-up, matching
     ``create_soft_contacts``); shapes with a provisioned volume SDF (``shape_sdf_index >= 0``) sample
     the texture SDF with query-time scaling.
@@ -301,23 +319,24 @@ def eval_shape_sdf(
     grad_norm = wp.length(grad)
     if grad_norm > 0.0:
         grad = grad / grad_norm
-    # Convert the normalized-frame distance to the shape-local frame. Under nonuniform scale the
-    # displacement to the closest surface point stretches per axis, so the accurate local distance is
-    # dist * |scale * grad| with grad the UNIT normal (the stretch ALONG the surface normal) -- exact
-    # for an axis-aligned face, first-order near the surface where contacts live. min|scale| is a cheap
-    # conservative lower bound for the cull/search. wp.length() / wp.min(wp.abs()) keep a mirrored
-    # (negative) scale sign-correct; the mirror itself is applied by the cw_div query and by inv_scale.
+    # Convert the normalized-frame distance to the shape-local frame. A plane with unit normal n at
+    # normalized distance d maps to the plane with normal S^-1 n at distance d / |S^-1 n|, so that
+    # factor is exact for any planar face and first-order near the surface where contacts live.
+    # It always lies in [min|scale|, max|scale|], which gives the conservative lower bound for
+    # the cull/search. wp.length() / wp.abs() keep a mirrored (negative) scale sign-correct; the
+    # mirror itself is applied by the cw_div query and by inv_scale.
     min_scale = wp.min(wp.abs(scale))
-    # Flat/quantized SDF cells have no normal, but their separation must not collapse to zero:
-    # that would emit phantom contacts whose zero normals still generate solver friction.
-    stretch = wp.max(wp.length(wp.cw_mul(scale, grad)), min_scale)
     scaled_grad = wp.cw_mul(grad, inv_scale)
     grad_len = wp.length(scaled_grad)
+    # Flat/quantized SDF cells have no normal, but their separation must not collapse to zero:
+    # that would emit phantom contacts whose zero normals still generate solver friction.
+    stretch = min_scale
     if grad_len > 0.0:
+        stretch = 1.0 / grad_len
         scaled_grad = scaled_grad / grad_len
     else:
         scaled_grad = grad
-    return dist * min_scale, dist * stretch, scaled_grad
+    return _scaled_sdf_lower_bound(dist, scale), dist * stretch, scaled_grad
 
 
 @wp.func
@@ -750,6 +769,9 @@ def _create_soft_sdf_contact_kernel(geo_filter: int, *, edge: bool = False):
                     continue
                 geo = wp.static(geo_filter)
             else:
+                if wp.static(geo_filter == _SDF_VOLUME_GEO):
+                    if _is_analytic(pair_geo):
+                        continue
                 geo = pair_geo
             if wp.static(edge):
                 a_idx = feature_indices[t, 2]
@@ -804,7 +826,10 @@ def _create_soft_sdf_contact_kernel(geo_filter: int, *, edge: bool = False):
 
 # The common face-pair stream contains only analytic shapes. Specializing its compact fallback
 # removes the runtime SDF dispatch from every inner Frank-Wolfe/line-search iteration.
-create_soft_face_sdf_contacts = _create_soft_sdf_contact_kernel(-1)
+create_soft_face_sdf_contacts = _create_soft_sdf_contact_kernel(_SDF_ANY_GEO)
+# Meshes on the SDF path share the pair stream with analytic shapes. The geometry-specialized
+# kernels skip them, so this kernel processes the queued volume-SDF pairs.
+create_soft_face_volume_sdf_contacts = _create_soft_sdf_contact_kernel(_SDF_VOLUME_GEO)
 _SDF_SPECIALIZED_GEO_TYPES = (
     GeoType.BOX,
     GeoType.CAPSULE,
@@ -963,10 +988,150 @@ create_soft_edge_contacts = _create_soft_edge_contact_kernel(False)
 classify_soft_edge_contacts = _create_soft_edge_contact_kernel(True)
 
 
-create_soft_edge_sdf_contacts = _create_soft_sdf_contact_kernel(-1, edge=True)
+create_soft_edge_sdf_contacts = _create_soft_sdf_contact_kernel(_SDF_ANY_GEO, edge=True)
+create_soft_edge_volume_sdf_contacts = _create_soft_sdf_contact_kernel(_SDF_VOLUME_GEO, edge=True)
 _SDF_EDGE_KERNEL_BY_GEO = {
     geo: _create_soft_sdf_contact_kernel(int(geo), edge=True) for geo in _SDF_SPECIALIZED_GEO_TYPES
 }
+
+
+@wp.kernel
+def create_soft_vertex_sdf_contacts(
+    vertex_pairs: wp.array[wp.vec2i],
+    particle_q: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
+    shape_type: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
+    shape_transform: wp.array[wp.transform],
+    shape_scale: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    shape_sdf_index: wp.array[wp.int32],
+    texture_sdf_table: wp.array[TextureSDFData],
+    shape_margin: wp.array[float],
+    shape_gap: wp.array[float],
+    shape_aabb_lower: wp.array[wp.vec3],
+    shape_aabb_upper: wp.array[wp.vec3],
+    margin: float,
+    tid_base: wp.int32,
+    soft_contact_max: wp.int32,
+    soft_contact_count: wp.array[wp.int32],
+    soft_contact_tids: wp.array[wp.int32],
+    soft_contact_particle: wp.array[wp.int32],
+    soft_contact_indices: wp.array[wp.vec3i],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    soft_contact_shape: wp.array[wp.int32],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_body_vel: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+):
+    """One thread per world-compatible (soft vertex, shape) pair of a shape on the SDF path.
+
+    Samples the shape's volume SDF at the vertex and emits a particle record ``(p, -1, -1)`` when
+    the signed distance is within the contact band. The distance is defined at any depth inside the
+    shape, so a deeply penetrating vertex keeps its own contact. Edge and face records of the same
+    shape sample the same SDF.
+    """
+    tid = wp.tid()
+    pair = vertex_pairs[tid]
+    particle_index = pair[0]
+    shape_index = pair[1]
+    if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
+        return
+    if (shape_flags[shape_index] & ShapeFlags.COLLIDE_PARTICLES) == 0:
+        return
+    sdf_idx = shape_sdf_index[shape_index]
+    if sdf_idx < 0:
+        # The pipeline routes only shapes with a volume SDF here. Retain the guard so an invalid
+        # descriptor can never index the table.
+        return
+
+    geo = shape_type[shape_index]
+    radius = particle_radius[particle_index]
+    x_w = particle_q[particle_index]
+    if _soft_feature_aabb_misses_shape(
+        geo, shape_index, shape_gap, shape_aabb_lower, shape_aabb_upper, x_w, x_w, margin, radius
+    ):
+        return
+
+    X_bs, X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
+    x_s = wp.transform_point(X_sw, x_w)
+    s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
+    _phi_lower, phi, grad = eval_shape_sdf(geo, shape_scale[shape_index], x_s, sdf_idx, texture_sdf_table)
+    if phi < margin + s_margin + radius:
+        # counter_increment must remain directly in the kernel body for Warp's replay substitution.
+        idx = counter_increment(soft_contact_count, 0, soft_contact_tids, tid + tid_base, soft_contact_max)
+        if idx >= 0:
+            soft_contact_particle[idx] = particle_index
+            soft_contact_indices[idx] = wp.vec3i(particle_index, -1, -1)
+            soft_contact_barycentric[idx] = wp.vec3(1.0, 0.0, 0.0)
+            soft_contact_shape[idx] = shape_index
+            soft_contact_body_pos[idx] = wp.transform_point(X_bs, x_s - phi * grad)
+            soft_contact_body_vel[idx] = wp.vec3(0.0, 0.0, 0.0)
+            soft_contact_normal[idx] = wp.transform_vector(X_ws, grad)
+
+
+def launch_soft_vertex_sdf_contacts(
+    *,
+    model,
+    state,
+    contacts,
+    margin: float,
+    device,
+    vertex_pairs: wp.array[wp.vec2i],
+    tid_base: int,
+    shape_aabb_lower: wp.array[wp.vec3] | None = None,
+    shape_aabb_upper: wp.array[wp.vec3] | None = None,
+):
+    """Launch the soft-vertex pass for shapes on the SDF path.
+
+    ``vertex_pairs`` are precomputed world-compatible (particle, shape) pairs whose shapes carry a
+    volume SDF. ``tid_base`` is this pass's static offset into the shared replay-tids array.
+    """
+    n_pairs = int(vertex_pairs.shape[0])
+    if n_pairs == 0:
+        return
+    if shape_aabb_lower is None:
+        shape_aabb_lower = wp.empty(0, dtype=wp.vec3, device=device)
+        shape_aabb_upper = wp.empty(0, dtype=wp.vec3, device=device)
+    wp.launch(
+        create_soft_vertex_sdf_contacts,
+        dim=n_pairs,
+        inputs=[
+            vertex_pairs,
+            state.particle_q,
+            model.particle_radius,
+            model.particle_flags,
+            model.shape_body,
+            model.shape_type,
+            model.shape_flags,
+            model.shape_transform,
+            model.shape_scale,
+            state.body_q,
+            model._shape_sdf_index,
+            model._texture_sdf_data,
+            model.shape_margin,
+            model.shape_gap,
+            shape_aabb_lower,
+            shape_aabb_upper,
+            margin,
+            tid_base,
+            contacts.soft_contact_max,
+        ],
+        outputs=[
+            contacts.soft_contact_count,
+            contacts.soft_contact_tids,
+            contacts.soft_contact_particle,
+            contacts.soft_contact_indices,
+            contacts.soft_contact_barycentric,
+            contacts.soft_contact_shape,
+            contacts.soft_contact_body_pos,
+            contacts.soft_contact_body_vel,
+            contacts.soft_contact_normal,
+        ],
+        device=device,
+    )
 
 
 def launch_soft_ef_contacts(
@@ -985,8 +1150,13 @@ def launch_soft_ef_contacts(
     face_sdf_geo_types=None,
     shape_aabb_lower: wp.array[wp.vec3] | None = None,
     shape_aabb_upper: wp.array[wp.vec3] | None = None,
+    has_volume_sdf_shapes: bool = False,
 ):
     """Launch the soft EDGE and FACE passes (the soft-particle pass is the legacy kernel).
+
+    ``has_volume_sdf_shapes`` states that the pair lists contain shapes that sample a volume SDF
+    (meshes on the SDF path). The geometry-specialized compact kernels skip such pairs, so one more
+    compact kernel then processes them.
 
     ``edge_pairs`` / ``face_pairs`` are precomputed world-compatible (soft feature, shape) index
     pairs (``wp.vec2i``), analogous to :func:`_build_soft_particle_rigid_contact_pairs` for the
@@ -1090,6 +1260,8 @@ def launch_soft_ef_contacts(
         if geo_types and n_pairs >= len(geo_types) * specialization_min_pairs:
             kernels_by_geo = _SDF_EDGE_KERNEL_BY_GEO if edge else _SDF_FACE_KERNEL_BY_GEO
             kernels = tuple(kernels_by_geo[geo] for geo in geo_types)
+            if has_volume_sdf_shapes:
+                kernels += (create_soft_edge_volume_sdf_contacts if edge else create_soft_face_volume_sdf_contacts,)
         for kernel in kernels:
             wp.launch(
                 kernel,

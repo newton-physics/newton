@@ -81,6 +81,7 @@ from newton.tests.unittest_utils import (
     USD_AVAILABLE,
     add_function_test,
     configure_sdf_for_collision_shapes,
+    get_cuda_test_devices,
     get_test_devices,
 )
 
@@ -7667,8 +7668,107 @@ def test_full_surface_rejected_for_vbd_proxy_particles(test, device):
         )
 
 
+def _mesh_sdf_backend_cube_scene(device, points, *, gravity):
+    """A static cube mesh of half extent 0.5 m with a volume SDF, plus one soft triangle."""
+    builder = newton.ModelBuilder(gravity=gravity)
+    cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True)
+    cfg.configure_sdf(force_sdf=True)
+    builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5), cfg=cfg)
+    ids = [builder.add_particle(wp.vec3(*point), wp.vec3(0.0), 0.1, radius=0.0) for point in points]
+    builder.add_triangle(*ids)
+    for a, b in ((0, 1), (1, 2), (2, 0)):
+        builder.add_edge(-1, -1, ids[a], ids[b])
+    builder.color()
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        soft_contact_gap=0.02,
+        enable_rigid_soft_full_surface_contact=True,
+        rigid_soft_full_surface_mesh_backend="sdf",
+    )
+    return model, pipeline
+
+
+def _cube_signed_distance(points, half_extent=0.5):
+    """Exact signed distance [m] to an origin-centered cube."""
+    q = np.abs(np.asarray(points, dtype=np.float64)) - half_extent
+    return np.linalg.norm(np.maximum(q, 0.0), axis=-1) + np.minimum(q.max(axis=-1), 0.0)
+
+
+def test_mesh_sdf_backend_pushes_penetrating_triangle_out(test, device):
+    """Resolve deep mesh penetration with SDF mesh contacts.
+
+    ``deep`` places a triangle 0.15 m below the cube's top face, beyond the contact band.
+    ``pierced`` places one vertex inside near the +x face and two vertices outside above the
+    top face. In both, every step must reduce the penetration until it is within the contact
+    band, and the triangle must then stay near the surface.
+    """
+    cases = {
+        "deep": [(-0.05, -0.04, 0.35), (0.06, -0.03, 0.35), (0.0, 0.07, 0.36)],
+        "pierced": [(0.30, 0.0, 0.62), (0.44, 0.0, 0.30), (0.30, 0.25, 0.62)],
+    }
+    for name, points in cases.items():
+        with test.subTest(case=name):
+            model, pipeline = _mesh_sdf_backend_cube_scene(device, points, gravity=(0.0, 0.0, 0.0))
+            np.testing.assert_array_equal(pipeline._soft_sdf_mesh_shapes, [0])
+            solver = newton.solvers.SolverVBD(model, iterations=10)
+            state_in, state_out = model.state(), model.state()
+            contacts = pipeline.contacts()
+            depth = [float(-_cube_signed_distance(points).min())]
+            for _ in range(60):
+                pipeline.collide(state_in, contacts)
+                solver.step(state_in, state_out, None, contacts, dt=1.0 / 600.0)
+                state_in, state_out = state_out, state_in
+                particle_q = state_in.particle_q.numpy()
+                test.assertTrue(np.isfinite(particle_q).all())
+                depth.append(float(-_cube_signed_distance(particle_q).min()))
+            depth = np.array(depth)
+            near_surface = int(np.argmax(depth < 0.02))
+            test.assertGreater(near_surface, 0, f"penetration must fall below the contact band: {depth}")
+            test.assertTrue(
+                np.all(np.diff(depth[: near_surface + 1]) < 0.0), f"deep penetration must decrease every step: {depth}"
+            )
+            test.assertLess(
+                float(depth[near_surface:].max()), 0.02, f"the triangle must stay near the surface: {depth}"
+            )
+
+
+def test_mesh_sdf_backend_supports_resting_triangle(test, device):
+    """Keep a triangle that rests on a mesh under gravity from sinking into it."""
+    points = [(-0.2, -0.2, 0.502), (0.2, -0.2, 0.502), (0.0, 0.2, 0.502)]
+    model, pipeline = _mesh_sdf_backend_cube_scene(device, points, gravity=(0.0, 0.0, -9.81))
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+    state_in, state_out = model.state(), model.state()
+    contacts = pipeline.contacts()
+    for _ in range(120):
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, None, contacts, dt=1.0 / 600.0)
+        state_in, state_out = state_out, state_in
+    particle_q = state_in.particle_q.numpy()
+    test.assertTrue(np.isfinite(particle_q).all())
+    test.assertGreater(float(_cube_signed_distance(particle_q).min()), -5.0e-3)
+    # The triangle stays over the top face instead of sliding off.
+    test.assertLess(float(np.abs(particle_q[:, :2]).max()), 0.3)
+
+
 class TestVBDFullSurfaceContact(unittest.TestCase):
     pass
+
+
+# Volume SDFs are built with CUDA kernels and 3D textures.
+add_function_test(
+    TestVBDFullSurfaceContact,
+    "test_mesh_sdf_backend_pushes_penetrating_triangle_out",
+    test_mesh_sdf_backend_pushes_penetrating_triangle_out,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestVBDFullSurfaceContact,
+    "test_mesh_sdf_backend_supports_resting_triangle",
+    test_mesh_sdf_backend_supports_resting_triangle,
+    devices=get_cuda_test_devices(),
+)
 
 
 add_function_test(

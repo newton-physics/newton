@@ -2168,6 +2168,72 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertIs(filtered._soft_contact_mesh_data, contacts._soft_contact_mesh_data)
         np.testing.assert_array_equal(filtered.soft_contact_tids.numpy()[:count], -1)
 
+    @unittest.skipUnless(wp.is_cuda_available(), "Volume SDFs require CUDA")
+    def test_full_surface_sdf_mesh_contacts_survive_the_entry_filter(self):
+        """Keep SDF mesh vertex, edge, and face rows of a capable entry."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+        cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True)
+        cfg.configure_sdf(force_sdf=True)
+        builder.add_shape_mesh(body=body, mesh=newton.Mesh.create_box(0.5, 0.5, 0.1), cfg=cfg)
+        builder.add_cloth_grid(
+            pos=wp.vec3(-0.3, -0.3, 0.105),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=4,
+            dim_y=4,
+            cell_x=0.15,
+            cell_y=0.15,
+            mass=0.1,
+            particle_radius=0.01,
+        )
+        model = builder.finalize(device="cuda")
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            soft_contact_gap=0.02,
+            enable_rigid_soft_full_surface_contact=True,
+            rigid_soft_full_surface_mesh_backend="sdf",
+        )
+        np.testing.assert_array_equal(pipeline._soft_sdf_mesh_shapes, [0])
+        state = model.state()
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        count = int(contacts.soft_contact_count.numpy()[0])
+        indices = contacts.soft_contact_indices.numpy()[:count]
+        for kind, mask in (
+            ("vertex", indices[:, 1] < 0),
+            ("edge", (indices[:, 1] >= 0) & (indices[:, 2] < 0)),
+            ("face", indices[:, 2] >= 0),
+        ):
+            self.assertTrue(np.any(mask), f"expected at least one {kind} row")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="A",
+                    solver=_FullSurfaceControlRecordingSolver,
+                    bodies=[body],
+                    joints=[joint],
+                    particles=list(range(model.particle_count)),
+                )
+            ],
+        )
+        coupled.step(state, model.state(), None, contacts, dt=1.0 / 60.0)
+
+        filtered = coupled._entry_contact_buffers["A"]
+        self.assertEqual(int(filtered.soft_contact_count.numpy()[0]), count)
+        mapping = coupled._entry_soft_contact_src_to_dst["A"].numpy()[:count]
+        self.assertTrue(np.all(mapping >= 0))
+        np.testing.assert_array_equal(filtered.soft_contact_indices.numpy()[mapping], indices)
+        np.testing.assert_array_equal(
+            filtered.soft_contact_body_pos.numpy()[mapping], contacts.soft_contact_body_pos.numpy()[:count]
+        )
+        self.assertTrue(filtered._enable_rigid_soft_full_surface_contact)
+
     def test_entry_control_arrays_are_mapped_to_local_dofs(self):
         """Entry solvers should receive control arrays in their local DOF namespace."""
         _ControlRecordingSolver.instances.clear()
