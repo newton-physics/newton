@@ -467,6 +467,25 @@ class TestInertia(unittest.TestCase):
         assert_np_equal(np.array(I), np.array(I_ref), tol=1e-2)
         assert_np_equal(np.array(I), np.array(I_box), tol=1e-2)
 
+    def test_hollow_mesh_inertia_uses_requested_thickness(self):
+        """Verify hollow mesh inertia uses the requested shell thickness and scale, not the cached shell."""
+        density = 5.0
+        box = newton.Mesh.create_box(0.5, 0.75, 1.0, duplicate_vertices=False, compute_inertia=False)
+        cached = newton.Mesh(box.vertices, box.indices, is_solid=False)
+        recomputed = newton.Mesh(box.vertices, box.indices, compute_inertia=False, is_solid=False)
+
+        for scale, thickness in ((wp.vec3(1.0), 0.05), (wp.vec3(2.0, 3.0, 4.0), 0.01)):
+            with self.subTest(scale=scale, thickness=thickness):
+                m, com, I = compute_inertia_shape(
+                    GeoType.MESH, scale, cached, density, is_solid=False, thickness=thickness
+                )
+                m_ref, com_ref, I_ref = compute_inertia_shape(
+                    GeoType.MESH, scale, recomputed, density, is_solid=False, thickness=thickness
+                )
+                self.assertAlmostEqual(m, m_ref, delta=1e-4 * m_ref)
+                assert_np_equal(np.array(com), np.array(com_ref), tol=1e-6)
+                assert_np_equal(np.array(I), np.array(I_ref), tol=1e-4 * np.abs(np.array(I_ref)).max())
+
     def test_hollow_primitive_thickness_must_fit_inside_shape(self):
         cases = [
             (GeoType.SPHERE, (0.5, 0.0, 0.0), 0.5, "sphere radius"),
