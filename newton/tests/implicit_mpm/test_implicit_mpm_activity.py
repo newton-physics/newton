@@ -60,14 +60,14 @@ def _make_scene(device, *, worlds=1, collider=False, particle_bases=False, color
         builder = local
     model = builder.finalize(device=device)
 
-    def make_solver(*, collider_velocity_mode="forward"):
+    def make_solver(*, collider_velocity_mode="forward", velocity_basis=None):
         solver = SolverImplicitMPM(
             model,
             SolverImplicitMPM.Config(
                 grid_type="sparse",
                 voxel_size=0.05,
                 max_active_cell_count=512,
-                velocity_basis="B2" if particle_bases else "Q1",
+                velocity_basis=velocity_basis or ("B2" if particle_bases else "Q1"),
                 strain_basis="pic8" if particle_bases else "P0",
                 collider_basis="pic8" if particle_bases or colored_contacts else "Q1",
                 max_iterations=5,
@@ -180,6 +180,8 @@ def test_activity_request_safety(test, device):
         state.mpm.particle_qd_grad.zero_()
         update(activity, state)
         np.testing.assert_array_equal(activity.activity.numpy(), [2, 0, 0, 0, 0, 0, 0, 0])
+        update(activity, state)
+        np.testing.assert_array_equal(activity.activity.numpy(), [2, 0, 0, 0, 0, 0, 0, 0])
 
     # The next tick falls between planning passes. A force must wake previously
     # sleeping dynamic material even with zero translation and affine motion.
@@ -219,19 +221,23 @@ def test_activity_request_safety(test, device):
 
 
 def test_captured_sleep_support_and_dirty_wake(test, device):
-    """Retain evolved dormant history while a moving collider changes the cached active region."""
+    """Retain B-spline support and dormant history through captured collider wakes."""
     _require_capture(test, device)
     model, make_solver = _make_scene(device, collider=True)
-    solver, state = make_solver(), model.state()
+    solver, state = make_solver(velocity_basis="B2"), model.state()
     positions = model.particle_q.numpy()
     flags, masses = model.particle_flags.numpy().copy(), model.particle_mass.numpy().copy()
     materials = {name: getattr(model.mpm, name).numpy().copy() for name in ("young_modulus", "poisson_ratio")}
     eligible = (flags & int(newton.ParticleFlags.ACTIVE)) != 0
     force = np.zeros((model.particle_count, 3), dtype=np.float32)
-    force[np.flatnonzero(eligible & (positions[:, 0] < 0.1))[0], 0] = 0.003
+    source = np.flatnonzero(eligible & (positions[:, 0] > 0.075) & (positions[:, 0] < 0.1))[0]
+    support = np.flatnonzero(eligible & (positions[:, 0] > 0.2) & (positions[:, 0] < 0.225))[0]
+    # Moving away keeps transport sweeps from waking the two-patch support target.
+    force[source, 0] = -0.003
     state.particle_f.assign(force)
-    for _ in range(3):
+    for _ in range(5):
         solver.step(state, state, None, None, 0.005)
+    test.assertEqual(solver.particle_activity.numpy()[support], 1)
     test.assertGreater(np.linalg.norm(state.mpm.particle_stress.numpy()), 1.0e-6)
     state.clear_forces()
     with wp.ScopedCapture(device=device) as capture:
@@ -290,8 +296,14 @@ def test_captured_sleep_support_and_dirty_wake(test, device):
     test.assertEqual(int(solver.step_status.numpy()[0]), 0)
 
     # Backward mode must ignore stale prescribed velocity and follow pose motion.
-    backward, backward_state = make_solver(collider_velocity_mode="backward"), model.state()
+    backward = make_solver(collider_velocity_mode="backward", velocity_basis="B3")
+    backward_state = model.state()
     backward_state.body_q.assign([wp.transform(wp.vec3(1.2, 0.025, 0.025), wp.quat_identity())])
+    backward_state.particle_f.assign(force)
+    for _ in range(5):
+        backward.step(backward_state, backward_state, None, None, 0.005)
+    test.assertEqual(backward.particle_activity.numpy()[support], 1)
+    backward_state.clear_forces()
     for _ in range(10):
         backward.step(backward_state, backward_state, None, None, 0.005)
     np.testing.assert_array_equal(backward.particle_activity.numpy()[eligible], 0)
