@@ -4442,16 +4442,14 @@ def Xform "NotPSD" (
 
     @requires("pxr.Usd")
     def test_import_usd_gravity_scale(self):
-        """Resolve body gravity scales from Newton and opt-in PhysX attributes, leaving native gravcomp unchanged."""
+        """Import PhysX gravity exclusions as body gravity scales, leaving native gravcomp unchanged."""
         from pxr import Sdf, Usd, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdPhysics.Scene.Define(stage, "/physicsScene")
         authored = {
-            "Newton": {"newton:gravityScale": 0.25},
             "Disabled": {"physxRigidBody:disableGravity": True},
             "Enabled": {"physxRigidBody:disableGravity": False},
-            "Both": {"newton:gravityScale": 0.5, "physxRigidBody:disableGravity": True},
             "Gravcomp": {"physxRigidBody:disableGravity": True, "mjc:gravcomp": 0.5},
             "Default": {},
         }
@@ -4467,11 +4465,12 @@ def Xform "NotPSD" (
                 value_type = Sdf.ValueTypeNames.Bool if isinstance(value, bool) else Sdf.ValueTypeNames.Float
                 prim.CreateAttribute(attribute, value_type).Set(value)
 
-        newton_only = {"Newton": 0.25, "Both": 0.5}
-        with_physx = {"Newton": 0.25, "Disabled": 0.0, "Both": 0.5, "Gravcomp": 0.0}
         resolvers = {
-            "newton": (None, newton_only),
-            "newton_physx": ([newton.usd.SchemaResolverNewton(), newton.usd.SchemaResolverPhysx()], with_physx),
+            "newton": (None, {}),
+            "newton_physx": (
+                [newton.usd.SchemaResolverNewton(), newton.usd.SchemaResolverPhysx()],
+                {"Disabled": 0.0, "Gravcomp": 0.0},
+            ),
         }
         for case, (schema_resolvers, expected) in resolvers.items():
             with self.subTest(resolvers=case):
@@ -4492,10 +4491,6 @@ def Xform "NotPSD" (
                 for body, label in enumerate(model.body_label):
                     expected_velocity = 0.01 * expected.get(label[1:], 1.0) * gravity
                     np.testing.assert_allclose(state_1.body_qd.numpy()[body, :3], expected_velocity, atol=1.0e-5)
-
-        stage.GetPrimAtPath("/Newton").GetAttribute("newton:gravityScale").Set(float("nan"))
-        with self.assertRaisesRegex(ValueError, "gravity_scale must be finite"):
-            newton.ModelBuilder().add_usd(stage)
 
     @requires("pxr.Usd")
     def test_joint_stiffness_damping(self):

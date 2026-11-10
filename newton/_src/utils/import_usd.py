@@ -1119,11 +1119,12 @@ def parse_usd(
             prim, builder_custom_attr_body, context={"builder": builder}
         )
 
+        gravity_enabled = R.get_value(prim, prim_type=PrimType.BODY, key="gravity_enabled", default=True)
         b = builder.add_link(
             xform=xform,
             label=label,
             is_kinematic=is_kinematic,
-            gravity_scale=float(R.get_value(prim, prim_type=PrimType.BODY, key="gravity_scale", default=1.0)),
+            gravity_scale=1.0 if gravity_enabled else 0.0,
             custom_attributes=body_custom_attrs,
         )
         builder.body_qd[b] = body_qd

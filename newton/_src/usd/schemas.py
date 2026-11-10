@@ -293,9 +293,7 @@ class SchemaResolverNewton(SchemaResolver):
             "mass_model": SchemaAttribute("newton:massModel", "solid"),
             "shell_thickness": SchemaAttribute("newton:shellThickness", float("-inf")),
         },
-        PrimType.BODY: {
-            "gravity_scale": SchemaAttribute("newton:gravityScale", 1.0),
-        },
+        PrimType.BODY: {},
         PrimType.ARTICULATION: {
             "self_collision_enabled": SchemaAttribute("newton:selfCollisionEnabled", True),
         },
@@ -415,9 +413,7 @@ class SchemaResolverPhysx(SchemaResolver):
             "kd": SchemaAttribute("physxMaterial:compliantContactDamping", None),
         },
         PrimType.BODY: {
-            "gravity_scale": SchemaAttribute(
-                "physxRigidBody:disableGravity", 1.0, lambda disabled: 0.0 if disabled else 1.0
-            ),
+            "gravity_enabled": SchemaAttribute("physxRigidBody:disableGravity", None, lambda value: not value),
         },
         PrimType.ARTICULATION: {
             "self_collision_enabled": SchemaAttribute("physxArticulation:enabledSelfCollisions", True),
