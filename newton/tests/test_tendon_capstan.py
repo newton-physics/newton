@@ -2207,18 +2207,24 @@ def test_dynamic_pulley_uses_angular_jacobian(test, device):
 
 
 def test_pulley_inertia_limit_locks_cable_travel(test, device):
-    """As pulley inertia tends to infinity, no-slip cable travel tends to zero."""
+    """As pulley inertia tends to infinity, no-slip cable travel tends to zero.
+
+    A no-slip Atwood machine with pulley inertia ``I = M R^2 / 2`` accelerates the cable at
+    ``a = (m_r - m_l) g / (m_l + m_r + M / 2)``, so the rim travels ``a t^2 / 2`` from rest.
+    """
     with wp.ScopedDevice(device):
         radius = 0.15
+        pulley_mass = 5000.0
+        num_frames = 80
         model, _, _, pulley_idx = build_dynamic_pulley_atwood(
             mu=10.0,
             mass_left=1.0,
             mass_right=3.0,
-            pulley_mass=5000.0,
+            pulley_mass=pulley_mass,
             pulley_radius=radius,
             compliance=3.0e-8,
         )
-        state = run_model(model, num_frames=80)
+        state = run_model(model, num_frames=num_frames)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite high-inertia pulley state")
 
@@ -2226,10 +2232,15 @@ def test_pulley_inertia_limit_locks_cable_travel(test, device):
         theta = abs(2.0 * np.arctan2(float(q[4]), float(q[6])))
         rim_travel = theta * radius
 
-        test.assertLess(
+        duration = num_frames / 60.0
+        accel = (3.0 - 1.0) * 9.81 / (1.0 + 3.0 + 0.5 * pulley_mass)
+        expected_travel = 0.5 * accel * duration * duration
+        test.assertAlmostEqual(
             rim_travel,
-            5.0e-3,
-            f"High-inertia no-slip pulley should lock cable travel: R*theta={rim_travel:.6f}, theta={theta:.6f}",
+            expected_travel,
+            delta=0.1 * expected_travel,
+            msg=f"High-inertia no-slip pulley should follow the Atwood law: R*theta={rim_travel:.6f}, "
+            f"expected={expected_travel:.6f}",
         )
 
 

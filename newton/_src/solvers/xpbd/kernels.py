@@ -940,12 +940,6 @@ def apply_body_deltas(
     v1 = v0 + dp
     w1 = w0 + dw1
 
-    # XXX this improves gradient stability
-    if wp.length(v1) < 1e-4:
-        v1 = wp.vec3(0.0)
-    if wp.length(w1) < 1e-4:
-        w1 = wp.vec3(0.0)
-
     qd_out[tid] = wp.spatial_vector(v1, w1)
 
 
