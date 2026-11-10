@@ -68,6 +68,8 @@ class TriMeshCollisionInfo:
     global_pair_counts: wp.array[wp.int32]
     """Pair cursors and overflow flags: [vt cursor, vt overflow, ee cursor, ee overflow].
     The cursors count total detection demand; stored records are ``min(cursor, capacity)``.
+    They are ``int32`` counts: a detection pass that produces more than ``2**31``
+    candidate pairs in one family is out of scope and not guarded.
     The slot order is internal: read the values through
     ``SolverVBD.check_self_contact_overflow()`` or
     ``CollisionPipeline.check_soft_self_contact_overflow()``."""
@@ -964,7 +966,9 @@ class TriMeshCollisionDetector:
         Returns ``(vt_demand, ee_demand, vt_overflowed, ee_overflowed)``. The
         demands are the total pair counts detection tried to store; when an
         overflow flag is set the corresponding pair array kept only its first
-        ``capacity`` records and the CSR rows cover only those.
+        ``capacity`` records and the CSR rows cover only those. Demands are
+        ``int32`` counts; more than ``2**31`` candidate pairs in one family per
+        detection pass is out of scope.
         """
         self._require_collision_info()
         global_pair_counts = self.collision_info.global_pair_counts.numpy()

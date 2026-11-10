@@ -1670,6 +1670,8 @@ def vertex_triangle_collision_detection_kernel(
                     # record the (vertex, triangle) pair to the shared array and
                     # link it into this vertex's single-writer list
                     min_dis_to_tris = wp.min(min_dis_to_tris, dist)
+                    # the cursor is an int32 demand count: more than 2**31 candidate pairs in one
+                    # detection pass is out of scope, so the returned slot is not checked for wrap
                     slot = wp.atomic_add(global_pair_counts, VT_PAIR_CURSOR, 1)
                     if slot < vt_pair_capacity:
                         vt_pairs[slot] = wp.vec2i(v_index, tri_index)
@@ -1848,6 +1850,8 @@ def edge_colliding_edges_detection_kernel(
                     # record e-e collision from e0's side (e1 records its own
                     # direction) and link it into e0's single-writer list
                     min_dis_to_edges = wp.min(min_dis_to_edges, dist)
+                    # the cursor is an int32 demand count: more than 2**31 candidate pairs in one
+                    # detection pass is out of scope, so the returned slot is not checked for wrap
                     slot = wp.atomic_add(global_pair_counts, EE_PAIR_CURSOR, 1)
                     if slot < ee_pair_capacity:
                         ee_pairs[slot] = wp.vec2i(e_index, colliding_edge_index)
