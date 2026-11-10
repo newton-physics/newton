@@ -10,6 +10,8 @@ mapping before applying their own numerical solve.
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import warp as wp
 
@@ -29,6 +31,8 @@ from .tendon_kernels import (
     update_tendon_cone_rows,
     update_tendon_guide_active,
 )
+
+logger = logging.getLogger(__name__)
 
 _TENDON_SEGMENT_STATE_FIELDS = (
     "tendon_segment_rest_length",
@@ -460,6 +464,7 @@ class TendonStateMixin:
                 model.tendon_guide_type,
                 model.tendon_guide_flags,
                 model.tendon_guide_radius,
+                model.tendon_guide_orientation,
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
                 model.tendon_segment_rest_length,
@@ -710,6 +715,7 @@ class TendonStateMixin:
                 model.tendon_guide_body,
                 model.tendon_guide_type,
                 model.tendon_guide_radius,
+                model.tendon_guide_orientation,
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
                 self.tendon_segment_rest_length,
@@ -761,6 +767,8 @@ class TendonStateMixin:
         guide_offset_np = model.tendon_guide_offset.numpy()
         guide_axis_np = model.tendon_guide_axis.numpy()
         guide_active_np = self.tendon_guide_active.numpy()
+        guide_orientation_np = model.tendon_guide_orientation.numpy()
+        guide_flags_np = model.tendon_guide_flags.numpy()
         seg_active_np = self.tendon_segment_active.numpy()
         seg_active_guide_l_np = self.tendon_segment_active_guide_l.numpy()
         seg_active_guide_r_np = self.tendon_segment_active_guide_r.numpy()
@@ -802,7 +810,24 @@ class TendonStateMixin:
                     r_r = pt_right - center
                     cross_val = np.dot(np.cross(r_l, r_r), normal)
                     dot_val = np.dot(r_l, r_r)
-                    theta = abs(np.arctan2(cross_val, dot_val))
+                    # Use the same signed material ledger as rolling and route transitions.
+                    theta = float(np.arctan2(cross_val, dot_val)) * float(guide_orientation_np[i])
+                    # Both atan2 branches describe the supported fixed half-circle.
+                    if (
+                        (guide_flags_np[i] & int(TendonGuideFlags.DYNAMIC)) == 0
+                        and theta < 0.0
+                        and abs(theta + np.pi) <= 1.0e-6
+                    ):
+                        theta = float(np.pi)
+                    if theta < -1.0e-6:
+                        logger.warning(
+                            "Tendon %d: ROLLER guide %d starts at an unsupported oriented wrap of %.1f deg. "
+                            "Correct the guide orientation or initial route geometry. "
+                            "The material reference uses the signed arc, not its absolute length.",
+                            t,
+                            i,
+                            np.degrees(theta),
+                        )
                     cable_len += theta * radius
             total_cable[t] = cable_len
             seg += num_guides - 1

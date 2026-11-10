@@ -4604,6 +4604,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 model.tendon_guide_body,
                 model.tendon_guide_type,
                 model.tendon_guide_radius,
+                model.tendon_guide_orientation,
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
                 self.tendon_segment_rest_length,

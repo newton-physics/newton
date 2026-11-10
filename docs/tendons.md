@@ -116,6 +116,11 @@ step. `orientation` determines which signed side of the neighboring bypass
 span engages the roller. `tendon_activation_tol` on the solver adds a
 radius-relative activation gap to prevent state chattering near tangency.
 
+A candidate can cross zero wrap during a step before the next routing update
+bypasses it. Material bookkeeping uses signed wrap arcs during this transition
+so that splitting and merging spans does not create or remove cable material.
+This does not make negative wraps a supported persistent route.
+
 Dynamic routing currently supports isolated rolling candidates only.
 Consecutive dynamic roller guides, endpoint candidates, and route reordering
 are not supported.

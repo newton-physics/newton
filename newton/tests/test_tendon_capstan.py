@@ -1709,12 +1709,10 @@ def test_force_driven_dynamic_route_updates_inside_solver(test, device):
                 att_r_local = solver.tendon_segment_attachment_r_local.numpy()
                 radius_l = att_r_local[0] - candidate_center
                 radius_r = att_l_local[1] - candidate_center
-                theta = abs(
-                    np.atan2(
-                        np.dot(np.cross(radius_l, radius_r), candidate_axis),
-                        np.dot(radius_l, radius_r),
-                    )
-                )
+                theta = np.atan2(
+                    np.dot(np.cross(radius_l, radius_r), candidate_axis),
+                    np.dot(radius_l, radius_r),
+                ) * int(model.tendon_guide_orientation.numpy()[candidate_guide])
                 material_length += theta * float(model.tendon_guide_radius.numpy()[candidate_guide])
             if candidate_active != previous_active:
                 transition_material_errors.append(abs(material_length - previous_material_length))
@@ -1740,6 +1738,180 @@ def test_force_driven_dynamic_route_updates_inside_solver(test, device):
             1.0e-5,
             "Changing route representation should conserve free-span rest length plus wrapped material",
         )
+
+
+def _build_grazing_route(device, winding, *, dynamic=True):
+    """Build one movable roller crossing a fixed world-space bypass chord."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    candidate = builder.add_body(
+        xform=wp.transform(p=wp.vec3(winding * 0.25, 0.0, 0.0)),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    builder.add_tendon(
+        [
+            newton.TendonGuide(body=-1, offset=(0.0, 0.0, -0.5)),
+            newton.TendonGuide(
+                body=candidate,
+                guide_type=TendonGuideType.ROLLER,
+                radius=0.1,
+                axis=(0.0, 1.0, 0.0),
+                orientation=winding,
+                dynamic=dynamic,
+                mu=0.3,
+                compliance=0.01,
+            ),
+            newton.TendonGuide(body=-1, offset=(0.0, 0.0, 0.5), compliance=0.01),
+        ]
+    )
+    builder.color()
+    return builder.finalize(device=device), candidate
+
+
+def _grazing_route_inventory(state, winding):
+    """Measure material independently from body-local tangent points."""
+    rest = state.tendon_segment_rest_length.numpy()
+    if not state.tendon_guide_active.numpy()[1]:
+        return float(rest[0]), 0.0
+    left = state.tendon_segment_attachment_r_local.numpy()[0]
+    right = state.tendon_segment_attachment_l_local.numpy()[1]
+    angle = float(np.arctan2(np.cross(left, right)[1], np.dot(left, right))) * winding
+    return float(np.sum(rest, dtype=np.float64)) + 0.1 * angle, angle
+
+
+def _advance_grazing_route(solver, state, output, winding, target, dt, graphs):
+    """Cross the route boundary inside a real solver step, optionally captured."""
+    velocity = np.zeros((1, 6), dtype=np.float32)
+    velocity[0, 0] = (winding * target - state.body_q.numpy()[0, 0]) / dt
+    state.body_qd.assign(velocity)
+    if graphs is not None:
+        key = id(state)
+        if key not in graphs:
+            with wp.ScopedCapture(device=solver.model.device) as scope:
+                solver.step(state, output, None, None, dt)
+            graphs[key] = scope.graph
+        wp.capture_launch(graphs[key])
+    else:
+        solver.step(state, output, None, None, dt)
+    return output, state
+
+
+def test_dynamic_route_signed_arc_inventory(test, device):
+    """Conserve material through repeated negative-wrap activation and deactivation."""
+    dt = 1.0 / 1200.0
+    for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+        for winding in (-1, 1):
+            for capture in (False, True) if wp.get_device(device).is_cuda else (False,):
+                with test.subTest(solver=solver_type.__name__, winding=winding, capture=capture):
+                    model, _ = _build_grazing_route(device, winding)
+                    solver = solver_type(model, iterations=1)
+                    state, output = model.state(), model.state()
+                    control = model.control()
+                    solver.step(state, output, control, None, dt)
+                    state, output = output, state
+                    test.assertFalse(state.tendon_guide_active.numpy()[1])
+                    expected_material, _ = _grazing_route_inventory(state, winding)
+                    expected_stretch = 1.0 - float(state.tendon_segment_rest_length.numpy()[0])
+                    graphs = {} if capture else None
+
+                    # Move inside while bypassed, then activate and cross back out in
+                    # one substep. Both topology transitions must conserve the ledger.
+                    for _ in range(4):
+                        state, output = _advance_grazing_route(solver, state, output, winding, 0.099, dt, graphs)
+                        test.assertFalse(state.tendon_guide_active.numpy()[1])
+                        state, output = _advance_grazing_route(solver, state, output, winding, 0.16, dt, graphs)
+                        test.assertTrue(state.tendon_guide_active.numpy()[1])
+                        material, angle = _grazing_route_inventory(state, winding)
+                        test.assertLess(angle, -np.radians(10.0))
+                        test.assertAlmostEqual(material, expected_material, delta=1.0e-6)
+                        state, output = _advance_grazing_route(solver, state, output, winding, 0.16, dt, graphs)
+                        test.assertFalse(state.tendon_guide_active.numpy()[1])
+                        material, _ = _grazing_route_inventory(state, winding)
+                        test.assertAlmostEqual(material, expected_material, delta=1.0e-6)
+                        test.assertAlmostEqual(
+                            float(
+                                solver.tendon_segment_length.numpy()[0] - state.tendon_segment_rest_length.numpy()[0]
+                            ),
+                            expected_stretch,
+                            delta=1.0e-6,
+                        )
+
+
+def test_dynamic_route_deactivation_signed_arc(test, device):
+    """Preserve material when a previously positive wrap turns negative before merging."""
+    dt = 1.0 / 1200.0
+    for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+        for winding in (-1, 1):
+            with test.subTest(solver=solver_type.__name__, winding=winding):
+                model, _ = _build_grazing_route(device, winding)
+                solver = solver_type(model, iterations=1)
+                state, output = model.state(), model.state()
+                solver.step(state, output, None, None, dt)
+                state, output = output, state
+                expected, _ = _grazing_route_inventory(state, winding)
+                for target in (0.098, 0.098):
+                    state, output = _advance_grazing_route(solver, state, output, winding, target, dt, None)
+                test.assertTrue(state.tendon_guide_active.numpy()[1])
+                material, angle = _grazing_route_inventory(state, winding)
+                test.assertGreater(angle, 0.0)
+                test.assertAlmostEqual(material, expected, delta=1.0e-6)
+                state, output = _advance_grazing_route(solver, state, output, winding, 0.1001, dt, None)
+                test.assertTrue(state.tendon_guide_active.numpy()[1])
+                material, angle = _grazing_route_inventory(state, winding)
+                test.assertLess(angle, 0.0)
+                test.assertGreater(2.0 * abs(angle) * 0.1, 1.0e-5)
+                test.assertAlmostEqual(material, expected, delta=1.0e-6)
+                state, output = _advance_grazing_route(solver, state, output, winding, 0.1001, dt, None)
+                test.assertFalse(state.tendon_guide_active.numpy()[1])
+                material, _ = _grazing_route_inventory(state, winding)
+                test.assertAlmostEqual(material, expected, delta=1.0e-6)
+
+
+def test_initial_negative_wrap_uses_signed_inventory(test, device):
+    """Report invalid initial wraps and use the same signed arc as route transitions."""
+    for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+        with test.subTest(solver=solver_type.__name__):
+            model, _ = _build_grazing_route(device, 1, dynamic=False)
+            with test.assertLogs("newton", level="WARNING") as caught:
+                solver = solver_type(model, iterations=1)
+            test.assertEqual(len(caught.records), 1)
+            test.assertIn("ROLLER guide 1 starts at an unsupported oriented wrap", caught.output[0])
+            material, angle = _grazing_route_inventory(solver, 1)
+            test.assertLess(angle, 0.0)
+            test.assertAlmostEqual(float(solver.tendon_total_cable.numpy()[0]), material, delta=1.0e-6)
+
+
+def test_fixed_half_turn_material_reference(test, device):
+    """Keep either winding of a fixed half-circle positive, including world guides."""
+    for world_attached in (False, True):
+        for winding in (-1, 1):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            radius = 0.15
+            body = -1 if world_attached else builder.add_body(mass=0.0)
+            builder.add_tendon(
+                [
+                    newton.TendonGuide(body=body, offset=(-winding * radius, 0.0, 0.0)),
+                    newton.TendonGuide(
+                        body=body,
+                        guide_type=TendonGuideType.ROLLER,
+                        offset=(0.0, 0.0, 1.0),
+                        axis=(0.0, 1.0, 0.0),
+                        radius=radius,
+                        orientation=winding,
+                        compliance=1.0e-5,
+                    ),
+                    newton.TendonGuide(body=body, offset=(winding * radius, 0.0, 0.0), compliance=1.0e-5),
+                ]
+            )
+            builder.color()
+            model = builder.finalize(device=device)
+            for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+                with test.subTest(solver=solver_type.__name__, world=world_attached, winding=winding):
+                    with test.assertNoLogs("newton", level="WARNING"):
+                        solver = solver_type(model, iterations=1)
+                    test.assertAlmostEqual(
+                        float(solver.tendon_total_cable.numpy()[0]), 2.0 + np.pi * radius, delta=1.0e-6
+                    )
 
 
 def test_dynamic_route_activation_uses_accepted_pose(test, device):
@@ -3654,6 +3826,17 @@ add_test(
     devices,
     test_dynamic_route_activation_uses_accepted_pose,
 )
+add_test(TestTendonCapstan, "dynamic_route_signed_arc_inventory", devices, test_dynamic_route_signed_arc_inventory)
+add_test(
+    TestTendonCapstan, "dynamic_route_deactivation_signed_arc", devices, test_dynamic_route_deactivation_signed_arc
+)
+add_test(
+    TestTendonCapstan,
+    "initial_negative_wrap_uses_signed_inventory",
+    devices,
+    test_initial_negative_wrap_uses_signed_inventory,
+)
+add_test(TestTendonCapstan, "fixed_half_turn_material_reference", devices, test_fixed_half_turn_material_reference)
 add_test(
     TestTendonCapstan,
     "xpbd_tendon_diagnostics_match_final_pose",

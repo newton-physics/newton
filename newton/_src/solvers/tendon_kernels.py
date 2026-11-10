@@ -87,14 +87,15 @@ def signed_arc_length(
 
 
 @wp.func
-def wrapped_arc_length(
+def oriented_wrap_arc_length(
     pt_left: wp.vec3,
     pt_right: wp.vec3,
     center: wp.vec3,
     radius: float,
     plane_normal: wp.vec3,
+    orientation: int,
 ) -> float:
-    """Unsigned arc length between two points on a circular rolling guide."""
+    """Measure the signed wrapped material between a roller's two tangent points."""
     r_left = pt_left - center
     r_right = pt_right - center
     r_left = r_left - wp.dot(r_left, plane_normal) * plane_normal
@@ -106,8 +107,8 @@ def wrapped_arc_length(
 
     u_left = r_left / len_left
     u_right = r_right / len_right
-    theta = wp.abs(wp.atan2(wp.dot(wp.cross(u_left, u_right), plane_normal), wp.dot(u_left, u_right)))
-    return theta * radius
+    theta = wp.atan2(wp.dot(wp.cross(u_left, u_right), plane_normal), wp.dot(u_left, u_right))
+    return theta * float(orientation) * radius
 
 
 @wp.kernel
@@ -518,6 +519,7 @@ def prepare_tendon_route(
     tendon_guide_type: wp.array[int],
     tendon_guide_flags: wp.array[int],
     tendon_guide_radius: wp.array[float],
+    tendon_guide_orientation: wp.array[int],
     tendon_guide_offset: wp.array[wp.vec3],
     tendon_guide_axis: wp.array[wp.vec3],
     seg_authored_rest_length: wp.array[float],
@@ -600,7 +602,14 @@ def prepare_tendon_route(
             merged_rest = (
                 seg_rest_length_step[seg_left]
                 + seg_rest_length_step[seg_right]
-                + wrapped_arc_length(pt_left, pt_right, center, tendon_guide_radius[guide_idx], normal)
+                + oriented_wrap_arc_length(
+                    pt_left,
+                    pt_right,
+                    center,
+                    tendon_guide_radius[guide_idx],
+                    normal,
+                    tendon_guide_orientation[guide_idx],
+                )
             )
         elif initialize != 0:
             merged_rest = seg_rest_length_step[seg_left] + seg_rest_length_step[seg_right]
@@ -1059,6 +1068,7 @@ def solve_tendon_material(
     tendon_guide_body: wp.array[int],
     tendon_guide_type: wp.array[int],
     tendon_guide_radius: wp.array[float],
+    tendon_guide_orientation: wp.array[int],
     tendon_guide_offset: wp.array[wp.vec3],
     tendon_guide_axis: wp.array[wp.vec3],
     seg_rest_length: wp.array[float],
@@ -1140,8 +1150,15 @@ def solve_tendon_material(
         pose = tendon_body_pose(body_q, body)
         center = wp.transform_point(pose, tendon_guide_offset[guide_idx])
         normal = wp.transform_vector(pose, tendon_guide_axis[guide_idx])
-        arc_rest = wrapped_arc_length(
-            seg_attachment_r[seg_left], seg_attachment_l[seg_right], center, tendon_guide_radius[guide_idx], normal
+        # Activation uses the accepted step-start pose, but this solve can already
+        # be past zero wrap. Split and merge must use the same signed arc as rolling.
+        arc_rest = oriented_wrap_arc_length(
+            seg_attachment_r[seg_left],
+            seg_attachment_l[seg_right],
+            center,
+            tendon_guide_radius[guide_idx],
+            normal,
+            tendon_guide_orientation[guide_idx],
         )
         free_rest = seg_rest_length_step[seg_left] - arc_rest
         if free_rest < 2.0 * min_rest:
