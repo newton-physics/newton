@@ -276,12 +276,15 @@ class PADMMSolver:
         self._initialize_solver_kernel = make_initialize_solver_kernel(self._use_acceleration)
         self._collect_solver_info_kernel = make_collect_solver_info_kernel(self._use_acceleration)
         self._collect_solver_info_kernel_sparse = make_collect_solver_info_kernel_sparse(self._use_acceleration)
+        delassus_dual_residual = self._config[0].dual_residual_mode == "delassus"
         self._update_dual_variables_and_compute_primal_dual_residuals_kernel = (
-            make_update_dual_variables_and_compute_primal_dual_residuals(self._use_acceleration)
+            make_update_dual_variables_and_compute_primal_dual_residuals(self._use_acceleration, delassus_dual_residual)
         )
         tile_size = get_tile_size(self._size.max_of_max_total_cts)
         block_dim = get_block_dim(tile_size, ratio=2, min_size=1)
-        self._project_dual_convergence_accel_kernel = _make_project_dual_convergence_accel_kernel(block_dim)
+        self._project_dual_convergence_accel_kernel = _make_project_dual_convergence_accel_kernel(
+            block_dim, delassus_dual_residual
+        )
 
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Accept model changes, which need no backend-specific handling."""
@@ -1172,6 +1175,9 @@ class PADMMSolver:
                 self._data.config,
                 self._data.penalty,
                 self._data.status,
+                problem.sparse,
+                self._data.state.sigma,
+                self._data.state.v,
                 self._data.state.x,
                 self._data.state.y,
                 self._data.state.x_p,
@@ -1179,6 +1185,7 @@ class PADMMSolver:
                 self._data.state.z_p,
                 # Outputs:
                 self._data.state.z,
+                self._data.state.Dx_p,
                 self._data.residuals.r_primal,
                 self._data.residuals.r_dual,
                 self._data.residuals.r_dx,
@@ -1218,6 +1225,9 @@ class PADMMSolver:
                 self._data.config,
                 self._data.penalty,
                 self._data.state.a_p,
+                problem.sparse,
+                self._data.state.sigma,
+                self._data.state.v,
                 self._data.state.x,
                 self._data.state.x_p,
                 self._data.state.y_hat,
@@ -1227,6 +1237,7 @@ class PADMMSolver:
                 # Outputs:
                 self._data.state.y,
                 self._data.state.z,
+                self._data.state.Dx_p,
                 self._data.state.done,
                 self._data.state.a,
                 self._data.state.a_factor,

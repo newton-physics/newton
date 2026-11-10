@@ -694,7 +694,49 @@ def _project_to_feasible_cone(
         solver_y[ccio_j + 2] = y_proj[2]
 
 
-def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleration: bool = False):
+@wp.func
+def _get_delassus_regularization(sparse: wp.bool, sigma: wp.vec2f, eta: wp.float32, rho: wp.float32) -> wp.float32:
+    """
+    Returns the proximal regularization held by the Delassus operator in the current iteration.
+
+    The dense matrix holds the regularization `sigma` set before the iterations,
+    while the sparse operator is updated with the current ALM penalty.
+    """
+    if sparse:
+        return eta + rho
+    return sigma[0]
+
+
+@wp.func
+def _compute_delassus_dual_residual(
+    iterations: wp.int32,
+    P_i: wp.float32,
+    sigma: wp.float32,
+    v_i: wp.float32,
+    x_i: wp.float32,
+    Dx_p: wp.array[wp.float32],
+    index: wp.int32,
+    r_d_standard: wp.float32,
+) -> wp.float32:
+    """
+    Computes the Delassus-weighted dual residual `P^{-1} D (x - x_p)` of a constraint row,
+    and stores the product `D x` for the next iteration.
+
+    The product is recovered from the regularized linear system `(D + sigma I) x = v` as
+    `D x = v - sigma x`. The first iteration has no previous product and falls back to
+    the standard residual.
+    """
+    Dx_i = v_i - sigma * x_i
+    r_d = r_d_standard
+    if iterations > 0:
+        r_d = (1.0 / P_i) * (Dx_i - Dx_p[index])
+    Dx_p[index] = Dx_i
+    return r_d
+
+
+def make_update_dual_variables_and_compute_primal_dual_residuals(
+    use_acceleration: bool = False, delassus_dual_residual: bool = False
+):
     """
     Creates a kernel to update the dual variables and compute the primal and dual residuals.
 
@@ -702,6 +744,8 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleratio
 
     Args:
         use_acceleration: Flag indicating whether acceleration is enabled. Defaults to False.
+        delassus_dual_residual: Flag indicating whether the dual residual is weighted by
+            the Delassus matrix instead of the proximal parameters. Defaults to False.
 
     Returns:
         The kernel function to update dual variables and compute residuals.
@@ -716,6 +760,9 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleratio
         solver_config: wp.array[PADMMConfigStruct],
         solver_penalty: wp.array[PADMMPenalty],
         solver_status: wp.array[PADMMStatus],
+        problem_sparse: wp.bool,
+        solver_sigma: wp.array[wp.vec2f],
+        solver_v: wp.array[wp.float32],
         solver_x: wp.array[wp.float32],
         solver_y: wp.array[wp.float32],
         solver_x_p: wp.array[wp.float32],
@@ -723,6 +770,7 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleratio
         solver_z_p: wp.array[wp.float32],
         # Outputs:
         solver_z: wp.array[wp.float32],
+        solver_Dx_p: wp.array[wp.float32],
         solver_r_prim: wp.array[wp.float32],
         solver_r_dual: wp.array[wp.float32],
         solver_r_dx: wp.array[wp.float32],
@@ -770,7 +818,13 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleratio
         solver_r_prim[thread_offset] = P_i * (x - y)
 
         # Compute the dual residual using the ADMM-specific shortcut
-        solver_r_dual[thread_offset] = (1.0 / P_i) * (eta * (x - x_p) + rho * (y - y_p))
+        r_d = (1.0 / P_i) * (eta * (x - x_p) + rho * (y - y_p))
+        if wp.static(delassus_dual_residual):
+            sigma = _get_delassus_regularization(problem_sparse, solver_sigma[wid], eta, rho)
+            r_d = _compute_delassus_dual_residual(
+                status.iterations, P_i, sigma, solver_v[thread_offset], x, solver_Dx_p, thread_offset, r_d
+            )
+        solver_r_dual[thread_offset] = r_d
 
         # Compute the individual iterate residuals only if acceleration is enabled
         # NOTE: These are used to compute the combined residual
@@ -785,12 +839,14 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleratio
 
 
 @functools.cache
-def _make_project_dual_convergence_accel_kernel(reduction_size: int):
+def _make_project_dual_convergence_accel_kernel(reduction_size: int, delassus_dual_residual: bool = False):
     """Create one accelerated PADMM projection/update kernel per world.
 
     Each block owns one world. Threads sweep the world's constraints, write the
     slack and dual variables, reduce residual metrics, update convergence and
     acceleration state, then cache the current iterates for the next iteration.
+    If ``delassus_dual_residual`` is set, the dual residual is weighted by the
+    Delassus matrix instead of the proximal parameters.
     """
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
@@ -813,6 +869,9 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
         solver_config: wp.array[PADMMConfigStruct],
         solver_penalty: wp.array[PADMMPenalty],
         solver_state_a_p: wp.array[wp.float32],
+        problem_sparse: wp.bool,
+        solver_state_sigma: wp.array[wp.vec2f],
+        solver_state_v: wp.array[wp.float32],
         solver_state_x: wp.array[wp.float32],
         solver_state_x_p: wp.array[wp.float32],
         solver_state_y_hat_in: wp.array[wp.float32],
@@ -822,6 +881,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
         # Outputs:
         solver_state_y: wp.array[wp.float32],
         solver_state_z: wp.array[wp.float32],
+        solver_state_Dx_p: wp.array[wp.float32],
         solver_state_done: wp.array[wp.int32],
         solver_state_a: wp.array[wp.float32],
         solver_state_a_factor: wp.array[wp.float32],
@@ -871,6 +931,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
         rho = pen.rho
         inv_rho = 1.0 / rho
         eta = config.eta
+        sigma = _get_delassus_regularization(problem_sparse, solver_state_sigma[wid], eta, rho)
 
         r_p_local = wp.float32(0.0)
         r_d_local = wp.float32(0.0)
@@ -920,6 +981,10 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
 
                             r_p = p_i * (x - y)
                             r_d = (1.0 / p_i) * (eta * (x - x_p) + rho * (y - y_p))
+                            if wp.static(delassus_dual_residual):
+                                r_d = _compute_delassus_dual_residual(
+                                    status.iterations, p_i, sigma, solver_state_v[idx], x, solver_state_Dx_p, idx, r_d
+                                )
                             r_dx = p_i * (x - x_p)
                             r_dy = p_i * (y - y_p)
                             r_dz = (1.0 / p_i) * (z - z_p)
@@ -957,6 +1022,17 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
 
                     r_p = p_i * (x - y)
                     r_d = (1.0 / p_i) * (eta * (x - x_p) + rho * (y - y_p))
+                    if wp.static(delassus_dual_residual):
+                        r_d = _compute_delassus_dual_residual(
+                            status.iterations,
+                            p_i,
+                            sigma,
+                            solver_state_v[thread_offset],
+                            x,
+                            solver_state_Dx_p,
+                            thread_offset,
+                            r_d,
+                        )
                     r_dx = p_i * (x - x_p)
                     r_dy = p_i * (y - y_p)
                     r_dz = (1.0 / p_i) * (z - z_prev)

@@ -292,7 +292,8 @@ class PADMMStatus:
         r_p: The total primal residual.
             Computed using the L-inf norm as `r_primal := || x - y ||_inf`.
         r_d: The total dual residual.
-            Computed using the L-inf norm as `r_dual := || eta * (x - x_p) + rho * (y - y_p) ||_inf`.
+            Computed using the L-inf norm as `r_dual := || eta * (x - x_p) + rho * (y - y_p) ||_inf`,
+            or as `r_dual := || P^{-1} D (x - x_p) ||_inf` with the Delassus-weighted dual residual.
         r_c: The complementarity residual used by the convergence test.
             For each bounded-multiplier row `b`, the residual is the directional
             box complementarity between its velocity and lower/upper box faces,
@@ -463,6 +464,8 @@ class PADMMState:
             Shape of ``(sum_of_max_total_cts,)``.
         x_p: The previous PADMM primal variables.
             Shape of ``(sum_of_max_total_cts,)``.
+        Dx_p: The product of the (preconditioned) Delassus matrix with the previous PADMM primal variables.
+            Shape of ``(sum_of_max_total_cts,)``.
         y: The current PADMM slack variables.
             Shape of ``(sum_of_max_total_cts,)``.
         y_p: The previous PADMM slack variables.
@@ -537,6 +540,13 @@ class PADMMState:
         self.x_p: wp.array[wp.float32] | None = None
         """
         The previous PADMM primal variables.
+        Shape of ``(sum_of_max_total_cts,)``.
+        """
+
+        self.Dx_p: wp.array[wp.float32] | None = None
+        """
+        The product of the (preconditioned) Delassus matrix with the previous PADMM primal variables.
+        Used by the Delassus-weighted dual residual.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
@@ -619,6 +629,7 @@ class PADMMState:
         self.v = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
         self.x = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
         self.x_p = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
+        self.Dx_p = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
         self.y = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
         self.y_p = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
         self.z = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
@@ -652,6 +663,7 @@ class PADMMState:
         self.v.zero_()
         self.x.zero_()
         self.x_p.zero_()
+        self.Dx_p.zero_()
         self.y.zero_()
         self.y_p.zero_()
         self.z.zero_()

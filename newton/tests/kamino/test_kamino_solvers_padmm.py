@@ -1144,6 +1144,114 @@ class TestPADMMSolver(unittest.TestCase):
             self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, 0.0], [1.0 / den, 0.0, mu / den])
 
 
+def make_redundant_fourbar(device: wp.DeviceLike, sparse: bool) -> TestSetup:
+    """Creates a fixed-base four-bar linkage, whose closed loop makes the bilateral constraints redundant."""
+    return TestSetup(
+        builder_fn=basics.build_boxes_fourbar,
+        max_world_contacts=8,
+        device=device,
+        sparse=sparse,
+        fixedbase=True,
+        limits=False,
+        ground=False,
+    )
+
+
+def delassus_null_bases(problem: DualProblem, rel_tol: float = 1e-6) -> list[np.ndarray]:
+    """Returns orthonormal bases of the numerical null spaces of the per-world (preconditioned) Delassus matrices."""
+    bases = []
+    for D in extract_delassus(problem.delassus, only_active_dims=True):
+        eigvals, eigvecs = np.linalg.eigh(D.astype(np.float64))
+        bases.append(eigvecs[:, eigvals < rel_tol * eigvals.max()])
+    return bases
+
+
+def add_null_components(problem: DualProblem, vector: wp.array, bases: list[np.ndarray], scale: float) -> np.ndarray:
+    """Adds null-space components of norm ``scale`` to each world block of ``vector`` and returns the result."""
+    rng = np.random.default_rng(0)
+    vector_np = vector.numpy()
+    vio = problem.data.vio.numpy()
+    for w, basis in enumerate(bases):
+        coeffs = rng.standard_normal(basis.shape[1])
+        vector_np[vio[w] : vio[w] + basis.shape[0]] += scale * basis @ (coeffs / np.linalg.norm(coeffs))
+    vector.assign(vector_np)
+    return vector_np
+
+
+class TestPADMMNullspaceRobustness(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def test_00_delassus_dual_residual(self):
+        """The Delassus-weighted dual residual matches `P^{-1} D (x - x_p)` between consecutive iterates."""
+        builders = {
+            "fourbar": lambda sparse: make_redundant_fourbar(self.default_device, sparse),
+            "box_on_plane": lambda sparse: TestSetup(
+                builder_fn=basics.build_box_on_plane, max_world_contacts=8, device=self.default_device, sparse=sparse
+            ),
+        }
+        num_iterations = 5
+        for name, make_test in builders.items():
+            for sparse in (False, True):
+                for use_acceleration in (False, True):
+                    for penalty in ("fixed", "balanced"):
+                        with self.subTest(
+                            model=name, sparse=sparse, use_acceleration=use_acceleration, penalty=penalty
+                        ):
+                            # Run the solver for two consecutive iteration counts from the same cold start
+                            x, r_d = [], []
+                            for max_iterations in (num_iterations - 1, num_iterations):
+                                test = make_test(sparse)
+                                config = PADMMSolver.Config(
+                                    dual_residual_mode="delassus",
+                                    max_iterations=max_iterations,
+                                    penalty_update_method=penalty,
+                                    penalty_update_freq=1,
+                                )
+                                solver = PADMMSolver(model=test.model, config=config, use_acceleration=use_acceleration)
+                                test.build()
+                                D = extract_delassus(test.problem.delassus, only_active_dims=True)
+                                P = extract_problem_vector(
+                                    test.problem.delassus, test.problem.data.P.numpy(), only_active_dims=True
+                                )
+                                solver.coldstart()
+                                solver.solve(problem=test.problem)
+                                x.append(
+                                    extract_problem_vector(
+                                        test.problem.delassus, solver.data.state.x.numpy(), only_active_dims=True
+                                    )
+                                )
+                                r_d.append(solver.data.status.numpy()["r_d"])
+
+                            # Compare with the explicit Delassus product of the last change of preconditioned iterates
+                            for w in range(len(D)):
+                                dx = (x[1][w].astype(np.float64) - x[0][w]) / P[w]
+                                r_d_ref = np.abs((D[w] @ dx) / P[w]).max()
+                                np.testing.assert_allclose(r_d[1][w], r_d_ref, rtol=1e-2, atol=1e-6)
+
+    def test_01_delassus_dual_residual_converges_with_null_leakage(self):
+        """The Delassus-weighted dual residual converges despite a free velocity leaking into the Delassus null space."""
+        for sparse in (False, True):
+            for use_acceleration in (False, True):
+                with self.subTest(sparse=sparse, use_acceleration=use_acceleration):
+                    status = {}
+                    for mode in ("standard", "delassus"):
+                        test = make_redundant_fourbar(self.default_device, sparse)
+                        config = PADMMSolver.Config(dual_residual_mode=mode, max_iterations=500)
+                        solver = PADMMSolver(model=test.model, config=config, use_acceleration=use_acceleration)
+                        test.build()
+                        bases = delassus_null_bases(test.problem)
+                        add_null_components(test.problem, test.problem.data.v_f, bases, 1e-4)
+                        solver.coldstart()
+                        solver.solve(problem=test.problem)
+                        status[mode] = solver.data.status.numpy()[0]
+                    self.assertTrue(bool(status["delassus"]["converged"]))
+                    if not sparse:
+                        self.assertFalse(bool(status["standard"]["converged"]))
+
+
 ###
 # Test execution
 ###

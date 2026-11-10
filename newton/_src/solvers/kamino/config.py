@@ -593,6 +593,18 @@ class PADMMSolverConfig:
     Must be greater than zero. Defaults to `1e-6`.
     """
 
+    dual_residual_mode: Literal["standard", "delassus"] = "standard"
+    """
+    The definition of the dual residual `r_dual` between consecutive iterates.\n
+    - `"standard"`: The ADMM residual `eta * (x - x_p) + rho * (y - y_p)`.\n
+    - `"delassus"`: The change `D @ (x - x_p)` of the constraint-space velocity, obtained without an
+      additional matrix-vector product from the right-hand side of the linear system. It is insensitive
+      to the drift of the impulses along the null space of the Delassus operator, e.g. due to redundant
+      constraints, which may otherwise prevent convergence.\n
+    Both are scaled by the inverse preconditioner. The setting of the first world applies to all worlds.
+    Defaults to `"standard"`.
+    """
+
     compl_tolerance: float = 1e-6
     """
     The target tolerance on the complementarity residual `r_compl`.\n
@@ -889,6 +901,10 @@ class PADMMSolverConfig:
             )
         if not 0.0 <= self.warmstart_scale <= 1.0:
             raise ValueError(f"Invalid warmstart scale: {self.warmstart_scale}. Must be in the range [0, 1].")
+        if self.dual_residual_mode not in ("standard", "delassus"):
+            raise ValueError(
+                f"Invalid dual residual mode: {self.dual_residual_mode}. Must be either 'standard' or 'delassus'."
+            )
 
         # Ensure that the enum-valued parameters are valid options
         # Conversion to enum-type configs will raise an error
