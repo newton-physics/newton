@@ -53,6 +53,11 @@ after the timed region so that the measurement includes GPU execution. Time
 several frames together to reduce measurement overhead. Report setup time,
 including model construction and kernel compilation, separately from stepping.
 
+GPU clock speeds change with temperature and power limits, so short runs and
+runs on a shared machine vary. Run long enough for the timing to settle, repeat
+the measurement, and report the spread. In benchmark mode, the examples raise
+the process priority; ``--realtime`` raises it further.
+
 Record the hardware and software versions, world count, timestep, substeps,
 solver settings, and collision frequency. State whether rendering, sensors,
 controls, and resets are included. Compare configurations over the same amount
@@ -93,8 +98,9 @@ When the step runs eagerly, :class:`warp.ScopedTimer` with ``synchronize=True``
 measures a region, and its ``cuda_filter`` option records the duration of each
 kernel and memory operation (see Warp's `CUDA activity profiling
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#cuda-activity-profiling>`__).
-:class:`~utils.EventTracer` uses CUDA events to time the functions that
-:class:`~solvers.SolverMuJoCo` instruments.
+:class:`~utils.EventTracer` uses CUDA events to time functions decorated with
+:func:`~utils.event_scope`, including the step of :class:`~solvers.SolverMuJoCo`.
+You can apply the decorator to your own functions.
 
 For captured steps, Warp's activity timing reports the graph launch as a
 single operation. Time the graph as a whole, profile the eager version, or
@@ -168,6 +174,33 @@ used from a device's Warp memory pool. This excludes allocations outside that
 pool. The process memory reported by ``nvidia-smi`` also includes reserved pool
 memory and other CUDA allocations. See Warp's `memory management guide
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/memory_management.html#querying-memory-usage>`__.
+
+.. _performance-debug-settings:
+
+Debug and Gradient Settings
+---------------------------
+
+Warp's debugging options make every launch much slower. Before timing, check
+that ``warp.config.mode`` is ``"release"`` and that ``verify_cuda``,
+``verify_fp``, and ``print_launches`` are disabled. The examples set Warp
+options with ``--warp-config KEY=VALUE``, so check the command line as well as
+the code.
+
+Enable gradients only for differentiable simulation.
+``ModelBuilder.finalize(requires_grad=True)`` allocates gradient arrays for the
+model and for the states it creates, and the collision pipeline then generates
+additional differentiable contact data.
+
+For your own Warp modules that never need gradients, disabling the
+``enable_backward`` module option skips generating adjoint code, which
+shortens compilation (see Warp's `module settings
+<https://nvidia.github.io/warp/stable/user_guide/configuration.html#module-settings>`__).
+Set it per module or per kernel, not globally through
+``warp.config.enable_backward``. Some Newton features use automatic
+differentiation during the forward simulation, such as the default autodiff
+Jacobians of :class:`~ik.IKSolver` and the linearization of neural actuator
+drives. With backward code disabled, Warp computes zero gradients without
+raising an error, so these features silently produce wrong results.
 
 .. _performance-graph-capture:
 
@@ -289,6 +322,16 @@ timings.
 Capture the whole frame in one graph rather than one graph per substep, and
 include collision detection, control updates, and any per-step metric kernels.
 Kernels outside the graph still incur individual host launch costs.
+
+For your own kernels that must run outside a graph, for example on the CPU or
+in code that branches on the host, Warp's `launch objects
+<https://nvidia.github.io/warp/stable/user_guide/runtime.html#launch-objects>`__
+reduce the Python cost of each launch. Calling :func:`warp.launch` with
+``record_cmd=True`` returns a :class:`warp.Launch` that can be launched again
+with updated parameters. Each replay is still a separate kernel launch, so
+launch objects do not replace graph capture. They also apply only to kernels
+you launch yourself; Newton's solvers and collision pipeline launch their own
+kernels, so capturing the step is the way to reduce their launch overhead.
 
 The example uses CUDA graphs on CUDA devices and runs the frame directly on the
 CPU. If the captured code allocates memory, capture also requires the device's
@@ -440,6 +483,13 @@ device and read them periodically or at the end of a run. To find reads you did
 not expect, profile the run with Nsight Systems, which shows synchronization on
 its timeline.
 
+When the host needs data every frame, copy it asynchronously into a pinned
+host array (``wp.empty(..., device="cpu", pinned=True)``) and read the copy a
+frame later, after an event or the next synchronization point shows that it is
+complete. When passing data to PyTorch, :func:`warp.to_torch` shares the device
+memory without a copy. Keep the result on the device: calls such as
+``tensor.item()`` or ``tensor.cpu()`` synchronize.
+
 Render once per frame, after the simulation step, to avoid repeating viewer
 work in every substep. Some viewers read data back to the host when logging. In
 particular, :meth:`~viewer.ViewerBase.log_contacts` reads the contact count
@@ -465,7 +515,8 @@ you intend to use, record the peak contact and constraint counts, and set the
 capacities to that peak plus a margin.
 
 The capacities of :class:`CollisionPipeline`, such as ``rigid_contact_max``,
-``soft_contact_max``, and ``shape_pairs_max``, are totals over all worlds.
+``soft_contact_max``, ``shape_pairs_max``, and ``max_triangle_pairs`` (for
+mesh and heightfield contacts), are totals over all worlds.
 Automatic contact-capacity estimates are not worst-case bounds. In contrast,
 the NxN and SAP broad phases default to a worst-case shape-pair bound summed
 over worlds, including shared global shapes. This can reserve much more memory
@@ -483,8 +534,22 @@ Collision Detection
 
 Reduce candidate pairs before changing collision accuracy. Use collision groups
 and filters to exclude pairs that should not interact, and choose a broad phase
-suited to the scene. Shared shapes (world ``-1``) collide with every world, so
-their cost grows with the world count. See :ref:`Collision Pipeline Details`.
+suited to the scene (see the :ref:`collision performance notes
+<Performance>`). Shared shapes (world ``-1``) collide with every world, so
+their cost grows with the world count. If static and kinematic shapes do not
+need contacts with each other, pass ``include_static_kinematic_pairs=False``
+to :class:`CollisionPipeline`. See :ref:`Collision Pipeline Details`.
+
+Several :class:`CollisionPipeline` options add work and are worth enabling only
+when needed:
+
+- ``deterministic=True`` sorts the contacts after every collision pass, and any
+  ``contact_matching`` mode other than ``"disabled"`` implies it.
+- ``dynamic_shape_scale=True`` makes SDF queries read the current shape scale
+  on every call, which is slower than the precompiled unit-scale path.
+- ``enable_rigid_soft_full_surface_contact=True`` can generate many more soft
+  contacts than particle contacts alone; see
+  :ref:`full-surface-mesh-contact-costs`.
 
 Request contact sensors and solver observables only when the application
 needs their output. Simpler geometry and less frequent detection trade accuracy
@@ -539,6 +604,20 @@ Substeps, iterations, and tolerances
     do not imply equal accuracy. See the tuning order in
     :ref:`Simulation Tuning` and :ref:`Tuning Solver Reference`.
 
+    A convergence check that runs on the host prevents graph capture. Inside
+    a graph, an early exit needs a conditional node such as
+    :func:`warp.capture_while`, with the loop condition stored in a device
+    array. Otherwise, the captured graph always runs the iteration count
+    recorded during capture.
+
+Sleeping
+    Some solvers can stop simulating islands of bodies that have come to rest
+    until something wakes them. This saves work in scenes where many objects
+    rest, but adds bookkeeping, so scenes where most bodies stay awake can
+    become slower. Benchmark before enabling it. See :ref:`MuJoCo sleeping
+    <mujoco-sleeping>` and the ``enable_sleeping`` option of
+    :class:`~solvers.SolverSteel` in :ref:`Tuning Solver Reference`.
+
 Solver choice and solver options
     Solvers differ in cost and in the effects they model, and many expose
     options that trade accuracy for speed. For example,
@@ -550,8 +629,11 @@ Multiple Worlds
 ---------------
 
 To simulate many copies of a scene, build one world and copy it with
-:meth:`ModelBuilder.replicate`. Mesh approximations and SDFs are computed once
-per source mesh and shared across worlds.
+:meth:`ModelBuilder.replicate`. Replication copies mesh references, so SDFs
+built on a source mesh are shared across worlds. Call
+:meth:`ModelBuilder.approximate_meshes` on the source builder before
+replicating it: the approximation is then computed once and shared, while
+approximating after replication creates one copy per replicated shape.
 
 Measure both throughput (world-steps per second) and latency (time per step)
 across several world counts. Batching can improve GPU utilization, but gains
