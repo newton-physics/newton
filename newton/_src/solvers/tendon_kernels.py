@@ -60,6 +60,49 @@ def tangent_point_circle(
 
 
 @wp.func
+def _planar_circle_tangents(
+    center_l: wp.vec3,
+    center_r: wp.vec3,
+    normal_l: wp.vec3,
+    normal_r: wp.vec3,
+    radius_l: float,
+    radius_r: float,
+    orient_l: int,
+    orient_r: int,
+):
+    """Return the required planar tangent and status: valid 1, missing -1, nonplanar 0."""
+    delta = center_r - center_l
+    distance = wp.length(delta)
+    length_l = wp.length(normal_l)
+    length_r = wp.length(normal_r)
+    if (
+        not wp.isfinite(distance)
+        or not wp.isfinite(length_l)
+        or not wp.isfinite(length_r)
+        or length_l <= 1.0e-8
+        or length_r <= 1.0e-8
+    ):
+        return center_l, center_r, int(-1)
+    n_l = normal_l / length_l
+    n_r = normal_r / length_r
+    alignment = wp.dot(n_l, n_r)
+    if wp.length_sq(wp.cross(n_l, n_r)) > 1.0e-12 or wp.abs(wp.dot(delta, n_l)) > 1.0e-6 * distance:
+        return center_l, center_r, int(0)
+
+    side = float(-1.0)
+    if float(orient_l * orient_r) * alignment > 0.0:
+        side = 1.0
+    radius_delta = radius_l - side * radius_r
+    if distance <= wp.abs(radius_delta):
+        return center_l, center_r, int(-1)
+
+    along = delta / distance
+    h = radius_delta / distance
+    radial = h * along - float(orient_l) * wp.sqrt(wp.max(0.0, 1.0 - h * h)) * wp.cross(n_l, along)
+    return center_l + radius_l * radial, center_r + side * radius_r * radial, int(1)
+
+
+@wp.func
 def signed_arc_length(
     old_pt: wp.vec3,
     new_pt: wp.vec3,
@@ -271,26 +314,47 @@ def update_tendon_guide_active(
 
         bypass_l = prev_center
         bypass_r = next_center
+        bypass_step = float(0.0)
         if prev_rolling and next_rolling:
             prev_normal = wp.transform_vector(prev_pose, tendon_guide_axis[prev_guide])
             next_normal = wp.transform_vector(next_pose, tendon_guide_axis[next_guide])
-            for _iter in range(10):
-                bypass_r = tangent_point_circle(
-                    bypass_l,
-                    next_center,
-                    tendon_guide_radius[next_guide],
-                    next_normal,
-                    tendon_guide_orientation[next_guide],
-                )
-                bypass_l = tangent_point_circle(
-                    bypass_r,
-                    prev_center,
-                    tendon_guide_radius[prev_guide],
-                    prev_normal,
-                    -tendon_guide_orientation[prev_guide],
-                )
+            bypass_l, bypass_r, tangent_status = _planar_circle_tangents(
+                prev_center,
+                next_center,
+                prev_normal,
+                next_normal,
+                tendon_guide_radius[prev_guide],
+                tendon_guide_radius[next_guide],
+                tendon_guide_orientation[prev_guide],
+                tendon_guide_orientation[next_guide],
+            )
+            if tangent_status < 0:
+                continue
+            if tangent_status == 0:
+                for _iter in range(10):
+                    previous_l = bypass_l
+                    previous_r = bypass_r
+                    bypass_r = tangent_point_circle(
+                        bypass_l,
+                        next_center,
+                        tendon_guide_radius[next_guide],
+                        next_normal,
+                        tendon_guide_orientation[next_guide],
+                    )
+                    bypass_l = tangent_point_circle(
+                        bypass_r,
+                        prev_center,
+                        tendon_guide_radius[prev_guide],
+                        prev_normal,
+                        -tendon_guide_orientation[prev_guide],
+                    )
+                    bypass_step = wp.length(bypass_l - previous_l) + wp.length(bypass_r - previous_r)
         elif prev_rolling:
             prev_normal = wp.transform_vector(prev_pose, tendon_guide_axis[prev_guide])
+            delta = next_center - prev_center
+            projected = delta - wp.dot(delta, prev_normal) * prev_normal
+            if wp.length(projected) <= tendon_guide_radius[prev_guide]:
+                continue
             bypass_l = tangent_point_circle(
                 next_center,
                 prev_center,
@@ -300,6 +364,10 @@ def update_tendon_guide_active(
             )
         elif next_rolling:
             next_normal = wp.transform_vector(next_pose, tendon_guide_axis[next_guide])
+            delta = prev_center - next_center
+            projected = delta - wp.dot(delta, next_normal) * next_normal
+            if wp.length(projected) <= tendon_guide_radius[next_guide]:
+                continue
             bypass_r = tangent_point_circle(
                 prev_center,
                 next_center,
@@ -313,7 +381,6 @@ def update_tendon_guide_active(
         normal = wp.transform_vector(candidate_pose, tendon_guide_axis[guide_idx])
         normal_length = wp.length(normal)
         if normal_length <= 1.0e-8:
-            tendon_guide_active[guide_idx] = False
             continue
         normal = normal / normal_length
         span = bypass_r - bypass_l
@@ -321,6 +388,14 @@ def update_tendon_guide_active(
         span = span - wp.dot(span, normal) * normal
         candidate_offset = candidate_offset - wp.dot(candidate_offset, normal) * normal
         span_length_sq = wp.dot(span, span)
+        # An undefined or unconverged bypass cannot decide a topology change.
+        if (
+            not wp.isfinite(span_length_sq)
+            or span_length_sq <= 1.0e-12
+            or not wp.isfinite(bypass_step)
+            or bypass_step > 1.0e-5 * wp.length(next_center - prev_center)
+        ):
+            continue
         active = False
         if span_length_sq > 1.0e-12:
             alpha = wp.dot(candidate_offset, span) / span_length_sq
@@ -328,6 +403,8 @@ def update_tendon_guide_active(
             span_normal = wp.cross(normal, span) / wp.sqrt(span_length_sq)
             # Orient the signed distance so it is positive on the inactive side.
             distance = wp.dot(candidate_offset - closest_offset, span_normal)
+            if not wp.isfinite(alpha) or not wp.isfinite(distance):
+                continue
             if tendon_guide_orientation[guide_idx] <= 0:
                 distance = -distance
             activation_radius = tendon_guide_radius[guide_idx]
@@ -572,8 +649,6 @@ def prepare_tendon_route(
             tendon_guide_active_step[guide_idx] = True
         if tendon_guide_type[guide_idx] != int(TendonGuideType.ROLLER):
             continue
-        if tendon_guide_route_rest_length[guide_idx] <= 0.0:
-            continue
         if tendon_guide_active[guide_idx]:
             continue
 
@@ -646,8 +721,26 @@ def _tendon_segment_attachment_points(
     both_rolling = (type_l == int(TendonGuideType.ROLLER)) and (type_r == int(TendonGuideType.ROLLER))
 
     if both_rolling and radius_l > 0.0 and radius_r > 0.0:
+        planar_l, planar_r, tangent_status = _planar_circle_tangents(
+            center_l, center_r, normal_l, normal_r, radius_l, radius_r, orient_l, orient_r
+        )
+        if tangent_status > 0:
+            return planar_l, planar_r
         new_al = seed_al
         new_ar = seed_ar
+        # Keep accepted attachments through a temporarily impossible tangent.
+        # This preserves history, not physical validity; the accepted-pose
+        # diagnostic reports the missing tangent. Center seeds are not history.
+        if tangent_status < 0:
+            radial_l = seed_al - center_l
+            radial_r = seed_ar - center_r
+            if (
+                wp.abs(wp.dot(radial_l, normal_l)) <= 1.0e-3 * radius_l
+                and wp.abs(wp.dot(radial_r, normal_r)) <= 1.0e-3 * radius_r
+                and wp.abs(wp.length(radial_l) - radius_l) <= 1.0e-3 * radius_l
+                and wp.abs(wp.length(radial_r) - radius_r) <= 1.0e-3 * radius_r
+            ):
+                return new_al, new_ar
         for _iter in range(10):
             previous_al = new_al
             previous_ar = new_ar
@@ -972,6 +1065,32 @@ def update_tendon_cone_rows(
     if seg_left < 0 or seg_right < 0:
         return
 
+    if is_rolling and report_unsupported_wrap != 0:
+        # Each roller owns the diagnostic for its outgoing roller-to-roller span.
+        next_guide = seg_active_guide_r[seg_right]
+        if tendon_guide_type[next_guide] == int(TendonGuideType.ROLLER):
+            pose_l = tendon_body_pose(body_q, tendon_guide_body[guide_idx])
+            pose_r = tendon_body_pose(body_q, tendon_guide_body[next_guide])
+            _unused_l, _unused_r, tangent_status = _planar_circle_tangents(
+                wp.transform_point(pose_l, tendon_guide_offset[guide_idx]),
+                wp.transform_point(pose_r, tendon_guide_offset[next_guide]),
+                wp.transform_vector(pose_l, tendon_guide_axis[guide_idx]),
+                wp.transform_vector(pose_r, tendon_guide_axis[next_guide]),
+                tendon_guide_radius[guide_idx],
+                tendon_guide_radius[next_guide],
+                tendon_guide_orientation[guide_idx],
+                tendon_guide_orientation[next_guide],
+            )
+            if tangent_status < 0:
+                wp.printf(
+                    "ERROR: Tendon %d ROLLER guides %d and %d have no nonzero common tangent "
+                    "for the authored winding. Cable rest length and tension may be invalid. "
+                    "Correct the guide orientation or route geometry.\n",
+                    tendon_id,
+                    guide_idx,
+                    next_guide,
+                )
+
     is_dynamic = (tendon_guide_flags[guide_idx] & int(TendonGuideFlags.DYNAMIC)) != 0
     if is_rolling and not is_dynamic and report_unsupported_wrap != 0:
         body = tendon_guide_body[guide_idx]
@@ -1083,7 +1202,6 @@ def solve_tendon_material(
     seg_active_damping: wp.array[float],
     tendon_guide_active: wp.array[bool],
     tendon_guide_active_step: wp.array[bool],
-    tendon_guide_route_rest_length: wp.array[float],
     seg_attachment_l: wp.array[wp.vec3],
     seg_attachment_r: wp.array[wp.vec3],
     seg_length: wp.array[float],
@@ -1136,8 +1254,6 @@ def solve_tendon_material(
     for i in range(1, num_guides - 1):
         guide_idx = guide_start + i
         if tendon_guide_type[guide_idx] != int(TendonGuideType.ROLLER):
-            continue
-        if tendon_guide_route_rest_length[guide_idx] <= 0.0:
             continue
         if not tendon_guide_active[guide_idx]:
             continue

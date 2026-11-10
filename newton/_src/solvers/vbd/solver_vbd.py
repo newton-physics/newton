@@ -4619,7 +4619,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.tendon_segment_active_damping,
                 self.tendon_guide_active,
                 self.tendon_guide_active_step,
-                self.tendon_guide_route_rest_length,
                 self.tendon_segment_attachment_l,
                 self.tendon_segment_attachment_r,
                 self.tendon_segment_length,

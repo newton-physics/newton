@@ -137,6 +137,22 @@ def _segment_attachment_points_np(
     rolling = int(TendonGuideType.ROLLER)
 
     if type_l == rolling and type_r == rolling and radius_l > 0.0 and radius_r > 0.0:
+        # Match the exact planar construction in _planar_circle_tangents.
+        delta = new_r - new_l
+        distance = float(np.linalg.norm(delta))
+        n_l = np.asarray(normal_l, dtype=np.float64)
+        n_r = np.asarray(normal_r, dtype=np.float64)
+        n_l = n_l / max(float(np.linalg.norm(n_l)), 1.0e-12)
+        n_r = n_r / max(float(np.linalg.norm(n_r)), 1.0e-12)
+        alignment = float(np.dot(n_l, n_r))
+        if np.dot(np.cross(n_l, n_r), np.cross(n_l, n_r)) <= 1.0e-12 and abs(np.dot(delta, n_l)) <= 1.0e-6 * distance:
+            side = 1.0 if orient_l * orient_r * alignment > 0.0 else -1.0
+            radius_delta = radius_l - side * radius_r
+            if distance > abs(radius_delta):
+                along = delta / distance
+                h = radius_delta / distance
+                radial = h * along - orient_l * np.sqrt(max(0.0, 1.0 - h * h)) * np.cross(n_l, along)
+                return new_l + radius_l * radial, new_r + side * radius_r * radial
         for _iter in range(10):
             new_r = _tangent_point_circle_np(new_l, center_r, radius_r, normal_r, orient_r)
             new_l = _tangent_point_circle_np(new_r, center_l, radius_l, normal_l, -orient_l)
@@ -730,7 +746,6 @@ class TendonStateMixin:
                 self.tendon_segment_active_damping,
                 self.tendon_guide_active,
                 self.tendon_guide_active_step,
-                self.tendon_guide_route_rest_length,
                 self.tendon_segment_attachment_l,
                 self.tendon_segment_attachment_r,
                 self.tendon_segment_length,

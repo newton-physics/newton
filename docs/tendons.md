@@ -251,6 +251,12 @@ and reject unsupported semantics rather than silently discard them.
   diagnostic from the accepted pose. The diagnostic does not repair the route.
 - Dynamic candidates cannot change their authored order or attach between
   non-neighboring guides.
+- Coplanar circular neighbors use an exact common tangent. Overlapping circles
+  can have a valid external tangent; an internal tangent requires their center
+  distance to exceed the sum of their radii. A missing or collapsed bypass does
+  not change a dynamic guide's active state. An impossible accepted roller span
+  emits a diagnostic; preserving its previous attachment points does not make
+  that geometry physically valid.
 - Native tendon data is not imported from USD/MuJoCo.
 - Tendon actuation is not part of {class}`~newton.Control`, and tendon
   diagnostics are solver-owned rather than part of {class}`~newton.State`.
