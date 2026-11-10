@@ -287,6 +287,51 @@ def update_batched_condition(
     condition[0] = wp.where(stop, 0, 1)
 
 
+@wp.kernel
+def _update_environment_convergence(
+    residual_threshold: float,
+    l2_tolerance_scales: wp.array[float],
+    residual: wp.array2d[float],
+    status: wp.array[int],
+    accepted_residual: wp.array2d[float],
+):
+    environment = wp.tid()
+    # 0: still iterating; 1: newly converged; 2: saved at an earlier check.
+    if status[environment] == 0:
+        accepted_residual[0, environment] = residual[0, environment]
+        accepted_residual[1, environment] = residual[1, environment]
+        scale = l2_tolerance_scales[environment]
+        if (
+            residual[0, environment] < residual_threshold * scale * scale
+            and residual[1, environment] < residual_threshold
+        ):
+            status[environment] = 1
+    else:
+        status[environment] = 2
+        # Continued iteration must not affect stopping or reported residuals.
+        residual[0, environment] = accepted_residual[0, environment]
+        residual[1, environment] = accepted_residual[1, environment]
+
+
+@wp.kernel
+def _copy_converged_environment_state(
+    restore: bool,
+    environment_offsets: wp.array[int],
+    status: wp.array[int],
+    values: wp.array[Any],
+    saved_values: wp.array[Any],
+):
+    environment, lane = wp.tid()
+    if (restore and status[environment] != 0) or (not restore and status[environment] == 1):
+        begin = environment_offsets[environment] + lane
+        end = environment_offsets[environment + 1]
+        for node in range(begin, end, wp.block_dim()):
+            if restore:
+                values[node] = saved_values[node]
+            else:
+                saved_values[node] = values[node]
+
+
 def apply_rigidity_operator(rigidity_operator, delta_collider_impulse, collider_velocity, delta_body_qd):
     """Apply collider rigidity feedback to the current collider velocities.
 
@@ -339,6 +384,8 @@ class MomentumData:
 
     inv_volume: wp.array
     velocity: wp.array[wp.vec3]
+    velocity_environment_offsets: wp.array[int] | None = None
+    """Velocity-node offsets delimiting independent environments, or ``None`` for a shared solve."""
 
 
 @dataclass
@@ -433,6 +480,8 @@ class CollisionData:
     colored_cell_offsets: wp.array[int] | None = None
     colored_cell_rows: wp.array[int] | None = None
     colored_velocity_nodes_per_cell: int = 0
+    collider_environment_offsets: wp.array[int] | None = None
+    """Collider-node offsets delimiting independent environments, or ``None`` for a shared solve."""
 
 
 class _DelassusOperator:
@@ -1723,6 +1772,81 @@ def _nonlinear_solver_result_norms(residual, l2_tolerance_scale: float | np.ndar
     )
 
 
+class _EnvironmentConvergence:
+    """Retain each environment's first converged iterate while the batch finishes.
+
+    Save all primary unknowns together, before stress/strain postprocessing.
+    Environments that exhaust the iteration budget keep their final iterate;
+    unmapped nodes in fixed-capacity arrays are never copied.
+    """
+
+    def __init__(
+        self,
+        momentum: MomentumData,
+        rheology: RheologyData,
+        collision: CollisionData,
+        tolerance: float,
+        l2_tolerance_scales: wp.array[float],
+        temporary_store: fem.TemporaryStore | None,
+    ):
+        self.device = momentum.velocity.device
+        self.environment_count = rheology.strain_environment_offsets.shape[0] - 1
+        self.block_dim = 256 if self.device.is_cuda else 1
+        self.status = fem.borrow_temporary(temporary_store, shape=self.environment_count, dtype=int, device=self.device)
+        self.status.zero_()
+        self.residual = fem.borrow_temporary(
+            temporary_store, shape=(2, self.environment_count), dtype=float, device=self.device
+        )
+        self.update_launch = wp.launch(
+            _update_environment_convergence,
+            dim=self.environment_count,
+            inputs=[tolerance * tolerance, l2_tolerance_scales, self.residual, self.status, self.residual],
+            device=self.device,
+            record_cmd=True,
+        )
+
+        fields = [
+            (momentum.velocity, momentum.velocity_environment_offsets),
+            (rheology.stress, rheology.strain_environment_offsets),
+            (collision.collider_impulse, collision.collider_environment_offsets),
+        ]
+        if collision.rigidity_operator is not None:
+            fields.append((collision.collider_velocities, collision.collider_environment_offsets))
+
+        self.saved_fields = []
+        self.copy_launches = []
+        for values, offsets in fields:
+            saved_values = fem.borrow_temporary_like(values, temporary_store)
+            self.saved_fields.append(saved_values)
+            self.copy_launches.append(
+                wp.launch(
+                    _copy_converged_environment_state,
+                    dim=(self.environment_count, self.block_dim),
+                    inputs=[False, offsets, self.status, values, saved_values],
+                    block_dim=self.block_dim,
+                    device=self.device,
+                    record_cmd=True,
+                )
+            )
+
+    def update(self, residual):
+        self.update_launch.set_param_at_index(2, residual)
+        self.update_launch.launch()
+        for launch in self.copy_launches:
+            launch.launch()
+
+    def restore(self):
+        for launch in self.copy_launches:
+            launch.set_param_at_index(0, True)
+            launch.launch()
+
+    def release(self):
+        self.status.release()
+        self.residual.release()
+        for values in self.saved_fields:
+            values.release()
+
+
 def _run_solver_loop(
     rheology_solver: _RheologySolver,
     contact_solver: _ContactSolver,
@@ -1734,6 +1858,17 @@ def _run_solver_loop(
     temporary_store: fem.TemporaryStore,
 ):
     solve_graph = None
+    convergence = None
+    if tolerance > 0.0 and rheology_solver.rheology.strain_environment_offsets is not None:
+        convergence = _EnvironmentConvergence(
+            rheology_solver.momentum,
+            rheology_solver.rheology,
+            contact_solver.collision,
+            tolerance,
+            l2_tolerance_scale,
+            temporary_store,
+        )
+
     if use_graph:
         solve_granularity = 5
 
@@ -1748,6 +1883,8 @@ def _run_solver_loop(
                 contact_solver.solve()
                 rheology_solver.solve()
             residual = rheology_solver.eval_residual()
+            if convergence is not None:
+                convergence.update(residual)
             if rheology_solver.rheology.strain_environment_offsets is None:
                 wp.launch(
                     update_condition,
@@ -1789,7 +1926,9 @@ def _run_solver_loop(
             wp.capture_launch(solve_graph)
 
             if verbose:
-                residual = rheology_solver.eval_residual().numpy()
+                residual = (
+                    rheology_solver.eval_residual().numpy() if convergence is None else convergence.residual.numpy()
+                )
                 host_tolerance_scale = (
                     l2_tolerance_scale
                     if rheology_solver.rheology.strain_environment_offsets is None
@@ -1819,7 +1958,10 @@ def _run_solver_loop(
                 contact_solver.solve()
                 rheology_solver.solve()
 
-            residual = rheology_solver.eval_residual().numpy()
+            residual = rheology_solver.eval_residual()
+            if convergence is not None:
+                convergence.update(residual)
+            residual = residual.numpy()
             res_l2, res_linf = _nonlinear_solver_result_norms(residual, host_tolerance_scale)
 
             if verbose:
@@ -1832,6 +1974,10 @@ def _run_solver_loop(
                 )
             if res_l2 < tolerance and res_linf < tolerance:
                 break
+
+    if convergence is not None:
+        convergence.restore()
+        convergence.release()
 
     return solve_graph
 
@@ -1862,6 +2008,8 @@ def solve_rheology(
     - Iterates until the residual on the stress update falls below
       ``tolerance`` or ``max_iterations`` is reached. Optionally records and
       executes CUDA graphs to reduce CPU overhead.
+      With separate environments, retains each environment's first converged
+      iterate while the remaining environments finish.
 
     On exit, the stress field is rotated back to world space and the elastic
     strain increment and plastic strain delta fields are produced.
