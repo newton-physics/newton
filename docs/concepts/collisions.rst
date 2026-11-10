@@ -2306,6 +2306,13 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - 1.0
      - :attr:`~ModelBuilder.ShapeConfig.mu`
      - :attr:`~Model.shape_material_mu`
+   * - ``mu_static``
+     - Coefficient of static (break-away) friction; ``None`` keeps a single
+       coefficient (``mu``), and a value below ``mu`` is rejected. Not used by
+       any built-in solver yet.
+     - None
+     - :attr:`~ModelBuilder.ShapeConfig.mu_static`
+     - :attr:`~Model.shape_material_mu_static`
    * - ``ke``
      - Normal contact stiffness
      - 2.5e3
@@ -2480,7 +2487,12 @@ attributes. The contact response attributes map to :class:`~ModelBuilder.ShapeCo
 fields as follows: ``newton:contactStiffness`` → ``ke``,
 ``newton:contactDamping`` → ``kd``, ``newton:contactFrictionGain`` → ``kf``,
 ``newton:contactAdhesion`` → ``ka``. A value of ``-inf`` means "use the engine's
-default" (see :ref:`Contact Material Properties`).
+default" (see :ref:`Contact Material Properties`). ``physics:dynamicFriction`` maps
+to ``mu``; ``physics:staticFriction`` maps to ``mu_static`` when it is larger than
+the dynamic coefficient (the material below imports ``mu=0.8``, ``mu_static=1.0``),
+and otherwise leaves a single coefficient (a positive value below the dynamic one is
+reported with a warning). A bound material supplies both coefficients; only colliders
+without one take ``mu`` and ``mu_static`` from the builder defaults.
 
 .. code-block:: usda
 
@@ -2550,6 +2562,17 @@ This enables two mechanisms:
 The overhead is small: fingerprint storage per contact, modified packing in
 the reduction, and one radix sort + gather pass per frame.  The sort is
 fully CUDA-graph-capturable.
+
+The key keeps bit 63 clear, so the two shape indices and the sub-key share 63
+bits.  Models with only primitive and convex shapes use a 3-bit sub-key, which
+leaves room for ``2**30`` shapes.  Models with meshes, heightfields,
+hydroelastic shapes or primitive shapes with an SDF use a 23-bit sub-key and
+fit at most ``2**20`` shapes;
+above that, deterministic mode and contact matching raise ``ValueError`` at
+construction.  A deterministic :class:`~newton.geometry.NarrowPhase` built
+without ``shape_aabb_lower``/``shape_aabb_upper`` doesn't know the shape count,
+so it uses 20-bit shape fields and raises at launch for more than ``2**20``
+shapes.
 
 Hydroelastic contacts are covered by the same two mechanisms, using the
 marching-cubes voxel and face index as the fingerprint.  They additionally need

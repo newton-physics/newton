@@ -555,7 +555,6 @@ class ViewerGL(ViewerBase):
         self.wind = None
 
         # State caching for selection panel
-        self._last_state = None
         self._last_control = None
 
         # Packed GPU arrays for batched shape transform computation

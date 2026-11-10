@@ -817,6 +817,16 @@ class TestViewerRTXRendering(unittest.TestCase):
                     self.assertIs(viewer.get_frame(output=target), target)
                     np.testing.assert_array_equal(target.numpy(), rgb)
 
+                    for frame_index, far in enumerate((1.0, 50.0), start=3):
+                        viewer.camera.far = far
+                        viewer._camera_dirty = True
+                        viewer.begin_frame(frame_index / 60)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                        rgb = viewer.get_frame().numpy()
+                        red_pixels = (rgb[:, :, 0] > 32) & (rgb[:, :, 1] < rgb[:, :, 0] // 2)
+                        self.assertEqual(bool(np.any(red_pixels)), far > 2.0)
+
                 finally:
                     viewer.close()
 

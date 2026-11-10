@@ -1,0 +1,1 @@
+Fix USD `MjcEqualityWeldAPI` welds holding the wrong point when `localPose1Position` is nonzero or the weld targets a site: the imported `relpose` position is now where the anchor sits in body0's frame when the joint frames coincide, which is what MuJoCo's weld enforces, instead of body1's origin.

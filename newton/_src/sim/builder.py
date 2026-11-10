@@ -202,6 +202,14 @@ _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
     "limits of ModelBuilder.JointDofConfig instead."
 )
+_ADD_MUSCLE_DEPRECATION_MSG = (
+    "ModelBuilder.add_muscle() is deprecated in Newton 1.9 and will be removed in a future release. "
+    "Legacy muscles ignore their parameters and are only evaluated by SolverSemiImplicit. "
+    "Use SolverMuJoCo muscle actuators instead: import MJCF <muscle> actuators, or build "
+    "them with newton.solvers.mujoco.add_tendon_spatial() and "
+    'add_actuator_general(..., dyntype="muscle", gaintype="muscle", biastype="muscle") '
+    "with explicit muscle dynprm, gainprm, and biasprm values."
+)
 _REPLICATE_WORLD_COUNT_DEPRECATION_MSG = (
     "ModelBuilder.replicate(world_count=...) is deprecated in Newton 1.8; use copy_count=... instead."
 )
@@ -1028,7 +1036,13 @@ class ModelBuilder:
         :class:`~newton.solvers.SolverFeatherstone`. ``0`` disables adhesion. See
         :ref:`Contact friction gain and adhesion`."""
         mu: float = 1.0
-        """The coefficient of friction."""
+        """The coefficient of friction [dimensionless]; the dynamic (kinetic) coefficient when
+        :attr:`mu_static` is set."""
+        mu_static: float | None = None
+        """The coefficient of static friction [dimensionless], the break-away threshold for sticking
+        contacts. ``None`` uses :attr:`mu` (no static/dynamic distinction); a set value must not be
+        below :attr:`mu`, so code that overrides :attr:`mu` alone has to resolve this field as well.
+        No built-in solver models stick-slip friction yet; the value is stored for solvers that do."""
         restitution: float = 0.0
         """The coefficient of restitution.
 
@@ -1181,6 +1195,14 @@ class ModelBuilder:
                 )
             if not math.isfinite(self.density) or self.density < 0.0:
                 raise ValueError(f"density must be finite and >= 0 (got {self.density}).")
+            if self.mu_static is not None:
+                if not math.isfinite(self.mu_static) or self.mu_static < 0.0:
+                    raise ValueError(f"mu_static must be finite and >= 0 (got mu_static={self.mu_static}).")
+                if self.mu_static < self.mu:
+                    raise ValueError(
+                        f"mu_static must be >= mu (got mu_static={self.mu_static}, mu={self.mu}). "
+                        "Leave mu_static as None for a single friction coefficient."
+                    )
 
             if self.sdf_target_voxel_size is not None and (
                 not math.isfinite(self.sdf_target_voxel_size) or self.sdf_target_voxel_size <= 0.0
@@ -2036,6 +2058,10 @@ class ModelBuilder:
         """Friction coefficients accumulated for :attr:`Model.shape_material_mu`."""
         self.shape_material_restitution: list[float] = []
         """Restitution coefficients accumulated for :attr:`Model.shape_material_restitution`."""
+        self.shape_material_mu_static: list[float | None] = []
+        """Static friction coefficients accumulated for :attr:`Model.shape_material_mu_static`. ``None`` means
+        "same as ``mu``" and is resolved in :meth:`finalize`, so a direct edit of :attr:`shape_material_mu` keeps a
+        single coefficient for such shapes; an explicit value is checked against the final ``mu`` there."""
         self.shape_material_mu_torsional: list[float] = []
         """Torsional friction coefficients accumulated for :attr:`Model.shape_material_mu_torsional`."""
         self.shape_material_mu_rolling: list[float] = []
@@ -2178,15 +2204,35 @@ class ModelBuilder:
 
         # muscles
         self.muscle_start: list[int] = []
-        """Muscle waypoint start indices accumulated for :attr:`Model.muscle_start`."""
+        """Muscle waypoint start indices accumulated for :attr:`Model.muscle_start`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
         self.muscle_params: list[tuple[float, float, float, float, float]] = []
-        """Muscle parameter rows accumulated for :attr:`Model.muscle_params`."""
+        """Muscle parameter rows accumulated for :attr:`Model.muscle_params`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
         self.muscle_activations: list[float] = []
-        """Muscle activations accumulated for :attr:`Model.muscle_activations`."""
+        """Muscle activations accumulated for :attr:`Model.muscle_activations`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
         self.muscle_bodies: list[int] = []
-        """Muscle waypoint body indices accumulated for :attr:`Model.muscle_bodies`."""
+        """Muscle waypoint body indices accumulated for :attr:`Model.muscle_bodies`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
         self.muscle_points: list[Vec3] = []
-        """Muscle waypoint local offsets accumulated for :attr:`Model.muscle_points`."""
+        """Muscle waypoint local offsets accumulated for :attr:`Model.muscle_points`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
 
         # rigid bodies
         self.body_mass: list[float] = []
@@ -3610,8 +3656,10 @@ class ModelBuilder:
 
     @property
     def muscle_count(self):
-        """
-        The number of muscles in the model.
+        """The number of muscles in the model.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
         """
         return len(self.muscle_start)
 
@@ -3744,8 +3792,9 @@ class ModelBuilder:
             To approximate mesh shapes, call
             :meth:`~newton.ModelBuilder.approximate_meshes` on ``builder`` before
             passing it here. Replication copies mesh references, so approximating
-            first yields a single simplified copy shared across all copies;
-            approximating afterwards allocates one copy per replicated shape.
+            first simplifies each mesh once and shares the result across all copies;
+            approximating afterwards produces the same shared result but processes
+            every replicated shape.
 
         Args:
             builder: The builder to replicate. All entities from this builder will be copied.
@@ -4886,9 +4935,11 @@ class ModelBuilder:
                 colliders on bodies with visual-only geometry. Default is False.
             parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
-                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-                equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
-                and finalize under ``model.mujoco.equality_constraint_*``.
+                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
+                becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
+                and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+                ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
+                ``model.mujoco.equality_constraint_*``.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
             schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
                 Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -4963,8 +5014,10 @@ class ModelBuilder:
             Particle widths are diameters. Newton converts each radius as
             ``width / 2`` after applying stage units and the prim's uniform world
             scale; converted widths and radii are in meters. Authored
-            ``physics:masses`` take precedence over body mass or density, then
-            material density. Density-derived mass uses
+            ``newton:masses`` take precedence over body mass or density, then
+            material density. The deprecated ``physics:masses`` name is read,
+            with a deprecation warning, when ``newton:masses`` is unauthored.
+            Density-derived mass uses
             ``physics:density * width**3``; converted masses are in kilograms.
             Without widths, it uses ``ModelBuilder.default_particle_radius`` and a
             support width of twice that radius. Non-uniform scale or shear is
@@ -5231,11 +5284,13 @@ class ModelBuilder:
             verbose: If True, log additional information about parsing the MJCF.
             skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
-                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-                equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
-                and finalize under ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or
-                target a multi-DoF joint (such as joints sharing a body) are preserved this way even when True,
-                with a :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
+                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
+                becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
+                and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+                ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
+                ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or target a multi-DoF
+                joint (such as joints sharing a body) are preserved this way even when True, with a
+                :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
             convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
                 Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
                 an identity rest orientation. Default is False.
@@ -7838,6 +7893,41 @@ class ModelBuilder:
             raise NotImplementedError("collapse_fixed_joints() does not support bodies with variants.")
         joints_to_keep = set(joints_to_keep or ())
 
+        # A FIXED joint outside every articulation whose child also has an articulated joint closes a loop (for
+        # example the weld of a link-break loop). The traversal below either merges across it or drops it, which
+        # opens the loop, so warn instead of failing silently.
+        incoming = {}
+        for j in range(self.joint_count):
+            incoming.setdefault(self.joint_child[j], []).append(j)
+        # A converted MuJoCo weld keeps its equality row, which SolverMuJoCo enforces and SolverSteel rejects once
+        # collapsing drops the joint (target kind 1 is a joint).
+        target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
+        target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
+        equality_joints = set()
+        if target_kind_attr is not None and target_attr is not None and target_attr.values:
+            for eq_idx, target in enumerate(target_attr.values):
+                kinds = target_kind_attr.values
+                if target is not None and kinds and eq_idx < len(kinds) and kinds[eq_idx] is not None:
+                    if int(kinds[eq_idx]) == 1:
+                        equality_joints.add(int(target))
+        loop_welds = [
+            j
+            for j in range(self.joint_count)
+            if self.joint_type[j] == JointType.FIXED
+            and self.joint_articulation[j] < 0
+            and j not in equality_joints
+            and any(k != j and self.joint_articulation[k] >= 0 for k in incoming[self.joint_child[j]])
+        ]
+        if loop_welds:
+            labels = ", ".join(repr(self.joint_label[j]) for j in loop_welds)
+            warnings.warn(
+                f"collapse_fixed_joints() does not preserve FIXED loop-closing joints ({labels}): it may merge or "
+                "drop them, which opens their loops. Build or import link-break models without collapsing fixed "
+                "joints (collapse_fixed_joints=False).",
+                NewtonWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
+
         original_counts = self._builder_merge_counts(self)
         original_counts.update(once=1, world=max(1, self.world_count))
 
@@ -8252,6 +8342,16 @@ class ModelBuilder:
                 # If no group was assigned, use default -1
                 self.body_world.append(-1)
 
+        def remap_body_frame(body: int) -> tuple[int, wp.transform | None]:
+            """Return the final body index and the old-to-surviving frame transform.
+
+            The DFS records the full transform across each fixed-joint chain.
+            Retained bodies and world (-1) need no geometry transformation.
+            """
+            if body in body_merged_parent:
+                return body_remap[body_merged_parent[body]], body_merged_transform[body]
+            return body_remap[body], None
+
         for spec in self._deformable_visual_meshes:
             if spec["kind"] != DeformableVisualMesh.Kind.BODY:
                 continue
@@ -8536,13 +8636,10 @@ class ModelBuilder:
 
         # Keep tendon contact geometry in the same world frame when its body is merged.
         for guide_idx, old_body in enumerate(self.tendon_guide_body):
-            if old_body in body_remap:
-                self.tendon_guide_body[guide_idx] = body_remap[old_body]
+            self.tendon_guide_body[guide_idx], merge_xform = remap_body_frame(old_body)
+            if merge_xform is None:
                 continue
 
-            merged_parent = body_merged_parent[old_body]
-            merge_xform = body_merged_transform[old_body]
-            self.tendon_guide_body[guide_idx] = body_remap[merged_parent]
             self.tendon_guide_offset[guide_idx] = wp.transform_point(
                 merge_xform, axis_to_vec3(self.tendon_guide_offset[guide_idx])
             )
@@ -8594,14 +8691,11 @@ class ModelBuilder:
         for i in range(self._equality_constraint_count):
             old_body1 = _at(body1_values, i, body1_attr.default)
             old_body2 = _at(body2_values, i, body2_attr.default)
-            body1_was_merged = old_body1 in body_merged_parent
-            body2_was_merged = old_body2 in body_merged_parent
-
             constraint_type = _at(type_values, i, type_attr.default)
 
             # Transform anchor/relpose from merged body's frame to parent body's frame
-            if body1_was_merged:
-                merge_xform = body_merged_transform[old_body1]
+            if old_body1 in body_merged_parent:
+                _, merge_xform = remap_body_frame(old_body1)
                 if constraint_type == EqType.CONNECT:
                     anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                     while len(anchor_values) <= i:
@@ -8613,8 +8707,8 @@ class ModelBuilder:
                         relpose_values.append(None)
                     relpose_values[i] = merge_xform * relpose
 
-            if body2_was_merged and constraint_type == EqType.WELD:
-                merge_xform = body_merged_transform[old_body2]
+            if old_body2 in body_merged_parent and constraint_type == EqType.WELD:
+                _, merge_xform = remap_body_frame(old_body2)
                 anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                 relpose = _at(relpose_values, i, relpose_attr.default)
                 while len(anchor_values) <= i:
@@ -8622,7 +8716,12 @@ class ModelBuilder:
                 while len(relpose_values) <= i:
                     relpose_values.append(None)
                 anchor_values[i] = wp.transform_point(merge_xform, anchor)
-                relpose_values[i] = relpose * wp.transform_inverse(merge_xform)
+                # relpose.p is the anchor's held position in body1's frame, which body2's merge leaves in
+                # place; only body2's orientation relative to body1 picks up the merge.
+                relpose_values[i] = wp.transform(
+                    wp.transform_get_translation(relpose),
+                    wp.transform_get_rotation(relpose) * wp.quat_inverse(wp.transform_get_rotation(merge_xform)),
+                )
 
             old_joint1 = _at(joint1_values, i, joint1_attr.default)
             old_joint2 = _at(joint2_values, i, joint2_attr.default)
@@ -8694,14 +8793,11 @@ class ModelBuilder:
         # frame so the attachment keeps its world-space position.
         for i in range(len(self.attachment_particle_body_body)):
             old_body = self.attachment_particle_body_body[i]
-            if old_body in body_merged_parent:
-                merge_xform = body_merged_transform[old_body]
+            self.attachment_particle_body_body[i], merge_xform = remap_body_frame(old_body)
+            if merge_xform is not None:
                 self.attachment_particle_body_body_point[i] = wp.transform_point(
                     merge_xform, self.attachment_particle_body_body_point[i]
                 )
-                self.attachment_particle_body_body[i] = body_remap[body_merged_parent[old_body]]
-            else:
-                self.attachment_particle_body_body[i] = body_remap[old_body]
 
         # Generic entity-reference remap for any custom attribute that points at bodies or joints
         # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
@@ -8715,10 +8811,9 @@ class ModelBuilder:
                 idx = int(value)
             except (TypeError, ValueError):
                 return value
-            if idx in body_remap:
-                return body_remap[idx]
-            if idx in body_merged_parent:
-                return body_remap[body_merged_parent[idx]]
+            if idx in body_remap or idx in body_merged_parent:
+                new_body, _ = remap_body_frame(idx)
+                return new_body
             return value
 
         def _remap_joint_reference(value: Any) -> Any:
@@ -8785,7 +8880,27 @@ class ModelBuilder:
     def add_muscle(
         self, bodies: list[int], positions: list[Vec3], f0: float, lm: float, lt: float, lmax: float, pen: float
     ) -> int:
-        """Adds a muscle-tendon activation unit.
+        """Adds a legacy muscle-tendon activation unit.
+
+        .. deprecated:: 1.9
+            Legacy muscles will be removed in a future release. Only
+            :class:`~newton.solvers.SolverSemiImplicit` evaluates them, and it
+            ignores the muscle parameters, applying a force of magnitude
+            ``Control.muscle_activations`` along each waypoint segment. Use
+            :class:`~newton.solvers.SolverMuJoCo` muscle actuators instead,
+            either imported from MJCF ``<muscle>`` actuators or built in code:
+            route a spatial tendon through sites on the waypoint bodies with
+            :func:`newton.solvers.mujoco.add_tendon_spatial`, then actuate it
+            with :func:`newton.solvers.mujoco.add_actuator_general` using
+            :meth:`ActuatorTarget.tendon() <newton.solvers.mujoco.ActuatorTarget.tendon>`
+            and ``dyntype``, ``gaintype`` and ``biastype`` set to ``"muscle"``.
+            Pass explicit muscle parameters, since MuJoCo rejects the generic
+            defaults of :func:`~newton.solvers.mujoco.add_actuator_general` for
+            muscles. MuJoCo's ``<muscle>`` defaults are
+            ``dynprm=(0.01, 0.04)`` and
+            ``gainprm = biasprm = (0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2)``,
+            which hold range, force, scale, lmin, lmax, vmax, fpmax and fvmax.
+            A negative force derives the peak force from ``scale``.
 
         Args:
             bodies: A list of body indices for each waypoint
@@ -8799,9 +8914,8 @@ class ModelBuilder:
         Returns:
             The index of the muscle in the model
 
-        .. note:: The simulation support for muscles is in progress and not yet fully functional.
-
         """
+        warnings.warn(_ADD_MUSCLE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
 
         n = len(bodies)
 
@@ -8979,6 +9093,7 @@ class ModelBuilder:
         self.shape_material_kf.append(cfg.kf)
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
+        self.shape_material_mu_static.append(cfg.mu_static)
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_material_mu_torsional.append(cfg.mu_torsional)
         self.shape_material_mu_rolling.append(cfg.mu_rolling)
@@ -9825,9 +9940,14 @@ class ModelBuilder:
             :meth:`~newton.ModelBuilder.add_world`, not to the parent builder
             afterwards. Replication copies mesh *references*, not mesh data, so
             ``N`` worlds share one :class:`~newton.Mesh` object. Approximating
-            first produces a single simplified copy that is shared across all
-            replicated worlds; approximating afterwards allocates one copy per
-            replicated shape — up to ``N`` times the memory for identical data.
+            first simplifies each mesh once and shares the result across all
+            replicated worlds; approximating afterwards produces the same shared
+            result but processes every replicated shape.
+
+            Shapes that share one source :class:`~newton.Mesh` object receive one
+            shared replacement mesh, so copy a shape's
+            :attr:`~newton.ModelBuilder.shape_source` entry
+            before modifying it for that shape alone.
 
             Recommended:
 
@@ -9957,6 +10077,9 @@ class ModelBuilder:
                     import trimesh
 
                 decompositions = {}
+                # Shapes sharing one source mesh, e.g. USD instances, share its convex replacement and parts.
+                replacement_meshes: dict[int, tuple[Mesh, Mesh]] = {}
+                part_meshes: dict[tuple[int, int | None], list[Mesh]] = {}
                 filtered_shapes_by_shape: dict[int, set[int]] = {}
                 convex_parts_by_shape: dict[int, list[int]] = {}
                 source_shapes = set(shape_indices)
@@ -10024,12 +10147,16 @@ class ModelBuilder:
                         decomposition_failed = True
                         continue
                     # note we need to copy the mesh to avoid modifying the original mesh
-                    replacement_mesh = self.shape_source[shape].copy(
-                        vertices=decomposition[0][0], indices=decomposition[0][1]
-                    )
-                    # Decomposition outputs do not provide attributes remapped to the new vertices.
-                    replacement_mesh._normals = None
-                    replacement_mesh._uvs = None
+                    cached_replacement = replacement_meshes.get(id(mesh))
+                    if cached_replacement is None:
+                        replacement_mesh = mesh.copy(vertices=decomposition[0][0], indices=decomposition[0][1])
+                        # Decomposition outputs do not provide attributes remapped to the new vertices.
+                        replacement_mesh._normals = None
+                        replacement_mesh._uvs = None
+                        # Keep the source alive so its id cannot be reused by a new mesh.
+                        replacement_meshes[id(mesh)] = (mesh, replacement_mesh)
+                    else:
+                        replacement_mesh = cached_replacement[1]
                     self.shape_source[shape] = replacement_mesh
                     # mark as convex mesh type
                     self.shape_type[shape] = GeoType.CONVEX_MESH
@@ -10050,6 +10177,7 @@ class ModelBuilder:
                             kf=self.shape_material_kf[shape],
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
+                            mu_static=self.shape_material_mu_static[shape],
                             restitution=self.shape_material_restitution[shape],
                             mu_torsional=self.shape_material_mu_torsional[shape],
                             mu_rolling=self.shape_material_mu_rolling[shape],
@@ -10063,12 +10191,19 @@ class ModelBuilder:
                         cfg.gap = self.shape_gap[shape]
                         cfg.collision_group = self.shape_collision_group[shape]
                         cfg.collision_filter_parent = False
-                        for i in range(1, len(decomposition)):
+                        parts = part_meshes.get(hash_m)
+                        if parts is None:
+                            parts = [
+                                Mesh(vertices, indices, maxhullvert=mesh.maxhullvert)
+                                for vertices, indices in decomposition[1:]
+                            ]
+                            part_meshes[hash_m] = parts
+                        for i, part in enumerate(parts, 1):
                             # add additional convex parts as convex meshes
                             extra_shape = self.add_shape_convex_hull(
                                 body=body,
                                 xform=xform,
-                                mesh=Mesh(decomposition[i][0], decomposition[i][1], maxhullvert=mesh.maxhullvert),
+                                mesh=part,
                                 scale=scale,
                                 cfg=cfg,
                                 color=color,
@@ -10109,13 +10244,23 @@ class ModelBuilder:
         if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
             remeshed = {}
+            # Shapes sharing one source mesh, e.g. USD instances, share its remeshed replacement.
+            replacements: dict[int, tuple[Mesh, Mesh]] = {}
             remesh_failed = False
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     # already remeshed with coacd or vhacd
                     continue
                 mesh: Mesh = self.shape_source[shape]
-                hash_m = hash(mesh)
+                cached_replacement = replacements.get(id(mesh))
+                if cached_replacement is not None:
+                    self.shape_source[shape] = cached_replacement[1]
+                    if method == "convex_hull":
+                        self.shape_type[shape] = GeoType.CONVEX_MESH
+                    remeshed_shapes.add(shape)
+                    continue
+                # Mesh.__hash__ does not include the hull-vertex limit.
+                hash_m = (hash(mesh), mesh.maxhullvert)
                 rmesh = remeshed.get(hash_m, None)
                 if rmesh is None:
                     try:
@@ -10133,7 +10278,10 @@ class ModelBuilder:
                             remesh_failed = True
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
-                self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
+                replacement = mesh.copy(vertices=rmesh.vertices, indices=rmesh.indices)
+                # Keep the source alive so its id cannot be reused by a new mesh.
+                replacements[id(mesh)] = (mesh, replacement)
+                self.shape_source[shape] = replacement
                 # mark convex_hull result as convex mesh type for efficient collision detection
                 if method == "convex_hull":
                     self.shape_type[shape] = GeoType.CONVEX_MESH
@@ -14767,6 +14915,27 @@ class ModelBuilder:
         batches.meshes = tuple(meshes)
         return batches.meshes, batches
 
+    def _resolve_shape_material_mu_static(self) -> list[float]:
+        """Static friction coefficients for :attr:`Model.shape_material_mu_static`.
+
+        An unset :attr:`ShapeConfig.mu_static` follows the shape's final ``mu``, including direct edits of
+        :attr:`shape_material_mu` made after :meth:`add_shape`. An explicit value below that ``mu`` is rejected
+        rather than corrected quietly.
+        """
+        shape_material_mu = _list_for_iteration(self.shape_material_mu)
+        shape_material_mu_static = _list_for_iteration(self.shape_material_mu_static)
+        resolved = [
+            mu if mu_static is None else mu_static
+            for mu, mu_static in zip(shape_material_mu, shape_material_mu_static, strict=True)
+        ]
+        for shape, (mu, mu_static) in enumerate(zip(shape_material_mu, resolved, strict=True)):
+            if mu_static < mu:
+                raise ValueError(
+                    f"shape_material_mu_static[{shape}] = {mu_static} is below shape_material_mu[{shape}] = {mu}. "
+                    "Update both when editing mu after add_shape, or leave mu_static None for a single coefficient."
+                )
+        return resolved
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -15229,8 +15398,12 @@ class ModelBuilder:
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
-            _set_spec_arrays(Model.AttributeFrequency.SHAPE)
+            # shape_material_mu_static holds None for "same as mu" until it is resolved here.
+            _set_spec_arrays(Model.AttributeFrequency.SHAPE, exclude=("shape_material_mu_static",))
             m.shape_source = self.shape_source  # used for rendering
+            m.shape_material_mu_static = wp.array(
+                self._resolve_shape_material_mu_static(), dtype=wp.float32, requires_grad=requires_grad
+            )
 
             # ---------------------
             # Compute local AABBs and voxel resolutions for contact reduction

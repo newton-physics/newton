@@ -35,7 +35,7 @@ class ModelFlags(IntEnum):
     """Indicates body inertial property updates: body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass."""
 
     SHAPE_PROPERTIES = 1 << 4
-    """Indicates shape property updates: shape_transform, shape_scale, shape_margin, shape_gap, shape_collision_radius, shape_is_solid, and the shape_material_* coefficients such as shape_material_mu, shape_material_restitution, shape_material_ke, shape_material_kd, shape_material_mu_torsional, and shape_material_mu_rolling."""
+    """Indicates shape property updates: shape_transform, shape_scale, shape_margin, shape_gap, shape_collision_radius, shape_is_solid, and the shape_material_* coefficients such as shape_material_mu, shape_material_mu_static, shape_material_restitution, shape_material_ke, shape_material_kd, shape_material_mu_torsional, and shape_material_mu_rolling."""
 
     MODEL_PROPERTIES = 1 << 5
     """Indicates model property updates: gravity and other global parameters."""
