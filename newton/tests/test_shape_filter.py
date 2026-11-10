@@ -8,7 +8,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_cuda_test_devices, get_test_devices
 
 ShapeConfig = newton.ModelBuilder.ShapeConfig
 VISIBLE = newton.ShapeFlags.VISIBLE
@@ -88,6 +88,72 @@ class TestShapeGroups(unittest.TestCase):
         with self.assertWarns(newton.exceptions.NewtonDeprecationWarning):
             self.assertIs(model.shape_filter, model.shape_groups)
         np.testing.assert_array_equal(newton.ShapeFilter(groups=["gripper"]).select(model), [0, 1, 2, 4, 5])
+
+    def test_groups_follow_mesh_approximation(self):
+        builder = newton.ModelBuilder()
+        shape = builder.add_shape_mesh(
+            builder.add_body(), mesh=newton.Mesh.create_box(0.2), cfg=ShapeConfig(groups=("robot",))
+        )
+        builder.approximate_meshes(method="convex_hull", shape_indices=[shape], keep_visual_shapes=True)
+        # The collider is replaced in place and its visual copy is a new shape; both keep the group.
+        self.assertEqual(builder.shape_count, 2)
+        np.testing.assert_array_equal(builder.shape_groups, [1, 1])
+
+    def test_groups_from_mjcf_geom_groups(self):
+        mjcf = """
+        <mujoco>
+          <default>
+            <default class="collision"><geom group="3"/></default>
+          </default>
+          <worldbody>
+            <geom name="floor" type="plane" size="1 1 0.1"/>
+            <body name="robot">
+              <freejoint/>
+              <geom name="visual" type="sphere" size="0.1" group="1" contype="0" conaffinity="0"/>
+              <geom name="collider" class="collision" type="box" size="0.1 0.1 0.1"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, geom_groups_as_shape_groups=True)
+        model = builder.finalize(device="cpu")
+        for group, geom in (("mujoco_group_0", "floor"), ("mujoco_group_1", "visual"), ("mujoco_group_3", "collider")):
+            selected = newton.ShapeFilter(groups=[group]).select(model)
+            self.assertEqual([model.shape_label[shape].rpartition("/")[2] for shape in selected], [geom])
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        self.assertEqual(builder.shape_group_names, [])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_groups_from_usd(self):
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        def author_groups(prim, groups):
+            prim.CreateAttribute("newton:shapeGroups", Sdf.ValueTypeNames.TokenArray).Set(Vt.TokenArray(groups))
+
+        robot = UsdGeom.Xform.Define(stage, "/World/Robot").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(robot)
+        author_groups(robot, ["robot"])
+        collider = UsdGeom.Cube.Define(stage, "/World/Robot/collider").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider)
+        author_groups(collider, ["colliders", "robot"])
+        UsdGeom.Sphere.Define(stage, "/World/Robot/visual")
+        ground = UsdGeom.Cube.Define(stage, "/World/ground").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(ground)
+        author_groups(ground, ["terrain"])
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        # Shapes belong to the groups authored on their prims and on all ancestors.
+        self.assertEqual(builder.shape_group_names, ["robot", "colliders", "terrain"])
+        groups = dict(zip(builder.shape_label, builder.shape_groups, strict=True))
+        self.assertEqual(groups, {"/World/Robot/visual": 0b1, "/World/Robot/collider": 0b11, "/World/ground": 0b100})
 
     def test_group_limits_and_errors(self):
         builder = newton.ModelBuilder()

@@ -116,7 +116,10 @@ and a camera should not trace collision proxies. Newton selects such subsets wit
   groups. Add shapes to groups through :attr:`ModelBuilder.ShapeConfig.groups <newton.ModelBuilder.ShapeConfig.groups>`
   or by label with :meth:`ModelBuilder.add_shape_group() <newton.ModelBuilder.add_shape_group>`. The groups of a model
   are stored as a bit mask per shape in :attr:`Model.shape_groups <newton.Model.shape_groups>`, so a model holds at
-  most 32 groups.
+  most 32 groups. Assets can author groups too: in USD, a ``token[] newton:shapeGroups`` attribute puts the shapes of a
+  prim and of all its descendants in the listed groups; in MJCF,
+  :meth:`ModelBuilder.add_mjcf(..., geom_groups_as_shape_groups=True) <newton.ModelBuilder.add_mjcf>` puts each geom in
+  the group ``"mujoco_group_<g>"`` of its MuJoCo ``group`` attribute.
 - A :class:`~newton.ShapeFilter` describes a set of shapes by :class:`~newton.ShapeFlags`, shape groups, and
   :ref:`label patterns <label-matching>`, with exclusions. A shape must satisfy every criterion that is set.
 

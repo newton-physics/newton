@@ -83,6 +83,32 @@ def get_attribute(prim: Usd.Prim, name: str, default: Any | None = None) -> Any 
     return attr.Get()
 
 
+class _ShapeGroupResolver:
+    """Shape groups of prims, from the ``newton:shapeGroups`` token arrays authored on them and their ancestors.
+
+    A shape belongs to the groups authored on its prim and on every ancestor prim, so authoring
+    groups on the root of an asset puts all of its shapes in them. Results are cached per prim path.
+    """
+
+    ATTRIBUTE = "newton:shapeGroups"
+
+    def __init__(self) -> None:
+        self._groups: dict[Any, tuple[str, ...]] = {}
+
+    def __call__(self, prim: Usd.Prim) -> tuple[str, ...]:
+        """Return the shape group names of ``prim``, ancestors' groups first."""
+        path = prim.GetPath()
+        groups = self._groups.get(path)
+        if groups is None:
+            parent = prim.GetParent()
+            groups = self(parent) if parent and not parent.IsPseudoRoot() else ()
+            authored = get_attribute(prim, self.ATTRIBUTE)
+            if authored:
+                groups = (*groups, *(str(name) for name in authored if str(name) not in groups))
+            self._groups[path] = groups
+        return groups
+
+
 def get_attributes_in_namespace(prim: Usd.Prim, namespace: str) -> dict[str, Any]:
     """
     Get all attributes in a namespace from a USD prim.

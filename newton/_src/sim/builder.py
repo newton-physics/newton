@@ -5177,6 +5177,7 @@ class ModelBuilder:
         path_resolver: Callable[[str | None, str], str] | None = None,
         override_root_xform: bool = False,
         legacy_margin_gap: bool = False,
+        geom_groups_as_shape_groups: bool = False,
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -5318,6 +5319,10 @@ class ModelBuilder:
                 where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
                 Use for MJCF files authored against MuJoCo <= 3.8. Defaults
                 to False (identity translation matching MuJoCo 3.9 semantics).
+            geom_groups_as_shape_groups: If True, add each geom to the shape group
+                ``"mujoco_group_<g>"`` of its MuJoCo ``group`` attribute ``g``, so that
+                :class:`~newton.ShapeFilter` can select geoms by MuJoCo group, such as
+                the collision geoms commonly kept in group 3.
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
@@ -5358,6 +5363,7 @@ class ModelBuilder:
             path_resolver=path_resolver,
             override_root_xform=override_root_xform,
             legacy_margin_gap=legacy_margin_gap,
+            geom_groups_as_shape_groups=geom_groups_as_shape_groups,
         )
 
     # endregion
@@ -10150,7 +10156,7 @@ class ModelBuilder:
                     has_particle_collision=False,
                     is_visible=True,
                 )
-                self.add_shape_mesh(
+                visual = self.add_shape_mesh(
                     body=body,
                     xform=xform,
                     cfg=cfg,
@@ -10161,6 +10167,7 @@ class ModelBuilder:
                     scale=self.shape_scale[shape],
                     custom_attributes=custom_attributes,
                 )
+                self.shape_groups[visual] = self.shape_groups[shape]
 
                 # disable visibility of the original shape
                 self.shape_flags[shape] &= ~ShapeFlags.VISIBLE
@@ -10316,6 +10323,7 @@ class ModelBuilder:
                                 label=f"{self.shape_label[shape]}_convex_{i}",
                                 custom_attributes=custom_attributes,
                             )
+                            self.shape_groups[extra_shape] = self.shape_groups[shape]
                             for filtered_shape in filtered_shapes:
                                 self.add_shape_collision_filter_pair(filtered_shape, extra_shape)
                                 for filtered_part in convex_parts_by_shape.get(filtered_shape, ()):
