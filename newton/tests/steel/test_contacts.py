@@ -1624,7 +1624,9 @@ for _suffix, _options in (
     ("torsion", {"torsion_radius": 0.01}),
     ("device_torsion", {"torsion_radius": 0.01, "contact_torsion_device": True}),
     ("double_buffer", {"double_buffer": True}),
-    ("row_overflow", {"free_body_constraint_max": 6, "warn_constraint_overflow": False}),
+    # Dropped rows leave the boxes unsupported, so they fall through the ground
+    # and tumble; check the reported rows while the stack still overflows.
+    ("row_overflow", {"free_body_constraint_max": 6, "warn_constraint_overflow": False, "steps": 10}),
 ):
     add_function_test(
         TestSteelContactObservable,
