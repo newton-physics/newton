@@ -813,8 +813,8 @@ Construction raises ``ValueError`` when the selection is not homogeneous. Pass
 
 - **Irregular layouts.** Worlds may differ outside the selected articulations, for
   example by holding additional bodies or articulations, so the selected rows are not
-  evenly spaced between worlds. Such layouts are addressed through explicit model
-  indices (:attr:`~newton.selection.ArticulationView.uses_explicit_model_indices`).
+  evenly spaced between or within worlds. Such layouts are addressed through explicit
+  model indices (:attr:`~newton.selection.ArticulationView.uses_explicit_model_indices`).
 - **Sparse views.** Matches may cover only some worlds. Worlds without matches are
   excluded from the leading dimension of all returned arrays, and
   :attr:`~newton.selection.ArticulationView.is_sparse` is ``True``.
@@ -839,11 +839,11 @@ Joint, coordinate, DOF, link, and shape layouts are checked independently. Both
 reads and writes raise ``AttributeError`` for an unavailable layout.
 A layout may contain gaps, but every match must have the same selected count and
 relative model positions and ownership (DOF/coordinate to joint and shape to link),
-and the matches' start indices must be uniformly strided within worlds. With
-``homogeneous=True`` they must also be uniformly strided between worlds;
-``homogeneous=False`` allows irregular spacing between worlds and addresses it through
-explicit model indices. Shapes may instead be interleaved with other shapes at
-different positions, as long as every match has the same shape count and owning links.
+and, with ``homogeneous=True``, the matches' start indices must be uniformly strided
+within and between worlds. ``homogeneous=False`` allows irregular spacing within and
+between worlds and addresses it through explicit model indices. Shapes may instead be
+interleaved with other shapes at different positions, as long as every match has the
+same shape count and owning links.
 
 Joint and link filters use the first match as their template. A filter selects the
 template position in every match: if another articulation inserts a link or joint
