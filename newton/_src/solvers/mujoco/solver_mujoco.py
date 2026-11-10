@@ -4706,7 +4706,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Shape ``[nu]``, dtype ``int32``."""
         self._mjc_actuator_effort_limited: wp.array[wp.int32] | None = None
         """``1`` for BALL-joint actuators whose force range follows ``joint_effort_limit`` at runtime
-        (the range was not authored in MJCF), ``0`` otherwise. Shape ``[nu]``, dtype ``int32``."""
+        (MuJoCo force-limits the actuator and the range was not authored in MJCF), ``0`` otherwise.
+        Shape ``[nu]``, dtype ``int32``."""
         self.mjc_eq_to_newton_eq: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, eq] to Newton equality constraint index.
 
@@ -9158,7 +9159,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         # Convert actuator mapping lists to warp arrays
         if mjc_actuator_ctrl_source_list:
-            self._mjc_actuator_effort_limited = wp.array(actuator_effort_limited, dtype=wp.int32, device=model.device)
             self.mjc_actuator_ctrl_source = wp.array(
                 np.array(mjc_actuator_ctrl_source_list, dtype=np.int32),
                 dtype=wp.int32,
@@ -9212,6 +9212,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             kinematic_welds.append(eq)
 
         self.mj_model = spec.compile()
+        if mjc_actuator_ctrl_source_list:
+            # A force range has no effect on an actuator MuJoCo compiled without a force limit.
+            actuator_effort_limited &= self.mj_model.actuator_forcelimited
+            self._mjc_actuator_effort_limited = wp.array(actuator_effort_limited, dtype=wp.int32, device=model.device)
         if not self.use_mujoco_cpu and np.any(self.mj_model.actuator_armature != 0.0):
             warnings.warn(
                 "SolverMuJoCo's MuJoCo-Warp backend does not support actuator armature. "

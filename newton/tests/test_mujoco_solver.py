@@ -9677,6 +9677,30 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 check(model, solver, world_count, use_mujoco_cpu, [[2.0, 1.0, 0.5], [1.0, 3.0, 5.0]])
                 check(model, solver, world_count, use_mujoco_cpu, [[0.5, 4.0, 1.0], [2.0, 2.0, 0.25]])
 
+        # Force ranges authored in MJCF, and actuators MuJoCo does not force-limit, keep their range.
+        mjcf = """<mujoco>
+            <worldbody>
+                <body name="a"><joint name="a" type="ball"/><geom type="sphere" size="0.1" mass="1"/></body>
+                <body name="b"><joint name="b" type="ball"/><geom type="sphere" size="0.1" mass="1"/></body>
+            </worldbody>
+            <actuator>
+                <position joint="a" kp="10" forcerange="-2 2"/>
+                <velocity joint="a" kv="1"/>
+                <position joint="b" kp="10"/>
+                <velocity joint="b" kv="1" forcelimited="false"/>
+            </actuator>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        model.joint_effort_limit.fill_(5.0)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+        # Each ball axis has a position then a velocity actuator. Only a's velocity and b's position
+        # actuators follow the new limit; b's velocity actuator keeps the default 1e6 limit.
+        expected = [[-2.0, 2.0], [-5.0, 5.0]] * 3 + [[-5.0, 5.0], [-1.0e6, 1.0e6]] * 3
+        np.testing.assert_allclose(solver.mjw_model.actuator_forcerange.numpy()[0], expected)
+
 
 class TestMuJoCoSolverPairProperties(unittest.TestCase):
     """Test contact pair property conversion and runtime updates across multiple worlds."""
