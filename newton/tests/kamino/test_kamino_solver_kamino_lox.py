@@ -448,6 +448,29 @@ class _LOXTestCase(unittest.TestCase):
 
 
 class TestSolverKaminoLOX(_LOXTestCase):
+    def test_solver_residual_requires_adaptive_iterations(self):
+        """Support the residual observable only when LOX runs its convergence check."""
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        builder.begin_world()
+        inertia = wp.mat33f(0.2, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.2)
+        body = builder.add_link(mass=1.0, inertia=inertia, lock_inertia=True)
+        builder.add_articulation([builder.add_joint_free(parent=-1, child=body)])
+        builder.end_world()
+        model = builder.finalize(device=self.default_device)
+
+        kind = SolverKamino.ObservableKind.SOLVER_RESIDUAL
+        for fixed_iterations in (False, True):
+            with self.subTest(fixed_iterations=fixed_iterations):
+                config = self.make_config()
+                config.lox.fixed_iterations = fixed_iterations
+                solver = SolverKamino(model, config=config)
+                self.assertEqual(kind in solver.supported_observables, not fixed_iterations)
+                if fixed_iterations:
+                    # Fixed iterations skip the convergence check that the observable reports.
+                    with self.assertRaisesRegex(ValueError, "solver_residual"):
+                        solver.observables({kind})
+
     def test_integrators_keep_prescribed_twist_of_rotated_singular_body(self):
         """Keep the LOX twist of a rotated body with mass and a rank-deficient inverse inertia."""
         rotation = np.array(wp.quat_to_matrix(wp.quat_rpy(0.3, -0.7, 1.1)), dtype=np.float32).reshape(3, 3)
@@ -924,8 +947,6 @@ class TestSolverKaminoLOXJoints(_LOXTestCase):
         config.lox.max_iterations = 80
         config.lox.joint_proximal_relaxation = 1.0
         solver = SolverKamino(model, config=config)
-        # Fixed iterations skip the convergence check that the residual observable reports.
-        self.assertNotIn(solver.ObservableKind.SOLVER_RESIDUAL, solver.supported_observables)
 
         solver.step(state_in, state_out, model.control(), contacts=None, dt=0.01)
 
