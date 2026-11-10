@@ -489,14 +489,23 @@ def trim_all_in_place(
                 # Nonparallel lines meet at one crossing. Simulated edges are
                 # never parallel to float precision, so keep the part of the
                 # overlap where the lines stay within the sample resolution EPS
-                # [m] of each other. The band has half-length EPS / sin(angle).
+                # [m] of their closest separation in the overlap. Normal error
+                # can offset the projected lines, as tolerated for parallel
+                # lines above; the band then tends to the whole overlap as the
+                # angle vanishes. It has half-length EPS / sin(angle) around a
+                # crossing inside the overlap.
                 inv_other_length = 1.0 / wp.sqrt(other_length_sq)
                 offset = (
                     other_direction[0] * (start[1] - other_start[1]) - other_direction[1] * (start[0] - other_start[0])
                 ) * inv_other_length
                 slope = -cross * inv_other_length
-                band_lo = (-EPS - offset) / slope
-                band_hi = (EPS - offset) / slope
+                separation_lo = offset + slope * lo
+                separation_hi = offset + slope * hi
+                closest = float(0.0)
+                if separation_lo * separation_hi > 0.0:
+                    closest = wp.min(wp.abs(separation_lo), wp.abs(separation_hi))
+                band_lo = (-(closest + EPS) - offset) / slope
+                band_hi = (closest + EPS - offset) / slope
                 overlap = (hi - lo) * wp.sqrt(length_sq)
                 lo = wp.max(lo, wp.min(band_lo, band_hi))
                 hi = wp.min(hi, wp.max(band_lo, band_hi))

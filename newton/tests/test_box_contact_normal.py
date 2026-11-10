@@ -20,6 +20,7 @@ from newton._src.geometry.multicontact import (
     _SamplePoints,
     add_contact_feature_point,
     create_build_manifold,
+    trim_all_in_place,
     update_incremental_plane_tracker,
 )
 from newton._src.geometry.support_function import GenericShapeData, SupportMapDataProvider, support_map
@@ -895,6 +896,39 @@ add_function_test(
     TestBoxContactNormal,
     "test_near_parallel_plank_edge_contact",
     test_near_parallel_plank_edge_contact,
+    devices=get_test_devices(),
+)
+
+
+@wp.kernel(enable_backward=False)
+def _trim_lines_kernel(trim: wp.array[wp.vec2], loop: wp.array[wp.vec2], count: wp.array[int]):
+    count[0] = trim_all_in_place(trim, 2, loop, 2)
+
+
+def test_offset_line_contacts_across_parallel_threshold(test, device):
+    """Keep offset line contacts continuous across the parallel-line threshold.
+
+    Normal error can offset projected supporting lines by more than EPS. The
+    parallel branch tolerates this offset, so a crossing just above its angle
+    threshold must keep the overlap too, while a steep crossing outside the
+    overlap still collapses to the single deepest contact.
+    """
+    length, offset = 0.1, 20.0 * EPS
+    trim = wp.array([wp.vec2(0.0, 0.0), wp.vec2(length, 0.0)], dtype=wp.vec2, device=device)
+    for rise, expected in ((0.0, 2), (1.0e-5 * length, 2), (length, 0)):
+        with test.subTest(rise=rise):
+            loop = wp.array([wp.vec2(0.0, offset), wp.vec2(length, offset + rise)], dtype=wp.vec2, device=device)
+            count = wp.zeros(1, dtype=int, device=device)
+            wp.launch(_trim_lines_kernel, 1, inputs=[trim, loop], outputs=[count], device=device)
+            test.assertEqual(int(count.numpy()[0]), expected)
+            if expected == 2:
+                np.testing.assert_allclose(loop.numpy()[:, 0], [0.0, length], atol=1.0e-7)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_offset_line_contacts_across_parallel_threshold",
+    test_offset_line_contacts_across_parallel_threshold,
     devices=get_test_devices(),
 )
 
