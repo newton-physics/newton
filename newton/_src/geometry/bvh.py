@@ -387,6 +387,9 @@ class _ShapeFilterBvh:
     """Shape of each BVH leaf, or :data:`BVH_SHAPE_INACTIVE` for leaves the filter skips at the last refit."""
     flags_mask: int
     """Flags a body variant row must currently have for the filter to keep its leaf."""
+    world_leaves: wp.array[wp.int32] | None
+    """BVH leaf of the only shape the filter selects in each world, shape ``[world_count + 1]`` (last entry is
+    the global world), ``-1`` for worlds without one; ``None`` if the filter selects several shapes of a world."""
 
 
 def compute_shape_bvh_bounds_launch(

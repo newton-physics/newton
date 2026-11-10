@@ -40,6 +40,11 @@ _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "per-DOF Model.joint_limit_lower and Model.joint_limit_upper instead."
 )
 
+_SHAPE_FILTER_DEPRECATION_MSG = (
+    "Model.shape_filter is deprecated in Newton 1.8 and will be removed in a future release. It was never "
+    "populated; it now aliases Model.shape_groups, the shape group membership that newton.ShapeFilter selects by."
+)
+
 _COLLISION_EDGE_DEPRECATION_MSG = (
     "Model.{name} is deprecated in Newton 1.8 and will be removed in Newton 1.9. "
     "Packed collision edges are internal acceleration data; use CollisionPipeline for collision detection. "
@@ -616,7 +621,7 @@ class Model:
         "shape_scale": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_color": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_opacity": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_filter": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_filter": AttributeSpec(AttributeFrequency.SHAPE, alias_of="shape_groups", deprecated=True),
         "shape_collision_group": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_radius": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_world": AttributeSpec(AttributeFrequency.SHAPE, references=AttributeFrequency.WORLD),
@@ -1139,8 +1144,6 @@ class Model:
         """Shape display colors [0, 1], shape [shape_count], vec3."""
         self.shape_opacity: wp.array[wp.float32] | None = None
         """Shape display opacity [0, 1], shape [shape_count], float."""
-        self.shape_filter: wp.array[wp.int32] | None = None
-        """Shape filter group, shape [shape_count], int."""
 
         self.shape_collision_group: wp.array[wp.int32] | None = None
         """Collision group of each shape, shape [shape_count], int. Array populated during finalization."""
@@ -2239,6 +2242,23 @@ class Model:
         self._shape_edge_range = value
 
     @property
+    def shape_filter(self) -> wp.array[wp.uint32] | None:
+        """Alias of :attr:`shape_groups`.
+
+        .. deprecated:: 1.8
+            This attribute was never populated. Use :attr:`shape_groups` and
+            :class:`~newton.ShapeFilter` instead.
+        """
+        warn_deprecation(_SHAPE_FILTER_DEPRECATION_MSG)
+        return self.shape_groups
+
+    @shape_filter.setter
+    def shape_filter(self, value: wp.array[wp.uint32] | None) -> None:
+        """Replace shape group membership through the deprecated alias."""
+        warn_deprecation(_SHAPE_FILTER_DEPRECATION_MSG)
+        self.shape_groups = value
+
+    @property
     def joint_twist_lower(self) -> wp.array[wp.float32] | None:
         """Joint lower twist limit [rad], shape [joint_count], float. Never populated.
 
@@ -2399,6 +2419,7 @@ class Model:
                     roots=wp.empty((world_count_total, 0), dtype=wp.int32, device=device),
                     leaves=self.bvh_shape_enabled,
                     flags_mask=0,
+                    world_leaves=None,
                 )
                 for _ in shape_filters
             ]
@@ -2422,8 +2443,21 @@ class Model:
             device=device,
         )
 
+        # Ray queries test the shape directly instead of traversing the BVH when a filter selects at most
+        # one shape in each world, such as a terrain.
+        leaf_world = self.shape_world.numpy()[enabled]
+        leaf_world = np.where(leaf_world < 0, self.world_count, leaf_world)
+
         self._bvh_shape_filters = []
-        for shape_filter, classes_of_filter in zip(shape_filters, filter_classes, strict=True):
+        for filter_index, (shape_filter, classes_of_filter) in enumerate(
+            zip(shape_filters, filter_classes, strict=True)
+        ):
+            filter_leaves = np.flatnonzero(class_filters[shape_class, filter_index])
+            world_leaves = None
+            if np.bincount(leaf_world[filter_leaves], minlength=world_count_total).max(initial=0) <= 1:
+                table = np.full(world_count_total, -1, dtype=np.int32)
+                table[leaf_world[filter_leaves]] = filter_leaves
+                world_leaves = wp.array(table, dtype=wp.int32, device=device)
             roots = wp.empty((world_count_total, len(classes_of_filter)), dtype=wp.int32, device=device)
             if len(classes_of_filter):
                 wp.launch(
@@ -2445,6 +2479,7 @@ class Model:
                     flags_mask=int(shape_filter.flags)
                     if shape_filter.flags is not None
                     else int(_EMPTY_ROW_CLEARED_FLAGS),
+                    world_leaves=world_leaves,
                 )
             )
         self._mark_inactive_bvh_shapes()

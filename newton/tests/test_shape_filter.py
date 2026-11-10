@@ -85,6 +85,8 @@ class TestShapeGroups(unittest.TestCase):
         model = scene.finalize(device="cpu")
         self.assertEqual(model.shape_group_names, ["gripper", "terrain", "tools", "robot"])
         np.testing.assert_array_equal(model.shape_groups.numpy(), scene.shape_groups)
+        with self.assertWarns(newton.exceptions.NewtonDeprecationWarning):
+            self.assertIs(model.shape_filter, model.shape_groups)
         np.testing.assert_array_equal(newton.ShapeFilter(groups=["gripper"]).select(model), [0, 1, 2, 4, 5])
 
     def test_group_limits_and_errors(self):
@@ -150,6 +152,9 @@ def test_intersect_ray_shape_filters(test: TestShapeGroups, device):
     # Shapes selected by the same filters share a class; the BVH holds every shape some filter selects.
     test.assertGreater(model._bvh_shape_class_count, 1)
     test.assertEqual(model.bvh_shapes_group_roots.shape[0], (model.world_count + 1) * model._bvh_shape_class_count)
+    # Filters selecting at most one shape per world, here the global ground plus one stack shape, skip the BVH.
+    direct = [model._bvh_shape_filter(shape_filter).world_leaves is not None for shape_filter in ids]
+    test.assertEqual(direct, [True, False, True, False, True, True, True])
 
     tops = {"ground": 0.0, **{label: top for label, top, *_ in _STACK}}
     default_filter = newton.ShapeFilter(flags=VISIBLE)

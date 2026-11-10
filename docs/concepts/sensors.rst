@@ -142,7 +142,8 @@ an integer id that :func:`~newton.intersect_ray` and :class:`~newton.sensors.Sen
 :meth:`ModelBuilder.finalize() <newton.ModelBuilder.finalize>` partitions the model's shape BVH by the registered
 filters. Shapes that the same filters select share a BVH group in each world, and a query traverses only the groups
 of its filter. A ray of a terrain height scan therefore never visits the robots, and a camera never visits
-collision-only shapes, while all queries share one BVH build and refit. Queries that take a filter id do not
+collision-only shapes, while all queries share one BVH build and refit. When a filter selects at most one shape in
+each world, such as a terrain, :func:`~newton.intersect_ray` tests that shape directly without traversing the BVH. Queries that take a filter id do not
 allocate or synchronize, so they can be captured in a CUDA graph. Without registered filters, the BVH and its
 traversal are the same as before.
 
