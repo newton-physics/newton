@@ -2526,6 +2526,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
     def _clear_sparse_grid_rebuild_status(self) -> None:
         """Clear sticky device faults at an explicit reset/reconfiguration boundary."""
+        if self.model.device.is_capturing and not self._device_guarded:
+            raise RuntimeError("Cannot clear sparse grid rebuild status during graph capture")
         if self._grid_status is not None:
             self._grid_status.zero_()
         if self._grid_accumulated_status is not None:
