@@ -10,6 +10,7 @@ transfer, and dynamic roller activation.
 import math
 import sys
 import unittest
+import warnings
 from itertools import pairwise
 
 import numpy as np
@@ -26,6 +27,8 @@ from newton._src.solvers.tendon_state import _segment_attachment_points_np
 from newton._src.solvers.xpbd.tendon_kernels import solve_tendon_slip, solve_tendon_stretch
 from newton.examples.tendon.example_tendon_capstan_friction import Example as CapstanFrictionExample
 from newton.examples.tendon.example_tendon_mujoco_switch import Example as MujocoSwitchExample
+from newton.examples.tendon.utils import get_tendon_total_lengths
+from newton.exceptions import NewtonWarning
 from newton.tests.unittest_utils import StdOutCapture, sanitize_identifier
 
 
@@ -33,6 +36,7 @@ from newton.tests.unittest_utils import StdOutCapture, sanitize_identifier
 def _measure_circle_pair_attachments(
     center_l: wp.vec3,
     center_r: wp.vec3,
+    normal_l: wp.vec3,
     normal_r: wp.vec3,
     radius_l: float,
     radius_r: float,
@@ -44,7 +48,7 @@ def _measure_circle_pair_attachments(
     point_l, point_r = _tendon_segment_attachment_points(
         center_l,
         center_r,
-        wp.vec3(0.0, 1.0, 0.0),
+        normal_l,
         normal_r,
         int(TendonGuideType.ROLLER),
         int(TendonGuideType.ROLLER),
@@ -1860,6 +1864,10 @@ def test_dynamic_route_signed_arc_inventory(test, device):
                         material, angle = _grazing_route_inventory(state, winding)
                         test.assertLess(angle, -np.radians(10.0))
                         test.assertAlmostEqual(material, expected_material, delta=1.0e-6)
+                        geometric_length = float(np.sum(solver.tendon_segment_length.numpy())) + 0.1 * angle
+                        test.assertAlmostEqual(
+                            float(get_tendon_total_lengths(solver, model, state)[0]), geometric_length, delta=1.0e-6
+                        )
                         state, output = _advance_grazing_route(solver, state, output, winding, 0.16, dt, graphs)
                         test.assertFalse(state.tendon_guide_active.numpy()[1])
                         material, _ = _grazing_route_inventory(state, winding)
@@ -1885,8 +1893,9 @@ def test_dynamic_route_deactivation_signed_arc(test, device):
                 solver.step(state, output, None, None, dt)
                 state, output = output, state
                 expected, _ = _grazing_route_inventory(state, winding)
-                for target in (0.098, 0.098):
-                    state, output = _advance_grazing_route(solver, state, output, winding, target, dt, None)
+                # Move into contact, then select the engaged route at the next step start.
+                for _ in range(2):
+                    state, output = _advance_grazing_route(solver, state, output, winding, 0.098, dt, None)
                 test.assertTrue(state.tendon_guide_active.numpy()[1])
                 material, angle = _grazing_route_inventory(state, winding)
                 test.assertGreater(angle, 0.0)
@@ -1908,46 +1917,83 @@ def test_initial_negative_wrap_uses_signed_inventory(test, device):
     for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
         with test.subTest(solver=solver_type.__name__):
             model, _ = _build_grazing_route(device, 1, dynamic=False)
-            with test.assertLogs("newton", level="WARNING") as caught:
+            with test.assertWarnsRegex(
+                NewtonWarning, "ROLLER guide 1 starts at an unsupported oriented wrap"
+            ) as caught:
                 solver = solver_type(model, iterations=1)
-            test.assertEqual(len(caught.records), 1)
-            test.assertIn("ROLLER guide 1 starts at an unsupported oriented wrap", caught.output[0])
+            test.assertEqual(caught.filename, __file__)
             material, angle = _grazing_route_inventory(solver, 1)
             test.assertLess(angle, 0.0)
             test.assertAlmostEqual(float(solver.tendon_total_cable.numpy()[0]), material, delta=1.0e-6)
+            test.assertAlmostEqual(
+                float(get_tendon_total_lengths(solver, model, model.state())[0]), material, delta=1.0e-6
+            )
 
 
 def test_fixed_half_turn_material_reference(test, device):
     """Keep either winding of a fixed half-circle positive, including world guides."""
+    # This placement exposes cancellation in the centimetre-scale contact vectors.
+    rotated_pose = wp.transform(
+        wp.vec3(0.77568998, 0.62335008, 0.99493911),
+        wp.quat(-0.84797758, 0.48976767, 0.04073934, 0.19849946),
+    )
     for world_attached in (False, True):
         for winding in (-1, 1):
-            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-            radius = 0.15
-            body = -1 if world_attached else builder.add_body(mass=0.0)
-            builder.add_tendon(
-                [
-                    newton.TendonGuide(body=body, offset=(-winding * radius, 0.0, 0.0)),
-                    newton.TendonGuide(
-                        body=body,
-                        guide_type=TendonGuideType.ROLLER,
-                        offset=(0.0, 0.0, 1.0),
-                        axis=(0.0, 1.0, 0.0),
-                        radius=radius,
-                        orientation=winding,
-                        compliance=1.0e-5,
-                    ),
-                    newton.TendonGuide(body=body, offset=(winding * radius, 0.0, 0.0), compliance=1.0e-5),
-                ]
+            for radius, height, pose in ((0.15, 1.0, wp.transform_identity()), (0.01, 0.2, rotated_pose)):
+                _check_fixed_half_turn(test, device, world_attached, winding, radius, height, pose)
+
+
+def _check_fixed_half_turn(test, device, world_attached, winding, radius, height, pose):
+    """Check a half-turn and its example measurement in the same coordinate frame."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = -1 if world_attached else builder.add_body(mass=0.0, xform=pose)
+    local_points = [
+        wp.vec3(-winding * radius, 0.0, 0.0),
+        wp.vec3(0.0, 0.0, height),
+        wp.vec3(winding * radius, 0.0, 0.0),
+    ]
+    points = [wp.transform_point(pose, point) for point in local_points] if world_attached else local_points
+    axis = wp.transform_vector(pose, wp.vec3(0.0, 1.0, 0.0)) if world_attached else wp.vec3(0.0, 1.0, 0.0)
+    builder.add_tendon(
+        [
+            newton.TendonGuide(body=body, offset=points[0]),
+            newton.TendonGuide(
+                body=body,
+                guide_type=TendonGuideType.ROLLER,
+                offset=points[1],
+                axis=axis,
+                radius=radius,
+                orientation=winding,
+                compliance=1.0e-5,
+            ),
+            newton.TendonGuide(body=body, offset=points[2], compliance=1.0e-5),
+        ]
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+        with test.subTest(solver=solver_type.__name__, world=world_attached, winding=winding, radius=radius):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", NewtonWarning)
+                solver = solver_type(model, iterations=1)
+            test.assertAlmostEqual(
+                float(solver.tendon_total_cable.numpy()[0]), 2.0 * height + np.pi * radius, delta=1.0e-6
             )
-            builder.color()
-            model = builder.finalize(device=device)
-            for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
-                with test.subTest(solver=solver_type.__name__, world=world_attached, winding=winding):
-                    with test.assertNoLogs("newton", level="WARNING"):
-                        solver = solver_type(model, iterations=1)
-                    test.assertAlmostEqual(
-                        float(solver.tendon_total_cable.numpy()[0]), 2.0 + np.pi * radius, delta=1.0e-6
-                    )
+            test.assertAlmostEqual(
+                float(get_tendon_total_lengths(solver, model, model.state())[0]),
+                2.0 * height + np.pi * radius,
+                delta=1.0e-6,
+            )
+            capture = StdOutCapture()
+            wp.synchronize_device(device)
+            capture.begin()
+            try:
+                solver._update_tendon_cone_rows(model, model.body_q, report_unsupported_wrap=True)
+                wp.synchronize_device(device)
+            finally:
+                message = capture.end()
+            if sys.platform != "win32":
+                test.assertNotIn("crossed the supported wrap range", message)
 
 
 def test_dynamic_route_activation_uses_accepted_pose(test, device):
@@ -2160,6 +2206,7 @@ def test_circle_pair_tangents_match_geometry(test, device):
                             dim=1,
                             inputs=[
                                 *map(wp.vec3, centers),
+                                wp.vec3(0.0, 1.0, 0.0),
                                 wp.vec3(normal_r),
                                 radius_l,
                                 radius_r,
@@ -2198,6 +2245,7 @@ def test_circle_pair_tangents_match_geometry(test, device):
                             dim=1,
                             inputs=[
                                 *map(wp.vec3, centers),
+                                wp.vec3(0.0, 1.0, 0.0),
                                 wp.vec3(normal_r),
                                 radius_l,
                                 radius_r,
@@ -2217,11 +2265,39 @@ def test_circle_pair_tangents_match_geometry(test, device):
         wp.launch(
             _measure_circle_pair_attachments,
             dim=1,
-            inputs=[*map(wp.vec3, centers), normal_r, 0.1, 0.1, 1, 1, seeds],
+            inputs=[*map(wp.vec3, centers), wp.vec3(0.0, 1.0, 0.0), normal_r, 0.1, 0.1, 1, 1, seeds],
             outputs=[outputs],
         )
         point_r = outputs.numpy()[1]
         test.assertAlmostEqual(float(np.dot(point_r - centers[1], np.array(normal_r))), 0.0, delta=1.0e-7)
+
+        # Small coplanar rollers must keep the analytic route after world placement.
+        rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+        normal = wp.quat_rotate(rotation, wp.vec3(0.0, 1.0, 0.0))
+        for translation in (0.0, 5.0, 20.0):
+            pose = wp.transform(wp.vec3(translation), rotation)
+            centers = [wp.transform_point(pose, wp.vec3(0.0, 0.0, z)) for z in (0.0, 0.05)]
+            seeds = wp.array(centers, dtype=wp.vec3)
+            wp.launch(
+                _measure_circle_pair_attachments,
+                dim=1,
+                inputs=[*centers, normal, normal, 0.1, 0.1, 1, 1, seeds],
+                outputs=[outputs],
+            )
+            expected = np.array([wp.transform_point(pose, wp.vec3(-0.1, 0.0, z)) for z in (0.0, 0.05)])
+            np.testing.assert_allclose(outputs.numpy(), expected, rtol=0.0, atol=5.0e-6)
+            host = _segment_attachment_points_np(
+                *map(np.asarray, centers),
+                int(TendonGuideType.ROLLER),
+                int(TendonGuideType.ROLLER),
+                0.1,
+                0.1,
+                1,
+                1,
+                np.asarray(normal),
+                np.asarray(normal),
+            )
+            np.testing.assert_allclose(host, expected, rtol=0.0, atol=5.0e-6)
 
 
 def _build_circle_neighbor_route(device, winding=1):
@@ -2277,6 +2353,20 @@ def test_dynamic_route_overlapping_neighbors(test, device):
                             solver._update_tendon_guide_active(model, model.body_q)
                             test.assertEqual(bool(solver.tendon_guide_active.numpy()[2]), expected)
 
+                    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+                    for translation in (5.0, 20.0):
+                        placement = wp.transform(wp.vec3(translation), rotation)
+                        for prior in (False, True):
+                            for x, expected in ((-0.25, True), (0.0, False)):
+                                for index, z in enumerate((-0.125, 0.0, 0.125)):
+                                    local = wp.transform(wp.vec3(x * winding if index == 1 else 0.0, 0.0, z))
+                                    poses[bodies[index]] = np.asarray(wp.transform_multiply(placement, local))
+                                model.body_q.assign(poses)
+                                active[2] = prior
+                                solver.tendon_guide_active.assign(active)
+                                solver._update_tendon_guide_active(model, model.body_q)
+                                test.assertEqual(bool(solver.tendon_guide_active.numpy()[2]), expected)
+
 
 def test_dynamic_route_accepts_short_spans_and_small_radii(test, device):
     """Activate valid routes without a diameter cutoff or an absolute engagement gap."""
@@ -2329,6 +2419,50 @@ def test_dynamic_route_accepts_short_spans_and_small_radii(test, device):
                             state, output = output, state
 
 
+def test_dynamic_route_nonplanar_roundoff(test, device):
+    """Decide activation when a nonplanar bypass has converged to float32 precision."""
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+    normal = wp.quat_rotate(rotation, wp.vec3(0.0, 0.0, 1.0))
+    tilted = wp.quat_rotate(
+        rotation, wp.quat_rotate(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 1.0e-4), wp.vec3(0.0, 0.0, 1.0))
+    )
+    for translation in (5.0, 20.0, 50.0):
+        with test.subTest(translation=translation):
+            placement = wp.transform(wp.vec3(translation), rotation)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            candidate = builder.add_body(
+                xform=wp.transform(wp.transform_point(placement, wp.vec3(0.025, 0.0, 0.0)), rotation), mass=0.0
+            )
+            points = [(-0.3, -0.1, 0.0), (0.0, 0.0, 0.0), (0.025, 0.0, 0.0), (0.05, 0.0, 0.0), (0.35, -0.1, 0.0)]
+            guides = []
+            for index, point in enumerate(points):
+                guides.append(
+                    newton.TendonGuide(
+                        body=candidate if index == 2 else -1,
+                        offset=wp.vec3() if index == 2 else wp.transform_point(placement, wp.vec3(point)),
+                        guide_type=TendonGuideType.ANCHOR if index in (0, 4) else TendonGuideType.ROLLER,
+                        axis=wp.vec3(0.0, 0.0, 1.0) if index == 2 else (tilted if index == 3 else normal),
+                        radius=0.0 if index in (0, 4) else (0.02 if index == 2 else 0.1),
+                        dynamic=index == 2,
+                        mu=0.0 if index in (0, 4) else 0.3,
+                        compliance=0.0 if index == 0 else 0.01,
+                    )
+                )
+            builder.add_tendon(guides)
+            model = builder.finalize(device=device)
+            solver = newton.solvers.SolverXPBD(model, iterations=1)
+            poses = model.body_q.numpy()
+            for prior in (False, True):
+                for y, expected in ((-0.09, True), (0.0, False)):
+                    poses[candidate, :3] = np.asarray(wp.transform_point(placement, wp.vec3(0.025, y, 0.0)))
+                    model.body_q.assign(poses)
+                    active = solver.tendon_guide_active.numpy()
+                    active[2] = prior
+                    solver.tendon_guide_active.assign(active)
+                    solver._update_tendon_guide_active(model, model.body_q)
+                    test.assertEqual(bool(solver.tendon_guide_active.numpy()[2]), expected)
+
+
 def test_dynamic_route_missing_bypass_preserves_state(test, device):
     """Keep either previous state for a missing tangent, then resume on valid geometry."""
     with wp.ScopedDevice(device):
@@ -2350,8 +2484,31 @@ def test_dynamic_route_missing_bypass_preserves_state(test, device):
                     solver.tendon_guide_active.assign(active)
                     solver._update_tendon_guide_active(model, model.body_q)
                     test.assertEqual(bool(solver.tendon_guide_active.numpy()[2]), prior)
-            poses[bodies[2], 2] = 0.5
             poses[bodies[1], :3] = (-0.3, 0.0, 0.0)
+            # A truly unconverged nonplanar bypass must report the skipped update.
+            radii = model.tendon_guide_radius.numpy()
+            radii[3] = 0.3
+            model.tendon_guide_radius.assign(radii)
+            poses[bodies[2], 2] = 0.125
+            poses[bodies[2], 3:] = np.asarray(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5))
+            model.body_q.assign(poses)
+            capture = StdOutCapture()
+            wp.synchronize_device(device)
+            capture.begin()
+            try:
+                for prior in (False, True):
+                    active[2] = prior
+                    solver.tendon_guide_active.assign(active)
+                    solver._update_tendon_guide_active(model, model.body_q)
+                    test.assertEqual(bool(solver.tendon_guide_active.numpy()[2]), prior)
+                wp.synchronize_device(device)
+            finally:
+                message = capture.end()
+            if sys.platform != "win32":
+                test.assertIn("dynamic ROLLER guide 2 bypass tangent did not converge", message)
+
+            poses[bodies[2], 2] = 0.5
+            poses[bodies[2], 3:] = np.asarray(wp.quat_identity())
             model.body_q.assign(poses)
             solver._update_tendon_guide_active(model, model.body_q)
             test.assertTrue(solver.tendon_guide_active.numpy()[2])
@@ -2368,7 +2525,7 @@ def test_missing_circle_tangent_preserves_history_and_reports(test, device):
         wp.launch(
             _measure_circle_pair_attachments,
             dim=1,
-            inputs=[*map(wp.vec3, centers), wp.vec3(0.0, 1.0, 0.0), 0.3, 0.3, 1, -1, seeds],
+            inputs=[*map(wp.vec3, centers), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 1.0, 0.0), 0.3, 0.3, 1, -1, seeds],
             outputs=[points],
         )
         np.testing.assert_array_equal(points.numpy(), history)
@@ -2391,6 +2548,20 @@ def test_missing_circle_tangent_preserves_history_and_reports(test, device):
         # still run there, and Linux checks the diagnostic on CPU and CUDA.
         if sys.platform != "win32":
             test.assertIn("ROLLER guides 1 and 3 have no nonzero common tangent", message)
+
+        # Zero-radius ROLLER guides use point routing, not a circle-pair tangent.
+        for radius_l, radius_r in ((0.0, 0.3), (0.3, 0.0), (0.0, 0.0)):
+            radii = model.tendon_guide_radius.numpy()
+            radii[1], radii[3] = radius_l, radius_r
+            model.tendon_guide_radius.assign(radii)
+            capture.begin()
+            try:
+                solver._update_tendon_cone_rows(model, model.body_q, report_unsupported_wrap=True)
+                wp.synchronize_device(device)
+            finally:
+                message = capture.end()
+            if sys.platform != "win32":
+                test.assertNotIn("no nonzero common tangent", message)
 
 
 def test_dynamic_route_recovers_from_zero_initial_bypass(test, device):
@@ -4184,6 +4355,7 @@ add_test(
     test_missing_circle_tangent_preserves_history_and_reports,
 )
 add_test(TestTendonCapstan, "dynamic_route_overlapping_neighbors", devices, test_dynamic_route_overlapping_neighbors)
+add_test(TestTendonCapstan, "dynamic_route_nonplanar_roundoff", devices, test_dynamic_route_nonplanar_roundoff)
 add_test(
     TestTendonCapstan,
     "dynamic_route_accepts_short_spans_and_small_radii",

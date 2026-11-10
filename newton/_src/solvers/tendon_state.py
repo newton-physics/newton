@@ -10,11 +10,13 @@ mapping before applying their own numerical solve.
 
 from __future__ import annotations
 
-import logging
+import warnings
 
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
+from ..exceptions import NewtonWarning
 from ..sim import Model, State
 from ..sim.tendon import TendonGuideFlags, TendonGuideType
 from .tendon_kernels import (
@@ -31,8 +33,6 @@ from .tendon_kernels import (
     update_tendon_cone_rows,
     update_tendon_guide_active,
 )
-
-logger = logging.getLogger(__name__)
 
 _TENDON_SEGMENT_STATE_FIELDS = (
     "tendon_segment_rest_length",
@@ -85,6 +85,11 @@ def _transform_vector_np(pose: np.ndarray, vec: np.ndarray) -> np.ndarray:
     q = pose[3:]
     t = 2.0 * np.cross(q[:3], vec)
     return vec + q[3] * t + np.cross(q[:3], t)
+
+
+def _position_roundoff_np(a: np.ndarray, b: np.ndarray) -> float:
+    """Match the float32 world-position allowance used by tendon geometry kernels."""
+    return 4.0 * np.finfo(np.float32).eps * max(float(np.max(np.abs(a))), float(np.max(np.abs(b))))
 
 
 def _tangent_point_circle_np(
@@ -145,7 +150,10 @@ def _segment_attachment_points_np(
         n_l = n_l / max(float(np.linalg.norm(n_l)), 1.0e-12)
         n_r = n_r / max(float(np.linalg.norm(n_r)), 1.0e-12)
         alignment = float(np.dot(n_l, n_r))
-        if np.dot(np.cross(n_l, n_r), np.cross(n_l, n_r)) <= 1.0e-12 and abs(np.dot(delta, n_l)) <= 1.0e-6 * distance:
+        plane_tol = 1.0e-6 * distance + _position_roundoff_np(new_l, new_r)
+        if np.dot(np.cross(n_l, n_r), np.cross(n_l, n_r)) <= 1.0e-12 and abs(np.dot(delta, n_l)) <= plane_tol:
+            delta = delta - np.dot(delta, n_l) * n_l
+            distance = float(np.linalg.norm(delta))
             side = 1.0 if orient_l * orient_r * alignment > 0.0 else -1.0
             radius_delta = radius_l - side * radius_r
             if distance > abs(radius_delta):
@@ -827,21 +835,24 @@ class TendonStateMixin:
                     dot_val = np.dot(r_l, r_r)
                     # Use the same signed material ledger as rolling and route transitions.
                     theta = float(np.arctan2(cross_val, dot_val)) * float(guide_orientation_np[i])
+                    wrap_tol = 1.0e-6 + (
+                        _position_roundoff_np(center, pt_left) + _position_roundoff_np(center, pt_right)
+                    ) / max(min(float(np.linalg.norm(r_l)), float(np.linalg.norm(r_r))), 1.0e-8)
                     # Both atan2 branches describe the supported fixed half-circle.
                     if (
                         (guide_flags_np[i] & int(TendonGuideFlags.DYNAMIC)) == 0
                         and theta < 0.0
-                        and abs(theta + np.pi) <= 1.0e-6
+                        and abs(theta + np.pi) <= wrap_tol
                     ):
                         theta = float(np.pi)
-                    if theta < -1.0e-6:
-                        logger.warning(
-                            "Tendon %d: ROLLER guide %d starts at an unsupported oriented wrap of %.1f deg. "
+                    if theta < -wrap_tol:
+                        warnings.warn(
+                            f"Tendon {t}: ROLLER guide {i} starts at an unsupported oriented wrap of "
+                            f"{np.degrees(theta):.1f} deg. "
                             "Correct the guide orientation or initial route geometry. "
                             "The material reference uses the signed arc, not its absolute length.",
-                            t,
-                            i,
-                            np.degrees(theta),
+                            NewtonWarning,
+                            stacklevel=_external_warning_stacklevel(),
                         )
                     cable_len += theta * radius
             total_cable[t] = cable_len

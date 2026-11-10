@@ -254,7 +254,10 @@ and reject unsupported semantics rather than silently discard them.
 - Coplanar circular neighbors use an exact common tangent. Overlapping circles
   can have a valid external tangent; an internal tangent requires their center
   distance to exceed the sum of their radii. A missing or collapsed bypass does
-  not change a dynamic guide's active state. An impossible accepted roller span
+  not change a dynamic guide's active state. Nonplanar bypass tangents use an
+  iterative solve; if it does not converge within the geometric and float32
+  precision tolerance, routing emits a diagnostic, keeps the previous active
+  state, and retries at the next substep. An impossible accepted roller span
   emits a diagnostic; preserving its previous attachment points does not make
   that geometry physically valid.
 - Native tendon data is not imported from USD/MuJoCo.

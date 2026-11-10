@@ -60,6 +60,14 @@ def tangent_point_circle(
 
 
 @wp.func
+def _position_roundoff(a: wp.vec3, b: wp.vec3) -> float:
+    """Allow float32 transform and subtraction roundoff at the world-coordinate scale."""
+    scale_a = wp.max(wp.abs(a[0]), wp.max(wp.abs(a[1]), wp.abs(a[2])))
+    scale_b = wp.max(wp.abs(b[0]), wp.max(wp.abs(b[1]), wp.abs(b[2])))
+    return 4.0 * 1.1920928955078125e-7 * wp.max(scale_a, scale_b)
+
+
+@wp.func
 def _planar_circle_tangents(
     center_l: wp.vec3,
     center_r: wp.vec3,
@@ -86,8 +94,13 @@ def _planar_circle_tangents(
     n_l = normal_l / length_l
     n_r = normal_r / length_r
     alignment = wp.dot(n_l, n_r)
-    if wp.length_sq(wp.cross(n_l, n_r)) > 1.0e-12 or wp.abs(wp.dot(delta, n_l)) > 1.0e-6 * distance:
+    plane_tol = 1.0e-6 * distance + _position_roundoff(center_l, center_r)
+    if wp.length_sq(wp.cross(n_l, n_r)) > 1.0e-12 or wp.abs(wp.dot(delta, n_l)) > plane_tol:
         return center_l, center_r, int(0)
+
+    # Project the accepted coplanar pair before constructing its tangent.
+    delta = delta - wp.dot(delta, n_l) * n_l
+    distance = wp.length(delta)
 
     side = float(-1.0)
     if float(orient_l * orient_r) * alignment > 0.0:
@@ -389,12 +402,16 @@ def update_tendon_guide_active(
         candidate_offset = candidate_offset - wp.dot(candidate_offset, normal) * normal
         span_length_sq = wp.dot(span, span)
         # An undefined or unconverged bypass cannot decide a topology change.
-        if (
-            not wp.isfinite(span_length_sq)
-            or span_length_sq <= 1.0e-12
-            or not wp.isfinite(bypass_step)
-            or bypass_step > 1.0e-5 * wp.length(next_center - prev_center)
-        ):
+        if not wp.isfinite(span_length_sq) or span_length_sq <= 1.0e-12:
+            continue
+        bypass_tol = 1.0e-5 * wp.length(next_center - prev_center) + 2.0 * _position_roundoff(bypass_l, bypass_r)
+        if not wp.isfinite(bypass_step) or bypass_step > bypass_tol:
+            wp.printf(
+                "WARNING: Tendon %d dynamic ROLLER guide %d bypass tangent did not converge; "
+                "keeping previous activation state.\n",
+                tendon_id,
+                guide_idx,
+            )
             continue
         active = False
         if span_length_sq > 1.0e-12:
@@ -1068,7 +1085,11 @@ def update_tendon_cone_rows(
     if is_rolling and report_unsupported_wrap != 0:
         # Each roller owns the diagnostic for its outgoing roller-to-roller span.
         next_guide = seg_active_guide_r[seg_right]
-        if tendon_guide_type[next_guide] == int(TendonGuideType.ROLLER):
+        if (
+            tendon_guide_type[next_guide] == int(TendonGuideType.ROLLER)
+            and tendon_guide_radius[guide_idx] > 0.0
+            and tendon_guide_radius[next_guide] > 0.0
+        ):
             pose_l = tendon_body_pose(body_q, tendon_guide_body[guide_idx])
             pose_r = tendon_body_pose(body_q, tendon_guide_body[next_guide])
             _unused_l, _unused_r, tangent_status = _planar_circle_tangents(
@@ -1109,7 +1130,10 @@ def update_tendon_cone_rows(
             signed_wrap_angle = wp.atan2(wp.dot(wp.cross(u_left, u_right), normal), wp.dot(u_left, u_right))
             oriented_wrap_angle = signed_wrap_angle * float(tendon_guide_orientation[guide_idx])
             # atan2 may represent the supported pi boundary as either +pi or -pi.
-            wrap_tol = 1.0e-6
+            wrap_tol = 1.0e-6 + (
+                _position_roundoff(center, seg_attachment_r[seg_left])
+                + _position_roundoff(center, seg_attachment_l[seg_right])
+            ) / wp.min(len_r_left, len_r_right)
             if oriented_wrap_angle < -wrap_tol and oriented_wrap_angle > -wp.pi + wrap_tol:
                 wp.printf(
                     "ERROR: Tendon %d ROLLER guide %d crossed the supported wrap range [0, pi] "

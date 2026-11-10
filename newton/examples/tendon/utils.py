@@ -146,8 +146,8 @@ def get_tendon_total_lengths(solver, model, state):
     """Return geometric total cable length for each tendon.
 
     The total includes straight segment distances plus wrap arc lengths at
-    rolling guides.  This is the measured counterpart of
-    ``solver.tendon_total_cable``.
+    rolling guides, using signed arcs for temporary negative wraps. This is the
+    measured counterpart of ``solver.tendon_total_cable``.
     """
     if model.tendon_count == 0:
         return np.zeros(0, dtype=np.float32)
@@ -159,6 +159,8 @@ def get_tendon_total_lengths(solver, model, state):
     guide_offset = model.tendon_guide_offset.numpy()
     guide_axis = model.tendon_guide_axis.numpy()
     guide_radius = model.tendon_guide_radius.numpy()
+    guide_orientation = model.tendon_guide_orientation.numpy()
+    guide_flags = model.tendon_guide_flags.numpy()
     guide_active = getattr(solver, "tendon_guide_active", None)
     guide_active = (
         guide_active.numpy() if guide_active is not None else np.ones(model.tendon_guide_count, dtype=np.int32)
@@ -209,7 +211,26 @@ def get_tendon_total_lengths(solver, model, state):
             r_right = pt_right - center
             cross_val = np.dot(np.cross(r_left, r_right), normal)
             dot_val = np.dot(r_left, r_right)
-            theta = abs(np.arctan2(cross_val, dot_val))
+            theta = float(np.arctan2(cross_val, dot_val)) * float(guide_orientation[i])
+            # Match the solver's fixed half-turn convention and float32 error bound.
+            scale_center = float(np.max(np.abs(center)))
+            roundoff = (
+                4.0
+                * np.finfo(np.float32).eps
+                * (
+                    max(scale_center, float(np.max(np.abs(pt_left))))
+                    + max(scale_center, float(np.max(np.abs(pt_right))))
+                )
+            )
+            wrap_tol = 1.0e-6 + roundoff / max(
+                min(float(np.linalg.norm(r_left)), float(np.linalg.norm(r_right))), 1.0e-8
+            )
+            if (
+                (guide_flags[i] & int(newton.TendonGuideFlags.DYNAMIC)) == 0
+                and theta < 0.0
+                and abs(theta + np.pi) <= wrap_tol
+            ):
+                theta = float(np.pi)
             total += theta * guide_radius[i]
 
         lengths[t] = total
