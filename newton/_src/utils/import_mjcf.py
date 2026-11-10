@@ -1416,6 +1416,8 @@ def parse_mjcf(
             if key in _SOLREF_SHORTHAND_KEYS and len(default) >= 2:
                 # MuJoCo's solref-style shorthand: trailing components fall
                 # back to the registered default (e.g. dampratio=1.0).
+                # SolverMuJoCo._solref_value_transformer applies the same rule
+                # to the mujoco:solref and mujoco:solreflimit custom attributes.
                 padded = (out[0], *(float(default[i]) for i in range(1, len(default))))
                 return wp.types.vector(len(default), wp.float32)(*padded)
             # Legacy "replicate to fill" behaviour for vec3 attributes that
@@ -1666,7 +1668,10 @@ def parse_mjcf(
                 friction_values = np.array(geom_attrib["friction"].split(), dtype=np.float32)
 
                 if len(friction_values) >= 1:
+                    # MJCF has one sliding coefficient: it replaces the whole friction pair, so a
+                    # builder default mu_static only applies to geoms without an explicit friction.
                     shape_cfg.mu = float(friction_values[0])
+                    shape_cfg.mu_static = None
 
                 if len(friction_values) >= 2:
                     shape_cfg.mu_torsional = float(friction_values[1])

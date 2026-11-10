@@ -360,8 +360,10 @@ def parse_usd(
         Particle widths are diameters. Newton converts each radius as
         ``width / 2`` after applying stage units and the prim's uniform world
         scale; converted widths and radii are in meters. Authored
-        ``physics:masses`` take precedence over body mass or density, then
-        material density. Density-derived mass uses
+        ``newton:masses`` take precedence over body mass or density, then
+        material density. The deprecated ``physics:masses`` name is read,
+        with a deprecation warning, when ``newton:masses`` is unauthored.
+        Density-derived mass uses
         ``physics:density * width**3``; converted masses are in kilograms.
         Without widths, it uses ``ModelBuilder.default_particle_radius`` and a
         support width of twice that radius. Non-uniform scale or shear is
@@ -474,7 +476,12 @@ def parse_usd(
 
     # Capture material defaults at the start of this import.
     default_material = _PhysicsMaterial(
-        staticFriction=builder.default_shape_cfg.mu,
+        # an unset default mu_static keeps a single coefficient (staticFriction == dynamicFriction)
+        staticFriction=(
+            builder.default_shape_cfg.mu
+            if builder.default_shape_cfg.mu_static is None
+            else builder.default_shape_cfg.mu_static
+        ),
         dynamicFriction=builder.default_shape_cfg.mu,
         torsionalFriction=builder.default_shape_cfg.mu_torsional,
         rollingFriction=builder.default_shape_cfg.mu_rolling,
