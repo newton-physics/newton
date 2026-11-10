@@ -504,8 +504,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             iterations: Number of VBD iterations per step. If ``None``, use the registered
                 ``newton:maxSolverIterations`` scene value, or ``10`` if absent or ``-1``.
                 Explicit values override the scene.
-            friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
-                and rigid body contacts).
+            friction_epsilon: Small sliding-speed threshold [m/s] for particle and rigid-soft friction.
+                Does not affect compliant-ALM rigid-rigid contacts.
             dat_conservative_bound_relaxation: Relaxation factor in (0, 1) shared by every Divide-and-Truncate
                 (DAT) truncation: soft self-contact (``particle_enable_self_contact``) and rigid-soft
                 (``rigid_soft_enable_dat``). It scales every truncation scalar, and each side's motion
@@ -1387,6 +1387,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.rigid_joint_linear_kd = max(0.0, rigid_joint_linear_kd)
         self.rigid_joint_angular_kd = max(0.0, rigid_joint_angular_kd)
 
+        # Per-body color from the groups VBD solves by (``model.body_colors`` may be unset when the groups are
+        # assigned directly); compliant contacts between same-color dynamic bodies use a conservative metric.
+        body_color = np.full(model.body_count, -1, dtype=np.int32)
+        for color, group in enumerate(model.body_color_groups):
+            body_color[group.numpy()] = color
+        self._body_color = wp.array(body_color, dtype=wp.int32, device=self.device)
+
         # -------------------------------------------------------------
         # Rigid-only solver state (used when SolverVBD integrates bodies)
         # -------------------------------------------------------------
@@ -1412,7 +1419,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # Adjacency and dimensions
             joint_constraint_dim = self._init_joint_constraint_layout()
             self.rigid_adjacency = self._compute_rigid_force_element_adjacency(model, joint_constraint_dim)
-            self.tendon_adjacency = self._compute_tendon_force_element_adjacency(model).to(self.device)
+            self.tendon_adjacency = self._compute_tendon_force_element_adjacency(model, body_color).to(self.device)
             (
                 self.body_particle_attachment_offsets,
                 self.body_particle_attachment_indices,
@@ -1615,13 +1622,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "model.body_color_groups is empty but rigid bodies are present! When using the SolverVBD you must call ModelBuilder.color() "
                 "or ModelBuilder.set_coloring() before calling ModelBuilder.finalize()."
             )
-
-        # Per-body color from the groups VBD solves by (``model.body_colors`` may be unset when the groups are
-        # assigned directly); compliant contacts between same-color dynamic bodies use a conservative metric.
-        body_color = np.full(model.body_count, -1, dtype=np.int32)
-        for color, group in enumerate(model.body_color_groups):
-            body_color[group.numpy()] = color
-        self._body_color = wp.array(body_color, dtype=wp.int32, device=self.device)
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -2686,13 +2686,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         adjacency.body_adj_joints_offsets = wp.array(offsets, dtype=wp.int32, device=self.device)
         return adjacency
 
-    def _compute_tendon_force_element_adjacency(self, model: Model) -> TendonForceElementAdjacencyInfo:
+    def _compute_tendon_force_element_adjacency(
+        self, model: Model, body_colors: np.ndarray
+    ) -> TendonForceElementAdjacencyInfo:
         """Build CSR adjacency for authored and possible dynamic bypass segments."""
         adjacency = TendonForceElementAdjacencyInfo()
         body_segments = [set() for _ in range(model.body_count)]
-        body_colors = np.full(model.body_count, -1, dtype=np.int32)
-        for color, group in enumerate(model.body_color_groups):
-            body_colors[group.numpy()] = color
 
         if model.tendon_segment_count > 0:
             guide_bodies = model.tendon_guide_body.numpy()

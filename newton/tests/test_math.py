@@ -28,6 +28,13 @@ def _inside_limits_kernel(
     result[i] = newton.math.vec_inside_limits(a[i], lower[i], upper[i])
 
 
+@wp.kernel(enable_backward=False)
+def _quat_velocity_kernel(q_now: wp.array[wp.quat], q_prev: wp.array[wp.quat], dt: float, result: wp.array[wp.vec3]):
+    """Evaluate finite-difference angular velocity on a Warp device."""
+    i = wp.tid()
+    result[i] = newton.math.quat_velocity(q_now[i], q_prev[i], dt)
+
+
 class TestMathVectorPredicates(unittest.TestCase):
     """Check finite boundaries and unordered values in vector predicates."""
 
@@ -119,6 +126,52 @@ class TestMathVectorPredicates(unittest.TestCase):
                     device=device,
                 )
                 np.testing.assert_array_equal(result.numpy(), expected)
+
+
+class TestMathQuatVelocity(unittest.TestCase):
+    """Check finite-difference angular velocity from two orientations."""
+
+    def test_quat_velocity_identical_and_small_rotations(self):
+        """Return exactly zero for identical orientations and the rotation rate otherwise."""
+        rng = np.random.default_rng(0)
+        q = rng.normal(size=(256, 4))
+        q /= np.linalg.norm(q, axis=1, keepdims=True)
+        dt = 1.0e-3
+        angle = 1.0e-3
+        axis = np.array([0.0, 0.6, 0.8])
+        step = np.array([*(np.sin(0.5 * angle) * axis), np.cos(0.5 * angle)])
+        # Warp quaternions are (x, y, z, w); q_now = step * q_prev rotates by `angle` about `axis`.
+        x0, y0, z0, w0 = q.T
+        x1, y1, z1, w1 = step
+        rotated = np.stack(
+            (
+                w1 * x0 + x1 * w0 + y1 * z0 - z1 * y0,
+                w1 * y0 - x1 * z0 + y1 * w0 + z1 * x0,
+                w1 * z0 + x1 * y0 - y1 * x0 + z1 * w0,
+                w1 * w0 - x1 * x0 - y1 * y0 - z1 * z0,
+            ),
+            axis=1,
+        )
+
+        for device in get_test_devices(mode="basic"):
+            with self.subTest(device=device):
+                q_prev = wp.array(q.astype(np.float32), dtype=wp.quat, device=device)
+                for q_now, expected, atol in (
+                    (q, np.zeros(3), 0.0),
+                    (-q, np.zeros(3), 0.0),
+                    (rotated, axis * (angle / dt), 1.0e-3),
+                ):
+                    result = wp.empty(len(q), dtype=wp.vec3, device=device)
+                    wp.launch(
+                        _quat_velocity_kernel,
+                        dim=len(q),
+                        inputs=[wp.array(q_now.astype(np.float32), dtype=wp.quat, device=device), q_prev, dt],
+                        outputs=[result],
+                        device=device,
+                    )
+                    np.testing.assert_allclose(
+                        result.numpy(), np.broadcast_to(expected, (len(q), 3)), rtol=0.0, atol=atol
+                    )
 
 
 if __name__ == "__main__":
