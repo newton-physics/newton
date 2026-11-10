@@ -32,6 +32,7 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL
 from newton._src.geometry.kernels import triangle_closest_point
+from newton._src.geometry.soft_contact_match import _soft_point, _soft_radius
 from newton._src.geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from newton._src.math import orthonormal_basis, quat_velocity
 from newton._src.sim import JointType
@@ -2240,11 +2241,24 @@ def record_body_particle_contact_normal_forces(
 
     Damping carries part of the normal load, so a cone from the elastic force alone is too wide while a
     contact opens and too narrow while it closes. Evaluated at the end of the step, the load does not follow
-    the iterates, whose inertial start overstates penetration and damping.
+    the iterates, whose inertial start overstates penetration and damping. A record that does not touch at the
+    end of the step stores no load (-1), so a substep in which it touches down uses its elastic force.
     """
     for i in range(wp.tid(), wp.min(soft_contact_count[0], soft_contact_max), worker_count):
         corners = soft_contact_indices[i]
         if corners[0] < 0 or not _soft_contact_force_enabled(i, contact_filter):
+            soft_contact_normal_force[i] = -1.0
+            continue
+        shape = soft_contact_shape[i]
+        X_wb = wp.transform_identity()
+        if shape_body[shape] >= 0:
+            X_wb = body_q[shape_body[shape]]
+        contact_distance = _soft_radius(corners, particle_radius)
+        if shape_margin.shape[0] > 0:
+            contact_distance += shape_margin[shape]
+        surface = wp.transform_point(X_wb, soft_contact_body_pos[i])
+        x = _soft_point(corners, soft_contact_barycentric[i], particle_q)
+        if wp.dot(soft_contact_normal[i], x - surface) >= contact_distance:
             soft_contact_normal_force[i] = -1.0
             continue
         normal_force, _hessian, _bx = _eval_soft_ef_contact(

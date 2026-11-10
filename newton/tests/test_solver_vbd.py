@@ -2426,6 +2426,24 @@ def _soft_block_on_tilted_box(
     mu = 0.5
     fps = 60
     dt = 1.0 / (fps * substeps)
+    model, pipeline, solver = _soft_block_on_box(mu, full_surface, sticky, damping_bidirectional)
+    state_0, state_1, contacts = model.state(), model.state(), pipeline.contacts()
+
+    positions = []
+    loads = load if isinstance(load, tuple) else (load,) * len(seconds)
+    for duration, window_load in zip(seconds, loads, strict=True):
+        tilt = math.atan(window_load * mu)
+        model.set_gravity((9.81 * math.sin(tilt), 0.0, -9.81 * math.cos(tilt)))
+        for _ in range(round(duration * fps * substeps)):
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, None, contacts, dt)
+            state_0, state_1 = state_1, state_0
+        positions.append(state_0.particle_q.numpy().mean(axis=0))
+    return positions
+
+
+def _soft_block_on_box(mu: float, full_surface: bool, sticky: bool, damping_bidirectional: bool = True):
+    """A soft block 2 mm above a static box, inside its contact gap: the model, its pipeline, and a VBD solver."""
     builder = newton.ModelBuilder()
     builder.add_shape_box(
         body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, -0.01), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.01
@@ -2457,19 +2475,35 @@ def _soft_block_on_tilted_box(
         contact_matching="sticky" if sticky else "disabled",
     )
     solver = newton.solvers.SolverVBD(model, iterations=10, soft_contact_damping_bidirectional=damping_bidirectional)
-    state_0, state_1, contacts = model.state(), model.state(), pipeline.contacts()
+    return model, pipeline, solver
 
-    positions = []
-    loads = load if isinstance(load, tuple) else (load,) * len(seconds)
-    for duration, window_load in zip(seconds, loads, strict=True):
-        tilt = math.atan(window_load * mu)
-        model.set_gravity((9.81 * math.sin(tilt), 0.0, -9.81 * math.cos(tilt)))
-        for _ in range(round(duration * fps * substeps)):
+
+def _sticky_soft_contacts_store_no_load_before_touchdown(test, device):
+    """A kept record that does not touch at the end of a step carries no load, only one that touches does.
+
+    With one collision pass per frame, the substeps between passes read the stored load. A record still inside
+    the contact gap stored zero, and the substep in which it touched down then had no friction.
+    """
+    substeps = 5
+    dt = 1.0 / (60 * substeps)
+    with wp.ScopedDevice(device):
+        model, pipeline, solver = _soft_block_on_box(0.5, False, True)
+        state_0, state_1, contacts = model.state(), model.state(), pipeline.contacts()
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, None, contacts, dt)
+        count = contacts.soft_contact_count.numpy()[0]
+        airborne = contacts._soft_contact_normal_force.numpy()[:count].copy()
+        state_0, state_1 = state_1, state_0
+        for _ in range(30):
             pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, None, contacts, dt)
-            state_0, state_1 = state_1, state_0
-        positions.append(state_0.particle_q.numpy().mean(axis=0))
-    return positions
+            for _ in range(substeps):
+                solver.step(state_0, state_1, None, contacts, dt)
+                state_0, state_1 = state_1, state_0
+        resting = contacts._soft_contact_normal_force.numpy()[: contacts.soft_contact_count.numpy()[0]]
+
+    test.assertGreater(count, 0)
+    np.testing.assert_array_equal(airborne, -1.0)
+    test.assertGreater(resting.max(), 0.0)
 
 
 def _sticky_soft_contacts_hold_static_load(test, device, full_surface, substeps):
@@ -7215,6 +7249,12 @@ add_function_test(
     TestSolverVBD,
     "test_sticky_soft_contacts_slide_beyond_friction_cone",
     _sticky_soft_contacts_slide_beyond_friction_cone,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_sticky_soft_contacts_store_no_load_before_touchdown",
+    _sticky_soft_contacts_store_no_load_before_touchdown,
     devices=devices,
 )
 add_function_test(
