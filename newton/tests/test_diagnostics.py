@@ -37,7 +37,7 @@ class TestWarningCategories(unittest.TestCase):
 
     def test_library_warnings_use_newton_categories(self):
         """Require a Newton category for every warning Newton emits."""
-        allowed = {"NewtonWarning", "NewtonDeprecationWarning"}
+        allowed = {n for n in newton.__all__ if isinstance(c := getattr(newton, n), type) and issubclass(c, Warning)}
         offenders = []
         for relative, tree in _library_sources():
             for node in ast.walk(tree):
