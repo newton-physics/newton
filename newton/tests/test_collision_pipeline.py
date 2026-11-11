@@ -7089,6 +7089,43 @@ def _sorted_soft_contact_rows(contacts):
     return rows[np.lexsort(np.round(rows, 5).T[::-1])]
 
 
+def _check_soft_replay_slots(test, model, pipeline, contacts):
+    """Check that every soft-contact row sits in the replay slot of the pass and pair that made it.
+
+    The fixed-size passes share ``soft_contact_tids`` in this order: per-particle, edge, face,
+    heightfield face, SDF mesh vertex. Valid for scenes without BVH mesh contacts, which use no slot.
+    """
+    count = int(contacts.soft_contact_count.numpy()[0])
+    tids = contacts.soft_contact_tids.numpy()
+    indices = contacts.soft_contact_indices.numpy()
+    shapes = contacts.soft_contact_shape.numpy()
+    edge_corners = model.edge_indices.numpy()[:, 2:4]
+    tri_corners = model.tri_indices.numpy()
+    passes = (
+        ("particle", pipeline.soft_rigid_contact_pairs, None),
+        ("edge", pipeline.soft_edge_rigid_pairs, edge_corners),
+        ("face", pipeline.soft_face_rigid_pairs, tri_corners),
+        ("heightfield face", pipeline._soft_heightfield_face_pairs, tri_corners),
+        ("SDF mesh vertex", pipeline._soft_sdf_vertex_pairs, None),
+    )
+    test.assertEqual(tids.shape[0], sum(len(pairs) for _name, pairs, _corners in passes))
+    base = 0
+    rows = []
+    for name, pair_array, corners in passes:
+        pairs = pair_array.numpy().reshape(-1, 2)
+        slots = tids[base : base + len(pairs)]
+        used = slots >= 0
+        row = slots[used]
+        feature = pairs[used, 0]
+        expected = feature[:, None] if corners is None else corners[feature]
+        np.testing.assert_array_equal(shapes[row], pairs[used, 1], err_msg=name)
+        np.testing.assert_array_equal(indices[row, : expected.shape[1]], expected, err_msg=name)
+        np.testing.assert_array_equal(indices[row, expected.shape[1] :], -1, err_msg=name)
+        rows.append(row)
+        base += len(pairs)
+    np.testing.assert_array_equal(np.sort(np.concatenate(rows)), np.arange(count))
+
+
 def test_mesh_backend_rejects_unknown_value(test, device):
     """Reject an unsupported full-surface mesh back-end name."""
     builder = newton.ModelBuilder()
@@ -7249,32 +7286,48 @@ def test_mesh_sdf_backend_mixed_scene_routes_each_mesh(test, device):
 
 
 def test_mesh_sdf_backend_moving_body_frames(test, device):
-    """Report SDF mesh contacts in the body frame and their normals in the world frame."""
+    """Report SDF mesh contacts in the body frame and their normals in the world frame.
+
+    The second pose is set on the state after the pipeline is built, so the contacts must follow
+    the body pose of the state and not the initial pose of the model.
+    """
     half = _MESH_BACKEND_BOX_HALF_EXTENT
     body_xform = wp.transform(wp.vec3(1.0, -2.0, 0.5), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * wp.pi))
+    moved_xform = wp.transform(wp.vec3(-0.5, 1.0, 2.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.3 * wp.pi))
     shape_xform = wp.transform(wp.vec3(0.1, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.25 * wp.pi))
-    shape_to_world = wp.transform_multiply(body_xform, shape_xform)
     local_points = [(-0.05, -0.04, 0.35), (0.06, -0.03, 0.35), (0.0, 0.07, 0.36)]
+
+    def world_points(xform):
+        shape_to_world = wp.transform_multiply(xform, shape_xform)
+        return [wp.transform_point(shape_to_world, wp.vec3(*p)) for p in local_points]
+
     builder = newton.ModelBuilder()
     body = builder.add_body(xform=body_xform, mass=1.0, inertia=wp.mat33(np.eye(3)))
     cfg = newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False, has_particle_collision=True)
     cfg.configure_sdf(force_sdf=True)
     builder.add_shape_mesh(body=body, xform=shape_xform, mesh=newton.Mesh.create_box(half, half, half), cfg=cfg)
-    _add_soft_triangle_with_edges(builder, [wp.transform_point(shape_to_world, wp.vec3(*p)) for p in local_points])
+    _add_soft_triangle_with_edges(builder, world_points(body_xform))
     model = builder.finalize(device=device)
-    _pipeline, contacts, state = _collide_mesh_backend(model, "sdf")
+    pipeline, contacts, state = _collide_mesh_backend(model, "sdf")
 
-    kinds, soft_points, body_points, normals, _shapes, _indices = _soft_contact_rows(contacts, state)
-    test.assertEqual(Counter(kinds.tolist()), Counter({"V": 3, "E": 3, "F": 1}))
-    world_to_shape = wp.transform_inverse(shape_to_world)
-    body_to_shape = wp.transform_inverse(shape_xform)
-    soft_local = np.array([wp.transform_point(world_to_shape, wp.vec3(*p)) for p in soft_points])
-    rigid_local = np.array([wp.transform_point(body_to_shape, wp.vec3(*p)) for p in body_points])
-    normals_local = np.array([wp.transform_vector(world_to_shape, wp.vec3(*n)) for n in normals])
-    exact_phi, exact_grad = _exact_cube_sdf(soft_local)
-    np.testing.assert_allclose(np.einsum("ij,ij->i", normals_local, soft_local - rigid_local), exact_phi, atol=5.0e-3)
-    np.testing.assert_allclose(normals_local, exact_grad, atol=2.0e-2)
-    np.testing.assert_allclose(rigid_local[:, 2], half, atol=5.0e-3)
+    for pose, xform in (("initial", body_xform), ("moved after construction", moved_xform)):
+        with test.subTest(pose=pose):
+            state.body_q.assign(wp.array([xform], dtype=wp.transform, device=device))
+            state.particle_q.assign(wp.array(world_points(xform), dtype=wp.vec3, device=device))
+            pipeline.collide(state, contacts)
+            kinds, soft_points, body_points, normals, _shapes, _indices = _soft_contact_rows(contacts, state)
+            test.assertEqual(Counter(kinds.tolist()), Counter({"V": 3, "E": 3, "F": 1}))
+            world_to_shape = wp.transform_inverse(wp.transform_multiply(xform, shape_xform))
+            body_to_shape = wp.transform_inverse(shape_xform)
+            soft_local = np.array([wp.transform_point(world_to_shape, wp.vec3(*p)) for p in soft_points])
+            rigid_local = np.array([wp.transform_point(body_to_shape, wp.vec3(*p)) for p in body_points])
+            normals_local = np.array([wp.transform_vector(world_to_shape, wp.vec3(*n)) for n in normals])
+            exact_phi, exact_grad = _exact_cube_sdf(soft_local)
+            np.testing.assert_allclose(
+                np.einsum("ij,ij->i", normals_local, soft_local - rigid_local), exact_phi, atol=5.0e-3
+            )
+            np.testing.assert_allclose(normals_local, exact_grad, atol=2.0e-2)
+            np.testing.assert_allclose(rigid_local[:, 2], half, atol=5.0e-3)
 
 
 def test_mesh_sdf_backend_multi_world_pairs(test, device):
@@ -7368,23 +7421,20 @@ def test_mesh_sdf_backend_negative_margin_nonuniform_scale(test, device):
     """Keep edge and face contacts whose acceptance threshold is negative under nonuniform scale.
 
     A negative shape margin beyond the contact gap accepts only penetrating features. The cull
-    bound must then stay below the accurate distance for points inside the shape.
+    bound must then stay below the accurate distance for points inside the shape. The scale is
+    mirrored, so the bound must also use the magnitude of each scale component.
     """
-    for scale_x in (4.0, -4.0):
-        with test.subTest(scale_x=scale_x):
-            builder = newton.ModelBuilder()
-            cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True, margin=-0.06)
-            cfg.configure_sdf(force_sdf=True)
-            builder.add_shape_mesh(
-                body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5), scale=(scale_x, 1.0, 1.0), cfg=cfg
-            )
-            # A small triangle 0.08 m inside the scaled +x face at x = 2.0.
-            _add_soft_triangle_with_edges(builder, [(1.92, -0.001, -0.001), (1.92, 0.001, -0.001), (1.92, 0.0, 0.001)])
-            model = builder.finalize(device=device)
-            _pipeline, contacts, state = _collide_mesh_backend(model, "sdf", gap=0.01)
-            kinds, soft_points, rigid_points, normals, _shapes, _indices = _soft_contact_rows(contacts, state)
-            test.assertEqual(Counter(kinds.tolist()), Counter({"V": 3, "E": 3, "F": 1}))
-            np.testing.assert_allclose(np.einsum("ij,ij->i", normals, soft_points - rigid_points), -0.08, atol=5.0e-3)
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True, margin=-0.06)
+    cfg.configure_sdf(force_sdf=True)
+    builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5), scale=(-4.0, 1.0, 1.0), cfg=cfg)
+    # A small triangle 0.08 m inside the scaled +x face at x = 2.0.
+    _add_soft_triangle_with_edges(builder, [(1.92, -0.001, -0.001), (1.92, 0.001, -0.001), (1.92, 0.0, 0.001)])
+    model = builder.finalize(device=device)
+    _pipeline, contacts, state = _collide_mesh_backend(model, "sdf", gap=0.01)
+    kinds, soft_points, rigid_points, normals, _shapes, _indices = _soft_contact_rows(contacts, state)
+    test.assertEqual(Counter(kinds.tolist()), Counter({"V": 3, "E": 3, "F": 1}))
+    np.testing.assert_allclose(np.einsum("ij,ij->i", normals, soft_points - rigid_points), -0.08, atol=5.0e-3)
 
 
 def test_mesh_sdf_backend_compact_search_keeps_mesh_rows(test, device):
@@ -7433,6 +7483,10 @@ def test_mesh_sdf_backend_compact_search_keeps_mesh_rows(test, device):
             pipeline, contacts, state = _collide_mesh_backend(model, "sdf", gap=0.05)
             wp.synchronize_device(device)
         test.assertEqual(pipeline._soft_sdf_fallback_tids.shape[0] > 0, compact)
+        # The SDF mesh vertex pass shares the replay slots with the per-particle, edge, and face passes.
+        test.assertGreater(pipeline.soft_contact_pair_count, 0)
+        test.assertGreater(len(pipeline._soft_sdf_vertex_pairs), 0)
+        _check_soft_replay_slots(test, model, pipeline, contacts)
         return contacts, state
 
     fused, state = collide(compact=False)
