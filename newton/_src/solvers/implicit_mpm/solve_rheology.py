@@ -288,6 +288,30 @@ def update_batched_condition(
 
 
 @wp.kernel
+def _update_environment_stop_condition(
+    solve_granularity: int,
+    max_iterations: int,
+    status: wp.array[int],
+    iteration: wp.array[int],
+    condition: wp.array[int],
+):
+    """Stop once every environment has been retained, or the budget is spent.
+
+    The residual threshold lives in ``_update_environment_convergence``. Status
+    is 0 while an environment is still iterating.
+    """
+
+    cur_it = iteration[0] + solve_granularity
+    converged = bool(True)
+    for environment in range(status.shape[0]):
+        converged = converged and status[environment] != 0
+
+    stop = converged or cur_it > max_iterations
+    iteration[0] = cur_it
+    condition[0] = wp.where(stop, 0, 1)
+
+
+@wp.kernel
 def _update_environment_convergence(
     residual_threshold: float,
     l2_tolerance_scales: wp.array[float],
@@ -380,12 +404,13 @@ class MomentumData:
             node, shape ``[node_count]``.
         velocity: Grid velocity DOFs to be updated in place [m/s],
             shape ``[node_count, 3]``.
+        velocity_environment_offsets: Velocity-node offsets delimiting
+            independent environments, or ``None`` for a shared solve.
     """
 
     inv_volume: wp.array
     velocity: wp.array[wp.vec3]
     velocity_environment_offsets: wp.array[int] | None = None
-    """Velocity-node offsets delimiting independent environments, or ``None`` for a shared solve."""
 
 
 @dataclass
@@ -466,6 +491,8 @@ class CollisionData:
         has_colliders: True when at least one collider mesh is present in the
             scene; used to reject linear-only solvers that do not support
             contact.
+        collider_environment_offsets: Collider-node offsets delimiting
+            independent environments, or ``None`` for a shared solve.
     """
 
     collider_mat: sp.BsrMatrix
@@ -481,7 +508,6 @@ class CollisionData:
     colored_cell_rows: wp.array[int] | None = None
     colored_velocity_nodes_per_cell: int = 0
     collider_environment_offsets: wp.array[int] | None = None
-    """Collider-node offsets delimiting independent environments, or ``None`` for a shared solve."""
 
 
 class _DelassusOperator:
@@ -1805,13 +1831,14 @@ class _EnvironmentConvergence:
             record_cmd=True,
         )
 
+        # Collider velocities are rasterized again on the next step, and body
+        # feedback reads collider impulses. Nothing consumes the corrected
+        # velocities after the solve returns.
         fields = [
             (momentum.velocity, momentum.velocity_environment_offsets),
             (rheology.stress, rheology.strain_environment_offsets),
             (collision.collider_impulse, collision.collider_environment_offsets),
         ]
-        if collision.rigidity_operator is not None:
-            fields.append((collision.collider_velocities, collision.collider_environment_offsets))
 
         self.saved_fields = []
         self.copy_launches = []
@@ -1885,7 +1912,18 @@ def _run_solver_loop(
             residual = rheology_solver.eval_residual()
             if convergence is not None:
                 convergence.update(residual)
-            if rheology_solver.rheology.strain_environment_offsets is None:
+                wp.launch(
+                    _update_environment_stop_condition,
+                    dim=1,
+                    inputs=[
+                        solve_granularity,
+                        max_iterations,
+                        convergence.status,
+                        iteration,
+                        condition,
+                    ],
+                )
+            elif rheology_solver.rheology.strain_environment_offsets is None:
                 wp.launch(
                     update_condition,
                     dim=1,
@@ -1972,7 +2010,10 @@ def _run_solver_loop(
                     res_l2,
                     res_linf,
                 )
-            if res_l2 < tolerance and res_linf < tolerance:
+            if convergence is not None:
+                if int(np.min(convergence.status.numpy())) != 0:
+                    break
+            elif res_l2 < tolerance and res_linf < tolerance:
                 break
 
     if convergence is not None:

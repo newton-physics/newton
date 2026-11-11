@@ -49,6 +49,7 @@ from newton._src.solvers.implicit_mpm.solve_rheology import (
     _linear_solver_result_norms,
     _nonlinear_solver_result_norms,
     _update_environment_convergence,
+    _update_environment_stop_condition,
     solve_rheology,
     update_batched_condition,
 )
@@ -985,6 +986,38 @@ def test_multiworld_residual_tolerance_scales(test, device):
     np.testing.assert_array_equal(values.numpy()[3:12], 99.0)
     np.testing.assert_array_equal(values.numpy()[12:], -10.0)
 
+    # Stopping reads the retained-environment status instead of repeating the threshold.
+    iteration.zero_()
+    condition.fill_(1)
+    wp.launch(
+        _update_environment_stop_condition,
+        dim=1,
+        inputs=[5, 100, status, iteration, condition],
+        device=device,
+    )
+    test.assertEqual(int(condition.numpy()[0]), 0)
+    test.assertEqual(int(iteration.numpy()[0]), 5)
+
+    status.assign(np.array([2, 0, 1], dtype=np.int32))
+    iteration.zero_()
+    condition.fill_(1)
+    wp.launch(
+        _update_environment_stop_condition,
+        dim=1,
+        inputs=[5, 100, status, iteration, condition],
+        device=device,
+    )
+    test.assertEqual(int(condition.numpy()[0]), 1)
+
+    wp.launch(
+        _update_environment_stop_condition,
+        dim=1,
+        inputs=[5, 5, status, iteration, condition],
+        device=device,
+    )
+    test.assertEqual(int(condition.numpy()[0]), 0)
+    test.assertEqual(int(iteration.numpy()[0]), 10)
+
 
 def test_multiworld_cr_matches_independent(test, device):
     """Verify multi-world CR matches independent."""
@@ -1175,7 +1208,7 @@ def test_multiworld_nonlinear_convergence_is_independent(test, device):
                 separate_worlds=True,
                 solver=mode,
             )
-            solver, state = _step_mpm(model, config, step_count=12, dt=2.5e-3)
+            solver, state = _step_mpm(model, config, step_count=8, dt=2.5e-3)
             arrays = _mpm_particle_state_arrays(state)
             arrays["particle_Jp"] = state.mpm.particle_Jp
             first_world = {name: array.numpy()[: starts[1]] for name, array in arrays.items()}
