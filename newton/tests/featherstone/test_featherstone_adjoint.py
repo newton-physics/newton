@@ -91,6 +91,7 @@ def _probe_loss_kernel(
 
 
 def _build_model(device, requires_grad=True):
+    """Build the quadruped-on-ground-plane model on the test device (inflated inertias)."""
     quadruped = newton.ModelBuilder()
     quadruped.default_joint_cfg.armature = 0.1
     quadruped.default_joint_cfg.target_ke = 0.0
@@ -119,6 +120,7 @@ def _build_model(device, requires_grad=True):
 
 
 def _eager_segment(model, solver, pipe, cts, stand_arr, dofs_arr, st0, st1, n, mode, amp=0.0):
+    """Run n solver steps under the test servo kernel with the given mode and amplitude."""
     params = wp.array([amp], dtype=wp.float32, device=model.device)
     ctrl = model.control()
     for _ in range(n):
@@ -136,10 +138,20 @@ def _eager_segment(model, solver, pipe, cts, stand_arr, dofs_arr, st0, st1, n, m
 
 
 def _snapshot(st):
+    """Copy a state's joint/body arrays to a host-side numpy snapshot tuple."""
     return tuple(arr.numpy().copy() for arr in (st.joint_q, st.joint_qd, st.body_q, st.body_qd))
 
 
 def test_multistep_gradient(test, device):
+    """Tape-vs-FD gradient check across K-step contact-free rollouts.
+
+    Pins the per-step mass-matrix chain scratch: with the aliased
+    solver-owned scratch the K=10 tape gradient lands tens of percent off
+    central FD; with the fix the worst resolvable channel sits at the
+    float32-chaos floor. The physics-unchanged probe constant below is
+    measured, not analytic (see the comment at the assertion), and
+    check_horizon skips channels whose FD reference is itself unconverged.
+    """
     model = _build_model(device)
     solver = newton.solvers.SolverFeatherstone(model)
     pipe = newton.CollisionPipeline(model, soft_contact_gap=10.0, requires_grad=True)
@@ -303,7 +315,7 @@ def test_multistep_gradient(test, device):
 
 
 class TestFeatherstoneAdjoint(unittest.TestCase):
-    pass
+    """Regression tests for the Featherstone differentiable-path adjoints."""
 
 
 add_function_test(
@@ -498,6 +510,7 @@ def test_rigid_tau_external_wrench(test, device):
     C = np.array([0.3, -0.7, 1.1, -0.4, 0.9, -0.2], dtype=np.float64)
 
     def rollout_loss(wrench64=None, q64=None):
+        """One eager solver step under the wrench; returns the hinge-velocity probe loss."""
         # a fresh state's force buffers are already zero - clear_forces()
         # must NOT be called after the assign (it would zero the wrench)
         st0 = model.state()

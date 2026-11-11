@@ -573,6 +573,8 @@ class Example:
     """ANYmal-D standing backflip: crouch -> -360 deg jump -> landing."""
 
     def __init__(self, viewer, args):
+        """Build the ANYmal-D model, classify paw and knee contact shapes, settle the
+        standing stance, and open the optional --rec recorder."""
         self.viewer = viewer
         self.args = args
         self.frame = 0
@@ -715,9 +717,11 @@ class Example:
     # ---------------- execution helpers ----------------
 
     def _snapshot(self, st):
+        """Copy a state's joint/body arrays to a host-side numpy snapshot tuple."""
         return tuple(arr.numpy().copy() for arr in (st.joint_q, st.joint_qd, st.body_q, st.body_qd))
 
     def _fresh(self, snap, requires_grad=None):
+        """Materialize a fresh model state (optionally grad-enabled) from a snapshot tuple."""
         st = self.model.state(requires_grad=requires_grad)
         st.joint_q.assign(snap[0])
         st.joint_qd.assign(snap[1])
@@ -726,6 +730,7 @@ class Example:
         return st
 
     def _settle_segment(self, st0, st1, n, mode, amp=0.0):
+        """Run n solver steps under the hold servo with the given mode and amplitude."""
         params = wp.array([amp], dtype=wp.float32)
         for _ in range(n):
             self.pipe.collide(st0, self.cts)
@@ -770,6 +775,7 @@ class Example:
         return float(out.min()), min_p
 
     def _state_metrics(self, body_q0, body_qd0):
+        """Root-body gate metrics: height, tilt, vertical and angular speed, as a dict."""
         return {
             "z": float(body_q0[2]),
             "tilt": _tilt_of(body_q0),
@@ -867,6 +873,7 @@ class Example:
         return bqs, qds, st0
 
     def _eager_loss(self, mode):
+        """Eager (numpy) loss closure for a phase; the differentiable twin is _tape_loss."""
         if mode == "crouch":
 
             def fn(n, amps, sps, snap):
@@ -947,6 +954,8 @@ class Example:
         return fn
 
     def _tape_loss(self, mode):
+        """Tape-differentiable loss closure for a phase; consumed by the optimizers."""
+
         def fn(n, amps0, sps, snap):
             loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
             params = wp.array(np.asarray(amps0, dtype=np.float32), dtype=wp.float32, requires_grad=True)
@@ -1172,6 +1181,7 @@ class Example:
 
     @staticmethod
     def _clipped_step(amps, d, r, lo, hi, r_min):
+        """Halve the trial radius until the clipped step moves; returns the new point and radius."""
         # project onto the feasible box; accept any real move so warm starts
         # stay usable
         while r >= r_min:
@@ -1283,6 +1293,7 @@ class Example:
     # ---------------- replays + metrics ----------------
 
     def _crouch_replay(self, amps):
+        """Replay the crouch phase for the given amplitudes; returns the end snapshot and metrics."""
         snap_end = None
         rep = {"min_foot_rows": 10**9, "knee_front_min": 1e9, "knee_hind_min": 1e9, "push_margin": 1e9}
         st = self._fresh(self.snap)
@@ -1742,6 +1753,7 @@ class Example:
     # ---------------- runner interface ----------------
 
     def step(self):
+        """Framework hook: run the full optimization once (skipped when done or in --test mode)."""
         if self.chain_done or self.args.test:
             # --test runs ONLY the gradient check (test_final); the full
             # optimization is the interactive run's purpose
@@ -1762,6 +1774,7 @@ class Example:
             self.rec_done = True
 
     def render(self):
+        """Framework hook: draw the settled stance or the optimized playback, looping it."""
         t = self.frame * SIM_DT * FRAME_EVERY
         if not self.playback:
             # nothing optimized yet (or --test): render the settled stance
@@ -1785,6 +1798,7 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Register this example's CLI arguments on top of the shared newton example parser."""
         parser = newton.examples.create_parser()
         parser.add_argument(
             "--rec",
@@ -1806,6 +1820,7 @@ class Example:
         amp = 0.07  # off zero so the spline path is exercised
 
         def rollout(kick_arr, kick_idx, kick):
+            """Two-step landing-servo rollout from the settled stance, with an optional kick."""
             amps = np.full(LAND_NPAR, amp, dtype=np.float32)
             amps_arr = wp.array(amps, dtype=wp.float32)
             st0 = self._fresh(snap)
