@@ -264,7 +264,7 @@ class TestImportMjcfBasic(unittest.TestCase):
 </mujoco>
 """
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, name):
+                with self.assertWarnsRegex(newton.NewtonWarning, name):
                     builder.add_mjcf(mjcf)
                 solver = SolverMuJoCo(builder.finalize())
                 self.assertEqual(solver.mj_model.opt.enableflags, 0)
@@ -6608,9 +6608,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         builder = newton.ModelBuilder()
         with warnings.catch_warnings():
             # The welds parallel the hinges.
-            warnings.filterwarnings(
-                "ignore", "Adding a .* another joint already connects", newton.exceptions.NewtonWarning
-            )
+            warnings.filterwarnings("ignore", "Adding a .* another joint already connects", newton.NewtonWarning)
             builder.add_mjcf(mjcf)
 
         def pose(body):
@@ -6684,9 +6682,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         builder = newton.ModelBuilder()
         with self.assertLogs("newton", level="WARNING"), warnings.catch_warnings():
             # The welds parallel the hinges.
-            warnings.filterwarnings(
-                "ignore", "Adding a .* another joint already connects", newton.exceptions.NewtonWarning
-            )
+            warnings.filterwarnings("ignore", "Adding a .* another joint already connects", newton.NewtonWarning)
             builder.add_mjcf(mjcf, xform=xform, scale=scale)
 
         def frames(label):
@@ -6753,9 +6749,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         builder = newton.ModelBuilder()
         with self.assertLogs("newton", level="WARNING") as logs, warnings.catch_warnings():
             # The welds parallel the hinges.
-            warnings.filterwarnings(
-                "ignore", "Adding a .* another joint already connects", newton.exceptions.NewtonWarning
-            )
+            warnings.filterwarnings("ignore", "Adding a .* another joint already connects", newton.NewtonWarning)
             builder.add_mjcf(mjcf)
         torquescale_warnings = [line for line in logs.output if "torquescale" in line]
         self.assertEqual(len(torquescale_warnings), 2, torquescale_warnings)
@@ -7723,7 +7717,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         """Hold joint1 at the constant term, with its solver parameters, when joint2 is omitted."""
         joint = '<joint name="hip-lock" type="hinge" axis="1 0 0"/>'
         equality = '<joint joint1="hip-lock" polycoef="0.3 0 0 0 0" solref="0.01 1" solimp="0.8 0.9 0.01 0.5 2"/>'
-        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "stay MuJoCo equality constraints"):
+        with self.assertWarnsRegex(newton.NewtonWarning, "stay MuJoCo equality constraints"):
             native, converted, model = self._convert(self._mjcf(joint, equality))
 
         self.assertEqual(model.constraint_mimic_count, 0)
@@ -7740,7 +7734,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
                             "".join(_EQUALITY_TEST_JOINTS[name] for name in joints),
                             f'<joint joint1="{joint1}" joint2="{joint2}" polycoef="0.05 0.5 0 0 0"/>',
                         )
-                        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, f"joint1={joint1}"):
+                        with self.assertWarnsRegex(newton.NewtonWarning, f"joint1={joint1}"):
                             native, converted, model = self._convert(mjcf)
                         self.assertEqual(model.constraint_mimic_count, 0)
                         # Combined joints apply slides before hinges, so a hinge declared
@@ -7782,7 +7776,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
                 SolverMuJoCo.register_custom_attributes(builder)
                 # One-ended rows stay MuJoCo-only; the quadratic term is beyond a Newton mimic.
                 warning = "higher-order polycoef" if 'joint2="' in equality else "omit joint2"
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, warning):
+                with self.assertWarnsRegex(newton.NewtonWarning, warning):
                     builder.add_mjcf(mjcf, scale=scale)
                 model = builder.finalize(device="cpu")
                 solver = SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
@@ -7910,7 +7904,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
             for world in range(2):
                 joint1, joint2 = world1_pair if world == 1 else ("h1", "h2")
                 builder.begin_world()
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "multi-DoF joint"):
+                with self.assertWarnsRegex(newton.NewtonWarning, "multi-DoF joint"):
                     builder.add_mjcf(self._mjcf(joints, f'<joint joint1="{joint1}" joint2="{joint2}"/>'))
                 builder.end_world()
             model = builder.finalize()

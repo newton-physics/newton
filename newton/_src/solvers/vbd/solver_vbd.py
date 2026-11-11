@@ -572,12 +572,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 Values must be finite and representable in float32; infinity is unsupported.
 
                 Explicit non-``None`` values for deprecated beta, hard-contact, or
-                penalty-seed controls emit a :class:`~newton.exceptions.NewtonDeprecationWarning`.
+                penalty-seed controls emit a :class:`~newton.NewtonDeprecationWarning`.
 
                 .. deprecated:: 1.6
                     The legacy path selected by ``False`` will be removed in a future
                     release. Explicit ``False`` emits a
-                    :class:`~newton.exceptions.NewtonDeprecationWarning` for all models.
+                    :class:`~newton.NewtonDeprecationWarning` for all models.
                     Use the default compliant ALM path instead.
             rigid_avbd_alpha: C0 stabilization strength (``C_stab = C - alpha * C0``). Range: [0, 1].
                 Controls both joints and body-body contacts when neither class-specific

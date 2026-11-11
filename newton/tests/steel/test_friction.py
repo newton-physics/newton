@@ -889,7 +889,7 @@ def test_unsupported_combinations_raise(test, device):
     for mode in MODES[1:]:
         with test.subTest(mode=mode):
             # An omitted friction_anchor_beta selects point friction, with a warning.
-            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "point friction"):
+            with test.assertWarnsRegex(newton.NewtonWarning, "point friction"):
                 solver = SolverSteel(model, friction_mode=mode)
             test.assertEqual(solver.friction_anchor_beta, 0.0)
             with test.assertRaisesRegex(ValueError, "friction_mode='fixed_normal'"):
@@ -2913,7 +2913,7 @@ def test_colored_modes_keep_the_coupled_restrictions(test, device):
     for mode in _COUPLED_MODES:
         with test.subTest(mode=mode):
             colored = {**_response_options("colored"), "friction_mode": mode}
-            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "point friction"):
+            with test.assertWarnsRegex(newton.NewtonWarning, "point friction"):
                 solver = SolverSteel(model, **colored)
             test.assertEqual(solver.friction_anchor_beta, 0.0)
             test.assertIn(f"_{mode}", solver._pgs_solve_propagation_colored_warp_kernel.key)

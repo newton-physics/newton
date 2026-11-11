@@ -12,7 +12,7 @@ import warp as wp
 
 import newton
 import newton.usd
-from newton.exceptions import NewtonDeprecationWarning
+from newton import NewtonDeprecationWarning
 from newton.sensors import SensorTiledCamera
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
