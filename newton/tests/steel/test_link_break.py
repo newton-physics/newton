@@ -259,7 +259,7 @@ def test_weld_loop_holds_a_hinge(test, device):
         )
         b.add_articulation([j0, j1])
         if weld:
-            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "another joint already connects these bodies"):
+            with test.assertWarnsRegex(newton.NewtonWarning, "another joint already connects these bodies"):
                 b.add_joint_fixed(
                     parent=l1,
                     child=l2,
@@ -565,7 +565,7 @@ class TestSteelLinkBreak(unittest.TestCase):
         """Warn when collapsing would open a link-break loop; collapse a joint-break loop and a MuJoCo weld quietly."""
         builder, *_ = _four_bar("link")
         with self.assertWarnsRegex(
-            newton.exceptions.NewtonWarning, r"does not preserve FIXED loop-closing joints \('coupler_weld'\)"
+            newton.NewtonWarning, r"does not preserve FIXED loop-closing joints \('coupler_weld'\)"
         ):
             builder.collapse_fixed_joints()
         builder, *_ = _four_bar("joint")
@@ -594,7 +594,7 @@ class TestSteelLinkBreak(unittest.TestCase):
         self.assertFalse([w for w in caught if "loop-closing" in str(w.message)])
         if USD_AVAILABLE:
             builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-            with self.assertWarnsRegex(newton.exceptions.NewtonWarning, r"does not preserve FIXED loop-closing joints"):
+            with self.assertWarnsRegex(newton.NewtonWarning, r"does not preserve FIXED loop-closing joints"):
                 builder.add_usd(_four_bar_link_break_stage(), collapse_fixed_joints=True)
 
 

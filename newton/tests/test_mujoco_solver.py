@@ -19,7 +19,7 @@ import numpy as np  # For numerical operations and random values
 import warp as wp
 
 import newton
-from newton import BodyFlags, JointType, Mesh, ModelFlags
+from newton import BodyFlags, JointType, Mesh, ModelFlags, NewtonDeprecationWarning, NewtonWarning
 from newton._src.core.types import vec5
 from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
@@ -38,7 +38,6 @@ from newton._src.solvers.mujoco.geometry import build_shape_layout, compile_layo
 from newton._src.solvers.mujoco.kernels import convert_solref, update_body_inertia_kernel
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.examples import get_asset
-from newton.exceptions import NewtonDeprecationWarning, NewtonWarning
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, patch_sys_module
 
@@ -6225,7 +6224,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "MuJoCo contact capacity"):
                     solver.observables(contacts=limited, kinds={solver.ObservableKind.CONTACT_F})
                 limited.force = None
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "exporting only the first") as warning:
+                with self.assertWarnsRegex(newton.NewtonWarning, "exporting only the first") as warning:
                     caller_line = inspect.currentframe().f_lineno + 1
                     solver.update_contacts(limited)
                 self.assertEqual(warning.filename, __file__)
@@ -8204,7 +8203,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         np.testing.assert_allclose(solver.mjw_model.opt.noslip_tolerance.numpy(), 1e-10, rtol=1e-6)
 
         model.mujoco.integrator.fill_(mujoco.mjtIntegrator.mjINT_RK4)
-        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "RK4.*intermediate"):
+        with self.assertWarnsRegex(newton.NewtonWarning, "RK4.*intermediate"):
             SolverMuJoCo(model, use_mujoco_contacts=False)
 
     def test_options_discrete_integrator(self):
@@ -10550,7 +10549,7 @@ class TestMuJoCoSolverFreeJointNonWorldParent(unittest.TestCase):
             self.skipTest(f"MuJoCo or deps not installed: {e}")
         mjc_warnings = [w for w in caught if "SolverMuJoCo" in str(w.message)]
         self.assertEqual(len(mjc_warnings), 1)
-        self.assertEqual(mjc_warnings[0].category, newton.exceptions.NewtonWarning)
+        self.assertEqual(mjc_warnings[0].category, newton.NewtonWarning)
         self.assertIn("floater", str(mjc_warnings[0].message))
 
 

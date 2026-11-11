@@ -2073,7 +2073,7 @@ def test_torsion_overflow_warns_once(test, device):
     matches = [w for w in caught if "contact torsion row overflow" in str(w.message)]
     test.assertEqual(len(matches), 1, [str(w.message) for w in caught])
     test.assertIn("in world 2: requested", str(matches[0].message))
-    test.assertTrue(issubclass(matches[0].category, newton.exceptions.NewtonWarning))
+    test.assertTrue(issubclass(matches[0].category, newton.NewtonWarning))
     test.assertEqual(matches[0].filename, __file__)
 
 

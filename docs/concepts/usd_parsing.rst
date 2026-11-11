@@ -61,7 +61,7 @@ axis with every translational axis parallel to it. Negating three translational
 axes flips their handedness, so a swapped D6 joint with X, Y, and Z translational
 axes gets a left-handed axis set, which :class:`~newton.solvers.SolverKamino`
 rejects. Newton cannot reverse any other swapped D6 or merged joint. It keeps
-the authored axes and emits a :class:`~newton.exceptions.NewtonWarning`, because
+the authored axes and emits a :class:`~newton.NewtonWarning`, because
 any limits, drives, or initial state may act in the mirrored direction. Author
 the joint with the rigid body as ``physics:body1`` to avoid this. A swapped spherical joint keeps its axes, so its ``joint_q`` holds the
 inverse of the authored joint rotation. This does not change its motion, because

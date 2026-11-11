@@ -724,7 +724,7 @@ def _construct(test, model, expect_warning, **kwargs):
     """Construct the solver, requiring exactly the unsolvable-global-contact warning or no warning."""
     if expect_warning:
         return _expect_one_warning(
-            test, newton.exceptions.NewtonWarning, _UNSOLVABLE_GLOBAL_WARNING, lambda: SolverSteel(model, **kwargs)
+            test, newton.NewtonWarning, _UNSOLVABLE_GLOBAL_WARNING, lambda: SolverSteel(model, **kwargs)
         )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -1183,10 +1183,8 @@ class TestSteelSolveModeOptions(unittest.TestCase):
         )
         for kwargs, message, expected in deprecated:
             with self.subTest(**kwargs):
-                with self.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, re.escape(message)) as caught:
-                    warnings.filterwarnings(
-                        "ignore", message=_CPU_COLORED_WARNING, category=newton.exceptions.NewtonWarning
-                    )
+                with self.assertWarnsRegex(newton.NewtonDeprecationWarning, re.escape(message)) as caught:
+                    warnings.filterwarnings("ignore", message=_CPU_COLORED_WARNING, category=newton.NewtonWarning)
                     solver = SolverSteel(model, **kwargs)
                 self.assertEqual(Path(caught.filename).resolve(), Path(__file__).resolve())
                 self.assertEqual((solver.solve_mode, solver.articulated_contact_response), expected)
@@ -1195,8 +1193,8 @@ class TestSteelSolveModeOptions(unittest.TestCase):
         """Expose the normalized pair without warnings and reject unknown values and an unsupported pair."""
         model, _ = _build_plane_model("cpu", separation=0.0, restitution=0.0)
         with warnings.catch_warnings():
-            warnings.simplefilter("error", newton.exceptions.NewtonDeprecationWarning)
-            warnings.filterwarnings("ignore", message=_CPU_COLORED_WARNING, category=newton.exceptions.NewtonWarning)
+            warnings.simplefilter("error", newton.NewtonDeprecationWarning)
+            warnings.filterwarnings("ignore", message=_CPU_COLORED_WARNING, category=newton.NewtonWarning)
             solver = SolverSteel(model)
             self.assertEqual((solver.solve_mode, solver.articulated_contact_response), ("serial", "immediate"))
             solver = SolverSteel(model, solve_mode="colored", articulated_contact_response="propagation")
@@ -1212,7 +1210,7 @@ class TestSteelSolveModeOptions(unittest.TestCase):
         """On CPU the colored mode runs the serial propagation sweep, so sleeping with it names CUDA, not the mode."""
         model = _floor_model("cpu", "static")
         with warnings.catch_warnings(), self.assertRaisesRegex(NotImplementedError, "requires CUDA"):
-            warnings.filterwarnings("ignore", message=_CPU_COLORED_WARNING, category=newton.exceptions.NewtonWarning)
+            warnings.filterwarnings("ignore", message=_CPU_COLORED_WARNING, category=newton.NewtonWarning)
             SolverSteel(model, solve_mode="colored", articulated_contact_response="propagation", enable_sleeping=True)
 
 
@@ -1327,9 +1325,7 @@ class TestSteelPrivateApi(unittest.TestCase):
                 mode.NOT_GUARANTEED,
             )
             wp.config.deterministic = mode.GPU_TO_GPU
-            with self.assertWarnsRegex(
-                newton.exceptions.NewtonWarning, "is GPU_TO_GPU; .* supports at most RUN_TO_RUN"
-            ):
+            with self.assertWarnsRegex(newton.NewtonWarning, "is GPU_TO_GPU; .* supports at most RUN_TO_RUN"):
                 self.assertEqual(SolverSteel(model).deterministic, mode.RUN_TO_RUN)
             if cuda_model is not None:
                 wp.config.deterministic = mode.RUN_TO_RUN

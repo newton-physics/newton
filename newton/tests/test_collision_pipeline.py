@@ -418,7 +418,7 @@ class TestCollisionPipeline(unittest.TestCase):
                     warnings.catch_warnings(record=True) as caught,
                 ):
                     warnings.filterwarnings(
-                        "always", message="Explicit broad phase tests", category=newton.exceptions.NewtonWarning
+                        "always", message="Explicit broad phase tests", category=newton.NewtonWarning
                     )
                     newton.CollisionPipeline(model, broad_phase=broad_phase, **kwargs)
                 self.assertEqual(len(caught), int(mode in ("custom", "expert")))
@@ -490,7 +490,7 @@ class TestCollisionPipeline(unittest.TestCase):
         self.assertIs(returned_contacts, contacts)
         self.assertIs(model._collision_pipeline, pipeline)
         self.assertEqual(len(caught), 2)
-        self.assertTrue(all(item.category is newton.exceptions.NewtonDeprecationWarning for item in caught))
+        self.assertTrue(all(item.category is newton.NewtonDeprecationWarning for item in caught))
         self.assertTrue(all(item.filename == __file__ for item in caught))
         self.assertIn("pipeline.contacts()", str(caught[0].message))
         self.assertIn("pipeline.collide(state, contacts)", str(caught[1].message))
@@ -1985,7 +1985,7 @@ def _rounded_convex_separations(probes, placements, device, rigid_gap, targets):
         with warnings.catch_warnings():
             # the builder warns for any two heightfields, even static ones that never need to collide
             warnings.filterwarnings(
-                "ignore", "Heightfield-vs-heightfield collision is not supported", newton.exceptions.NewtonWarning
+                "ignore", "Heightfield-vs-heightfield collision is not supported", newton.NewtonWarning
             )
             model = builder.finalize()
         state = model.state()
@@ -2652,7 +2652,7 @@ class TestContactCountEstimator(unittest.TestCase):
 
         with mock.patch("newton._src.sim.collide._RIGID_CONTACT_LARGE_BUFFER_BYTES", 1):
             with self.assertWarnsRegex(
-                newton.exceptions.NewtonWarning,
+                newton.NewtonWarning,
                 r"1,000 rigid contact slots.*0\.1 MiB.*world count: 1.*colliding shapes: 1 primitives"
                 r".*precomputed contact pairs: 0.*selected estimate: minimum.*rigid_contact_max",
             ):
@@ -2875,11 +2875,11 @@ class TestTrianglePairCapacityEstimator(unittest.TestCase):
         self.assertEqual(CollisionPipeline(model, max_triangle_pairs=4096).narrow_phase.max_triangle_pairs, 4096)
         self.assertEqual(CollisionPipeline(model).narrow_phase.max_triangle_pairs, _TRIANGLE_PAIRS_MIN_CAPACITY)
         with mock.patch("newton._src.sim.collide._TRIANGLE_PAIRS_PER_MESH_PAIR", 1 << 20):
-            with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "deterministic contact reduction"):
+            with self.assertWarnsRegex(newton.NewtonWarning, "deterministic contact reduction"):
                 pipeline = CollisionPipeline(model, deterministic=True)
             self.assertEqual(pipeline.narrow_phase.max_triangle_pairs, (1 << 20) - 1)
             with warnings.catch_warnings():
-                warnings.simplefilter("ignore", newton.exceptions.NewtonWarning)
+                warnings.simplefilter("ignore", newton.NewtonWarning)
                 unreduced = CollisionPipeline(model, deterministic=True, reduce_contacts=False)
             self.assertEqual(unreduced.narrow_phase.max_triangle_pairs, 3 << 20)
         with self.assertRaises(ValueError):
@@ -2932,7 +2932,7 @@ class TestTrianglePairCapacityEstimator(unittest.TestCase):
 
         with mock.patch("newton._src.sim.collide._TRIANGLE_PAIRS_LARGE_BUFFER_BYTES", 1):
             with self.assertWarnsRegex(
-                newton.exceptions.NewtonWarning,
+                newton.NewtonWarning,
                 r"max_triangle_pairs=1,000,000.*MiB.*3 budgeted of 3 mesh-routed pairs from shape pairs",
             ):
                 CollisionPipeline(model)

@@ -29,7 +29,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.exceptions import NewtonWarning
+from newton import NewtonWarning
 from newton.solvers import SolverSteel
 
 TOWER_HEIGHTS = (6, 7, 5, 6)

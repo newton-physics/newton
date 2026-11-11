@@ -12,12 +12,15 @@ from ._src.core import (
     Axis,
     AxisType,
 )
+from ._src.exceptions import NewtonDeprecationWarning, NewtonWarning
 from ._version import __version__
 
 __all__ = [
     "MAXVAL",
     "Axis",
     "AxisType",
+    "NewtonDeprecationWarning",
+    "NewtonWarning",
     "__version__",
 ]
 
@@ -112,7 +115,6 @@ from . import (  # noqa: E402
     actuators,
     config,
     controllers,
-    exceptions,
     geometry,
     ik,
     math,
@@ -128,7 +130,6 @@ __all__ += [
     "actuators",
     "config",
     "controllers",
-    "exceptions",
     "geometry",
     "ik",
     "math",
@@ -149,10 +150,10 @@ if _sys.version_info < (3, 11):
     # Show the interpreter migration notice even under Python's default filters.
     with _warnings.catch_warnings():
         if not _sys.warnoptions:
-            _warnings.simplefilter("default", exceptions.NewtonDeprecationWarning)
+            _warnings.simplefilter("default", NewtonDeprecationWarning)
         _warnings.warn(
             "Support for Python 3.10 is deprecated and will be removed in Newton 1.9. "
             "Please upgrade to Python 3.11 or newer.",
-            exceptions.NewtonDeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
