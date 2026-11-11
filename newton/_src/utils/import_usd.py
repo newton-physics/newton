@@ -126,7 +126,10 @@ def _warn_mirrored_body_transform(usd_prim, key: str, xform_cache) -> None:
 
 
 # PhysxRigidBodyAPI damping has no generic Newton target. Solvers that support it import it
-# through body custom attributes (see SolverSteel.register_custom_attributes()).
+# through body custom attributes (see SolverSteel.register_custom_attributes()). A body's damping
+# counts as imported only when a custom attribute registered for that USD name produced a value for
+# the body; wildcard (``usd_attribute_name="*"``) readers do not declare which USD attributes they
+# read, so they do not establish that the damping was imported.
 _PHYSX_BODY_DAMPING_ATTRIBUTES = ("physxRigidBody:linearDamping", "physxRigidBody:angularDamping")
 
 
@@ -134,8 +137,8 @@ def _warn_dropped_body_damping(body_paths: Sequence[str], attribute_names: Seque
     """Log one warning per import about authored rigid-body damping that is not imported.
 
     Args:
-        body_paths: Paths of the rigid bodies that author a nonzero damping value.
-        attribute_names: The authored damping attributes that no custom attribute reads.
+        body_paths: Paths of the rigid bodies with a nonzero damping value that was not imported.
+        attribute_names: The damping attributes that were dropped on at least one of those bodies.
     """
     if not body_paths:
         return
@@ -1148,8 +1151,14 @@ def parse_usd(
         body_custom_attrs = usd.get_custom_attribute_values(
             prim, builder_custom_attr_body, context={"builder": builder}
         )
-        if any(usd.get_attribute(prim, name, 0.0) != 0.0 for name in dropped_body_damping_attributes):
+        dropped_on_body = [
+            name
+            for name, reader_keys in body_damping_reader_keys.items()
+            if usd.get_attribute(prim, name, 0.0) != 0.0 and not any(key in body_custom_attrs for key in reader_keys)
+        ]
+        if dropped_on_body:
             dropped_body_damping_paths.append(label)
+            dropped_body_damping_names.update(dropped_on_body)
 
         b = builder.add_link(
             xform=xform,
@@ -1471,12 +1480,14 @@ def parse_usd(
     builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.BODY]
     )
-    # Authored PhysX body damping that no registered body custom attribute reads is dropped.
-    imported_body_attribute_names = {attr.usd_attribute_name for attr in builder_custom_attr_body}
-    dropped_body_damping_attributes = tuple(
-        name for name in _PHYSX_BODY_DAMPING_ATTRIBUTES if name not in imported_body_attribute_names
-    )
+    # Authored PhysX body damping is dropped on a body unless a body custom attribute registered for
+    # that USD name produced a value for it.
+    body_damping_reader_keys = {
+        name: [attr.key for attr in builder_custom_attr_body if attr.usd_attribute_name == name]
+        for name in _PHYSX_BODY_DAMPING_ATTRIBUTES
+    }
     dropped_body_damping_paths: list[str] = []
+    dropped_body_damping_names: set[str] = set()
     builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.JOINT, AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD]
     )
@@ -2988,7 +2999,10 @@ def parse_usd(
         if path in battery_actuators:
             builder.add_battery(battery.battery_class, battery_actuators[path], **battery.battery_kwargs)
 
-    _warn_dropped_body_damping(dropped_body_damping_paths, dropped_body_damping_attributes)
+    _warn_dropped_body_damping(
+        dropped_body_damping_paths,
+        [name for name in _PHYSX_BODY_DAMPING_ATTRIBUTES if name in dropped_body_damping_names],
+    )
 
     result = {
         "fps": stage.GetFramesPerSecond(),

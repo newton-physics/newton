@@ -15265,18 +15265,40 @@ class TestImportUsdPhysxBodyDamping(unittest.TestCase):
                 prim.CreateAttribute("physxRigidBody:angularDamping", Sdf.ValueTypeNames.Float).Set(angular)
         return stage
 
-    def _import(self, stage, builder=None):
-        """Import ``stage`` and return the formatted dropped-damping log messages."""
+    def _import_reported(self, stage, builder=None):
+        """Import ``stage``, assert it logs a warning, and return the dropped-damping messages."""
         builder = builder or newton.ModelBuilder()
-        with mock.patch("newton._src.utils.import_usd.logger.warning") as warning:
+        with self.assertLogs("newton", level="WARNING") as caught:
             builder.add_usd(stage)
-        messages = [call.args[0] % call.args[1:] for call in warning.call_args_list]
-        return [message for message in messages if "physxRigidBody:" in message]
+        return [record.getMessage() for record in caught.records if "physxRigidBody:" in record.getMessage()]
+
+    def _import_silent(self, stage, builder=None):
+        """Import ``stage`` and assert it logs no warning."""
+        builder = builder or newton.ModelBuilder()
+        with self.assertNoLogs("newton", level="WARNING"):
+            builder.add_usd(stage)
+        return builder
+
+    @staticmethod
+    def _register_linear_damping_reader(builder, usd_attribute_name, transformer):
+        from newton import Model  # noqa: PLC0415
+
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="linear_damping_reader",
+                frequency=Model.AttributeFrequency.BODY,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+                usd_attribute_name=usd_attribute_name,
+                usd_value_transformer=transformer,
+            )
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_authored_damping_is_reported_once_per_import(self):
         stage = self._make_stage([(5.0, None), (None, 2.0), (0.0, 0.0), (None, None), (1.0, 1.0)])
-        caught = self._import(stage)
+        caught = self._import_reported(stage)
         self.assertEqual(len(caught), 1)
         message = caught[0]
         self.assertRegex(message, self._WARNING + r" 3 rigid bodies")
@@ -15289,7 +15311,7 @@ class TestImportUsdPhysxBodyDamping(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_report_lists_at_most_three_bodies(self):
         stage = self._make_stage([(1.0, None)] * 5)
-        caught = self._import(stage)
+        caught = self._import_reported(stage)
         self.assertEqual(len(caught), 1)
         message = caught[0]
         self.assertRegex(message, r"5 rigid bodies \(/World/Body0, /World/Body1, /World/Body2, \.\.\. \(2 more\)\)")
@@ -15297,24 +15319,52 @@ class TestImportUsdPhysxBodyDamping(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_unauthored_or_zero_damping_is_silent(self):
         stage = self._make_stage([(None, None), (0.0, 0.0)])
-        self.assertEqual(self._import(stage), [])
+        self._import_silent(stage)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_damping_read_by_custom_attributes_is_silent(self):
         stage = self._make_stage([(0.2, 0.3)])
         builder = newton.ModelBuilder()
         newton.solvers.SolverSteel.register_custom_attributes(builder)
-        self.assertEqual(self._import(stage, builder), [])
+        self._import_silent(stage, builder)
         model = builder.finalize(device="cpu")
         np.testing.assert_allclose(model.steel.rigid_body_linear_damping.numpy(), [0.2])
         np.testing.assert_allclose(model.steel.rigid_body_angular_damping.numpy(), [0.3])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_physx_resolver_has_no_body_damping_mapping(self):
+    def test_reader_that_skips_a_body_still_reports_it(self):
+        """A named reader counts only for the bodies it produced a value for."""
+        stage = self._make_stage([(0.5, None), (2.0, None)])
+        builder = newton.ModelBuilder()
+        # Imports small values only; returning None leaves the body's damping unimported.
+        self._register_linear_damping_reader(
+            builder, "physxRigidBody:linearDamping", lambda value, _context: value if value < 1.0 else None
+        )
+        caught = self._import_reported(stage, builder)
+        self.assertEqual(len(caught), 1)
+        self.assertRegex(caught[0], r"^physxRigidBody:linearDamping is authored on 1 rigid body \(/World/Body1\)")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_wildcard_reader_does_not_suppress_report(self):
+        """Wildcard readers do not declare the USD attributes they read, so they do not count as importing damping."""
+        stage = self._make_stage([(0.5, None)])
+        builder = newton.ModelBuilder()
+        self._register_linear_damping_reader(builder, "*", lambda _value, _context: 1.0)
+        caught = self._import_reported(stage, builder)
+        self.assertEqual(len(caught), 1)
+        self.assertRegex(caught[0], r"^physxRigidBody:linearDamping is authored on 1 rigid body \(/World/Body0\)")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_physx_resolver_still_resolves_body_damping(self):
+        """The public resolver keys keep returning authored damping."""
         from newton._src.usd.schema_resolver import PrimType  # noqa: PLC0415
         from newton._src.usd.schemas import SchemaResolverPhysx  # noqa: PLC0415
 
-        self.assertEqual(SchemaResolverPhysx.mapping[PrimType.BODY], {})
+        stage = self._make_stage([(0.2, 0.3)])
+        prim = stage.GetPrimAtPath("/World/Body0")
+        resolver = SchemaResolverPhysx()
+        self.assertAlmostEqual(resolver.get_value(prim, PrimType.BODY, "rigid_body_linear_damping"), 0.2, places=6)
+        self.assertAlmostEqual(resolver.get_value(prim, PrimType.BODY, "rigid_body_angular_damping"), 0.3, places=6)
 
 
 if __name__ == "__main__":

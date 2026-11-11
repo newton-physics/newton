@@ -412,9 +412,12 @@ class SchemaResolverPhysx(SchemaResolver):
             "ke": SchemaAttribute("physxMaterial:compliantContactStiffness", None),
             "kd": SchemaAttribute("physxMaterial:compliantContactDamping", None),
         },
-        # physxRigidBody:linearDamping / angularDamping have no generic Newton target. parse_usd()
-        # warns when they are authored, and SolverSteel.register_custom_attributes() imports them.
-        PrimType.BODY: {},
+        PrimType.BODY: {
+            # Rigid body damping. No builder or solver consumes these keys; parse_usd() logs when an
+            # authored value is not imported by a body custom attribute (e.g. SolverSteel's).
+            "rigid_body_linear_damping": SchemaAttribute("physxRigidBody:linearDamping", 0.0),
+            "rigid_body_angular_damping": SchemaAttribute("physxRigidBody:angularDamping", 0.05),
+        },
         PrimType.ARTICULATION: {
             "self_collision_enabled": SchemaAttribute("physxArticulation:enabledSelfCollisions", True),
         },
