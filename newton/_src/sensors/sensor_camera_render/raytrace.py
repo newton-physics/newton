@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -59,6 +57,27 @@ def _ray_intersect_mesh_smooth(
     if t < 0.0:
         return t, normal_local, u, v, face
 
+    return (
+        t,
+        _mesh_hit_normal(transform, scale, mesh_id, shape_mesh_data_id, mesh_data, normal_local, face, u, v),
+        u,
+        v,
+        face,
+    )
+
+
+@wp.func
+def _mesh_hit_normal(
+    transform: wp.transformf,
+    scale: wp.vec3f,
+    mesh_id: wp.uint64,
+    shape_mesh_data_id: wp.int32,
+    mesh_data: wp.array[MeshData],
+    normal_local: wp.vec3f,
+    face: wp.int32,
+    u: wp.float32,
+    v: wp.float32,
+) -> wp.vec3f:
     if shape_mesh_data_id > -1:
         normals = mesh_data[shape_mesh_data_id].normals
         if normals.shape[0] > 0:
@@ -68,7 +87,7 @@ def _ray_intersect_mesh_smooth(
             vertex_normal = normals[n0] * u + normals[n1] * v + normals[n2] * (1.0 - u - v)
             normal_local = raycast.safe_div_vec3(vertex_normal, scale)
 
-    return t, wp.normalize(wp.transform_vector(transform, normal_local)), u, v, face
+    return wp.normalize(wp.transform_vector(transform, normal_local))
 
 
 @wp.func
@@ -78,14 +97,17 @@ def get_group_roots(group_roots: wp.array[wp.int32], world_index: wp.int32, want
     return group_roots[world_index]
 
 
-def create_closest_hit_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
+def create_closest_hit_function(config: RenderConfig, state: "RenderContext.RenderState", optix=None) -> wp.Function:
+    from .optix import SceneData  # noqa: PLC0415
+
+    shape_accel_type = wp.uint64 if optix is None else SceneData
     shade_gaussians = gaussians.create_shade_function(config, state)
 
     @wp.func
     def closest_hit_shape(
         closest_hit: ClosestHit,
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
+        bvh_shapes_id: shape_accel_type,
         bvh_shapes_group_roots: wp.array[wp.int32],
         world_index: wp.int32,
         shape_enabled: wp.array[wp.uint32],
@@ -279,10 +301,15 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
 
         return closest_hit
 
+    if optix is not None:
+        from .optix import create_closest_hit  # noqa: PLC0415
+
+        closest_hit_shape = create_closest_hit(config, optix)
+
     @wp.func
     def closest_hit(
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
+        bvh_shapes_id: shape_accel_type,
         bvh_shapes_group_roots: wp.array[wp.int32],
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,
@@ -353,14 +380,19 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
     return closest_hit
 
 
-def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
+def create_closest_hit_depth_only_function(
+    config: RenderConfig, state: "RenderContext.RenderState", optix=None
+) -> wp.Function:
+    from .optix import SceneData  # noqa: PLC0415
+
+    shape_accel_type = wp.uint64 if optix is None else SceneData
     shade_gaussians = gaussians.create_shade_function(config, state)
 
     @wp.func
     def closest_hit_shape_depth_only(
         closest_hit: ClosestHit,
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
+        bvh_shapes_id: shape_accel_type,
         bvh_shapes_group_roots: wp.array[wp.int32],
         world_index: wp.int32,
         shape_enabled: wp.array[wp.uint32],
@@ -519,10 +551,15 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
 
         return closest_hit
 
+    if optix is not None:
+        from .optix import create_closest_hit  # noqa: PLC0415
+
+        closest_hit_shape_depth_only = create_closest_hit(config, optix)
+
     @wp.func
     def closest_hit_depth_only(
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
+        bvh_shapes_id: shape_accel_type,
         bvh_shapes_group_roots: wp.array[wp.int32],
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,
@@ -592,11 +629,15 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
     return closest_hit_depth_only
 
 
-def create_first_hit_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
+def create_first_hit_function(config: RenderConfig, state: "RenderContext.RenderState", optix=None) -> wp.Function:
+    from .optix import SceneData  # noqa: PLC0415
+
+    shape_accel_type = wp.uint64 if optix is None else SceneData
+
     @wp.func
     def first_hit_shape(
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
+        bvh_shapes_id: shape_accel_type,
         bvh_shapes_group_roots: wp.array[wp.int32],
         world_index: wp.int32,
         shape_enabled: wp.array[wp.uint32],
@@ -715,10 +756,15 @@ def create_first_hit_function(config: RenderConfig, state: RenderContext.RenderS
                     return True
         return False
 
+    if optix is not None:
+        from .optix import create_first_hit  # noqa: PLC0415
+
+        first_hit_shape = create_first_hit(config, optix)
+
     @wp.func
     def first_hit(
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
+        bvh_shapes_id: shape_accel_type,
         bvh_shapes_group_roots: wp.array[wp.int32],
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,

@@ -86,6 +86,7 @@ class RenderContext:
         model: Model,
         load_textures: bool = True,
         *,
+        use_optix: bool = False,
         deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Create a render context for a Newton simulation model.
@@ -101,9 +102,14 @@ class RenderContext:
         Args:
             model: Newton simulation model providing shapes and particles.
             load_textures: Load shape and visual mesh textures from file paths or in-memory images.
+            use_optix: Use the optional OptiX shape-traversal backend.
             deformable_surface_mode: Which deformable surfaces to upload: the simulation triangles,
                 the visual meshes, or both.
         """
+        if use_optix and not model.device.is_cuda:
+            raise ValueError("The OptiX camera backend requires a CUDA device")
+        self._use_optix = use_optix
+        self._optix = None
         self._model = model
         self._deformable_surface_mode = deformable_surface_mode
         self._render_state = RenderContext.RenderState()
@@ -464,6 +470,7 @@ class RenderContext:
         albedo_image: wp.array3d[wp.uint32] | None = None,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
         config: RenderConfig | None = DEFAULT_RENDER_CONFIG,
+        sync_shapes: bool = True,
     ):
         """Raytrace the scene into the provided output images.
 
@@ -503,10 +510,20 @@ class RenderContext:
             clear_data: Values used to clear output images before
                 rendering. Pass ``None`` to use :attr:`DEFAULT_CLEAR_DATA`.
             hdr_color_image: Output linear HDR color buffer.
+            sync_shapes: Refit camera-owned shape acceleration structures before rendering.
             config: Render settings for this render call. If ``None``, uses
                 default :class:`RenderConfig` settings.
         """
         model = self.model
+        if self._use_optix and self.device.stream.is_capturing:
+            raise RuntimeError("The OptiX camera backend does not support CUDA graph capture")
+        if self._use_optix and self._optix is None:
+            from .optix import Scene  # noqa: PLC0415
+
+            self._optix = Scene(self)
+        elif self._optix is not None and sync_shapes:
+            self._optix.refit()
+
         if config is None:
             config = RenderContext.DEFAULT_RENDER_CONFIG
         try:
@@ -618,7 +635,9 @@ class RenderContext:
             key_config = replace(config, block_dim=0)
             render_kernel = self._kernel_cache.get((key_config, self._render_state, clear_data))
             if render_kernel is None:
-                render_kernel = create_kernel(config, self._render_state, clear_data)
+                render_kernel = create_kernel(config, self._render_state, clear_data, self._optix)
+                if self._optix is not None:
+                    render_kernel = self._optix.pipeline(render_kernel, config)
                 self._kernel_cache[(key_config, replace(self._render_state), replace(clear_data))] = render_kernel
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
@@ -630,8 +649,10 @@ class RenderContext:
                 pixels_per_view = tiles_x * tiles_y * config.tile_width * config.tile_height
 
             self._gather_variant_render_data()
-            wp.launch(
-                kernel=render_kernel,
+            launch = wp.launch if self._optix is None else self._optix.wo.launch
+            launch_options = {"device": self.device, "block_dim": config.block_dim} if self._optix is None else {}
+            launch(
+                render_kernel,
                 dim=(view_count * pixels_per_view),
                 inputs=[
                     # Model and config
@@ -646,7 +667,9 @@ class RenderContext:
                     world_indices,
                     # Shape BVH
                     model.bvh_shape_count_enabled,
-                    model.bvh_shapes.id if model.bvh_shapes is not None else 0,
+                    self._optix.data
+                    if self._optix is not None
+                    else (model.bvh_shapes.id if model.bvh_shapes is not None else 0),
                     model.bvh_shapes_group_roots,
                     # Shapes
                     model._bvh_shape_active_leaves,
@@ -694,8 +717,7 @@ class RenderContext:
                     albedo_image,
                     hdr_color_image,
                 ],
-                device=self.device,
-                block_dim=config.block_dim,
+                **launch_options,
             )
 
     @property

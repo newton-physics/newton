@@ -256,6 +256,8 @@ class _SensorCameraSceneRig:
         resolution: int,
         render_order: SensorCamera.RenderOrder,
         camera_fov_deg: float = 45.0,
+        *,
+        backend: SensorCamera.Backend = SensorCamera.Backend.WARP,
     ):
         world = preset.build()
         _disable_collision_handling(world)
@@ -272,7 +274,7 @@ class _SensorCameraSceneRig:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
 
         light_direction = wp.vec3f(*preset.light_direction) if preset.light_direction is not None else None
-        self.sensor = SensorCamera(self.model)
+        self.sensor = SensorCamera(self.model, backend=backend)
         self.sensor.create_default_light(enable_shadows=True, direction=light_direction)
         self.sensor.assign_checkerboard_material(shape_indices=np.arange(self.model.shape_count, dtype=np.int32))
         self.sensor.default_render_config.render_order = render_order
@@ -309,6 +311,7 @@ class _SensorCameraSceneRig:
             color_image=self.color_image if color else None,
             depth_image=self.depth_image if depth else None,
             sync_deformables=False,
+            sync_shapes=False,
         )
 
 
@@ -318,9 +321,12 @@ class _SceneBenchmark:
     param_names = ["resolution", "world_count", "iterations"]
     scene: str
     render_order = RENDER_ORDER
+    backend = SensorCamera.Backend.WARP
 
     def setup(self, resolution: int, world_count: int, iterations: int):
-        self.rig = _SensorCameraSceneRig(SCENES[self.scene], world_count, resolution, self.render_order)
+        self.rig = _SensorCameraSceneRig(
+            SCENES[self.scene], world_count, resolution, self.render_order, backend=self.backend
+        )
         # Compile and warm the render kernels for every output combination measured below.
         for color, depth in ((True, True), (True, False), (False, True)):
             self.rig.render(color=color, depth=depth)
@@ -451,6 +457,12 @@ if __name__ == "__main__":
         default=1024,
         help="Preview image width and height [px].",
     )
+    parser.add_argument(
+        "--backend",
+        choices=[backend.value for backend in SensorCamera.Backend],
+        default="warp",
+        help="Camera shape-traversal backend.",
+    )
     args = parser.parse_known_args()[0]
 
     if args.preview:
@@ -458,5 +470,6 @@ if __name__ == "__main__":
             print(f"Wrote {path}")
     else:
         for key in args.bench or benchmark_list.keys():
+            benchmark_list[key].backend = SensorCamera.Backend(args.backend)
             result = run_benchmark(benchmark_list[key])
             print_fps_results(result)

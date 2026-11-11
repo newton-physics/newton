@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import enum
 import math
 import os
 from collections.abc import Sequence
@@ -135,6 +136,18 @@ class SensorCamera:
     Utils = Utils
     WorldRenderFlag = WorldRenderFlag
 
+    class Backend(enum.Enum):
+        """Camera shape-traversal backend.
+
+        .. experimental::
+            The OptiX backend may change without a deprecation cycle.
+        """
+
+        WARP = "warp"
+        """Portable Warp BVH traversal (default)."""
+        OPTIX = "optix"
+        """Hardware traversal using the optional ``newton[optix]`` dependency."""
+
     def __init__(
         self,
         model: Model,
@@ -142,6 +155,7 @@ class SensorCamera:
         default_clear_data: ClearData | None = None,
         default_render_config: RenderConfig | None = None,
         load_textures: bool = True,
+        backend: Backend = Backend.WARP,
         deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Construct a camera sensor for a model.
@@ -154,6 +168,14 @@ class SensorCamera:
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
                 ``RenderConfig()``.
+            backend: Shape-traversal backend. ``Backend.OPTIX`` is experimental,
+                requires a CUDA device and ``newton[optix]``, and does not support
+                CUDA graph capture, particles, deformable surfaces, Gaussian
+                shapes, or shape variants. Mesh
+                topology and the set of enabled shapes must remain fixed. Continue
+                to call :meth:`Model.bvh_refit_shapes() <newton.Model.bvh_refit_shapes>`
+                after changing body poses; the camera refits its OptiX instances
+                from these transforms on each update unless ``sync_shapes=False``.
             load_textures: Load the textures of shape meshes and deformable visual
                 meshes from file paths or in-memory images. A texture that cannot
                 be loaded raises ``ValueError`` here, so pass ``False`` for
@@ -187,6 +209,7 @@ class SensorCamera:
         self._render_context = RenderContext(
             model,
             load_textures=load_textures,
+            use_optix=self.Backend(backend) == self.Backend.OPTIX,
             deformable_surface_mode=DeformableSurfaceMode(deformable_surface_mode),
         )
 
@@ -1001,6 +1024,7 @@ class SensorCamera:
         clear_data: ClearData | None = None,
         render_config: RenderConfig | None = None,
         sync_deformables: bool = True,
+        sync_shapes: bool = True,
         deformable_visuals: DeformableVisuals | None = None,
     ) -> None:
         """Render this camera sensor.
@@ -1051,6 +1075,12 @@ class SensorCamera:
                 :attr:`default_clear_data`.
             render_config: Render settings for this call. Defaults to
                 :attr:`default_render_config`.
+            sync_shapes: Refit camera-owned shape acceleration structures from
+                the model's current shape transforms before rendering. The OptiX
+                backend builds these on first use even when ``False``. Set
+                ``False`` for subsequent renders of an unchanged scene. The
+                Warp backend uses the model's BVH directly. This does not replace
+                the caller's :meth:`Model.bvh_refit_shapes() <newton.Model.bvh_refit_shapes>`.
             sync_deformables: Sync simulation surfaces and visual mesh points
                 from *state* before rendering. Set ``False`` if you already
                 called :meth:`sync_deformable_meshes` this frame.
@@ -1116,4 +1146,5 @@ class SensorCamera:
                 albedo_image=albedo_image,
                 clear_data=clear_data if clear_data is not None else self.default_clear_data,
                 config=render_config if render_config is not None else self.default_render_config,
+                sync_shapes=sync_shapes,
             )
