@@ -518,9 +518,11 @@ class RenderContext:
         if self._use_optix and self.device.stream.is_capturing:
             raise RuntimeError("The OptiX camera backend does not support CUDA graph capture")
         if self._use_optix and self._optix is None:
-            from .optix import Scene  # noqa: PLC0415
+            from ...geometry.optix import Scene  # noqa: PLC0415
 
-            self._optix = Scene(self)
+            if self._has_particles or self._has_triangle_mesh:
+                raise NotImplementedError("The OptiX camera backend does not support particles or deformable surfaces")
+            self._optix = Scene(self.model, self._get_shape_render_type())
         elif self._optix is not None and sync_shapes:
             self._optix.refit()
 
@@ -641,7 +643,9 @@ class RenderContext:
                     replace(config), replace(self._render_state), replace(clear_data), self._optix
                 )
                 if self._optix is not None:
-                    render_kernel = self._optix.pipeline(render_kernel, replace(config))
+                    render_kernel = self._optix.pipeline(
+                        render_kernel, enable_backface_culling=config.enable_backface_culling
+                    )
                 self._kernel_cache[(key_config, replace(self._render_state), replace(clear_data))] = render_kernel
 
             particle_count = state.particle_q.shape[0] if has_particles else 0

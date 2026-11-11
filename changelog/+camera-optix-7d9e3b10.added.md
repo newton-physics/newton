@@ -1,1 +1,1 @@
-Add an experimental OptiX backend for `SensorCamera`, available through the optional `optix` extra with `warp-optix~=0.3.0`.
+Add experimental OptiX acceleration for `SensorCamera` and `intersect_ray`, selected with `RaycastBackend.OPTIX` and installed through the optional `optix` extra (`warp-optix~=0.3.0`).

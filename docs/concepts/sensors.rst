@@ -127,11 +127,11 @@ hardware-accelerated shape traversal, install ``newton[optix]`` and construct:
 
 .. code-block:: python
 
-   camera = SensorCamera(model, backend=SensorCamera.Backend.OPTIX)
+   camera = SensorCamera(model, backend=newton.RaycastBackend.OPTIX)
 
 .. experimental::
 
-   ``SensorCamera.Backend.OPTIX`` is experimental. The ``warp-optix~=0.3.0``
+   ``newton.RaycastBackend.OPTIX`` is experimental. The ``warp-optix~=0.3.0``
    extra currently installs on Python 3.12, on x86-64 Linux and Windows, and
    requires an NVIDIA CUDA device supported by OptiX. Other configurations
    retain the default Warp backend.
@@ -154,6 +154,30 @@ Mesh topology and the set of enabled shapes must remain fixed for the camera's
 lifetime. Particles, deformable surfaces, Gaussian shapes, shape variants, and
 CUDA graph capture are currently unsupported and raise errors. Rendering updates
 must run outside graph capture; simulation may still use CUDA graphs.
+
+The same :class:`~newton.RaycastBackend` selects acceleration for batched shape
+queries:
+
+.. code-block:: python
+
+   newton.intersect_ray(
+       model,
+       backend=newton.RaycastBackend.OPTIX,
+       ray_origins=origins,
+       ray_directions=directions,
+       ray_worlds=worlds,
+       out_dist=distances,
+       out_shape_id=shape_ids,
+       out_normal=normals,
+   )
+
+Raycasts build their acceleration lazily on the model. Subsequent
+:meth:`~newton.Model.bvh_refit_shapes` calls update it automatically;
+:meth:`~newton.Model.bvh_build_shapes` invalidates it, including when the shape
+selection changes. The existing raycast world selection, optional outputs, and
+miss values are unchanged. Raycasts query rigid shapes only, even when a model
+also contains particles or deformable surfaces. Gaussian shapes, shape variants
+and CUDA graph capture remain unsupported in the OptiX query path.
 
 The optional package declares ``Apache-2.0 AND BSD-3-Clause AND
 LicenseRef-NVIDIA-OptiX``. It is installed separately; Newton does not redistribute

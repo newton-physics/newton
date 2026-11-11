@@ -46,6 +46,7 @@ newton
    NewtonDeprecationWarning
    NewtonWarning
    ParticleFlags
+   RaycastBackend
    Rod
    SDF
    ShapeFlags

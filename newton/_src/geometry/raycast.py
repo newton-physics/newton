@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import enum
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -923,6 +924,20 @@ def raycast_kernel(
         _spinlock_release(lock)
 
 
+class RaycastBackend(enum.Enum):
+    """Shape traversal backend for ray queries and :class:`~newton.sensors.SensorCamera`.
+
+    .. experimental::
+        The OptiX backend requires ``newton[optix]`` and a CUDA device. Shape
+        variants, Gaussian shapes and CUDA graph capture are not supported.
+    """
+
+    WARP = "warp"
+    """Portable Warp BVH traversal (default)."""
+    OPTIX = "optix"
+    """Hardware traversal using the optional ``newton[optix]`` dependency."""
+
+
 def intersect_ray(
     model: Model,
     *,
@@ -934,6 +949,7 @@ def intersect_ray(
     out_shape_id: wp.array[wp.int32] | None = None,
     out_normal: wp.array[wp.vec3] | None = None,
     fast_math: bool = True,
+    backend: RaycastBackend = RaycastBackend.WARP,
 ):
     """Intersect rays with model shapes.
 
@@ -963,7 +979,27 @@ def intersect_ray(
         out_shape_id: Optional output hit shape indices, shape [ray_count]. ``-1`` on miss.
         out_normal: Optional output hit normals, shape [ray_count, 3].
         fast_math: Whether to compile the intersection kernel with fast math enabled.
+        backend: Shape traversal backend. OptiX acceleration is built lazily and
+            updated by :meth:`~newton.Model.bvh_refit_shapes`. Rebuilding the model
+            BVH invalidates the cached OptiX acceleration.
     """
+
+    backend = RaycastBackend(backend)
+    if backend == RaycastBackend.OPTIX:
+        from .optix import intersect_rays  # noqa: PLC0415
+
+        intersect_rays(
+            model,
+            ray_origins,
+            ray_directions,
+            ray_worlds,
+            enable_global_world=enable_global_world,
+            out_dist=out_dist,
+            out_shape_id=out_shape_id,
+            out_normal=out_normal,
+            fast_math=fast_math,
+        )
+        return
 
     if model.bvh_shape_enabled is not None and model.bvh_shape_count_enabled == 0:
         # The shape BVH was built but no shape was selected, so every ray misses.

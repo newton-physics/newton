@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import enum
 import math
 import os
 from collections.abc import Sequence
@@ -14,6 +13,7 @@ import warp as wp
 
 from ..core.types import Devicelike
 from ..geometry.deformable_visual import DeformableVisuals
+from ..geometry.raycast import RaycastBackend
 from .sensor_camera_render import Utils
 from .sensor_camera_render.types import (
     AntiAliasing,
@@ -136,18 +136,6 @@ class SensorCamera:
     Utils = Utils
     WorldRenderFlag = WorldRenderFlag
 
-    class Backend(enum.Enum):
-        """Camera shape-traversal backend.
-
-        .. experimental::
-            The OptiX backend may change without a deprecation cycle.
-        """
-
-        WARP = "warp"
-        """Portable Warp BVH traversal (default)."""
-        OPTIX = "optix"
-        """Hardware traversal using the optional ``newton[optix]`` dependency."""
-
     def __init__(
         self,
         model: Model,
@@ -155,7 +143,7 @@ class SensorCamera:
         default_clear_data: ClearData | None = None,
         default_render_config: RenderConfig | None = None,
         load_textures: bool = True,
-        backend: Backend = Backend.WARP,
+        backend: RaycastBackend = RaycastBackend.WARP,
         deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Construct a camera sensor for a model.
@@ -168,7 +156,7 @@ class SensorCamera:
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
                 ``RenderConfig()``.
-            backend: Shape-traversal backend. ``Backend.OPTIX`` is experimental,
+            backend: Shape-traversal backend. ``newton.RaycastBackend.OPTIX`` is experimental,
                 requires a CUDA device and ``newton[optix]``, and does not support
                 CUDA graph capture, particles, deformable surfaces, Gaussian
                 shapes, or shape variants. Mesh
@@ -209,7 +197,7 @@ class SensorCamera:
         self._render_context = RenderContext(
             model,
             load_textures=load_textures,
-            use_optix=self.Backend(backend) == self.Backend.OPTIX,
+            use_optix=RaycastBackend(backend) == RaycastBackend.OPTIX,
             deformable_surface_mode=DeformableSurfaceMode(deformable_surface_mode),
         )
 
