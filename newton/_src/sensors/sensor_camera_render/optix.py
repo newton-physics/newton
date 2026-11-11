@@ -11,13 +11,57 @@ from ...geometry import GeoType, raycast
 
 @wp.struct
 class SceneData:
-    handles: wp.array[wp.uint64]
+    handle: wp.uint64
+    world_count: wp.int32
+    grid: wp.int32
+    extent: wp.array[wp.float32]
+    shape_world: wp.array[wp.int32]
+    has_instances: wp.array[wp.bool]
     planes: wp.array[wp.int32]
     plane_offsets: wp.array[wp.int32]
 
 
+@wp.func
+def _world_offset(world: int, grid: int, extent: float) -> wp.vec3:
+    center = float(grid - 1) * 0.5
+    cell = wp.vec3(float(world % grid), float((world // grid) % grid), float(world // (grid * grid)))
+    return (cell - wp.vec3(center)) * (3.0 * extent)
+
+
+@wp.func
+def _ray_interval(origin: wp.vec3, direction: wp.vec3, extent: float, max_distance: float) -> wp.vec2:
+    """Clip traversal to one cell, including rays whose origins lie outside it."""
+    near = float(0.0)
+    far = max_distance
+    for axis in range(3):
+        if direction[axis] != 0.0:
+            a = (-extent - origin[axis]) / direction[axis]
+            b = (extent - origin[axis]) / direction[axis]
+            near = wp.max(near, wp.min(a, b))
+            far = wp.min(far, wp.max(a, b))
+        elif wp.abs(origin[axis]) > extent:
+            far = -1.0
+    return wp.vec2(near, far)
+
+
+@wp.kernel(enable_backward=False)
+def _grow_extent(
+    enabled: wp.array[wp.uint32],
+    shape_types: wp.array[wp.int32],
+    lowers: wp.array[wp.vec3],
+    uppers: wp.array[wp.vec3],
+    extent: wp.array[float],
+):
+    leaf = wp.tid()
+    if shape_types[enabled[leaf]] != GeoType.PLANE:
+        bounds = wp.max(wp.abs(lowers[leaf]), wp.abs(uppers[leaf]))
+        radius = wp.max(bounds[0], wp.max(bounds[1], bounds[2]))
+        # Padding also encloses the analytic primitives' padded unit cube.
+        wp.atomic_max(extent, 0, radius * 1.01)
+
+
 class Scene:
-    """Own shared geometry and independent world instance acceleration structures."""
+    """Own shared geometry and one spatially packed world instance structure."""
 
     def __init__(self, context):
         if not context.device.is_cuda:
@@ -69,7 +113,7 @@ class Scene:
         indices = []
         planes = []
         offsets = [0]
-        ranges = []
+        has_instances = []
         world_ids = np.where(worlds[enabled] < 0, model.world_count, worlds[enabled])
         order = np.argsort(world_ids, kind="stable")
         grouped = enabled[order]
@@ -77,16 +121,28 @@ class Scene:
         for world in range(model.world_count + 1):
             selected = grouped[boundaries[world] : boundaries[world + 1]]
             bounded = selected[types[selected] != GeoType.PLANE]
-            ranges.append((len(indices), len(bounded)))
+            has_instances.append(len(bounded) > 0)
             indices.extend(bounded)
             planes.extend(selected[types[selected] == GeoType.PLANE])
             offsets.append(len(planes))
         self.indices = wp.array(indices, dtype=wp.int32, device=context.device)
         self.instances = wp.empty(len(indices), dtype=wo.Instance, device=context.device)
+        self.data = SceneData()
+        self.data.world_count = model.world_count
+        self.data.shape_world = model.shape_world
+        self.data.grid = int(np.ceil((model.world_count + 1) ** (1.0 / 3.0)))
+        while self.data.grid**3 < model.world_count + 1:
+            self.data.grid += 1
+        self.data.extent = wp.ones(1, dtype=float, device=self.device)
+        self.data.has_instances = wp.array(has_instances, dtype=wp.bool, device=self.device)
+        self.data.planes = wp.array(planes, dtype=wp.int32, device=self.device)
+        self.data.plane_offsets = wp.array(offsets, dtype=wp.int32, device=self.device)
 
         @wp.kernel(module="unique", enable_backward=False)
         def write_instances(
+            data: SceneData,
             indices: wp.array[wp.int32],
+            shape_world: wp.array[wp.int32],
             shape_types: wp.array[wp.int32],
             shape_sizes: wp.array[wp.vec3],
             shape_transforms: wp.array[wp.transform],
@@ -107,12 +163,14 @@ class Scene:
                 if kind == GeoType.CYLINDER and size[2] > 0.0:
                     radius += size[2] - wp.sqrt(wp.max(0.0, size[2] * size[2] - size[1] * size[1]))
                 half = wp.vec3(radius, radius, size[1])
+            world = wp.where(shape_world[si] < 0, data.world_count, shape_world[si])
+            offset = _world_offset(world, data.grid, data.extent[0])
             transform = shape_transforms[si]
             linear = wp.quat_to_matrix(wp.transform_get_rotation(transform)) @ wp.diag(half)
             sbt = wp.where(kind == GeoType.MESH, 0, 1)
             instances[i] = wo.make_instance(
                 linear,
-                wp.transform_get_translation(transform),
+                wp.transform_get_translation(transform) + offset,
                 traversables[si],
                 wp.uint32(si),
                 wp.uint32(sbt),
@@ -121,32 +179,37 @@ class Scene:
             )
 
         self.write_instances = write_instances
-        self.accels = []
+        self.accel = None
         self._write_instances()
-        world_handles = []
-        for start, count in ranges:
-            if count:
-                records = self.instances[start : start + count]
-                accel = wo.Accel(
-                    [wo.instances(records, self.geometry)],
-                    flags=wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_TRACE,
-                )
-                self.accels.append(accel)
-                world_handles.append(accel.id)
-            else:
-                world_handles.append(0)
-        self.data = SceneData()
-        self.data.handles = wp.array(world_handles, dtype=wp.uint64, device=context.device)
-        self.data.planes = wp.array(planes, dtype=wp.int32, device=context.device)
-        self.data.plane_offsets = wp.array(offsets, dtype=wp.int32, device=context.device)
+        if indices:
+            self.accel = wo.Accel(
+                [wo.instances(self.instances, self.geometry)],
+                flags=wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_TRACE,
+            )
+            self.data.handle = self.accel.id
 
     def _write_instances(self):
         model = self.model
+        if model.bvh_shape_count_enabled:
+            wp.launch(
+                _grow_extent,
+                dim=model.bvh_shape_count_enabled,
+                inputs=[
+                    model.bvh_shape_enabled,
+                    self.shape_types,
+                    model.bvh_shapes.lowers,
+                    model.bvh_shapes.uppers,
+                    self.data.extent,
+                ],
+                device=self.device,
+            )
         wp.launch(
             self.write_instances,
             dim=len(self.indices),
             inputs=[
+                self.data,
                 self.indices,
+                model.shape_world,
                 self.shape_types,
                 model.shape_scale,
                 model.bvh_shape_world_transforms,
@@ -160,24 +223,29 @@ class Scene:
         if self.device.stream.is_capturing:
             raise RuntimeError("The OptiX camera backend does not support CUDA graph capture")
         self._write_instances()
-        for accel in self.accels:
-            accel.refit()
+        if self.accel is not None:
+            self.accel.refit()
 
     def pipeline(self, kernel, config):
         wo = self.wo
 
         @wp.kernel(module="unique", enable_backward=False)
         def intersect(
+            bvh_shapes_id: SceneData,
+            shape_transforms: wp.array[wp.transform],
             shape_types: wp.array[wp.int32],
             shape_sizes: wp.array[wp.vec3],
-            shape_transforms: wp.array[wp.transform],
         ):
             si = int(wp.optix_get_instance_id())
+            world = wp.where(
+                bvh_shapes_id.shape_world[si] < 0, bvh_shapes_id.world_count, bvh_shapes_id.shape_world[si]
+            )
+            offset = _world_offset(world, bvh_shapes_id.grid, bvh_shapes_id.extent[0])
             distance, _normal = raycast.ray_intersect_shape_no_normal(
                 shape_transforms[si],
                 shape_sizes[si],
                 shape_types[si],
-                wp.optix_get_world_ray_origin(),
+                wp.optix_get_world_ray_origin() - offset,
                 wp.optix_get_world_ray_direction(),
                 wp.static(config.enable_backface_culling),
             )
@@ -223,13 +291,14 @@ def create_closest_hit(config, scene):
     ) -> ClosestHit:
         # Keep the two traversals unrolled: dynamic traversal loops miscompile with OptiX 0.3.0.
         for i in range(wp.static(2 if config.enable_global_world else 1)):
-            world = wp.where(i == 1, data.handles.shape[0] - 1, world_index)
-            handle = data.handles[world]
-            if handle != wp.uint64(0):
+            world = wp.where(i == 1, data.world_count, world_index)
+            interval = _ray_interval(origin, direction, data.extent[0], hit.distance)
+            packed_origin = origin + _world_offset(world, data.grid, data.extent[0])
+            if data.has_instances[world] and interval[1] >= interval[0]:
                 flags = wp.uint32(0)
                 if wp.static(config.enable_backface_culling):
                     flags = wp.uint32(wp.static(int(wo.RayFlags.CULL_BACK_FACING_TRIANGLES)))
-                query = wo.accel_query_ray(handle, origin, direction, hit.distance, 0.0, 255, flags)
+                query = wo.accel_query_ray(data.handle, packed_origin, direction, interval[1], interval[0], 255, flags)
                 if query.result:
                     if query.t < hit.distance:
                         si = int(query.instance_id)
@@ -312,10 +381,11 @@ def create_first_hit(config, scene):
     ) -> wp.bool:
         # Keep the two traversals unrolled: dynamic traversal loops miscompile with OptiX 0.3.0.
         for i in range(wp.static(2 if config.enable_global_world else 1)):
-            world = wp.where(i == 1, data.handles.shape[0] - 1, world_index)
-            handle = data.handles[world]
-            if handle != wp.uint64(0):
-                if wo.accel_query_ray_anyhit(handle, origin, direction, max_dist, 0.0, 255):
+            world = wp.where(i == 1, data.world_count, world_index)
+            interval = _ray_interval(origin, direction, data.extent[0], max_dist)
+            packed_origin = origin + _world_offset(world, data.grid, data.extent[0])
+            if data.has_instances[world] and interval[1] >= interval[0]:
+                if wo.accel_query_ray_anyhit(data.handle, packed_origin, direction, interval[1], interval[0], 255):
                     return True
             for p in range(data.plane_offsets[world], data.plane_offsets[world + 1]):
                 si = data.planes[p]

@@ -136,20 +136,24 @@ hardware-accelerated shape traversal, install ``newton[optix]`` and construct:
    requires an NVIDIA CUDA device supported by OptiX. Other configurations
    retain the default Warp backend.
 
-OptiX shares mesh geometry between instances and isolates worlds with separate
-instance acceleration structures. Global shapes and planes remain visible
-according to ``RenderConfig.enable_global_world``. Camera rays, image outputs,
+OptiX shares mesh geometry between instances and spatially packs worlds into
+one instance acceleration structure. Rays are offset into the selected world's
+cell and clipped to its bounds so they cannot hit neighboring worlds. The cell
+extent grows on the GPU from the model's shape bounds when geometry moves;
+there is no fixed user-supplied world extent. Global bounded shapes occupy an
+additional cell, while planes are intersected analytically. Both respect
+``RenderConfig.enable_global_world``. Camera rays, image outputs,
 materials, lights, and shading use the same interfaces as the default backend.
 The initial OptiX backend supports rigid shapes, including triangle meshes and
 heightfields.
 
-Continue to refit the model's shape BVH after moving bodies, as with the default
-camera. OptiX refits its instances from those transforms on every camera update. For repeated renders of an unchanged
-scene, pass ``sync_shapes=False`` to skip instance refits after the first render.
+Continue to refit the model's shape BVH after changing poses or sizes, as with
+the default camera. OptiX refits its single instance structure from those transforms on every
+camera update. For repeated renders of an unchanged scene, pass ``sync_shapes=False`` to skip instance refits after the first render.
 Mesh topology and the set of enabled shapes must remain fixed for the camera's
 lifetime. Particles, deformable surfaces, Gaussian shapes, shape variants, and
-CUDA graph capture are currently unsupported and raise errors. Rendering updates must run outside graph capture;
-simulation may still use CUDA graphs.
+CUDA graph capture are currently unsupported and raise errors. Rendering updates
+must run outside graph capture; simulation may still use CUDA graphs.
 
 The optional package declares ``Apache-2.0 AND BSD-3-Clause AND
 LicenseRef-NVIDIA-OptiX``. It is installed separately; Newton does not redistribute

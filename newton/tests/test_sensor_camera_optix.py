@@ -79,6 +79,44 @@ class TestSensorCameraOptix(unittest.TestCase):
             outputs[0]["depth_image"].numpy(), outputs[1]["depth_image"].numpy(), atol=3e-4, rtol=1e-4
         )
 
+    def test_packed_world_isolation_and_expanding_bounds(self):
+        """Clip outside rays, isolate neighboring cells, and expand packing after motion."""
+        builder = newton.ModelBuilder()
+        for z in (-2.0, 0.0):
+            world = newton.ModelBuilder()
+            body = world.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, z), wp.quat_identity()))
+            world.add_shape_sphere(body, radius=0.25)
+            builder.add_world(world)
+        builder.add_world(newton.ModelBuilder())
+        builder.add_shape_sphere(-1, xform=wp.transform(wp.vec3(0.0, 0.0, -4.0), wp.quat_identity()), radius=0.25)
+        model = builder.finalize(device="cuda:0")
+        state = model.state()
+        cameras = [SensorCamera(model, backend=backend) for backend in SensorCamera.Backend]
+        values = np.zeros((1, 3, 1, 2, 3), dtype=np.float32)
+        # The +X ray would enter world 1's cell without clipping.
+        values[0, 0, 0, 1] = (1.0, 0.0, 0.0)
+        values[0, 1, 0, 0] = (0.0, 0.0, 20.0)
+        values[0, 1, 0, 1] = (0.0, 0.0, -1.0)
+        # Outside the cell and parallel to its upper face: always a miss.
+        values[0, 2, 0, 0] = (0.0, 20.0, 0.0)
+        values[0, 2, 0, 1] = (1.0, 0.0, 0.0)
+        rays = wp.array(values, dtype=wp.vec3, device=model.device)
+        poses = wp.array([wp.transform_identity()] * 3, dtype=wp.transform, device=model.device)
+        depths = [camera.allocate_image_depth(3, 3, 1) for camera in cameras]
+        for frame in range(2):
+            if frame:
+                transforms = state.body_q.numpy()
+                transforms[0, 2] = 12.0  # Leave the initial cell bounds.
+                state.body_q.assign(transforms)
+                model.bvh_refit_shapes(state)
+            for include_global in (False, True):
+                for camera, depth in zip(cameras, depths, strict=True):
+                    camera.default_render_config.enable_global_world = include_global
+                    camera.update(state, poses, rays, depth_image=depth)
+                np.testing.assert_allclose(depths[0].numpy(), depths[1].numpy(), atol=2e-4, rtol=1e-4)
+                self.assertEqual(depths[1].numpy()[0, 0, 0], 0.0)
+                self.assertEqual(depths[1].numpy()[0, 0, 2], 0.0)
+
     def test_output_variants_across_cameras(self):
         """Keep compiled output variants independent of later camera-state changes."""
         builder = newton.ModelBuilder()
