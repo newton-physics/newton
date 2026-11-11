@@ -28,6 +28,7 @@ def _delay_buffer_state_kernel(
     pos_indices: wp.array[wp.uint32],
     vel_indices: wp.array[wp.uint32],
     buf_depth: int,
+    copy_all: bool,
     current_buffer_pos: wp.array2d[float],
     current_buffer_vel: wp.array2d[float],
     current_buffer_act: wp.array2d[float],
@@ -39,17 +40,24 @@ def _delay_buffer_state_kernel(
     next_num_pushes: wp.array[int],
     next_write_idx: wp.array[int],
 ):
-    """Update delay circular buffer: copy previous entry, write new entry, advance write pointer."""
+    """Update delay circular buffer: copy the previous entry (all entries if copy_all), write new entry, advance write pointer."""
     i = wp.tid()
     pos_idx = pos_indices[i]
     vel_idx = vel_indices[i]
 
-    copy_idx = current_write_idx[0]
-    write_idx = (copy_idx + 1) % buf_depth
+    write_idx = (current_write_idx[0] + 1) % buf_depth
 
-    next_buffer_pos[copy_idx, i] = current_buffer_pos[copy_idx, i]
-    next_buffer_vel[copy_idx, i] = current_buffer_vel[copy_idx, i]
-    next_buffer_act[copy_idx, i] = current_buffer_act[copy_idx, i]
+    if copy_all:
+        for row in range(buf_depth):
+            if row != write_idx:
+                next_buffer_pos[row, i] = current_buffer_pos[row, i]
+                next_buffer_vel[row, i] = current_buffer_vel[row, i]
+                next_buffer_act[row, i] = current_buffer_act[row, i]
+    else:
+        copy_idx = current_write_idx[0]
+        next_buffer_pos[copy_idx, i] = current_buffer_pos[copy_idx, i]
+        next_buffer_vel[copy_idx, i] = current_buffer_vel[copy_idx, i]
+        next_buffer_act[copy_idx, i] = current_buffer_act[copy_idx, i]
 
     next_buffer_pos[write_idx, i] = target_pos_global[pos_idx]
     next_buffer_vel[write_idx, i] = target_vel_global[vel_idx]
@@ -290,6 +298,9 @@ class InputProcessorDelay(InputProcessorBase):
             ``(delayed_pos, delayed_vel, delayed_feedforward)``.  When
             *feedforward* is ``None``, *delayed_feedforward* is all zeros.
         """
+        outputs = [self._out_pos, self._out_vel, self._out_act]
+        if self._requires_grad:
+            outputs = [wp.empty_like(out) for out in outputs]
         wp.launch(
             kernel=_delay_read_kernel,
             dim=self._num_actuators,
@@ -307,10 +318,10 @@ class InputProcessorDelay(InputProcessorBase):
                 pos_indices,
                 vel_indices,
             ],
-            outputs=[self._out_pos, self._out_vel, self._out_act],
+            outputs=outputs,
             device=self._device,
         )
-        return (self._out_pos, self._out_vel, self._out_act)
+        return tuple(outputs)
 
     def process(
         self, inputs: InputProcessorBase.Inputs, state: InputProcessorDelay.State, dt: float | None
@@ -422,6 +433,7 @@ class InputProcessorDelay(InputProcessorBase):
                 pos_indices,
                 vel_indices,
                 self.buf_depth,
+                self._requires_grad,
                 current_state.buffer_pos,
                 current_state.buffer_vel,
                 current_state.buffer_act,

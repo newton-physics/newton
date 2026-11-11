@@ -214,7 +214,7 @@ class DrivePID(DriveBase):
         self._param_pack: wp.array2d[float] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
-        self._next_integral = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._next_integral = wp.zeros(num_actuators, dtype=wp.float32, device=device, requires_grad=True)
 
     def is_stateful(self) -> bool:
         return True
@@ -285,7 +285,7 @@ class DrivePID(DriveBase):
 
     def state(self, num_actuators: int, device: wp.Device) -> DrivePID.State:
         return DrivePID.State(
-            integral=wp.zeros(num_actuators, dtype=wp.float32, device=device),
+            integral=wp.zeros(num_actuators, dtype=wp.float32, device=device, requires_grad=True),
         )
 
     def compute(
