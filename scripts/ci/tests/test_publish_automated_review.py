@@ -21,7 +21,7 @@ class TestPublishAutomatedReview(unittest.TestCase):
             {
                 "GITHUB_REPOSITORY": "example/project",
                 "GITHUB_RUN_ID": "123",
-                "REVIEW_MODEL_NAME": "GPT 6 Astra",
+                "REVIEW_MODEL_NAME": "GPT 6.1 Sol",
                 "REVIEW_EFFORT": "high",
             },
         ):
@@ -44,7 +44,7 @@ class TestPublishAutomatedReview(unittest.TestCase):
             details,
         )
         for body in (inline[0]["body"], review["body"], summary):
-            self.assertIn("GPT 6 Astra", body)
+            self.assertIn("GPT 6.1 Sol", body)
             self.assertIn("effort `high`", body)
             self.assertIn("actions/runs/123", body)
             self.assertNotIn("Claude", body)
@@ -56,10 +56,10 @@ class TestPublishAutomatedReview(unittest.TestCase):
         """Preserve the original model attribution when a new model reviews a follow-up."""
         output = {"summary": "No further issues.", "complete": True}
         previous = publish.summary_body(output, [], [], "a" * 40, ["Reviewed with Claude Opus 5.5."])
-        result = publish.summary_body(output, [], [], "b" * 40, ["Reviewed with GPT 6 Astra at high effort."], previous)
+        result = publish.summary_body(output, [], [], "b" * 40, ["Reviewed with GPT 6.1 Sol at high effort."], previous)
         original, follow_up = result.split(publish.FOLLOW_UP_MARKER)
         self.assertIn("Claude Opus 5.5", original)
-        self.assertIn("GPT 6 Astra", follow_up)
+        self.assertIn("GPT 6.1 Sol", follow_up)
         self.assertNotIn("Claude", follow_up)
 
 

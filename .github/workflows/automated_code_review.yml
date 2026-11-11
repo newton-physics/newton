@@ -101,8 +101,8 @@ jobs:
     env:
       # REVIEW_MODEL is passed to the reviewer; the published comments show
       # only REVIEW_MODEL_NAME and REVIEW_EFFORT.
-      REVIEW_MODEL: openai/openai/gpt-6-astra
-      REVIEW_MODEL_NAME: GPT 6 Astra
+      REVIEW_MODEL: openai/openai/gpt-6.1-sol
+      REVIEW_MODEL_NAME: GPT 6.1 Sol
       REVIEW_EFFORT: high
     permissions:
       contents: read
