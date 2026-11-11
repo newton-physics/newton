@@ -98,6 +98,65 @@ def Xform "Root" (
             builder.add_usd(stage, load_visual_shapes=False)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mirrored_body_joint_frames_consistent(self):
+        """Keep joint frames on a mirrored body consistent with the imported body poses.
+
+        The UsdPhysics parser absorbs the reflection of a negative-determinant transform
+        into a negative uniform scale. ``usd.get_transform()`` must pick the same rotation,
+        otherwise the importer rebases joint frames by the difference and a child link is
+        rotated away from its authored pose by forward kinematics (issue #3653).
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        for scale in ((-1.0, -1.0, -1.0), (-1.0, 1.0, 1.0), (1.0, -2.0, 0.5)):
+            with self.subTest(scale=scale):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+                base = UsdGeom.Xform.Define(stage, "/World/Base")
+                base.AddTranslateOp().Set(Gf.Vec3d(0.5, 0.0, 1.0))
+                base.AddRotateXYZOp().Set(Gf.Vec3f(30.0, 20.0, 10.0))
+                base.AddScaleOp().Set(Gf.Vec3f(*scale))
+                UsdPhysics.ArticulationRootAPI.Apply(base.GetPrim())
+                link = UsdGeom.Xform.Define(stage, "/World/Base/Link")
+                link.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 1.0))
+                for prim in (base.GetPrim(), link.GetPrim()):
+                    UsdPhysics.RigidBodyAPI.Apply(prim)
+                    mass = UsdPhysics.MassAPI.Apply(prim)
+                    mass.GetMassAttr().Set(1.0)
+                    mass.GetDiagonalInertiaAttr().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+                root = UsdPhysics.FixedJoint.Define(stage, "/World/Root")
+                root.CreateBody1Rel().SetTargets([base.GetPath()])
+                hinge = UsdPhysics.RevoluteJoint.Define(stage, "/World/Hinge")
+                hinge.CreateBody0Rel().SetTargets([base.GetPath()])
+                hinge.CreateBody1Rel().SetTargets([link.GetPath()])
+                hinge.CreateAxisAttr().Set("Z")
+                hinge.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+                hinge.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, "mirrored"):
+                    builder.add_usd(stage, load_visual_shapes=False)
+
+                base_id = builder.body_label.index("/World/Base")
+                link_id = builder.body_label.index("/World/Base/Link")
+                base_matrix = UsdGeom.XformCache().GetLocalToWorldTransform(base.GetPrim())
+                base_rot = Gf.Transform(base_matrix).GetRotation().GetQuat()
+                expected_rot = np.array([*base_rot.GetImaginary(), base_rot.GetReal()])
+                actual_rot = np.array(builder.body_q[base_id][3:])
+                self.assertAlmostEqual(abs(float(np.dot(expected_rot, actual_rot))), 1.0, places=5)
+
+                model = builder.finalize(device="cpu")
+                state = model.state()
+                authored_link = state.body_q.numpy()[link_id].copy()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                fk_link = state.body_q.numpy()[link_id]
+                np.testing.assert_allclose(fk_link[:3], authored_link[:3], atol=1e-5)
+                self.assertAlmostEqual(abs(float(np.dot(fk_link[3:], authored_link[3:]))), 1.0, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_body_newton_armature_ignored(self):
         """Ignore body-level newton:armature without warnings or changes to inertia.
 

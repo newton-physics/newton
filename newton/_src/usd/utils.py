@@ -477,6 +477,12 @@ def get_transform(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.Xform
         A Warp transform containing the position and rotation extracted from the prim.
     """
     mat = _get_xform_matrix(prim, local=local, xform_cache=xform_cache)
+    if np.linalg.det(mat[:3, :3]) < 0.0:
+        # A mirrored (negative-determinant) transform has no unique rotation. Absorb the
+        # reflection into a negative uniform scale, as ``Gf.Transform`` and the UsdPhysics
+        # parser do, so this rotation matches the poses in UsdPhysics body and joint descs.
+        mat = mat.copy()
+        mat[:3, :3] *= -1.0
     xform_pos, xform_rot, _scale = wp.transform_decompose(wp.mat44(mat.T))
     return wp.transform(xform_pos, xform_rot)
 
