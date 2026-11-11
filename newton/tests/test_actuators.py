@@ -2753,7 +2753,8 @@ class TestMotorDC(unittest.TestCase):
         With duty ``d = 0.5 * kp``, a 10 V, 1 Ω battery and a supply current of
         ``d^2 V``, the voltages are 10, ``10 - 10 d^2`` and ``10 - d^2 (10 - 10 d^2)``.
         The third effort is ``10 d - 10 d^3 + 10 d^5`` = 4.0625 and its
-        derivative at ``kp = 1`` is 2.8125. As in ``example_diffsim_drone``,
+        derivative at ``kp = 1`` is 2.8125; with respect to the battery
+        resistance it is -0.625. As in ``example_diffsim_drone``,
         each step gets its own ``Control``, and the battery voltage written
         into one is carried to the next.
         """
@@ -2784,6 +2785,7 @@ class TestMotorDC(unittest.TestCase):
                 tape.backward(grads={controls[-1].joint_f: wp.ones_like(controls[-1].joint_f)})
                 np.testing.assert_allclose(controls[-1].joint_f.numpy(), [4.0625], rtol=1e-6)
                 np.testing.assert_allclose(actuator.drive.kp.grad.numpy(), [2.8125], rtol=1e-6)
+                np.testing.assert_allclose(model.batteries[0].resistance.grad.numpy(), [-0.625], rtol=1e-6)
 
     def test_compute(self):
         """Construct the motor directly and call compute() from a voltage command.
