@@ -91,7 +91,8 @@ jobs:
       !endsWith(github.actor, '[bot]') &&
       (needs.throttle.outputs.review == 'true' ||
        (github.event.action != 'synchronize' && needs.throttle.result == 'skipped'))
-    runs-on: ubuntu-latest
+    # codex-action's drop-sudo fails on ubuntu-26.04 (openai/codex-action#188).
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     # Never cancel a review in progress; a newer run waits for it, and GitHub
     # keeps only the latest pending run.
