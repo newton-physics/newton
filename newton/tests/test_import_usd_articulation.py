@@ -68,13 +68,13 @@ def Xform "Root" (
         self.assertEqual(len(collision_shapes), 13)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_mirrored_body_transform_warns(self):
-        """Warn when a rigid body has a negative-determinant (mirrored) transform.
+    def test_mirrored_body_transform_imports_without_warning(self):
+        """Import a rigid body with a negative-determinant (mirrored) transform silently.
 
-        Body frames cannot represent a reflection, so it ends up in a negative
-        shape scale that turns mesh collision geometry inside out (common with
-        mirror-scaled CAD exports). Joint frames stay consistent; see
-        ``test_mirrored_body_joint_frames_consistent``.
+        The body frame takes the ``Gf.Transform`` rotation and the reflection is
+        carried by a negative shape scale, which collision (winding swap), mass
+        properties and the viewer already support (see ``test_negative_scaling``).
+        Joint frames stay consistent; see ``test_mirrored_body_joint_frames_consistent``.
         """
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -96,8 +96,10 @@ def Xform "Root" (
         joint.CreateAxisAttr().Set("Z")
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "mirrored"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             builder.add_usd(stage, load_visual_shapes=False)
+        self.assertEqual([str(w.message) for w in caught if "mirrored" in str(w.message)], [])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mirrored_body_joint_frames_consistent(self):
@@ -139,8 +141,7 @@ def Xform "Root" (
                 hinge.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
 
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(UserWarning, "mirrored"):
-                    builder.add_usd(stage, load_visual_shapes=False)
+                builder.add_usd(stage, load_visual_shapes=False)
 
                 base_id = builder.body_label.index("/World/Base")
                 link_id = builder.body_label.index("/World/Base/Link")
@@ -216,11 +217,7 @@ def Xform "Root" (
                 root.CreateBody1Rel().SetTargets([body.GetPath()])
 
                 builder = newton.ModelBuilder()
-                if scale[0] * scale[1] * scale[2] < 0.0:
-                    with self.assertWarnsRegex(UserWarning, "mirrored"):
-                        builder.add_usd(stage, load_visual_shapes=False)
-                else:
-                    builder.add_usd(stage, load_visual_shapes=False)
+                builder.add_usd(stage, load_visual_shapes=False)
 
                 body_id = builder.body_label.index("/World/Parent/Body")
                 world = UsdGeom.XformCache().GetLocalToWorldTransform(body.GetPrim())

@@ -48,9 +48,6 @@ from newton.tests.unittest_utils import (
 devices = get_test_devices()
 
 
-_MIRRORED_BODY_WARNING = (
-    r"Rigid body prim /World/Negative/Complete has a mirrored \(negative-determinant\) world transform\."
-)
 _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ values but frequency"
 
 
@@ -7249,15 +7246,7 @@ def Xform "Articulation" (
                 UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
 
         builder = newton.ModelBuilder()
-        with warnings.catch_warnings(record=True) as caught:
-            # This fixture deliberately covers negative scale. Record only its
-            # expected diagnostic while preserving the ambient warning policy.
-            warnings.filterwarnings("always", message=_MIRRORED_BODY_WARNING, category=UserWarning)
-            result = builder.add_usd(stage)
-
-        self.assertEqual(len(caught), 1)
-        self.assertEqual(caught[0].category, newton.NewtonWarning)
-        self.assertRegex(str(caught[0].message), _MIRRORED_BODY_WARNING)
+        result = builder.add_usd(stage)
 
         for case_name, _scale, _angle, _com, include_partial in cases:
             for mass_name, _author_all_mass_properties in mass_cases if include_partial else mass_cases[:1]:
