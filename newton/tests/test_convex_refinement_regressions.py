@@ -331,6 +331,34 @@ def test_refinement_triangle_box_seam(test, device):
             np.testing.assert_allclose(np.max(np.abs(local_box) - half, axis=1), 0.0, atol=1.0e-5)
 
 
+def test_refinement_triangle_box_tilted_rest(test, device):
+    """Keep a slightly tilted mesh resting on a wide box at its true depth.
+
+    A side triangle of the mesh dips below the box's top face. Lifting it out is the
+    shallow way to separate the pair, but that direction leans a little toward the
+    triangle's front side, and the next front-side exit crosses the whole box.
+    """
+    half = np.array([0.075, 0.125, 0.04])
+    side, depth, tilt = 0.01, 0.0005, -0.02
+    cube = newton.Mesh.create_box(
+        side, side, side, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+    )
+    vertices = np.asarray(cube.vertices, dtype=np.float32)
+    for axis, swap in product(((0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.6, 0.8, 0.0)), (False, True)):
+        with test.subTest(axis=axis, swap=swap):
+            rotation = wp.quat_from_axis_angle(wp.vec3(axis), tilt)
+            lowest = min(float(wp.quat_rotate(rotation, wp.vec3(vertex))[2]) for vertex in vertices)
+            pose = wp.transform(wp.vec3(-0.02, 0.03, half[2] - depth - lowest), rotation)
+            pa, pb, normals = _contacts(
+                test, device, half, vertices, cube.indices, pose, np.ones(3), swap=swap, triangle=True
+            )
+            depths = np.sum((pa - pb) * normals, axis=1)
+            test.assertAlmostEqual(float(np.max(depths)), depth, delta=1.0e-5)
+            # Every contact pushes the mesh up out of the top face, within the tilt.
+            test.assertGreater(float(np.min(normals[:, 2])), np.cos(2.0 * tilt))
+            np.testing.assert_allclose(pa[:, 2], half[2], atol=1.0e-5)
+
+
 def test_refinement_triangle_above_wide_ground(test, device):
     """Report the true gap for a small triangle hovering above a wide ground.
 
@@ -544,6 +572,7 @@ for function in (
     test_refinement_unconverged_query_separation,
     test_refinement_triangle_box_depth,
     test_refinement_triangle_box_seam,
+    test_refinement_triangle_box_tilted_rest,
     test_refinement_triangle_above_wide_ground,
     test_refinement_resting_box_stack,
     test_refinement_box_hull_depth,
