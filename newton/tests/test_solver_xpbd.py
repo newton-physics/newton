@@ -1734,6 +1734,8 @@ def test_xpbd_contact_force_zero_when_no_contact(test, device):
     dt = 1.0 / 60.0
     state_in.clear_forces()
     collision_pipeline.collide(state_in, contacts)
+    # Seed the buffer so the step has to clear it
+    observables.contact_f.fill_(wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0))
     solver.step(state_in, state_out, control, contacts, dt, observables=observables)
 
     test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)

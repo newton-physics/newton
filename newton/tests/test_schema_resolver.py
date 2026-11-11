@@ -127,13 +127,10 @@ class TestSchemaResolver(unittest.TestCase):
             schema_resolvers=[SchemaResolverPhysx()],  # PhysX first
             verbose=False,
         )
-        armature_values_found = []
-        for i in range(6, builder.joint_dof_count):
-            armature = builder.joint_armature[i]
-            if armature > 0:
-                armature_values_found.append(armature)
-        self.assertEqual(len(armature_values_found), 8)
-        for armature in armature_values_found:
+        # Skip the free joint's six DOFs
+        armatures = builder.joint_armature[6:]
+        self.assertEqual(len(armatures), 8)
+        for armature in armatures:
             self.assertAlmostEqual(armature, 0.02, places=3)
 
         builder = ModelBuilder()
@@ -142,12 +139,7 @@ class TestSchemaResolver(unittest.TestCase):
             schema_resolvers=[SchemaResolverNewton()],  # nothing should be found
             verbose=False,
         )
-        armature_values_found = []
-        for i in range(6, builder.joint_dof_count):
-            armature = builder.joint_armature[i]
-            if armature > 0:
-                armature_values_found.append(armature)
-        self.assertEqual(armature_values_found, [])
+        self.assertEqual(builder.joint_armature[6:], [0.0] * 8)
 
     def test_physx_joint_velocity_limit(self):
         """

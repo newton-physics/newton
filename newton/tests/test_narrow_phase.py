@@ -705,7 +705,6 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
         self.assertGreater(penetrations[0], 0.0, "Separated spheres should have positive penetration (separation)")
         self.assertAlmostEqual(penetrations[0], 1.5, places=1, msg=f"Expected separation ~1.5, got {penetrations[0]}")
 
-        # Normal should be unit length
         normal_length = np.linalg.norm(normals[0])
         self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
 
@@ -924,44 +923,47 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
 
     def test_sphere_box_corner_collision(self):
         """Test sphere-box collision at box corner."""
-        # Sphere approaching box corner
-        offset = 1.5  # Distance to corner
-        corner_dir = np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0)  # Unit vector toward corner
-        sphere_pos = corner_dir * offset
+        sphere_radius = 0.5
+        box_size = np.array([1.0, 1.0, 1.0])
+        corner_dir = np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0)
+        # Outside all three faces, so the corner is the closest box feature
+        corner_dist = 0.3
+        sphere_pos = box_size + corner_dir * corner_dist
 
         geom_list = [
             {
                 "type": GeoType.SPHERE,
                 "transform": (sphere_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
-                "data": ([0.5, 0.5, 0.5], 0.0),
+                "data": ([sphere_radius, sphere_radius, sphere_radius], 0.0),
             },
-            {"type": GeoType.BOX, "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), "data": ([1.0, 1.0, 1.0], 0.0)},
+            {
+                "type": GeoType.BOX,
+                "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": (box_size.tolist(), 0.0),
+            },
         ]
 
         count, _pairs, positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
         self.assertGreater(count, 0)
-        # Normal should point approximately along corner direction
-        normal_length = np.linalg.norm(normals[0])
-        self.assertAlmostEqual(normal_length, 1.0, places=2, msg="Normal should be unit length")
+        np.testing.assert_allclose(
+            normals[0], -corner_dir, atol=1e-2, err_msg="Normal should point from sphere toward box corner"
+        )
+        self.assertAlmostEqual(penetrations[0], corner_dist - sphere_radius, places=2)
 
-        # Verify surface reconstruction if penetrating
-        if penetrations[0] < 0:
-            sphere_radius = 0.5
-            box_pos = np.array([0.0, 0.0, 0.0])
-            box_size = np.array([1.0, 1.0, 1.0])
-            box_rot = np.eye(3)
+        box_pos = np.array([0.0, 0.0, 0.0])
+        box_rot = np.eye(3)
 
-            def dist_to_sphere(p):
-                return abs(np.linalg.norm(p - sphere_pos) - sphere_radius)
+        def dist_to_sphere(p):
+            return abs(np.linalg.norm(p - sphere_pos) - sphere_radius)
 
-            def dist_to_box(p):
-                return distance_point_to_box(p, box_pos, box_rot, box_size)
+        def dist_to_box(p):
+            return distance_point_to_box(p, box_pos, box_rot, box_size)
 
-            self.assertTrue(
-                check_surface_reconstruction(positions[0], normals[0], penetrations[0], dist_to_sphere, dist_to_box),
-                msg="Contact position should be at midpoint between surfaces",
-            )
+        self.assertTrue(
+            check_surface_reconstruction(positions[0], normals[0], penetrations[0], dist_to_sphere, dist_to_box),
+            msg="Contact position should be at midpoint between surfaces",
+        )
 
     def test_box_box_face_collision(self):
         """Test box-box collision with face contact."""
@@ -1082,7 +1084,6 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
 
         # The contact gap exceeds the separation, so the pair reports a speculative contact
         self.assertGreater(count, 0)
-        # Normal should be unit length
         normal_length = np.linalg.norm(normals[0])
         self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
 
@@ -1118,7 +1119,6 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
         count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
         self.assertGreater(count, 0)
-        # Normal should be unit length
         normal_length = np.linalg.norm(normals[0])
         self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
 
@@ -1964,7 +1964,6 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
         # A separated pair reports a positive distance
         self.assertGreater(penetrations[0], 0.0, "Separated ellipsoids should have positive penetration (separation)")
 
-        # Normal should be unit length
         normal_length = np.linalg.norm(normals[0])
         self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
 
