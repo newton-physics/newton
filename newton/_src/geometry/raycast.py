@@ -279,6 +279,21 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
                         if wp.abs(p0) <= size[id0] and wp.abs(p1) <= size[id1]:
                             if wp.abs(sol - t_hit) < EPSILON:
                                 normal_local[i] = -1.0 if side < 0 else 1.0
+        # Fallback for hits on edges/corners or far-away hits, where the strict
+        # face-distance matching above can leave the normal zero: pick the face
+        # from the hit point, taking the axis with the largest |p[i]| / size[i].
+        if wp.length(normal_local) < EPSILON:
+            p = ray_origin + t_hit * ray_direction
+            best_axis = 0
+            best_ratio = -1.0
+            for i in range(3):
+                if size[i] > MINVAL:
+                    ratio = wp.abs(p[i]) / size[i]
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_axis = i
+            if size[best_axis] > MINVAL:
+                normal_local[best_axis] = 1.0 if p[best_axis] >= 0.0 else -1.0
         normal = wp.normalize(normal_local)
 
     return t_hit, normal

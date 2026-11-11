@@ -10,6 +10,7 @@ import newton
 from newton import GeoType, Heightfield
 from newton._src.geometry.raycast import (
     map_ray_to_local,
+    ray_intersect_box,
     ray_intersect_mesh,
     ray_intersect_shape,
     raycast_kernel,
@@ -85,6 +86,34 @@ def test_ray_intersect_sphere(test: TestRaycast, device: str):
                 device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-5)
+
+
+@wp.kernel
+def kernel_test_box_normal(
+    out_t: wp.array[float],
+    out_n: wp.array[wp.vec3],
+    origin: wp.vec3,
+    direction: wp.vec3,
+    size: wp.vec3,
+):
+    tid = wp.tid()
+    t, n = ray_intersect_box(origin, direction, size)
+    out_t[tid] = t
+    out_n[tid] = n
+
+
+def test_ray_intersect_box_edge_normal(test: TestRaycast, device: str):
+    out_t = wp.zeros(1, dtype=float, device=device)
+    out_n = wp.zeros(1, dtype=wp.vec3, device=device)
+    size = wp.vec3(0.30, 0.24, 0.04)
+    # Ray that hits a box edge; previously returned a zero normal.
+    origin = wp.vec3(5.050293260982222, -1.8969020617206513, 7.960762088902726)
+    direction = wp.vec3(-0.530973067765775, 0.17350523356487588, -0.8294356727516604)
+    wp.launch(kernel_test_box_normal, dim=1, inputs=[out_t, out_n, origin, direction, size], device=device)
+    t = out_t.numpy()[0]
+    n = out_n.numpy()[0]
+    test.assertGreaterEqual(t, 0.0)
+    test.assertAlmostEqual(float(np.linalg.norm(n)), 1.0, delta=1e-5)
 
 
 def test_ray_intersect_box(test: TestRaycast, device: str):
@@ -872,6 +901,9 @@ devices = get_test_devices()
 add_function_test(TestRaycast, "test_ray_intersect_plane", test_ray_intersect_plane, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_sphere", test_ray_intersect_sphere, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_box", test_ray_intersect_box, devices=devices)
+add_function_test(
+    TestRaycast, "test_ray_intersect_box_edge_normal", test_ray_intersect_box_edge_normal, devices=devices
+)
 add_function_test(TestRaycast, "test_ray_intersect_capsule", test_ray_intersect_capsule, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_cylinder", test_ray_intersect_cylinder, devices=devices)
 add_function_test(
