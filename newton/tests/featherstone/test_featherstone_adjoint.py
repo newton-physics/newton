@@ -332,7 +332,7 @@ add_function_test(
 
 
 def test_dense_cholesky_solve_adjoint(test, device):
-    """Guards the custom adjoints of the Featherstone dense Cholesky/solve.
+    """Verify the custom adjoints of the Featherstone dense Cholesky/solve.
 
     Composition under test (verbatim repo kernels, one 8x8 batch):
         L_factor = chol(H + diag(R));  x = solve(L_factor, b);  loss = <g, x>
@@ -576,7 +576,7 @@ def test_tile_gemm_armature_gradient(test, device):
 
 
 def test_rigid_tau_external_wrench(test, device):
-    """Guards eval_rigid_tau's external-wrench frame shift.
+    """Verify eval_rigid_tau's external-wrench frame shift.
 
     Pre-fix, eval_rigid_tau converted the public-frame external wrench into
     the internal solve frame by OVERWRITING the body_f_ext input array in
@@ -681,7 +681,12 @@ def test_rigid_tau_external_wrench(test, device):
     # pre-fix x_com_s covector (built from the replayed, already-converted
     # wrench) lands in adj_body_q_com and surfaces here through the fk
     # backward. Same two-epsilon methodology as test_multistep_gradient.
+    # The wrench checks above PIN the leaf path but do not discriminate the
+    # defect, so at least one root-pose channel must actually resolve below;
+    # if none does, the test skips rather than passing on the wrench checks
+    # alone.
     q_base = st0.joint_q.numpy().astype(np.float64).copy()
+    resolved = 0
     for c in (3, 4, 5, 6):
         fds = []
         for eps_q in (1e-3, 1e-2):
@@ -696,6 +701,7 @@ def test_rigid_tau_external_wrench(test, device):
         spread = abs(fds[0] - fds[1]) / scale
         if spread > 0.15:
             continue  # FD-unresolvable: finite differences cannot judge
+        resolved += 1
         rel = abs(ana_q[c] - fds[0]) / scale
         test.assertLessEqual(
             rel,
@@ -703,6 +709,11 @@ def test_rigid_tau_external_wrench(test, device):
             f"root-pose joint_q[{c}]: tape {ana_q[c]:.5e} vs FD {fds[0]:.5e} (rel {rel * 100:.2f}%, "
             f"spread {spread * 100:.2f}%) - pose gradient through eval_rigid_tau's wrench "
             "frame shift is corrupted (replayed f_ext from the overwritten array)",
+        )
+    if resolved == 0:
+        test.skipTest(
+            "all four root-pose channels are dead or FD-unresolvable on this device; "
+            "the discriminating root-pose check did not run (wrench channels only)"
         )
 
 
@@ -712,7 +723,7 @@ def _joint_qd_loss_kernel(joint_qd: wp.array[float], loss: wp.array[float]):
 
 
 def test_non_grad_step_reuses_aux_arrays(test, device):
-    """Guards the augmentation flag on the default non-grad step path.
+    """Verify the augmentation flag on the default non-grad step path.
 
     On requires_grad=False the solver itself is the allocation target of
     _allocate_state_aux_vars, so the flag must be set for the solver too.
