@@ -159,7 +159,8 @@ class BatteryConstantResistance(BatteryBase):
 
         See :meth:`BatteryBase.step` for the arguments.
         """
-        self._current.zero_()
+        current = wp.zeros_like(self._current) if self._current.requires_grad else self._current
+        current.zero_()
         wp.launch(
             _battery_update_kernel,
             dim=self.num_batteries,
@@ -171,7 +172,7 @@ class BatteryConstantResistance(BatteryBase):
                 self.min_voltage,
                 _require_array(sim_control, "actuator_supply_current"),
             ],
-            outputs=[self._current, _require_array(sim_control, "actuator_supply_voltage")],
+            outputs=[current, _require_array(sim_control, "actuator_supply_voltage")],
             device=self.device,
         )
 

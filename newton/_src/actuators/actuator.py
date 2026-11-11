@@ -666,6 +666,7 @@ class Actuator:
             self.device,
             self._drive_output,
             self._motor_voltage,
+            self.requires_grad,
         )
 
     def is_stateful(self) -> bool:
@@ -793,6 +794,16 @@ class Actuator:
         current_states = (current_act_state and current_act_state.input_processor_states) or no_states
         next_states = (next_act_state and next_act_state.input_processor_states) or no_states
 
+        computed_forces, applied_forces, supply_voltage = (
+            self._computed_forces,
+            self._applied_forces,
+            self._supply_voltage,
+        )
+        if self.requires_grad:
+            computed_forces, applied_forces = wp.empty_like(computed_forces), wp.empty_like(applied_forces)
+            if supply_voltage is not None:
+                supply_voltage = wp.empty_like(supply_voltage)
+
         # --- 1. Input processors (read current_state, write next_state) ---
         inputs = InputProcessorBase.Inputs(
             positions=positions,
@@ -832,7 +843,7 @@ class Actuator:
             supply_current = _require_array(sim_control, self.control_supply_current_attr)
         if self.motor is not None:
             self.motor.compute_supply_voltage(
-                battery_voltage, self.actuator_indices, self._supply_voltage, device=self.device
+                battery_voltage, self.actuator_indices, supply_voltage, device=self.device
             )
 
         # --- 3-5. Effort mode: drive, clamps, optional motor ---
@@ -849,13 +860,13 @@ class Actuator:
             inputs.vel_indices,
             inputs.target_pos_indices,
             inputs.target_vel_indices,
-            self._computed_forces,
-            self._applied_forces,
+            computed_forces,
+            applied_forces,
             drive_state,
             dt,
             custom_inputs,
             bias_force,
-            self._supply_voltage,
+            supply_voltage,
             supply_current,
             self.actuator_indices,
         )
@@ -873,7 +884,7 @@ class Actuator:
             dim=self.num_actuators,
             inputs=[
                 output_forces,
-                self._computed_forces,
+                computed_forces,
                 self.effort_indices,
             ],
             outputs=[applied_output, computed_output],

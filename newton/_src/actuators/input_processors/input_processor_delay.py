@@ -290,6 +290,9 @@ class InputProcessorDelay(InputProcessorBase):
             ``(delayed_pos, delayed_vel, delayed_feedforward)``.  When
             *feedforward* is ``None``, *delayed_feedforward* is all zeros.
         """
+        outputs = [self._out_pos, self._out_vel, self._out_act]
+        if self._requires_grad:
+            outputs = [wp.empty_like(out) for out in outputs]
         wp.launch(
             kernel=_delay_read_kernel,
             dim=self._num_actuators,
@@ -307,10 +310,10 @@ class InputProcessorDelay(InputProcessorBase):
                 pos_indices,
                 vel_indices,
             ],
-            outputs=[self._out_pos, self._out_vel, self._out_act],
+            outputs=outputs,
             device=self._device,
         )
-        return (self._out_pos, self._out_vel, self._out_act)
+        return tuple(outputs)
 
     def process(
         self, inputs: InputProcessorBase.Inputs, state: InputProcessorDelay.State, dt: float | None

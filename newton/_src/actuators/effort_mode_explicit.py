@@ -31,6 +31,7 @@ class _EffortModeExplicit:
         device: wp.Device,
         drive_output: wp.array[float] | None = None,
         motor_voltage: wp.array[float] | None = None,
+        requires_grad: bool = False,
     ):
         self._drive = drive
         self._motor = motor
@@ -38,6 +39,7 @@ class _EffortModeExplicit:
         self._device = device
         self._drive_output = drive_output
         self._motor_voltage = motor_voltage
+        self._requires_grad = requires_grad
 
     def is_graphable(self) -> bool:
         return self._drive.is_graphable() and (self._motor is None or self._motor.is_graphable())
@@ -75,6 +77,9 @@ class _EffortModeExplicit:
         Returns the buffer holding the final (clamped) effort.
         *bias_force* is ignored.
         """
+        drive_output, motor_voltage = self._drive_output, self._motor_voltage
+        if self._requires_grad and self._motor is not None:
+            drive_output, motor_voltage = wp.empty_like(drive_output), wp.empty_like(motor_voltage)
         compute_kwargs: dict[str, Any] = {"device": self._device}
         if self._drive.custom_inputs:
             compute_kwargs["custom_inputs"] = custom_inputs
@@ -88,12 +93,12 @@ class _EffortModeExplicit:
             vel_indices,
             target_pos_indices,
             target_vel_indices,
-            computed_forces if self._motor is None else self._drive_output,
+            computed_forces if self._motor is None else drive_output,
             drive_state,
             dt,
             **compute_kwargs,
         )
-        forces = computed_forces if self._motor is None else self._drive_output
+        forces = computed_forces if self._motor is None else drive_output
         for clamp in self._clamping:
             clamp_kwargs = {"supply_voltage": supply_voltage} if self._motor is not None else {}
             clamp.modify_forces(
@@ -113,11 +118,11 @@ class _EffortModeExplicit:
                 _duty_to_voltage_kernel,
                 dim=len(forces),
                 inputs=[forces, supply_voltage],
-                outputs=[self._motor_voltage],
+                outputs=[motor_voltage],
                 device=self._device,
             )
             self._motor.compute(
-                self._motor_voltage,
+                motor_voltage,
                 computed_forces,
                 velocities,
                 vel_indices,

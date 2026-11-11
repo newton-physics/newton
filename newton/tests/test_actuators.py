@@ -2747,6 +2747,40 @@ class TestMotorDC(unittest.TestCase):
                         np.testing.assert_allclose(actuator.drive.kp.grad.numpy(), [0.75 if requested == 0.25 else 0.0])
                         tape.zero()
 
+    def test_battery_feedback_gradient_over_two_steps(self):
+        """Differentiate two actuator steps on one tape through the battery voltage.
+
+        With duty ``d = 0.5 * kp``, the first step draws ``10 d^2`` A from a
+        10 V, 1 Ω battery, so the second effort is ``10 d - 10 d^3`` and its
+        derivative at ``kp = 1`` is 1.25.
+        """
+        for device in get_test_devices():
+            with self.subTest(device=device), wp.ScopedDevice(device):
+                builder = newton.ModelBuilder()
+                joint = builder.add_joint_revolute(-1, builder.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA))
+                builder.add_articulation([joint])
+                slot = builder.add_actuator(
+                    DrivePD,
+                    index=0,
+                    kp=1.0,
+                    output_space=DriveOutputSpace.DUTY,
+                    motor=(MotorDC, {"kt": 1.0, "resistance": 1.0, "supply_from_battery": True}),
+                )
+                builder.add_battery(BatteryConstantResistance, [slot], nominal_voltage=10.0, resistance=1.0)
+                model = builder.finalize(device=device, requires_grad=True)
+                actuator, state = model.actuators[0], model.state()
+                control_0, control_1 = model.control(), model.control()
+                control_0.joint_target_q.fill_(0.5)
+                control_1.joint_target_q.fill_(0.5)
+                with wp.Tape() as tape:
+                    actuator.step(state, control_0, dt=0.01)
+                    model.batteries[0].step(control_0)
+                    wp.copy(control_1.actuator_supply_voltage, control_0.actuator_supply_voltage)
+                    actuator.step(state, control_1, dt=0.01)
+                tape.backward(grads={control_1.joint_f: wp.ones_like(control_1.joint_f)})
+                np.testing.assert_allclose(control_1.joint_f.numpy(), [3.75], rtol=1e-6)
+                np.testing.assert_allclose(actuator.drive.kp.grad.numpy(), [1.25], rtol=1e-6)
+
     def test_compute(self):
         """Construct the motor directly and call compute() from a voltage command.
 
