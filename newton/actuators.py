@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING
 
 from ._src.actuators import (
     Actuator,
-    ActuatorBase,
     ActuatorParsed,
     BatteryBase,
     BatteryConstantResistance,
@@ -55,7 +54,6 @@ from ._src.exceptions import NewtonDeprecationWarning
 
 __all__ = [
     "Actuator",
-    "ActuatorBase",
     "ActuatorParsed",
     "BatteryBase",
     "BatteryConstantResistance",

@@ -27,7 +27,6 @@ construction.
    :nosignatures:
 
    Actuator
-   ActuatorBase
    ActuatorParsed
    BatteryBase
    BatteryConstantResistance

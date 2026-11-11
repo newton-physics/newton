@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .actuator import Actuator
-from .actuator_base import ActuatorBase
 from .batteries import BatteryBase, BatteryConstantResistance
 from .clamping import (
     ClampingBase,
@@ -40,7 +39,6 @@ from .usd_parser import (
 
 __all__ = [
     "Actuator",
-    "ActuatorBase",
     "ActuatorParsed",
     "BatteryBase",
     "BatteryConstantResistance",

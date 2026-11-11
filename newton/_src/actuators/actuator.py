@@ -13,7 +13,6 @@ import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..utils.deprecation import RemovedAttribute
-from .actuator_base import ActuatorBase
 from .clamping.base import ClampingBase
 from .clamping.clamping_current_duty import ClampingCurrentDuty
 from .drives.base import DriveBase
@@ -212,7 +211,7 @@ def _input_container_class(name: str, frequencies: tuple[tuple[str, Model.Attrib
     return cls
 
 
-class Actuator(ActuatorBase):
+class Actuator:
     """Composed actuator: transmission → input processors → drive → clamping → motor → transmission.
 
     An actuator reads from simulation state/control arrays, maps its joints
