@@ -725,7 +725,7 @@ def compute_inertia_shape(
         return 0.0, wp.vec3(), wp.mat33()
     elif type == GeoType.MESH or type == GeoType.CONVEX_MESH:
         assert src is not None, "src must be provided for mesh or convex hull shapes"
-        if src.has_inertia and src.mass > 0.0 and src.is_solid == is_solid:
+        if src.has_inertia and src.mass > 0.0 and src.is_solid == is_solid and is_solid:
             m, c, I = src.mass, src.com, src.inertia
             scale = wp.vec3(scale)
             sx, sy, sz = scale
