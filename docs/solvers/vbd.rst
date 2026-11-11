@@ -164,9 +164,10 @@ with the shape values (:ref:`vbd-energy-terms`). The Model Parameters table of
 Rigid constraint rows use the compliant ALM formulation: the authored
 stiffness is the physical stiffness of the row and the solver picks the
 metric :math:`\rho` itself (:ref:`vbd-rigid-joints`). The legacy AVBD path,
-deprecated in 1.6, has been removed together with its penalty-ramp controls
-and the hard/soft joint API (``vbd:joint_is_hard``,
-``SolverVBD.set_joint_constraint_mode()``, and ``SolverVBD.JointSlot``).
+deprecated in 1.6, has been removed together with its penalty-ramp controls,
+the hard-contact switch ``rigid_contact_hard``, and the hard/soft joint API
+(``vbd:joint_is_hard``, ``SolverVBD.set_joint_constraint_mode()``, and
+``SolverVBD.JointSlot``).
 
 Scene-authored settings
 ^^^^^^^^^^^^^^^^^^^^^^^

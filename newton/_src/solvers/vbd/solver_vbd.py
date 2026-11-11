@@ -2605,7 +2605,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # Material can redistribute between fixed guides even without any rigid bodies.
             if self.tendon_segment_lambda is not None and not self.integrate_with_external_rigid_solver:
                 self._update_tendon_routing(state_in, dt, False)
-            self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
+            self._solve_rigid_body_iteration(state_in, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt)
             if self.model.attachment_particle_body_count > 0:
                 wp.launch(
@@ -4247,7 +4247,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     def _solve_rigid_body_iteration(
         self,
         state_in: State,
-        state_out: State,
         control: Control,
         contacts: Contacts | None,
         dt: float,

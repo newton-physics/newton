@@ -1851,12 +1851,6 @@ def _rigid_compliant_alm_defaults_to_compliant(test, device):
         with test.subTest(parameter=parameter, value=value):
             with test.assertRaisesRegex(TypeError, parameter):
                 newton.solvers.SolverVBD(model, **{parameter: value})
-    with test.assertRaisesRegex(ValueError, "rigid_compliant_alm=False"):
-        newton.solvers.SolverVBD(
-            model,
-            rigid_compliant_alm=False,
-            integrate_with_external_rigid_solver=True,
-        )
 
 
 def _rigid_contact_dual_update_computes_lambda(test, device):
@@ -4351,11 +4345,11 @@ def _rigid_contact_reset_lifecycle(test, device):
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
     contacts = pipeline.contacts()
     # Dynamic bodies supply ALM support; zero iterations and gravity keep their geometry fixed.
+    # gamma=1 disables the per-step multiplier decay, so a restored dual survives a step unchanged.
     solver = newton.solvers.SolverVBD(
         model,
         iterations=0,
         rigid_contact_history=True,
-        rigid_avbd_contact_alpha=1.0,
         rigid_avbd_gamma=1.0,
     )
     state_in = model.state()
