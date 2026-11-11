@@ -140,6 +140,11 @@ def _reset_proxy_values_masked_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def _set_unit_body_gravity_scale_kernel(body_indices: wp.array[int], body_gravity_scale: wp.array[wp.float32]):
+    body_gravity_scale[body_indices[wp.tid()]] = 1.0
+
+
+@wp.kernel(enable_backward=False)
 def _copy_indexed_float_kernel(
     src_indices: wp.array[int],
     dst_indices: wp.array[int],
@@ -1267,6 +1272,20 @@ class SolverCoupledProxy(SolverCoupled):
             if proxy.dst_name == name and proxy.proxy_ids_local is not None and proxy.proxy_ids_local.shape[0] > 0:
                 return True
         return False
+
+    def _mark_view_proxy_bodies(self, view: ModelView, body_indices: wp.array[int]) -> None:
+        """Mark proxy bodies and give them a gravity scale of 1 in the destination view.
+
+        Proxy coupling removes the gravity the destination reports for a proxy, whatever the owner's scale.
+        """
+        super()._mark_view_proxy_bodies(view, body_indices)
+        if body_indices.shape[0] > 0:
+            wp.launch(
+                _set_unit_body_gravity_scale_kernel,
+                dim=body_indices.shape[0],
+                inputs=[body_indices, view._cow_array("body_gravity_scale")],
+                device=self.model.device,
+            )
 
     def _refresh_body_inertial_view_overrides(self, entry) -> None:
         if not self._entry_has_body_proxy_overrides(entry.name):

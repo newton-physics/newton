@@ -18,6 +18,7 @@ from newton.solvers import (
     SolverVBD,
     SolverXPBD,
 )
+from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledADMM, SolverCoupledProxy
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 SCALES = (1.0, 0.5, 0.0, -1.0)
@@ -122,18 +123,13 @@ def _advance(solver, model, states, control, steps):
 
 
 def test_free_fall(test, device, solver_fn, scene, mujoco):
-    """Accelerate each free body from rest at its scaled world gravity."""
+    """Accelerate each free body from rest at its scaled world gravity, and report it through the coupling hook."""
     model = _free_body_model(device, **scene, mujoco=mujoco)
     solver = solver_fn(model)
     states = [model.state(), model.state()]
     _advance(solver, model, states, model.control(), 10)
     np.testing.assert_allclose(states[0].body_qd.numpy()[:, :3], _expected_gravity(model) * 10 * DT, atol=1.0e-4)
 
-
-def test_coupling_hook(test, device, solver_fn, scene, mujoco):
-    """Report each body's scaled gravity through the coupling hook."""
-    model = _free_body_model(device, **scene, mujoco=mujoco)
-    solver = solver_fn(model)
     acceleration = wp.empty(model.body_count, dtype=wp.vec3, device=device)
     solver.coupling_eval_gravity_acceleration(acceleration, None)
     np.testing.assert_allclose(acceleration.numpy(), _expected_gravity(model), atol=1.0e-6)
@@ -249,6 +245,69 @@ def test_unsupported_solver_raises(test, device, solver_fn):
         solver_fn(model)
 
 
+def test_coupled_proxy(test, device, destination_fn):
+    """Proxy scaled bodies owned by Featherstone into a solver that rejects scales, and fall at the owner's gravity."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    bodies = [
+        builder.add_body(
+            xform=wp.transform((2.0 * i, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            inertia=INERTIA,
+            gravity_scale=scale,
+        )
+        for i, scale in enumerate(SCALES)
+    ]
+    builder.color()
+    model = builder.finalize(device=device)
+    coupled = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupled.Entry(name="owner", solver=SolverFeatherstone, bodies=bodies),
+            SolverCoupled.Entry(name="proxy", solver=destination_fn),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[SolverCoupledProxy.Proxy(source="owner", destination="proxy", bodies=bodies)]
+        ),
+    )
+    states = [model.state(), model.state()]
+    _advance(coupled, model, states, model.control(), 10)
+    np.testing.assert_allclose(states[0].body_qd.numpy()[:, :3], _expected_gravity(model) * 10 * DT, atol=1.0e-4)
+
+
+def test_coupled_admm_joint_proxy_raises(test, device, destination_fn):
+    """Raise when a solver that rejects scales would apply its own gravity to a scaled ADMM joint proxy."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    parent = builder.add_link(mass=1.0, inertia=INERTIA, gravity_scale=0.0)
+    child = builder.add_link(xform=wp.transform((1.0, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=INERTIA)
+    joints = [
+        builder.add_joint_revolute(-1, parent, axis=(0.0, 1.0, 0.0)),
+        builder.add_joint_ball(parent, child, parent_xform=wp.transform((1.0, 0.0, 0.0), wp.quat_identity())),
+    ]
+    builder.add_articulation(joints)
+    model = builder.finalize(device=device)
+    with test.assertRaisesRegex(NotImplementedError, "body_gravity_scale"):
+        SolverCoupledADMM(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="parent", solver=SolverFeatherstone, bodies=[parent], joints=joints[:1]),
+                SolverCoupled.Entry(name="child", solver=destination_fn, bodies=[child]),
+            ],
+            coupling=SolverCoupledADMM.Config(),
+        )
+
+
+class TestBodyGravityScaleSolvers(unittest.TestCase):
+    pass
+
+
+class TestBodyGravityScaleUnsupported(unittest.TestCase):
+    pass
+
+
+class TestBodyGravityScaleCoupled(unittest.TestCase):
+    pass
+
+
 supported_solvers = {
     "featherstone": (SolverFeatherstone, False),
     "steel": (SolverSteel, False),
@@ -279,20 +338,19 @@ for device in get_test_devices():
     for name, (solver_fn, mujoco) in supported_solvers.items():
         if name == "mujoco_cpu" and device.is_cuda:
             continue
-        for test_fn in (test_free_fall, test_coupling_hook):
-            add_function_test(
-                TestBodyGravityScale,
-                f"{test_fn.__name__}_{name}",
-                test_fn,
-                devices=[device],
-                solver_fn=solver_fn,
-                scene=free_body_scenes[name],
-                mujoco=mujoco,
-            )
+        add_function_test(
+            TestBodyGravityScaleSolvers,
+            f"test_free_fall_{name}",
+            test_free_fall,
+            devices=[device],
+            solver_fn=solver_fn,
+            scene=free_body_scenes[name],
+            mujoco=mujoco,
+        )
         if name == "mujoco_warp_shared":
             continue
         add_function_test(
-            TestBodyGravityScale,
+            TestBodyGravityScaleSolvers,
             f"test_chain_hold_{name}",
             test_chain_hold,
             devices=[device],
@@ -300,7 +358,7 @@ for device in get_test_devices():
             mujoco=mujoco,
         )
         add_function_test(
-            TestBodyGravityScale,
+            TestBodyGravityScaleSolvers,
             f"test_notify_rejects_nonfinite_scale_{name}",
             test_notify_rejects_nonfinite_scale,
             devices=[device],
@@ -309,7 +367,7 @@ for device in get_test_devices():
         )
         if device.is_cuda and name in ("featherstone", "steel", "mujoco_warp"):
             add_function_test(
-                TestBodyGravityScale,
+                TestBodyGravityScaleSolvers,
                 f"test_graph_replay_after_notify_{name}",
                 test_graph_replay_after_notify,
                 devices=[device],
@@ -318,12 +376,27 @@ for device in get_test_devices():
             )
     for name, solver_fn in unsupported_solvers.items():
         add_function_test(
-            TestBodyGravityScale,
+            TestBodyGravityScaleUnsupported,
             f"test_unsupported_solver_raises_{name}",
             test_unsupported_solver_raises,
             devices=[device],
             solver_fn=solver_fn,
         )
+    for name in ("semi_implicit", "xpbd", "vbd"):
+        add_function_test(
+            TestBodyGravityScaleCoupled,
+            f"test_coupled_proxy_{name}",
+            test_coupled_proxy,
+            devices=[device],
+            destination_fn=unsupported_solvers[name],
+        )
+    add_function_test(
+        TestBodyGravityScaleCoupled,
+        "test_coupled_admm_joint_proxy_raises",
+        test_coupled_admm_joint_proxy_raises,
+        devices=[device],
+        destination_fn=SolverXPBD,
+    )
 
 
 if __name__ == "__main__":
