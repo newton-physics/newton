@@ -565,7 +565,9 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     joint_count, dof_count = size
                     first, n = int(arts.numpy()[0]), arts.shape[0]
                     target._J_by_size[size] = _group_view(target.J, J_start[first], (n, 6 * joint_count, dof_count))
-                    target._M_by_size[size] = _group_view(target.M, M_start[first], (n, 6 * joint_count, 6 * joint_count))
+                    target._M_by_size[size] = _group_view(
+                        target.M, M_start[first], (n, 6 * joint_count, 6 * joint_count)
+                    )
                     target._H_by_size[size] = _group_view(target.H, H_start[first], (n, dof_count, dof_count))
                     target._L_by_size[size] = _group_view(target.L, H_start[first], (n, dof_count, dof_count))
 
