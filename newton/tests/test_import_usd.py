@@ -7253,7 +7253,7 @@ def Xform "Articulation" (
             result = builder.add_usd(stage)
 
         self.assertEqual(len(caught), 1)
-        self.assertEqual(caught[0].category, newton.exceptions.NewtonWarning)
+        self.assertEqual(caught[0].category, newton.NewtonWarning)
         self.assertRegex(str(caught[0].message), _MIRRORED_BODY_WARNING)
 
         for case_name, _scale, _angle, _com, include_partial in cases:
@@ -9286,7 +9286,7 @@ def Xform "Articulation" (
 
                 builder = newton.ModelBuilder()
                 SolverMuJoCo.register_custom_attributes(builder)
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "another joint already connects"):
+                with self.assertWarnsRegex(newton.NewtonWarning, "another joint already connects"):
                     builder.add_usd(stage, xform=xform, schema_resolvers=[usd.SchemaResolverMjc()])
                 j = builder.joint_label.index("/World/Weld")
                 self.assertEqual(builder.joint_parent[j], -1)
@@ -15200,7 +15200,7 @@ def test_converted_mjc_equality_weld_closes_its_loop_in_steel(test, device):
             stage, frame0, frame1 = TestImportSampleAssetsParsing._authored_weld_stage(target, closed_loop=True)
             builder = newton.ModelBuilder()
             SolverMuJoCo.register_custom_attributes(builder)
-            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "another joint already connects"):
+            with test.assertWarnsRegex(newton.NewtonWarning, "another joint already connects"):
                 builder.add_usd(stage, load_sites=False, schema_resolvers=[usd.SchemaResolverMjc()])
             model = builder.finalize(device=device)
             solver = newton.solvers.SolverSteel(model)
