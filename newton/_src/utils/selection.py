@@ -426,7 +426,7 @@ class FrequencyLayout:
 
     A regular layout addresses row ``offset + world * stride_between_worlds + articulation *
     stride_within_worlds + index`` for each selected ``index``. When the articulations' start rows
-    are not regularly spaced across worlds, ``model_starts`` gives the absolute start row of each
+    are not regularly spaced within or between worlds, ``model_starts`` gives the absolute start row of each
     ``(world, articulation)`` instead, and attributes are gathered and scattered through
     :meth:`get_model_indices`. When the selected values are not at the same offsets in every
     articulation, ``model_indices`` gives the absolute row of each selected value of each
@@ -725,9 +725,9 @@ def _check_layout(
     """Check one frequency of every selected articulation against the first one.
 
     Each articulation (slot) must select the same number of values, with the same offsets from its
-    origin and the same owning joint or link, and origins must be uniformly strided within worlds.
-    Origins that are not uniformly strided between worlds yield a layout with explicit model indices,
-    or, with ``homogeneous``, make the frequency unavailable.
+    origin and the same owning joint or link. Origins that are not uniformly strided, within or between
+    worlds, yield a layout with explicit model indices, or, with ``homogeneous``, make the frequency
+    unavailable.
 
     With ``explicit_values``, matching counts and owners suffice: when the offsets differ between
     articulations or the origins are irregular within worlds, the layout records the absolute row
@@ -775,8 +775,8 @@ def _check_layout(
                     reasons.append("selected rows differ between worlds")
                     failed |= np.repeat(irregular_worlds, count_per_world)
         elif misplaced.any():
-            if regular_within and not homogeneous:
-                # only the world origins are irregular (e.g. worlds holding different articulations):
+            if not homogeneous:
+                # irregular origins (e.g. other articulations between or among the selected ones):
                 # address every articulation's rows through explicit model indices
                 model_starts = grid
             else:
@@ -988,9 +988,9 @@ class ArticulationView:
     articulations, in model order, so worlds holding other articulations are skipped
     (``is_sparse``). ``world_ids`` maps each view world to its model world, and
     masks and returned arrays use the view's world axis. When the selected articulations'
-    rows are not regularly spaced between worlds, for example when worlds hold different
-    articulations, the affected attributes are addressed through explicit absolute model
-    indices (``uses_explicit_model_indices``).
+    rows are not regularly spaced within or between worlds, for example when other
+    articulations sit between them, the affected attributes are addressed through explicit
+    absolute model indices (``uses_explicit_model_indices``).
 
     Getters may return a copy instead of a view of the source array, for example when a joint or link filter leaves
     gaps in the selection or rows are addressed through explicit model indices. Write changes back with the matching
@@ -1453,7 +1453,14 @@ class ArticulationView:
                     for articulation in range(1, count_per_world)
                 ]
                 if not all_equal(inner_strides):
-                    reason = f"Non-uniform strides within worlds for custom frequency '{frequency}' are not supported"
+                    if homogeneous:
+                        reason = (
+                            f"Custom frequency '{frequency}' has non-uniform strides within worlds, "
+                            "which requires `homogeneous=False`"
+                        )
+                    else:
+                        # irregular articulation origins are addressed through explicit model indices
+                        model_starts = starts
                 inner_stride = inner_strides[0]
             else:
                 inner_stride = value_extent

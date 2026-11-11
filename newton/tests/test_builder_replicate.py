@@ -99,7 +99,9 @@ class TestModelBuilderReplicate(unittest.TestCase):
             kp=100.0,
             kd=10.0,
         )
-        builder.add_muscle([root, child], [wp.vec3(), wp.vec3(0.0, 0.0, 0.5)], 1.0, 1.0, 1.0, 1.0, 0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", NewtonDeprecationWarning)
+            builder.add_muscle([root, child], [wp.vec3(), wp.vec3(0.0, 0.0, 0.5)], 1.0, 1.0, 1.0, 1.0, 0.0)
         builder.body_color_groups = [np.asarray([root, child, fixed])]
         # Uneven group sizes exercise the balancing in the merge combine.
         builder.set_coloring([[0], [1, 2, 3]])
@@ -706,7 +708,8 @@ class TestModelBuilderReplicate(unittest.TestCase):
         source = ModelBuilder()
         body0 = source.add_body()
         body1 = source.add_body()
-        source.add_muscle([body0, body1], [wp.vec3(), wp.vec3(0.0, 0.0, 1.0)], 1.0, 2.0, 3.0, 4.0, 5.0)
+        with self.assertWarnsRegex(NewtonDeprecationWarning, r"add_muscle\(\) is deprecated"):
+            source.add_muscle([body0, body1], [wp.vec3(), wp.vec3(0.0, 0.0, 1.0)], 1.0, 2.0, 3.0, 4.0, 5.0)
         source.body_color_groups = [np.asarray([body0, body1])]
 
         scene = ModelBuilder()

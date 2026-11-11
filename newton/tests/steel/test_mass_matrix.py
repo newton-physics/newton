@@ -204,7 +204,7 @@ def _run_star(model, solver, steps, *, contacts=False):
 def _star_solver(model, overrides, **kwargs):
     """Construct a solver with a temporary kernel-selection override."""
     with kernel_overrides(overrides):
-        return SolverSteel(model, solve_mode="matrix_free", **kwargs)
+        return SolverSteel(model, **kwargs)
 
 
 _DENSE_LOOP_KERNELS = {
@@ -217,28 +217,26 @@ _DENSE_LOOP_KERNELS = {
 
 def test_fixed_base_sibling_branches_detect_diagonal_mass_topology(test, device):
     """Detect independent fixed-base branches, and keep coupled topologies off the diagonal path."""
-    solver = SolverSteel(_build_fixed_base_star_model(device), solve_mode="matrix_free", articulation_constraint_max=16)
+    solver = SolverSteel(_build_fixed_base_star_model(device), articulation_constraint_max=16)
     test.assertEqual(solver._diagonal_mass_sizes, frozenset((16,)))
     test.assertTrue(solver._execution_plan.use_diagonal_mass(16))
     test.assertIsNone(solver._sparse_mass_matrix_size)
     # A serial chain couples every DOF, and pinned kernels disable the selection.
-    chain = SolverSteel(
-        _build_chain_model(device, num_links=3), solve_mode="matrix_free", articulation_constraint_max=16
-    )
+    chain = SolverSteel(_build_chain_model(device, num_links=3), articulation_constraint_max=16)
     test.assertEqual(chain._diagonal_mass_sizes, frozenset())
     pinned = _star_solver(
         _build_fixed_base_star_model(device), {"cholesky_kernel": "loop"}, articulation_constraint_max=16
     )
     test.assertEqual(pinned._diagonal_mass_sizes, frozenset())
     # The DOFs of one multi-DOF joint are coupled.
-    ball = SolverSteel(_build_fixed_base_star_model(device, num_branches=4, ball_branch=True), solve_mode="matrix_free")
+    ball = SolverSteel(_build_fixed_base_star_model(device, num_branches=4, ball_branch=True))
     test.assertEqual(ball._diagonal_mass_sizes, frozenset())
 
 
 def test_fixed_base_sibling_branches_use_diagonal_mass_path(test, device):
     """Match the dense reference while selecting independent branch solves."""
     model = _build_fixed_base_star_model(device)
-    optimized = SolverSteel(model, solve_mode="matrix_free", articulation_constraint_max=16)
+    optimized = SolverSteel(model, articulation_constraint_max=16)
     test.assertEqual(optimized._diagonal_mass_sizes, frozenset((16,)))
     test.assertTrue(optimized._execution_plan.use_diagonal_mass(16))
     test.assertIsNone(optimized._cholesky_kernels_by_size[16])
@@ -268,7 +266,7 @@ def test_diagonal_mass_rows_match_dense_and_sparse_factors(test, device):
             model = _build_fixed_base_star_model(
                 device, num_branches=6, ground=True, armature=0.05, with_chain=with_chain
             )
-            diagonal = SolverSteel(model, solve_mode="matrix_free", **options)
+            diagonal = SolverSteel(model, **options)
             test.assertTrue(diagonal._execution_plan.use_diagonal_mass(6))
             # With a second response group per world the responses are gathered per world.
             test.assertEqual(diagonal._hinv_jt_writes_world, with_chain)
@@ -291,7 +289,7 @@ def test_diagonal_mass_rows_match_dense_and_sparse_factors(test, device):
                     np.testing.assert_allclose(d[1], f[1], rtol=0.0, atol=1.0e-4, err_msg=f"sparse qd step {step}")
             # The armature enters the factor: without it the trajectory differs.
             plain = _build_fixed_base_star_model(device, num_branches=6, ground=True, with_chain=with_chain)
-            unarmed = _run_star(plain, SolverSteel(plain, solve_mode="matrix_free", **options), 60, contacts=True)
+            unarmed = _run_star(plain, SolverSteel(plain, **options), 60, contacts=True)
             test.assertGreater(float(np.abs(unarmed[5][1] - runs[0][5][1]).max()), 1.0e-6)
 
 
@@ -304,9 +302,7 @@ def test_sleeping_diagonal_dynamics_skip_is_exact(test, device):
     runs = []
     for skip in (False, True):
         model = _build_fixed_base_star_model(device, num_branches=3, ground=True)
-        solver = SolverSteel(
-            model, solve_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, articulation_constraint_max=64
-        )
+        solver = SolverSteel(model, enable_sleeping=True, sleep_quiet_time=0.05, articulation_constraint_max=64)
         test.assertTrue(solver._execution_plan.use_diagonal_mass(3))
         solver._sleeping.skip_dynamics = skip
         pipeline = newton.CollisionPipeline(model)
@@ -435,7 +431,7 @@ def _run_trajectory(model, solver, num_steps):
     return np.stack(history)
 
 
-def test_mass_refresh_cadence_follows_interval(test, device, solve_mode="matrix_free"):
+def test_mass_refresh_cadence_follows_interval(test, device, solve_mode="serial"):
     """Refresh every articulation's factorization on every ``interval``-th step only."""
     model = _build_model(device)
     solver = SolverSteel(model, solve_mode=solve_mode, update_mass_matrix_interval=2)
@@ -451,7 +447,7 @@ def test_mass_refresh_cadence_follows_interval(test, device, solve_mode="matrix_
         test.assertEqual(solver._mass_update_mask.numpy().tolist(), expected, f"step {step_index}")
 
 
-def test_stale_factorization_stays_close_to_interval_one(test, device, solve_mode="matrix_free"):
+def test_stale_factorization_stays_close_to_interval_one(test, device, solve_mode="serial"):
     """Keep an interval-2 contact trajectory close to the every-step refresh."""
     history = {}
     for interval in (1, 2):
@@ -465,7 +461,7 @@ def test_stale_factorization_stays_close_to_interval_one(test, device, solve_mod
     test.assertGreater(moved, 1.0e-3)
 
 
-def test_model_change_request_refreshes_a_reuse_step(test, device, solve_mode="matrix_free"):
+def test_model_change_request_refreshes_a_reuse_step(test, device, solve_mode="serial"):
     """Refresh every articulation on a reuse step after a notification and consume the request."""
     model = _build_model(device, ground=False)
     solver = SolverSteel(model, solve_mode=solve_mode, update_mass_matrix_interval=2)
@@ -480,7 +476,7 @@ def test_model_change_request_refreshes_a_reuse_step(test, device, solve_mode="m
     test.assertEqual(solver._mass_update_requested.numpy().tolist(), [0] * model.articulation_count)
 
 
-def test_timestep_change_forces_a_refresh(test, device, solve_mode="matrix_free"):
+def test_timestep_change_forces_a_refresh(test, device, solve_mode="serial"):
     """Refresh the augmented mass matrix when the time step changes on a reuse step."""
     model = _build_model(device, ground=False)
     solver = SolverSteel(model, solve_mode=solve_mode, update_mass_matrix_interval=4)
@@ -494,7 +490,7 @@ def test_timestep_change_forces_a_refresh(test, device, solve_mode="matrix_free"
     test.assertEqual(solver._mass_update_mask.numpy().tolist(), [1, 1])
 
 
-def test_captured_two_substep_replay_matches_eager(test, device, solve_mode="matrix_free"):
+def test_captured_two_substep_replay_matches_eager(test, device, solve_mode="serial"):
     """Replay two captured substeps, including the first-step allocations, like eager stepping."""
     graph_model = _build_model(device, ground=False)
     eager_model = _build_model(device, ground=False)
@@ -522,7 +518,7 @@ def test_captured_two_substep_replay_matches_eager(test, device, solve_mode="mat
         np.testing.assert_allclose(captured, getattr(eager_a, name).numpy(), rtol=0.0, atol=2.0e-6, err_msg=name)
 
 
-def test_mass_refresh_has_no_obsolete_limit_count_state(test, device, solve_mode="matrix_free"):
+def test_mass_refresh_has_no_obsolete_limit_count_state(test, device, solve_mode="serial"):
     """Keep no per-step joint-limit count state for the mass refresh."""
     solver = SolverSteel(_build_model(device, ground=False), solve_mode=solve_mode)
     for attribute in ("aug_limit_counts", "aug_prev_limit_counts", "limit_change_mask"):
@@ -541,11 +537,8 @@ for _name in (
     "test_captured_two_substep_replay_matches_eager",
     "test_mass_refresh_has_no_obsolete_limit_count_state",
 ):
-    add_function_test(TestSteelMassUpdateInterval, _name, globals()[_name], devices=devices)
-    split_devices = devices if _name == "test_captured_two_substep_replay_matches_eager" else get_test_devices()
-    add_function_test(
-        TestSteelMassUpdateInterval, f"{_name}_split", globals()[_name], devices=split_devices, solve_mode="split"
-    )
+    serial_devices = devices if _name == "test_captured_two_substep_replay_matches_eager" else get_test_devices()
+    add_function_test(TestSteelMassUpdateInterval, _name, globals()[_name], devices=serial_devices)
 
 
 INITIAL_JOINT_Q_notify_inertial = 0.3
@@ -596,7 +589,7 @@ def _run_trajectory_notify_inertial(model, solver, num_steps):
     return np.stack(history)
 
 
-def test_stepped_solver_releases_resources_without_cyclic_gc(test, device, solve_mode="matrix_free"):
+def test_stepped_solver_releases_resources_without_cyclic_gc(test, device, solve_mode="serial"):
     """Release a stepped solver without relying on the cyclic garbage collector."""
     gc_enabled = gc.isenabled()
     gc.disable()
@@ -612,7 +605,7 @@ def test_stepped_solver_releases_resources_without_cyclic_gc(test, device, solve
             gc.enable()
 
 
-def test_step_refreshes_body_pose_after_generalized_coordinate_update(test, device, solve_mode="matrix_free"):
+def test_step_refreshes_body_pose_after_generalized_coordinate_update(test, device, solve_mode="serial"):
     """Derive body poses from joint_q in step, so a direct joint_q write needs no caller-side FK."""
     outputs = {}
     for caller_refreshes_fk in (False, True):
@@ -637,7 +630,7 @@ def test_step_refreshes_body_pose_after_generalized_coordinate_update(test, devi
         np.testing.assert_allclose(outputs[False][key], outputs[True][key], rtol=0.0, atol=1.0e-6)
 
 
-def test_step_refreshes_reused_state_after_joint_q_write(test, device, solve_mode="matrix_free"):
+def test_step_refreshes_reused_state_after_joint_q_write(test, device, solve_mode="serial"):
     """Pick up a joint_q write into a state the solver produced on the previous step."""
     model = _build_model_notify_inertial(device)
     solver = SolverSteel(model, solve_mode=solve_mode)
@@ -661,7 +654,7 @@ def test_step_refreshes_reused_state_after_joint_q_write(test, device, solve_mod
     np.testing.assert_allclose(state_0.body_q.numpy(), reference_out.body_q.numpy(), rtol=0.0, atol=1.0e-6)
 
 
-def test_notify_refreshes_baked_com_and_inertia_buffers(test, device, solve_mode="matrix_free"):
+def test_notify_refreshes_baked_com_and_inertia_buffers(test, device, solve_mode="serial"):
     """Re-derive the solver's COM and inertia buffers on BODY_INERTIAL_PROPERTIES."""
     model = _build_model_notify_inertial(device)
     solver = SolverSteel(model, solve_mode=solve_mode)
@@ -684,7 +677,7 @@ def test_notify_refreshes_baked_com_and_inertia_buffers(test, device, solve_mode
     test.assertEqual(solver._mass_update_requested.numpy()[0], 1)
 
 
-def test_com_change_with_notify_matches_freshly_built_solver(test, device, solve_mode="matrix_free"):
+def test_com_change_with_notify_matches_freshly_built_solver(test, device, solve_mode="serial"):
     """Reproduce a freshly built solver's dynamics after a mid-run COM change and notification."""
     pre_steps, post_steps = 30, 60
     reference_model = _build_model_notify_inertial(device, com=NEW_COM)
@@ -709,7 +702,7 @@ def test_com_change_with_notify_matches_freshly_built_solver(test, device, solve
     test.assertGreater(stale_drift, 1.0e-2, "a solver that was not notified should diverge")
 
 
-def test_kinematic_flag_change_is_picked_up(test, device, solve_mode="matrix_free"):
+def test_kinematic_flag_change_is_picked_up(test, device, solve_mode="serial"):
     """Hold a body still once it is flagged kinematic and the solver is notified."""
     model = _build_model_notify_inertial(device, com=NEW_COM)
     solver = SolverSteel(model, solve_mode=solve_mode)
@@ -732,7 +725,7 @@ def _shift_child_frame(model):
     model.joint_X_c.assign(joint_X_c)
 
 
-def test_joint_frame_change_with_notify_matches_freshly_built_solver(test, device, solve_mode="matrix_free"):
+def test_joint_frame_change_with_notify_matches_freshly_built_solver(test, device, solve_mode="serial"):
     """Refresh cached mass factors on JOINT_PROPERTIES, eagerly and under graph replay."""
     interval = 100
     reference_model = _build_model_notify_inertial(device)
@@ -813,12 +806,12 @@ def _check_damping_edit_matches_fresh_solver(test, device, replace: bool, solve_
             np.testing.assert_allclose(state_1.joint_qd.numpy(), fresh_out.joint_qd.numpy(), atol=1.0e-6)
 
 
-def test_replaced_joint_damping_matches_fresh_solver(test, device, solve_mode="matrix_free"):
+def test_replaced_joint_damping_matches_fresh_solver(test, device, solve_mode="serial"):
     """Read a joint damping array replaced on the model at the next JOINT_DOF_PROPERTIES notify."""
     _check_damping_edit_matches_fresh_solver(test, device, replace=True, solve_mode=solve_mode)
 
 
-def test_assigned_joint_damping_matches_fresh_solver(test, device, solve_mode="matrix_free"):
+def test_assigned_joint_damping_matches_fresh_solver(test, device, solve_mode="serial"):
     """Read joint damping modified in place at the next JOINT_DOF_PROPERTIES notify."""
     _check_damping_edit_matches_fresh_solver(test, device, replace=False, solve_mode=solve_mode)
 
@@ -856,21 +849,21 @@ def _check_joint_dof_edit_matches_fresh_solver(test, device, name: str, value: f
             np.testing.assert_allclose(state_1.joint_qd.numpy(), fresh_out.joint_qd.numpy(), atol=1.0e-6)
 
 
-def test_dof_force_flag_refreshes_drive_gains(test, device, solve_mode="matrix_free"):
+def test_dof_force_flag_refreshes_drive_gains(test, device, solve_mode="serial"):
     """Fold a drive damping edit into the mass matrix on a JOINT_DOF_FORCE_PROPERTIES notify."""
     _check_joint_dof_edit_matches_fresh_solver(
         test, device, "joint_target_kd", 40.0, ModelFlags.JOINT_DOF_FORCE_PROPERTIES, solve_mode
     )
 
 
-def test_dof_force_flag_refreshes_joint_damping(test, device, solve_mode="matrix_free"):
+def test_dof_force_flag_refreshes_joint_damping(test, device, solve_mode="serial"):
     """Read joint damping at the next JOINT_DOF_FORCE_PROPERTIES notify."""
     _check_joint_dof_edit_matches_fresh_solver(
         test, device, "joint_damping", 20.0, ModelFlags.JOINT_DOF_FORCE_PROPERTIES, solve_mode
     )
 
 
-def test_dof_inertial_flag_refreshes_armature(test, device, solve_mode="matrix_free"):
+def test_dof_inertial_flag_refreshes_armature(test, device, solve_mode="serial"):
     """Fold an armature edit into the mass matrix on a JOINT_DOF_INERTIAL_PROPERTIES notify."""
     _check_joint_dof_edit_matches_fresh_solver(
         test, device, "joint_armature", 1.0, ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES, solve_mode
@@ -918,12 +911,12 @@ def _check_friction_edit_matches_fresh_solver(test, device, replace: bool, solve
             np.testing.assert_allclose(state_1.joint_qd.numpy(), fresh_out.joint_qd.numpy(), atol=1.0e-5)
 
 
-def test_replaced_shape_friction_matches_fresh_solver(test, device, solve_mode="matrix_free"):
+def test_replaced_shape_friction_matches_fresh_solver(test, device, solve_mode="serial"):
     """Read a friction array replaced on the model at the next SHAPE_PROPERTIES notify."""
     _check_friction_edit_matches_fresh_solver(test, device, replace=True, solve_mode=solve_mode)
 
 
-def test_assigned_shape_friction_matches_fresh_solver(test, device, solve_mode="matrix_free"):
+def test_assigned_shape_friction_matches_fresh_solver(test, device, solve_mode="serial"):
     """Read friction modified in place at the next SHAPE_PROPERTIES notify."""
     _check_friction_edit_matches_fresh_solver(test, device, replace=False, solve_mode=solve_mode)
 
@@ -948,10 +941,7 @@ for _name in (
     "test_replaced_shape_friction_matches_fresh_solver",
     "test_assigned_shape_friction_matches_fresh_solver",
 ):
-    add_function_test(TestSteelNotifyInertial, _name, globals()[_name], devices=devices)
-    add_function_test(
-        TestSteelNotifyInertial, f"{_name}_split", globals()[_name], devices=get_test_devices(), solve_mode="split"
-    )
+    add_function_test(TestSteelNotifyInertial, _name, globals()[_name], devices=get_test_devices())
 
 
 NOTIFY_WORLD_COUNT = 3
@@ -1070,7 +1060,7 @@ def _host_update_geometry(model, patches, seen, valid):
     return radii, valid, geometry
 
 
-def test_armature_notify_matches_host_reference_and_fresh_solver(test, device, solve_mode="matrix_free"):
+def test_armature_notify_matches_host_reference_and_fresh_solver(test, device, solve_mode="serial"):
     """Refresh the effective armature and its size groups like a host rebuild, from edited and replaced arrays."""
     model = _build_model_notify_device(device)
     solver = SolverSteel(model, solve_mode=solve_mode)
@@ -1086,7 +1076,7 @@ def test_armature_notify_matches_host_reference_and_fresh_solver(test, device, s
             _assert_armature_matches(test, solver, SolverSteel(model, solve_mode=solve_mode))
 
 
-def test_kinematic_notify_matches_host_reference_and_fresh_solver(test, device, solve_mode="matrix_free"):
+def test_kinematic_notify_matches_host_reference_and_fresh_solver(test, device, solve_mode="serial"):
     """Give newly kinematic joints the large armature and drop it when they become dynamic again."""
     model = _build_model_notify_device(device)
     solver = SolverSteel(model, solve_mode=solve_mode)
@@ -1101,7 +1091,7 @@ def test_kinematic_notify_matches_host_reference_and_fresh_solver(test, device, 
             _assert_armature_matches(test, solver, SolverSteel(model, solve_mode=solve_mode))
 
 
-def test_shape_notify_matches_host_reference(test, device, solve_mode="matrix_free"):
+def test_shape_notify_matches_host_reference(test, device, solve_mode="serial"):
     """Refresh body radii and retire exactly the anchors whose geometry changed."""
     model = _build_model_notify_device(device)
     solver = SolverSteel(model, solve_mode=solve_mode, friction_anchor_beta=0.2)
@@ -1111,7 +1101,8 @@ def test_shape_notify_matches_host_reference(test, device, solve_mode="matrix_fr
     for edit in ("shape_transform", "shape_scale", "shape_margin", "shape_body", "shape_collision_radius", None):
         with test.subTest(edit=edit):
             _randomize_history(patches, model, rng)
-            valid_before = patches.previous.valid.numpy()
+            # Copy: on CPU numpy() aliases the array the notification edits in place.
+            valid_before = patches.previous.valid.numpy().copy()
             shape = int(rng.integers(model.shape_count))
             if edit == "shape_body":
                 values = model.shape_body.numpy()
@@ -1130,7 +1121,7 @@ def test_shape_notify_matches_host_reference(test, device, solve_mode="matrix_fr
     test.assertGreater(np.count_nonzero(patches.previous.valid.numpy()), 0)
 
 
-def test_world_mask_limits_warmstart_invalidation(test, device, solve_mode="matrix_free"):
+def test_world_mask_limits_warmstart_invalidation(test, device, solve_mode="serial"):
     """Discard warm-start impulses of the masked worlds only, keep overflow status, and validate the mask."""
     model = _build_model_notify_device(device)
     solver = SolverSteel(model, solve_mode=solve_mode, contact_warmstart=True)
@@ -1310,15 +1301,7 @@ for _name in (
     "test_shape_notify_matches_host_reference",
     "test_world_mask_limits_warmstart_invalidation",
 ):
-    add_function_test(TestSteelNotifyDevice, _name, globals()[_name], devices=devices)
-# Friction anchors and warm start require the matrix-free solve.
-for _name in (
-    "test_armature_notify_matches_host_reference_and_fresh_solver",
-    "test_kinematic_notify_matches_host_reference_and_fresh_solver",
-):
-    add_function_test(
-        TestSteelNotifyDevice, f"{_name}_split", globals()[_name], devices=get_test_devices(), solve_mode="split"
-    )
+    add_function_test(TestSteelNotifyDevice, _name, globals()[_name], devices=get_test_devices())
 
 
 def test_tiled_response_diagonal_matches_dense_reference(test, device):
