@@ -477,14 +477,18 @@ def get_transform(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.Xform
         A Warp transform containing the position and rotation extracted from the prim.
     """
     mat = _get_xform_matrix(prim, local=local, xform_cache=xform_cache)
-    if np.linalg.det(mat[:3, :3]) < 0.0:
-        # A mirrored (negative-determinant) transform has no unique rotation. Absorb the
-        # reflection into a negative uniform scale, as ``Gf.Transform`` and the UsdPhysics
-        # parser do, so this rotation matches the poses in UsdPhysics body and joint descs.
-        mat = mat.copy()
-        mat[:3, :3] *= -1.0
-    xform_pos, xform_rot, _scale = wp.transform_decompose(wp.mat44(mat.T))
-    return wp.transform(xform_pos, xform_rot)
+    # Use ``Gf.Transform`` so the rotation matches the UsdPhysics parser. Warp's
+    # decompose agrees for a pure scaled rotation, but a child rotation under an
+    # inherited nonuniform (and especially mirrored) scale is sheared, and
+    # negating that basis is not enough to recover the same quaternion.
+    gf_xform = Gf.Transform(Gf.Matrix4d(*np.asarray(mat, dtype=np.float64).reshape(-1)))
+    translation = gf_xform.GetTranslation()
+    quat = gf_xform.GetRotation().GetQuat()
+    imag = quat.GetImaginary()
+    return wp.transform(
+        wp.vec3(float(translation[0]), float(translation[1]), float(translation[2])),
+        wp.quat(float(imag[0]), float(imag[1]), float(imag[2]), float(quat.GetReal())),
+    )
 
 
 def _normalized_quat(x: float, y: float, z: float, w: float) -> wp.quat:

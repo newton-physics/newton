@@ -12,6 +12,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton import JointType
+from newton._src.usd.utils import get_transform
 from newton._src.utils.import_usd import _is_uniform_scale
 from newton.tests._usd_import_test_utils import _expect_jointless_articulation_warning
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
@@ -155,6 +156,77 @@ def Xform "Root" (
                 fk_link = state.body_q.numpy()[link_id]
                 np.testing.assert_allclose(fk_link[:3], authored_link[:3], atol=1e-5)
                 self.assertAlmostEqual(abs(float(np.dot(fk_link[3:], authored_link[3:]))), 1.0, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_transform_matches_gf_for_inherited_nonuniform_scale(self):
+        """Match Gf.Transform when a rotated child inherits a nonuniform scale.
+
+        A child rotation under a nonuniform parent scale yields a sheared world
+        matrix. Negating a mirrored basis and using Warp's decompose does not
+        recover the UsdPhysics rotation; ``usd.get_transform()`` must follow
+        ``Gf.Transform`` so imported body poses stay consistent with joint descs.
+        """
+        from pxr import Gf, Usd, UsdGeom
+
+        for scale in ((-1.0, 2.0, 0.5), (1.0, 2.0, 0.5)):
+            with self.subTest(scale=scale):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                parent = UsdGeom.Xform.Define(stage, "/World/Parent")
+                parent.AddScaleOp().Set(Gf.Vec3f(*scale))
+                child = UsdGeom.Xform.Define(stage, "/World/Parent/Child")
+                child.AddTranslateOp().Set(Gf.Vec3d(0.5, 0.0, 1.0))
+                child.AddRotateXYZOp().Set(Gf.Vec3f(30.0, 20.0, 10.0))
+
+                cache = UsdGeom.XformCache()
+                world = cache.GetLocalToWorldTransform(child.GetPrim())
+                expected = Gf.Transform(world)
+                expected_rot = expected.GetRotation().GetQuat()
+                expected_q = np.array([*expected_rot.GetImaginary(), expected_rot.GetReal()])
+                expected_p = np.array(expected.GetTranslation(), dtype=np.float64)
+
+                actual = np.array(get_transform(child.GetPrim(), local=False, xform_cache=cache))
+                np.testing.assert_allclose(actual[:3], expected_p, atol=1e-6)
+                self.assertAlmostEqual(abs(float(np.dot(actual[3:], expected_q))), 1.0, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_imported_body_matches_gf_under_inherited_nonuniform_scale(self):
+        """Import a rotated body under a nonuniform parent scale with Gf.Transform's rotation."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        for scale in ((-1.0, 2.0, 0.5), (1.0, 2.0, 0.5)):
+            with self.subTest(scale=scale):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+                parent = UsdGeom.Xform.Define(stage, "/World/Parent")
+                parent.AddScaleOp().Set(Gf.Vec3f(*scale))
+                body = UsdGeom.Xform.Define(stage, "/World/Parent/Body")
+                body.AddTranslateOp().Set(Gf.Vec3d(0.5, 0.0, 1.0))
+                body.AddRotateXYZOp().Set(Gf.Vec3f(30.0, 20.0, 10.0))
+                UsdPhysics.ArticulationRootAPI.Apply(body.GetPrim())
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+                mass.GetMassAttr().Set(1.0)
+                mass.GetDiagonalInertiaAttr().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+                root = UsdPhysics.FixedJoint.Define(stage, "/World/Root")
+                root.CreateBody1Rel().SetTargets([body.GetPath()])
+
+                builder = newton.ModelBuilder()
+                if scale[0] * scale[1] * scale[2] < 0.0:
+                    with self.assertWarnsRegex(UserWarning, "mirrored"):
+                        builder.add_usd(stage, load_visual_shapes=False)
+                else:
+                    builder.add_usd(stage, load_visual_shapes=False)
+
+                body_id = builder.body_label.index("/World/Parent/Body")
+                world = UsdGeom.XformCache().GetLocalToWorldTransform(body.GetPrim())
+                expected_rot = Gf.Transform(world).GetRotation().GetQuat()
+                expected_q = np.array([*expected_rot.GetImaginary(), expected_rot.GetReal()])
+                actual_q = np.array(builder.body_q[body_id][3:])
+                self.assertAlmostEqual(abs(float(np.dot(expected_q, actual_q))), 1.0, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_body_newton_armature_ignored(self):
