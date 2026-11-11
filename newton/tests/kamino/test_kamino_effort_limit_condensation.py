@@ -115,8 +115,8 @@ class TestKaminoEffortLimitCondensation(unittest.TestCase):
         wp.launch(make_compact_schur_pgs_kernel(64), dim=128, inputs=inputs, block_dim=32, device=self.device)
 
     def test_static_fallback(self):
-        """Keep small batches, short sweeps, and models without efforts on the original path."""
-        for worlds, iterations, sweeps, efforts in ((4, 32, 2, 12), (4096, 16, 1, 16), (8192, 32, 2, 0)):
+        """Keep short sweeps and models without efforts on the original path."""
+        for worlds, iterations, sweeps, efforts in ((4, 16, 1, 12), (4096, 16, 1, 16), (8192, 32, 2, 0)):
             with self.subTest(worlds=worlds, iterations=iterations, sweeps=sweeps, efforts=efforts):
                 path = SimpleNamespace(
                     device=self.device,

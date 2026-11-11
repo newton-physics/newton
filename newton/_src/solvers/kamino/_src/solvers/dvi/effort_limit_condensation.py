@@ -426,10 +426,9 @@ class EffortLimitCondensation:
 
     @classmethod
     def create(cls, path):
-        """Allocate only for saturated compact solves with enough projected sweeps."""
+        """Allocate only for compact solves with enough projected sweeps."""
         if (
             not path.device.is_cuda
-            or path.size.num_worlds < 2048
             or not path.use_schur_complement
             or path.data.bilateral_operator is None
             or path.max_alternating_iterations * path.max_inequality_sweeps_per_iteration < 32
