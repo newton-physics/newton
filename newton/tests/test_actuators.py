@@ -24,6 +24,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonDeprecationWarning, NewtonWarning
 from newton._src.actuators import effort_mode_implicit
 from newton._src.actuators.utils import load_metadata
 from newton._src.utils.import_usd import parse_usd
@@ -51,7 +52,6 @@ from newton.actuators import (
     parse_actuator_prim,
     parse_battery_prim,
 )
-from newton.exceptions import NewtonDeprecationWarning, NewtonWarning
 from newton.selection import ArticulationView
 from newton.tests.unittest_utils import get_test_devices
 

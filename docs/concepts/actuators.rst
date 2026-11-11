@@ -688,7 +688,7 @@ Limitations of the implicit mode.  In the cases marked *error*,
   solve, or the solve would ignore them.
 * **Encoders** (warning): an actuator with an
   :class:`~newton.actuators.InputProcessorEncoder` is accepted with a
-  :class:`~newton.exceptions.NewtonWarning`, because the result is only
+  :class:`~newton.NewtonWarning`, because the result is only
   approximate.  The drive reads the encoder behind the output joint, while the
   solve predicts the end-of-step state from the response of the actuated joint
   alone.  While the output joint is not at its limit, the motor's effort does

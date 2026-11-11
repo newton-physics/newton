@@ -12,7 +12,7 @@ import warp as wp
 
 import newton
 import newton.actuators as actuators
-from newton.exceptions import NewtonDeprecationWarning
+from newton import NewtonDeprecationWarning
 
 
 class TestActuatorDriveAPI(unittest.TestCase):

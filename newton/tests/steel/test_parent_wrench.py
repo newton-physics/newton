@@ -10,11 +10,11 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonWarning
 from newton._src.solvers.steel.kernels import (
     accumulate_connect_wrenches_from_impulses,
     populate_connect_J_for_size,
 )
-from newton.exceptions import NewtonWarning
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import (
     _build_carried_load,

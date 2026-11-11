@@ -9,10 +9,9 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton import Axis, Mesh, Model, ModelBuilder, Rod
+from newton import Axis, Mesh, Model, ModelBuilder, NewtonDeprecationWarning, Rod
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
 from newton.actuators import BatteryConstantResistance, DriveOutputSpace, DrivePD, MotorDC
-from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import HOST_TRANSFORMS_BIT_EXACT, add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
 
