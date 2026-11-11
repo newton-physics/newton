@@ -432,6 +432,14 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         solver-owned matrices would alias across the steps of one gradient
         tape (earlier steps' adjoints would read later steps' rewritten
         values, and later steps' covector deposits would be consumed again).
+
+        The views alias the flat arrays and cost nothing; they serve the
+        ``use_tile_gemm`` path, which produces H and its Cholesky factor in
+        one fused launch per distinct articulation size (compiled once at
+        solver construction) instead of the default path's three batched
+        launches (P, H, Cholesky). Measured on a single 13-joint
+        articulation (ANYmal-D, RTX 4060): the full step drops from
+        2.94 ms to 0.84 ms.
         """
         model = self.model
         target.J = wp.zeros((self.J_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
