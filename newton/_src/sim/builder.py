@@ -1659,8 +1659,8 @@ class ModelBuilder:
 
         For enum frequencies (BODY, SHAPE, etc.): dict[int, Any] mapping entity indices to values.
         For ``WORLD``, keys are world indices, and key ``-1`` is global world ``-1``, whose value is
-        also the default of local worlds without one unless the attribute has
-        :attr:`references`.
+        also the default of local worlds without one unless the attribute stores
+        references through :attr:`references` or :attr:`reference_value_transformer`.
         For string frequencies ("mujoco:pair", etc.): list[Any] for sequential custom data.
 
         If None, the attribute is not initialized with any values. Values can be assigned in subsequent
@@ -1850,7 +1850,7 @@ class ModelBuilder:
                     # Key -1 is global world -1, stored after the local worlds. Like builder
                     # gravity, it is also the default of local worlds without their own value.
                     global_value = self.values[-1]
-                    if self.references is None:
+                    if self.references is None and self.reference_value_transformer is None:
                         arr = [self.values.get(i, global_value) for i in range(count - 1)]
                         arr.append(global_value)
                     else:
@@ -4737,7 +4737,8 @@ class ModelBuilder:
         try:
             matches = existing == incoming
             if hasattr(matches, "__iter__") and not isinstance(matches, (str, bytes)):
-                matches = all(matches)
+                # np.all also reduces multidimensional comparisons, such as of matrices.
+                matches = np.all(matches)
         except (ValueError, TypeError):
             return False
         return bool(matches)

@@ -21,5 +21,6 @@ such models:
 Merging a builder places all its entities in one destination world, so the
 source's explicit `WORLD` values must agree, and different values raise
 `ValueError`; global `add_builder()` merges write the global entry instead of
-world `0`. Use
-`values[:model.world_count]` for the previous per-world layout.
+world `0`. Index local worlds with `values[:model.world_count]` and global
+world `-1` with `values[-1]`; in models built without `begin_world()`, the
+previous single entry corresponds to `values[-1]`.
