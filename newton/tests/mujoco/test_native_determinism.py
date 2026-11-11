@@ -182,7 +182,13 @@ def test_native_rollout(test, device, use_mujoco_contacts=True):
 
     if not hasattr(mjw, "DeterminismType"):
         test.skipTest("MuJoCo Warp native determinism API is not available")
-    _run_isolated(test, "_check_native_rollout", str(device), use_mujoco_contacts, module_name=__name__)
+    _run_isolated(
+        test,
+        "_check_native_rollout",
+        str(device),
+        use_mujoco_contacts,
+        module_name="newton.tests.mujoco.test_native_determinism",
+    )
 
 
 class TestMuJoCoNativeDeterminism(unittest.TestCase):
