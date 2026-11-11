@@ -100,11 +100,12 @@ def _is_uniform_scale(scale, rel_tol: float = 1.0e-6) -> bool:
 def _warn_mirrored_body_transform(usd_prim, key: str, xform_cache) -> None:
     """Warn when a rigid body prim has an improper (mirrored) world transform.
 
-    Improper transforms (negative determinant) have no unique rotation
-    decomposition: the USD physics parser's ``rotation`` and
-    ``usd.get_transform()`` may absorb the reflection on different axes, and
-    their disagreement becomes a spurious constant rotation injected into the
-    imported body and joint frames via the incoming-xform rebase.
+    Body frames are proper rigid transforms and cannot represent a
+    reflection. Body and joint frames use the same rotation as the UsdPhysics
+    parser (``usd.get_transform()`` decomposes with ``Gf.Transform``), so they
+    match the authored poses; the reflection itself is carried by a negative
+    shape scale, which reverses the triangle winding of mesh collision
+    geometry and turns it inside out.
 
     Args:
         usd_prim: The rigid body ``Usd.Prim``.
@@ -114,8 +115,10 @@ def _warn_mirrored_body_transform(usd_prim, key: str, xform_cache) -> None:
     if xform_cache.GetLocalToWorldTransform(usd_prim).GetDeterminant() < 0.0:
         warnings.warn(
             f"Rigid body prim {key} has a mirrored (negative-determinant) "
-            "world transform. Imported body and joint frames may acquire a "
-            "spurious rotation. Bake the reflection into the mesh geometry "
+            "world transform. Newton bodies cannot represent the reflection, "
+            "so it is carried by a negative shape scale, which reverses the "
+            "triangle winding of mesh collision geometry (inside-out normals). "
+            "Bake the reflection into the mesh geometry "
             "(negate vertices, flip triangle winding) and re-author the body "
             "with a proper transform before import.",
             NewtonWarning,

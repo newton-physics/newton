@@ -71,9 +71,10 @@ def Xform "Root" (
     def test_mirrored_body_transform_warns(self):
         """Warn when a rigid body has a negative-determinant (mirrored) transform.
 
-        Improper transforms have no unique rotation decomposition, so the
-        incoming-xform rebase can inject a spurious constant rotation into
-        body and joint frames (common with mirror-scaled CAD exports).
+        Body frames cannot represent a reflection, so it ends up in a negative
+        shape scale that turns mesh collision geometry inside out (common with
+        mirror-scaled CAD exports). Joint frames stay consistent; see
+        ``test_mirrored_body_joint_frames_consistent``.
         """
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
