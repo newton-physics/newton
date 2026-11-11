@@ -982,6 +982,11 @@ def _sort_full_with(sorter, keys, count, shape0, shape1, device):
 
 def test_sorter_pair_pass_matches_packed_order(test, device):
     """A sub-key pass plus a stable pair-key pass orders contacts like one packed-key pass."""
+    with wp.ScopedDevice(device):
+        _check_sorter_pair_pass_matches_packed_order(test, device)
+
+
+def _check_sorter_pair_pass_matches_packed_order(test, device):
     rng = np.random.default_rng(7)
     capacity, count, shape_bits, sub_bits = 96, 80, 4, 3
     shape0 = rng.integers(0, 1 << shape_bits, capacity).astype(np.int32)
@@ -1011,7 +1016,9 @@ def test_sorter_pair_pass_matches_packed_order(test, device):
 
     # The simple layout reads the shape pair from ``contact_pair``.
     pairs = wp.array(np.stack((shape0, shape1), axis=1), dtype=wp.vec2i, device=device)
-    positions = wp.array(np.stack((np.arange(capacity), np.zeros(capacity), np.zeros(capacity)), axis=1), dtype=wp.vec3)
+    positions = wp.array(
+        np.stack((np.arange(capacity), np.zeros(capacity), np.zeros(capacity)), axis=1), dtype=wp.vec3, device=device
+    )
     simple_sorter = ContactSorter(capacity, key_bit_count=sub_bits, pair_shape_index_bits=shape_bits, device=device)
     simple_sorter.sort_simple(
         wp.array(sub_key, dtype=wp.int64, device=device),
@@ -1022,6 +1029,53 @@ def test_sorter_pair_pass_matches_packed_order(test, device):
         contact_penetration=wp.zeros(capacity, dtype=float, device=device),
     )
     np.testing.assert_array_equal(positions.numpy()[:count, 0], order)
+
+
+def test_pair_key_claim_ties_use_sub_keys(test, device):
+    """With bare pair keys, contacts of one pair competing for a previous row are told apart by their sub-keys."""
+    with wp.ScopedDevice(device):
+        matcher = ContactMatcher(
+            capacity=2,
+            sorter=ContactSorter(2),
+            shape_world=wp.full(2, -1, dtype=wp.int32, device=device),
+            world_count=0,
+            shape_index_bits=1,
+            sub_key_bits=0,
+            pos_threshold=0.01,
+            device=device,
+        )
+        # One previous contact of pair (0, 1); its bare pair key is (0 << 1) | 1.
+        matcher._prev_sorted_keys.assign(np.array([1, 0], dtype=np.int64))
+        matcher._prev_pos_world.assign(np.zeros((2, 3), dtype=np.float32))
+        matcher._prev_normal.assign(np.array([[0.0, 0.0, 1.0]] * 2, dtype=np.float32))
+        matcher._prev_count.assign(np.array([1], dtype=np.int32))
+
+        def match(tiebreak_keys):
+            # Two new contacts of the same pair, equally far from the previous one.
+            points = wp.array([[-0.001, 0.0, 0.0], [0.001, 0.0, 0.0]], dtype=wp.vec3, device=device)
+            match_index = wp.full(2, MATCH_NOT_FOUND, dtype=wp.int32, device=device)
+            matcher.match(
+                sort_keys=wp.array([1, 1], dtype=wp.int64, device=device),
+                contact_count=wp.array([2], dtype=wp.int32, device=device),
+                point0=points,
+                point1=points,
+                shape0=wp.zeros(2, dtype=wp.int32, device=device),
+                shape1=wp.ones(2, dtype=wp.int32, device=device),
+                normal=wp.array([[0.0, 0.0, 1.0]] * 2, dtype=wp.vec3, device=device),
+                body_q=wp.array([wp.transform_identity()], dtype=wp.transform, device=device),
+                shape_body=wp.array([-1, 0], dtype=wp.int32, device=device),
+                match_index_out=match_index,
+                buffer_id=1,
+                match_generation_out=wp.zeros(1, dtype=wp.int32, device=device),
+                tiebreak_keys=tiebreak_keys,
+                device=device,
+            )
+            return match_index.numpy()
+
+        # Distinct sorted sub-keys: exactly one contact keeps the row, the smaller sub-key at equal distance.
+        np.testing.assert_array_equal(match(wp.array([2, 5], dtype=wp.int64, device=device)), (0, MATCH_BROKEN))
+        # Without them both contacts carry the same claim id and both keep the row.
+        np.testing.assert_array_equal(match(None), (0, 0))
 
 
 def _build_multi_contact_scene(device):
@@ -1642,6 +1696,12 @@ add_function_test(
     TestContactMatching,
     "test_sorter_pair_pass_matches_packed_order",
     test_sorter_pair_pass_matches_packed_order,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatching,
+    "test_pair_key_claim_ties_use_sub_keys",
+    test_pair_key_claim_ties_use_sub_keys,
     devices=devices,
 )
 add_function_test(
