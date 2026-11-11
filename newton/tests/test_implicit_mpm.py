@@ -713,7 +713,7 @@ def test_strain_cell_velocity_cache(test, device, capture=False):
                             else:
                                 for _ in range(5):
                                     solver.solve()
-                            results.append((operator.momentum.velocity.numpy(), r.stress.numpy()))
+                            results.append((operator.momentum.velocity.numpy().copy(), r.stress.numpy().copy()))
                         finally:
                             solver.release()
                 for actual, expected in zip(results[1], results[0], strict=True):
@@ -1373,7 +1373,7 @@ def test_unbinned_particles_keep_state(test, device):
     model = builder.finalize(device=device)
     history = ("particle_Jp", "particle_elastic_strain", "particle_stress")
     active = int(newton.ParticleFlags.ACTIVE)
-    initial_flags = model.particle_flags.numpy()
+    initial_flags = model.particle_flags.numpy().copy()
     half = model.particle_count // 2
     for integration_scheme in ("pic", "gimp"):
         with test.subTest(grid_type="sparse", integration_scheme=integration_scheme):
