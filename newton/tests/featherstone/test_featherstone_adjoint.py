@@ -90,7 +90,7 @@ def _probe_loss_kernel(
     )
 
 
-def _build_model(device):
+def _build_model(device, requires_grad=True):
     quadruped = newton.ModelBuilder()
     quadruped.default_joint_cfg.armature = 0.1
     quadruped.default_joint_cfg.target_ke = 0.0
@@ -115,7 +115,7 @@ def _build_model(device):
     scene = newton.ModelBuilder(up_axis=newton.Axis.Z)
     scene.replicate(quadruped, 1)
     scene.add_ground_plane(cfg=quadruped.default_shape_cfg)
-    return scene.finalize(device=device, requires_grad=True)
+    return scene.finalize(device=device, requires_grad=requires_grad)
 
 
 def _eager_segment(model, solver, pipe, cts, stand_arr, dofs_arr, st0, st1, n, mode, amp=0.0):
@@ -542,6 +542,38 @@ def _joint_qd_loss_kernel(joint_qd: wp.array[float], loss: wp.array[float]):
     loss[0] = 0.3 * joint_qd[9] - 0.7 * joint_qd[13] + 1.1 * joint_qd[3] - 0.4 * joint_qd[16]
 
 
+def test_non_grad_step_reuses_aux_arrays(test, device):
+    """Guards the augmentation flag on the default non-grad step path.
+
+    On requires_grad=False the solver itself is the allocation target of
+    _allocate_state_aux_vars, so the flag must be set for the solver too.
+    Before the fix the flag sat inside the joint-count/target-is-not-self
+    block, was never set on this path, and every step() call reallocated the
+    state-side aux arrays (~15 wp.zeros/empty per step) - a steady-state
+    allocation regression for ordinary Featherstone users, with allocations
+    inside CUDA-graph-captured step() calls."""
+    model = _build_model(device, requires_grad=False)
+    solver = newton.solvers.SolverFeatherstone(model)
+    pipe = newton.CollisionPipeline(model, soft_contact_gap=10.0, requires_grad=False)
+    cts = pipe.contacts()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, model)
+    st0 = model.state()
+    st1 = model.state()
+    ctrl = model.control()
+    solver.step(st0, st1, ctrl, cts, SIM_DT)
+    test.assertTrue(
+        getattr(solver, "_featherstone_augmented", False),
+        "non-grad step must mark the solver augmented so the next step reuses the aux arrays",
+    )
+    body_f_ext = solver.body_f_ext
+    solver.step(st1, st0, ctrl, cts, SIM_DT)
+    test.assertIs(
+        body_f_ext,
+        solver.body_f_ext,
+        "second non-grad step reallocated the state-side aux arrays",
+    )
+
+
 add_function_test(
     TestFeatherstoneAdjoint,
     "test_dense_cholesky_solve_adjoint",
@@ -552,6 +584,12 @@ add_function_test(
     TestFeatherstoneAdjoint,
     "test_rigid_tau_external_wrench",
     test_rigid_tau_external_wrench,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestFeatherstoneAdjoint,
+    "test_non_grad_step_reuses_aux_arrays",
+    test_non_grad_step_reuses_aux_arrays,
     devices=get_test_devices(),
 )
 

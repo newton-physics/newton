@@ -571,7 +571,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     target._H_by_size[size] = _group_view(target.H, H_start[first], (n, dof_count, dof_count))
                     target._L_by_size[size] = _group_view(target.L, H_start[first], (n, dof_count, dof_count))
 
-            target._featherstone_augmented = True
+        # mark the target augmented so step() allocates only once per target
+        target._featherstone_augmented = True
 
     @override
     def step(

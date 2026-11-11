@@ -2019,7 +2019,9 @@ def adj_dense_solve(
     x: wp.array[float],
     tmp: wp.array[float],
 ):
-    if not tmp or not wp.adjoint[x] or not wp.adjoint[A] or not wp.adjoint[L]:
+    # adjoint[L] is intentionally not checked: L is internal and this adjoint
+    # never deposits into it (see the deposit below)
+    if not tmp or not wp.adjoint[x] or not wp.adjoint[A]:
         return
     for i in range(n):
         tmp[b_start + i] = 0.0
