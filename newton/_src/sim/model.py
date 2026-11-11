@@ -2453,6 +2453,8 @@ class Model:
             zip(shape_filters, filter_classes, strict=True)
         ):
             filter_leaves = np.flatnonzero(class_filters[shape_class, filter_index])
+            # Variant rows keep their leaf while they have one of the filter's flags; without flags, while not empty.
+            flags_mask = int(shape_filter.flags) if shape_filter.flags is not None else int(_EMPTY_ROW_CLEARED_FLAGS)
             world_leaves = None
             if np.bincount(leaf_world[filter_leaves], minlength=world_count_total).max(initial=0) <= 1:
                 table = np.full(world_count_total, -1, dtype=np.int32)
@@ -2476,9 +2478,7 @@ class Model:
                 _ShapeFilterBvh(
                     roots=roots,
                     leaves=wp.empty_like(self.bvh_shape_enabled) if self._has_variant_rows else self.bvh_shape_enabled,
-                    flags_mask=int(shape_filter.flags)
-                    if shape_filter.flags is not None
-                    else int(_EMPTY_ROW_CLEARED_FLAGS),
+                    flags_mask=flags_mask,
                     world_leaves=world_leaves,
                 )
             )
