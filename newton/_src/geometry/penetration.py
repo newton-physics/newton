@@ -278,8 +278,8 @@ def create_solve_box_penetration(support: Any):
     """Find minimum depth for a box against a box, triangle, or convex mesh.
 
     Box and triangle pairs use the closed-form separating-axis test. Mesh
-    triangles restrict box-separation directions to their front side or their own
-    plane, consistent with midphase back-face culling. Convex meshes first try cheap certificates:
+    triangles restrict box-separation directions to their front side unless the box
+    can slide off the triangle, consistent with midphase back-face culling. Convex meshes first try cheap certificates:
     a box plus a triangle of genuine partner points is an inner Minkowski body,
     so its depth bounds the minimum from below, and a support plane bounds it from above; matching
     bounds certify the minimum with a few support queries. Verified hulls
