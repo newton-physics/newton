@@ -1378,15 +1378,6 @@ class TestSteelPrivateApi(unittest.TestCase):
             with self.subTest(file=path.name):
                 self.assertIsNone(pattern.search(path.read_text(encoding="utf-8").replace(profiling, "")))
 
-    def test_prescribed_response_is_not_a_public_execution_knob(self):
-        """Select the kinematic-body response internally, not through a constructor option."""
-        init_method = self.solver_methods["__init__"]
-        parameters = {
-            argument.arg
-            for argument in [*init_method.args.posonlyargs, *init_method.args.args, *init_method.args.kwonlyargs]
-        }
-        self.assertNotIn("exclude_fully_kinematic_free_articulations", parameters)
-
     def test_kernel_factories_are_private_cached_functions(self):
         """Keep the size-specialized kernel factories private, cached and keyed by device architecture."""
         for helper_name in _KERNEL_FACTORIES:

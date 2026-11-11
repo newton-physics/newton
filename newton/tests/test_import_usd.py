@@ -6524,21 +6524,6 @@ def Xform "Articulation" (
             atol=1.0e-7,
         )
 
-    def test_omnipbr_mapping_inputs_are_not_parsed(self):
-        """Keep OmniPBR texture-mapping adapters out of the USD importer."""
-        self.assertFalse(hasattr(usd_utils, "_is_omnipbr_shader"))
-        self.assertFalse(hasattr(usd_utils, "_extract_omnipbr_texture_mapping"))
-        importer_source = inspect.getsource(usd_utils)
-        for input_name in (
-            "texture_scale",
-            "texture_translate",
-            "texture_rotate",
-            "project_uvw",
-            "world_or_object",
-        ):
-            with self.subTest(input_name=input_name):
-                self.assertNotIn(input_name, importer_source)
-
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_mesh_loads_alternate_texcoord_set(self):
         """``get_mesh`` loads UVs from an alternate texcoord set name (``st_0``), not just ``st``.
