@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonDeprecationWarning
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _bishop_transport_quat,
     _finite_curvature_binormal,
@@ -24,7 +25,6 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     update_rod_dahl_state,
 )
 from newton._src.utils import is_graph_capture_allocation_enabled
-from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices()

@@ -44,9 +44,12 @@ from newton._src.solvers.implicit_mpm.solve_rheology import (
     MomentumData,
     RheologyData,
     _compute_environment_l2_tolerance_scales,
+    _copy_converged_environment_state,
     _DelassusOperator,
     _linear_solver_result_norms,
     _nonlinear_solver_result_norms,
+    _update_environment_convergence,
+    _update_environment_stop_condition,
     solve_rheology,
     update_batched_condition,
 )
@@ -934,6 +937,87 @@ def test_multiworld_residual_tolerance_scales(test, device):
     )
     test.assertEqual(condition.numpy()[0], 1)
 
+    # Accept worlds independently, including an empty world, and retain their
+    # accepted residuals if further iteration would move them out of tolerance.
+    residual_device.assign(np.array(((3.6, 0.0, 11.0), (0.25, 0.0, 0.75)), dtype=np.float32))
+    status = wp.zeros(3, dtype=int, device=device)
+    accepted = wp.empty_like(residual_device)
+    initial_values = np.arange(42, dtype=np.float32).reshape(14, 3)
+    values = wp.array(initial_values, dtype=wp.vec3, device=device)
+    saved_values = wp.empty_like(values)
+
+    def update_and_save():
+        wp.launch(
+            _update_environment_convergence,
+            dim=3,
+            inputs=[1.0, scales, residual_device, status, accepted],
+            device=device,
+        )
+        wp.launch(
+            _copy_converged_environment_state,
+            dim=(3, 1),
+            block_dim=1,
+            inputs=[False, offsets, status, values, saved_values],
+            device=device,
+        )
+
+    def restore():
+        wp.launch(
+            _copy_converged_environment_state,
+            dim=(3, 1),
+            block_dim=1,
+            inputs=[True, offsets, status, values, saved_values],
+            device=device,
+        )
+
+    update_and_save()
+    values.fill_(wp.vec3(99.0))
+    restore()
+    # A world still above tolerance keeps its last iterate at the budget limit.
+    np.testing.assert_array_equal(values.numpy()[:3], initial_values[:3])
+    np.testing.assert_array_equal(values.numpy()[3:], 99.0)
+
+    residual_device.assign(np.array(((100.0, 0.0, 9.0), (100.0, 0.0, 0.75)), dtype=np.float32))
+    update_and_save()
+    np.testing.assert_allclose(accepted.numpy(), ((3.6, 0.0, 9.0), (0.25, 0.0, 0.75)))
+    values.fill_(wp.vec3(-10.0))
+    restore()
+    np.testing.assert_array_equal(values.numpy()[:3], initial_values[:3])
+    np.testing.assert_array_equal(values.numpy()[3:12], 99.0)
+    np.testing.assert_array_equal(values.numpy()[12:], -10.0)
+
+    # Stopping reads the retained-environment status instead of repeating the threshold.
+    iteration.zero_()
+    condition.fill_(1)
+    wp.launch(
+        _update_environment_stop_condition,
+        dim=1,
+        inputs=[5, 100, status, iteration, condition],
+        device=device,
+    )
+    test.assertEqual(int(condition.numpy()[0]), 0)
+    test.assertEqual(int(iteration.numpy()[0]), 5)
+
+    status.assign(np.array([2, 0, 1], dtype=np.int32))
+    iteration.zero_()
+    condition.fill_(1)
+    wp.launch(
+        _update_environment_stop_condition,
+        dim=1,
+        inputs=[5, 100, status, iteration, condition],
+        device=device,
+    )
+    test.assertEqual(int(condition.numpy()[0]), 1)
+
+    wp.launch(
+        _update_environment_stop_condition,
+        dim=1,
+        inputs=[5, 5, status, iteration, condition],
+        device=device,
+    )
+    test.assertEqual(int(condition.numpy()[0]), 0)
+    test.assertEqual(int(iteration.numpy()[0]), 10)
+
 
 def test_multiworld_cr_matches_independent(test, device):
     """Verify multi-world CR matches independent."""
@@ -1080,6 +1164,76 @@ def test_multiworld_fixed_pic_matches_independent(test, device):
     _run_multiworld_reference_case(device, grid_type="fixed", integration_scheme="pic")
 
 
+def test_multiworld_nonlinear_convergence_is_independent(test, device):
+    """Preserve a world's converged state when another world needs more iterations."""
+    spacing = 1.25e-3
+    local_builder = newton.ModelBuilder()
+    SolverImplicitMPM.register_custom_attributes(local_builder)
+    local_builder.add_particle_grid(
+        pos=wp.vec3(-3.5 * spacing, -3.5 * spacing, 0.5 * spacing),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=8,
+        dim_y=8,
+        dim_z=4,
+        cell_x=spacing,
+        cell_y=spacing,
+        cell_z=spacing,
+        mass=1000.0 * spacing**3,
+        radius_mean=0.5 * spacing,
+        jitter=0.0,
+        custom_attributes={"mpm:young_modulus": 1.0e4},
+    )
+    empty_builder = newton.ModelBuilder()
+    empty_builder.add_body(is_kinematic=True)
+    builder = newton.ModelBuilder()
+    SolverImplicitMPM.register_custom_attributes(builder)
+    for world in (local_builder, empty_builder, local_builder):
+        builder.add_world(world)
+    builder.add_ground_plane()
+
+    for mode in ("gs", "jacobi"):
+        results = []
+        for friction in (0.5, 0.0):
+            model = builder.finalize(device=device)
+            starts = model.particle_world_start.numpy()
+            material_friction = model.mpm.friction.numpy()
+            material_friction[starts[2] : starts[3]] = friction
+            model.mpm.friction.assign(material_friction)
+            config = SolverImplicitMPM.Config(
+                voxel_size=2.5e-3,
+                grid_type="fixed",
+                grid_padding=2,
+                max_active_cell_count=256,
+                separate_worlds=True,
+                solver=mode,
+            )
+            solver, state = _step_mpm(model, config, step_count=8, dt=2.5e-3)
+            arrays = _mpm_particle_state_arrays(state)
+            arrays["particle_Jp"] = state.mpm.particle_Jp
+            first_world = {name: array.numpy()[: starts[1]] for name, array in arrays.items()}
+            scratch = solver._scratchpad
+            for name, values, offsets in (
+                ("grid_velocity", scratch.velocity_field.dof_values, scratch.velocity_environment_offsets),
+                ("grid_stress", scratch.stress_field.dof_values, scratch.strain_environment_offsets),
+                ("collider_impulse", scratch.impulse_field.dof_values, scratch.collider_environment_offsets),
+            ):
+                environment_offsets = offsets.numpy()
+                test.assertEqual(environment_offsets[1], environment_offsets[2])
+                test.assertTrue(np.isfinite(values.numpy()).all(), f"Non-finite {name}, including padding")
+                first_world[name] = values.numpy()[: environment_offsets[1]]
+            results.append((first_world, state.particle_q.numpy()[starts[2] : starts[3]]))
+
+        with test.subTest(solver=mode):
+            for name, reference in results[0][0].items():
+                np.testing.assert_allclose(
+                    results[1][0][name], reference, rtol=1.0e-6, atol=1.0e-8, equal_nan=False, err_msg=name
+                )
+            test.assertGreater(np.max(np.abs(results[1][1] - results[0][1])), 1.0e-4)
+            test.assertGreater(np.linalg.norm(results[0][0]["collider_impulse"]), 1.0e-4)
+            test.assertGreater(np.linalg.norm(results[0][0]["particle_stress"]), 1.0e-4)
+
+
 def _make_multiworld_fixed_outer_graph_case(device, max_active_cell_count=16):
     local_builder = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0))
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
@@ -1169,7 +1323,7 @@ def test_multiworld_fixed_capped_jacobi_matches_uncapped(test, device):
         test.assertTrue(np.isfinite(array.numpy()).all(), f"Padded {name} contains non-finite values")
 
 
-def test_multiworld_fixed_outer_graph_matches_eager(test, device):
+def test_multiworld_fixed_outer_graph_matches_eager(test, device, convergence=False):
     """Verify multi-world fixed outer graph matches eager."""
     if (
         not device.is_cuda
@@ -1185,6 +1339,10 @@ def test_multiworld_fixed_outer_graph_matches_eager(test, device):
     captured_model, captured_solver, captured_state_0, captured_state_1, captured_world_starts = (
         _make_multiworld_fixed_outer_graph_case(device)
     )
+    if convergence:
+        for solver in (eager_solver, captured_solver):
+            solver.max_iterations = 100
+            solver.tolerance = 1.0e-4
     np.testing.assert_array_equal(captured_world_starts, world_starts)
     initial_q = eager_state_0.particle_q.numpy().copy()
     initial_qd_grad = eager_state_0.mpm.particle_qd_grad.numpy().copy()
@@ -3175,9 +3333,24 @@ add_function_test(
 
 add_function_test(
     TestImplicitMPM,
+    "test_multiworld_nonlinear_convergence_is_independent",
+    test_multiworld_nonlinear_convergence_is_independent,
+    devices=basic_devices,
+)
+
+add_function_test(
+    TestImplicitMPM,
     "test_multiworld_fixed_outer_graph_matches_eager",
     test_multiworld_fixed_outer_graph_matches_eager,
     devices=basic_cuda_devices,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_multiworld_fixed_outer_graph_convergence_matches_eager",
+    test_multiworld_fixed_outer_graph_matches_eager,
+    devices=basic_cuda_devices,
+    convergence=True,
 )
 
 add_function_test(

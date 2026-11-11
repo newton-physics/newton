@@ -525,7 +525,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             rigid_compliant_alm: Deprecated; omit it. Compliant ALM is always used for
                 body-body contacts, structural joints, drives, and limits. Explicit
                 ``True`` is accepted with a
-                :class:`~newton.exceptions.NewtonDeprecationWarning`; ``False``, the
+                :class:`~newton.NewtonDeprecationWarning`; ``False``, the
                 removed legacy AVBD path, raises :class:`ValueError`, and
                 ``None`` raises :class:`TypeError`.
 

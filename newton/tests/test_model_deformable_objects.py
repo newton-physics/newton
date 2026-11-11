@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.exceptions import NewtonWarning
+from newton import NewtonWarning
 from newton.tests._deformable_test_utils import _add_curve, _add_surface, _add_volume
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 

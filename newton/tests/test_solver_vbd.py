@@ -14,6 +14,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonDeprecationWarning
 from newton._src.geometry.soft_contacts_mesh import _SoftContactFilterData
 from newton._src.geometry.tri_mesh_collision import build_tri_mesh_collision_info
 from newton._src.solvers.vbd import particle_vbd_kernels, rigid_vbd_kernels
@@ -74,7 +75,6 @@ from newton._src.solvers.vbd.solver_vbd import (
     _is_tet_only_elasticity_model,
     _select_rigid_block_dim,
 )
-from newton.exceptions import NewtonDeprecationWarning
 from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
