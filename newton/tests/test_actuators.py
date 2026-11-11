@@ -23,6 +23,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonDeprecationWarning
 from newton._src.actuators import effort_mode_implicit
 from newton._src.actuators.utils import load_metadata
 from newton._src.utils.import_usd import parse_usd
@@ -43,7 +44,6 @@ from newton.actuators import (
     JointSpaceResponse,
     parse_actuator_prim,
 )
-from newton.exceptions import NewtonDeprecationWarning
 from newton.selection import ArticulationView
 
 try:

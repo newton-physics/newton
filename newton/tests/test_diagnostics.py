@@ -10,7 +10,7 @@ import unittest
 import warnings
 
 import newton
-from newton.exceptions import NewtonDeprecationWarning, NewtonWarning
+from newton import NewtonDeprecationWarning, NewtonWarning
 
 _NEWTON_ROOT = pathlib.Path(newton.__file__).parent
 
@@ -36,8 +36,8 @@ class TestWarningCategories(unittest.TestCase):
         self.assertEqual([type(w.message) for w in caught], [NewtonDeprecationWarning])
 
     def test_library_warnings_use_newton_categories(self):
-        """Require a newton.exceptions category for every warning Newton emits."""
-        allowed = set(newton.exceptions.__all__)
+        """Require a Newton category for every warning Newton emits."""
+        allowed = {n for n in newton.__all__ if isinstance(c := getattr(newton, n), type) and issubclass(c, Warning)}
         offenders = []
         for relative, tree in _library_sources():
             for node in ast.walk(tree):
@@ -47,7 +47,7 @@ class TestWarningCategories(unittest.TestCase):
                 category = next((k.value for k in node.keywords if k.arg == "category"), category)
                 if category is None or ast.unparse(category).rpartition(".")[2] not in allowed:
                     offenders.append(f"{relative}:{node.lineno}")
-        self.assertEqual(offenders, [], "use a newton.exceptions warning category")
+        self.assertEqual(offenders, [], "use a Newton warning category")
 
 
 class _RecordingHandler(logging.Handler):
