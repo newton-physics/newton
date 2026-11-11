@@ -543,6 +543,49 @@ class TestInertia(unittest.TestCase):
                         GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=thickness
                     )
 
+    def test_hollow_mesh_zero_thickness_warning_points_to_caller(self):
+        """Verify zero-thickness hollow mesh warnings are attributed to the calling code, not to Newton."""
+        box = newton.Mesh.create_box(0.5, 0.75, 1.0, duplicate_vertices=False, compute_inertia=False)
+        hollow = newton.Mesh(box.vertices, box.indices, is_solid=False)
+        zero_thickness = (0.0, [0.0] * len(hollow.vertices))
+
+        for thickness in zero_thickness:
+            with self.subTest(call="compute_inertia_shape", thickness=type(thickness).__name__):
+                with self.assertWarnsRegex(UserWarning, "zero mass and inertia") as caught:
+                    compute_inertia_shape(
+                        GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=thickness
+                    )
+                self.assertEqual(caught.filename, __file__)
+
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        with self.assertWarnsRegex(UserWarning, "zero mass and inertia") as caught:
+            builder.add_shape_mesh(
+                body, mesh=hollow, cfg=newton.ModelBuilder.ShapeConfig(density=1000.0, is_solid=False, margin=0.0)
+            )
+        self.assertEqual(caught.filename, __file__)
+
+    def test_invalid_hollow_mesh_thickness_leaves_builder_unchanged(self):
+        """Verify a rejected hollow mesh thickness does not leave a partially added shape in the builder."""
+        box = newton.Mesh.create_box(0.5, 0.75, 1.0, duplicate_vertices=False, compute_inertia=False)
+        hollow = newton.Mesh(box.vertices, box.indices, is_solid=False)
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=1000.0))
+        shape_count, body_shapes = builder.shape_count, list(builder.body_shapes[body])
+        mass, inertia = builder.body_mass[body], np.array(builder.body_inertia[body])
+
+        with self.assertRaisesRegex(ValueError, ">= 0"):
+            builder.add_shape_mesh(
+                body, mesh=hollow, cfg=newton.ModelBuilder.ShapeConfig(density=1000.0, is_solid=False, margin=-0.01)
+            )
+
+        self.assertEqual(builder.shape_count, shape_count)
+        self.assertEqual(builder.body_shapes[body], body_shapes)
+        self.assertEqual(builder.body_mass[body], mass)
+        assert_np_equal(np.array(builder.body_inertia[body]), inertia)
+        builder.finalize(device="cpu")
+
     def test_hollow_primitive_thickness_must_fit_inside_shape(self):
         cases = [
             (GeoType.SPHERE, (0.5, 0.0, 0.0), 0.5, "sphere radius"),
