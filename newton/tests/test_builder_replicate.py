@@ -228,7 +228,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         for i, anchor in enumerate(anchors):
             root = source.add_link()
             free = source.add_joint_free(root, parent_xform=anchor)
-            hinge = source.add_joint_revolute(root, source.add_link(), target_pos=0.3, target_vel=0.4)
+            hinge = source.add_joint_revolute(root, source.add_link(), target_q=0.3, target_qd=0.4)
             source.add_articulation([free, hinge])
             q, qd = source.joint_q_start[free], source.joint_qd_start[free]
             source.joint_target_q[q : q + 7] = [i + 1.0, 2.0, 3.0, *wp.quat_rpy(0.2, -0.3, 0.4 + i)]

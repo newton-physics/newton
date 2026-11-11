@@ -6280,9 +6280,10 @@ class ModelBuilder:
 
         Args:
             builder: The model builder to copy data from.
-            xform: Optional transform that places the copied entities as a whole. It
-                transforms body and particle positions, tetrahedral rest poses, and the
-                state and targets of free root joints, and rotates world-frame velocities.
+            xform: Optional transform that places the copy as a whole. It moves everything
+                expressed in the world frame, including root bodies and joint frames, static
+                shapes, particles, tetrahedral rest poses, and free-root joint targets, and
+                rotates world-frame velocities.
             label_prefix: Optional prefix prepended to all entity labels
                 from the source builder. Labels are joined with ``/``
                 (e.g., ``"left/panda/base_link"``).
