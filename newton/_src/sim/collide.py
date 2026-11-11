@@ -21,7 +21,7 @@ from ..geometry.contact_data import (
     ContactData,
     contact_passes_speculative_gap_check,
     contact_separation,
-    contact_sort_shape_index_bits,
+    contact_sort_key_layout,
     make_contact_sort_key_with_bits,
 )
 from ..geometry.contact_match import ContactMatcher
@@ -2359,8 +2359,13 @@ class CollisionPipeline:
             self.narrow_phase, "_contact_sort_sub_key_bits", CONTACT_SORT_SUB_KEY_BITS
         )
         # Sort keys are written only in deterministic mode, which contact matching implies.
-        self._contact_sort_shape_index_bits = (
-            contact_sort_shape_index_bits(shape_count, self._contact_sort_sub_key_bits) if deterministic else 0
+        # Past the packed key's shape limit the keys hold only the sub-key and the
+        # sorter adds a stable pass on the shape pair.
+        self._contact_sort_shape_index_bits, self._contact_sort_split_pair_key = (
+            contact_sort_key_layout(shape_count, self._contact_sort_sub_key_bits) if deterministic else (0, False)
+        )
+        self._contact_sort_key_shape_index_bits = (
+            0 if self._contact_sort_split_pair_key else self._contact_sort_shape_index_bits
         )
 
         self._hydro_shape_sdf_data_prepared = self.hydroelastic_sdf is not None
@@ -2519,7 +2524,8 @@ class CollisionPipeline:
                 self._sort_key_array = wp.zeros(rigid_contact_max, dtype=wp.int64, device=device)
             self._contact_sorter = ContactSorter(
                 rigid_contact_max,
-                key_bit_count=self._contact_sort_sub_key_bits + 2 * self._contact_sort_shape_index_bits,
+                key_bit_count=self._contact_sort_sub_key_bits + 2 * self._contact_sort_key_shape_index_bits,
+                pair_shape_index_bits=self._contact_sort_shape_index_bits if self._contact_sort_split_pair_key else 0,
                 per_contact_shape_properties=per_contact_props,
                 allocate_simple_scratch=False,
                 device=device,
@@ -2539,7 +2545,8 @@ class CollisionPipeline:
                 shape_world=model.shape_world,
                 world_count=model.world_count,
                 shape_index_bits=self._contact_sort_shape_index_bits,
-                sub_key_bits=self._contact_sort_sub_key_bits,
+                # A split sort hands the matcher bare pair keys.
+                sub_key_bits=0 if self._contact_sort_split_pair_key else self._contact_sort_sub_key_bits,
                 pos_threshold=contact_matching_pos_threshold,
                 normal_dot_threshold=contact_matching_normal_dot_threshold,
                 contact_report=contact_report,
@@ -3170,7 +3177,7 @@ class CollisionPipeline:
         # Create ContactWriterData struct for custom contact writing
         writer_data = ContactWriterData()
         writer_data.contact_max = contacts.rigid_contact_max
-        writer_data.shape_index_bits = self._contact_sort_shape_index_bits
+        writer_data.shape_index_bits = self._contact_sort_key_shape_index_bits
         writer_data.sub_key_bits = self._contact_sort_sub_key_bits
         writer_data.body_q = state.body_q
         writer_data.shape_body = model.shape_body
@@ -3311,6 +3318,7 @@ class CollisionPipeline:
                 match_index_out=contacts.rigid_contact_match_index,
                 buffer_id=self._contact_matcher.buffer_id(contacts),
                 match_generation_out=contacts.rigid_contact_match_generation,
+                tiebreak_keys=self._contact_sorter.sorted_tiebreak_keys_view,
                 device=self.device,
             )
         elif contacts.rigid_contact_match_index is not None:

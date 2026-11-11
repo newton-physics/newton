@@ -627,9 +627,9 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
         np.testing.assert_array_equal(pairs, [(2, 3), (1 << 20, (1 << 20) + 1)])
         self.assertEqual(self.narrow_phase._contact_sorter._key_bit_count, 3 + 2 * 21)
 
-    def test_deterministic_sort_keys_reject_more_than_2_20_shapes(self):
-        """Reject shape counts the deterministic sort key can't hold instead of aliasing them."""
-        shape_count = (1 << 20) + 1
+    def test_deterministic_sort_keys_split_past_2_20_mesh_shapes(self):
+        """Sort by a separate pair key when shape indices and the 23-bit sub-key don't fit in one key."""
+        shape_count = (1 << 20) + 2
         kwargs = {
             "max_candidate_pairs": 2,
             "max_triangle_pairs": 8,
@@ -638,14 +638,33 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
             "contact_max": 20,
             "verify_buffers": False,
         }
-        aabbs = {
-            "shape_aabb_lower": wp.zeros(shape_count, dtype=wp.vec3),
-            "shape_aabb_upper": wp.ones(shape_count, dtype=wp.vec3),
-        }
-        with self.assertRaisesRegex(ValueError, "at most 1048576 shapes"):
-            NarrowPhase(deterministic=True, **kwargs, **aabbs)
-        NarrowPhase(deterministic=False, **kwargs, **aabbs)
+        self.narrow_phase = NarrowPhase(
+            deterministic=True,
+            **kwargs,
+            shape_aabb_lower=wp.zeros(shape_count, dtype=wp.vec3),
+            shape_aabb_upper=wp.ones(shape_count, dtype=wp.vec3),
+        )
+        sorter = self.narrow_phase._contact_sorter
+        self.assertEqual(sorter.pair_shape_index_bits, 21)
+        self.assertEqual(sorter._key_bit_count, 23)
 
+        pairs = self._launch_spheres_past_2_20()
+
+        np.testing.assert_array_equal(pairs, [(2, 3), (1 << 20, (1 << 20) + 1)])
+        np.testing.assert_array_equal(
+            sorter.sorted_keys_view.numpy()[:2], [(2 << 21) | 3, ((1 << 20) << 21) | ((1 << 20) + 1)]
+        )
+
+    def test_deterministic_sort_keys_check_launch_shape_count(self):
+        """Reject a launch with more shapes than the sort key was sized for."""
+        kwargs = {
+            "max_candidate_pairs": 2,
+            "max_triangle_pairs": 8,
+            "reduce_contacts": False,
+            "has_meshes": True,
+            "contact_max": 20,
+            "verify_buffers": False,
+        }
         # Without AABBs the shape count is known only at launch.
         self.narrow_phase = NarrowPhase(deterministic=True, **kwargs)
         with self.assertRaisesRegex(ValueError, "20-bit shape indices.*pass shape_aabb_lower"):

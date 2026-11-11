@@ -5,12 +5,17 @@
 
 import unittest
 from functools import partial
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.contact_data import CONTACT_SORT_CONVEX_SUB_KEY_BITS, CONTACT_SORT_SUB_KEY_BITS
+from newton._src.geometry.contact_data import (
+    CONTACT_SORT_CONVEX_SUB_KEY_BITS,
+    CONTACT_SORT_SUB_KEY_BITS,
+    contact_sort_key_layout,
+)
 from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MATCH_NOT_FOUND, ContactMatcher
 from newton._src.geometry.contact_sort import ContactSorter
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
@@ -954,6 +959,133 @@ def test_sorter_simple_layout_remains_available(test, device):
         np.testing.assert_array_equal(penetration.numpy()[:3], (1.0, 2.0, 3.0))
 
 
+def _sort_full_with(sorter, keys, count, shape0, shape1, device):
+    """Run ``sort_full`` on copies of the given columns; return the sorted shapes and original rows."""
+    capacity = shape0.shape[0]
+    cols = {
+        "shape0": wp.array(shape0, dtype=wp.int32, device=device),
+        "shape1": wp.array(shape1, dtype=wp.int32, device=device),
+        "point0": wp.zeros(capacity, dtype=wp.vec3, device=device),
+        "point1": wp.zeros(capacity, dtype=wp.vec3, device=device),
+        "offset0": wp.zeros(capacity, dtype=wp.vec3, device=device),
+        "offset1": wp.zeros(capacity, dtype=wp.vec3, device=device),
+        "normal": wp.zeros(capacity, dtype=wp.vec3, device=device),
+        "margin0": wp.zeros(capacity, dtype=float, device=device),
+        "margin1": wp.zeros(capacity, dtype=float, device=device),
+        "tids": wp.array(np.arange(capacity, dtype=np.int32), device=device),
+    }
+    sorter.sort_full(
+        wp.array(keys, dtype=wp.int64, device=device), wp.array((count,), dtype=wp.int32, device=device), **cols
+    )
+    return cols["shape0"].numpy()[:count], cols["shape1"].numpy()[:count], cols["tids"].numpy()[:count]
+
+
+def test_sorter_pair_pass_matches_packed_order(test, device):
+    """A sub-key pass plus a stable pair-key pass orders contacts like one packed-key pass."""
+    rng = np.random.default_rng(7)
+    capacity, count, shape_bits, sub_bits = 96, 80, 4, 3
+    shape0 = rng.integers(0, 1 << shape_bits, capacity).astype(np.int32)
+    shape1 = rng.integers(0, 1 << shape_bits, capacity).astype(np.int32)
+    # Few distinct sub-keys, so equal (shape0, shape1, sub_key) rows check that ties keep the input order.
+    sub_key = rng.integers(0, 3, capacity).astype(np.int64)
+    packed = (shape0.astype(np.int64) << (sub_bits + shape_bits)) | (shape1.astype(np.int64) << sub_bits) | sub_key
+
+    packed_sorter = ContactSorter(capacity, key_bit_count=sub_bits + 2 * shape_bits, device=device)
+    pair_sorter = ContactSorter(capacity, key_bit_count=sub_bits, pair_shape_index_bits=shape_bits, device=device)
+    test.assertEqual(packed_sorter.pair_shape_index_bits, 0)
+    test.assertEqual(pair_sorter.pair_shape_index_bits, shape_bits)
+
+    expected = _sort_full_with(packed_sorter, packed, count, shape0, shape1, device)
+    actual = _sort_full_with(pair_sorter, sub_key, count, shape0, shape1, device)
+    order = np.lexsort((np.arange(count), sub_key[:count], shape1[:count], shape0[:count]))
+    np.testing.assert_array_equal(expected[2], order)
+    for exp, act in zip(expected, actual, strict=True):
+        np.testing.assert_array_equal(act, exp)
+
+    packed_sorted = packed_sorter.sorted_keys_view.numpy()[:count]
+    np.testing.assert_array_equal(pair_sorter.sorted_keys_view.numpy()[:count], packed_sorted >> sub_bits)
+    np.testing.assert_array_equal(
+        pair_sorter.sorted_tiebreak_keys_view.numpy()[:count], packed_sorted & ((1 << sub_bits) - 1)
+    )
+    np.testing.assert_array_equal(packed_sorter.sorted_tiebreak_keys_view.numpy()[:count], packed_sorted)
+
+    # The simple layout reads the shape pair from ``contact_pair``.
+    pairs = wp.array(np.stack((shape0, shape1), axis=1), dtype=wp.vec2i, device=device)
+    positions = wp.array(np.stack((np.arange(capacity), np.zeros(capacity), np.zeros(capacity)), axis=1), dtype=wp.vec3)
+    simple_sorter = ContactSorter(capacity, key_bit_count=sub_bits, pair_shape_index_bits=shape_bits, device=device)
+    simple_sorter.sort_simple(
+        wp.array(sub_key, dtype=wp.int64, device=device),
+        wp.array((count,), dtype=wp.int32, device=device),
+        contact_pair=pairs,
+        contact_position=positions,
+        contact_normal=wp.zeros(capacity, dtype=wp.vec3, device=device),
+        contact_penetration=wp.zeros(capacity, dtype=float, device=device),
+    )
+    np.testing.assert_array_equal(positions.numpy()[:count, 0], order)
+
+
+def _build_multi_contact_scene(device):
+    """Boxes and spheres on a ground plane, with several contacts per box pair."""
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    for i, x in enumerate((-0.6, -0.2, 0.2, 0.6)):
+        body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.098)))
+        if i % 2 == 0:
+            builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+        else:
+            builder.add_shape_sphere(body=body, radius=0.1)
+    model = builder.finalize(device=device)
+    return model, model.state()
+
+
+def _forced_pair_key_layout(shape_count, sub_key_bits):
+    del sub_key_bits
+    return max(max(int(shape_count) - 1, 0).bit_length(), 1), True
+
+
+def test_pair_key_sort_matches_like_packed_key(test, device):
+    """Matching on a separate pair key gives the same contacts, matches and reports as the packed key."""
+    with wp.ScopedDevice(device):
+        model, state = _build_multi_contact_scene(device)
+        # Lift the second box clear of the ground in the last frame so its contacts break.
+        lifted = model.state()
+        q = state.body_q.numpy().copy()
+        q[2, 2] += 1.0
+        lifted.body_q.assign(q)
+
+        results = []
+        for force_pair_key in (False, True):
+            layout = _forced_pair_key_layout if force_pair_key else contact_sort_key_layout
+            with mock.patch("newton._src.sim.collide.contact_sort_key_layout", layout):
+                pipeline = newton.CollisionPipeline(
+                    model, broad_phase="nxn", contact_matching="latest", contact_report=True
+                )
+            test.assertEqual(pipeline._contact_sorter.pair_shape_index_bits > 0, force_pair_key)
+            contacts = pipeline.contacts()
+            frames = []
+            for frame_state in (state, state, lifted):
+                count = _collide_once(pipeline, frame_state, contacts)
+                broken_count = contacts.rigid_contact_broken_count.numpy()[0]
+                frames.append(
+                    (
+                        contacts.rigid_contact_shape0.numpy()[:count].copy(),
+                        contacts.rigid_contact_shape1.numpy()[:count].copy(),
+                        contacts.rigid_contact_point0.numpy()[:count].copy(),
+                        contacts.rigid_contact_match_index.numpy()[:count].copy(),
+                        np.sort(contacts.rigid_contact_broken_indices.numpy()[:broken_count]),
+                    )
+                )
+            results.append(frames)
+
+        packed, split = results
+        test.assertGreater(len(packed[0][0]), 4)
+        np.testing.assert_array_equal(packed[1][3], np.arange(len(packed[1][3]), dtype=np.int32))
+        test.assertGreater(len(packed[2][4]), 0)
+        for packed_frame, split_frame in zip(packed, split, strict=True):
+            for exp, act in zip(packed_frame, split_frame, strict=True):
+                np.testing.assert_array_equal(act, exp)
+
+
 def test_invalid_mode_raises(test, device):
     """Invalid contact_matching values must raise ValueError."""
     with wp.ScopedDevice(device):
@@ -1504,6 +1636,19 @@ add_function_test(
 )
 add_function_test(
     TestContactMatching, "test_contact_report_requires_matching", test_contact_report_requires_matching, devices=devices
+)
+
+add_function_test(
+    TestContactMatching,
+    "test_sorter_pair_pass_matches_packed_order",
+    test_sorter_pair_pass_matches_packed_order,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatching,
+    "test_pair_key_sort_matches_like_packed_key",
+    test_pair_key_sort_matches_like_packed_key,
+    devices=devices,
 )
 
 add_function_test(

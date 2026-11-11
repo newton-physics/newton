@@ -10,7 +10,7 @@ import warp as wp
 
 from newton._src.geometry.contact_data import (
     ContactData,
-    contact_sort_shape_index_bits,
+    contact_sort_key_layout,
     make_contact_sort_key,
     make_contact_sort_key_with_bits,
 )
@@ -1426,23 +1426,23 @@ class TestMakeContactSortKey(unittest.TestCase):
     pass
 
 
-def test_sort_key_shape_index_bits(test, device):
-    """Use only the shape-index bits required by the model, up to what the sub-key leaves free."""
+def test_sort_key_layout(test, device):
+    """Pack shape indices into the key while they fit; past that, sort by a separate pair key."""
     del device
     for shape_count, sub_key_bits, expected in (
-        (0, 23, 1),
-        (2, 23, 1),
-        (3, 23, 2),
-        (256, 23, 8),
-        (32768, 23, 15),
-        (1 << 20, 23, 20),
-        ((1 << 20) + 1, 3, 21),
-        (1 << 30, 3, 30),
+        (0, 23, (1, False)),
+        (2, 23, (1, False)),
+        (3, 23, (2, False)),
+        (256, 23, (8, False)),
+        (32768, 23, (15, False)),
+        (1 << 20, 23, (20, False)),
+        ((1 << 20) + 1, 3, (21, False)),
+        (1 << 30, 3, (30, False)),
+        ((1 << 20) + 1, 23, (21, True)),
+        ((1 << 30) + 1, 3, (31, True)),
+        (1 << 31, 23, (31, True)),
     ):
-        test.assertEqual(contact_sort_shape_index_bits(shape_count, sub_key_bits), expected)
-    for shape_count, sub_key_bits in (((1 << 20) + 1, 23), ((1 << 30) + 1, 3)):
-        with test.assertRaises(ValueError):
-            contact_sort_shape_index_bits(shape_count, sub_key_bits)
+        test.assertEqual(contact_sort_key_layout(shape_count, sub_key_bits), expected)
 
 
 @wp.kernel(enable_backward=False)
@@ -1816,8 +1816,8 @@ add_function_test(
 # make_contact_sort_key tests
 add_function_test(
     TestMakeContactSortKey,
-    "test_sort_key_shape_index_bits",
-    test_sort_key_shape_index_bits,
+    "test_sort_key_layout",
+    test_sort_key_layout,
     devices=devices,
 )
 add_function_test(TestMakeContactSortKey, "test_sort_key_bit_layout", test_sort_key_bit_layout, devices=devices)

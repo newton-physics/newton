@@ -191,6 +191,76 @@ def _gather_full_kernel(data: _FullContactArrays, perm: wp.array[wp.int32], coun
         data.match_index[i] = data.match_index_buf[p]
 
 
+# -----------------------------------------------------------------------
+# Second sort pass for models whose shape indices don't fit in the packed key.
+#
+# The writers then store only the per-pair sub-key.  The first radix pass
+# orders contacts by sub-key; a second stable pass on a ``(shape_a, shape_b)``
+# pair key built from the backed-up shape columns gives the same order as one
+# sort on the packed ``(shape_a, shape_b, sub_key)`` key would.
+# -----------------------------------------------------------------------
+
+
+@wp.func
+def _make_pair_key(shape_a: wp.int32, shape_b: wp.int32, shape_index_bits: int) -> wp.int64:
+    return (wp.int64(shape_a) << wp.int64(shape_index_bits)) | wp.int64(shape_b)
+
+
+@wp.kernel(enable_backward=False)
+def _pair_keys_from_pairs_kernel(
+    pair_buf: wp.array[wp.vec2i],
+    count: wp.array[int],
+    first_pass_perm: wp.array[wp.int32],
+    shape_index_bits: int,
+    pair_keys: wp.array[wp.int64],
+    pair_order: wp.array[wp.int32],
+):
+    """Build pair keys in first-pass order from the simple layout's backed-up pairs."""
+    i = wp.tid()
+    pair_order[i] = wp.int32(i)
+    p = first_pass_perm[i]
+    if p >= count[0]:
+        pair_keys[i] = SORT_KEY_SENTINEL
+        return
+    pair = pair_buf[p]
+    pair_keys[i] = _make_pair_key(pair[0], pair[1], shape_index_bits)
+
+
+@wp.kernel(enable_backward=False)
+def _pair_keys_from_shapes_kernel(
+    shape0_buf: wp.array[wp.int32],
+    shape1_buf: wp.array[wp.int32],
+    count: wp.array[int],
+    first_pass_perm: wp.array[wp.int32],
+    shape_index_bits: int,
+    pair_keys: wp.array[wp.int64],
+    pair_order: wp.array[wp.int32],
+):
+    """Build pair keys in first-pass order from the full layout's backed-up shapes."""
+    i = wp.tid()
+    pair_order[i] = wp.int32(i)
+    p = first_pass_perm[i]
+    if p >= count[0]:
+        pair_keys[i] = SORT_KEY_SENTINEL
+        return
+    pair_keys[i] = _make_pair_key(shape0_buf[p], shape1_buf[p], shape_index_bits)
+
+
+@wp.kernel(enable_backward=False)
+def _compose_pair_sort_kernel(
+    first_pass_perm: wp.array[wp.int32],
+    first_pass_keys: wp.array[wp.int64],
+    pair_order: wp.array[wp.int32],
+    perm: wp.array[wp.int32],
+    sorted_sub_keys: wp.array[wp.int64],
+):
+    """Compose both passes into one permutation and carry the sub-keys along."""
+    i = wp.tid()
+    j = pair_order[i]
+    perm[i] = first_pass_perm[j]
+    sorted_sub_keys[i] = first_pass_keys[j]
+
+
 class ContactSorter:
     """Sort contact arrays into a deterministic canonical order.
 
@@ -206,6 +276,13 @@ class ContactSorter:
     ``key_bit_count`` limits sorting to the populated low key bits, reducing
     radix passes without changing the full-capacity graph-capture behavior.
 
+    Set ``pair_shape_index_bits`` when two shape indices and the sub-key don't
+    fit in one 63-bit key.  The sort keys then hold only the sub-key, and a
+    second stable radix pass orders contacts by a ``(shape_a, shape_b)`` pair
+    key with ``pair_shape_index_bits`` per shape, read from the contact shape
+    columns.  :attr:`sorted_keys_view` then holds the sorted pair keys and
+    :attr:`sorted_tiebreak_keys_view` the matching sub-keys.
+
     Set ``allocate_simple_scratch=False`` for a sorter used only by
     :meth:`sort_full` to avoid allocating the unused simple-layout scratch.
     Scratch allocation is fixed at construction time.
@@ -216,18 +293,29 @@ class ContactSorter:
         capacity: int,
         *,
         key_bit_count: int = 64,
+        pair_shape_index_bits: int = 0,
         per_contact_shape_properties: bool = False,
         allocate_simple_scratch: bool = True,
         device: Devicelike = None,
     ):
         if not 1 <= key_bit_count <= 64:
             raise ValueError(f"key_bit_count must be in [1, 64], got {key_bit_count}")
+        if not 0 <= pair_shape_index_bits <= 31:
+            raise ValueError(f"pair_shape_index_bits must be in [0, 31], got {pair_shape_index_bits}")
         with wp.ScopedDevice(device):
             self._capacity = capacity
             self._key_bit_count = key_bit_count
             # radix_sort_pairs uses the second half as scratch, so allocate 2x.
             self._sort_indices = wp.zeros(2 * capacity, dtype=wp.int32)
             self._sort_keys_copy = wp.zeros(2 * capacity, dtype=wp.int64)
+
+            # Second pass on the shape pair, only for models past the packed key's shape limit.
+            self._pair_shape_index_bits = pair_shape_index_bits
+            pair_capacity = capacity if pair_shape_index_bits > 0 else 0
+            self._pair_keys = wp.zeros(2 * pair_capacity, dtype=wp.int64)
+            self._pair_order = wp.zeros(2 * pair_capacity, dtype=wp.int32)
+            self._pair_perm = wp.zeros(pair_capacity, dtype=wp.int32)
+            self._pair_sorted_sub_keys = wp.zeros(pair_capacity, dtype=wp.int64)
 
             self._has_shape_props = per_contact_shape_properties
 
@@ -325,8 +413,8 @@ class ContactSorter:
             inputs=[data, contact_count, sort_keys, self._sort_keys_copy, self._sort_indices],
             device=device,
         )
-        wp.utils.radix_sort_pairs(self._sort_keys_copy, self._sort_indices, n, end_bit=self._key_bit_count)
-        wp.launch(_gather_simple_kernel, dim=n, inputs=[data, self._sort_indices, contact_count], device=device)
+        perm = self._sort_permutation(_pair_keys_from_pairs_kernel, [data.pair_buf], contact_count, device)
+        wp.launch(_gather_simple_kernel, dim=n, inputs=[data, perm, contact_count], device=device)
 
     def sort_full(
         self,
@@ -421,8 +509,42 @@ class ContactSorter:
             inputs=[data, contact_count, sort_keys, self._sort_keys_copy, self._sort_indices],
             device=device,
         )
+        perm = self._sort_permutation(
+            _pair_keys_from_shapes_kernel, [data.shape0_buf, data.shape1_buf], contact_count, device
+        )
+        wp.launch(_gather_full_kernel, dim=n, inputs=[data, perm, contact_count], device=device)
+
+    def _sort_permutation(self, pair_keys_kernel, shape_inputs: list, contact_count: wp.array, device) -> wp.array:
+        """Radix-sort the backed-up keys and return the gather permutation."""
+        n = self._capacity
         wp.utils.radix_sort_pairs(self._sort_keys_copy, self._sort_indices, n, end_bit=self._key_bit_count)
-        wp.launch(_gather_full_kernel, dim=n, inputs=[data, self._sort_indices, contact_count], device=device)
+        if self._pair_shape_index_bits == 0:
+            return self._sort_indices
+
+        # Stable second pass: the pair key is the major key, the first pass's sub-key order breaks ties.
+        bits = self._pair_shape_index_bits
+        wp.launch(
+            pair_keys_kernel,
+            dim=n,
+            inputs=[*shape_inputs, contact_count, self._sort_indices, bits],
+            outputs=[self._pair_keys, self._pair_order],
+            device=device,
+        )
+        # One bit above the pair key keeps the sentinel past every real pair.
+        wp.utils.radix_sort_pairs(self._pair_keys, self._pair_order, n, end_bit=2 * bits + 1)
+        wp.launch(
+            _compose_pair_sort_kernel,
+            dim=n,
+            inputs=[self._sort_indices, self._sort_keys_copy, self._pair_order],
+            outputs=[self._pair_perm, self._pair_sorted_sub_keys],
+            device=device,
+        )
+        return self._pair_perm
+
+    @property
+    def pair_shape_index_bits(self) -> int:
+        """Bits per shape index in the second-pass pair key, or 0 for a single packed-key pass."""
+        return self._pair_shape_index_bits
 
     @property
     def sorted_keys_view(self) -> wp.array:
@@ -430,8 +552,23 @@ class ContactSorter:
 
         Valid only after :meth:`sort_simple` or :meth:`sort_full` returns.
         The array has ``capacity`` elements; active entries are
-        ``sorted_keys_view[:contact_count]``.
+        ``sorted_keys_view[:contact_count]``.  With a second pair pass these
+        are the sorted ``(shape_a, shape_b)`` pair keys.
         """
+        if self._pair_shape_index_bits > 0:
+            return self._pair_keys[: self._capacity]
+        return self._sort_keys_copy[: self._capacity]
+
+    @property
+    def sorted_tiebreak_keys_view(self) -> wp.array:
+        """Per-contact keys whose low 32 bits tell the contacts of one shape pair apart.
+
+        Same as :attr:`sorted_keys_view` for a single packed-key pass; the
+        sorted sub-keys with a second pair pass.  Valid only after
+        :meth:`sort_simple` or :meth:`sort_full` returns.
+        """
+        if self._pair_shape_index_bits > 0:
+            return self._pair_sorted_sub_keys
         return self._sort_keys_copy[: self._capacity]
 
     @property
