@@ -1017,11 +1017,11 @@ def test_sticky_common_translation(test, device, use_capture=False):
 
 
 def test_sticky_drift_uses_body_witnesses(test, device):
-    """Sticky drift follows each witness on its own body, not the midpoint."""
+    """Verify sticky drift follows each witness in its own body's frame."""
     threshold = 0.0005
 
-    def match(*, body_z=0.0, point1=(0.0, 0.0, 0.0)):
-        """Match a ground (shape 0) to body (shape 1) contact saved at the origin with the body at rest."""
+    def match(*, body_x=0.0, body_z=0.0, point1=(0.0, 0.0, 0.0)):
+        """Match a ground-to-body contact saved with zero body-local witnesses."""
         matcher = ContactMatcher(
             capacity=1,
             sorter=ContactSorter(1),
@@ -1048,7 +1048,9 @@ def test_sticky_drift_uses_body_witnesses(test, device):
             shape0=wp.zeros(1, dtype=wp.int32, device=device),
             shape1=wp.ones(1, dtype=wp.int32, device=device),
             normal=wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device),
-            body_q=wp.array([wp.transform((0.0, 0.0, body_z), wp.quat_identity())], dtype=wp.transform, device=device),
+            body_q=wp.array(
+                [wp.transform((body_x, 0.0, body_z), wp.quat_identity())], dtype=wp.transform, device=device
+            ),
             shape_body=wp.array([-1, 0], dtype=wp.int32, device=device),
             match_index_out=match_index,
             buffer_id=1,
@@ -1065,6 +1067,8 @@ def test_sticky_drift_uses_body_witnesses(test, device):
         # opposite face of a 0.6 mm plate, expires the anchor although the
         # midpoint moves only 0.3 mm.
         test.assertEqual(match(point1=(0.0, 0.0, -0.0006)), MATCH_BROKEN)
+        # World-space rounding must not hide local drift far from the origin.
+        test.assertEqual(match(body_x=1.0e6, point1=(0.0006, 0.0, 0.0)), MATCH_BROKEN)
 
 
 def test_sticky_matched_rows_replayed(test, device):

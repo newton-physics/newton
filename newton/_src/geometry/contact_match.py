@@ -304,23 +304,19 @@ def _match_contacts_kernel(data: _MatchData):
 
     target_key = data.new_keys[tid]
 
-    # World-space midpoint, symmetric in the endpoints. Sticky candidates are
-    # transported to the current poses before comparison below.
     p0 = data.new_point0[tid]
-    bid0 = data.shape_body[data.new_shape0[tid]]
-    if bid0 == -1:
-        p0w = p0
-    else:
-        p0w = wp.transform_point(data.body_q[bid0], p0)
-
     p1 = data.new_point1[tid]
-    bid1 = data.shape_body[data.new_shape1[tid]]
-    if bid1 == -1:
+    new_pos_w = wp.vec3(0.0)
+    if data.sticky == 0:
+        bid0 = data.shape_body[shape0]
+        p0w = p0
+        if bid0 >= 0:
+            p0w = wp.transform_point(data.body_q[bid0], p0)
+        bid1 = data.shape_body[shape1]
         p1w = p1
-    else:
-        p1w = wp.transform_point(data.body_q[bid1], p1)
-
-    new_pos_w = 0.5 * (p0w + p1w)
+        if bid1 >= 0:
+            p1w = wp.transform_point(data.body_q[bid1], p1)
+        new_pos_w = 0.5 * (p0w + p1w)
     new_n = data.new_normal[tid]
 
     # Binary search the [range_lo, range_hi) interval of prev contacts
@@ -345,18 +341,9 @@ def _match_contacts_kernel(data: _MatchData):
     for old_idx in range(range_lo, range_hi):
         dist_sq = float(0.0)
         if data.sticky != 0:
-            # Transport the previous body-local witnesses with their bodies and
-            # take the larger drift of the two. Compression moves the witnesses
-            # apart along the normal but keeps each on its own surface, so it
-            # does not age a match; a witness that jumps to another feature of
-            # its body, such as the opposite face of a thin plate, does.
-            old_p0 = data.prev_point0[old_idx]
-            old_p1 = data.prev_point1[old_idx]
-            if bid0 >= 0:
-                old_p0 = wp.transform_point(data.body_q[bid0], old_p0)
-            if bid1 >= 0:
-                old_p1 = wp.transform_point(data.body_q[bid1], old_p1)
-            dist_sq = wp.max(wp.length_sq(p0w - old_p0), wp.length_sq(p1w - old_p1))
+            # Rigid transforms preserve distance. Compare in each body's frame
+            # to avoid world-space rounding and unnecessary transforms.
+            dist_sq = wp.max(wp.length_sq(p0 - data.prev_point0[old_idx]), wp.length_sq(p1 - data.prev_point1[old_idx]))
         else:
             diff = new_pos_w - data.prev_pos_world[old_idx]
             dist_sq = wp.dot(diff, diff)
@@ -468,9 +455,9 @@ class _SaveStateData:
 def _save_sorted_state_kernel(data: _SaveStateData, reset_world_mask: wp.array[wp.bool]):
     """Copy sorted contacts into the previous-frame buffers for next-frame matching.
 
-    The persisted ``dst_pos_world`` is the world-space *midpoint* of the two
-    contact points, so the next frame's match kernel compares a shape-symmetric
-    quantity.
+    Latest matching uses the world-space midpoint in ``dst_pos_world``;
+    sticky matching uses the body-local witnesses in ``dst_point0_body`` and
+    ``dst_point1_body``.
     """
     i = wp.tid()
     # Matching and reporting have already consumed the mask; saving does not read it.
