@@ -363,8 +363,8 @@ class Actuator:
         input_processors: list[InputProcessorBase] | None = None,
         motor: MotorDC | None = None,
         actuator_indices: wp.array[wp.uint32] | None = None,
-        state_supply_voltage_attr: str = "actuator_supply_voltage",
-        state_supply_current_attr: str = "actuator_supply_current",
+        control_supply_voltage_attr: str = "actuator_supply_voltage",
+        control_supply_current_attr: str = "actuator_supply_current",
     ):
         """Initialize actuator.
 
@@ -409,9 +409,9 @@ class Actuator:
             actuator_indices: Index of each actuator into per-actuator arrays,
                 i.e. arrays with one entry per actuator of the model rather
                 than per DOF. Required when the motor draws from a battery.
-            state_supply_voltage_attr: Attribute on sim_state for the
+            control_supply_voltage_attr: Attribute on sim_control for the
                 per-actuator supply voltage the motor reads from its battery.
-            state_supply_current_attr: Attribute on sim_state for the
+            control_supply_current_attr: Attribute on sim_control for the
                 per-actuator current the motor draws from its battery.
         """
         if drive is None:
@@ -464,8 +464,8 @@ class Actuator:
         for clamp in self.clamping:
             if isinstance(clamp, ClampingCurrentDuty):
                 clamp._use_motor_parameters(motor)
-        self.state_supply_voltage_attr = state_supply_voltage_attr
-        self.state_supply_current_attr = state_supply_current_attr
+        self.control_supply_voltage_attr = control_supply_voltage_attr
+        self.control_supply_current_attr = control_supply_current_attr
         self._uses_battery = motor is not None and motor.uses_battery
         if self._uses_battery and actuator_indices is None:
             raise ValueError(f"{type(motor).__name__} draws from a battery, which requires actuator_indices")
@@ -538,45 +538,39 @@ class Actuator:
         return _input_container_class("sim_control", tuple(frequencies.items()))()
 
     def register_custom_attributes(self, builder: ModelBuilder) -> None:
-        """Register drive inputs and battery arrays as custom Newton attributes.
+        """Register drive inputs and battery arrays as custom Newton Control attributes.
 
         :class:`~newton.ModelBuilder` calls this method automatically while
         finalizing its actuators. Every input declared by the drive is
         registered as a ``wp.float32`` joint-DOF array on
         :class:`~newton.Control`. When the motor draws from a battery,
-        :attr:`state_supply_voltage_attr` and
-        :attr:`state_supply_current_attr` are registered as per-actuator
-        arrays (:attr:`~newton.Model.AttributeFrequency.ACTUATOR` frequency)
-        on :class:`~newton.State`.
+        :attr:`control_supply_voltage_attr` and
+        :attr:`control_supply_current_attr` are registered as per-actuator
+        arrays (:attr:`~newton.Model.AttributeFrequency.ACTUATOR` frequency).
         Registration allocates the arrays but does not populate or clear them;
         the caller must update the declared inputs before each actuator
         evaluation.
 
         This method is a Newton convenience. Other simulation engines should
-        provide arrays with the same names through their ``sim_control`` and
-        ``sim_state`` adapters instead.
+        provide arrays with the same names through their ``sim_control``
+        adapter instead.
 
         Args:
             builder: Newton model builder on which to register the attributes.
         """
         from ..sim.model import Model  # noqa: PLC0415
 
-        attributes = [
-            (name, Model.AttributeFrequency.JOINT_DOF, Model.AttributeAssignment.CONTROL)
-            for name in self.drive.custom_inputs
-        ]
+        frequencies = dict.fromkeys(self.drive.custom_inputs, Model.AttributeFrequency.JOINT_DOF)
         if self._uses_battery:
-            attributes += [
-                (name, Model.AttributeFrequency.ACTUATOR, Model.AttributeAssignment.STATE)
-                for name in (self.state_supply_voltage_attr, self.state_supply_current_attr)
-            ]
-        for name, frequency, assignment in attributes:
+            frequencies[self.control_supply_voltage_attr] = Model.AttributeFrequency.ACTUATOR
+            frequencies[self.control_supply_current_attr] = Model.AttributeFrequency.ACTUATOR
+        for name, frequency in frequencies.items():
             builder.add_custom_attribute(
                 builder.CustomAttribute(
                     name=name,
                     dtype=wp.float32,
                     frequency=frequency,
-                    assignment=assignment,
+                    assignment=Model.AttributeAssignment.CONTROL,
                     default=0.0,
                 )
             )
@@ -713,17 +707,13 @@ class Actuator:
         frequency = Model.AttributeFrequency
         battery_attrs = (
             [
-                (self.state_supply_voltage_attr, frequency.ACTUATOR),
-                (self.state_supply_current_attr, frequency.ACTUATOR),
+                (self.control_supply_voltage_attr, frequency.ACTUATOR),
+                (self.control_supply_current_attr, frequency.ACTUATOR),
             ]
             if self._uses_battery
             else []
         )
-        state_attrs = [
-            (self.state_pos_attr, frequency.JOINT_COORD),
-            (self.state_vel_attr, frequency.JOINT_DOF),
-            *battery_attrs,
-        ]
+        state_attrs = [(self.state_pos_attr, frequency.JOINT_COORD), (self.state_vel_attr, frequency.JOINT_DOF)]
         control_attrs = [
             (self.control_target_pos_attr, frequency.JOINT_COORD),
             (self.control_target_vel_attr, frequency.JOINT_DOF),
@@ -731,6 +721,7 @@ class Actuator:
             (self.control_output_attr, frequency.JOINT_DOF),
             (self.control_computed_output_attr, frequency.JOINT_DOF),
             *((name, frequency.JOINT_DOF) for name in self.drive.custom_inputs),
+            *battery_attrs,
         ]
         required = {"sim_state": state_attrs, "sim_control": [(a, f) for a, f in control_attrs if a is not None]}
         return {source: dict(attrs) for source, attrs in required.items() if attrs}
@@ -768,10 +759,11 @@ class Actuator:
 
         Args:
             sim_state: Object or mapping carrying the arrays named by
-                :attr:`state_pos_attr` and :attr:`state_vel_attr`, plus the
-                battery arrays of the motor. Build one with :meth:`sim_state`.
+                :attr:`state_pos_attr` and :attr:`state_vel_attr`. Build one
+                with :meth:`sim_state`.
             sim_control: Object or mapping carrying the target and output
-                arrays, plus the drive's custom inputs. Build one
+                arrays, plus the drive's custom inputs and the battery arrays
+                of the motor. Build one
                 with :meth:`sim_control`.
             current_act_state: Current composed state (None if stateless).
             next_act_state: Next composed state (None if stateless).
@@ -854,8 +846,8 @@ class Actuator:
         # --- 2. Supply voltage from the motor ---
         battery_voltage = supply_current = None
         if self._uses_battery:
-            battery_voltage = _require_array(sim_state, self.state_supply_voltage_attr)
-            supply_current = _require_array(sim_state, self.state_supply_current_attr)
+            battery_voltage = _require_array(sim_control, self.control_supply_voltage_attr)
+            supply_current = _require_array(sim_control, self.control_supply_current_attr)
         if self.motor is not None:
             self.motor.compute_supply_voltage(
                 battery_voltage, self.actuator_indices, supply_voltage, device=self.device

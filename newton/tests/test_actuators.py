@@ -702,6 +702,37 @@ class TestDrivePID(unittest.TestCase):
 
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
 
+    def test_integral_gradient_with_fixed_gains(self):
+        """Gains without gradients still pass target gradients through the integral.
+
+        With ``kp = 2``, ``ki = 3``, ``dt = 0.1``, ``q = 0`` and targets 10, 20, 30,
+        the last effort is ``2 * 30 + 0.3 * 60`` = 78; its derivative is
+        ``ki * dt`` = 0.3 for each earlier target and 2.3 for the last.
+        """
+        device = wp.get_device()
+        gains = [wp.full(1, v, dtype=float, device=device) for v in (2.0, 3.0, 0.0, math.inf)]
+        actuator = Actuator(wp.array([0], dtype=wp.uint32, device=device), drive=DrivePID(*gains), requires_grad=True)
+        sim_state = {
+            "joint_q": wp.zeros(1, dtype=float, device=device),
+            "joint_qd": wp.zeros(1, dtype=float, device=device),
+        }
+        targets = [wp.full(1, t, dtype=float, device=device, requires_grad=True) for t in (10.0, 20.0, 30.0)]
+        controls = [
+            {
+                "joint_target_q": t,
+                "joint_target_qd": wp.zeros(1, dtype=float, device=device),
+                "joint_f": wp.zeros(1, dtype=float, device=device, requires_grad=True),
+            }
+            for t in targets
+        ]
+        act_states = [actuator.state() for _ in range(4)]
+        with wp.Tape() as tape:
+            for k, control in enumerate(controls):
+                actuator.step(sim_state, control, act_states[k], act_states[k + 1], dt=0.1)
+        tape.backward(grads={controls[-1]["joint_f"]: wp.ones(1, dtype=float, device=device)})
+        np.testing.assert_allclose(controls[-1]["joint_f"].numpy(), [78.0], rtol=1e-6)
+        np.testing.assert_allclose([t.grad.numpy()[0] for t in targets], [0.3, 0.3, 2.3], rtol=1e-5)
+
 
 def _actuator_dofs(model):
     """Return the DOF of each actuator of *model*, indexed like per-actuator arrays."""
@@ -2742,7 +2773,7 @@ class TestMotorDC(unittest.TestCase):
                             actuator.step(state, control, dt=0.01)
                         np.testing.assert_allclose(control.joint_f.numpy(), [3.0 * expected_duty])
                         np.testing.assert_allclose(control.raw_effort.numpy(), [3.0 * expected_duty])
-                        np.testing.assert_allclose(state.actuator_supply_current.numpy(), [6.0 * expected_duty**2])
+                        np.testing.assert_allclose(control.actuator_supply_current.numpy(), [6.0 * expected_duty**2])
                         tape.backward(grads={control.joint_f: wp.ones_like(control.joint_f)})
                         np.testing.assert_allclose(actuator.drive.kp.grad.numpy(), [0.75 if requested == 0.25 else 0.0])
                         tape.zero()
@@ -2757,8 +2788,8 @@ class TestMotorDC(unittest.TestCase):
         The third effort ``d V_3 = 10 d - 10 d^3 + 10 d^5`` is 4.0625; its
         derivative at ``kp = 1`` is 2.8125, and with respect to ``R`` it is
         ``-d^3 V_2 + R d^5 * 10 = -0.625``. As in ``example_diffsim_drone``,
-        each step gets its own ``Control`` and ``State``; the battery carries
-        the voltage from one ``State`` to the next.
+        each step gets its own ``Control``, and the battery writes the next
+        voltage into the next one.
         """
         for device in get_test_devices():
             with self.subTest(device=device), wp.ScopedDevice(device):
@@ -2774,19 +2805,47 @@ class TestMotorDC(unittest.TestCase):
                 )
                 builder.add_battery(BatteryConstantResistance, [slot], nominal_voltage=10.0, resistance=1.0)
                 model = builder.finalize(device=device, requires_grad=True)
-                actuator = model.actuators[0]
-                states = tuple(model.state() for _ in range(4))
-                controls = tuple(model.control() for _ in range(3))
+                actuator, state = model.actuators[0], model.state()
+                controls = tuple(model.control() for _ in range(4))
                 for control in controls:
                     control.joint_target_q.fill_(0.5)
                 with wp.Tape() as tape:
-                    for k, control in enumerate(controls):
-                        actuator.step(states[k], control, dt=0.01)
-                        model.batteries[0].step(states[k], states[k + 1])
-                tape.backward(grads={controls[-1].joint_f: wp.ones_like(controls[-1].joint_f)})
-                np.testing.assert_allclose(controls[-1].joint_f.numpy(), [4.0625], rtol=1e-6)
+                    for k in range(3):
+                        actuator.step(state, controls[k], dt=0.01)
+                        model.batteries[0].step(controls[k], controls[k + 1])
+                tape.backward(grads={controls[2].joint_f: wp.ones_like(controls[2].joint_f)})
+                np.testing.assert_allclose(controls[2].joint_f.numpy(), [4.0625], rtol=1e-6)
                 np.testing.assert_allclose(actuator.drive.kp.grad.numpy(), [2.8125], rtol=1e-6)
                 np.testing.assert_allclose(model.batteries[0].resistance.grad.numpy(), [-0.625], rtol=1e-6)
+
+    def test_battery_resistance_gradient_with_fixed_nominal_voltage(self):
+        """A differentiable resistance alone keeps each step's current for the backward pass.
+
+        A 10 V battery with ``R = 1`` sees 2 A, then 4 A, so the voltages are
+        ``10 - 2 R`` and ``10 - 4 R``, and their sum has derivative -6 with respect to ``R``.
+        """
+        device = wp.get_device()
+        battery = BatteryConstantResistance(
+            nominal_voltage=wp.full(1, 10.0, dtype=float, device=device),
+            resistance=wp.full(1, 1.0, dtype=float, device=device, requires_grad=True),
+            min_voltage=wp.zeros(1, dtype=float, device=device),
+            actuator_start=wp.array([0, 1], dtype=wp.int32, device=device),
+            actuators=wp.array([0], dtype=wp.int32, device=device),
+        )
+        controls = [
+            {
+                "actuator_supply_current": wp.full(1, current, dtype=float, device=device),
+                "actuator_supply_voltage": wp.zeros(1, dtype=float, device=device, requires_grad=True),
+            }
+            for current in (2.0, 4.0, 0.0)
+        ]
+        with wp.Tape() as tape:
+            for k in range(2):
+                battery.step(controls[k], controls[k + 1])
+        voltages = [c["actuator_supply_voltage"] for c in controls[1:]]
+        tape.backward(grads={v: wp.ones(1, dtype=float, device=device) for v in voltages})
+        np.testing.assert_allclose([v.numpy()[0] for v in voltages], [8.0, 6.0])
+        np.testing.assert_allclose(battery.resistance.grad.numpy(), [-6.0], rtol=1e-6)
 
     def test_compute(self):
         """Construct the motor directly and call compute() from a voltage command.
@@ -2913,22 +2972,22 @@ class TestMotorDC(unittest.TestCase):
                 actuator.step(state, control, dt=dt)
 
             voltage = np.maximum(nominal - battery_resistance * np.maximum(drawn, 0.0), minimum)[battery]
-            np.testing.assert_allclose(state.actuator_supply_voltage.numpy(), voltage, rtol=1e-5)
+            np.testing.assert_allclose(control.actuator_supply_voltage.numpy(), voltage, rtol=1e-5)
             current = (voltage * duty - kt * qd[dof]) / resistance
-            np.testing.assert_allclose(state.actuator_supply_current.numpy(), duty * current, rtol=1e-4)
+            np.testing.assert_allclose(control.actuator_supply_current.numpy(), duty * current, rtol=1e-4)
             applied = np.zeros(model.joint_dof_count)
             np.add.at(applied, dof, kt * current)
             np.testing.assert_allclose(control.joint_f.numpy(), applied, rtol=1e-4)
-            batteries.step(state, state)
+            batteries.step(control)
             drawn = np.bincount(battery, duty * current, minlength=4)
             if step == 0:
                 self.assertTrue(0.0 < drawn[0] < duty[0] * current[0] and drawn[1] < 0.0)
-        self.assertAlmostEqual(state.actuator_supply_voltage.numpy()[3], min_voltage[0], places=5)
+        self.assertAlmostEqual(control.actuator_supply_voltage.numpy()[3], min_voltage[0], places=5)
 
-        batteries.reset(state, world_mask=wp.array([True, False, False], dtype=wp.bool))
+        batteries.reset(control, world_mask=wp.array([True, False, False], dtype=wp.bool))
         dropped = np.maximum(nominal - battery_resistance * np.maximum(drawn, 0.0), minimum)
         np.testing.assert_allclose(
-            state.actuator_supply_voltage.numpy(), np.where(np.arange(4) < 2, nominal, dropped)[battery], rtol=1e-5
+            control.actuator_supply_voltage.numpy(), np.where(np.arange(4) < 2, nominal, dropped)[battery], rtol=1e-5
         )
 
 
@@ -3248,15 +3307,15 @@ class TestClampingCurrentDuty(unittest.TestCase):
                     control.joint_target_q = wp.ones(5, dtype=float)
                     control.joint_target_qd = wp.zeros(5, dtype=float)
                     control.joint_f = wp.zeros(5, dtype=float, requires_grad=True)
-                    state.actuator_supply_voltage = supply
-                    state.actuator_supply_current = wp.zeros(5, dtype=float, requires_grad=True)
+                    control.actuator_supply_voltage = supply
+                    control.actuator_supply_current = wp.zeros(5, dtype=float, requires_grad=True)
                     nominal = mode is source.NOMINAL
                     with wp.Tape() as tape:
                         actuator.step(state, control, dt=0.01)
                     expected = [0.5, 1.0, 0.25, -0.5, -1.25] if nominal else [0.5, 0.5, 0.5, -0.5, -1.25]
                     np.testing.assert_allclose(control.joint_f.numpy(), expected, atol=1e-6)
                     expected_current = [0.2, 0.8, 0.05, 0.0, -2.5] if nominal else [0.2, 0.2, 0.2, 0.0, -2.5]
-                    np.testing.assert_allclose(state.actuator_supply_current.numpy(), expected_current, atol=1e-6)
+                    np.testing.assert_allclose(control.actuator_supply_current.numpy(), expected_current, atol=1e-6)
                     tape.backward(grads={control.joint_f: wp.ones(5, dtype=float)})
                     expected_grad = [0.05, 0.1, 0.025, 0.25] if nominal else [0.0, 0.0, 0.0, 0.25]
                     np.testing.assert_allclose(supply.grad.numpy()[[0, 1, 2, 4]], expected_grad, atol=1e-6)
@@ -5632,7 +5691,7 @@ class TestActuatorBuilder(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.replicate(template, 3)
         model = builder.finalize()
-        state, control = model.state(), model.control()
+        control = model.control()
         actuator = newton.Model.AttributeFrequency.ACTUATOR
 
         self.assertEqual(model.actuator_count, 6)
@@ -5641,18 +5700,19 @@ class TestActuatorBuilder(unittest.TestCase):
         np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 1, 2, 3])
         np.testing.assert_array_equal(batteries.actuators.numpy(), [1, 3, 5])
         np.testing.assert_array_equal(batteries.world.numpy(), [0, 1, 2])
-        for name in ("actuator_supply_current", "actuator_supply_voltage"):
-            self.assertEqual(model.get_attribute_frequency(name), actuator)
-            self.assertEqual(getattr(state, name).shape, (6,))
-            self.assertFalse(hasattr(control, name))
-        self.assertEqual(control.get_attribute_frequency("joint_target_q"), newton.Model.AttributeFrequency.JOINT_COORD)
+        for name, frequency in {
+            "actuator_supply_current": actuator,
+            "actuator_supply_voltage": actuator,
+            "joint_target_q": newton.Model.AttributeFrequency.JOINT_COORD,
+        }.items():
+            self.assertEqual(control.get_attribute_frequency(name), frequency)
         motor = next(a for a in model.actuators if a.motor is not None)
         sim_state, sim_control = motor.sim_state(), motor.sim_control()
         for source, name, frequency in (
             (sim_state, "joint_q", newton.Model.AttributeFrequency.JOINT_COORD),
             (sim_control, "joint_f", newton.Model.AttributeFrequency.JOINT_DOF),
-            (sim_state, "actuator_supply_voltage", actuator),
-            (sim_state, "actuator_supply_current", actuator),
+            (sim_control, "actuator_supply_voltage", actuator),
+            (sim_control, "actuator_supply_current", actuator),
         ):
             self.assertEqual(source.get_attribute_frequency(name), frequency)
         for source, name in ((control, "kp"), (sim_control, "kp")):
@@ -5732,7 +5792,7 @@ class TestActuatorBuilder(unittest.TestCase):
             expected = 0.6 * supply * duty / 2.0
             np.testing.assert_allclose(control.joint_f.numpy()[dof], expected, rtol=1e-5, err_msg=f"step {step}")
 
-            batteries.step(state, state)
+            batteries.step(control)
             drawn = (duty * supply * duty / 2.0).reshape(2, 3)[:, :2].sum(axis=1)
             supply = np.ravel([[6.0 - 0.5 * max(i, 0.0)] * 2 + [5.0] for i in drawn])
 

@@ -142,28 +142,34 @@ class BatteryConstantResistance(BatteryBase):
         self.min_voltage = min_voltage
         """Lowest voltage under load [V], shape (B,)."""
         self._current = wp.zeros(
-            self.num_batteries, dtype=float, device=self.device, requires_grad=nominal_voltage.requires_grad
+            self.num_batteries,
+            dtype=float,
+            device=self.device,
+            requires_grad=nominal_voltage.requires_grad or resistance.requires_grad or min_voltage.requires_grad,
         )
         for name in ("nominal_voltage", "resistance", "min_voltage"):
             shape = getattr(self, name).shape
             if shape != (self.num_batteries,):
                 raise ValueError(f"{name} shape {shape} must be ({self.num_batteries},)")
 
-    def step(self, state_in: Any, state_out: Any) -> None:
+    def step(self, sim_control: Any, next_control: Any | None = None) -> None:
         """Drop each battery's voltage with the current of its actuators.
 
         Raises:
-            AttributeError: *state_in* has no ``actuator_supply_current``, or
-                *state_out* no ``actuator_supply_voltage``.
+            AttributeError: *sim_control* has no ``actuator_supply_current``,
+                or the written control no ``actuator_supply_voltage``.
             ValueError: One of these arrays is ``None``.
 
         See :meth:`BatteryBase.step` for the arguments.
         """
-        if self._current.requires_grad:
-            current = wp.zeros_like(self._current)
+        actuator_current = _require_array(sim_control, "actuator_supply_current")
+        if self._current.requires_grad or actuator_current.requires_grad:
+            current = wp.zeros_like(self._current, requires_grad=True)
         else:
             current = self._current
             current.zero_()
+        if next_control is None:
+            next_control = sim_control
         wp.launch(
             _battery_update_kernel,
             dim=self.num_batteries,
@@ -173,17 +179,17 @@ class BatteryConstantResistance(BatteryBase):
                 self.nominal_voltage,
                 self.resistance,
                 self.min_voltage,
-                _require_array(state_in, "actuator_supply_current"),
+                actuator_current,
             ],
-            outputs=[current, _require_array(state_out, "actuator_supply_voltage")],
+            outputs=[current, _require_array(next_control, "actuator_supply_voltage")],
             device=self.device,
         )
 
-    def reset(self, state: Any, *, world_mask: wp.array[wp.bool] | None = None) -> None:
+    def reset(self, sim_control: Any, *, world_mask: wp.array[wp.bool] | None = None) -> None:
         """Restore the nominal voltage of the reset batteries.
 
         Raises:
-            AttributeError: *state* has no ``actuator_supply_voltage``.
+            AttributeError: *sim_control* has no ``actuator_supply_voltage``.
             ValueError: ``actuator_supply_voltage`` is ``None``, or
                 *world_mask* does not have shape ``(world_count + 1,)``.
 
@@ -201,6 +207,6 @@ class BatteryConstantResistance(BatteryBase):
                 self.nominal_voltage,
                 world_mask,
             ],
-            outputs=[_require_array(state, "actuator_supply_voltage")],
+            outputs=[_require_array(sim_control, "actuator_supply_voltage")],
             device=self.device,
         )

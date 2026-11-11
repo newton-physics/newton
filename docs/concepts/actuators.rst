@@ -720,19 +720,18 @@ pass.  Neural-network drives support one step per tape.
 .. code-block:: python
 
    states = [model.state() for _ in range(num_steps + 1)]
-   controls = [model.control() for _ in range(num_steps)]
+   controls = [model.control() for _ in range(num_steps + 1)]
    act_states = [actuator.state() for _ in range(num_steps + 1)]
    with wp.Tape() as tape:
        for k in range(num_steps):
            actuator.step(states[k], controls[k], act_states[k], act_states[k + 1], dt=dt)
-           model.batteries[0].step(states[k], states[k + 1])
+           for battery in model.batteries:
+               battery.step(controls[k], controls[k + 1])
            solver.step(states[k], states[k + 1], controls[k], None, dt)
 
 Each step then allocates fresh intermediate buffers, so capturing such steps in
 a CUDA graph needs Warp's memory pool; :meth:`Actuator.is_graphable` returns
-``False`` otherwise.  Drives and batteries created directly, outside
-:meth:`ModelBuilder.finalize <newton.ModelBuilder.finalize>`, track gradients
-only when their parameter arrays do.
+``False`` otherwise.
 
 :meth:`Actuator.is_graphable` describes the components, not the captured region.
 A stateful actuator also needs the region's state exchange to be graph-safe.  See
@@ -826,16 +825,15 @@ A battery powers the motors of one or more actuators.  Battery models subclass
 :class:`BatteryBase`.  See the individual battery class documentation for the
 model equations.
 
-A battery reads one array and writes one array on ``State``, each with one
+A battery reads one array and writes one array on ``control``, each with one
 entry per actuator of the model
-(:attr:`Model.AttributeFrequency.ACTUATOR <newton.Model.AttributeFrequency.ACTUATOR>`).
-Like the joint positions, the voltage is carried from ``state_in`` to
-``state_out``:
+(:attr:`Model.AttributeFrequency.ACTUATOR <newton.Model.AttributeFrequency.ACTUATOR>`):
 
-* input ``state_in.actuator_supply_current``: the current each motor draws
+* input ``control.actuator_supply_current``: the current each motor draws
   from its battery, written by the motor in :meth:`Actuator.step`;
-* output ``state_out.actuator_supply_voltage``: the supply voltage of each
-  motor, read by the motor in the next :meth:`Actuator.step`.
+* output ``control.actuator_supply_voltage``: the supply voltage of each
+  motor, read by the motor in the next :meth:`Actuator.step`.  With one
+  ``Control`` per step, :meth:`BatteryBase.step` writes it to the next one.
 
 To set up and run batteries:
 
@@ -898,7 +896,7 @@ Below, the hip and knee share one battery and the ankle draws from another:
        for actuator in model.actuators:
            actuator.step(state_0, control, dt=dt)
        for battery in model.batteries:
-           battery.step(state_0, state_1)
+           battery.step(control)
        solver.step(state_0, state_1, control, None, dt)
        state_0, state_1 = state_1, state_0
 
