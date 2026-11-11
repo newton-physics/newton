@@ -635,9 +635,13 @@ class RenderContext:
             key_config = replace(config, block_dim=0)
             render_kernel = self._kernel_cache.get((key_config, self._render_state, clear_data))
             if render_kernel is None:
-                render_kernel = create_kernel(config, self._render_state, clear_data, self._optix)
+                # Factories capture these values in wp.static expressions. Keep
+                # them stable when another camera recompiles a shared Warp module.
+                render_kernel = create_kernel(
+                    replace(config), replace(self._render_state), replace(clear_data), self._optix
+                )
                 if self._optix is not None:
-                    render_kernel = self._optix.pipeline(render_kernel, config)
+                    render_kernel = self._optix.pipeline(render_kernel, replace(config))
                 self._kernel_cache[(key_config, replace(self._render_state), replace(clear_data))] = render_kernel
 
             particle_count = state.particle_q.shape[0] if has_particles else 0

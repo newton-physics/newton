@@ -79,6 +79,31 @@ class TestSensorCameraOptix(unittest.TestCase):
             outputs[0]["depth_image"].numpy(), outputs[1]["depth_image"].numpy(), atol=3e-4, rtol=1e-4
         )
 
+    def test_output_variants_across_cameras(self):
+        """Keep compiled output variants independent of later camera-state changes."""
+        builder = newton.ModelBuilder()
+        builder.add_shape_sphere(-1, xform=wp.transform(wp.vec3(0.0, 0.0, -2.0), wp.quat_identity()), radius=0.5)
+        model = builder.finalize(device="cuda:0")
+        state = model.state()
+        rays = SensorCamera.compute_camera_rays_pinhole(4, 4, camera_fov=0.2, device=model.device)
+        poses = wp.array([wp.transform_identity()], dtype=wp.transform, device=model.device)
+        for _ in range(2):
+            camera = SensorCamera(model, backend=SensorCamera.Backend.OPTIX)
+            depth = camera.allocate_image_depth(1, 4, 4)
+            color = camera.allocate_image_color(1, 4, 4)
+            for render_color, render_depth in ((True, True), (True, False), (False, True)):
+                camera.update(
+                    state,
+                    poses,
+                    rays,
+                    depth_image=depth if render_depth else None,
+                    color_image=color if render_color else None,
+                )
+                if render_depth:
+                    self.assertTrue(np.all(depth.numpy() > 0.0))
+                if render_color:
+                    self.assertTrue(np.all(color.numpy() != 0))
+
     def test_reject_particles_and_deformable_surface(self):
         """Reject unsupported geometry before attempting to compile an OptiX pipeline."""
         builder = newton.ModelBuilder()
