@@ -37,6 +37,7 @@ from newton.tests.steel._fixtures import (
     _reset_state,
     _shape_cfg,
     _sphere_inertia,
+    printf_capture_is_reliable,
     set_torsion_radius,
 )
 from newton.tests.unittest_utils import (
@@ -571,7 +572,7 @@ def test_shared_anchors_warn_with_patch_friction(test, device):
     """Explain that patch anchors keep their friction points when shared anchors are requested."""
     model = _free_body_model(device)
     for flag in ("contact_shared_anchor", "contact_friction_shared_anchor"):
-        with test.subTest(flag=flag), test.assertWarnsRegex(newton.exceptions.NewtonWarning, "friction_anchor_beta=0"):
+        with test.subTest(flag=flag), test.assertWarnsRegex(newton.NewtonWarning, "friction_anchor_beta=0"):
             SolverSteel(model, **{flag: True})
         solver = SolverSteel(model, friction_anchor_beta=0.0, **{flag: True})
         test.assertTrue(getattr(solver, flag))
@@ -839,16 +840,19 @@ def test_overflow_warning_enabled_after_construction_latches(test, device):
     test.assertTrue(solver.constraint_overflow.numpy().any())
     test.assertEqual(solver._row_overflow_warning_emitted.numpy().tolist(), [0, 0, 0, 0, 0])
     solver.warn_constraint_overflow = True
+    check_output = printf_capture_is_reliable()
     capture = StdOutCapture()
-    capture.begin()
+    if check_output:
+        capture.begin()
     try:
         solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
     finally:
         try:
             wp.synchronize()
         finally:
-            printed = capture.end()
-    test.assertRegex(printed, "constraint-row overflow")
+            printed = capture.end() if check_output else ""
+    if check_output:
+        test.assertRegex(printed, "constraint-row overflow")
     test.assertEqual(int(solver._row_overflow_warning_emitted.numpy()[0]), 1)
     test.assertTrue(np.isfinite(output.joint_q.numpy()).all())
 
@@ -1377,19 +1381,25 @@ def test_contact_f_reports_each_box_weight(test, device, steps=150, torsion_radi
     observables.contact_f.fill_(wp.spatial_vector(FILL, FILL, FILL, FILL, FILL, FILL))
     states = [model.state(), model.state()]
     control = model.control()
-    for _ in range(steps):
+    row_overflow = options.get("free_body_constraint_max") is not None
+    for step in range(steps):
         pipeline.collide(states[0], contacts)
         solver.step(states[0], states[1], control, contacts, DT, observables=observables)
         states.reverse()
+        if row_overflow and step == min(10, steps) - 1:
+            # Check dropped rows before the unsupported boxes leave the ground.
+            contact_f = observables.contact_f.numpy()
+            _check_rows(test, contacts, contact_f)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            dropped = solver._contact_slot.numpy()[:count] < 0
+            test.assertTrue(dropped.any())
+            np.testing.assert_array_equal(contact_f[:count][dropped], 0.0)
     contact_f = observables.contact_f.numpy()
-    _check_rows(test, contacts, contact_f)
-    if options.get("free_body_constraint_max") is not None:
-        # Rows beyond the capacity were dropped; those contacts report zero.
-        count = int(contacts.rigid_contact_count.numpy()[0])
-        dropped = solver._contact_slot.numpy()[:count] < 0
-        test.assertTrue(dropped.any())
-        np.testing.assert_array_equal(contact_f[:count][dropped], 0.0)
+    if row_overflow and int(contacts.rigid_contact_count.numpy()[0]) == 0:
+        np.testing.assert_array_equal(contact_f, 0.0)
     else:
+        _check_rows(test, contacts, contact_f)
+    if not row_overflow:
         weight = np.linalg.norm(model.gravity.numpy()[0])
         net = _net_body_forces(model, contacts, contact_f)
         np.testing.assert_allclose(net[0], [0.0, 0.0, LOWER_MASS * weight], atol=0.03 * LOWER_MASS * weight)
