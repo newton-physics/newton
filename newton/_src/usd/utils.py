@@ -29,7 +29,7 @@ from ..utils.import_usd_deformable_utils import (
     _prim_has_collision_api,
     _warn_geometry_authored_material_attrs,
 )
-from ..utils.texture import linear_texture_to_srgb, load_texture
+from ..utils.texture import _linear_to_srgb, linear_texture_to_srgb, load_texture
 from ._mesh_loading import (  # noqa: F401
     _get_mesh_from_source,
     corner_angles,
@@ -1973,17 +1973,18 @@ def _resolve_color_space(name: str, default: ColorSpace, what: str, path: Any) -
 
 
 def _color_to_display_space(
-    color: tuple[float, float, float],
+    color: tuple[float, float, float] | np.ndarray,
     attr: Usd.Attribute | None,
-) -> tuple[float, float, float]:
-    """Normalize a USD scalar color to Newton's display/sRGB model color space."""
-    if attr is None:
-        return color_linear_to_srgb(color)
-    # Untagged scalar colors follow USD Preview Surface and are linear.
-    color_space = _resolve_color_space(_get_attribute_color_space(attr), ColorSpace.LINEAR, "Color", attr.GetPath())
-    if color_space == ColorSpace.LINEAR:
-        return color_linear_to_srgb(color)
-    return color
+) -> tuple[float, float, float] | np.ndarray:
+    """Normalize a USD color, or an ``(N, 3)`` array of colors, to Newton's display/sRGB model color space."""
+    if attr is not None:
+        # Untagged colors follow USD Preview Surface and are linear.
+        color_space = _resolve_color_space(_get_attribute_color_space(attr), ColorSpace.LINEAR, "Color", attr.GetPath())
+        if color_space != ColorSpace.LINEAR:
+            return color
+    if np.ndim(color) == 2:
+        return _linear_to_srgb(np.asarray(color))
+    return color_linear_to_srgb(color)
 
 
 def _resolve_color_texture_asset(
@@ -2175,10 +2176,64 @@ def _coerce_color_opacity(value: Any, attr: Usd.Attribute | None) -> float | Non
     return _coerce_opacity(value_np[3], attr)
 
 
+def _uniform_primvar_face_values(primvar: UsdGeom.Primvar, face_count: int | None) -> tuple[np.ndarray | None, Any]:
+    """Return a ``uniform`` primvar's per-face values, or its first flattened value after a logged length mismatch.
+
+    The values are None unless the primvar holds exactly one value per face; the fallback is a one-element list.
+    """
+    if face_count is None or primvar.GetInterpolation() != UsdGeom.Tokens.uniform:
+        return None, None
+    if not primvar.GetTypeName().isArray:
+        return None, None
+    values = primvar.ComputeFlattened()
+    if values is None or len(values) == 0:
+        return None, None
+    if len(values) != face_count:
+        _warn_imported_value(
+            primvar.GetAttr(),
+            "uniform primvar length %d does not match %d faces; using the first value.",
+            len(values),
+            face_count,
+        )
+        return None, [values[0]]
+    try:
+        return np.asarray(values, dtype=np.float64).reshape(face_count, -1), None
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _coerce_face_values(values: np.ndarray, attr: Usd.Attribute, what: str) -> np.ndarray | None:
+    """Clamp per-face values read from ``attr`` to [0, 1]; faces with a non-finite value become NaN.
+
+    Returns None if every face is non-finite.
+    """
+    finite = np.all(np.isfinite(values), axis=1)
+    if not np.any(finite):
+        _warn_imported_value(attr, "ignoring imported face %s: all %d are non-finite.", what, len(values))
+        return None
+    if not np.all(finite):
+        _warn_imported_value(
+            attr,
+            "ignoring imported face %s: %d of %d are non-finite; those faces use the default.",
+            what,
+            int(np.count_nonzero(~finite)),
+            len(values),
+        )
+    clamped = np.clip(values, 0.0, 1.0)
+    clamped[~finite] = np.nan
+    clamped_count = int(np.count_nonzero(finite & np.any(clamped != values, axis=1)))
+    if clamped_count:
+        _warn_imported_value(attr, "clamping %d of %d imported face %s to [0, 1].", clamped_count, len(values), what)
+    return clamped
+
+
 def _extract_display_primvar_properties(
-    prim: Usd.Prim, *, read_color: bool = True, read_opacity: bool = True
+    prim: Usd.Prim, *, read_color: bool = True, read_opacity: bool = True, face_count: int | None = None
 ) -> dict[str, Any]:
-    """Extract displayColor/displayOpacity primvars from a prim, skipping those not requested."""
+    """Extract displayColor/displayOpacity primvars from a prim, skipping those not requested.
+
+    With ``face_count``, a ``uniform`` primvar holding one value per face is returned as a per-face array.
+    """
     properties = _empty_material_properties()
     if UsdGeom is None or not prim or not prim.IsValid():
         return properties
@@ -2187,17 +2242,30 @@ def _extract_display_primvar_properties(
     if read_color:
         display_color = primvars_api.FindPrimvarWithInheritance("displayColor")
         if display_color:
-            color_value = display_color.Get()
-            color = _coerce_color(color_value, display_color.GetAttr())
-            if color is not None:
-                properties["color"] = _color_to_display_space(color, display_color.GetAttr())
+            face_colors, mismatch_value = _uniform_primvar_face_values(display_color, face_count)
+            if face_colors is not None and face_colors.shape[1] >= 3:
+                colors = _coerce_face_values(face_colors[:, :3], display_color.GetAttr(), "colors")
+                if colors is not None:
+                    properties["color"] = _color_to_display_space(colors, display_color.GetAttr())
+            else:
+                value = display_color.Get() if mismatch_value is None else mismatch_value
+                color = _coerce_color(value, display_color.GetAttr())
+                if color is not None:
+                    properties["color"] = _color_to_display_space(color, display_color.GetAttr())
 
     if read_opacity:
         display_opacity = primvars_api.FindPrimvarWithInheritance("displayOpacity")
         if display_opacity:
-            opacity = _coerce_opacity(display_opacity.Get(), display_opacity.GetAttr(), warn_on_multiple=True)
-            if opacity is not None:
-                properties["opacity"] = opacity
+            face_opacities, mismatch_value = _uniform_primvar_face_values(display_opacity, face_count)
+            if face_opacities is not None:
+                opacities = _coerce_face_values(face_opacities[:, :1], display_opacity.GetAttr(), "opacities")
+                if opacities is not None:
+                    properties["opacity"] = opacities[:, 0]
+            else:
+                value = display_opacity.Get() if mismatch_value is None else mismatch_value
+                opacity = _coerce_opacity(value, display_opacity.GetAttr(), warn_on_multiple=mismatch_value is None)
+                if opacity is not None:
+                    properties["opacity"] = opacity
 
         if properties["opacity"] is None:
             attr = prim.GetAttribute("displayOpacity")
@@ -2577,7 +2645,7 @@ def _get_bound_material(target_prim: Usd.Prim) -> UsdShade.Material | None:
     return bound_material if bound_material else None
 
 
-def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] | None:
+def _resolve_prim_material_properties(target_prim: Usd.Prim, *, face_count: int | None = None) -> dict[str, Any] | None:
     """Resolve material properties from a prim's bound material.
 
     Returns None if no material is bound or no properties could be extracted.
@@ -2623,7 +2691,7 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
     need_opacity = properties["opacity"] is None
     if need_color or need_opacity:
         display_props = _extract_display_primvar_properties(
-            target_prim, read_color=need_color, read_opacity=need_opacity
+            target_prim, read_color=need_color, read_opacity=need_opacity, face_count=face_count
         )
         if display_props.get("color") is not None:
             properties["color"] = display_props["color"]
@@ -2633,22 +2701,29 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
     return properties
 
 
-def resolve_material_properties_for_prim(prim: Usd.Prim, *, include_subsets: bool = True) -> dict[str, Any]:
+def resolve_material_properties_for_prim(
+    prim: Usd.Prim, *, include_subsets: bool = True, face_count: int | None = None
+) -> dict[str, Any]:
     """Resolve surface material properties bound to a prim.
 
     Args:
         prim: The prim whose bound material should be inspected.
         include_subsets: If ``False``, a mesh without its own material skips the
             ``GeomSubset`` fallback and uses its display primvars.
+        face_count: Number of authored faces of the prim. If given, a ``uniform``
+            ``displayColor`` or ``displayOpacity`` with one value per face is returned
+            as a per-face array of shape ``(face_count, 3)`` or ``(face_count,)``, with
+            NaN for faces whose authored value is non-finite.
 
     Returns:
-        Dictionary with scalar surface properties (including opacity), texture
-        data, and a standard texture-coordinate transform.
+        Dictionary with surface properties (including opacity), texture data, and a
+        standard texture-coordinate transform. Color and opacity are scalars unless
+        ``face_count`` selects per-face display primvars.
     """
     if not prim or not prim.IsValid():
         return _empty_material_properties()
 
-    properties = _resolve_prim_material_properties(prim)
+    properties = _resolve_prim_material_properties(prim, face_count=face_count)
     if properties is not None:
         return properties
 
@@ -2661,7 +2736,7 @@ def resolve_material_properties_for_prim(prim: Usd.Prim, *, include_subsets: boo
     except Exception:
         proto_prim = None
     if proto_prim and proto_prim.IsValid():
-        properties = _resolve_prim_material_properties(proto_prim)
+        properties = _resolve_prim_material_properties(proto_prim, face_count=face_count)
         if properties is not None:
             return properties
 
@@ -2693,7 +2768,7 @@ def resolve_material_properties_for_prim(prim: Usd.Prim, *, include_subsets: boo
             if fallback_props is not None:
                 return fallback_props
 
-    display_props = _extract_display_primvar_properties(prim)
+    display_props = _extract_display_primvar_properties(prim, face_count=face_count)
     if display_props.get("color") is not None or display_props.get("opacity") is not None:
         return display_props
 
