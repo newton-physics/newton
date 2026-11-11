@@ -1387,7 +1387,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         dense Delassus solve was removed, runs ``"serial"``; and
         ``articulated_contact_response="propagation_colored"`` maps to
         ``solve_mode="colored"`` with ``"propagation"``. Each emits a
-        :class:`~newton.exceptions.NewtonDeprecationWarning`.
+        :class:`~newton.NewtonDeprecationWarning`.
 
     Like :class:`~newton.solvers.SolverFeatherstone`, the solver uses
     :attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd` as its state and
@@ -1917,7 +1917,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 .. deprecated:: 1.8
                     ``"matrix_free"`` maps to ``"serial"``, and ``"split"``, whose dense Delassus
                     solve was removed, runs ``"serial"``; each emits a
-                    :class:`~newton.exceptions.NewtonDeprecationWarning`.
+                    :class:`~newton.NewtonDeprecationWarning`.
             iterations: Number of projected Gauss-Seidel iterations per step.
             baumgarte: Baumgarte position-correction factor of contact and joint-limit rows,
                 as a fraction of the position error removed per step.
@@ -2017,7 +2017,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             warn_constraint_overflow: Print a device-side warning the first time a world
                 exceeds a row capacity. The warning does not synchronize the host and is
                 compatible with CUDA graph capture. The host contact torsion preparation
-                emits its overflow warning as a :class:`~newton.exceptions.NewtonWarning`
+                emits its overflow warning as a :class:`~newton.NewtonWarning`
                 through :mod:`warnings` instead.
             row_watermark: Accumulate the high-water marks of the per-world row counts of
                 every row family and of the contact count on the device in every step,
@@ -2372,7 +2372,7 @@ class SolverSteel(SolverBase, CouplingInterface):
 
                 .. deprecated:: 1.8
                     ``"propagation_colored"`` maps to ``solve_mode="colored"`` with
-                    ``"propagation"`` and emits a :class:`~newton.exceptions.NewtonDeprecationWarning`.
+                    ``"propagation"`` and emits a :class:`~newton.NewtonDeprecationWarning`.
             propagation_same_articulation_rows: Solve contacts between two links of the same
                 articulation as propagation rows, with the exact cross response of the two
                 links, instead of dense rows. Requires
@@ -2415,7 +2415,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 seed walks a world's rows serially, so its cost grows with the contact rows in one world;
                 ``solve_mode="colored"`` regroups a world's contact rows by color, an order fixed by the
                 contact set. ``GPU_TO_GPU`` is not supported: passing it raises :class:`ValueError`, and an
-                inherited one emits a :class:`~newton.exceptions.NewtonWarning` and runs ``RUN_TO_RUN``.
+                inherited one emits a :class:`~newton.NewtonWarning` and runs ``RUN_TO_RUN``.
                 :attr:`deterministic` reports the mode that runs, after any fallback.
                 ``BODY_PARENT_F`` sums contact wrenches with atomics, so it is outside this guarantee.
                 Steel's kernel modules always opt out of Warp's ``deterministic`` module option, so a

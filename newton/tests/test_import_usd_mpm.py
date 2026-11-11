@@ -10,7 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.exceptions import NewtonDeprecationWarning
+from newton import NewtonDeprecationWarning
 from newton.solvers import SolverImplicitMPM
 from newton.tests.unittest_utils import USD_AVAILABLE
 

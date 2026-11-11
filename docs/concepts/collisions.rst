@@ -2927,7 +2927,7 @@ and ownership requires internal data without a stable public accessor. Use
    The ``Model.mesh_edge_indices``, ``Model.mesh_edge_centers``,
    ``Model.mesh_edge_halves``, and ``Model.shape_edge_range`` aliases expose
    internal collision acceleration data. They remain readable and writable with
-   :class:`~newton.exceptions.NewtonDeprecationWarning` through Newton 1.8 and
+   :class:`~newton.NewtonDeprecationWarning` through Newton 1.8 and
    will be removed in 1.9. Use :class:`~newton.CollisionPipeline` instead.
 
 .. code-block:: python
