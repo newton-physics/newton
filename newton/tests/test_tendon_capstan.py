@@ -17,7 +17,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton import Axis, TendonGuideFlags, TendonGuideType
+from newton import Axis, NewtonWarning, TendonGuideFlags, TendonGuideType
 from newton._src.solvers.tendon_kernels import (
     _tendon_segment_attachment_points,
     tangent_point_circle,
@@ -28,7 +28,6 @@ from newton._src.solvers.xpbd.tendon_kernels import solve_tendon_slip, solve_ten
 from newton.examples.tendon.example_tendon_capstan_friction import Example as CapstanFrictionExample
 from newton.examples.tendon.example_tendon_mujoco_switch import Example as MujocoSwitchExample
 from newton.examples.tendon.utils import get_tendon_total_lengths
-from newton.exceptions import NewtonWarning
 from newton.tests.unittest_utils import StdOutCapture, sanitize_identifier
 
 
