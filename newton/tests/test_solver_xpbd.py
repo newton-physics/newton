@@ -1736,10 +1736,10 @@ def test_xpbd_contact_force_zero_when_no_contact(test, device):
     collision_pipeline.collide(state_in, contacts)
     solver.step(state_in, state_out, control, contacts, dt, observables=observables)
 
-    ncontacts = int(contacts.rigid_contact_count.numpy()[0])
-    if ncontacts > 0:
-        forces = observables.contact_f.numpy()[:ncontacts]
-        np.testing.assert_allclose(forces, 0.0, atol=1e-6, err_msg="No contact force expected in free-fall")
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+    np.testing.assert_allclose(
+        observables.contact_f.numpy(), 0.0, atol=1e-6, err_msg="No contact force expected in free-fall"
+    )
 
 
 def test_xpbd_contact_force_zero_when_not_touching(test, device):

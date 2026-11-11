@@ -113,9 +113,8 @@ class TestSchemaResolver(unittest.TestCase):
         Test PhysX joint armature attribute resolution and priority handling.
 
         Verifies that PhysX joint armature values (0.02) are correctly resolved from ant_mixed.usda
-        when PhysX has priority over Newton. Also confirms that when only Newton/MuJoCo plugins
-        are used (without PhysX), correct armature values are still found, demonstrating
-        fallback behavior.
+        when PhysX has priority over Newton. Also confirms that the Newton resolver alone
+        does not pick up the PhysX-authored values.
         """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -133,7 +132,8 @@ class TestSchemaResolver(unittest.TestCase):
             armature = builder.joint_armature[i]
             if armature > 0:
                 armature_values_found.append(armature)
-        for _i, armature in enumerate(armature_values_found):
+        self.assertEqual(len(armature_values_found), 8)
+        for armature in armature_values_found:
             self.assertAlmostEqual(armature, 0.02, places=3)
 
         builder = ModelBuilder()
@@ -147,8 +147,7 @@ class TestSchemaResolver(unittest.TestCase):
             armature = builder.joint_armature[i]
             if armature > 0:
                 armature_values_found.append(armature)
-        for _i, armature in enumerate(armature_values_found):
-            self.assertAlmostEqual(armature, 0.01, places=3)
+        self.assertEqual(armature_values_found, [])
 
     def test_physx_joint_velocity_limit(self):
         """
@@ -814,9 +813,9 @@ class TestSchemaResolver(unittest.TestCase):
         )  # Has physxJoint:armature but no newton:armature
         scene_prim = stage.GetPrimAtPath("/physicsScene")  # For testing scene attributes
 
-        self.assertIsNotNone(joint_with_physx_armature)
-        self.assertIsNotNone(joint_without_armature)
-        self.assertIsNotNone(scene_prim)
+        self.assertTrue(joint_with_physx_armature.IsValid())
+        self.assertTrue(joint_without_armature.IsValid())
+        self.assertTrue(scene_prim.IsValid())
 
         resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
 
