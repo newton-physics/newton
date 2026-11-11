@@ -1797,8 +1797,9 @@ class CollisionPipeline:
                 between the previous and current contact midpoints
                 ``0.5 * (world(point0) + world(point1))``.  Contacts whose
                 midpoint moves more than this are considered broken. In sticky mode,
-                keep fresh geometry when either saved witness moves farther than this
-                from its fresh contact point under the current body transforms.
+                instead compare each saved body-local witness, transformed by the
+                current body pose, with its fresh contact point. The contact is
+                broken if either witness moves farther than this distance.
                 Defaults to ``0.0005``.
             contact_matching_normal_dot_threshold: Minimum dot product between
                 old and new contact normals for a match.
