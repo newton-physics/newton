@@ -464,10 +464,10 @@ def test_solver_flags_track_runtime_model_changes(test, device):
                 if current in graphs:
                     wp.capture_launch(graphs[current])
                 else:
-                    current._to_internal_state(state_0)
+                    current._to_internal_state(state_0, 0.01)
                     if wp.get_device(device).is_cuda:
                         with wp.ScopedCapture(device=device) as capture:
-                            current._to_internal_state(state_0)
+                            current._to_internal_state(state_0, 0.01)
                         graphs[current] = capture.graph
                 expected = np.concatenate(
                     (
@@ -519,6 +519,233 @@ def _advance_affine_coordinates(x: wp.array[wp.vec3], x_inertia: wp.array[wp.vec
     x[coordinate] = x_inertia[coordinate]
 
 
+def test_affine_body_linear_system(test, device):
+    """Solve full affine inertia with matrix-free mass coupling and cloth contact products."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -2.0))
+    newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+    newton.solvers.style3d.add_cloth_grid(
+        builder,
+        pos=(0.0, 0.0, 3.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+    )
+    moment = np.array([[0.12, 0.02, -0.01], [0.02, 0.3, 0.025], [-0.01, 0.025, 0.6]])
+    builder.begin_world(gravity=(1.0, -2.0, 0.5))
+    for body in range(3):
+        builder.add_link(
+            xform=wp.transform(
+                wp.vec3(0.4 * body, -0.2, 1.0),
+                wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.7),
+            ),
+            com=wp.vec3(0.2, -0.4, 0.1),
+            mass=2.0 if body < 2 else 0.0,
+            inertia=wp.mat33(np.trace(moment) * np.eye(3) - moment) if body < 2 else wp.mat33(0.0),
+            is_kinematic=body == 1,
+        )
+        if body < 2:
+            builder.body_qd[body] = wp.spatial_vector(0.3, -0.1, 0.2, 0.4, -0.7, 1.2)
+    builder.end_world()
+    model = builder.finalize(device=device)
+    contacts = newton.CollisionPipeline(model).contacts()
+    control = model.control()
+    rigid_solver = newton.solvers.SolverBase(model)
+    initial_inertia = model.body_inertia.numpy().copy()
+    initial_inv_inertia = model.body_inv_inertia.numpy().copy()
+    initial_flags = model.body_flags.numpy().copy()
+    forces = np.zeros((3, 6), dtype=np.float32)
+    forces[:2] = (0.7, -0.3, 0.5, -0.2, 0.4, 0.3)
+
+    # The second mode also exercises the contact Hessian callback on the shared system.
+    for dynamics in (newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY, newton.solvers.SolverStyle3D.Dynamics.ALL):
+        with test.subTest(dynamics=dynamics):
+            model.body_mass.assign(np.array([2.0, 2.0, 0.0], dtype=np.float32))
+            model.body_inv_mass.assign(np.array([0.5, 0.5, 0.0], dtype=np.float32))
+            model.body_inertia.assign(initial_inertia)
+            model.body_inv_inertia.assign(initial_inv_inertia)
+            model.body_flags.assign(initial_flags)
+            config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0)
+            solver = newton.solvers.SolverStyle3D(model, config=config, dynamics=dynamics)
+            state_in, state_out, state_ref = model.state(), model.state(), model.state()
+            state_in.body_f.assign(forces)
+            offset = solver._particle_count
+            test.assertEqual(len(solver._matrix_free_Ax), solver._dof_block_count)
+            if offset:
+                test.assertEqual(len(solver.collision.contact_hessian_diagonal()), offset)
+            counts = solver._pd_off_diag.num_nz.numpy().copy()
+            np.testing.assert_array_equal(counts[offset:], 0)
+            columns = solver._pd_off_diag.nz_ell.numpy()["column_index"].copy()
+            cloth_values = solver._pd_off_diag.nz_ell.numpy()["value"][:, :offset].copy()
+            probe = np.random.default_rng(123).standard_normal((solver._dof_block_count, 3)).astype(np.float32)
+            probe_wp = wp.array(probe, dtype=wp.vec3, device=device)
+
+            for frame, dt in enumerate((0.02, 0.07)):
+                # Refresh the mass diagonal on the next frame without adding ELL entries.
+                if frame == 1:
+                    model.body_mass.assign(np.array([3.0, 2.0, 0.0], dtype=np.float32))
+                    model.body_inv_mass.assign(np.array([1.0 / 3.0, 0.5, 0.0], dtype=np.float32))
+                    inertias = initial_inertia.copy()
+                    inertias[0] = np.diag([1.1, 0.9, 0.6])
+                    inverse = initial_inv_inertia.copy()
+                    inverse[0] = np.linalg.inv(inertias[0])
+                    model.body_inertia.assign(inertias)
+                    model.body_inv_inertia.assign(inverse)
+                input_poses = state_in.body_q.numpy().copy()
+                input_velocities = state_in.body_qd.numpy().copy()
+                rigid_solver.integrate_bodies(model, state_in, state_ref, dt)
+
+                # With no PCG iterations, the nonzero inertia RHS must not advance the body.
+                config.linear_iterations = 0
+                solver.step(state_in, state_out, control, contacts, dt)
+                np.testing.assert_allclose(solver._x.numpy()[offset:], solver._x_prev.numpy()[offset:], atol=1e-7)
+                test.assertGreater(np.linalg.norm(solver._rhs.numpy()[offset : offset + 4]), 0.0)
+
+                matrix = np.diag(solver._A_diag_base.numpy())
+                entries = solver._pd_off_diag.nz_ell.numpy()
+                np.testing.assert_array_equal(solver._pd_off_diag.num_nz.numpy(), counts)
+                np.testing.assert_array_equal(entries["column_index"], columns)
+                np.testing.assert_array_equal(entries["value"][:, :offset], cloth_values)
+                for row, count in enumerate(counts):
+                    matrix[row, entries["column_index"][:count, row]] += entries["value"][:count, row]
+                mass = np.zeros((12, 12))
+                for body, (source_mass, source_inertia, _flags) in enumerate(
+                    zip(
+                        model.body_mass.numpy(),
+                        model.body_inertia.numpy(),
+                        model.body_flags.numpy(),
+                        strict=True,
+                    )
+                ):
+                    effective_mass = source_mass
+                    effective_inertia = source_inertia.copy()
+                    if effective_mass <= 0.0:
+                        continue
+                    start = 4 * body
+                    mass[start, start] = effective_mass
+                    mass[start + 1 : start + 4, start + 1 : start + 4] = (
+                        0.5 * np.trace(effective_inertia) * np.eye(3) - effective_inertia
+                    )
+                np.testing.assert_allclose(
+                    matrix[offset:, offset:], np.diag(np.diag(mass)) / dt**2, rtol=2e-6, atol=2e-5
+                )
+                delta = solver._x_inertia.numpy()[offset:] - solver._x.numpy()[offset:]
+                np.testing.assert_allclose(solver._rhs.numpy()[offset:], mass @ delta / dt**2, rtol=2e-6, atol=2e-5)
+                test.assertGreater(np.linalg.norm(delta[4:8]), 0.0)
+                np.testing.assert_array_equal(solver._inv_A_diag.numpy()[offset + 4 :], 0.0)
+
+                # The assembled diagonal and matrix-free coupling must recover M / dt^2.
+                mass_off_diagonal = (mass - np.diag(np.diag(mass))) / dt**2
+                expected_mass_product = mass_off_diagonal @ probe[offset:]
+                solver._matrix_free_Ax.fill_(wp.vec3(17.0))
+                product = solver._matrix_free_multiply(probe_wp)
+                test.assertIs(product, solver._matrix_free_Ax)
+                np.testing.assert_allclose(product.numpy()[offset:], expected_mass_product, rtol=2e-6, atol=2e-5)
+                np.testing.assert_allclose(
+                    (matrix @ probe + product.numpy())[offset:], mass @ probe[offset:] / dt**2, rtol=2e-6, atol=2e-4
+                )
+
+                config.linear_iterations = 12
+                config.iterations = 2
+                solver.step(state_in, state_out, control, contacts, dt)
+                if wp.get_device(device).is_cuda and frame == 1:
+                    with wp.ScopedCapture(device=device) as capture:
+                        solver.step(state_in, state_out, control, contacts, dt)
+                    # Reset only the simulated body; other outputs are caller-owned.
+                    state_out.body_q[:1].fill_(wp.transform_identity())
+                    state_out.body_qd[:1].zero_()
+                    wp.capture_launch(capture.graph)
+                np.testing.assert_allclose(
+                    solver._x.numpy()[offset : offset + 4], solver._x_inertia.numpy()[offset : offset + 4], atol=2e-6
+                )
+                np.testing.assert_array_equal(solver._x.numpy()[offset + 4 :], solver._x_prev.numpy()[offset + 4 :])
+                for actual, expected in zip(state_out.body_q.numpy(), state_ref.body_q.numpy(), strict=True):
+                    np.testing.assert_allclose(actual[:3], expected[:3], atol=2e-5)
+                    np.testing.assert_allclose(
+                        wp.quat_to_matrix(wp.quat(*actual[3:])), wp.quat_to_matrix(wp.quat(*expected[3:])), atol=2e-5
+                    )
+                np.testing.assert_allclose(state_out.body_qd.numpy(), state_ref.body_qd.numpy(), atol=1e-4, rtol=2e-5)
+                np.testing.assert_array_equal(state_out.body_q.numpy()[1:], input_poses[1:])
+                np.testing.assert_array_equal(state_out.body_qd.numpy()[1:], input_velocities[1:])
+                np.testing.assert_array_equal(state_in.body_q.numpy(), input_poses)
+                np.testing.assert_array_equal(state_in.body_qd.numpy(), input_velocities)
+                if offset:
+                    test.assertTrue(np.isfinite(state_out.particle_q.numpy()).all())
+                    test.assertTrue(np.all(state_out.particle_qd.numpy()[:, 2] < 0.0))
+                if frame == 1:
+                    # Prescribed bodies must also survive reconstruction into the input state.
+                    solver.step(state_in, state_in, control, contacts, dt)
+                    np.testing.assert_allclose(state_in.body_q.numpy(), state_out.body_q.numpy(), atol=2e-6)
+                    np.testing.assert_allclose(state_in.body_qd.numpy(), state_out.body_qd.numpy(), atol=2e-5)
+                state_in, state_out = state_out, state_in
+                state_in.body_f.assign(forces)
+                config.iterations = 1
+
+            if offset:
+                # Cloth contact and affine mass products occupy separate portions of Ax.
+                hessian = np.tile(np.diag([2.0, 3.0, 4.0]), (offset, 1, 1)).astype(np.float32)
+                solver.collision.contact_hessian_diags.assign(hessian)
+                product = solver._matrix_free_multiply(probe_wp)
+                test.assertIs(product, solver._matrix_free_Ax)
+                np.testing.assert_allclose(product.numpy()[offset:], expected_mass_product, rtol=2e-6, atol=2e-5)
+                expected = matrix @ probe
+                expected[offset:] += expected_mass_product
+                expected[:offset] += np.einsum("ijk,ik->ij", hessian, probe[:offset])
+                solver._linear_solver.step1_update_r(
+                    solver._pd_off_diag, solver._A_diag_base, solver._rhs, probe_wp, product
+                )
+                np.testing.assert_allclose(
+                    solver._linear_solver.r.numpy(), solver._rhs.numpy() - expected, rtol=2e-6, atol=2e-4
+                )
+                solver._linear_solver.p.assign(probe_wp)
+                solver._linear_solver.step5_update_Ap(solver._pd_off_diag, solver._A_diag_base, product)
+                np.testing.assert_allclose(solver._linear_solver.Ap.numpy(), expected, rtol=2e-6, atol=2e-4)
+
+                # Collision writes only the caller's particle view, and the
+                # shared callback overwrites stale results on the next product.
+                storage = wp.full(offset + 2, wp.vec3(17.0), dtype=wp.vec3, device=device)
+                solver.collision.hessian_multiply(probe_wp[:offset], storage[1:-1])
+                np.testing.assert_allclose(storage.numpy()[1:-1], product.numpy()[:offset], atol=1e-6)
+                np.testing.assert_array_equal(storage.numpy()[[0, -1]], 17.0)
+
+                collision = solver.collision
+                solver.collision = None
+                solver._matrix_free_multiply(probe_wp)
+                np.testing.assert_array_equal(product.numpy()[:offset], 0.0)
+                np.testing.assert_allclose(product.numpy()[offset:], expected_mass_product, rtol=2e-6, atol=2e-5)
+                solver.collision = collision
+
+            config.linear_iterations = 0
+            graph = None
+            if wp.get_device(device).is_cuda:
+                with wp.ScopedCapture(device=device) as capture:
+                    solver.step(state_in, state_out, control, contacts, dt)
+                    solver._matrix_free_multiply(probe_wp)
+                graph = capture.graph
+            if offset:
+                solver.collision.contact_hessian_diags.zero_()
+            # Mass coefficients remain fixed during a solve and refresh at the next step.
+            model.body_inertia.assign(initial_inertia)
+            for disable_mass in (False, True):
+                if disable_mass:
+                    model.body_flags.assign(initial_flags)
+                    model.body_mass.zero_()
+                else:
+                    model.body_flags.zero_()
+                    solver._matrix_free_multiply(probe_wp)
+                    np.testing.assert_allclose(product.numpy()[offset:], expected_mass_product, rtol=2e-6, atol=2e-5)
+                solver._matrix_free_Ax.fill_(wp.vec3(17.0))
+                if graph is None:
+                    solver.step(state_in, state_out, control, contacts, dt)
+                    solver._matrix_free_multiply(probe_wp)
+                else:
+                    wp.capture_launch(graph)
+                np.testing.assert_array_equal(product.numpy(), 0.0)
+
+
 def test_affine_body_state_conversion(test, device):
     """Recover integrated rigid states and fit deformed affine configurations."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -549,6 +776,8 @@ def test_affine_body_state_conversion(test, device):
     affine_body = AffineBody(model)
     rigid_solver = newton.solvers.SolverBase(model)
     state_in, state_ref, state_out = model.state(), model.state(), model.state()
+    inactive_pose = state_out.body_q.numpy()[2].copy()
+    inactive_velocity = state_out.body_qd.numpy()[2].copy()
     forces = np.zeros((model.body_count, 6), dtype=np.float32)
     forces[0] = (0.7, -0.3, 0.5, -0.2, 0.4, 0.3)
     state_in.body_f.assign(forces)
@@ -585,14 +814,26 @@ def test_affine_body_state_conversion(test, device):
                     affine_body.from_internal_state(state_out, x, v, dt)
                 state_out.body_q.fill_(wp.transform_identity())
                 state_out.body_qd.fill_(wp.spatial_vector(0.0))
+                inactive_pose = state_out.body_q.numpy()[2].copy()
+                inactive_velocity = state_out.body_qd.numpy()[2].copy()
                 wp.capture_launch(capture.graph)
 
-            for expected, actual in zip(state_ref.body_q.numpy(), state_out.body_q.numpy(), strict=True):
-                np.testing.assert_allclose(actual[:3], expected[:3], atol=2e-5)
-                np.testing.assert_allclose(
-                    wp.quat_to_matrix(wp.quat(*actual[3:])), wp.quat_to_matrix(wp.quat(*expected[3:])), atol=2e-5
-                )
-            np.testing.assert_allclose(state_out.body_qd.numpy(), state_ref.body_qd.numpy(), atol=1e-4, rtol=2e-5)
+            for i, (expected, actual) in enumerate(
+                zip(state_ref.body_q.numpy(), state_out.body_q.numpy(), strict=True)
+            ):
+                if i == 2:
+                    np.testing.assert_array_equal(actual, inactive_pose)
+                else:
+                    np.testing.assert_allclose(actual[:3], expected[:3], atol=2e-5)
+                    np.testing.assert_allclose(
+                        wp.quat_to_matrix(wp.quat(*actual[3:])),
+                        wp.quat_to_matrix(wp.quat(*expected[3:])),
+                        atol=2e-5,
+                    )
+            np.testing.assert_allclose(
+                state_out.body_qd.numpy()[:2], state_ref.body_qd.numpy()[:2], atol=1e-4, rtol=2e-5
+            )
+            np.testing.assert_array_equal(state_out.body_qd.numpy()[2], inactive_velocity)
 
     # Stretch, shear, and reflection require fitting beyond a rigid round trip.
     deformations = (
@@ -633,26 +874,36 @@ def test_affine_body_state_conversion(test, device):
         expected_velocities.append(np.concatenate((velocities[i, :3], omega)))
     x.assign(coordinates.reshape(-1, 3))
     v.assign(coordinate_velocities.reshape(-1, 3))
+    inactive_pose = state_out.body_q.numpy()[2].copy()
+    inactive_velocity = state_out.body_qd.numpy()[2].copy()
     affine_body.from_internal_state(state_out, x, v, dt)
-    for actual, (position, rotation) in zip(state_out.body_q.numpy(), expected_poses, strict=True):
-        np.testing.assert_allclose(actual[:3], position, atol=2e-5)
-        actual_rotation = np.array(wp.quat_to_matrix(wp.quat(*actual[3:]))).reshape(3, 3)
-        np.testing.assert_allclose(actual_rotation, rotation, atol=2e-5)
-        test.assertAlmostEqual(float(np.linalg.det(actual_rotation)), 1.0, places=5)
-    np.testing.assert_allclose(state_out.body_qd.numpy(), expected_velocities, atol=2e-5)
+    for i, (actual, (position, rotation)) in enumerate(zip(state_out.body_q.numpy(), expected_poses, strict=True)):
+        if i == 2:
+            np.testing.assert_array_equal(actual, inactive_pose)
+        else:
+            np.testing.assert_allclose(actual[:3], position, atol=2e-5)
+            actual_rotation = np.array(wp.quat_to_matrix(wp.quat(*actual[3:]))).reshape(3, 3)
+            np.testing.assert_allclose(actual_rotation, rotation, atol=2e-5)
+            test.assertAlmostEqual(float(np.linalg.det(actual_rotation)), 1.0, places=5)
+    np.testing.assert_allclose(state_out.body_qd.numpy()[:2], expected_velocities[:2], atol=2e-5)
+    np.testing.assert_array_equal(state_out.body_qd.numpy()[2], inactive_velocity)
     np.testing.assert_array_equal(state_in.body_q.numpy(), poses)
     np.testing.assert_array_equal(state_in.body_qd.numpy(), velocities)
     np.testing.assert_array_equal(state_in.body_f.numpy(), forces)
     for storage in (storage_x, storage_x_inertia, storage_v):
         np.testing.assert_array_equal(storage.numpy()[[0, 1, -3, -2, -1]], np.full((5, 3), 17.0))
 
-    empty_model = newton.ModelBuilder().finalize(device=device)
-    empty_affine_body = AffineBody(empty_model)
-    empty_affine_body.to_internal_state(empty_model.state(), x[:0], x_inertia[:0], dt)
-    empty_affine_body.from_internal_state(empty_model.state(), x[:0], v[:0], dt)
-
 
 devices = get_test_devices()
+
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_affine_body_linear_system",
+    test_affine_body_linear_system,
+    devices=devices,
+    check_output=False,
+)
 
 
 add_function_test(

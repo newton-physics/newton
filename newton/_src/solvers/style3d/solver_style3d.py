@@ -14,6 +14,7 @@ from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
 from ...sim import Contacts, Control, Model, ModelBuilder, State
 from ..solver import SolverBase
+from .affine_body import AffineBody
 from .builder import PDMatrixBuilder, _compute_max_neighbors
 from .collision import Collision
 from .kernels import (
@@ -27,7 +28,7 @@ from .kernels import (
     nonlinear_step_kernel,
     prepare_jacobi_preconditioner_kernel,
     prepare_jacobi_preconditioner_no_contact_hessian_kernel,
-    update_velocity,
+    update_velocity_kernel,
 )
 from .linear_solver import PcgSolver, SparseMatrixELL
 
@@ -328,6 +329,7 @@ class SolverStyle3D(SolverBase):
         self._particle_count = model.particle_count if enable_deformable else 0
         self._affine_body_count = model.body_count if enable_affine_body else 0
         self._dof_block_count = self._particle_count + self._affine_body_count * 4
+        self._affine_body = AffineBody(model) if enable_affine_body else None
         self._linear_solver = PcgSolver(self._dof_block_count, self.device)
 
         # ParticleFlags for every particle and affine block, separate from model flags.
@@ -348,6 +350,8 @@ class SolverStyle3D(SolverBase):
 
         # Base diagonal excluding contact contributions.
         self._A_diag_base = wp.zeros(self._dof_block_count, dtype=float, device=self.device)
+        # Per-body (S_01, S_02, S_12) / dt^2, refreshed alongside the mass diagonal.
+        self._affine_mass_off_diag = wp.zeros(self._affine_body_count, dtype=wp.vec3, device=self.device)
         # Inverse full diagonal blocks for Jacobi preconditioning.
         self._inv_A_diag = wp.zeros(self._dof_block_count, dtype=wp.mat33, device=self.device)
         # Matrix-free contribution to A x beyond the assembled base matrix.
@@ -396,7 +400,7 @@ class SolverStyle3D(SolverBase):
         elif self.config.iterations < 1:
             raise ValueError(f"Config.iterations must be at least 1, got {self.config.iterations}.")
 
-        self._to_internal_state(state_in)
+        self._to_internal_state(state_in, dt)
         particle_q = self._x[: self._particle_count]
         particle_qd = self._v[: self._particle_count]
 
@@ -405,28 +409,28 @@ class SolverStyle3D(SolverBase):
 
         wp.launch(
             kernel=init_step_kernel,
-            dim=self._dof_block_count,
+            dim=self._particle_count + self._affine_body_count,
             inputs=[
+                self._particle_count,
                 dt,
                 self.model.gravity,
                 self.model.particle_world,
-                state_in.particle_f,
+                state_in.particle_f if self._particle_count > 0 else self._x[:0],
                 particle_qd,
-                particle_q,
+                self._x,
                 self._x_prev,
                 self._pd_diag,
                 self.model.particle_mass,
                 self._particle_flags,
+                self.model.body_mass,
+                self.model.body_inertia,
+                self.model.body_flags,
             ],
-            outputs=[
-                self._x_inertia,
-                self._A_diag_base,
-                self._dx,
-            ],
+            outputs=[self._x_inertia, self._A_diag_base, self._dx, self._affine_mass_off_diag],
             device=self.device,
         )
 
-        if self.config.enable_mouse_dragging:
+        if self._particle_count > 0 and self.config.enable_mouse_dragging:
             wp.launch(
                 accumulate_dragging_pd_diag_kernel,
                 dim=1,
@@ -444,12 +448,16 @@ class SolverStyle3D(SolverBase):
         for _iter in range(self.config.iterations):
             wp.launch(
                 init_rhs_kernel,
-                dim=self._dof_block_count,
+                dim=self._particle_count + self._affine_body_count,
                 inputs=[
                     dt,
-                    particle_q,
+                    self._x,
                     self._x_inertia,
+                    self._particle_count,
                     self.model.particle_mass,
+                    self.model.body_mass,
+                    self.model.body_inertia,
+                    self.model.body_flags,
                 ],
                 outputs=[self._rhs],
                 device=self.device,
@@ -508,13 +516,13 @@ class SolverStyle3D(SolverBase):
                     state_in.body_q,
                     state_out.body_q,
                     particle_q,
-                    self._rhs,
-                    self._x_prev,
-                    self._A_diag_base,
+                    self._rhs[: self._particle_count],
+                    self._x_prev[: self._particle_count],
+                    self._A_diag_base[: self._particle_count],
                 )
                 wp.launch(
                     prepare_jacobi_preconditioner_kernel,
-                    dim=self._dof_block_count,
+                    dim=self._particle_count,
                     inputs=[
                         self._A_diag_base,
                         self.collision.contact_hessian_diagonal(),
@@ -523,11 +531,22 @@ class SolverStyle3D(SolverBase):
                     outputs=[self._inv_A_diag],
                     device=self.device,
                 )
+                if self._affine_body_count > 0:
+                    wp.launch(
+                        prepare_jacobi_preconditioner_no_contact_hessian_kernel,
+                        dim=4 * self._affine_body_count,
+                        inputs=[
+                            self._A_diag_base[self._particle_count :],
+                            self._particle_flags[self._particle_count :],
+                        ],
+                        outputs=[self._inv_A_diag[self._particle_count :]],
+                        device=self.device,
+                    )
             else:
                 wp.launch(
                     prepare_jacobi_preconditioner_no_contact_hessian_kernel,
                     dim=self._dof_block_count,
-                    inputs=[self._A_diag_base],
+                    inputs=[self._A_diag_base, self._particle_flags],
                     outputs=[self._inv_A_diag],
                     device=self.device,
                 )
@@ -540,11 +559,11 @@ class SolverStyle3D(SolverBase):
                 self._inv_A_diag,
                 self._dx,
                 self.config.linear_iterations,
-                None if self.collision is None else self._matrix_free_multiply,
+                self._matrix_free_multiply,
             )
 
             if self.collision is not None:
-                self.collision.linear_iteration_end(self._dx)
+                self.collision.linear_iteration_end(self._dx[: self._particle_count])
 
             wp.launch(
                 nonlinear_step_kernel,
@@ -555,9 +574,9 @@ class SolverStyle3D(SolverBase):
             )
 
         wp.launch(
-            kernel=update_velocity,
+            kernel=update_velocity_kernel,
             dim=self._dof_block_count,
-            inputs=[dt, self._x_prev, self._x],
+            inputs=[dt, self._particle_count, self._x_prev, self._x],
             outputs=[self._v],
             device=self.device,
         )
@@ -565,11 +584,18 @@ class SolverStyle3D(SolverBase):
         if self.collision is not None:
             self.collision.frame_end(particle_q, particle_qd, dt)
 
-        self._from_internal_state(state_out)
+        self._from_internal_state(state_out, dt)
 
     def _matrix_free_multiply(self, x: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
         """Return the matrix-free contribution to A x, excluding the assembled base matrix."""
-        self.collision.hessian_multiply(x[: self._particle_count], self._matrix_free_Ax[: self._particle_count])
+        if self.collision is not None:
+            self.collision.hessian_multiply(x[: self._particle_count], self._matrix_free_Ax[: self._particle_count])
+        else:
+            self._matrix_free_Ax[: self._particle_count].zero_()
+        if self._affine_body is not None:
+            self._affine_body.off_diag_multiply(
+                x[self._particle_count :], self._affine_mass_off_diag, self._matrix_free_Ax[self._particle_count :]
+            )
         return self._matrix_free_Ax
 
     def rebuild_bvh(self, state: State):
@@ -665,7 +691,7 @@ class SolverStyle3D(SolverBase):
                     pd_matrix_builder = assemble(max_neighbors)
             self._pd_diag, self._pd_off_diag.num_nz, self._pd_off_diag.nz_ell = pd_matrix_builder.finalize(self.device)
 
-    def _to_internal_state(self, state: State):
+    def _to_internal_state(self, state: State, dt: float):
         """Populate internal solver state and refresh flags for all DOF blocks."""
         if self._particle_count > 0:
             wp.copy(self._x, state.particle_q, count=self._particle_count)
@@ -684,12 +710,20 @@ class SolverStyle3D(SolverBase):
                 outputs=[self._particle_flags],
                 device=self.device,
             )
+        if self._affine_body_count > 0:
+            self._affine_body.to_internal_state(
+                state, self._x[self._particle_count :], self._x_inertia[self._particle_count :], dt
+            )
 
-    def _from_internal_state(self, state: State):
+    def _from_internal_state(self, state: State, dt: float):
         """Write solved positions and velocities to the output state."""
         if self._particle_count > 0:
             wp.copy(state.particle_q, self._x, count=self._particle_count)
             wp.copy(state.particle_qd, self._v, count=self._particle_count)
+        if self._affine_body_count > 0:
+            self._affine_body.from_internal_state(
+                state, self._x[self._particle_count :], self._v[self._particle_count :], dt
+            )
 
     def _update_drag_info(self, index: int, pos: wp.vec3, bary_coord: wp.vec3):
         """Should be invoked when state changed."""

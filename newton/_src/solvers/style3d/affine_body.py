@@ -3,7 +3,7 @@
 
 import warp as wp
 
-from ...sim import Model, State
+from ...sim import BodyFlags, Model, State
 from ..solver import integrate_rigid_body
 
 
@@ -17,6 +17,49 @@ def inertia_to_second_moment(inertia: wp.mat33) -> wp.mat33:
     S = 0.5 trace(I) Id - I. Both tensors have units of kg*m^2.
     """
     return 0.5 * wp.trace(inertia) * wp.identity(3, float) - inertia
+
+
+@wp.func
+def affine_mass_multiply(
+    mass: float,
+    inertia: wp.mat33,
+    v_com: wp.vec3,
+    v_a0: wp.vec3,
+    v_a1: wp.vec3,
+    v_a2: wp.vec3,
+) -> tuple[wp.vec3, wp.vec3, wp.vec3, wp.vec3]:
+    """Return all four blocks of M v for v = [v_com, v_a0, v_a1, v_a2]."""
+    moment = inertia_to_second_moment(inertia)
+
+    return (
+        mass * v_com,
+        moment[0, 0] * v_a0 + moment[0, 1] * v_a1 + moment[0, 2] * v_a2,
+        moment[1, 0] * v_a0 + moment[1, 1] * v_a1 + moment[1, 2] * v_a2,
+        moment[2, 0] * v_a0 + moment[2, 1] * v_a1 + moment[2, 2] * v_a2,
+    )
+
+
+@wp.kernel
+def affine_off_diag_multiply_kernel(
+    x: wp.array[wp.vec3],
+    mass_off_diag: wp.array[wp.vec3],
+    # outputs
+    Ax: wp.array[wp.vec3],
+):
+    body = wp.tid()
+    start = 4 * body
+    coupling = mass_off_diag[body]
+
+    x1 = x[start + 1]
+    x2 = x[start + 2]
+    x3 = x[start + 3]
+
+    # The assembled matrix already contains m / dt^2 and S_ii / dt^2.
+    # Only the cross-direction terms S_ij / dt^2 (i != j) belong here.
+    Ax[start + 0] = wp.vec3(0.0)
+    Ax[start + 1] = coupling[0] * x2 + coupling[1] * x3
+    Ax[start + 2] = coupling[0] * x1 + coupling[2] * x3
+    Ax[start + 3] = coupling[1] * x1 + coupling[2] * x2
 
 
 @wp.kernel
@@ -78,10 +121,18 @@ def affine_to_body_kernel(
     body_com: wp.array[wp.vec3],
     body_inertia: wp.array[wp.mat33],
     dt: float,
+    body_mass: wp.array[float],
+    body_flags: wp.array[int],
+    # outputs
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
 ):
     body = wp.tid()
+
+    # Bodies outside the ABD solve are owned by another solver or caller.
+    if body_mass[body] <= 0.0 or (body_flags[body] & BodyFlags.DYNAMIC) == 0:
+        return
+
     start = 4 * body
     center = x[start]
     linear = v[start]
@@ -130,35 +181,55 @@ class AffineBody:
     def __init__(self, model: Model) -> None:
         self.model = model
 
+    def off_diag_multiply(self, x: wp.array[wp.vec3], mass_off_diag: wp.array[wp.vec3], Ax: wp.array[wp.vec3]) -> None:
+        """Write the affine off-diagonal contribution to A x.
+
+        Currently this is (M - diag(M)) x / dt^2, using prepared
+        (S_01, S_02, S_12) / dt^2 coefficients.
+        """
+        wp.launch(
+            affine_off_diag_multiply_kernel,
+            dim=self.model.body_count,
+            inputs=[x, mass_off_diag],
+            outputs=[Ax],
+            device=self.model.device,
+        )
+
     def to_internal_state(self, state: State, x: wp.array[wp.vec3], x_inertia: wp.array[wp.vec3], dt: float) -> None:
         """Write current affine coordinates and inertial targets for a positive time step."""
-        if self.model.body_count > 0:
-            wp.launch(
-                body_to_affine_kernel,
-                dim=self.model.body_count,
-                inputs=[
-                    state.body_q,
-                    state.body_qd,
-                    state.body_f,
-                    self.model.body_com,
-                    self.model.body_inertia,
-                    self.model.body_inv_mass,
-                    self.model.body_inv_inertia,
-                    self.model.body_world,
-                    self.model.gravity,
-                    dt,
-                ],
-                outputs=[x, x_inertia],
-                device=self.model.device,
-            )
+        wp.launch(
+            body_to_affine_kernel,
+            dim=self.model.body_count,
+            inputs=[
+                state.body_q,
+                state.body_qd,
+                state.body_f,
+                self.model.body_com,
+                self.model.body_inertia,
+                self.model.body_inv_mass,
+                self.model.body_inv_inertia,
+                self.model.body_world,
+                self.model.gravity,
+                dt,
+            ],
+            outputs=[x, x_inertia],
+            device=self.model.device,
+        )
 
-    def from_internal_state(self, state: State, x: wp.array[wp.vec3], v: wp.array[wp.vec3], dt: float) -> None:
-        """Fit rigid states from affine coordinates and their finite-difference velocities."""
-        if self.model.body_count > 0:
-            wp.launch(
-                affine_to_body_kernel,
-                dim=self.model.body_count,
-                inputs=[x, v, self.model.body_com, self.model.body_inertia, dt],
-                outputs=[state.body_q, state.body_qd],
-                device=self.model.device,
-            )
+    def from_internal_state(self, state_out: State, x: wp.array[wp.vec3], v: wp.array[wp.vec3], dt: float) -> None:
+        """Fit the rigid states for bodies updated by the ABD solve."""
+        wp.launch(
+            affine_to_body_kernel,
+            dim=self.model.body_count,
+            inputs=[
+                x,
+                v,
+                self.model.body_com,
+                self.model.body_inertia,
+                dt,
+                self.model.body_mass,
+                self.model.body_flags,
+            ],
+            outputs=[state_out.body_q, state_out.body_qd],
+            device=self.model.device,
+        )

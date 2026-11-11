@@ -5,6 +5,7 @@ import warp as wp
 
 from ...geometry import ParticleFlags
 from ...sim import BodyFlags
+from .affine_body import affine_mass_multiply, inertia_to_second_moment
 
 
 @wp.kernel
@@ -201,6 +202,7 @@ def accumulate_dragging_pd_diag_kernel(
 
 @wp.kernel
 def init_step_kernel(
+    particle_count: int,
     dt: float,
     gravity: wp.array[wp.vec3],
     particle_world: wp.array[wp.int32],
@@ -211,30 +213,57 @@ def init_step_kernel(
     pd_diag: wp.array[float],
     particle_masses: wp.array[float],
     particle_flags: wp.array[wp.int32],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    body_flags: wp.array[wp.int32],
     # outputs
     x_inertia: wp.array[wp.vec3],
     A_diag_base: wp.array[float],
     dx: wp.array[wp.vec3],
+    affine_mass_off_diag: wp.array[wp.vec3],
 ):
+    """Initialize particle and affine-body inertia data for one time step."""
     tid = wp.tid()
-    x_last = x_curr[tid]
-    x_prev[tid] = x_last
+    if tid < particle_count:
+        x_last = x_curr[tid]
+        x_prev[tid] = x_last
 
-    if not particle_flags[tid] & ParticleFlags.ACTIVE:
-        x_inertia[tid] = x_prev[tid]
-        A_diag_base[tid] = 0.0
-        dx[tid] = wp.vec3(0.0)
+        if not particle_flags[tid] & ParticleFlags.ACTIVE:
+            x_inertia[tid] = x_prev[tid]
+            A_diag_base[tid] = 0.0
+            dx[tid] = wp.vec3(0.0)
+        else:
+            v_prev = v_curr[tid]
+            mass = particle_masses[tid]
+            A_diag_base[tid] = pd_diag[tid] + mass / (dt * dt)
+            world_idx = particle_world[tid]
+            world_g = gravity[world_idx]
+            x_inertia[tid] = x_last + v_prev * dt + (world_g + f_ext[tid] / mass) * (dt * dt)
+            dx[tid] = v_prev * dt
     else:
-        v_prev = v_curr[tid]
-        mass = particle_masses[tid]
-        A_diag_base[tid] = pd_diag[tid] + mass / (dt * dt)
-        world_idx = particle_world[tid]
-        world_g = gravity[world_idx]
-        x_inertia[tid] = x_last + v_prev * dt + (world_g + f_ext[tid] / mass) * (dt * dt)
-        dx[tid] = v_prev * dt
+        body = tid - particle_count
+        start = particle_count + 4 * body
+        is_kinematic = (body_flags[body] & BodyFlags.KINEMATIC) != 0
+        active = body_mass[body] > 0.0 and (is_kinematic or (body_flags[body] & BodyFlags.DYNAMIC) != 0)
+        mass = float(0.0)
+        moment = wp.mat33(0.0)
+        if active:
+            mass = body_mass[body] / (dt * dt)
+            moment = inertia_to_second_moment(body_inertia[body]) / (dt * dt)
 
-        # temp
-        # x_curr[tid] = x_last + v_prev * dt
+        # Cache the symmetric mass coupling once per step for all PCG products.
+        affine_mass_off_diag[body] = wp.vec3(moment[0, 1], moment[0, 2], moment[1, 2])
+
+        for i in range(4):
+            row = start + i
+            x_prev[row] = x_curr[row]
+            dx[row] = wp.vec3(0.0)
+            if body_mass[body] <= 0.0:
+                x_inertia[row] = x_curr[row]
+            diagonal = mass
+            if i > 0:
+                diagonal = moment[i - 1, i - 1]
+            A_diag_base[row] = diagonal
 
 
 @wp.kernel
@@ -242,12 +271,44 @@ def init_rhs_kernel(
     dt: float,
     x_curr: wp.array[wp.vec3],
     x_inertia: wp.array[wp.vec3],
+    particle_count: int,
     particle_masses: wp.array[float],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    body_flags: wp.array[int],
     # outputs
     rhs: wp.array[wp.vec3],
 ):
+    """Initialize M (x_inertia - x_curr) / dt^2 with one thread per particle or body."""
     tid = wp.tid()
-    rhs[tid] = (x_inertia[tid] - x_curr[tid]) * particle_masses[tid] / (dt * dt)
+
+    if tid < particle_count:
+        rhs[tid] = (x_inertia[tid] - x_curr[tid]) * particle_masses[tid] / (dt * dt)
+        return
+
+    body = tid - particle_count
+    start = particle_count + 4 * body
+    if body_mass[body] <= 0.0 or (
+        (body_flags[body] & BodyFlags.DYNAMIC) == 0 and (body_flags[body] & BodyFlags.KINEMATIC) == 0
+    ):
+        rhs[start + 0] = wp.vec3(0.0)
+        rhs[start + 1] = wp.vec3(0.0)
+        rhs[start + 2] = wp.vec3(0.0)
+        rhs[start + 3] = wp.vec3(0.0)
+    else:
+        inv_dt2 = 1.0 / (dt * dt)
+        rhs_com, rhs_a0, rhs_a1, rhs_a2 = affine_mass_multiply(
+            body_mass[body],
+            body_inertia[body],
+            x_inertia[start] - x_curr[start],
+            x_inertia[start + 1] - x_curr[start + 1],
+            x_inertia[start + 2] - x_curr[start + 2],
+            x_inertia[start + 3] - x_curr[start + 3],
+        )
+        rhs[start + 0] = rhs_com * inv_dt2
+        rhs[start + 1] = rhs_a0 * inv_dt2
+        rhs[start + 2] = rhs_a1 * inv_dt2
+        rhs[start + 3] = rhs_a2 * inv_dt2
 
 
 @wp.kernel
@@ -259,19 +320,25 @@ def prepare_jacobi_preconditioner_kernel(
     inv_A_diag: wp.array[wp.mat33],
 ):
     tid = wp.tid()
+    if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
+        inv_A_diag[tid] = wp.mat33(0.0)
+        return
     diag = wp.identity(3, float) * A_diag_base[tid]
-    if particle_flags[tid] & ParticleFlags.ACTIVE:
-        diag += contact_hessian_diags[tid]
+    diag += contact_hessian_diags[tid]
     inv_A_diag[tid] = wp.inverse(diag) if A_diag_base[tid] > 0.0 else wp.identity(3, float) * 0.0
 
 
 @wp.kernel
 def prepare_jacobi_preconditioner_no_contact_hessian_kernel(
     A_diag_base: wp.array[float],
+    particle_flags: wp.array[wp.int32],
     # outputs
     inv_A_diag: wp.array[wp.mat33],
 ):
     tid = wp.tid()
+    if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
+        inv_A_diag[tid] = wp.mat33(0.0)
+        return
     diag = wp.identity(3, float) * A_diag_base[tid]
     inv_A_diag[tid] = wp.inverse(diag) if A_diag_base[tid] > 0.0 else wp.identity(3, float) * 0.0
 
@@ -301,11 +368,15 @@ def nonlinear_step_kernel(
 
 
 @wp.kernel
-def update_velocity(
+def update_velocity_kernel(
     dt: float,
+    particle_count: int,
     prev_pos: wp.array[wp.vec3],
     pos: wp.array[wp.vec3],
     vel: wp.array[wp.vec3],
 ):
-    particle = wp.tid()
-    vel[particle] = 0.998 * (pos[particle] - prev_pos[particle]) / dt
+    tid = wp.tid()
+    if tid < particle_count:
+        vel[tid] = 0.998 * (pos[tid] - prev_pos[tid]) / dt
+    else:
+        vel[tid] = (pos[tid] - prev_pos[tid]) / dt
