@@ -20,12 +20,11 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton import ModelBuilder
+from newton import ModelBuilder, NewtonDeprecationWarning
 from newton._src.geometry.utils import transform_points
 from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
-from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import assert_np_equal, patch_sys_module
 
 
@@ -2805,7 +2804,7 @@ class TestModelJoints(unittest.TestCase):
                         builder.add_joint_ball(parent=p, child=c, label="ball")
                 keep = ["fix"] if order == "fixed_kept_first" else []
                 # "fix" parallels the child's free joint, so it is a FIXED loop-closing joint.
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, r"FIXED loop-closing joints \('fix'\)"):
+                with self.assertWarnsRegex(newton.NewtonWarning, r"FIXED loop-closing joints \('fix'\)"):
                     builder.collapse_fixed_joints(joints_to_keep=keep)
                 labels = list(builder.joint_label)
                 # add_body() gives each body a free joint; only assert on ours.

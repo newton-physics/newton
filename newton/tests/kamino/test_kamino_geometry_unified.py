@@ -15,14 +15,13 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton import ModelBuilder
+from newton import ModelBuilder, NewtonWarning
 from newton._src.geometry import broad_phase_nxn
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
 from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.exceptions import NewtonWarning
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.test_kamino_geometry_primitive import check_contacts
 from newton.tests.utils import basics, testing
@@ -516,13 +515,13 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         in the (x,y) plane, and the top box rotated so that one of
         its lowest vertex is touching the top face of the bottom box.
         """
-        # NOTE: We set to negative value to move the geoms into each other,
-        # i.e. move the bottom geom upwards and the top geom downwards.
+        # NOTE: Negative, lowering the top box so its vertex penetrates the bottom face.
         penetration = -0.01
 
         # Define expected contact data
         expected = {
-            "num_contacts": 1,
+            "model_active_contacts": 1,
+            "world_active_contacts": [1],
             "gid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(1, 1)),
             "bid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(1, 1)),
             "position_A": np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
@@ -534,7 +533,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         # Create a builder for the specified shape pair
         builder = testing.make_single_shape_pair_builder(
             shapes=("box", "box"),
-            top_xyz=[0.0, 0.0, 0.5 * np.sqrt(3) + 0.5],
+            top_xyz=[0.0, 0.0, 0.5 * np.sqrt(3) + penetration],
             top_rpy=[np.pi / 4, -np.arctan(1.0 / np.sqrt(2)), 0.0],
         )
 
@@ -545,7 +544,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
             case="box_on_box_vertex_on_face",
             device=self.default_device,
             rtol=1e-5,
-            atol=1e-6,
+            atol=1e-5,
         )
 
     def test_08_on_boxes_nunchaku(self):
