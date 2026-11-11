@@ -83,7 +83,7 @@ def get_attribute(prim: Usd.Prim, name: str, default: Any | None = None) -> Any 
     return attr.Get()
 
 
-class _ShapeGroupResolver:
+class ShapeGroupResolver:
     """Shape groups of prims, from the ``newton:shapeGroups`` token arrays authored on them and their ancestors.
 
     A shape belongs to the groups authored on its prim and on every ancestor prim, so authoring

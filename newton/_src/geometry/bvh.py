@@ -173,22 +173,26 @@ BVH_SHAPE_INACTIVE = wp.constant(wp.uint32(0xFFFFFFFF))
 def mark_inactive_bvh_shapes(
     bvh_shape_leaves: wp.array[wp.uint32],
     shape_variant_row: wp.array[wp.bool],
+    shape_variant_shape: wp.array[wp.int32],
     shape_flags: wp.array[wp.int32],
     shape_flags_mask: wp.int32,
     shape_opacity: wp.array[wp.float32],
     out_shape_enabled: wp.array[wp.uint32],
 ):
-    """Copy the BVH leaf shapes, replacing variant rows whose current flags miss ``shape_flags_mask``,
-    such as empty or fully transparent rows, by :data:`BVH_SHAPE_INACTIVE`."""
+    """Copy the BVH leaf shapes, replacing variant rows that are empty or, for a nonzero
+    ``shape_flags_mask``, whose current flags miss it, such as fully transparent rows, by
+    :data:`BVH_SHAPE_INACTIVE`."""
     tid = wp.tid()
     shape = bvh_shape_leaves[tid]
     s = wp.int32(shape)
     active = True
     if shape_variant_row[s]:
-        flags = shape_flags[s]
-        if shape_opacity.shape[0] > 0 and shape_opacity[s] <= 0.0:
-            flags = flags & ~_SHAPE_FLAG_VISIBLE
-        active = (flags & shape_flags_mask) != 0
+        active = shape_variant_shape[s] >= 0
+        if active and shape_flags_mask != 0:
+            flags = shape_flags[s]
+            if shape_opacity.shape[0] > 0 and shape_opacity[s] <= 0.0:
+                flags = flags & ~_SHAPE_FLAG_VISIBLE
+            active = (flags & shape_flags_mask) != 0
     out_shape_enabled[tid] = wp.where(active, shape, BVH_SHAPE_INACTIVE)
 
 
@@ -377,7 +381,7 @@ def compute_shape_filter_roots(
 
 
 @dataclass
-class _ShapeFilterBvh:
+class ShapeFilterBvh:
     """Shape BVH traversal data of one shape filter, built by :meth:`Model.bvh_build_shapes`."""
 
     roots: wp.array2d[wp.int32]
@@ -386,7 +390,8 @@ class _ShapeFilterBvh:
     leaves: wp.array[wp.uint32]
     """Shape of each BVH leaf, or :data:`BVH_SHAPE_INACTIVE` for leaves the filter skips at the last refit."""
     flags_mask: int
-    """Flags a body variant row must currently have for the filter to keep its leaf."""
+    """Flags a body variant row must currently have for the filter to keep its leaf, or ``0`` for a filter
+    without flags, which keeps the leaf of every row that holds a shape."""
     world_leaves: wp.array[wp.int32] | None
     """BVH leaf of the only shape the filter selects in each world, shape ``[world_count + 1]`` (last entry is
     the global world), ``-1`` for worlds without one; ``None`` if the filter selects several shapes of a world."""

@@ -23,11 +23,11 @@ _STACK = (
 )
 
 
-def _stack_world() -> newton.ModelBuilder:
-    """One world: a body holding boxes stacked along z whose tops are at the heights of ``_STACK``."""
+def _stack_world(stack=_STACK) -> newton.ModelBuilder:
+    """One world: a body holding boxes stacked along z whose tops are at the heights of ``stack``."""
     builder = newton.ModelBuilder()
     body = builder.add_body(label="robot")
-    for label, top, visible, colliding, groups in _STACK:
+    for label, top, visible, colliding, groups in stack:
         cfg = ShapeConfig(
             is_visible=visible, has_shape_collision=colliding, has_particle_collision=colliding, groups=groups
         )
@@ -43,6 +43,28 @@ def _stack_scene(world_count: int = 3) -> newton.ModelBuilder:
     builder = newton.ModelBuilder()
     builder.add_ground_plane(cfg=ShapeConfig(groups=("terrain",)), label="ground")
     builder.replicate(_stack_world(), world_count)
+    return builder
+
+
+# Per-world terrain of the heterogeneous scene, below the stack and above the global ground.
+_LOCAL_TERRAIN = (
+    ("terrain/a", 0.5, True, True, ("terrain",)),
+    ("terrain/b", 0.3, True, True, ("terrain",)),
+)
+
+
+def _heterogeneous_scene() -> newton.ModelBuilder:
+    """Worlds that differ in shapes, shape counts, and group registration order, above a global ground."""
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane(cfg=ShapeConfig(groups=("terrain",)), label="ground")
+    worlds = (
+        _STACK,
+        (*reversed(_STACK[2:]), _LOCAL_TERRAIN[0]),  # props and one terrain, groups registered in another order
+        (*_STACK[:2], *_LOCAL_TERRAIN),  # robot over two terrains
+        (),  # no shapes
+    )
+    for stack in worlds:
+        builder.add_world(_stack_world(stack))
     return builder
 
 
@@ -201,30 +223,23 @@ class TestShapeGroups(unittest.TestCase):
             newton.ModelBuilder().add_builder(builder)
 
 
-def test_intersect_ray_shape_filters(test: TestShapeGroups, device):
-    builder = _stack_scene()
-    filters = [
-        newton.ShapeFilter(groups=["terrain"]),
-        newton.ShapeFilter(flags=COLLIDE_SHAPES),
-        newton.ShapeFilter(flags=COLLIDE_SHAPES, exclude_shapes="robot/*"),
-        newton.ShapeFilter(flags=VISIBLE, exclude_groups=["robot"]),
-        newton.ShapeFilter(groups=["markers"]),
-        newton.ShapeFilter(groups=["props"], exclude_groups=["markers"]),
-        newton.ShapeFilter(shapes=["robot/visual"]),
-    ]
-    ids = [builder.add_shape_filter(shape_filter) for shape_filter in filters]
-    model = builder.finalize(device=device)
+_RAY_FILTERS = [
+    newton.ShapeFilter(groups=["terrain"]),
+    newton.ShapeFilter(flags=COLLIDE_SHAPES),
+    newton.ShapeFilter(flags=COLLIDE_SHAPES, exclude_shapes="robot/*"),
+    newton.ShapeFilter(flags=VISIBLE, exclude_groups=["robot"]),
+    newton.ShapeFilter(groups=["markers"]),
+    newton.ShapeFilter(groups=["props"], exclude_groups=["markers"]),
+    newton.ShapeFilter(shapes=["robot/visual"]),
+]
+"""Filters of the ray cast tests, covering flags, groups, labels, and exclusions."""
 
-    # Shapes selected by the same filters share a class; the BVH holds every shape some filter selects.
-    test.assertGreater(model._bvh_shape_class_count, 1)
-    test.assertEqual(model.bvh_shapes_group_roots.shape[0], (model.world_count + 1) * model._bvh_shape_class_count)
-    # Filters selecting at most one shape per world, here the global ground plus one stack shape, skip the BVH.
-    direct = [model._bvh_shape_filter(shape_filter).world_leaves is not None for shape_filter in ids]
-    test.assertEqual(direct, [True, False, True, False, True, True, True])
 
-    tops = {"ground": 0.0, **{label: top for label, top, *_ in _STACK}}
+def _assert_rays_match_brute_force(test: TestShapeGroups, model: newton.Model, ids: list[int], device):
+    """Check that a downward ray per world hits the highest shape each filter selects in reach of the ray."""
+    tops = {"ground": 0.0, **{label: top for label, top, *_ in (*_STACK, *_LOCAL_TERRAIN)}}
     default_filter = newton.ShapeFilter(flags=VISIBLE)
-    for shape_filter, shape_filter_id in [(default_filter, None), *zip(filters, ids, strict=True)]:
+    for shape_filter, shape_filter_id in [(default_filter, None), *zip(_RAY_FILTERS, ids, strict=True)]:
         with test.subTest(shape_filter=shape_filter):
             selected = shape_filter.select(model)
             worlds = model.shape_world.numpy()[selected]
@@ -236,6 +251,32 @@ def test_intersect_ray_shape_filters(test: TestShapeGroups, device):
             np.testing.assert_array_equal(shape_id, expected)
             expected_dist = [3.0 - tops[model.shape_label[shape]] if shape >= 0 else -1.0 for shape in expected]
             np.testing.assert_allclose(dist, expected_dist, atol=1.0e-5)
+
+
+def test_intersect_ray_shape_filters(test: TestShapeGroups, device):
+    builder = _stack_scene()
+    ids = [builder.add_shape_filter(shape_filter) for shape_filter in _RAY_FILTERS]
+    model = builder.finalize(device=device)
+
+    # Shapes selected by the same filters share a class; the BVH holds every shape some filter selects.
+    test.assertGreater(model._bvh_shape_class_count, 1)
+    test.assertEqual(model.bvh_shapes_group_roots.shape[0], (model.world_count + 1) * model._bvh_shape_class_count)
+    # Filters selecting at most one shape per world, here the global ground plus one stack shape, skip the BVH.
+    direct = [model._bvh_shape_filter(shape_filter).world_leaves is not None for shape_filter in ids]
+    test.assertEqual(direct, [True, False, True, False, True, True, True])
+    _assert_rays_match_brute_force(test, model, ids, device)
+
+
+def test_intersect_ray_shape_filters_heterogeneous_worlds(test: TestShapeGroups, device):
+    builder = _heterogeneous_scene()
+    ids = [builder.add_shape_filter(shape_filter) for shape_filter in _RAY_FILTERS]
+    model = builder.finalize(device=device)
+
+    # World 2 holds two colliding terrain shapes, so the terrain filter and the collider filter excluding the
+    # robot traverse the BVH there; filters with at most one shape in every world still skip it.
+    direct = [model._bvh_shape_filter(shape_filter).world_leaves is not None for shape_filter in ids]
+    test.assertEqual(direct, [False, False, False, False, True, True, True])
+    _assert_rays_match_brute_force(test, model, ids, device)
 
 
 def test_intersect_ray_default_filter_keeps_world_groups(test: TestShapeGroups, device):
@@ -306,9 +347,44 @@ def test_intersect_ray_shape_filter_skips_empty_variant_rows(test: TestShapeGrou
     np.testing.assert_array_equal(shape_id, [1, -1])
 
 
+def test_intersect_ray_shape_filter_variant_rows_follow_occupancy(test: TestShapeGroups, device):
+    def variant(with_site: bool) -> newton.ModelBuilder:
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.2)
+        if with_site:
+            site = builder.add_site(body, xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()), scale=(0.1,) * 3)
+            builder.add_shape_group("markers", shapes=[site])
+        return builder
+
+    env = newton.ModelBuilder()
+    env.add_body_variants(env.add_body(), [variant(True), variant(False)])
+    builder = newton.ModelBuilder()
+    builder.replicate(env, 2)
+    # A filter without flags keeps a row holding a shape with neither visibility nor collision; a SITE filter
+    # skips an empty row, although the row keeps the SITE flag of the site it can hold.
+    filters = [builder.add_shape_filter(newton.ShapeFilter(groups=["markers"]))]
+    filters.append(builder.add_shape_filter(newton.ShapeFilter(flags=newton.ShapeFlags.SITE)))
+    model = builder.finalize(device=device)
+
+    model.select_body_variants(wp.array([0, 1], dtype=wp.int32, device=device))
+    model.bvh_refit_shapes(model.state())
+    site_row = newton.ShapeFilter(groups=["markers"]).select(model)[0]  # the site row of world 0
+    for shape_filter in filters:
+        with test.subTest(shape_filter=shape_filter):
+            _dist, shape_id = _cast_down(model, shape_filter, device)
+            np.testing.assert_array_equal(shape_id, [site_row, -1])
+
+
 devices = get_test_devices()
 add_function_test(
     TestShapeGroups, "test_intersect_ray_shape_filters", test_intersect_ray_shape_filters, devices=devices
+)
+add_function_test(
+    TestShapeGroups,
+    "test_intersect_ray_shape_filters_heterogeneous_worlds",
+    test_intersect_ray_shape_filters_heterogeneous_worlds,
+    devices=devices,
 )
 add_function_test(
     TestShapeGroups,
@@ -332,3 +408,9 @@ add_function_test(
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+add_function_test(
+    TestShapeGroups,
+    "test_intersect_ray_shape_filter_variant_rows_follow_occupancy",
+    test_intersect_ray_shape_filter_variant_rows_follow_occupancy,
+    devices=devices,
+)

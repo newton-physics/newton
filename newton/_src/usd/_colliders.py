@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from ._resolution_policy import _PhysicsMaterial
     from ._visuals import _UsdVisuals
     from .schema_resolver import SchemaResolverManager
-    from .utils import _ShapeGroupResolver
+    from .utils import ShapeGroupResolver
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ def _parse_colliders(
     ret_dict: dict[Any, Any],
     R: SchemaResolverManager,
     visuals: _UsdVisuals,
-    shape_groups: _ShapeGroupResolver,
+    shape_groups: ShapeGroupResolver,
     mass_properties: _UsdMassProperties,
     material_specs: dict[str, _PhysicsMaterial],
     default_shape_density: float,

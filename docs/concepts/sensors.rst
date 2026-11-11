@@ -130,8 +130,8 @@ an integer id that :func:`~newton.intersect_ray` and :class:`~newton.sensors.Sen
 .. code-block:: python
 
    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(groups=("terrain",)))
-   builder.add_shape_group("robot", shapes="*/Robot/*")
    builder.replicate(env, world_count)
+   builder.add_shape_group("robot", shapes="*/Robot/*")
 
    height_scan = builder.add_shape_filter(newton.ShapeFilter(groups=["terrain"]))
    lidar = builder.add_shape_filter(

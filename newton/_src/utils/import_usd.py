@@ -681,7 +681,7 @@ def parse_usd(
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     traverse_instance_proxies = Usd.TraverseInstanceProxies()
     visuals = _UsdVisuals(stage)
-    shape_groups = usd._ShapeGroupResolver()
+    shape_groups = usd.ShapeGroupResolver()
 
     def _xform_to_mat44(xform: wp.transform) -> wp.mat44:
         return wp.transform_compose(xform.p, xform.q, wp.vec3(1.0))

@@ -1442,6 +1442,7 @@ class TestSensorCamera(unittest.TestCase):
             hx=2.0,
             hy=2.0,
             hz=0.1,
+            color=(0.5, 0.5, 0.5),
         )
         no_markers = builder.add_shape_filter(
             newton.ShapeFilter(flags=newton.ShapeFlags.VISIBLE, exclude_groups=["markers"])
@@ -1459,6 +1460,23 @@ class TestSensorCamera(unittest.TestCase):
                     state, self._identity_transforms(1), rays, shape_index_image=shape_index, color_image=color
                 )
                 self.assertEqual(int(shape_index.numpy()[0, height // 2, width // 2]), expected_shape)
+
+        # A light shining along the view axis shadows the box behind the marker sphere, unless the filter
+        # excludes the sphere from shadow rays too. The filtered render then matches a scene without the sphere.
+        def lit_center(model: newton.Model, shape_filter: int | None = None) -> np.ndarray:
+            camera = self._camera_with_model(model, shape_filter=shape_filter)
+            camera.create_default_light(enable_shadows=True, direction=wp.vec3(0.0, 0.0, -1.0))
+            return self._center_hdr(camera, model, render_config=camera.RenderConfig(enable_shadows=True))
+
+        box_only = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        box_only.add_shape_box(
+            box_only.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -5.0), q=wp.quat_identity())),
+            hx=2.0,
+            hy=2.0,
+            hz=0.1,
+            color=(0.5, 0.5, 0.5),
+        )
+        np.testing.assert_allclose(lit_center(model, no_markers), lit_center(box_only.finalize(device="cpu")))
 
         with self.assertRaisesRegex(ValueError, "Unknown shape filter id 2"):
             self._camera_with_model(model, shape_filter=2)

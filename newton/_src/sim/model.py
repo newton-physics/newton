@@ -19,7 +19,7 @@ import warp as wp
 
 from ..core.types import Devicelike
 from ..exceptions import NewtonDeprecationWarning
-from ..geometry.bvh import _ShapeFilterBvh
+from ..geometry.bvh import ShapeFilterBvh
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
@@ -41,7 +41,7 @@ _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
 )
 
 _SHAPE_FILTER_DEPRECATION_MSG = (
-    "Model.shape_filter is deprecated in Newton 1.8 and will be removed in a future release. It was never "
+    "Model.shape_filter is deprecated in Newton 1.9 and will be removed in a future release. It was never "
     "populated; it now aliases Model.shape_groups, the shape group membership that newton.ShapeFilter selects by."
 )
 
@@ -1198,7 +1198,7 @@ class Model:
         """Shape class of each shape BVH leaf, shape ``[bvh_shape_count_enabled]``."""
         self._bvh_shape_class_count: int = 1
         """Number of shape classes in the shape BVH."""
-        self._bvh_shape_filters: list[_ShapeFilterBvh] = []
+        self._bvh_shape_filters: list[ShapeFilterBvh] = []
         """Traversal data of each shape filter id, built by :meth:`bvh_build_shapes`."""
         self.bvh_shape_bounds: wp.array2d[wp.vec3f] | None = None
         """Local-space AABB per shape (min/max) for mesh and gaussian shapes, shape ``[shape_count, 2]`` [m]."""
@@ -2245,7 +2245,7 @@ class Model:
     def shape_filter(self) -> wp.array[wp.uint32] | None:
         """Alias of :attr:`shape_groups`.
 
-        .. deprecated:: 1.8
+        .. deprecated:: 1.9
             This attribute was never populated. Use :attr:`shape_groups` and
             :class:`~newton.ShapeFilter` instead.
         """
@@ -2415,7 +2415,7 @@ class Model:
             self.bvh_shapes = None
             self.bvh_shapes_group_roots = None
             self._bvh_shape_filters = [
-                _ShapeFilterBvh(
+                ShapeFilterBvh(
                     roots=wp.empty((world_count_total, 0), dtype=wp.int32, device=device),
                     leaves=self.bvh_shape_enabled,
                     flags_mask=0,
@@ -2453,8 +2453,8 @@ class Model:
             zip(shape_filters, filter_classes, strict=True)
         ):
             filter_leaves = np.flatnonzero(class_filters[shape_class, filter_index])
-            # Variant rows keep their leaf while they have one of the filter's flags; without flags, while not empty.
-            flags_mask = int(shape_filter.flags) if shape_filter.flags is not None else int(_EMPTY_ROW_CLEARED_FLAGS)
+            # Variant rows keep their leaf while they hold a shape with one of the filter's flags, if it has any.
+            flags_mask = int(shape_filter.flags) if shape_filter.flags is not None else 0
             world_leaves = None
             if np.bincount(leaf_world[filter_leaves], minlength=world_count_total).max(initial=0) <= 1:
                 table = np.full(world_count_total, -1, dtype=np.int32)
@@ -2475,7 +2475,7 @@ class Model:
                 )
             # Only variant rows change which leaves a filter keeps; without them all filters share the leaves.
             self._bvh_shape_filters.append(
-                _ShapeFilterBvh(
+                ShapeFilterBvh(
                     roots=roots,
                     leaves=wp.empty_like(self.bvh_shape_enabled) if self._has_variant_rows else self.bvh_shape_enabled,
                     flags_mask=flags_mask,
@@ -2532,6 +2532,7 @@ class Model:
                 inputs=[
                     self.bvh_shape_enabled,
                     self._shape_variant_row,
+                    self._shape_variant_shape,
                     self.shape_flags,
                     shape_filter.flags_mask,
                     opacity,
@@ -2550,7 +2551,7 @@ class Model:
             )
         return index
 
-    def _bvh_shape_filter(self, shape_filter: int | None) -> _ShapeFilterBvh:
+    def _bvh_shape_filter(self, shape_filter: int | None) -> ShapeFilterBvh:
         """Shape BVH traversal data of a shape filter id, ``None`` meaning the default filter."""
         index = self._shape_filter_index(shape_filter)
         if not self._bvh_shape_filters:
