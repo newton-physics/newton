@@ -721,10 +721,11 @@ pass.  Neural-network drives support one step per tape.
 
    states = [model.state() for _ in range(num_steps + 1)]
    controls = [model.control() for _ in range(num_steps + 1)]
-   act_states = [actuator.state() for _ in range(num_steps + 1)]
+   act_states = [[actuator.state() for actuator in model.actuators] for _ in range(num_steps + 1)]
    with wp.Tape() as tape:
        for k in range(num_steps):
-           actuator.step(states[k], controls[k], act_states[k], act_states[k + 1], dt=dt)
+           for i, actuator in enumerate(model.actuators):
+               actuator.step(states[k], controls[k], act_states[k][i], act_states[k + 1][i], dt=dt)
            for battery in model.batteries:
                battery.step(controls[k], controls[k + 1])
            solver.step(states[k], states[k + 1], controls[k], None, dt)
