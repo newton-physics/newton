@@ -1337,7 +1337,9 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         # A kinematic body made dynamic brings its scale into the dynamics.
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
-            self._validate_body_gravity_scale(applies_scale=False)
+            self._validate_body_gravity_scale(
+                applies_scale=False, scale_changed=bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES)
+            )
         self._validate_structural_invariants(flags)
         self._solver_kamino.validate_model_changed(flags)
 

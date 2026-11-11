@@ -4,6 +4,7 @@
 """Tests for per-body gravity scales (:attr:`newton.Model.body_gravity_scale`)."""
 
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -245,6 +246,25 @@ def test_unsupported_solver_raises(test, device, solver_fn):
         solver_fn(model)
 
 
+def test_unsupported_solver_notify_after_unit_scales(test, device, solver_fn):
+    """Skip the host read on body notifications while every scale is 1, and check again after a scale change."""
+    builder = newton.ModelBuilder()
+    body = builder.add_body(mass=1.0, inertia=INERTIA)
+    builder.add_shape_sphere(body, radius=0.1)
+    builder.add_body(mass=1.0, inertia=INERTIA, is_kinematic=True)
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+    with mock.patch.object(wp.array, "numpy", side_effect=AssertionError("host read")):
+        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+    model.body_gravity_scale.assign([1.0, 0.0])
+    solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+    model.body_flags.fill_(int(newton.BodyFlags.DYNAMIC))
+    with test.assertRaisesRegex(NotImplementedError, "body_gravity_scale"):
+        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+
 def test_coupled_proxy(test, device, destination_fn):
     """Proxy scaled bodies owned by Featherstone into a solver that rejects scales, and fall at the owner's gravity."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
@@ -382,6 +402,15 @@ for device in get_test_devices():
             devices=[device],
             solver_fn=solver_fn,
         )
+        # Kamino's own body checks read the model on the host.
+        if name != "kamino":
+            add_function_test(
+                TestBodyGravityScaleUnsupported,
+                f"test_unsupported_solver_notify_after_unit_scales_{name}",
+                test_unsupported_solver_notify_after_unit_scales,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
     for name in ("semi_implicit", "xpbd", "vbd"):
         add_function_test(
             TestBodyGravityScaleCoupled,

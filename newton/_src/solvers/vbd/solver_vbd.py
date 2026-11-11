@@ -1629,7 +1629,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """Refresh solver caches affected by the specified model-property flags."""
         # A kinematic body made dynamic brings its scale into the dynamics.
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
-            self._validate_body_gravity_scale(applies_scale=False)
+            self._validate_body_gravity_scale(
+                applies_scale=False, scale_changed=bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES)
+            )
         self._apply_module_options()
         if flags & ModelFlags.TENDON_PROPERTIES:
             self._refresh_tendon_properties()

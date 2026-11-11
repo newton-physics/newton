@@ -615,6 +615,7 @@ class SolverBase:
         self.model = model
         self._module_options: dict[Any, dict[str, Any]] = {}
         self._applied_module_options_revision = -1
+        self._body_gravity_scale_all_one = False
 
         if collision_pipeline is not None and not self.supports_collision_pipeline:
             raise ValueError(
@@ -982,22 +983,26 @@ class SolverBase:
         """
         return self.model.device
 
-    def _validate_body_gravity_scale(self, *, applies_scale: bool) -> None:
+    def _validate_body_gravity_scale(self, *, applies_scale: bool, scale_changed: bool = True) -> None:
         """Reject non-finite :attr:`~newton.Model.body_gravity_scale` values, and values other than 1 on
         dynamic bodies unless the solver applies them.
 
-        Reads the model on the host, so it is skipped during CUDA graph capture.
+        Reads the model on the host, so it is skipped during CUDA graph capture. With ``scale_changed=False``
+        it is also skipped while every scale was 1 at the last check.
         """
         model = self.model
         scale = model.body_gravity_scale
         if scale is None or scale.shape[0] == 0 or model.device.is_capturing:
             return
+        if not scale_changed and self._body_gravity_scale_all_one:
+            return
         scale = scale.numpy()
+        self._body_gravity_scale_all_one = bool(np.all(scale == 1.0))
         finite = np.isfinite(scale)
         if not np.all(finite):
             body = int(np.flatnonzero(~finite)[0])
             raise ValueError(f"Model.body_gravity_scale of body {body} must be finite, got {scale[body]}")
-        if applies_scale:
+        if applies_scale or self._body_gravity_scale_all_one:
             return
         dynamic = (model.body_inv_mass.numpy() > 0.0) & ((model.body_flags.numpy() & int(BodyFlags.KINEMATIC)) == 0)
         if np.any(dynamic & (scale != 1.0)):
