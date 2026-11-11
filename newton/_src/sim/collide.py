@@ -2502,6 +2502,7 @@ class CollisionPipeline:
         # Built here (not in finalize) so models/tasks that never collide don't pay for it.
         # Host-side, so not graph-capture-safe -- construct the pipeline before any capture.
         is_mesh = np.zeros(model.shape_count, dtype=bool)
+        # Meshes whose vertex, edge, and face contacts use the mesh BVH.
         mesh_mask = is_mesh
         # Meshes whose vertex, edge, and face contacts sample their volume SDF.
         sdf_mesh_mask = is_mesh

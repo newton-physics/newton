@@ -879,6 +879,11 @@ triangle, edge or vertex through
 mesh contacts from the ``"sdf"`` mesh back-end
 (``CollisionPipeline(rigid_soft_full_surface_mesh_backend="sdf")``), and
 penetration-recovery contacts truncate only their stored rigid surface point.
+The penetration-free guarantee of rigid-soft DAT therefore holds only for mesh
+contacts from the ``"bvh"`` back-end. For analytic shapes and the ``"sdf"``
+mesh back-end the truncation keeps the soft feature apart from that one point
+and does not check the rest of the rigid surface, so new penetrations are not
+ruled out.
 Each body then scales its whole pose update, translation and rotation about
 the centre of mass, by the smallest factor of its contacts
 (``apply_body_truncation_ts``). The radius truncation caps the motion of every
