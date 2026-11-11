@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+approval_policy = "never"
+web_search = "disabled"
+
+[features]
+multi_agent = false
+shell_snapshot = false
+apps = false
+
+[shell_environment_policy]
+inherit = "none"
+
+[shell_environment_policy.set]
+PATH = "/usr/local/bin:/usr/bin:/bin"
+
+[permissions.review.filesystem]
+":root" = "deny"
+":minimal" = "read"
+"/proc" = "deny"
+"/sys" = "deny"
+
+[permissions.review.filesystem.":workspace_roots"]
+"." = "read"
+
+[permissions.review.network]
+enabled = false
