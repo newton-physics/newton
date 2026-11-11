@@ -1061,7 +1061,6 @@ def parse_mjcf(
                     jnt_actgravcomp=bool(model.jnt_actgravcomp[native_joint]),
                     native_joint_type=int(model.jnt_type[native_joint]),
                     native_joint_springdamper=source_joint.springdamper,
-                    dof_limit_range=model.jnt_range[native_joint],
                     native_joint_limited=int(source_joint.limited),
                     native_joint_actfrcrange=model.jnt_actfrcrange[native_joint],
                     native_joint_actfrclimited=int(source_joint.actfrclimited),
@@ -1075,6 +1074,8 @@ def parse_mjcf(
                     solreffriction=model.dof_solref[source_dof],
                     solimpfriction=model.dof_solimp[source_dof],
                 )
+                if count > 1:
+                    extra.update(attributes(native_joint_range=model.jnt_range[native_joint]))
                 for key, value in extra.items():
                     for k in range(1 if key.startswith("mujoco:native_joint_") else count):
                         builder.custom_attributes[key].values[dof + k] = value
@@ -1335,6 +1336,8 @@ def parse_mjcf(
                 pending_damping,
                 dof_count=3 if model.jnt_type[source_target] == mujoco.mjtJoint.mjJNT_BALL else 1,
             )
+        if transmission == 0 and native_parameters["native_actuator_inheritrange"] > 0:
+            values.update(attributes(native_actuator_inheritrange_bounds=model.jnt_range[source_target]))
         values.update(custom("mujoco:actuator", spec.actuators[i]))
         if values.get("mujoco:native_actuator_inheritrange", 0) > 0:
             builder._add_model_finalizer(_finalize_native_actuator_ranges)

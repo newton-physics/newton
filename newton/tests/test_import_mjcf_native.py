@@ -1255,7 +1255,6 @@ class TestImportMjcfNative(unittest.TestCase):
                     xml,
                     (
                         "jnt_limited",
-                        "jnt_range",
                         "jnt_stiffness",
                         "jnt_stiffnesspoly",
                         "dof_dampingpoly",

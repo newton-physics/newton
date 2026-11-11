@@ -143,6 +143,8 @@ def _register_native_attributes(builder: ModelBuilder) -> None:
         ("native_equality_site1", "mujoco:equality_constraint", wp.int32, -1, "shape"),
         ("native_equality_site2", "mujoco:equality_constraint", wp.int32, -1, "shape"),
         ("native_actuator_target_kd", "mujoco:actuator", wp.float32, -1.0, None),
+        ("native_actuator_inheritrange_bounds", "mujoco:actuator", wp.vec2, (0.0, 0.0), None),
+        ("native_joint_range", Model.AttributeFrequency.JOINT_DOF, wp.vec2, (0.0, 0.0), None),
         ("native_joint_gain_baseline", Model.AttributeFrequency.JOINT_DOF, wp.vec2, (-1.0, -1.0), None),
         ("native_target_kd_override", Model.AttributeFrequency.JOINT_DOF, wp.bool, False, None),
     ):
@@ -333,7 +335,7 @@ def _apply_native_joint_parameters(model: Model, spec: mujoco.MjSpec, dof_to_joi
     if not hasattr(attrs, "native_joint_type"):
         return
     fields = {name: getattr(attrs, f"native_joint_{name}").numpy() for name in _NATIVE_JOINT_FIELDS}
-    ranges = attrs.dof_limit_range.numpy()
+    ranges = attrs.native_joint_range.numpy()
     stiffness = model.joint_stiffness.numpy()
     actgravcomp = attrs.jnt_actgravcomp.numpy()
     damping, armature, friction = (
@@ -439,14 +441,14 @@ def _finalize_native_actuator_ranges(builder: ModelBuilder, model: Model) -> Non
     transmissions = attrs.actuator_trntype.numpy()
     tendon_ranges = attrs.tendon_range.numpy() if np.any(transmissions == SolverMuJoCo.TrnType.TENDON) else None
     lower, upper = model.joint_limit_lower.numpy(), model.joint_limit_upper.numpy()
-    refs, native_ranges = attrs.dof_ref.numpy(), attrs.dof_limit_range.numpy()
+    refs, source_bounds = attrs.dof_ref.numpy(), attrs.native_actuator_inheritrange_bounds.numpy()
     dynamics = attrs.actuator_dyntype.numpy()
     control, activation = attrs.actuator_ctrlrange.numpy(), attrs.actuator_actrange.numpy()
     for row in np.flatnonzero(factors > 0):
         dof = targets[row]
         if transmissions[row] == SolverMuJoCo.TrnType.JOINT:
             bounds = (
-                native_ranges[dof]
+                source_bounds[row]
                 if lower[dof] <= -MAXVAL and upper[dof] >= MAXVAL
                 else np.array([lower[dof], upper[dof]]) + refs[dof]
             )

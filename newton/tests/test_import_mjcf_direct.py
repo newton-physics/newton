@@ -204,7 +204,7 @@ class TestImportMjcfDirect(unittest.TestCase):
         reference = mujoco.MjModel.from_xml_string(assembled)
         fields = (
             "jnt_type",
-            "jnt_range",
+            "jnt_limited",
             "jnt_stiffness",
             "dof_damping",
             "dof_armature",
@@ -235,6 +235,10 @@ class TestImportMjcfDirect(unittest.TestCase):
                     builder.replicate(asset, copies)
                     solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
                     self.assertEqual((solver.mj_model.nv, solver.mj_model.nu), (reference.nv, reference.nu))
+                    limited = reference.jnt_limited.astype(bool)
+                    np.testing.assert_allclose(
+                        solver.mj_model.jnt_range[limited], reference.jnt_range[limited], rtol=5e-5, atol=3e-6
+                    )
                     for field in fields:
                         np.testing.assert_allclose(
                             getattr(solver.mj_model, field),

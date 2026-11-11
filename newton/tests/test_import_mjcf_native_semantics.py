@@ -900,10 +900,11 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
         builder.replicate(asset, 2)
         builder.joint_limit_lower[1], builder.joint_limit_upper[1] = -0.5, 0.7
         builder.custom_attributes["mujoco:tendon_range"].values[1] = (2, 6)
+        builder.custom_attributes["mujoco:native_actuator_inheritrange"].values[0] = 0.5
         model = builder.finalize()
         ctrl = model.mujoco.actuator_ctrlrange.numpy().copy()
         act = model.mujoco.actuator_actrange.numpy().copy()
-        np.testing.assert_allclose(ctrl[[0, 2]], [[-0.14, 0.34], [-0.28, 0.68]], atol=1e-7)
+        np.testing.assert_allclose(ctrl[[0, 2]], [[-0.05, 0.25], [-0.28, 0.68]], atol=1e-7)
         np.testing.assert_allclose(act[[1, 3]], [[1.2, 2.8], [2.4, 5.6]], atol=1e-6)
         np.testing.assert_array_equal(model.mujoco.native_actuator_inheritrange.numpy(), 0)
         np.testing.assert_array_equal(builder.finalize().mujoco.actuator_ctrlrange.numpy(), ctrl)
@@ -985,7 +986,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                             np.testing.assert_allclose(getattr(solver.mj_model, field), getattr(reference, field))
 
     def test_joint_limit_defaults(self):
-        """Retain disabled ranges and automatic flags through solver notifications."""
+        """Preserve active limits and native ball ranges through solver notifications."""
         import mujoco
 
         for kind, bounds in (("hinge", "-20 40"), ("slide", "-.2 .4"), ("ball", "0 30")):
@@ -996,17 +997,22 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                     builder = newton.ModelBuilder()
                     builder.add_mjcf_native(xml)
                     solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
-                    for field in ("jnt_limited", "jnt_range", "jnt_actfrclimited", "jnt_actfrcrange", "jnt_solref"):
+                    for field in ("jnt_limited", "jnt_actfrclimited", "jnt_actfrcrange", "jnt_solref"):
                         np.testing.assert_allclose(
                             getattr(solver.mj_model, field), getattr(reference, field), atol=1e-7
                         )
+                    expected_range = (
+                        reference.jnt_range if kind == "ball" or reference.jnt_limited[0] else [[-1e10, 1e10]]
+                    )
+                    if kind == "ball" or reference.jnt_limited[0]:
+                        np.testing.assert_allclose(solver.mj_model.jnt_range, reference.jnt_range, atol=1e-7)
                     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-                    np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0], reference.jnt_range, atol=1e-7)
+                    np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0], expected_range, atol=1e-7)
                     if kind == "hinge" and flag == "false":
                         model = solver.model
                         model.mujoco.dof_ref.assign([0.5])
                         solver.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
-                        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0], reference.jnt_range)
+                        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0], [[-1e10, 1e10]])
                         model.joint_limit_lower.assign([-0.25])
                         model.joint_limit_upper.assign([0.75])
                         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)

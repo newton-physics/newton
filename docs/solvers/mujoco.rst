@@ -198,9 +198,11 @@ composition. These are Newton storage fields for standard MJCF parameters,
 not extensions to the XML format. Explicit zero values remain distinct from
 automatic values, and
 limit flags retain their ``auto`` / ``true`` / ``false`` state. Native compilation
-validates ranges and infers activation dimensions. Disabled angular ranges keep
-MuJoCo's authored-unit convention. Both importers store disabled ranges in
-``mujoco.dof_limit_range``; later finite Newton bounds take precedence.
+validates ranges and infers activation dimensions. Inactive scalar joint ranges
+are not preserved in solver models or MJCF export. Native import retains source
+bounds only for actuators awaiting ``inheritrange`` resolution; finite Newton
+joint bounds take precedence at finalization. Native ball-joint ranges remain
+solver-specific because Newton's per-axis limits cannot express them.
 
 Passive joint stiffness and rest positions populate ``joint_stiffness`` and
 ``joint_rest_q`` during import, so other Newton solvers can consume them.
@@ -492,12 +494,12 @@ Joint types
 Joint reference values (``ref``)
 --------------------------------
 
-MJCF hinge and slide joints with ``limited="false"`` use unlimited Newton
-bounds. Their authored ranges remain available for MuJoCo export and actuator
-``inheritrange``, including integrated-velocity activation bounds. Disabled
-angular ranges retain their authored units, as in MuJoCo; slide ranges scale
-with the imported model. Editing the reference pose leaves these inactive
-ranges unchanged. Subsequent finite Newton bounds take precedence.
+Legacy MJCF import treats disabled hinge and slide ranges like omitted ranges,
+using the builder's default joint limits. It retains inactive ranges locally
+only to resolve actuator ``inheritrange`` during import. Native import uses
+unlimited scalar bounds and resolves ``inheritrange`` at builder finalization.
+Neither importer preserves inactive scalar ranges in ``jnt_range`` or
+``save_to_mjcf`` output; their values do not affect joint-limit forces.
 
 MuJoCo scalar joints (hinge and slide) may carry a reference value
 (MJCF ``ref``, exposed as the ``mujoco.dof_ref`` custom attribute): the
