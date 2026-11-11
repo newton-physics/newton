@@ -21,9 +21,9 @@ from ..geometry.contact_data import (
     CONTACT_SORT_SUB_KEY_BITS,
     ContactData,
     contact_passes_speculative_gap_check,
+    contact_separation,
     contact_sort_shape_index_bits,
     make_contact_sort_key_with_bits,
-    prepare_speculative_contact,
 )
 from ..geometry.contact_match import ContactMatcher
 from ..geometry.contact_reduction_body_pairs import (
@@ -232,8 +232,6 @@ def _write_contact_at_index(
     contact_data: ContactData,
     writer_data: ContactWriterData,
     index: int,
-    point_a_world: wp.vec3,
-    point_b_world: wp.vec3,
     normal_a_to_b: wp.vec3,
 ):
     """Write a previously accepted contact at a reserved output index."""
@@ -245,16 +243,24 @@ def _write_contact_at_index(
 
     body0 = writer_data.shape_body[contact_data.shape_a]
     body1 = writer_data.shape_body[contact_data.shape_b]
-    X_bw_a = wp.transform_identity() if body0 == -1 else wp.transform_inverse(writer_data.body_q[body0])
-    X_bw_b = wp.transform_identity() if body1 == -1 else wp.transform_inverse(writer_data.body_q[body1])
+    X_wa = wp.transform_identity() if body0 == -1 else writer_data.body_q[body0]
+    X_wb = wp.transform_identity() if body1 == -1 else writer_data.body_q[body1]
+    rotation_a = wp.transform_get_rotation(X_wa)
+    rotation_b = wp.transform_get_rotation(X_wb)
 
-    writer_data.out_point0[index] = wp.transform_point(X_bw_a, point_a_world)
-    writer_data.out_point1[index] = wp.transform_point(X_bw_b, point_b_world)
+    # Apply witness offsets after subtracting the body origins to retain their precision.
+    relative_a = contact_data.contact_point_center - wp.transform_get_translation(X_wa)
+    relative_b = contact_data.contact_point_center - wp.transform_get_translation(X_wb)
+    half_distance = 0.5 * contact_data.contact_distance
+    point_a = relative_a - normal_a_to_b * (half_distance + contact_data.radius_eff_a)
+    point_b = relative_b + normal_a_to_b * (half_distance + contact_data.radius_eff_b)
+    writer_data.out_point0[index] = wp.quat_rotate_inv(rotation_a, point_a)
+    writer_data.out_point1[index] = wp.quat_rotate_inv(rotation_b, point_b)
 
     offset_mag_a = contact_data.radius_eff_a + contact_data.margin_a
     offset_mag_b = contact_data.radius_eff_b + contact_data.margin_b
-    writer_data.out_offset0[index] = wp.transform_vector(X_bw_a, offset_mag_a * normal_a_to_b)
-    writer_data.out_offset1[index] = wp.transform_vector(X_bw_b, -offset_mag_b * normal_a_to_b)
+    writer_data.out_offset0[index] = wp.quat_rotate_inv(rotation_a, offset_mag_a * normal_a_to_b)
+    writer_data.out_offset1[index] = wp.quat_rotate_inv(rotation_b, -offset_mag_b * normal_a_to_b)
     writer_data.out_normal[index] = normal_a_to_b
     writer_data.out_margin0[index] = offset_mag_a
     writer_data.out_margin1[index] = offset_mag_b
@@ -289,37 +295,14 @@ def write_contact(
         writer_data: ContactWriterData struct containing body info and output arrays
         output_index: If -1, use atomic_add to get the next available index if contact distance is less than margin. If >= 0, use this index directly and skip margin check.
     """
-    total_separation_needed = (
-        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.margin_a + contact_data.margin_b
-    )
-
-    # Distance calculation matching box_plane_collision
-    contact_normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
-
-    a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
-    )
-    b_contact_world = contact_data.contact_point_center + contact_normal_a_to_b * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
-    )
-
-    diff = b_contact_world - a_contact_world
-    distance = wp.dot(diff, contact_normal_a_to_b)
-    d = distance - total_separation_needed
-
-    # Use per-shape contact gaps (sum of both shapes)
-    gap_a = writer_data.shape_gap[contact_data.shape_a]
-    gap_b = writer_data.shape_gap[contact_data.shape_b]
-    contact_gap = gap_a + gap_b
-
     index = output_index
-
     if index < 0:
-        # compute index using atomic counter
-        if d > contact_gap:
+        contact_gap = writer_data.shape_gap[contact_data.shape_a] + writer_data.shape_gap[contact_data.shape_b]
+        if contact_separation(contact_data) > contact_gap:
             return
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
-    _write_contact_at_index(contact_data, writer_data, index, a_contact_world, b_contact_world, contact_normal_a_to_b)
+    normal = wp.normalize(contact_data.contact_normal_a_to_b)
+    _write_contact_at_index(contact_data, writer_data, index, normal)
 
 
 @wp.func
@@ -330,8 +313,6 @@ def write_contact_speculative(
 ):
     """Write a present or exactly predicted contact to the output arrays."""
     contact_data.gap_sum = writer_data.shape_gap[contact_data.shape_a] + writer_data.shape_gap[contact_data.shape_b]
-    normal, point_a_world, point_b_world, _separation = prepare_speculative_contact(contact_data)
-
     index = output_index
     if index < 0:
         if not contact_passes_speculative_gap_check(
@@ -345,7 +326,8 @@ def write_contact_speculative(
             return
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
 
-    _write_contact_at_index(contact_data, writer_data, index, point_a_world, point_b_world, normal)
+    normal = wp.normalize(contact_data.contact_normal_a_to_b)
+    _write_contact_at_index(contact_data, writer_data, index, normal)
 
 
 @wp.func
@@ -1804,11 +1786,13 @@ class CollisionPipeline:
             deterministic: Sort contacts after the narrow phase so that results
                 are independent of GPU thread scheduling. This also enables
                 deterministic hydroelastic accumulation and contact allocation.
-                Adds a radix sort + gather pass.
+                Adds a radix sort + gather pass. Limits the shape count; see
+                :ref:`Deterministic Contacts`.
             contact_matching: Frame-to-frame contact matching mode.  One of
                 ``"disabled"``, ``"latest"``, or ``"sticky"``.  Any
-                non-disabled mode implies ``deterministic=True`` and
-                populates :attr:`Contacts.rigid_contact_match_index`.
+                non-disabled mode implies ``deterministic=True``, including
+                its shape-count limit, and populates
+                :attr:`Contacts.rigid_contact_match_index`.
                 ``"sticky"`` also keeps each rigid-soft contact's soft-side and
                 body-side points while they touch the same surface and have
                 slipped apart by at most ``contact_matching_pos_threshold``,
@@ -1930,7 +1914,6 @@ class CollisionPipeline:
             properties is not None and np.any(properties.numpy() & int(MeshProperties.SURFACE_VELOCITY))
             for properties in mesh_properties
         )
-        self._contact_sort_shape_index_bits = contact_sort_shape_index_bits(shape_count)
         device = model.device
         using_expert_components = broad_phase_instance is not None or narrow_phase is not None
 
@@ -2387,6 +2370,10 @@ class CollisionPipeline:
         # matching; complex contact families retain the full fingerprint width.
         self._contact_sort_sub_key_bits = getattr(
             self.narrow_phase, "_contact_sort_sub_key_bits", CONTACT_SORT_SUB_KEY_BITS
+        )
+        # Sort keys are written only in deterministic mode, which contact matching implies.
+        self._contact_sort_shape_index_bits = (
+            contact_sort_shape_index_bits(shape_count, self._contact_sort_sub_key_bits) if deterministic else 0
         )
 
         self._hydro_shape_sdf_data_prepared = self.hydroelastic_sdf is not None
