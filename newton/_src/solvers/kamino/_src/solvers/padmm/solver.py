@@ -831,6 +831,11 @@ class PADMMSolver:
             problem: The dual forward dynamics problem to be solved.
                 This is needed during warm-starts in order to access the problem preconditioning.
         """
+        # The stored solution is in the variables of the joint decoupling of its own step, whose
+        # body share may differ from the current one, so express it in the current variables
+        if problem.joint_decoupling is not None:
+            problem.joint_decoupling.rebase_solution(self._data.solution.lambdas, self._data.solution.v_plus)
+
         # Apply the dual-problem preconditioner to the stored solution
         # in order to project to solution space of the PADMM variables
         wp.launch(

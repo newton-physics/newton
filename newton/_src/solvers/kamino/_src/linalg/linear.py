@@ -1109,8 +1109,13 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
         self._coupled_rows = size.sum_of_num_dynamic_joint_cts > 0 and (
             size.sum_of_num_friction_joint_cts + size.sum_of_num_effort_joint_cts > 0
         )
+        # Joint rows come first in each world's constraint rows, so only the leading
+        # bilateral and bounded joint rows can have couplings
+        self._num_coupled_rows = (
+            size.max_of_num_bilateral_joint_cts + size.max_of_num_bounded_joint_cts if self._coupled_rows else 0
+        )
         self._kernel = make_fused_cr_kernel(
-            self._max_rows, self._max_cols, MAX_BLOCKS_PER_ROW, self._block_dim, coupled_rows=self._coupled_rows
+            self._max_rows, self._max_cols, MAX_BLOCKS_PER_ROW, self._block_dim, coupled_rows=self._num_coupled_rows
         )
 
         with wp.ScopedDevice(device):

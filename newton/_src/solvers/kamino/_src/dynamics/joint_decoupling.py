@@ -158,6 +158,38 @@ def _decouple_warmstart(
 
 
 @wp.kernel
+def _rebase_solution(
+    # Inputs:
+    dofs: wp.array[DecoupledJointDof],
+    body_share: wp.array[wp.float32],
+    # Inputs and outputs:
+    solution_body_share: wp.array[wp.float32],
+    lambdas: wp.array[wp.float32],
+    v_plus: wp.array[wp.float32],
+):
+    """Express a solution in the variables of the current body share instead of those it was computed with.
+
+    The original impulses ``lambda_q = lambda_q' + c lambda_f`` and velocities ``v_f = v_f' - c v_q``
+    are unchanged, so ``lambda_q'`` changes by ``(c_old - c_new) lambda_f`` and ``v_f'`` by
+    ``(c_new - c_old) v_q``, where ``lambda_f`` sums the friction and effort impulses.
+    """
+    tid = wp.tid()
+    dof = dofs[tid]
+    s_new = body_share[tid]
+    dc = solution_body_share[tid] - s_new  # c_old - c_new
+    solution_body_share[tid] = s_new
+    lambda_sum = wp.float32(0.0)
+    v_shift = -dc * v_plus[dof.dynamic_row]
+    if dof.friction_row >= 0:
+        lambda_sum += lambdas[dof.friction_row]
+        v_plus[dof.friction_row] += v_shift
+    if dof.effort_row >= 0:
+        lambda_sum += lambdas[dof.effort_row]
+        v_plus[dof.effort_row] += v_shift
+    lambdas[dof.dynamic_row] += dc * lambda_sum
+
+
+@wp.kernel
 def _recouple_impulses(
     # Inputs:
     dofs: wp.array[DecoupledJointDof],
@@ -194,7 +226,6 @@ def _compute_body_share_dense(
     D: wp.array[wp.float32],
     # Outputs:
     body_share: wp.array[wp.float32],
-    row_scale: wp.array[wp.float32],
 ):
     """Compute the body share of each DoF from the dense body-space Delassus matrix."""
     tid = wp.tid()
@@ -205,12 +236,58 @@ def _compute_body_share_dense(
     # regularized, so it is the body-space term ``d`` of the DoF
     row = wp.where(dof.friction_row >= 0, dof.friction_row, dof.effort_row)
     d = D[mio[dof.wid] + ncts * (dof.dynamic_row - vio_w) + row - vio_w]
-    s = compute_body_share(d, inv_m_j[dof.dynamic_cts])
-    body_share[tid] = s
-    if dof.friction_row >= 0:
-        row_scale[dof.friction_row] = s
-    if dof.effort_row >= 0:
-        row_scale[dof.effort_row] = s
+    body_share[tid] = compute_body_share(d, inv_m_j[dof.dynamic_cts])
+
+
+@wp.func
+def _scale_dense_row(
+    row: wp.int32,
+    k: wp.int32,
+    s: wp.float32,
+    ncts: wp.int32,
+    m: wp.int32,
+    vio_w: wp.int32,
+    columns: wp.bool,
+    D: wp.array[wp.float32],
+):
+    """Scale entry ``k`` of one friction or effort row of a dense Delassus matrix, or of its column, if any."""
+    if row < 0:
+        return
+    local = row - vio_w
+    if columns:
+        D[m + ncts * k + local] *= s
+    else:
+        D[m + ncts * local + k] *= s
+
+
+@wp.kernel
+def _scale_rows_dense(
+    # Inputs:
+    dofs: wp.array[DecoupledJointDof],
+    body_share: wp.array[wp.float32],
+    dim: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    columns: wp.bool,
+    # Outputs:
+    D: wp.array[wp.float32],
+):
+    """Scale the friction and effort rows, or columns, of each DoF in a dense Delassus matrix by its body share."""
+    # Columns are launched with the DoF index varying fastest, so that the threads of a warp write
+    # neighboring entries of a matrix row instead of entries strided by a row length
+    i, j = wp.tid()
+    tid, k = i, j
+    if columns:
+        tid, k = j, i
+    dof = dofs[tid]
+    ncts = dim[dof.wid]
+    if k >= ncts:
+        return
+    m = mio[dof.wid]
+    vio_w = vio[dof.wid]
+    s = body_share[tid]
+    _scale_dense_row(dof.friction_row, k, s, ncts, m, vio_w, columns, D)
+    _scale_dense_row(dof.effort_row, k, s, ncts, m, vio_w, columns, D)
 
 
 @wp.kernel
@@ -271,13 +348,12 @@ class DynamicJointDecoupling:
     of the original rows.
     """
 
-    def __init__(self, model: ModelKamino | None = None, dense: bool = False, device: wp.DeviceLike = None):
+    def __init__(self, model: ModelKamino | None = None, device: wp.DeviceLike = None):
         """
         Initializes the decoupling.
 
         Args:
             model: The model to decouple the joint DoFs of. If provided, :meth:`finalize` is called.
-            dense: Whether the decoupling is used with a dense Delassus matrix.
             device: The device to allocate on. Defaults to the device of the model.
         """
         # Declare the device cache
@@ -289,21 +365,21 @@ class DynamicJointDecoupling:
         self.body_share: wp.array[wp.float32] | None = None
         """Body share ``s`` of each decoupled DoF, updated whenever the dual problem is built."""
 
-        self.row_scale: wp.array[wp.float32] | None = None
-        """Dense only: row scale ``s`` of the friction and effort rows, and one for all other rows."""
+        self.solution_body_share: wp.array[wp.float32] | None = None
+        """Body share of each decoupled DoF with which the solver's stored solution was computed,
+        updated by :meth:`rebase_solution`."""
 
         # If a model is provided, finalize the allocations
         if model is not None:
-            self.finalize(model, dense=dense, device=device)
+            self.finalize(model, device=device)
 
-    def finalize(self, model: ModelKamino, dense: bool = False, device: wp.DeviceLike = None):
+    def finalize(self, model: ModelKamino, device: wp.DeviceLike = None):
         """
         Finds all joint DoFs with a joint dynamics row and a friction or effort row, and
         allocates the decoupling data. Leaves :attr:`dofs` as ``None`` if there are no such DoFs.
 
         Args:
             model: The model to decouple the joint DoFs of.
-            dense: Whether the decoupling is used with a dense Delassus matrix.
             device: The device to allocate on. Defaults to the device of the model.
         """
         # Ensure the model is valid
@@ -313,7 +389,7 @@ class DynamicJointDecoupling:
         self._device = device if device is not None else model.device
         self.dofs = None
         self.body_share = None
-        self.row_scale = None
+        self.solution_body_share = None
 
         table = self._build_dof_table(model)
         if table is None:
@@ -322,8 +398,7 @@ class DynamicJointDecoupling:
         with wp.ScopedDevice(self._device):
             self.dofs = wp.array(table, dtype=DecoupledJointDof)
             self.body_share = wp.zeros(table.size, dtype=wp.float32)
-            if dense:
-                self.row_scale = wp.ones(model.size.sum_of_max_total_cts, dtype=wp.float32)
+            self.solution_body_share = wp.zeros(table.size, dtype=wp.float32)
 
     @staticmethod
     def _build_dof_table(model: ModelKamino) -> np.ndarray | None:
@@ -393,7 +468,7 @@ class DynamicJointDecoupling:
         self, inv_m_j: wp.array, dim: wp.array, mio: wp.array, vio: wp.array, D: wp.array[wp.float32]
     ):
         """
-        Updates the body share from a dense body-space Delassus matrix, and the row scale.
+        Updates the body share from a dense body-space Delassus matrix.
 
         Args:
             inv_m_j: Compliance of the joint dynamics rows.
@@ -404,9 +479,31 @@ class DynamicJointDecoupling:
             _compute_body_share_dense,
             dim=self.num_dofs,
             inputs=[self.dofs, inv_m_j, dim, mio, vio, D],
-            outputs=[self.body_share, self.row_scale],
+            outputs=[self.body_share],
             device=self.device,
         )
+
+    def scale_rows_dense(self, dim: wp.array, mio: wp.array, vio: wp.array, max_rows: int, D: wp.array[wp.float32]):
+        """
+        Scales the friction and effort rows and columns of a dense Delassus matrix by the body share.
+
+        Only the rows and columns of the decoupled DoFs are visited, so the cost is proportional
+        to their number rather than to the size of the matrix.
+
+        Args:
+            dim, mio, vio: Per-world dimension, matrix offset and vector offset of the Delassus matrix.
+            max_rows: Maximum number of constraint rows of any world.
+            D: The dense Delassus matrix, modified in place.
+        """
+        # Scale the rows, then the columns, so that the entries of two decoupled rows get both shares
+        for columns in (False, True):
+            wp.launch(
+                _scale_rows_dense,
+                dim=(max_rows, self.num_dofs) if columns else (self.num_dofs, max_rows),
+                inputs=[self.dofs, self.body_share, dim, mio, vio, columns],
+                outputs=[D],
+                device=self.device,
+            )
 
     def add_joint_terms_dense(
         self,
@@ -418,7 +515,8 @@ class DynamicJointDecoupling:
         D: wp.array[wp.float32],
     ):
         """
-        Completes the change of variables of a dense Delassus matrix that is already scaled by :attr:`row_scale`.
+        Completes the change of variables of a dense Delassus matrix that is already scaled by
+        :meth:`scale_rows_dense`.
 
         Args:
             inv_m_j: Compliance of the joint dynamics rows.
@@ -466,6 +564,26 @@ class DynamicJointDecoupling:
             dim=self.num_dofs,
             inputs=[self.dofs, self.body_share, P],
             outputs=[x, y, z],
+            device=self.device,
+        )
+
+    def rebase_solution(self, lambdas: wp.array[wp.float32], v_plus: wp.array[wp.float32]):
+        """
+        Expresses a stored solution in the variables of the current body share, e.g. to warm-start from it.
+
+        The body share changes with the Jacobian, the body inertias and the joint compliance, and the
+        solution is in the variables of the body share it was computed with, which
+        :attr:`solution_body_share` records. Call this exactly once per solve that writes the solution.
+
+        Args:
+            lambdas: Unpreconditioned constraint impulses of the solution, modified in place.
+            v_plus: Unpreconditioned post-event constraint velocities of the solution, modified in place.
+        """
+        wp.launch(
+            _rebase_solution,
+            dim=self.num_dofs,
+            inputs=[self.dofs, self.body_share],
+            outputs=[self.solution_body_share, lambdas, v_plus],
             device=self.device,
         )
 

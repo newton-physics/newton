@@ -1662,7 +1662,7 @@ class DualProblem:
 
         # Pair the joint friction and effort rows with the joint dynamics rows of the same DoFs
         if self._decouple_joint_dynamics:
-            decoupling = DynamicJointDecoupling(model, dense=not self._sparse, device=self._device)
+            decoupling = DynamicJointDecoupling(model, device=self._device)
             if decoupling.num_dofs > 0:
                 self._joint_decoupling = decoupling
                 if self._sparse:
@@ -1847,12 +1847,8 @@ class DualProblem:
         else:
             problem = self._data
             decoupling.compute_body_share_dense(data.joints.inv_m_j, problem.dim, problem.mio, problem.vio, problem.D)
-            wp.launch(
-                _apply_dual_preconditioner_to_matrix,
-                dim=(self._size.num_worlds, self._delassus._max_of_max_total_D_size),
-                inputs=[problem.dim, problem.mio, problem.vio, decoupling.row_scale],
-                outputs=[problem.D],
-                device=self.device,
+            decoupling.scale_rows_dense(
+                problem.dim, problem.mio, problem.vio, self._size.max_of_max_total_cts, problem.D
             )
             decoupling.add_joint_terms_dense(
                 data.joints.inv_m_j, data.joints.inv_m_a, problem.dim, problem.mio, problem.vio, problem.D
