@@ -1412,7 +1412,7 @@ def test_mimic_articulation_stays_awake(test, device):
             if legacy:
                 _expect_one_warning(
                     test,
-                    newton.exceptions.NewtonDeprecationWarning,
+                    newton.NewtonDeprecationWarning,
                     r"add_constraint_mimic\(\) is deprecated",
                     functools.partial(builder.add_constraint_mimic, joint0=joints[2], joint1=joints[1]),
                 )

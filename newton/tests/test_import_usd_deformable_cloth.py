@@ -16,8 +16,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton import ShapeFlags
-from newton.exceptions import NewtonWarning
+from newton import NewtonWarning, ShapeFlags
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
@@ -577,7 +576,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         messages = [str(warning.message) for warning in caught]
         self.assertTrue(
             any(
-                warning.category is newton.exceptions.NewtonDeprecationWarning
+                warning.category is newton.NewtonDeprecationWarning
                 and "thicknesses" in str(warning.message)
                 and "thicknesses:elementType" in str(warning.message)
                 for warning in caught

@@ -5226,7 +5226,7 @@ class ModelBuilder:
                 ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
                 ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or target a multi-DoF
                 joint (such as joints sharing a body) are preserved this way even when True, with a
-                :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
+                :class:`~newton.NewtonWarning`; only SolverMuJoCo enforces them.
             convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
                 Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
                 an identity rest orientation. Default is False.
@@ -10586,7 +10586,7 @@ class ModelBuilder:
                 body origin and COM coincide. Defaults to ``"com"``.
 
                 .. deprecated:: 1.8
-                    ``"start"`` emits a :class:`~newton.exceptions.NewtonDeprecationWarning`.
+                    ``"start"`` emits a :class:`~newton.NewtonDeprecationWarning`.
                     Use ``"com"`` instead. For manually authored body-local anchors,
                     subtract the old ``body_com`` offset.
             junction_collision_filter: Whether to suppress self-collisions

@@ -532,7 +532,7 @@ Actuator damping is preserved on both backends. MuJoCo-Warp 3.15 folds it into
 joint and tendon damping; Newton retains that contribution when publishing
 joint or tendon property updates. Actuator armature is preserved only on the
 native MuJoCo CPU backend (``use_mujoco_cpu=True``); the Warp backend emits a
-:class:`~newton.exceptions.NewtonWarning` when it is nonzero. This limitation applies to all actuator
+:class:`~newton.NewtonWarning` when it is nonzero. This limitation applies to all actuator
 types, not only DC motors. MJCF ``damping`` accepts one, two, or three coefficients:
 the first is stored in ``mujoco:actuator_damping`` and the remaining two in
 ``mujoco:actuator_dampingpoly``. Partial overrides retain inherited trailing

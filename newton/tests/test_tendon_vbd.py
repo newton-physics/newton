@@ -75,10 +75,10 @@ def _make_tendon_vbd_solver(test, model, **overrides):
         "rigid_joint_linear_k_start, rigid_joint_angular_k_start are deprecated"
     )
     with warnings.catch_warnings(record=True) as caught:
-        warnings.filterwarnings("always", message=expected_warning, category=newton.exceptions.NewtonDeprecationWarning)
+        warnings.filterwarnings("always", message=expected_warning, category=newton.NewtonDeprecationWarning)
         solver = newton.solvers.SolverVBD(model, **(TENDON_VBD_SOLVER_KWARGS | overrides))
     test.assertEqual(len(caught), 1)
-    test.assertIs(caught[0].category, newton.exceptions.NewtonDeprecationWarning)
+    test.assertIs(caught[0].category, newton.NewtonDeprecationWarning)
     test.assertRegex(str(caught[0].message), expected_warning)
     return solver
 

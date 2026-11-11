@@ -14,7 +14,7 @@ import warp as wp
 
 import newton
 import newton.usd
-from newton.exceptions import NewtonWarning
+from newton import NewtonWarning
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.viewer import ViewerRTX, ViewerUSD
 
