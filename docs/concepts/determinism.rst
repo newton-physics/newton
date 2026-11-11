@@ -123,12 +123,14 @@ GPU models); Newton only tests ``RUN_TO_RUN``.
        observable sums contact wrenches with atomics and is outside the
        guarantee. See ``python -m newton.examples steel_determinism_arms``.
    * - :class:`~solvers.SolverMuJoCo`
-     - CPU only
-     - The CPU backend (``use_mujoco_cpu=True``) is always deterministic. On
-       the MuJoCo Warp backend, ``deterministic`` currently fails to compile
-       MuJoCo Warp's kernels with Warp 1.19, and MuJoCo Warp does not yet
-       order its contacts or constraint rows. Tracked in
-       `#5042 <https://github.com/newton-physics/newton/issues/5042>`__.
+     - CPU; partial GPU
+     - The CPU backend (``use_mujoco_cpu=True``) is deterministic. Native
+       MuJoCo Warp backends receive ``DeterminismType.ALL`` before constants
+       are initialized, and select their supported deterministic kernels.
+       MuJoCo Warp 4.0.0 still lacks contact and constraint sorting, so this
+       is not a bitwise trajectory guarantee. Older backends retain the
+       legacy Warp path, which can fail to compile with Warp 1.19. See
+       :ref:`mujoco-determinism` for configuration and downstream limits.
    * - :class:`~solvers.SolverStyle3D`
      - No
      - Accumulates cloth and contact forces with floating-point atomics.

@@ -40,10 +40,10 @@ def _skip_unsupported_mujoco_determinism(test):
         test.skipTest("MuJoCo Warp does not compile in Warp 1.19 deterministic mode")
 
 
-def _run_isolated(test, function_name, *args):
+def _run_isolated(test, function_name, *args, module_name=__name__):
     # Deterministic kernels and GPU runtime state persist for the life of the process.
     call_args = ", ".join(repr(arg) for arg in args)
-    code = f"from newton.tests.determinism.test_solver_determinism import {function_name}; {function_name}({call_args})"
+    code = f"from {module_name} import {function_name}; {function_name}({call_args})"
 
     env = os.environ.copy()
     env.pop("PYTHONWARNINGS", None)

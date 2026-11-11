@@ -978,15 +978,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         native = getattr(self, "_native_mujoco_determinism", False)
         # Contact conversion has a separate module and must retain Newton's mode.
         contact_module = convert_newton_contacts_to_mjwarp_kernel.module
-        for module in [*_mujoco_warp_deterministic_modules(), kernels, contact_module]:
-            backend_native = native and module is not kernels and module is not contact_module
+        backend_modules = [] if native else _mujoco_warp_deterministic_modules()
+        for module in [*backend_modules, kernels, contact_module]:
             max_records = (
                 self._deterministic_max_records
-                if not backend_native and getattr(module, "__name__", None) in _MUJOCO_WARP_DYNAMIC_RECORD_MODULES
+                if getattr(module, "__name__", None) in _MUJOCO_WARP_DYNAMIC_RECORD_MODULES
                 else 0
             )
             options = {
-                "deterministic": wp.DeterministicMode.NOT_GUARANTEED if backend_native else self._deterministic,
+                "deterministic": self._deterministic,
                 "deterministic_max_records": max_records,
             }
             self._set_module_options(options, module=module)
@@ -4681,7 +4681,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 wp.DeterministicMode.RUN_TO_RUN,
             )
         ):
-            raise ValueError("Native MuJoCo Warp determinism supports only NOT_GUARANTEED and RUN_TO_RUN")
+            raise ValueError(
+                "Native MuJoCo Warp determinism supports only NOT_GUARANTEED and RUN_TO_RUN, "
+                f"got {self._deterministic!r} "
+                f"from {'wp.config.deterministic' if deterministic is None else 'deterministic'}; "
+                "pass deterministic=wp.DeterministicMode.RUN_TO_RUN or NOT_GUARANTEED to override"
+            )
         if not use_mujoco_cpu:
             # MJWarp's step pipeline spans several modules (forward dynamics,
             # smooth dynamics, constraints, solver, and optional collision).

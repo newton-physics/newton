@@ -10,7 +10,9 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.mujoco import kernels, solver_mujoco
 from newton.solvers import SolverMuJoCo
+from newton.tests.determinism.test_solver_determinism import _run_isolated
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -46,6 +48,11 @@ def test_native_configuration(test, device):
 
     if not hasattr(mjw, "DeterminismType"):
         test.skipTest("MuJoCo Warp native determinism API is not available")
+    for module in (smooth, kernels, solver_mujoco.convert_newton_contacts_to_mjwarp_kernel.module):
+        test.addCleanup(wp.set_module_options, wp.get_module_options(module).copy(), module=module)
+    # A backend-owned record bound must survive Newton construction and updates.
+    wp.set_module_options({"deterministic_max_records": 17}, module=smooth)
+    backend_options = wp.get_module_options(smooth).copy()
     observed = []
     original_crb = smooth.crb
 
@@ -71,6 +78,9 @@ def test_native_configuration(test, device):
         test.assertTrue(observed, "construction must exercise constant computation")
         test.assertTrue(all(value == int(mjw.DeterminismType.ALL) for value in observed), observed)
         test.assertEqual(solver.mjw_model.opt.deterministic, int(mjw.DeterminismType.ALL))
+        test.assertEqual(wp.get_module_options(smooth), backend_options)
+        for module in (kernels, solver_mujoco.convert_newton_contacts_to_mjwarp_kernel.module):
+            test.assertEqual(wp.get_module_options(module)["deterministic"], wp.DeterministicMode.RUN_TO_RUN)
         for field in ("body_invweight0", "dof_invweight0"):
             values = getattr(solver.mjw_model, field).numpy()
             test.assertTrue(np.isfinite(values).all(), field)
@@ -86,20 +96,29 @@ def test_native_configuration(test, device):
         )
         test.assertEqual(other.mjw_model.opt.deterministic, int(mjw.DeterminismType.NONE))
         test.assertEqual(solver.mjw_model.opt.deterministic, int(mjw.DeterminismType.ALL))
-        with test.assertRaisesRegex(ValueError, "supports only NOT_GUARANTEED and RUN_TO_RUN"):
+        with test.assertRaisesRegex(ValueError, "GPU_TO_GPU.*from deterministic"):
             SolverMuJoCo(model, deterministic=wp.DeterministicMode.GPU_TO_GPU)
+        try:
+            wp.config.deterministic = wp.DeterministicMode.GPU_TO_GPU
+            with test.assertRaisesRegex(ValueError, "GPU_TO_GPU.*from wp.config.deterministic"):
+                SolverMuJoCo(model)
+        finally:
+            wp.config.deterministic = global_mode
+        # Alternate solvers to check shared modules are reconfigured on entry.
         solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+        for module in (kernels, solver_mujoco.convert_newton_contacts_to_mjwarp_kernel.module):
+            test.assertEqual(wp.get_module_options(module)["deterministic"], wp.DeterministicMode.RUN_TO_RUN)
         test.assertEqual(solver.mjw_model.opt.deterministic, int(mjw.DeterminismType.ALL))
+        test.assertEqual(wp.get_module_options(smooth), backend_options)
     test.assertEqual(wp.config.deterministic, global_mode)
     test.assertEqual(wp.config.deterministic_max_records, global_records)
 
 
-def test_native_rollout(test, device):
-    """Repeat contact rollouts exactly in eager mode and supported CUDA Graph execution."""
-    import mujoco_warp as mjw
+def _check_native_rollout(device_name, use_mujoco_contacts):
+    """Exercise one small contact workload in an isolated process."""
 
-    if not hasattr(mjw, "DeterminismType"):
-        test.skipTest("MuJoCo Warp native determinism API is not available")
+    test = unittest.TestCase()
+    device = wp.get_device(device_name)
 
     def run(captured):
         """Construct fresh constants and execute ten physical steps."""
@@ -107,7 +126,7 @@ def test_native_rollout(test, device):
             model = _build_model(device)
             solver = SolverMuJoCo(
                 model,
-                use_mujoco_contacts=True,
+                use_mujoco_contacts=use_mujoco_contacts,
                 deterministic=wp.DeterministicMode.RUN_TO_RUN,
                 integrator="euler",
                 jacobian="sparse",
@@ -118,10 +137,16 @@ def test_native_rollout(test, device):
             control = model.control()
             newton.eval_fk(model, state0.joint_q, state0.joint_qd, state0)
 
+            pipeline = None if use_mujoco_contacts else newton.CollisionPipeline(model, deterministic=True)
+            contacts = None if pipeline is None else pipeline.contacts()
+
             def step_pair():
                 """Keep graph bindings fixed while advancing both state buffers."""
-                solver.step(state0, state1, control, None, 0.005)
-                solver.step(state1, state0, control, None, 0.005)
+                if pipeline is not None:
+                    pipeline.collide(state0, contacts)
+                solver.step(state0, state1, control, contacts, 0.005)
+                # Reuse this contact generation to exercise the cached conversion path.
+                solver.step(state1, state0, control, contacts, 0.005)
 
             step_pair()
             graph = None
@@ -151,8 +176,40 @@ def test_native_rollout(test, device):
                 np.testing.assert_array_equal(first[name], second[name], err_msg=name)
 
 
+def test_native_rollout(test, device, use_mujoco_contacts=True):
+    """Isolate deterministic compilation and runtime state from other test cases."""
+    import mujoco_warp as mjw
+
+    if not hasattr(mjw, "DeterminismType"):
+        test.skipTest("MuJoCo Warp native determinism API is not available")
+    _run_isolated(test, "_check_native_rollout", str(device), use_mujoco_contacts, module_name=__name__)
+
+
 class TestMuJoCoNativeDeterminism(unittest.TestCase):
     """Check per-model determinism configuration on supported backends."""
+
+    def test_scoped_configuration_restoration(self):
+        """Restore ambient configuration after nested native and legacy failures."""
+        native = object.__new__(SolverMuJoCo)
+        native._native_mujoco_determinism = True
+        legacy = object.__new__(SolverMuJoCo)
+        legacy._native_mujoco_determinism = False
+        legacy._deterministic = wp.DeterministicMode.RUN_TO_RUN
+        legacy._deterministic_max_records = 123
+        ambient = (wp.config.deterministic, wp.config.deterministic_max_records)
+        with self.assertRaisesRegex(RuntimeError, "injected"):
+            with legacy._scoped_deterministic_config():
+                self.assertEqual(wp.config.deterministic, wp.DeterministicMode.RUN_TO_RUN)
+                self.assertEqual(wp.config.deterministic_max_records, 123)
+                with self.assertRaisesRegex(RuntimeError, "native"):
+                    with native._scoped_deterministic_config():
+                        self.assertEqual(wp.config.deterministic, wp.DeterministicMode.NOT_GUARANTEED)
+                        self.assertEqual(wp.config.deterministic_max_records, 0)
+                        raise RuntimeError("native")
+                self.assertEqual(wp.config.deterministic, wp.DeterministicMode.RUN_TO_RUN)
+                self.assertEqual(wp.config.deterministic_max_records, 123)
+                raise RuntimeError("injected")
+        self.assertEqual((wp.config.deterministic, wp.config.deterministic_max_records), ambient)
 
 
 add_function_test(
@@ -161,6 +218,15 @@ add_function_test(
 
 
 add_function_test(TestMuJoCoNativeDeterminism, "test_native_rollout", test_native_rollout, devices=get_test_devices())
+
+
+add_function_test(
+    TestMuJoCoNativeDeterminism,
+    "test_native_newton_contacts_rollout",
+    test_native_rollout,
+    devices=get_test_devices(),
+    use_mujoco_contacts=False,
+)
 
 
 if __name__ == "__main__":
