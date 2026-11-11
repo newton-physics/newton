@@ -59,6 +59,8 @@ Runs:
 - `python -m newton.examples diffsim_anymal_backflip --test`    (gradient check only)
 """
 
+import os
+
 import numpy as np
 import warp as wp
 
@@ -699,8 +701,11 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
         self.viewer.set_model(self.model)
 
-        # optional side-recording of the playback (see --rec): a ViewerFile
-        # alongside the interactive viewer, closed after one full pass
+        # optional recording of the optimized playback (see --rec): the
+        # cached playback is written as one full ViewerFile pass when the
+        # recording is closed at exit, independent of the viewer's frame
+        # limit (a `--viewer null` run defaults to 100 frames, fewer than
+        # one playback pass contains)
         self.recorder = None
         self.rec_done = False
         if self.args.rec:
@@ -1770,18 +1775,25 @@ class Example:
             return
         self.run_chain()
 
-    def _rec_frame(self, st, t):
-        """Mirror one playback frame into the --rec ViewerFile (if any)."""
-        if self.recorder is not None and not self.rec_done:
-            self.recorder.begin_frame(t)
+    def _rec_close(self):
+        """Write one full playback pass to the recording and close it; safe to call repeatedly.
+
+        The recording is fed from the cached playback at close time instead of
+        mirroring render(), so it always holds exactly one full pass and never
+        the settled stance - regardless of how many frames the viewer loop
+        reached (a `--viewer null` run defaults to 100 frames, fewer than one
+        pass contains) or how the run exited."""
+        if self.recorder is None or self.rec_done:
+            return
+        if not self.playback:
+            print("recording: no optimized playback was produced; nothing saved", flush=True)
+        for k, (_phase, snap) in enumerate(self.playback):
+            st = self._fresh(snap)
+            self.recorder.begin_frame(k * SIM_DT * FRAME_EVERY)
             self.recorder.log_state(st)
             self.recorder.end_frame()
-
-    def _rec_close(self):
-        """Flush and close the recording; safe to call repeatedly."""
-        if self.recorder is not None and not self.rec_done:
-            self.recorder.close()
-            self.rec_done = True
+        self.recorder.close()
+        self.rec_done = True
 
     def render(self):
         """Framework hook: draw the settled stance or the optimized playback, looping it."""
@@ -1792,7 +1804,6 @@ class Example:
             self.viewer.begin_frame(t)
             self.viewer.log_state(st)
             self.viewer.end_frame()
-            self._rec_frame(st, t)
             self.frame += 1
             return
         _ph, snap = self.playback[min(self.frame, len(self.playback) - 1)]
@@ -1800,11 +1811,9 @@ class Example:
         self.viewer.begin_frame(t)
         self.viewer.log_state(st)
         self.viewer.end_frame()
-        self._rec_frame(st, t)
         self.frame += 1
         if self.frame >= len(self.playback):
             self.frame = 0  # loop the achieved behavior
-            self._rec_close()  # the recording holds exactly one full pass
 
     @staticmethod
     def create_parser():
@@ -1814,7 +1823,7 @@ class Example:
             "--rec",
             type=str,
             default=None,
-            help="Save the optimized playback to this ViewerFile recording (.bin).",
+            help="Save the optimized playback to this ViewerFile recording (.bin or .json).",
         )
         return parser
 
@@ -1948,8 +1957,25 @@ def _probe_loss_kernel(joint_q: wp.array[float], loss: wp.array[float]):
 if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
+    if args.test and args.rec:
+        # nothing is optimized in test mode, so the recording could only ever
+        # hold the settled stance - reject the combination before any work
+        parser.error("--rec is not supported together with --test")
+    if args.rec:
+        # mirror ViewerFile's save-time validation (_get_serialization_format
+        # in newton/_src/viewer/viewer_file.py) here, so an unusable path is
+        # rejected before the long run instead of silently producing no
+        # recording at save time
+        ext = os.path.splitext(args.rec)[1].lower()
+        if ext not in (".bin", ".json"):
+            parser.error(f"--rec {args.rec}: unsupported extension '{ext}' (ViewerFile supports .bin and .json)")
+        if ext == ".bin":
+            try:
+                import cbor2  # noqa: F401
+            except ImportError:
+                parser.error("--rec: .bin recordings require the cbor2 package (pip install 'cbor2>=5.7.0')")
     ex = Example(viewer, args)
     try:
         newton.examples.run(ex, args)
     finally:
-        ex._rec_close()  # flush the recording on any exit path
+        ex._rec_close()  # write the full playback pass and close on any exit path
