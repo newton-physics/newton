@@ -2567,8 +2567,7 @@ class ArticulationView:
         corresponding value gathered from ``component.<name>``.
 
         Each actuator maps to its first joint (``actuator.indices[0]``);
-        further joints of an actuator with a transmission and sensor joints
-        of an encoder are not included.
+        further joints of an actuator with a transmission are not included.
 
         The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
         an actuator builds the view's DOF mapping for it with device kernels and caches it. A call
@@ -2624,7 +2623,7 @@ class ArticulationView:
         per world).  Only entries whose DOFs are actually driven by *actuator*
         are written back to ``component.<name>``; the rest are ignored.
         As in :meth:`get_actuator_parameter`, each actuator maps to its
-        actuated DOF, ``actuator.indices[0]``.
+        first joint, ``actuator.indices[0]``.
 
         The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
         an actuator builds the view's DOF mapping for it with device kernels and caches it. A call

@@ -991,8 +991,8 @@ class ModelBuilder:
         clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
         clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
         drive_shared_kwargs: dict  # Shared drive kwargs (e.g. model_path)
-        indices: list[tuple[int, ...]]  # Per-actuator input DOF indices (joint_qd layout)
-        pos_indices: list[tuple[int, ...]]  # Per-actuator input position indices (joint_q layout)
+        indices: list[tuple[int, ...]]  # Per-actuator DOF indices (joint_qd layout)
+        pos_indices: list[tuple[int, ...]]  # Per-actuator position indices (joint_q layout)
         drive_args: list[dict[str, Any]]  # Per-actuator drive array params
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
         input_processor_classes: tuple = ()  # Tuple of InputProcessorBase subclass types (in order)
@@ -1005,7 +1005,7 @@ class ModelBuilder:
         transmission_class: type | None = None  # Transmission class (e.g. TransmissionFixed), or None
         transmission_shared_kwargs: dict = field(default_factory=dict)  # Shared transmission kwargs
         transmission_args: list[dict[str, list]] = field(default_factory=list)  # Per-actuator per-joint params
-        effort_indices: list[tuple[int, ...]] = field(default_factory=list)  # Per-actuator output DOF indices
+        effort_indices: list[tuple[int, ...]] = field(default_factory=list)  # Per-actuator effort DOF indices
 
         def __init__(
             self,
@@ -1066,7 +1066,7 @@ class ModelBuilder:
             self.effort_indices = (
                 [(i,) if np.ndim(i) == 0 else tuple(i) for i in effort_indices]
                 if effort_indices is not None
-                else [(i[0],) for i in self.indices]
+                else list(self.indices)
             )
             if delay_args is _ACTUATOR_ENTRY_DELAY_ARGS_UNSET:
                 return
@@ -3605,7 +3605,7 @@ class ModelBuilder:
                 "actuator coordinate, e.g. TransmissionFixed"
             )
 
-        def _resolve_joint_component(component: tuple[type, dict[str, Any]] | None, count: int):
+        def _resolve_transmission(component: tuple[type, dict[str, Any]] | None, count: int):
             """Split a transmission spec into its class, shared params and per-joint params."""
             if component is None:
                 return None, {}, {}
@@ -3625,7 +3625,7 @@ class ModelBuilder:
                 if name in shared_names:
                     shared[name] = value
                     continue
-                values = [value] * count if isinstance(value, int | float) else list(value)
+                values = [value] * count if np.ndim(value) == 0 else list(value)
                 if len(values) != count:
                     raise ValueError(
                         f"add_actuator: {component_class.__name__} '{name}' has {len(values)} value(s) "
@@ -3719,7 +3719,7 @@ class ModelBuilder:
             motor_shared = {k: resolved_motor[k] for k in motor_shared_names if k in resolved_motor}
             motor_array_params = {k: v for k, v in resolved_motor.items() if k not in motor_shared_names}
         # --- Resolve transmission kwargs into shared and per-joint params ---
-        transmission_class, transmission_shared, transmission_joint_params = _resolve_joint_component(
+        transmission_class, transmission_shared, transmission_joint_params = _resolve_transmission(
             transmission, len(input_dofs)
         )
 
@@ -3854,6 +3854,15 @@ class ModelBuilder:
         entry.actuators.append(actuators)
         entry.world.append(self.current_world)
 
+    def _actuators_with_battery(self) -> set[int]:
+        """Return the actuators that draw from a battery added with :meth:`add_battery`."""
+        return {
+            actuator
+            for entry in self.battery_entries.values()
+            for actuators in entry.actuators
+            for actuator in actuators
+        }
+
     def _resolve_actuator_joint(self, joint: int | str, owner: str, name: str, world: int | None = None) -> int:
         """Resolve a joint index or joint label to a single-DOF joint index.
 
@@ -3884,15 +3893,6 @@ class ModelBuilder:
                 f"but joint '{self.joint_label[joint]}' has {next_start - self.joint_qd_start[joint]} DOFs"
             )
         return joint
-
-    def _actuators_with_battery(self) -> set[int]:
-        """Return the actuators that draw from a battery added with :meth:`add_battery`."""
-        return {
-            actuator
-            for entry in self.battery_entries.values()
-            for actuators in entry.actuators
-            for actuator in actuators
-        }
 
     def _stack_args_to_arrays(
         self,
@@ -6320,7 +6320,6 @@ class ModelBuilder:
             entry.clamping_args.extend(sub_entry.clamping_args)
             entry.motor_args.extend(sub_entry.motor_args)
             entry.transmission_args.extend(sub_entry.transmission_args)
-
             for per_actuator in sub_entry.input_processor_args:
                 offset_args = []
                 for proc_class, sub_args in zip(sub_entry.input_processor_classes, per_actuator, strict=True):
@@ -17038,18 +17037,17 @@ class ModelBuilder:
                     )
                     clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
 
-                def _build_joint_component(component_class, shared_kwargs, args_list):
-                    if component_class is None:
-                        return None
-                    arrays = {
-                        key: self._stack_joint_args_to_array([args[key] for args in args_list], device, requires_grad)
-                        for key in args_list[0]
+                transmission_obj = None
+                if entry.transmission_class is not None:
+                    transmission_arrays = {
+                        key: self._stack_joint_args_to_array(
+                            [args[key] for args in entry.transmission_args], device, requires_grad
+                        )
+                        for key in entry.transmission_args[0]
                     }
-                    return component_class(**arrays, **shared_kwargs)
-
-                transmission_obj = _build_joint_component(
-                    entry.transmission_class, entry.transmission_shared_kwargs, entry.transmission_args
-                )
+                    transmission_obj = entry.transmission_class(
+                        **transmission_arrays, **entry.transmission_shared_kwargs
+                    )
 
                 has_rows = len(entry.actuator_indices) == len(entry.indices)
                 actuator = Actuator(
