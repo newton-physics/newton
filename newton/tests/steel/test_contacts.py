@@ -37,6 +37,7 @@ from newton.tests.steel._fixtures import (
     _reset_state,
     _shape_cfg,
     _sphere_inertia,
+    printf_capture_is_reliable,
     set_torsion_radius,
 )
 from newton.tests.unittest_utils import (
@@ -839,16 +840,19 @@ def test_overflow_warning_enabled_after_construction_latches(test, device):
     test.assertTrue(solver.constraint_overflow.numpy().any())
     test.assertEqual(solver._row_overflow_warning_emitted.numpy().tolist(), [0, 0, 0, 0, 0])
     solver.warn_constraint_overflow = True
+    check_output = printf_capture_is_reliable()
     capture = StdOutCapture()
-    capture.begin()
+    if check_output:
+        capture.begin()
     try:
         solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
     finally:
         try:
             wp.synchronize()
         finally:
-            printed = capture.end()
-    test.assertRegex(printed, "constraint-row overflow")
+            printed = capture.end() if check_output else ""
+    if check_output:
+        test.assertRegex(printed, "constraint-row overflow")
     test.assertEqual(int(solver._row_overflow_warning_emitted.numpy()[0]), 1)
     test.assertTrue(np.isfinite(output.joint_q.numpy()).all())
 
