@@ -15238,5 +15238,84 @@ if USD_AVAILABLE:
     )
 
 
+class TestImportUsdPhysxBodyDamping(unittest.TestCase):
+    """PhysxRigidBodyAPI damping is either read by a registered custom attribute or reported as dropped."""
+
+    _WARNING = r"physxRigidBody:linearDamping / physxRigidBody:angularDamping is authored on"
+
+    @staticmethod
+    def _make_stage(dampings):
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        for i, (linear, angular) in enumerate(dampings):
+            cube = UsdGeom.Cube.Define(stage, f"/World/Body{i}")
+            cube.CreateSizeAttr(0.5)
+            cube.AddTranslateOp().Set(Gf.Vec3d(float(i), 0.0, 1.0))
+            prim = cube.GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(prim)
+            UsdPhysics.CollisionAPI.Apply(prim)
+            UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(1.0)
+            prim.AddAppliedSchema("PhysxRigidBodyAPI")
+            if linear is not None:
+                prim.CreateAttribute("physxRigidBody:linearDamping", Sdf.ValueTypeNames.Float).Set(linear)
+            if angular is not None:
+                prim.CreateAttribute("physxRigidBody:angularDamping", Sdf.ValueTypeNames.Float).Set(angular)
+        return stage
+
+    def _import(self, stage, builder=None):
+        """Import ``stage`` and return the formatted dropped-damping log messages."""
+        builder = builder or newton.ModelBuilder()
+        with mock.patch("newton._src.utils.import_usd.logger.warning") as warning:
+            builder.add_usd(stage)
+        messages = [call.args[0] % call.args[1:] for call in warning.call_args_list]
+        return [message for message in messages if "physxRigidBody:" in message]
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_authored_damping_is_reported_once_per_import(self):
+        stage = self._make_stage([(5.0, None), (None, 2.0), (0.0, 0.0), (None, None), (1.0, 1.0)])
+        caught = self._import(stage)
+        self.assertEqual(len(caught), 1)
+        message = caught[0]
+        self.assertRegex(message, self._WARNING + r" 3 rigid bodies")
+        for path in ("/World/Body0", "/World/Body1", "/World/Body4"):
+            self.assertIn(path, message)
+        for path in ("/World/Body2", "/World/Body3"):
+            self.assertNotIn(path, message)
+        self.assertIn("SolverSteel.register_custom_attributes", message)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_report_lists_at_most_three_bodies(self):
+        stage = self._make_stage([(1.0, None)] * 5)
+        caught = self._import(stage)
+        self.assertEqual(len(caught), 1)
+        message = caught[0]
+        self.assertRegex(message, r"5 rigid bodies \(/World/Body0, /World/Body1, /World/Body2, \.\.\. \(2 more\)\)")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unauthored_or_zero_damping_is_silent(self):
+        stage = self._make_stage([(None, None), (0.0, 0.0)])
+        self.assertEqual(self._import(stage), [])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_damping_read_by_custom_attributes_is_silent(self):
+        stage = self._make_stage([(0.2, 0.3)])
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverSteel.register_custom_attributes(builder)
+        self.assertEqual(self._import(stage, builder), [])
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.steel.rigid_body_linear_damping.numpy(), [0.2])
+        np.testing.assert_allclose(model.steel.rigid_body_angular_damping.numpy(), [0.3])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_physx_resolver_has_no_body_damping_mapping(self):
+        from newton._src.usd.schema_resolver import PrimType  # noqa: PLC0415
+        from newton._src.usd.schemas import SchemaResolverPhysx  # noqa: PLC0415
+
+        self.assertEqual(SchemaResolverPhysx.mapping[PrimType.BODY], {})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)
