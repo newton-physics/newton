@@ -1,0 +1,175 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "pick_scene"
+{
+    def Scope "Pallets"
+    {
+        def Cube "pallet_panel" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double3 xformOp:translate = (-0.49305665493011475, 1.5848422050476074, 0.8042582869529724)
+            quatf xformOp:orient = (1.0, 0.0, 0.0, 0.0)
+            float3 xformOp:scale = (0.54, 0.54, 0.5)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.8, 0.15, 0.15)]
+        }
+        def Cube "pallet_crate" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double3 xformOp:translate = (-1.5389111042022705, -1.339923620223999, 0.16216252744197845)
+            quatf xformOp:orient = (1.0, 0.0, 0.0, 0.0)
+            float3 xformOp:scale = (0.206, 0.282, 0.5)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.8, 0.15, 0.15)]
+        }
+    }
+    def Scope "PickBoxes"
+    {
+        def Xform "panel" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            double3 xformOp:translate = (-0.49305665493011475, 1.5848422050476074, 1.3442583084106445)
+            quatf xformOp:orient = (1.0, 0.0, 0.0, 0.0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+            float physics:mass = 30.0
+            float3 physics:diagonalInertia = (2.5160000324249268, 2.5160000324249268, 5.0)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+            def Cube "collision" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                float3 xformOp:scale = (0.5, 0.5, 0.04)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+                color3f[] primvars:displayColor = [(0.6, 0.6, 0.65)]
+            }
+        }
+        def Xform "crate_0" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            double3 xformOp:translate = (-3.0, -3.0, 0.13699999451637268)
+            quatf xformOp:orient = (0.7071067690849304, 0.0, 0.0, 0.7071067690849304)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+            float physics:mass = 12.0
+            float3 physics:diagonalInertia = (0.18529999256134033, 0.309332013130188, 0.3444800078868866)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+            def Cube "collision" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                float3 xformOp:scale = (0.242, 0.166, 0.137)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+                color3f[] primvars:displayColor = [(0.85, 0.35, 0.3)]
+            }
+        }
+        def Xform "crate_1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            double3 xformOp:translate = (-3.0, -3.5999999046325684, 0.13699999451637268)
+            quatf xformOp:orient = (0.7071067690849304, 0.0, 0.0, 0.7071067690849304)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+            float physics:mass = 12.0
+            float3 physics:diagonalInertia = (0.18529999256134033, 0.309332013130188, 0.3444800078868866)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+            def Cube "collision" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                float3 xformOp:scale = (0.242, 0.166, 0.137)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+                color3f[] primvars:displayColor = [(0.35, 0.65, 0.35)]
+            }
+        }
+        def Xform "crate_2" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            double3 xformOp:translate = (-3.0, -4.199999809265137, 0.13699999451637268)
+            quatf xformOp:orient = (0.7071067690849304, 0.0, 0.0, 0.7071067690849304)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+            float physics:mass = 12.0
+            float3 physics:diagonalInertia = (0.18529999256134033, 0.309332013130188, 0.3444800078868866)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+            def Cube "collision" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                float3 xformOp:scale = (0.242, 0.166, 0.137)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+                color3f[] primvars:displayColor = [(0.3, 0.45, 0.85)]
+            }
+        }
+        def Xform "crate_3" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            double3 xformOp:translate = (-3.0, -4.800000190734863, 0.13699999451637268)
+            quatf xformOp:orient = (0.7071067690849304, 0.0, 0.0, 0.7071067690849304)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+            float physics:mass = 12.0
+            float3 physics:diagonalInertia = (0.18529999256134033, 0.309332013130188, 0.3444800078868866)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+            def Cube "collision" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                float3 xformOp:scale = (0.242, 0.166, 0.137)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+                color3f[] primvars:displayColor = [(0.9, 0.75, 0.2)]
+            }
+        }
+        def Xform "crate_4" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            double3 xformOp:translate = (-3.0, -5.400000095367432, 0.13699999451637268)
+            quatf xformOp:orient = (0.7071067690849304, 0.0, 0.0, 0.7071067690849304)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+            float physics:mass = 12.0
+            float3 physics:diagonalInertia = (0.18529999256134033, 0.309332013130188, 0.3444800078868866)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+            def Cube "collision" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                float3 xformOp:scale = (0.242, 0.166, 0.137)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+                color3f[] primvars:displayColor = [(0.6, 0.35, 0.75)]
+            }
+        }
+        def Xform "crate_5" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            double3 xformOp:translate = (-3.0, -6.0, 0.13699999451637268)
+            quatf xformOp:orient = (0.7071067690849304, 0.0, 0.0, 0.7071067690849304)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+            float physics:mass = 12.0
+            float3 physics:diagonalInertia = (0.18529999256134033, 0.309332013130188, 0.3444800078868866)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+            def Cube "collision" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                float3 xformOp:scale = (0.242, 0.166, 0.137)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+                color3f[] primvars:displayColor = [(0.25, 0.7, 0.7)]
+            }
+        }
+    }
+}

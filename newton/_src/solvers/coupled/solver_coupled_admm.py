@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import warp as wp
 
+from ...exceptions import NewtonDeprecationWarning
 from ...geometry.flags import ShapeFlags
 from ...math import quat_between_vectors_robust
 from ...sim import BodyFlags, JointType, ModelFlags, StateFlags
@@ -556,7 +558,7 @@ class SolverCoupledADMM(SolverCoupled):
         warnings.warn(
             "SolverCoupledADMM.add_body_particle_attachment() is deprecated; use "
             "ModelBuilder.add_attachment_particle_body() instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         if cls.BODY_PARTICLE_ATTACHMENT_FREQUENCY not in builder.custom_frequencies:
@@ -952,6 +954,9 @@ class SolverCoupledADMM(SolverCoupled):
     def _entry_proxy_joint_keep_indices(self, name: str) -> set[int]:
         return set(self._admm_joint_proxy_joint_keep.get(name, ()))
 
+    def _iteration_restarts_possible(self) -> bool:
+        return int(self._coupling.iterations) > 1
+
     def _after_entries_constructed(self) -> None:
         self._refresh_admm_joint_proxy_view_maps()
         self._cache_admm_joint_proxy_effective_masses()
@@ -1011,7 +1016,7 @@ class SolverCoupledADMM(SolverCoupled):
 
     def notify_model_changed(self, flags: int) -> None:
         super().notify_model_changed(flags)
-        if int(flags) & int(ModelFlags.BODY_INERTIAL_PROPERTIES):
+        if int(flags) & self._effective_mass_refresh_flags():
             self._refresh_admm_body_effective_mass_buffers()
             self._cache_admm_joint_proxy_effective_masses()
             self._apply_cached_admm_joint_proxy_effective_masses()
@@ -1161,6 +1166,7 @@ class SolverCoupledADMM(SolverCoupled):
                 rigid_contact_max=rigid_contact_max,
                 soft_contact_max=None if self._admm_rigid_particle_contact_specs else 0,
                 soft_contact_gap=0.0,
+                publish_capacity=False,
                 contact_matching=(
                     coupling.rigid_contact_matching if self._admm_rigid_rigid_contact_specs else "disabled"
                 ),
@@ -1205,52 +1211,50 @@ class SolverCoupledADMM(SolverCoupled):
         ):
             return
 
-        joint_child = self.model.joint_child.numpy() if self.model.joint_child is not None else []
-        joint_articulation = self.model.joint_articulation.numpy() if self.model.joint_articulation is not None else []
-        joint_qd_start = self.model.joint_qd_start.numpy()
-        articulation_start = self.model.articulation_start.numpy() if self.model.articulation_start is not None else []
-        articulation_end = self.model.articulation_end.numpy() if self.model.articulation_end is not None else []
-        joint_dof_global_to_local = entry.joint_dof_global_to_local.numpy()
+        # Entry-local view arrays describe the articulations the sub-solver
+        # moves, including split subtrees headed by synthesized FREE joints.
+        view = entry.view
+        if view.joint_count == 0:
+            return
+        joint_child = view.joint_child.numpy()
+        joint_articulation = view.joint_articulation.numpy()
+        joint_qd_start = view.joint_qd_start.numpy()
+        articulation_start = view.articulation_start.numpy() if view.articulation_count else []
+        articulation_end = (
+            view.articulation_end.numpy() if view.articulation_count and view.articulation_end is not None else []
+        )
 
         incoming_joint_by_body: dict[int, int] = {}
         for joint, child in enumerate(joint_child):
-            incoming_joint_by_body.setdefault(int(child), joint)
+            # Prefer articulation tree joints over loop closures.
+            if int(joint_articulation[joint]) >= 0:
+                incoming_joint_by_body[int(child)] = joint
+            else:
+                incoming_joint_by_body.setdefault(int(child), joint)
 
         starts: list[int] = []
         counts: list[int] = []
         indices: list[int] = []
-        for global_body in entry.body_local_to_global.numpy():
+        for body in range(int(view.body_count)):
             starts.append(len(indices))
-            joint = incoming_joint_by_body.get(int(global_body))
+            joint = incoming_joint_by_body.get(body)
             if joint is None:
                 counts.append(0)
                 continue
 
             joint_start = joint
             joint_end = joint + 1
-            if len(joint_articulation) > joint:
-                articulation = int(joint_articulation[joint])
-                if articulation >= 0 and len(articulation_start) > articulation:
-                    joint_start = int(articulation_start[articulation])
-                    if len(articulation_end) > articulation:
-                        joint_end = int(articulation_end[articulation])
-                    elif len(articulation_start) > articulation + 1:
-                        joint_end = int(articulation_start[articulation + 1])
+            articulation = int(joint_articulation[joint])
+            if articulation >= 0:
+                joint_start = int(articulation_start[articulation])
+                if len(articulation_end) > articulation:
+                    joint_end = int(articulation_end[articulation])
+                else:
+                    joint_end = int(articulation_start[articulation + 1])
 
-            local_dofs: list[int] = []
-            for joint_id in range(joint_start, joint_end):
-                if joint_id < 0 or joint_id + 1 >= len(joint_qd_start):
-                    continue
-                for global_dof in range(int(joint_qd_start[joint_id]), int(joint_qd_start[joint_id + 1])):
-                    if global_dof < 0 or global_dof >= len(joint_dof_global_to_local):
-                        continue
-                    local_dof = int(joint_dof_global_to_local[global_dof])
-                    if local_dof >= 0:
-                        local_dofs.append(local_dof)
-
-            unique_dofs = sorted(set(local_dofs))
-            indices.extend(unique_dofs)
-            counts.append(len(unique_dofs))
+            dofs = range(int(joint_qd_start[joint_start]), int(joint_qd_start[joint_end]))
+            indices.extend(dofs)
+            counts.append(len(dofs))
 
         device = self.model.device
         buf.body_joint_qd_start = wp.array(starts, dtype=int, device=device)
@@ -2280,6 +2284,9 @@ class SolverCoupledADMM(SolverCoupled):
     def _discover_rigid_particle_contact_specs(self) -> list[_AdmmRigidParticleContactSpec]:
         shape_body = self.model.shape_body.numpy() if self.model.shape_body is not None else []
         shape_flags = self.model.shape_flags.numpy() if getattr(self.model, "shape_flags", None) is not None else None
+        if shape_flags is not None and self.model._has_variant_rows:
+            # A body variant row can hold a particle-colliding shape after construction.
+            shape_flags = self.model._shape_option_flags()
         shapes_by_owner: dict[str, list[int]] = {}
         for shape in range(self.model.shape_count):
             if not self._shape_flagged(shape_flags, shape, ShapeFlags.COLLIDE_PARTICLES):
@@ -2868,6 +2875,11 @@ class SolverCoupledADMM(SolverCoupled):
                 stiffness = float(stiffness_np[row])
                 if stiffness < 0.0:
                     raise ValueError(f"ADMM particle-body attachment {name} has negative stiffness")
+                if math.isinf(stiffness) and not is_model_source:
+                    raise ValueError(
+                        f"ADMM particle-body attachment {name} is hard; use "
+                        "ModelBuilder.add_attachment_particle_body() for hard attachments"
+                    )
                 damping = float(damping_np[row])
                 if damping < 0.0:
                     raise ValueError(f"ADMM particle-body attachment {name} has negative damping")
@@ -2902,6 +2914,15 @@ class SolverCoupledADMM(SolverCoupled):
         for name, body, particle, point, stiffness, damping in rows:
             body_entry = self._entry_name_for_body(body)
             particle_entry = self._entry_name_for_particle(particle)
+            if math.isinf(stiffness) and (
+                body_entry is None
+                or particle_entry != body_entry
+                or not isinstance(self._entries[body_entry].solver, SolverVBD)
+            ):
+                raise ValueError(
+                    "Hard particle-body attachments require both endpoints in the same SolverVBD entry; "
+                    f"attachment {name} has body entry {body_entry!r} and particle entry {particle_entry!r}"
+                )
             if body_entry is None or particle_entry is None:
                 unowned.append(name)
                 continue

@@ -123,7 +123,10 @@ def convert_ray_depth_to_forward_depth_kernel(
         out_depth[world_index, py, px] = ray_depth
         return
 
-    out_depth[world_index, py, px] = ray_depth * wp.dot(ray_dir_world, cam_forward_world)
+    ray_origin_offset_world = wp.transform_vector(camera_transform, camera_rays[py, px, 0, 0])
+    out_depth[world_index, py, px] = wp.dot(ray_origin_offset_world, cam_forward_world) + ray_depth * wp.dot(
+        ray_dir_world, cam_forward_world
+    )
 
 
 @wp.kernel(enable_backward=False)
@@ -294,9 +297,10 @@ class Utils:
     ) -> wp.array3d[wp.float32]:
         """Convert ray-distance depth to forward (planar) depth.
 
-        Projects each pixel's hit distance along its ray onto the camera's
-        forward axis, producing depth measured perpendicular to the image
-        plane. The forward axis is derived from each camera transform by
+        Projects each pixel's camera-space hit position, including its ray
+        origin offset, onto the camera's forward axis, producing depth measured
+        from the camera origin perpendicular to the image plane.
+        The forward axis is derived from each camera transform by
         transforming camera-space ``(0, 0, -1)`` into world space.
 
         Args:

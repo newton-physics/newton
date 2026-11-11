@@ -1,16 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Box Pyramid
-#
-# Builds pyramids of box-shaped cubes with a wrecking ball on a ramp
-# to stress-test narrow-phase contact generation.
-#
-# Command: python -m newton.examples pyramid
-# Kamino DVI: python -m newton.examples pyramid --solver kamino
-#
-###########################################################################
+"""Example Box Pyramid
+
+Builds pyramids of box-shaped cubes with a wrecking ball on a ramp
+to stress-test narrow-phase contact generation.
+
+Success criteria:
+- Box pyramids and a large sphere on a ramp appear; pyramid count and height match the selected
+  options.
+- The sphere rolls down the ramp and knocks boxes from the stacks.
+- Boxes respond through contact without explosive motion.
+
+Runs:
+- `python -m newton.examples pyramid --broad-phase nxn`
+- `python -m newton.examples pyramid --broad-phase sap --num-pyramids 5 --pyramid-size 40`
+- `python -m newton.examples pyramid --broad-phase explicit --num-pyramids 40 --pyramid-size 5`
+- `python -m newton.examples pyramid`
+- `python -m newton.examples pyramid --solver kamino`
+"""
 
 import numpy as np
 import warp as wp
@@ -37,7 +45,6 @@ XPBD_CONTACT_RELAXATION = 0.8
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.test_mode = args.test
         self.world_count = args.world_count
@@ -46,7 +53,8 @@ class Example:
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        # Resolve the heavy-ball impact before deep ground penetration develops.
+        self.sim_substeps = 40 if self.solver_type == "kamino" else 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         num_pyramids = args.num_pyramids
@@ -117,7 +125,7 @@ class Example:
 
         if self.world_count > 1:
             main_builder = newton.ModelBuilder()
-            main_builder.replicate(builder, world_count=self.world_count)
+            main_builder.replicate(builder, copy_count=self.world_count)
             self.model = main_builder.finalize()
         else:
             self.model = builder.finalize()
@@ -125,15 +133,15 @@ class Example:
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model,
-                dynamics_solver="dvi",
+                dynamics_solver="scc",
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
             solver_config.use_collision_detector = True
             solver_config.integrator = "moreau"
             solver_config.collision_detector.broadphase = args.broad_phase
-            # The heavy ball needs short steps; keep each DVI solve inexpensive.
-            solver_config.dvi.max_alternating_iterations = 2
+            # Resolve coupled ball/ground contacts at the roughly 6500:1 mass ratio.
+            solver_config.scc.max_alternating_iterations = 8
             solver_config.constraints.gamma = 0.5
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
             self.collision_pipeline = None

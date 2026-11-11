@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -12,9 +13,10 @@ import warp as wp
 
 from ...geometry import ParticleFlags
 from ...sim import BodyFlags, JointType, Model
+from ...utils.deprecation import warn_deprecation
 
 if TYPE_CHECKING:
-    from ...sim import State
+    from ...sim import Control, State
 
 
 def _types_compatible(current, value) -> bool:
@@ -44,11 +46,22 @@ def _type_summary(value) -> str:
 class _AttributeNamespaceView(Model.AttributeNamespace):
     """Copy-on-write namespace overlay used by compact model views."""
 
-    def __init__(self, parent: Model.AttributeNamespace) -> None:
+    def __init__(self, parent: Model.AttributeNamespace, view: ModelView) -> None:
         super().__init__(object.__getattribute__(parent, "_name"))
         object.__setattr__(self, "_parent_namespace", parent)
+        self._removed_attributes.update(parent._removed_attributes)
+        for name, (getter, message) in parent._deprecated_aliases.items():
+            spec = view.parent._attribute_spec(f"{self._name}:{name}")
+            view_getter = (
+                partial(getattr, view, spec.alias_of) if spec is not None and spec.alias_of is not None else getter
+            )
+            self._add_deprecated_alias(name, view_getter, message)
 
     def __getattr__(self, name: str):
+        if name in self._deprecated_aliases:
+            getter, message = self._deprecated_aliases[name]
+            warn_deprecation(message)
+            return getter()
         try:
             return super().__getattr__(name)
         except AttributeError:
@@ -62,6 +75,10 @@ class ModelView:
     overridden on this view.  This allows coupled solvers to present a per-solver
     "model" (e.g. with zeroed masses for non-owned bodies) without duplicating
     the full Model.
+
+    Default shape contact pairs and their summaries use the parent Model's
+    finalized collision topology. To change the view's pairs, assign
+    ``shape_contact_pairs`` on the view; its read-only count follows the array length.
 
     A ``ModelView`` is intended to duck-type as a :class:`~newton.Model` for the
     purpose of constructing solvers (``SolverFoo(model=view)``).
@@ -94,27 +111,50 @@ class ModelView:
         overrides = object.__getattribute__(self, "_overrides")
         if name in overrides:
             return self._count_limited_attribute(name, overrides[name])
-        return self._count_limited_attribute(name, getattr(parent, name))
+        value = getattr(parent, name)
+        if isinstance(value, Model.AttributeNamespace) and (value._deprecated_aliases or value._removed_attributes):
+            cache = object.__getattribute__(self, "_cache")
+            if name not in cache:
+                cache[name] = _AttributeNamespaceView(value, self)
+            return cache[name]
+        return self._count_limited_attribute(name, value)
 
     def __setattr__(self, name: str, value) -> None:
+        if name == "shape_contact_pair_count":
+            raise AttributeError("shape_contact_pair_count is read-only; replace shape_contact_pairs instead")
         parent = object.__getattribute__(self, "_parent")
+        if parent.tendon_count and name in {"body_count", "tendon_count", "tendon_guide_count", "tendon_segment_count"}:
+            if value != getattr(parent, name):
+                raise ValueError("Partial model views containing tendons are unsupported; use a complete tendon model")
         spec = parent._attribute_spec(name)
         if spec is not None and spec.alias_of is not None:
             getattr(parent, name)  # Validate availability and emit the deprecation warning.
             setattr(self, spec.alias_of, value)
             return
 
-        if not hasattr(parent, name):
-            raise AttributeError(
-                f"ModelView {self.name!r} cannot override {name!r}: {type(parent).__name__} has no such attribute"
-            )
-        current = getattr(parent, name)
-        if current is not None and value is not None and not _types_compatible(current, value):
-            raise TypeError(
-                f"ModelView {self.name!r} override for {name!r}: expected "
-                f"{_type_summary(current)}, got {_type_summary(value)}"
-            )
-        if name.endswith("_count"):
+        if name == "shape_contact_pairs":
+            if value is not None and not (
+                isinstance(value, wp.array)
+                and value.dtype == wp.vec2i
+                and value.ndim == 1
+                and value.device == parent.device
+            ):
+                raise TypeError(
+                    f"ModelView {self.name!r} override for {name!r}: expected "
+                    f"wp.array[dtype={wp.vec2i}, ndim=1, device={parent.device}], got {_type_summary(value)}"
+                )
+        else:
+            if not hasattr(parent, name):
+                raise AttributeError(
+                    f"ModelView {self.name!r} cannot override {name!r}: {type(parent).__name__} has no such attribute"
+                )
+            current = getattr(parent, name)
+            if current is not None and value is not None and not _types_compatible(current, value):
+                raise TypeError(
+                    f"ModelView {self.name!r} override for {name!r}: expected "
+                    f"{_type_summary(current)}, got {_type_summary(value)}"
+                )
+        if name.endswith("_count") or name == "shape_contact_pairs":
             object.__getattribute__(self, "_cache").clear()
         object.__getattribute__(self, "_overrides")[name] = value
 
@@ -140,9 +180,18 @@ class ModelView:
         return object.__getattribute__(self, "_parent")
 
     @property
+    def shape_contact_pair_count(self) -> int:
+        """Read-only pair count inherited from the parent or derived from the replacement array."""
+        overrides = object.__getattribute__(self, "_overrides")
+        if "shape_contact_pairs" in overrides:
+            pairs = overrides["shape_contact_pairs"]
+            return len(pairs) if pairs is not None else 0
+        return object.__getattribute__(self, "_parent").shape_contact_pair_count
+
+    @property
     def joint_target_q_start(self) -> wp.array | None:
         """View-local start indices for :attr:`~newton.Model.joint_target_q`."""
-        return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
+        return self.joint_q_start
 
     @property
     def overrides(self) -> dict[str, object]:
@@ -200,7 +249,7 @@ class ModelView:
         """Return the view-local count associated with a model attribute."""
         parent = object.__getattribute__(self, "_parent")
         spec = parent._attribute_spec(name)
-        if spec is None or spec.compaction_policy not in {"generic", "end"}:
+        if spec is None or spec.compaction_policy not in {"generic", "end", "range_start"}:
             return None
         try:
             count = self._attribute_frequency_count(spec.frequency)
@@ -282,6 +331,17 @@ class ModelView:
 
         with self._temporary_state_array_overrides():
             return Model.state(self, requires_grad=requires_grad)
+
+    def control(self, requires_grad: bool | None = None, clone_variables: bool = True) -> Control:
+        """Create a :class:`~newton.Control` from view-local control defaults.
+
+        This calls the normal :meth:`~newton.Model.control` implementation with
+        this view as the model object, so the control arrays follow the joint
+        rows and counts visible through the view.
+        """
+        from ...sim import Model  # noqa: PLC0415
+
+        return Model.control(self, requires_grad=requires_grad, clone_variables=clone_variables)
 
     def get_requested_state_attributes(self) -> list[str]:
         """Return requested state attributes using view-local counts."""
@@ -678,9 +738,11 @@ class ModelView:
         wp.launch(
             _replace_joint_type_kernel,
             dim=joint_indices.shape[0],
-            inputs=[joint_indices, joint_type, int(JointType.ROD), int(JointType.D6)],
+            inputs=[joint_indices, joint_type, int(JointType.ROD), int(JointType.FREE)],
             device=parent.device,
         )
+        if parent._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
+            self._has_rod_joints = bool(np.any(self.joint_type.numpy() == int(JointType.ROD)))
 
     def zero_particle_mass(self, particle_indices: wp.array[int]) -> None:
         """Zero mass and inverse mass for the given particle indices.

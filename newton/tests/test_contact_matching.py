@@ -4,13 +4,14 @@
 """Tests for frame-to-frame contact matching."""
 
 import unittest
+from functools import partial
 
 import numpy as np
 import warp as wp
 
 import newton
 from newton._src.geometry.contact_data import CONTACT_SORT_CONVEX_SUB_KEY_BITS, CONTACT_SORT_SUB_KEY_BITS
-from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MATCH_NOT_FOUND
+from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MATCH_NOT_FOUND, ContactMatcher
 from newton._src.geometry.contact_sort import ContactSorter
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
@@ -454,6 +455,61 @@ def test_contact_report_indices_correct(test, device):
         _collide_once(pipeline, state, contacts)
         test.assertEqual(contacts.rigid_contact_new_count.numpy()[0], 0)
         test.assertEqual(contacts.rigid_contact_broken_count.numpy()[0], 0)
+
+
+def test_save_empty_history_with_more_worlds_than_capacity(test, device):
+    """Clear every reset mask entry and save empty history even at zero capacity."""
+    with wp.ScopedDevice(device):
+        for capacity in (0, 1):
+            sorter = ContactSorter(capacity)
+            matcher = ContactMatcher(
+                capacity,
+                sorter=sorter,
+                shape_world=wp.zeros(1, dtype=wp.int32),
+                world_count=4,
+                shape_index_bits=1,
+                sub_key_bits=1,
+                device=device,
+            )
+            count = wp.zeros(1, dtype=wp.int32)
+            keys = wp.zeros(capacity, dtype=wp.int64)
+            generation = wp.full(1, 9, dtype=wp.int32)
+            points = wp.zeros(capacity, dtype=wp.vec3)
+            shapes = wp.zeros(capacity, dtype=wp.int32)
+            body_q = wp.zeros(0, dtype=wp.transform)
+            shape_body = wp.full(1, -1, dtype=wp.int32)
+
+            save = partial(
+                matcher.save_sorted_state,
+                keys,
+                count,
+                points,
+                points,
+                shapes,
+                shapes,
+                points,
+                body_q,
+                shape_body,
+                buffer_id=17,
+                contact_generation=generation,
+                device=device,
+            )
+
+            save()
+            if wp.get_device(device).is_cuda:
+                with wp.ScopedCapture(device=device) as capture:
+                    save()
+            for raw_count in (0, capacity + 1):
+                count.fill_(raw_count)
+                matcher._reset_world_mask.fill_(True)
+                matcher._prev_count.fill_(7)
+                if wp.get_device(device).is_cuda:
+                    wp.capture_launch(capture.graph)
+                else:
+                    save()
+                test.assertEqual(int(matcher.prev_contact_count.numpy()[0]), min(raw_count, capacity))
+                np.testing.assert_array_equal(matcher._prev_frame.numpy(), (17, 9))
+                test.assertFalse(matcher._reset_world_mask.numpy().any())
 
 
 def test_save_resets_next_frame_report_flags(test, device):
@@ -929,6 +985,92 @@ def test_contact_report_requires_matching(test, device):
 # ---------------------------------------------------------------------------
 
 
+def test_sticky_common_translation(test, device, use_capture=False):
+    """Preserve body-local contact history during shared translation."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        for z in (0.0, 0.198):
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, z)))
+            builder.add_shape_sphere(body=body, radius=0.1)
+        model = builder.finalize(device=device)
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="sticky")
+        contacts = pipeline.contacts()
+        test.assertEqual(_collide_once(pipeline, state, contacts), 1)
+        points = [getattr(contacts, f"rigid_contact_point{i}").numpy()[0].copy() for i in (0, 1)]
+        if use_capture:
+            with wp.ScopedCapture(device=device) as capture:
+                pipeline.collide(state, contacts)
+        for _ in range(3):
+            q = state.body_q.numpy()
+            q[:, 0] += 0.01
+            q[:, 1] -= 0.02
+            state.body_q.assign(q)
+            if use_capture:
+                wp.capture_launch(capture.graph)
+            else:
+                pipeline.collide(state, contacts)
+            test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
+            test.assertEqual(int(contacts.rigid_contact_match_index.numpy()[0]), 0)
+            for i in (0, 1):
+                np.testing.assert_array_equal(getattr(contacts, f"rigid_contact_point{i}").numpy()[0], points[i])
+
+
+def test_sticky_drift_uses_body_witnesses(test, device):
+    """Verify sticky drift follows each witness in its own body's frame."""
+    threshold = 0.0005
+
+    def match(*, body_x=0.0, body_z=0.0, point1=(0.0, 0.0, 0.0)):
+        """Match a ground-to-body contact saved with zero body-local witnesses."""
+        matcher = ContactMatcher(
+            capacity=1,
+            sorter=ContactSorter(1),
+            shape_world=wp.full(2, -1, dtype=wp.int32, device=device),
+            world_count=0,
+            shape_index_bits=1,
+            sub_key_bits=1,
+            pos_threshold=threshold,
+            sticky=True,
+            device=device,
+        )
+        matcher._prev_sorted_keys.assign(np.array([0], dtype=np.int64))
+        matcher._prev_pos_world.assign(np.zeros((1, 3), dtype=np.float32))
+        matcher._prev_point0.assign(np.zeros((1, 3), dtype=np.float32))
+        matcher._prev_point1.assign(np.zeros((1, 3), dtype=np.float32))
+        matcher._prev_normal.assign(np.array([[0.0, 0.0, 1.0]], dtype=np.float32))
+        matcher._prev_count.assign(np.array([1], dtype=np.int32))
+        match_index = wp.full(1, MATCH_NOT_FOUND, dtype=wp.int32, device=device)
+        matcher.match(
+            sort_keys=wp.zeros(1, dtype=wp.int64, device=device),
+            contact_count=wp.array([1], dtype=wp.int32, device=device),
+            point0=wp.zeros(1, dtype=wp.vec3, device=device),
+            point1=wp.array([point1], dtype=wp.vec3, device=device),
+            shape0=wp.zeros(1, dtype=wp.int32, device=device),
+            shape1=wp.ones(1, dtype=wp.int32, device=device),
+            normal=wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device),
+            body_q=wp.array(
+                [wp.transform((body_x, 0.0, body_z), wp.quat_identity())], dtype=wp.transform, device=device
+            ),
+            shape_body=wp.array([-1, 0], dtype=wp.int32, device=device),
+            match_index_out=match_index,
+            buffer_id=1,
+            match_generation_out=wp.zeros(1, dtype=wp.int32, device=device),
+            device=device,
+        )
+        return int(match_index.numpy()[0])
+
+    with wp.ScopedDevice(device):
+        # Compression moves the body, not its witness on the body: 2 mm of
+        # normal approach keeps the anchor although the midpoint moves 1 mm.
+        test.assertEqual(match(body_z=-0.002), 0)
+        # A witness that jumps to another feature of its body, such as the
+        # opposite face of a 0.6 mm plate, expires the anchor although the
+        # midpoint moves only 0.3 mm.
+        test.assertEqual(match(point1=(0.0, 0.0, -0.0006)), MATCH_BROKEN)
+        # World-space rounding must not hide local drift far from the origin.
+        test.assertEqual(match(body_x=1.0e6, point1=(0.0006, 0.0, 0.0)), MATCH_BROKEN)
+
+
 def test_sticky_matched_rows_replayed(test, device):
     """STICKY mode: matched rows carry exact previous-frame geometry even when
     the narrow phase's fresh output differs on a perturbed second frame.
@@ -1083,9 +1225,16 @@ def _check_sticky_rotated_witness(test, device, *, plane_first, threshold, use_c
             pipeline.collide(state, contacts)
         test.assertEqual(count, int(contacts.rigid_contact_count.numpy()[0]))
         match_index = contacts.rigid_contact_match_index.numpy()[:count]
-        test.assertTrue(np.all(match_index >= 0), "The geometric contacts must still match")
-        test.assertEqual(int(contacts.rigid_contact_new_count.numpy()[0]), 0)
-        test.assertEqual(int(contacts.rigid_contact_broken_count.numpy()[0]), 0)
+        # Rotation moves the saved material witnesses even when the geometric
+        # surface stays put. Match only while each transported witness remains
+        # inside the configured radius; otherwise report the contact as broken.
+        if expect_replay:
+            test.assertTrue(np.all(match_index >= 0))
+        else:
+            np.testing.assert_array_equal(match_index, MATCH_BROKEN)
+        unmatched = int(np.count_nonzero(match_index < 0))
+        test.assertEqual(int(contacts.rigid_contact_new_count.numpy()[0]), unmatched)
+        test.assertEqual(int(contacts.rigid_contact_broken_count.numpy()[0]), unmatched)
         for field in fields:
             current = getattr(contacts, f"rigid_contact_{field}").numpy()[:count]
             if expect_replay:
@@ -1284,9 +1433,21 @@ add_function_test(
     devices=devices,
 )
 add_function_test(
+    TestContactMatching,
+    "test_save_empty_history_with_more_worlds_than_capacity",
+    test_save_empty_history_with_more_worlds_than_capacity,
+    devices=get_test_devices(mode="basic"),
+)
+add_function_test(
     TestContactMatching, "test_contact_report_broken_indices", test_contact_report_broken_indices, devices=devices
 )
 add_function_test(TestContactMatching, "test_deterministic_implied", test_deterministic_implied, devices=devices)
+add_function_test(
+    TestContactMatching,
+    "test_matching_sort_width_follows_contact_family",
+    test_matching_sort_width_follows_contact_family,
+    devices=devices,
+)
 add_function_test(
     TestContactMatching, "test_contacts_exposes_matching_mode", test_contacts_exposes_matching_mode, devices=devices
 )
@@ -1384,6 +1545,25 @@ add_function_test(
     "test_sticky_rotated_witness_cuda_graph",
     test_sticky_rotated_witness_cuda_graph,
     devices=cuda_devices,
+)
+
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_common_translation",
+    test_sticky_common_translation,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_common_translation_cuda_graph",
+    partial(test_sticky_common_translation, use_capture=True),
+    devices=cuda_devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_drift_uses_body_witnesses",
+    test_sticky_drift_uses_body_witnesses,
+    devices=devices,
 )
 
 if __name__ == "__main__":

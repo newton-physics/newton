@@ -298,26 +298,26 @@ def _has_implicit_pd(act_type: int, k_p: float, k_d: float) -> bool:
     ) and (k_p > 0.0 or k_d > 0.0)
 
 
-def _has_missing_implicit_pd_gains(act_type: int, k_p: float, k_d: float) -> bool:
-    """Returns whether an implicit-PD actuation type has no effective gain."""
-    if act_type == JointActuationType.VELOCITY:
-        return k_d == 0.0
-    return (
-        act_type
-        in (
-            JointActuationType.POSITION,
-            JointActuationType.POSITION_VELOCITY,
-            JointActuationType.POSITION_VELOCITY_FORCE,
+def _has_missing_implicit_pd_gains(
+    act_type: int | np.ndarray,
+    k_p: float | np.ndarray,
+    k_d: float | np.ndarray,
+) -> np.bool_ | np.ndarray:
+    """Returns whether implicit-PD actuation types have no effective gain."""
+    missing_velocity_gain = (act_type == JointActuationType.VELOCITY) & (k_d == 0.0)
+    missing_position_gain = (
+        np.isin(
+            act_type,
+            (
+                JointActuationType.POSITION,
+                JointActuationType.POSITION_VELOCITY,
+                JointActuationType.POSITION_VELOCITY_FORCE,
+            ),
         )
-        and k_p == 0.0
-        and k_d == 0.0
+        & (k_p == 0.0)
+        & (k_d == 0.0)
     )
-
-
-def _validate_implicit_pd_gains(act_type: JointActuationType, k_p: float, k_d: float, *, label: str) -> None:
-    """Raises if an implicit-PD actuation type has no effective gain."""
-    if _has_missing_implicit_pd_gains(act_type, k_p, k_d):
-        raise ValueError(f"Invalid implicit-PD actuation: {act_type.name} requires a non-zero gain ({label}).")
+    return missing_velocity_gain | missing_position_gain
 
 
 def _is_bounded_effort_limit(tau_max: float) -> bool:
@@ -363,6 +363,14 @@ def is_bounded_effort_limit_wp(tau_max: float) -> bool:
     # Checking against JOINT_TAUMAX is important, because the Newton ModelBuilder will insert
     # JOINT_TAUMAX as a default value if no effort limit is specified.
     return wp.isfinite(tau_max) and tau_max < JOINT_TAUMAX
+
+
+@wp.func
+def clamp_joint_effort_wp(tau: float, tau_max: float) -> float:
+    """Clamp an actuator command to a bounded effort limit; pass unbounded commands through."""
+    if is_bounded_effort_limit_wp(tau_max):
+        return wp.clamp(tau, -tau_max, tau_max)
+    return tau
 
 
 @wp.func
@@ -926,130 +934,6 @@ class JointDoFType(IntEnum):
         return joint_type
 
     @staticmethod
-    def from_newton(
-        type: JointType,
-        q_count: int,
-        qd_count: int,
-        dof_dim: tuple[int, int],
-        limit_lower: np.ndarray,
-        limit_upper: np.ndarray,
-        dof_axes: np.ndarray | None = None,
-    ) -> JointDoFType:
-        """
-        Converts a `JointType` to the corresponding `JointDoFType`.
-
-        Args:
-            type: The Newton joint type to convert.
-            q_count: The Newton coordinates count for this joint.
-            qd_count: The Newton dofs count for this joint.
-            dof_dim: The Newton dof dimension (linear/angular dof counts) for this joint.
-            limit_lower: The lower position limits from Newton for this joint (in dof space).
-            limit_upper: The upper position limits from Newton for this joint (in dof space).
-            dof_axes: The Newton joint axes, used to distinguish gimbal handedness.
-
-        Returns:
-            The corresponding joint DoF type.
-
-        Raises:
-            ValueError: if the Newton joint type is not supported.
-        """
-        # First try directly mapping the trivially supported types
-        _MAP_TO_KAMINO: dict[JointType, JointDoFType | None] = {
-            JointType.FREE: JointDoFType.FREE,
-            JointType.REVOLUTE: JointDoFType.REVOLUTE,
-            JointType.PRISMATIC: JointDoFType.PRISMATIC,
-            JointType.BALL: JointDoFType.SPHERICAL,
-            JointType.FIXED: JointDoFType.FIXED,
-            # NOTE: D6 joints require special handling
-            # to infer the corresponding DoF type
-            JointType.D6: None,
-        }
-        dof_type = _MAP_TO_KAMINO.get(type, None)
-        if dof_type is not None:
-            return dof_type
-
-        # If the type is not directly supported, attempt to infer the DoF type based on the number of DoFs
-        if dof_type is None or type == JointType.D6:
-            # Ensure that q_count and qd_count are provided for inference
-            if q_count is None or qd_count is None:
-                raise ValueError("q_count and qd_count must be provided for inference of unsupported joint types.")
-
-            # Ensure dof_dim is provided for inference
-            if dof_dim is None or not isinstance(dof_dim, tuple) or len(dof_dim) != 2:
-                raise ValueError(
-                    "dof_dim must be provided as a tuple of length 2 for inference of unsupported joint types."
-                )
-
-            # Ensure the limits are provided for inference
-            if limit_lower is None or limit_upper is None:
-                raise ValueError(
-                    "limit_lower and limit_upper must be provided for inference of unsupported joint types."
-                )
-            if not isinstance(limit_lower, np.ndarray) or not isinstance(limit_upper, np.ndarray):
-                raise TypeError(
-                    "limit_lower and limit_upper must be numpy arrays for inference of unsupported joint types."
-                )
-            if limit_lower.shape != limit_upper.shape:
-                raise ValueError(
-                    f"limit_lower and limit_upper must have the same shape, got: "
-                    f"limit_lower.shape: {limit_lower.shape}, limit_upper.shape: {limit_upper.shape}."
-                )
-            if limit_lower.shape[0] != qd_count or limit_upper.shape[0] != qd_count:
-                raise ValueError(
-                    f"The length of limit_lower and limit_upper must match qd_count ({qd_count}), got:"
-                    f"\n  limit_lower: {limit_lower} (shape={limit_lower.shape})"
-                    f"\n  limit_upper: {limit_upper} (shape={limit_upper.shape})"
-                )
-
-            # Map to the DoF type based on the dimensions of the joint
-            if q_count == 0 and qd_count == 0 and dof_dim == (0, 0):
-                dof_type = JointDoFType.FIXED
-            elif q_count == 1 and qd_count == 1 and dof_dim == (1, 0):
-                dof_type = JointDoFType.PRISMATIC
-            elif q_count == 1 and qd_count == 1 and dof_dim == (0, 1):
-                dof_type = JointDoFType.REVOLUTE
-            elif q_count == 2 and qd_count == 2 and dof_dim == (0, 2):
-                dof_type = JointDoFType.UNIVERSAL
-            elif q_count == 2 and qd_count == 2 and dof_dim == (1, 1):
-                dof_type = JointDoFType.CYLINDRICAL
-            elif q_count == 3 and qd_count == 3 and dof_dim == (3, 0):
-                dof_type = JointDoFType.CARTESIAN
-            elif q_count == 3 and qd_count == 3 and dof_dim == (0, 3):
-                if (
-                    dof_axes is not None
-                    and dof_axes.shape == (3, 3)
-                    and np.all(np.isfinite(dof_axes))
-                    and np.dot(np.cross(dof_axes[0], dof_axes[1]), dof_axes[2]) < 0.0
-                ):
-                    dof_type = JointDoFType.GIMBAL_LEFT_HANDED
-                else:
-                    dof_type = JointDoFType.GIMBAL
-            elif q_count == 4 and qd_count == 3 and dof_dim == (0, 3):
-                dof_type = JointDoFType.SPHERICAL
-            elif q_count == 7 and qd_count == 6:
-                if np.any(limit_lower <= JOINT_QMIN) or np.any(limit_upper >= JOINT_QMAX):
-                    dof_type = JointDoFType.FREE
-                else:
-                    raise ValueError(
-                        f"Unsupported joint type with 7 coordinates and 6 DoFs but unrecognized limits:\n"
-                        f"\n  limit_lower: {limit_lower}"
-                        f"\n  limit_upper: {limit_upper}"
-                    )
-            else:
-                raise ValueError(
-                    f"Unsupported joint type with:"
-                    f"\n  type: {type}"
-                    f"\n  dof_dim: {dof_dim}"
-                    f"\n  q_count: {q_count}"
-                    f"\n  qd_count: {qd_count}"
-                    f"\n  limit_lower: {limit_lower}"
-                    f"\n  limit_upper: {limit_upper}"
-                )
-
-        # Return the inferred DoF type
-        return dof_type
-
-    @staticmethod
     @wp.func
     def from_newton_wp(
         joint_type: int,
@@ -1062,9 +946,6 @@ class JointDoFType(IntEnum):
     ) -> wp.int32:
         """
         Converts a Newton `JointType` to the corresponding Kamino `JointDoFType`.
-
-        Note:
-            This is the warp-compatible equivalent to `from_newton()`.
 
         Args:
             joint_type: The Newton joint type to convert, see `JointType`.
@@ -1343,12 +1224,6 @@ class JointsModel:
     Shape of ``(num_joints,)``.
     """
 
-    jid: wp.array[wp.int32] | None = None
-    """
-    Index of each joint w.r.t the world.
-    Shape of ``(num_joints,)``.
-    """
-
     ###
     # Parameterization
     ###
@@ -1470,6 +1345,12 @@ class JointsModel:
     Maximum joint velocity limits of each joint (as flat array).
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
+
+    limit_ke: wp.array[wp.float32] | None = None
+    """Limit stiffness [N/m or N m/rad], indexed by joint DoF."""
+
+    limit_kd: wp.array[wp.float32] | None = None
+    """Limit damping [N s/m or N m s/rad], indexed by joint DoF."""
 
     tau_j_max: wp.array[wp.float32] | None = None
     """
@@ -1984,11 +1865,11 @@ class JointsData:
     h_j := a_j * dq_j^{-} + dt * tau_j_tot
     dq_b_j := inv_m_j * h_j
     ```
-    For unbounded implicit PD, the joint dynamics constraint includes
-    ``tau_j_tot`` according to the actuation type:
+    For DoFs with armature, viscous damping or unbounded implicit PD, this path
+    assembles ``tau_j_tot`` as follows according to the actuation type:
 
-    - ``PASSIVE``: ``tau_j``
-    - ``FORCE``: ``tau_j + tau_j_ff``
+    - ``PASSIVE``: ``clamp(tau_j, -tau_j_max, tau_j_max)``
+    - ``FORCE``: ``clamp(tau_j + tau_j_ff, -tau_j_max, tau_j_max)``
     - ``POSITION``: ``tau_j + k_p_j * (q_j_ref - q_j^{-})``
     - ``VELOCITY``: ``tau_j + k_d_j * dq_j_ref``
     - ``POSITION_VELOCITY``:

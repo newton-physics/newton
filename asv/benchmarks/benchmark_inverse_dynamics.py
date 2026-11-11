@@ -30,7 +30,7 @@ def create_franka_model(world_count: int = 1) -> newton.Model:
     articulation_builder.num_rigid_contacts_per_world = 0
     articulation_builder.default_shape_cfg.density = 100.0
     asset_path = newton.utils.download_asset("franka_emika_panda") / "urdf/fr3.urdf"
-    articulation_builder.add_urdf(asset_path, floating=False, scale=1.0)
+    articulation_builder.add_urdf(asset_path, floating=False, scale=1.0, joint_damping_mode="passive")
 
     builder = newton.ModelBuilder()
     builder.replicate(articulation_builder, world_count)

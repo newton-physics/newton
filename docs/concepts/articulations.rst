@@ -27,7 +27,7 @@ Maximal coordinates describe the configuration of an articulation in terms of th
 Each rigid body's pose is represented by 7 parameters (3D position and XYZW quaternion) in :attr:`newton.State.body_q`,
 and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`newton.State.body_qd`.
 The linear component of :attr:`newton.State.body_qd` is the world-frame velocity
-of the body's center of mass. For public ``FREE`` and ``DISTANCE`` joints,
+of the body's center of mass. For public ``FREE``, ``DISTANCE``, and ``ROD`` joints,
 :attr:`newton.State.joint_qd` stores the child-COM twist in the joint parent
 frame: the linear slice is child-COM velocity and the angular slice is angular
 velocity in that same frame.
@@ -45,18 +45,20 @@ use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
 use maximal coordinates.
 Note that collision detection via :meth:`newton.CollisionPipeline.collide` requires the maximal coordinates to be current in the state.
 
+.. _Rod joints:
+
 Rod joints
 ^^^^^^^^^^
 
 Newton uses *cable* for the modeled object and *rod* for this discrete
 stretch/shear/bend/twist representation. A cable may be assembled from rod
 joints or modeled with another formulation. :class:`newton.Rod` stores
-prepared centerline geometry, segment frames, topology, and optional rod
+initial and structural-rest geometry, segment frames, topology, and optional rod
 constitutive data before :meth:`newton.ModelBuilder.add_rod` assembles the
 simulation representation. Pass prepared data with
-``builder.add_rod(rod=rod)``. The raw ``add_rod(positions=...)`` and
-``add_rod_graph()`` forms are deprecated compatibility APIs in Newton 1.6; use
-``newton.Rod(points, ...)`` or ``newton.Rod(points, edges=...)`` respectively.
+``builder.add_rod(rod=rod)``. Construct an ordered chain with
+``newton.Rod(points, ...)`` or an explicit graph with
+``newton.Rod(points, edges=...)``.
 A rod may specify either an isotropic elastic material or a complete set of
 homogeneous stretch, shear, bend, and twist rigidities. These parameterizations
 are mutually exclusive. Direct per-joint stiffness values remain assembly controls on
@@ -84,23 +86,56 @@ segment incidence alone does not determine unique parent-child joint pairings,
 and different star or spanning-tree choices can produce different discrete
 energies. Supply explicit per-joint builder stiffnesses instead.
 
-:attr:`newton.JointType.ROD` is represented in Newton's joint data model, but
-it is not a conventional generalized-coordinate joint. Its four entries are
-VBD constraint/material slots defined by
-:class:`~newton.solvers.SolverVBD.JointSlot`: stretch (``STRETCH``, slot 0),
-shear (``SHEAR``, slot 1), bend (``BEND``, slot 2), and
-twist (``TWIST``, slot 3). These slots store independent per-joint stiffness
-and damping through
-:attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`.
-Generic joint storage allocates matching ``joint_q`` / ``joint_qd`` entries, but
-they are not generalized coordinates or velocities that reconstruct the child
-body pose.
+:attr:`newton.JointType.ROD` uses the same kinematic state layout as a
+:attr:`~newton.JointType.FREE` joint: seven ``joint_q`` coordinates for relative
+position and orientation, and six ``joint_qd`` entries for relative twist.
+:func:`newton.eval_fk` and :func:`newton.eval_ik` convert between joint and body
+state. :class:`newton.solvers.SolverVBD` is currently the only solver that
+evaluates the rod's constitutive response.
 
-For a cable modeled as bodies connected by rod joints, body poses and velocities
-are maximal-coordinate state stored in
-:attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, and are advanced by
-:class:`newton.solvers.SolverVBD`. Therefore :func:`newton.eval_fk` does not
-update those child-body transforms from ``joint_q`` / ``joint_qd``.
+In :class:`newton.Rod`, ``points`` and ``quaternions`` define the initial
+centerline and segment orientations. Optional ``rest_points`` and
+``rest_quaternions`` define the structural-rest shape with the same topology.
+Rest edge lengths determine capsule geometry, mass properties, anchor offsets,
+and rigidity discretization; initial points and frames determine initial
+segment centers and orientations. Omitted rest points use the initial
+centerline; omitted rest frames transport initial material roll to the rest
+tangents. See :class:`newton.Rod` for the full authoring conventions.
+
+Set ``rest_straight=True`` on :class:`newton.Rod` to remove intrinsic bend and
+twist without changing initial poses, anchor geometry, or segment lengths.
+This option requires an ordered chain with at least two segments and cannot be
+combined with explicit rest points or frames.
+
+Closed ordered chains require coincident structural-rest endpoints: repeat the
+first point at the end of ``rest_points``, or ``points`` if rest points are
+omitted. The final consecutive point pair defines the closing segment. With
+explicit rest points, the initial endpoints may differ.
+
+At structural rest, parent and child anchor points coincide. The rod's
+:attr:`newton.Model.joint_rest_q` therefore has zero translation and stores
+the relative rest rotation as a unit quaternion. For individual joints, specify
+``rest_rotation`` on :meth:`newton.ModelBuilder.add_joint_rod`; its default is
+the initial relative anchor rotation. :class:`newton.solvers.SolverVBD` reads
+only the quaternion entries; direct edits to the three translation entries
+have no effect.
+
+Rod stiffness and damping use :attr:`newton.Model.joint_target_ke` and
+:attr:`newton.Model.joint_target_kd` in canonical XYZ linear/angular order:
+``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``. Each anchor's local
+``+Z`` is the material tangent; X/Y shear and X/Y bend coefficients must match.
+Every material axis uses :attr:`~newton.JointTargetMode.NONE`.
+Rods share :attr:`newton.Model.joint_rest_q` with passive joint springs.
+:class:`newton.solvers.SolverVBD` uses the material coefficients above for rod
+response; :attr:`newton.Model.joint_stiffness` and
+:attr:`newton.Model.joint_damping` do not affect rods in VBD.
+
+:attr:`newton.Control.joint_target_q` and
+:attr:`newton.Control.joint_target_qd` neither actuate a rod nor change its
+structural rest. After editing rest rotations in
+:attr:`newton.Model.joint_rest_q`, call
+:meth:`newton.solvers.SolverVBD.notify_model_changed` with
+:attr:`newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:
@@ -172,6 +207,10 @@ applied componentwise when the joints have more than one coordinate.
 The joint types do not need to match; only their position and velocity
 dimensions must match. For example, a one-axis D6 joint can mimic another
 one-dimensional joint.
+Both joints must be PRISMATIC, REVOLUTE, or D6 joints. Quaternion joints
+(BALL, FREE, DISTANCE, and ROD) are not supported because componentwise
+scaling and offsets do not preserve unit quaternions. FIXED joints have no
+coordinates to mimic and are also not supported.
 
 :func:`newton.eval_mimic` updates the follower coordinates in a state. For each
 follower, it reads all position and velocity coordinates of the reference joint
@@ -193,10 +232,12 @@ during a partial reset:
   newton.eval_mimic(model, state, indices=articulation_indices)
   newton.eval_fk(model, state.joint_q, state.joint_qd, state, indices=articulation_indices)
 
-Mimic chains are not supported. The reference joint must be independent, and a
-joint that is already the reference for a follower cannot itself become a
-follower. :meth:`newton.ModelBuilder.set_joint_mimic` raises an error if either
-case would create a chain.
+Joint-owned mimic chains are not supported. The reference joint must be
+independent, and a joint that is already the reference for a follower cannot
+itself become a follower. :meth:`newton.ModelBuilder.set_joint_mimic` raises
+an error if either case would create a chain. When importing URDF,
+:meth:`newton.ModelBuilder.add_urdf` composes chained ``<mimic>`` coefficients
+into direct references to independent joints.
 
 Call :func:`newton.eval_mimic` before :func:`newton.eval_fk` when
 maximal-coordinate body poses should reflect the mimic relationship.
@@ -216,6 +257,22 @@ generalized coordinates. It removes follower degrees of freedom from the
 dynamics solve and transfers their forces and inertia to the reference joint.
 :class:`newton.solvers.SolverMuJoCo` applies the joint-owned mimic metadata
 directly through its joint equality constraints.
+
+A separate :func:`newton.eval_mimic` call is not needed for a solver to enforce
+its supported mimic relationships during a step.
+Whether ``step()`` refreshes ``state_out.joint_q`` and ``state_out.joint_qd``
+is solver-defined. Solvers that advance body poses and velocities without
+refreshing these arrays can leave joint coordinates stale for all joints,
+including followers. To read joint coordinates from the updated body state, use
+:func:`newton.eval_ik`:
+
+.. code-block:: python
+
+  newton.eval_ik(model, state_out, state_out.joint_q, state_out.joint_qd)
+
+This reads the solved body configuration; it does not project the exact mimic
+formula onto it. Calling :func:`newton.eval_mimic` on the untouched joint
+arrays instead would use stale reference coordinates.
 
 When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigid body poses (maximal coordinates :attr:`newton.State.body_q`) are initialized by the ``xform`` argument:
 
@@ -348,7 +405,8 @@ The following patterns are valid and commonly used:
      - Fully used by dynamics
    * - Mass matrix / constraint role
      - No active DOFs when fixed to world
-     - Solver-dependent infinite-mass approximation along kinematic DOFs
+     - Solver-dependent: an infinite-mass approximation along kinematic DOFs, or a weld to the world
+       in :class:`~newton.solvers.SolverMuJoCo`
      - Standard articulated mass matrix
    * - Typical applications
      - Environment geometry, fixtures
@@ -396,9 +454,13 @@ Implementation details differ by coordinate formulation:
   :class:`~newton.solvers.SolverSemiImplicit` currently preserves prescribed state but
   does not zero inverse mass/inertia inside its contact solver. Contacts against
   kinematic bodies can therefore be softer under SemiImplicit.
+- :class:`~newton.solvers.SolverKamino` with ``dynamics_solver="lox"`` advances the pose of
+  kinematic bodies with their prescribed :attr:`newton.State.body_qd` over the step, while its
+  PADMM and SCC backends keep the input :attr:`newton.State.body_q`. Under LOX, write a velocity
+  that reaches the target pose within the step.
 
-In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
-large internal armature value; see :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
+:class:`~newton.solvers.SolverMuJoCo` holds kinematic roots with a weld constraint to the world, and
+massless kinematic roots cannot become dynamic. See :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
 
 .. _Joint types:
 
@@ -443,15 +505,12 @@ Joint types
      - up to 6
      - up to 6
    * - ``JointType.ROD``
-     - Rod joint with 2 linear material slots (stretch/shear) and 2 angular
-       material slots (bend/twist)
-     - 4
-     - 4
+     - Rod joint with relative-pose kinematics and stretch/shear/bend/twist material response
+     - 7 (3D position + 4D quaternion)
+     - 6
 
 D6 joints are the most general joint type in Newton and can be used to represent any combination of translational and rotational degrees of freedom.
 Prismatic, revolute, planar, and universal joints can be seen as special cases of the D6 joint.
-For ``JointType.ROD``, both counts represent allocated material slots, not
-generalized coordinates or velocity DOFs; see `Rod joints`_.
 
 Definition of ``joint_q``
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -513,11 +572,9 @@ properties defined via :class:`newton.ModelBuilder.JointDofConfig`, and the
 velocity targets at :attr:`newton.Control.joint_target_qd`.
 
 The position targets at :attr:`newton.Control.joint_target_q` instead match
-:attr:`newton.Model.joint_q` (coord layout) by default; index those with
-:attr:`newton.Model.joint_q_start`. Under the deprecated legacy layout
-(``use_coord_layout_targets = False``) the array is DOF-shaped and indexed
-via :attr:`newton.Model.joint_qd_start` — see the
-:ref:`migration guide <joint-target-layout>` for details.
+:attr:`newton.Model.joint_q` (coordinate layout); index those with
+:attr:`newton.Model.joint_target_q_start`, which aliases :attr:`newton.Model.joint_q_start`.
+See the :ref:`migration guide <joint-target-layout>` for details.
 
 For every generalized-coordinate joint, these per-DOF arrays are stored
 consecutively, with linear DOFs first and angular DOFs second. Use
@@ -546,8 +603,7 @@ The same start index can be used to query other per-DOF arrays for that joint:
     num_angular_dofs = joint_dof_dim[joint_id, 1]
     # all per-DOF arrays for this joint start at this index:
     dof_start = joint_qd_start[joint_id]
-    # position targets use the layout-aware mapping (aliases joint_q_start
-    # under newton.use_coord_layout_targets, joint_qd_start otherwise):
+    # position targets use coordinate indices (aliases joint_q_start):
     target_q_start = joint_target_q_start[joint_id]
     # the axis vector for the first linear DOF
     first_lin_axis = joint_axis[dof_start]
@@ -635,12 +691,13 @@ A robust pattern is:
         # Start index for this joint in generalized coordinates q
         q_begin = joint_q_start[joint_id]
 
-        # Skip free/ball joints because their q entries include quaternion coordinates.
+        # Skip joints whose q entries include quaternion coordinates.
         jt = joint_type[joint_id]
         if (
             jt == newton.JointType.FREE
             or jt == newton.JointType.BALL
             or jt == newton.JointType.DISTANCE
+            or jt == newton.JointType.ROD
         ):
             return
 
@@ -724,22 +781,54 @@ Construct a view by matching articulation keys with a pattern and optional filte
     assert scalar_view.get_dof_positions(state).shape == (1, 2, 1)
 
 Use views to read/write batched state slices (joint positions/velocities, root transforms,
-link transforms) without manual index bookkeeping.
+link transforms) without manual index bookkeeping. Getters may return a copy instead of a
+view of the source array, for example when a joint or link filter leaves gaps in the
+selection. Write changes back with the matching setter.
 
 Selections with structural differences
 """"""""""""""""""""""""""""""""""""""
 
-By default, every match must have the same joint, link, and shape layout. If some
-kinds of data differ, pass ``allow_partial_layouts=True`` to retain access to the
-layouts that still match:
+By default, :class:`~newton.selection.ArticulationView` requires homogeneous worlds:
+every world contains the same number of matches, every match has the same joint,
+coordinate, DOF, link, shape, and custom-frequency layout, and every world is laid out
+like the first, offset by a fixed stride, such as after replicating a builder into a
+builder that has no worlds yet (global shapes are permitted). Shapes are the exception:
+a match's shapes may be interleaved with other shapes or appended after them, at
+positions that differ between matches, as long as every match has the same shape count
+and owning links and the shape rows repeat in every world. Such shapes are addressed
+through explicit model indices.
 
 .. code-block:: python
 
-    view = newton.selection.ArticulationView(
-        model,
-        pattern="robot*",
-        allow_partial_layouts=True,
-    )
+    robot = newton.ModelBuilder()
+    robot.add_usd("robot.usd")
+    scene = newton.ModelBuilder()
+    scene.replicate(robot, copy_count=1024)
+    model = scene.finalize()
+
+    view = newton.selection.ArticulationView(model, pattern="robot*")  # homogeneous=True
+
+Construction raises ``ValueError`` when the selection is not homogeneous. Pass
+``homogeneous=False`` to relax these requirements:
+
+- **Irregular layouts.** Worlds may differ outside the selected articulations, for
+  example by holding additional bodies or articulations, so the selected rows are not
+  evenly spaced between or within worlds. Such layouts are addressed through explicit
+  model indices (:attr:`~newton.selection.ArticulationView.uses_explicit_model_indices`).
+- **Sparse views.** Matches may cover only some worlds. Worlds without matches are
+  excluded from the leading dimension of all returned arrays, and
+  :attr:`~newton.selection.ArticulationView.is_sparse` is ``True``.
+  :attr:`~newton.selection.ArticulationView.world_ids` maps each view world to its
+  model world. Every world with matches must hold the same number of them.
+- **Unavailable frequencies.** Selected articulations may differ in structure.
+  Frequencies whose layout differs between them are unavailable. Their counts and names
+  are ``None`` only when the selected counts differ, as described below.
+  For example, articulations that share a joint topology but differ in their shapes
+  still provide joint and link data:
+
+.. code-block:: python
+
+    view = newton.selection.ArticulationView(model, pattern="robot*", homogeneous=False)
 
     try:
         shape_margin = view.get_attribute("shape_margin", model)
@@ -750,7 +839,11 @@ Joint, coordinate, DOF, link, and shape layouts are checked independently. Both
 reads and writes raise ``AttributeError`` for an unavailable layout.
 A layout may contain gaps, but every match must have the same selected count and
 relative model positions and ownership (DOF/coordinate to joint and shape to link),
-and the matches' start indices must be uniformly strided within and between worlds.
+and, with ``homogeneous=True``, the matches' start indices must be uniformly strided
+within and between worlds. ``homogeneous=False`` allows irregular spacing within and
+between worlds and addresses it through explicit model indices. Shapes may instead be
+interleaved with other shapes at different positions, as long as every match has the
+same shape count and owning links.
 
 Joint and link filters use the first match as their template. A filter selects the
 template position in every match: if another articulation inserts a link or joint
@@ -759,7 +852,7 @@ shapes attached to each selected link; display and collision shapes are not
 distinguished. Counts and names are ``None`` only when counts differ. Relationship
 metadata such as ``joint_dof_counts`` and ``link_shapes`` is available only when both
 participating layouts are available. Custom frequencies with articulation ownership
-follow the same partial-layout behavior.
+follow the same rules.
 
 Move articulations in world space
 """""""""""""""""""""""""""""""""
@@ -855,9 +948,9 @@ Given the parent body's world transform :math:`x_{wp}` and the joint transform :
 
 Newton's public :func:`newton.eval_fk` writes :attr:`State.body_qd` using that
 COM/world convention, and :func:`newton.eval_ik` expects the same convention
-when recovering generalized state from maximal body state. For ``FREE`` and
-``DISTANCE`` joints, the
-recovered generalized velocities are rotated back into the joint parent frame.
+when recovering generalized state from maximal body state. For ``FREE``,
+``DISTANCE``, and ``ROD`` joints, the recovered generalized velocities are
+rotated back into the joint parent frame.
 
 
 .. autofunction:: newton.eval_fk
@@ -1156,6 +1249,12 @@ a USD asset can author a four-bar linkage or other parallel mechanism.
      :class:`~newton.solvers.SolverMuJoCo` enforces each loop-closure joint as a
      bilateral coupling at compile time, which restricts the supported
      joint types and drops joint-level features (see the note below).
+     :class:`~newton.solvers.SolverSteel` enforces loop-closing BALL,
+     REVOLUTE, and FIXED joints as bilateral constraint rows (3, 5, and 6 rows)
+     when the joint's parent is in the same articulation, the world, or a
+     kinematic body; other loop-closing joint types are rejected, and a
+     loop-closing joint loses its drive and limits. :ref:`Link-break loops` keep
+     every joint of the loop as a tree joint instead.
      :class:`~newton.solvers.SolverFeatherstone` has no such synthesis
      path: the loop-closure joint contributes no DOFs and the loop closure is
      silently not enforced.
@@ -1171,3 +1270,212 @@ a USD asset can author a four-bar linkage or other parallel mechanism.
    features (drive, limits, armature, friction). See
    :ref:`mujoco-loop-closures` for the supported types and MuJoCo-specific
    behavior.
+
+.. _Link-break loops:
+
+Link-break loops
+^^^^^^^^^^^^^^^^
+
+A loop-closing joint has no coordinate of its own, so generalized-coordinate
+solvers cannot drive, limit, or mimic it. A **link-break** loop moves the cut
+from a joint to a body instead (the approach of Drake's ``SpanningForest``):
+one body of the loop is split into a *primary* and a *shadow* that share its
+mass, the joint that would close the loop becomes a tree joint into the shadow,
+and a FIXED loop-closing joint welds the shadow back to its primary. Every
+joint of the loop, including the one that closes it, then keeps its
+coordinate, drive, limits, and mimic relationships.
+:class:`~newton.solvers.SolverSteel` enforces the weld as six bilateral rows.
+
+The four-bar below hinges a crank and a rocker on the world and splits the
+coupler that joins them:
+
+.. testcode::
+
+  builder = newton.ModelBuilder()
+  inertia = wp.mat33(0.02, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.02)
+  half_inertia = wp.mat33(0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01)
+
+  crank = builder.add_link(xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()), mass=1.0, inertia=inertia)
+  rocker = builder.add_link(xform=wp.transform((1.0, 0.0, 0.5), wp.quat_identity()), mass=1.0, inertia=inertia)
+
+  # Split the coupler into a primary and a shadow at the same pose, each with
+  # half of its mass and inertia. Collision shapes go on the primary only.
+  coupler_pose = wp.transform((0.5, 0.0, 1.0), wp.quat_identity())
+  coupler = builder.add_link(xform=coupler_pose, mass=0.5, inertia=half_inertia)
+  coupler_shadow = builder.add_link(xform=coupler_pose, mass=0.5, inertia=half_inertia)
+
+
+  def hinge(parent, child, parent_pos, child_pos):
+      return builder.add_joint_revolute(
+          parent=parent,
+          child=child,
+          axis=newton.Axis.Y,
+          parent_xform=wp.transform(parent_pos, wp.quat_identity()),
+          child_xform=wp.transform(child_pos, wp.quat_identity()),
+      )
+
+
+  j_a = hinge(-1, crank, (0.0, 0.0, 0.0), (0.0, 0.0, -0.5))
+  j_b = hinge(crank, coupler, (0.0, 0.0, 0.5), (-0.5, 0.0, 0.0))
+  j_d = hinge(-1, rocker, (1.0, 0.0, 0.0), (0.0, 0.0, -0.5))
+  # The hinge that closes the loop is a tree joint into the shadow, so it keeps its coordinate.
+  j_c = hinge(rocker, coupler_shadow, (0.0, 0.0, 0.5), (0.5, 0.0, 0.0))
+
+  # Both branches of the loop belong to one articulation.
+  builder.add_articulation([j_a, j_b, j_d, j_c])
+
+  # The weld is the loop-closing joint: it holds the shadow on its primary.
+  builder.add_joint_fixed(parent=coupler, child=coupler_shadow)
+
+  model = builder.finalize()
+
+When building a link-break loop:
+
+- The primary and the shadow start at the same pose and keep the real body's
+  center of mass, and their masses and inertias add up to the real body's (an
+  even split is the usual choice). The weld's two frames must coincide at the
+  authored pose; identity frames do when the two bodies share a pose.
+- All tree joints of the loop, from both branches, go into **one**
+  articulation, and the weld stays out of it. Steel rejects a weld between two
+  dynamic articulations.
+- Cut on the far side of the loop from the articulation root so both branches
+  stay short. Welding a long chain back onto its own root is valid but, in
+  Steel, leaks more momentum.
+- With :class:`~newton.solvers.SolverSteel`, iterative weld rows converge
+  slowly on spatial loops at low iteration counts. ``enable_bilateral_preelimination``
+  solves a weld directly when the articulation's loop rows fit its capacity
+  (8 rows, so one weld); larger models warn and fall back to iterative rows.
+- Do not collapse fixed joints in a link-break model: build and import it with
+  ``collapse_fixed_joints=False`` and do not call
+  :meth:`~newton.ModelBuilder.collapse_fixed_joints` afterwards. Collapsing
+  merges the shadow into its primary or drops the weld, either of which opens
+  the loop; :meth:`~newton.ModelBuilder.collapse_fixed_joints` warns when it
+  finds a weld closure.
+
+The same structure can be authored in an asset:
+
+- **MJCF:** nest the shadow body (no geoms) inside the body that is the
+  closing joint's parent and give it the closing joint; give the primary and
+  the shadow ``<inertial>`` elements with the same ``pos`` and half of the mass
+  and inertia each;
+  and close the loop with ``<weld body1="coupler" body2="coupler_shadow"/>``.
+  Each top-level body of ``<worldbody>`` imports as its own articulation, so
+  both branches must hang from one body there; for a loop on the ground, use a
+  fixed base body without joints.
+- **USD:** add the shadow as a rigid body with half of the mass properties,
+  target the closing joint's ``physics:body1`` at it, and weld it to its
+  primary with a ``PhysicsFixedJoint`` whose
+  ``physics:excludeFromArticulation`` is ``true``. Put both branches under one
+  prim with ``PhysicsArticulationRootAPI``.
+
+Link-break welds and MuJoCo welds
+"""""""""""""""""""""""""""""""""
+
+A link-break weld is a hard, topological loop closure. It plays the role of the
+weld that `Drake's SpanningForest
+<https://github.com/RobotLocomotion/drake/tree/master/multibody/topology>`_
+adds between a split link's primary and shadow, which Drake's
+``MultibodyPlant`` enforces as a hard weld constraint. It is not a model of
+MuJoCo's soft ``<weld>`` equality, but the MJCF and USD importers convert MuJoCo
+welds (``<weld>``, ``MjcEqualityWeldAPI``) to the same loop joints:
+
+- ``torquescale`` 0, which MuJoCo enforces as a point constraint with rotation
+  free, becomes a BALL loop joint on the weld's anchor, and the importer logs
+  a warning.
+- Any other ``torquescale`` becomes a FIXED loop joint. A value other than 1
+  logs a warning, because the weld is then enforced in full.
+- :class:`~newton.solvers.SolverSteel` solves loop closures as hard
+  constraints and does not support ``solref`` or ``solimp`` (time constant,
+  damping ratio, impedance) on them. :class:`~newton.solvers.SolverMuJoCo`
+  enforces the original equality row and keeps all of these parameters.
+
+A link-break MJCF also runs in MuJoCo itself, where the weld is soft. To keep it
+close to a hard closure there:
+
+- Set the weld's ``solref`` time constant to twice ``timestep`` with a damping
+  ratio of 1, for example ``solref="0.002 1"`` with ``timestep="0.001"``.
+  MuJoCo raises smaller time constants to twice the timestep. With the default
+  ``solref`` (0.02 s), the weld of a four-bar's coupler opens by about 1 mm
+  and 0.6 degrees.
+- Set ``solimp="0.99 0.999 0.001"`` to raise the constraint impedance.
+- Keep ``torquescale`` at its default of 1, and leave ``relpose`` unset so the
+  weld holds the authored pose.
+- Leave the shadow without geoms, or exclude its contacts with the primary
+  (``<contact><exclude body1="coupler" body2="coupler_shadow"/></contact>``):
+  MuJoCo skips collisions only between a parent and its child.
+- For accuracy, use a smaller ``timestep`` or ``integrator="RK4"``.
+
+
+.. _passive-joint-springs:
+
+Passive joint springs
+---------------------
+
+:attr:`newton.Model.joint_stiffness` and :attr:`newton.Model.joint_rest_q`
+describe a passive joint spring. For each scalar coordinate, its generalized
+force is ``stiffness * (rest_q - q)``. Passive damping adds
+``-joint_damping * qd``. These forces act independently of the drive targets
+and remain active when a joint limit is violated. The rest coordinate may
+lie outside the limits to model preload.
+
+Author scalar springs with :class:`newton.ModelBuilder.JointDofConfig` or
+the scalar joint helpers::
+
+    builder.add_joint_revolute(
+        parent=-1, child=body, stiffness=2.0, rest_q=0.25,
+        target_q=0.0, target_qd=0.0,
+    )
+
+``stiffness`` defaults to zero and has units N/m for linear axes and
+N·m/rad for angular axes. The effective scalar rest coordinate defaults to zero
+and is in meters or radians. ``JointDofConfig.rest_q=None`` leaves the coordinate
+unspecified; finalization resolves it to zero unless a legacy spring input
+supplies it. An explicitly configured zero takes precedence over a legacy
+default and conflicts with an explicitly authored, different legacy rest.
+``target_q`` and ``target_qd`` configure drives;
+``target_pos`` and ``target_vel`` are deprecated aliases since Newton 1.8.
+
+The stiffness array is DOF-sized. The rest array always has the same
+coordinate layout as :attr:`newton.Model.joint_q`, including identity
+quaternions (xyzw) for default rotational rest configurations. Index it
+with :attr:`newton.Model.joint_q_start`. Scalar ``JointDofConfig.rest_q`` values cannot specify a
+quaternion; edit the joint's four entries in ``joint_rest_q`` instead.
+
+Featherstone, Steel, and SemiImplicit apply springs only to REVOLUTE, PRISMATIC,
+and D6 coordinates. MuJoCo
+also supports isotropic BALL springs and quaternion rest orientations.
+:class:`newton.solvers.SolverVBD` uses ``joint_rest_q`` for ROD structural rest;
+its material stiffness and damping remain in ``joint_target_ke`` / ``joint_target_kd``.
+Other solvers do not consume these properties yet. As with other model
+features, unsupported springs do not produce automatic warnings; consult the
+:doc:`solver feature matrix </solvers/index>` when choosing a solver.
+
+SemiImplicit derives angular coordinates from body orientations and does not
+track multi-turn winding. Its scalar angular springs use a principal angle in
+[-pi, pi), independent of quaternion sign. The displacement ``rest_q - q`` is
+not wrapped, so rest coordinates outside that interval still produce preload.
+However, crossing the -pi/pi boundary makes the coordinate jump by 2*pi and
+the spring force jump by ``2*pi*stiffness``. This can destabilize motion even
+near an equilibrium close to that boundary. Use Featherstone or MuJoCo, which
+store unwrapped scalar joint coordinates, for boundary-crossing or multi-turn
+motion. SemiImplicit winding support is tracked in
+`issue #4547 <https://github.com/newton-physics/newton/issues/4547>`_.
+
+MJCF ``stiffness`` and ``springref`` import into the core fields without explicit
+solver custom-attribute registration.
+
+For USD, reuse the existing MjcJointAPI ``mjc:stiffness``,
+``mjc:springref``, and ``mjc:ref`` properties with
+:class:`newton.usd.SchemaResolverMjc` enabled. This import path does not
+require MuJoCo solver registration. NewtonJointAPI spring authoring
+properties are tracked separately in `issue #4516 <https://github.com/newton-physics/newton/issues/4516>`_; no unregistered
+Newton USD attributes are introduced here.
+
+See :ref:`mujoco-joint-spring-migration` for reference-coordinate conversion,
+legacy attribute compatibility, and migration of runtime spring edits.
+
+After runtime spring edits, call ``solver.notify_model_changed`` with
+:attr:`newton.ModelFlags.JOINT_DOF_PROPERTIES`, or use
+:attr:`newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` for stiffness and
+:attr:`newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES` for rest coordinates.
+Modify existing arrays in place when reusing captured simulation graphs.

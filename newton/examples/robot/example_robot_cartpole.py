@@ -1,15 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot Cartpole
-#
-# Shows how to set up a simulation of a rigid-body cartpole articulation
-# from a USD stage using newton.ModelBuilder.add_usd().
-#
-# Command: python -m newton.examples robot_cartpole --world-count 100
-#
-###########################################################################
+"""Example Robot Cartpole
+
+Shows how to set up a simulation of a rigid-body cartpole articulation
+from a USD stage using newton.ModelBuilder.add_usd().
+
+Success criteria:
+- Replicated setups appear consisting of a double pendulum attached to a rail.
+- The double pendulum is consistently moving.
+
+Runs:
+- `python -m newton.examples robot_cartpole --world-count 2`
+  - 2 cartpole setups appear.
+- `python -m newton.examples robot_cartpole --world-count 100`
+  - 100 cartpole setups appear.
+"""
 
 import numpy as np
 import warp as wp
@@ -68,10 +74,10 @@ class Example:
 
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=False, sparse_jacobian=False
+                self.model, dynamics_solver="scc", sparse_dynamics=False, sparse_jacobian=False
             )
-            solver_config.dvi.max_alternating_iterations = 8
-            solver_config.dvi.bilateral_solve_interval = 8
+            solver_config.scc.max_alternating_iterations = 8
+            solver_config.scc.bilateral_solve_interval = 8
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(self.model)

@@ -9,6 +9,7 @@ from typing import Any
 
 import warp as wp
 
+from ...exceptions import NewtonDeprecationWarning
 from .base import ClampingBase
 
 
@@ -106,6 +107,11 @@ class ClampingDCMotor(ClampingBase):
     (capped by ``max_motor_effort``). As velocity approaches
     ``velocity_limit``, available effort in the direction of motion drops
     to zero.
+
+    This clamp models a DC motor by its effort-speed limit only. It cannot be
+    combined with a motor such as :class:`~newton.actuators.MotorDC`, which
+    models the motor itself including its back-EMF, so the effort-speed limit
+    would be applied a second time.
     """
 
     @classmethod
@@ -172,7 +178,7 @@ class ClampingDCMotor(ClampingBase):
             "The clamp derives the corner velocity from the live parameters instead, so a stored "
             "copy is no longer used; compute it as velocity_limit * (1 + max_motor_effort / "
             "saturation_effort) if you need the value.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         corner = wp.zeros_like(self.velocity_limit)

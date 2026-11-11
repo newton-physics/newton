@@ -1,15 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot Anymal D
-#
-# Shows how to simulate Anymal D with multiple worlds using MuJoCo or Kamino.
-#
-# Command: python -m newton.examples robot_anymal_d --world-count 16
-#          python -m newton.examples robot_anymal_d --solver kamino
-#
-###########################################################################
+"""Example Robot Anymal D
+
+Shows how to simulate Anymal D with multiple worlds using MuJoCo or Kamino.
+
+Success criteria:
+- ANYmal D robots appear standing on the ground.
+- The user can grasp every robot with a right click and move them around.
+- The robots do not interact with each other but collide properly with the ground plane.
+
+Runs:
+- `python -m newton.examples robot_anymal_d --world-count 4`
+  - 4 ANYmal D robots appear.
+- `python -m newton.examples robot_anymal_d --world-count 16`
+  - 16 ANYmal D robots appear.
+- `python -m newton.examples robot_anymal_d --solver kamino`
+"""
 
 import warp as wp
 
@@ -21,7 +28,6 @@ from newton import JointTargetMode, JointType
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -93,12 +99,12 @@ class Example:
         use_mujoco_contacts = self.solver_type == "mujoco" and args.use_mujoco_contacts
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
-            # Bounded joint drives and foot contacts need the bilateral rows
-            # resolved throughout the alternating solve to hold the stance.
-            solver_config.dvi.max_alternating_iterations = 32
-            solver_config.dvi.bilateral_solve_interval = 1
+            # Eliminate bilateral rows once before the projected inequality sweeps.
+            solver_config.scc.max_alternating_iterations = 32
+            solver_config.scc.use_schur_complement = True
+            solver_config.scc.bilateral_solver_type = "LLTBRCM"
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(
@@ -128,7 +134,9 @@ class Example:
         else:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)

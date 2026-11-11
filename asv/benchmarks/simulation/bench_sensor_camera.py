@@ -155,11 +155,13 @@ def _build_franka_cabinet() -> newton.ModelBuilder:
         cabinet_folder / "urdf" / "sektion_cabinet_2.urdf",
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.4), wp.quat_identity()),
         floating=False,
+        joint_damping_mode="passive",
     )
     builder.add_urdf(
         newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
         xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), math.pi)),
         floating=False,
+        joint_damping_mode="passive",
     )
     _set_joint_positions(builder, _FRANKA_CABINET_ARM_POSE)
     return builder

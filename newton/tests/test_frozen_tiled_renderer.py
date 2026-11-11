@@ -27,7 +27,7 @@ _FROZEN_MANIFEST = {
     "textures.py": "0f12c8e515c267f0962f340234d9114ff4a6b564234cc18f11ae3d24571c821c",
     "tiling.py": "299deed013bf215bd0c693d904cd9320795cfc8cbb4bc4bf71954288fe4122d0",
     "types.py": "b6fc4eabded2380665f7e71ddfb2f7ad0c465e216d11567f3f9d7dec0e798d49",
-    "utils.py": "9b2cb23ba60f56eb45cf696dd2774bf10811ee3829cdef3948c40f537d84b51e",
+    "utils.py": "4f952ea8b6ae66d2218b963d1d36f37468a093ab0a8914a0225b347dc9f0569f",
 }
 
 

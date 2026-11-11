@@ -1,17 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Selection Cartpole
-#
-# Demonstrates batch control of multiple cartpole worlds using
-# ArticulationView. This example spawns multiple cartpole robots and applies
-# simple random control policy.
-#
-# To limit the number of worlds to render use the max-worlds argument.
-# Command: python -m newton.examples selection_cartpole --world-count 16 --max-worlds 8
-#
-###########################################################################
+"""Example Selection Cartpole
+
+Demonstrates batch control of multiple cartpole worlds using
+ArticulationView. This example spawns multiple cartpole robots and applies
+center-directed cart forces from randomized initial cart and pole states.
+
+To limit the number of worlds to render use the max-worlds argument.
+
+Success criteria:
+- The displayed setups consist of a double pendulum attached to a rail.
+- Each setup evolves from random initial cart and pole coordinates under a center-directed cart
+  force.
+
+Runs:
+- `python -m newton.examples selection_cartpole --world-count 8`
+  - 8 cartpole setups appear.
+- `python -m newton.examples selection_cartpole --world-count 16 --max-worlds 8`
+  - 16 worlds are simulated, but only 8 are displayed because of --max-worlds.
+"""
 
 from __future__ import annotations
 
@@ -69,17 +77,17 @@ class Example:
         )
 
         scene = newton.ModelBuilder()
-        scene.replicate(world, world_count=self.world_count)
+        scene.replicate(world, copy_count=self.world_count)
 
         # finalize model
         self.model = scene.finalize()
 
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
-            solver_config.dvi.max_alternating_iterations = 8
-            solver_config.dvi.bilateral_solve_interval = 8
+            solver_config.scc.max_alternating_iterations = 8
+            solver_config.scc.bilateral_solve_interval = 8
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(self.model, disable_contacts=True)

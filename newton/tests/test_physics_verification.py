@@ -34,7 +34,7 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino.config import ConstraintStabilizationConfig, PADMMSolverConfig
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 class TestPhysicsVerification(unittest.TestCase):
@@ -1318,7 +1318,7 @@ def test_ball_loop_joint(test, device, solver_fn):
             parent=-1,
             child=link,
             parent_xform=wp.transform_identity(),
-            child_xform=wp.transform(wp.vec3(0.0, 0.25, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0.0, 0.5, 0.0), wp.quat_identity()),
         )
     builder.joint_articulation[j_loop] = -1
 
@@ -1536,6 +1536,11 @@ def test_fixed_loop_joint(test, device, solver_fn):
 # Test Registration
 # ---------------------------------------------------------------------------
 
+
+def _steel(model):
+    return newton.solvers.SolverSteel(model)
+
+
 devices = get_test_devices()
 
 for device in devices:
@@ -1546,11 +1551,15 @@ for device in devices:
             True,
         ),
         "mujoco_cpu": (
-            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
+            requires(*MUJOCO_MODULES)(
+                lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+            ),
             True,
         ),
         "mujoco_warp": (
-            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
+            requires(*MUJOCO_MODULES)(
+                lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+            ),
             True,
         ),
         "xpbd": (
@@ -1565,6 +1574,7 @@ for device in devices:
             newton.solvers.SolverKamino,
             False,
         ),
+        "steel": (_steel, True),
     }
     for solver_name, (solver_fn, uses_gen_coords) in solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
@@ -1605,11 +1615,15 @@ for device in devices:
             True,
         ),
         "mujoco_cpu": (
-            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
+            requires(*MUJOCO_MODULES)(
+                lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+            ),
             True,
         ),
         "mujoco_warp": (
-            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
+            requires(*MUJOCO_MODULES)(
+                lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+            ),
             True,
         ),
         "semi_implicit": (
@@ -1632,6 +1646,7 @@ for device in devices:
             ),
             False,
         ),
+        "steel": (_steel, True),
     }
     for solver_name, (solver_fn, uses_gen_coords) in articulation_solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
@@ -1668,7 +1683,7 @@ for device in devices:
         # Torque-free precession exercises the articulated rigid-body dynamics
         # exactly (rigid joints, no soft constraints), so restrict it to the
         # exact generalized-coordinate solvers.
-        if solver_name in ("featherstone", "mujoco_cpu", "mujoco_warp"):
+        if solver_name in ("featherstone", "steel", "mujoco_cpu", "mujoco_warp"):
             add_function_test(
                 TestPhysicsVerification,
                 f"test_torque_free_precession_{solver_name}",
@@ -1709,6 +1724,13 @@ for device in devices:
             solver_fn=newton.solvers.SolverKamino,
             rebound_rtol=0.03,
         )
+    add_function_test(
+        TestPhysicsVerification,
+        "test_restitution_steel",
+        test_restitution,
+        devices=[device],
+        solver_fn=_steel,
+    )
 
     # Full rigid restitution sweep: endpoint and intermediate coefficients,
     # coarse and fine timesteps, and late (gap=0) and predictive contacts.
@@ -1732,7 +1754,7 @@ for device in devices:
             "test_restitution_mujoco_cpu",
             test_restitution_mujoco,
             devices=[device],
-            solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
+            solver_fn=requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True)),
             use_mujoco_cpu=True,
         )
     if device.is_cuda:
@@ -1741,17 +1763,19 @@ for device in devices:
             "test_restitution_mujoco_warp",
             test_restitution_mujoco,
             devices=[device],
-            solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+            solver_fn=requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
             use_mujoco_cpu=False,
         )
 
-    # Kinematic loop and loop joint constraint tests (MuJoCo only)
+    # Kinematic loop and loop joint constraint tests (MuJoCo only). Steel rejects MuJoCo CONNECT
+    # equalities and revolute or fixed loop closures, and its stiff ball closure resolves the initial
+    # 0.29 m closure violation with an orbit below this test's MuJoCo-tuned amplitude bound.
     loop_solvers = {
-        "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(
-            model, use_mujoco_cpu=True, iterations=100, ls_iterations=50
+        "mujoco_cpu": requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, iterations=100, ls_iterations=50)
         ),
-        "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
-            model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
+        "mujoco_warp": requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, iterations=100, ls_iterations=50)
         ),
     }
     for solver_name, solver_fn in loop_solvers.items():

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ..core import MAXVAL
+from .flags import ShapeFlags
 from .types import Gaussian, GeoType
 
 if TYPE_CHECKING:
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
 
 
 SHAPE_BOUNDS_BLOCK_DIM = 256
+_SHAPE_FLAG_VISIBLE = wp.constant(wp.int32(int(ShapeFlags.VISIBLE)))
 
 
 @wp.func
@@ -173,17 +175,52 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
     return False
 
 
+BVH_SHAPE_INACTIVE = wp.constant(wp.uint32(0xFFFFFFFF))
+"""BVH leaf entry of an empty variant row in ``Model._bvh_shape_active_leaves``; ray queries skip it."""
+
+
+@wp.kernel(enable_backward=False)
+def mark_inactive_bvh_shapes(
+    bvh_shape_leaves: wp.array[wp.uint32],
+    shape_variant_row: wp.array[wp.bool],
+    shape_flags: wp.array[wp.int32],
+    shape_flags_mask: wp.int32,
+    shape_opacity: wp.array[wp.float32],
+    out_shape_enabled: wp.array[wp.uint32],
+):
+    """Copy the BVH leaf shapes, replacing variant rows that :func:`compute_enabled_shapes` would
+    exclude now, such as empty or fully transparent rows, by :data:`BVH_SHAPE_INACTIVE`."""
+    tid = wp.tid()
+    shape = bvh_shape_leaves[tid]
+    s = wp.int32(shape)
+    active = True
+    if shape_variant_row[s]:
+        flags = shape_flags[s]
+        if shape_opacity.shape[0] > 0 and shape_opacity[s] <= 0.0:
+            flags = flags & ~_SHAPE_FLAG_VISIBLE
+        active = (flags & shape_flags_mask) != 0
+    out_shape_enabled[tid] = wp.where(active, shape, BVH_SHAPE_INACTIVE)
+
+
 @wp.kernel(enable_backward=False)
 def compute_enabled_shapes(
     shape_type: wp.array[wp.int32],
     shape_flags: wp.array[wp.int32],
     shape_flags_mask: wp.int32,
+    shape_opacity: wp.array[wp.float32],
     out_shape_enabled: wp.array[wp.uint32],
     out_shape_enabled_count: wp.array[wp.int32],
 ):
     tid = wp.tid()
 
-    if not bool(shape_flags[tid] & shape_flags_mask):
+    flags = shape_flags[tid]
+
+    # A fully transparent shape (e.g. an MJCF helper geom with rgba alpha 0) is not visible, so it must not occlude
+    # other shapes. Clear VISIBLE before applying the mask so shapes selected through other flags are kept.
+    if shape_opacity.shape[0] > 0 and shape_opacity[tid] <= 0.0:
+        flags = flags & ~_SHAPE_FLAG_VISIBLE
+
+    if not bool(flags & shape_flags_mask):
         return
 
     if not is_supported_shape_type(shape_type[tid]):

@@ -157,21 +157,18 @@ def _max_abs_component(v: wp.vec3) -> float:
     return wp.max(wp.max(wp.abs(v[0]), wp.abs(v[1])), wp.abs(v[2]))
 
 
-@wp.func
+@wp.func_native(f"""
+if (exp_ref == {int(FIXED_EXP_NONE)}) return 0.0;
+return ::ldexp(1.0, mantissa_bits - exp_ref);
+""")
 def _fixed_shift(exp_ref: int, mantissa_bits: int) -> wp.float64:
     """Power-of-two factor mapping an entry's grid onto the fixed-point range.
 
     Returns zero for the sentinel exponent so that quantization collapses to
-    zero without a branch at every call site.  This is a double-precision
-    ``pow``, so callers hoist it out of per-component loops: computing it once
-    per entry instead of once per scalar is ~10x cheaper on consumer GPUs.
+    zero without a branch at every call site. Native ``ldexp`` constructs the
+    exact binary scale; CUDA's general double-precision ``pow`` can round an
+    integer power of two down by one ULP. Warp does not expose ``ldexp`` yet.
     """
-    if exp_ref == FIXED_EXP_NONE:
-        return wp.float64(0.0)
-    # Every non-sentinel exponent comes from a finite float32 contribution, so
-    # forming the exact shift in float64 covers its full exponent range while
-    # preserving the int64 overflow proof in ``_fixed_mantissa_bits``.
-    return wp.pow(wp.float64(2.0), wp.float64(mantissa_bits - exp_ref))
 
 
 @wp.func
@@ -416,7 +413,7 @@ def _create_unreduced_aggregate_kernel(mantissa_bits: int):
         mantissa_bits: Fixed-point mantissa width from :func:`_fixed_mantissa_bits`.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def accumulate_unreduced_aggregates_kernel(
         reducer_data: GlobalContactReducerData,
         fixed_accum: wp.array[wp.int64],
@@ -478,7 +475,7 @@ def _create_unreduced_moment_kernel(mantissa_bits: int):
     ``weight_sum`` and ``weighted_pos_sum`` have been finalized.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def accumulate_unreduced_moment_kernel(
         reducer_data: GlobalContactReducerData,
         fixed_accum: wp.array[wp.int64],
@@ -530,7 +527,7 @@ def _create_finalize_fixed_kernel(mantissa_bits: int):
     the moment accumulator needs them, and the moments last.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def finalize_fixed_aggregates_kernel(
         reducer_data: GlobalContactReducerData,
         fixed_accum: wp.array[wp.int64],
@@ -604,7 +601,7 @@ def get_reduce_hydroelastic_contacts_kernel(deterministic: bool = False):
         A Warp kernel that registers buffered contacts in the hashtable.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def reduce_hydroelastic_contacts_kernel(
         reducer_data: GlobalContactReducerData,
         shape_transform: wp.array[wp.transform],
@@ -767,7 +764,7 @@ def _create_accumulate_reduced_depth_kernel(deterministic: bool = False, mantiss
     """
     exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def accumulate_reduced_depth_kernel(
         ht_keys: wp.array[wp.uint64],
         ht_values: wp.array[wp.uint64],
@@ -867,7 +864,7 @@ def _create_accumulate_moments_kernel(
     """
     exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def accumulate_moments_kernel(
         ht_keys: wp.array[wp.uint64],
         ht_values: wp.array[wp.uint64],
@@ -1033,7 +1030,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
     exported_ny_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.float32)
     exported_nz_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.float32)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def export_hydroelastic_reduced_contacts_kernel(
         # Hashtable arrays
         ht_keys: wp.array[wp.uint64],

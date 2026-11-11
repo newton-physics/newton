@@ -6,6 +6,7 @@ Unit tests for the ForwardKinematicsSolver class of Kamino, in `solvers/fk.py`.
 """
 
 import hashlib
+import logging
 import unittest
 from functools import partial
 
@@ -29,12 +30,15 @@ from newton.tests.kamino.utils.sampling import (
     sample_body_poses,
     sample_world_mask,
 )
+from newton.tests.unittest_utils import requires
 from newton.tests.utils.basics import build_boxes_fourbar, build_cartpole
 from newton.tests.utils.testing import (
     build_all_joints_test,
     build_unary_revolute_joint_test,
     build_unary_universal_joint_test,
 )
+
+logger = logging.getLogger(__name__)
 
 ###
 # Helpers
@@ -245,7 +249,7 @@ def solve_and_check_fk_random_poses(
                 body_u_before_np[b0:b1], body_u_after_np[b0:b1]
             ):
                 inactive_untouched = False
-                print(f"Inactive world {wid} was modified by the solver for pose {pose_id}")
+                logger.error("Inactive world %s was modified by the solver for pose %s", wid, pose_id)
                 break
         if not inactive_untouched:
             success_flags.append(False)
@@ -280,7 +284,7 @@ def solve_and_check_fk_random_poses(
             if r1 > r0:
                 residual_ct_pos = max(residual_ct_pos, float(np.max(np.abs(r_j_np[r0:r1]))))
         if residual_ct_pos > epsilon:
-            print(f"Large constraint residual ({residual_ct_pos}) for pose {pose_id}")
+            logger.error("Large constraint residual (%s) for pose %s", residual_ct_pos, pose_id)
             success_flags[-1] = False
         actuator_q_check = extract_segments(data.joints.q_j.numpy(), active_coord_offsets, active_coord_sizes)
         actuator_q_check = standardize_actuated_coords(actuator_q_check, active_coord_sizes, active_dof_types)
@@ -288,7 +292,9 @@ def solve_and_check_fk_random_poses(
         actuator_q_ref = standardize_actuated_coords(actuator_q_ref, active_coord_sizes, active_dof_types)
         residual_actuator_q = float(np.max(np.abs(actuator_q_check - actuator_q_ref))) if actuator_q_check.size else 0.0
         if residual_actuator_q > epsilon:
-            print(f"Large error on prescribed actuator coordinates ({residual_actuator_q}) for pose {pose_id}")
+            logger.error(
+                "Large error on prescribed actuator coordinates (%s) for pose %s", residual_actuator_q, pose_id
+            )
             success_flags[-1] = False
 
         # Validate velocities computation on active worlds
@@ -300,18 +306,20 @@ def solve_and_check_fk_random_poses(
             if r1 > r0:
                 residual_ct_vel = max(residual_ct_vel, float(np.max(np.abs(dr_j_np[r0:r1]))))
         if residual_ct_vel > epsilon:
-            print(f"Large constraint velocity residual ({residual_ct_vel}) for pose {pose_id}")
+            logger.error("Large constraint velocity residual (%s) for pose %s", residual_ct_vel, pose_id)
             success_flags[-1] = False
         actuator_u_check = extract_segments(data.joints.dq_j.numpy(), active_dof_offsets, active_dof_sizes)
         actuator_u_ref = extract_segments(actuator_u_np[pose_id], active_ref_dof_offsets, active_dof_sizes)
         residual_actuator_u = float(np.max(np.abs(actuator_u_check - actuator_u_ref))) if actuator_u_check.size else 0.0
         if residual_actuator_u > epsilon:
-            print(f"Large error on prescribed actuator velocities ({residual_actuator_u}) for pose {pose_id}")
+            logger.error("Large error on prescribed actuator velocities (%s) for pose %s", residual_actuator_u, pose_id)
             success_flags[-1] = False
 
     success = np.sum(success_flags) == num_poses
     if not success:
-        print(f"Random poses simulation & validation failed, {np.sum(success_flags)}/{num_poses} poses successful")
+        logger.error(
+            "Random poses simulation & validation failed, %s/%s poses successful", np.sum(success_flags), num_poses
+        )
 
     return success
 
@@ -332,6 +340,7 @@ class TestJacobianAssembly(unittest.TestCase):
     def tearDown(self):
         self.default_device = None
 
+    @requires("pxr.Usd")
     def test_finite_differences_single_joint(self):
         """Match analytic and finite-difference Jacobians on every single-joint fixture."""
         test_name = "Forward Kinematics Jacobian check"
@@ -372,6 +381,7 @@ class TestJacobianAssembly(unittest.TestCase):
         success = run_test_single_joint_examples(test_function, test_name, device=self.default_device)
         self.assertTrue(success)
 
+    @requires("pxr.Usd")
     def test_sparse_matches_dense_single_joint(self):
         """Match dense and sparse Jacobians for every single-joint fixture."""
         test_name = "Single-joint sparse Jacobian assembly check"
@@ -396,6 +406,7 @@ class TestJacobianAssembly(unittest.TestCase):
         success = run_test_single_joint_examples(test_function, test_name, device=self.default_device)
         self.assertTrue(success)
 
+    @requires("git", "pxr.Usd")
     def test_sparse_matches_dense_heterogenous(self):
         """Match dense and sparse Jacobians on a heterogenous (TestMech + DR Legs) model."""
         test_name = "Heterogenous model (test mechanism + dr_legs) sparse Jacobian assembly check"
@@ -535,7 +546,7 @@ class TestPassiveUniversalJointFrame(unittest.TestCase):
         np.testing.assert_allclose(constraints, 0.0, atol=1.0e-6)
 
         # Validate jacobian with finite differences
-        body_q_np = body_q.numpy().reshape(-1)
+        body_q_np = body_q.numpy().reshape(-1).copy()
         jacobian = solver.eval_kinematic_constraints_jacobian(body_q, target_transforms).numpy()[0]
 
         def eval_constraints(body_q_stepped_np):
@@ -583,6 +594,7 @@ class TestRandomPoses(unittest.TestCase):
         kwargs.update(overrides)
         return partial(solve_and_check_fk_random_poses, model, num_poses, rng, **kwargs)
 
+    @requires("git", "pxr.Usd")
     def test_dr_testmech_random_poses(self):
         """Validate FK on random poses for the DR Test mechanism"""
         rng = np.random.default_rng(rng_seed_from_string("Test mechanism FK random poses check"))
@@ -595,7 +607,7 @@ class TestRandomPoses(unittest.TestCase):
         builder_single.add_usd(source=asset_file)
         builder_single.end_world()
         builder = newton.ModelBuilder()
-        builder.replicate(builder=builder_single, world_count=10)
+        builder.replicate(builder=builder_single, copy_count=10)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Solve and check FK on random poses, on both dense and sparse paths
@@ -603,6 +615,7 @@ class TestRandomPoses(unittest.TestCase):
         self.assertTrue(solve_and_check_fn(use_sparsity=False))
         self.assertTrue(solve_and_check_fn(use_sparsity=True))
 
+    @requires("git", "pxr.Usd")
     def test_dr_legs_random_poses(self):
         """Validate FK on random poses for DR Legs"""
         rng = np.random.default_rng(rng_seed_from_string("FK random poses check for dr_legs model"))
@@ -615,7 +628,7 @@ class TestRandomPoses(unittest.TestCase):
         builder_single.add_usd(source=asset_file)
         builder_single.end_world()
         builder = newton.ModelBuilder()
-        builder.replicate(builder=builder_single, world_count=10)
+        builder.replicate(builder=builder_single, copy_count=10)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Solve and check FK on random poses, on both dense and sparse paths
@@ -630,6 +643,7 @@ class TestRandomPoses(unittest.TestCase):
         self.assertTrue(solve_and_check_fn(use_sparsity=False))
         self.assertTrue(solve_and_check_fn(use_sparsity=True))
 
+    @requires("git", "pxr.Usd")
     def test_heterogenous_dr_testmech_and_legs_random_poses(self):
         """Validate FK on random poses for a heterogenous model (DR TestMechanism + DR Legs)"""
         rng = np.random.default_rng(
@@ -692,7 +706,7 @@ class TestRandomPoses(unittest.TestCase):
         """Validate FK on random poses for a four-bar with a tie rod, using axis joints"""
         rng = np.random.default_rng(rng_seed_from_string("Four-bar with tie rod FK random poses check (axis joints)"))
         builder = newton.ModelBuilder()
-        builder.replicate(builder=create_four_bar_tie_rod(), world_count=10)
+        builder.replicate(builder=create_four_bar_tie_rod(), copy_count=10)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device, requires_grad=False))
 
         # Solve and check FK on random poses, on both dense and sparse paths
@@ -711,7 +725,7 @@ class TestRandomPoses(unittest.TestCase):
             rng_seed_from_string("Four-bar with tie rod FK random poses check (regularization)")
         )
         builder = newton.ModelBuilder()
-        builder.replicate(builder=create_four_bar_tie_rod(), world_count=10)
+        builder.replicate(builder=create_four_bar_tie_rod(), copy_count=10)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device, requires_grad=False))
 
         # Solve and check FK on random poses, on both dense and sparse paths

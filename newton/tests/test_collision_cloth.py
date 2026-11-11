@@ -18,14 +18,18 @@ from newton._src.geometry.kernels import (
     vertex_adjacent_to_triangle,
 )
 from newton._src.geometry.tri_mesh_collision import build_tri_mesh_collision_info
+from newton._src.solvers.vbd.particle_vbd_kernels import (
+    NUM_THREADS_PER_COLLISION_PRIMITIVE,
+    accumulate_self_contact_force_and_hessian,
+)
 from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector, leq_n_ring_vertices, set_to_csr
 from newton.solvers import SolverVBD
 from newton.tests.unittest_utils import (
-    USD_AVAILABLE,
     add_function_test,
     assert_np_equal,
     get_cuda_test_devices,
     get_test_devices,
+    requires,
 )
 
 
@@ -564,7 +568,7 @@ def get_data():
     return vertices, faces
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 def test_vertex_triangle_collision(test, device):
     vertices, faces = get_data()
 
@@ -575,11 +579,11 @@ def test_vertex_triangle_collision(test, device):
 
     for query_radius in rs:
         collision_detector.vertex_triangle_collision_detection(query_radius)
-        vertex_colliding_triangles_count_1 = collision_detector.vertex_colliding_triangles_count.numpy()
-        vertex_min_dis_1 = collision_detector.vertex_colliding_triangles_min_dist.numpy()
+        vertex_colliding_triangles_count_1 = collision_detector.vertex_colliding_triangles_count.numpy().copy()
+        vertex_min_dis_1 = collision_detector.vertex_colliding_triangles_min_dist.numpy().copy()
 
-        triangle_colliding_vertices_count_1 = collision_detector.triangle_colliding_vertices_count.numpy()
-        triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy()
+        triangle_colliding_vertices_count_1 = collision_detector.triangle_colliding_vertices_count.numpy().copy()
+        triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy().copy()
 
         wp.launch(
             kernel=validate_vertex_collisions,
@@ -669,10 +673,10 @@ def test_vertex_triangle_collision(test, device):
 
     for query_radius in rs:
         collision_detector.vertex_triangle_collision_detection(query_radius)
-        vertex_colliding_triangles_count_1 = collision_detector.vertex_colliding_triangles_count.numpy()
-        vertex_min_dis_1 = collision_detector.vertex_colliding_triangles_min_dist.numpy()
+        vertex_colliding_triangles_count_1 = collision_detector.vertex_colliding_triangles_count.numpy().copy()
+        vertex_min_dis_1 = collision_detector.vertex_colliding_triangles_min_dist.numpy().copy()
 
-        triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy()
+        triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy().copy()
 
         wp.launch(
             kernel=validate_vertex_collisions,
@@ -720,7 +724,7 @@ def test_vertex_triangle_collision(test, device):
         assert_np_equal(vertex_min_dis_2, vertex_min_dis_1)
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 def test_edge_edge_collision(test, device):
     vertices, faces = get_data()
 
@@ -731,8 +735,8 @@ def test_edge_edge_collision(test, device):
 
     for query_radius in rs:
         collision_detector.edge_edge_collision_detection(query_radius)
-        edge_colliding_edges_count_1 = collision_detector.edge_colliding_edges_count.numpy()
-        edge_min_dist_1 = collision_detector.edge_colliding_edges_min_dist.numpy()
+        edge_colliding_edges_count_1 = collision_detector.edge_colliding_edges_count.numpy().copy()
+        edge_min_dist_1 = collision_detector.edge_colliding_edges_min_dist.numpy().copy()
 
         wp.launch(
             kernel=validate_edge_collisions,
@@ -1278,7 +1282,7 @@ def validate_edge_collisions_distance_filter(
             wp.expect_eq(edge_colliding_edges[2 * (offset + col)] == -1, True)
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 def test_collision_filtering(test, device):
     """Ensure filtering lists include requested exclusions and respect n-ring topology.
 
@@ -1443,6 +1447,7 @@ def test_collision_filtering(test, device):
     wp.synchronize_device(device)
 
 
+@requires("pxr.Usd")
 def test_collision_detector_requires_adjacency(test, device):
     # TriMeshCollisionDetector needs the model's soft-mesh adjacency; a missing one is a clear error.
     vertices, faces = get_data()
@@ -1462,6 +1467,106 @@ def test_collision_detector_requires_adjacency(test, device):
         TriMeshCollisionDetector(model=model, init_collision_info=True)
 
 
+def test_edge_topology_reciprocity(test, device):
+    """Keep endpoint-neighborhood exclusions reciprocal and internal edge forces balanced."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    vertices = [(0.01 * x, 0.01 * y, 0.0) for y in range(4) for x in range(4)]
+    faces = []
+    for y in range(3):
+        for x in range(3):
+            i = 4 * y + x
+            faces.extend((i, i + 1, i + 4, i + 1, i + 5, i + 4))
+    # A disconnected nearby triangle ensures legitimate contacts survive even
+    # when the grid's topological neighborhood covers most of its own edges.
+    vertices.extend(((0.002, 0.002, 0.003), (0.012, 0.002, 0.003), (0.002, 0.012, 0.003)))
+    faces.extend((16, 17, 18))
+    builder.add_cloth_mesh(
+        pos=wp.vec3(),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vertices=vertices,
+        indices=faces,
+        density=1.0,
+        vel=wp.vec3(),
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    edge_endpoints_np = model.edge_indices.numpy()[:, 2:4]
+    neighbors = [set() for _ in vertices]
+    for a, b in edge_endpoints_np:
+        neighbors[a].add(b)
+        neighbors[b].add(a)
+    for ring in (1, 2, 3):
+        with test.subTest(ring=ring):
+            detector = TriMeshCollisionDetector(
+                model,
+                topological_contact_filter_threshold=ring,
+                init_collision_info=True,
+                edge_collision_buffer_pre_alloc=model.edge_count,
+            )
+            if ring > 1:
+                indices_np = detector.edge_filtering_list.numpy()
+                offsets_np = detector.edge_filtering_list_offsets.numpy()
+                filters = [set(indices_np[offsets_np[i] : offsets_np[i + 1]]) for i in range(model.edge_count)]
+                for source, endpoints in enumerate(edge_endpoints_np):
+                    reachable = set(endpoints)
+                    for _ in range(ring - 1):
+                        reachable |= {neighbor for vertex in tuple(reachable) for neighbor in neighbors[vertex]}
+                    expected = {
+                        target
+                        for target, other in enumerate(edge_endpoints_np)
+                        if not set(endpoints).intersection(other) and reachable.intersection(other)
+                    }
+                    test.assertEqual(filters[source], expected, f"edge {source}")
+                    for target in filters[source]:
+                        test.assertIn(source, filters[target])
+            detector.edge_edge_collision_detection(0.1)
+            data = detector.collision_info
+            counts_np = data.edge_colliding_edges_count.numpy()
+            offsets_np = data.edge_colliding_edges_offsets.numpy()
+            test.assertTrue(np.all(counts_np <= np.diff(offsets_np)))
+            pairs_np = data.edge_colliding_edges.numpy().reshape(-1, 2)
+            pairs = {
+                tuple(pair)
+                for i, count in enumerate(counts_np)
+                for pair in pairs_np[offsets_np[i] : offsets_np[i] + count]
+            }
+            test.assertTrue(pairs)
+            test.assertEqual(pairs, {(b, a) for a, b in pairs})
+            forces = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
+            hessians = wp.zeros(model.particle_count, dtype=wp.mat33, device=device)
+            # Only edge detection ran, so vertex-triangle counts remain zero.
+            # Exercise the actual source-side-only accumulation for every color.
+            for color in range(len(model.particle_color_groups)):
+                wp.launch(
+                    accumulate_self_contact_force_and_hessian,
+                    dim=max(model.edge_count, model.particle_count) * NUM_THREADS_PER_COLLISION_PRIMITIVE,
+                    inputs=[
+                        1.0 / 300,
+                        color,
+                        model.particle_q,
+                        model.particle_q,
+                        model.particle_colors,
+                        model.tri_indices,
+                        model.edge_indices,
+                        data,
+                        0.1,
+                        100.0,
+                        0.1,
+                        1.5,
+                        0.001,
+                        False,
+                        1.0e-5,
+                    ],
+                    outputs=[forces, hessians],
+                    device=device,
+                )
+            forces_np = forces.numpy().astype(np.float64)
+            test.assertGreater(np.linalg.norm(forces_np, axis=1).sum(), 0.0)
+            np.testing.assert_allclose(forces_np.sum(axis=0), 0.0, atol=1.0e-3)
+
+
+@requires("pxr.Usd")
 def test_collision_filter_decouple(test, device):
     # Providing an explicit vertex-triangle filter must not suppress edge-edge generation:
     # the edge-edge side is still built from its external map (the two families decouple).
@@ -1491,6 +1596,7 @@ def test_collision_filter_decouple(test, device):
     test.assertIn(1, detector.edge_filtering_list.numpy().tolist())
 
 
+@requires("pxr.Usd")
 def test_collision_info_injection(test, device):
     """Verify an injected TriMeshCollisionInfo yields results identical to self-allocation.
 
@@ -1541,6 +1647,7 @@ def test_collision_info_injection(test, device):
         )
 
 
+@requires("pxr.Usd")
 def test_pipeline_soft_self_contact(test, device):
     """Verify pipeline-driven self-contact matches a standalone detector and rebinds per buffer.
 
@@ -1656,6 +1763,7 @@ def test_pipeline_soft_self_contact(test, device):
     test.assertEqual(unconfigured.soft_contact_gap, 0.05)
 
 
+@requires("pxr.Usd")
 def test_soft_self_contact_buffer_validation(test, device):
     """Reject invalid self-contact mesh sizes and incompatible result buffers."""
     for particle_count, tri_count, edge_count in ((0, 1, 1), (1, 0, 1), (1, 1, 0)):
@@ -1824,6 +1932,7 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestCollision, "test_collision_filter_decouple", test_collision_filter_decouple, devices=devices)
+add_function_test(TestCollision, "test_edge_topology_reciprocity", test_edge_topology_reciprocity, devices=devices)
 add_function_test(
     TestCollision,
     "test_collision_info_injection",

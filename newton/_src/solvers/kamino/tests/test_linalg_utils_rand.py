@@ -3,6 +3,7 @@
 
 """Unit tests for linalg/utils/rand.py"""
 
+import logging
 import unittest
 
 import numpy as np
@@ -19,8 +20,10 @@ from newton._src.solvers.kamino._src.linalg.utils.rand import (
     random_spd_matrix,
     random_symmetric_matrix,
 )
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.tests import setup_tests, test_context
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -38,20 +41,20 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_make_small_random_symmetric_matrix_in_fp64(self):
         # Generate a small random symmetric matrix in fp64
         A = random_symmetric_matrix(dim=10, dtype=np.float64, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (10, 10))
@@ -62,7 +65,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
     def test_02_make_medium_random_symmetric_matrix_in_fp64(self):
         # Generate a small random symmetric matrix in fp64
         A = random_symmetric_matrix(dim=100, dtype=np.float64, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (100, 100))
@@ -73,7 +76,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
     def test_03_make_large_random_symmetric_matrix_in_fp64(self):
         # Generate a small random symmetric matrix in fp64
         A = random_symmetric_matrix(dim=1000, dtype=np.float64, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (1000, 1000))
@@ -84,7 +87,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
     def test_04_make_small_random_symmetric_matrix_in_fp32(self):
         # Generate a small random symmetric matrix in fp32
         A = random_symmetric_matrix(dim=10, dtype=np.float32, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (10, 10))
@@ -95,7 +98,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
     def test_05_make_medium_random_symmetric_matrix_in_fp32(self):
         # Generate a small random symmetric matrix in fp32
         A = random_symmetric_matrix(dim=100, dtype=np.float32, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (100, 100))
@@ -106,7 +109,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
     def test_06_make_large_random_symmetric_matrix_in_fp32(self):
         # Generate a small random symmetric matrix in fp32
         A = random_symmetric_matrix(dim=1000, dtype=np.float32, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (1000, 1000))
@@ -121,7 +124,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
 
         # Generate a distribution of eigenvalues
         eigenvalues = eigenvalues_from_distribution(size=M, dtype=dtype, seed=self.seed)
-        msg.debug("eigenvalues:\n%s\n", eigenvalues)
+        logger.debug("eigenvalues:\n%s\n", eigenvalues)
 
         # Generate a large random symmetric matrix in fp32
         A = random_symmetric_matrix(
@@ -130,7 +133,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
             seed=self.seed,
             eigenvalues=eigenvalues,
         )
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (M, M))
@@ -140,7 +143,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check spectral matrix properties
         self.assertAlmostEqual(props_A.lambda_min, np.min(eigenvalues), places=6)
@@ -153,7 +156,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
 
         # Generate a distribution of eigenvalues
         eigenvalues = eigenvalues_from_distribution(size=M, dtype=dtype, seed=self.seed)
-        msg.debug("eigenvalues:\n%s\n", eigenvalues)
+        logger.debug("eigenvalues:\n%s\n", eigenvalues)
 
         # Generate a large random symmetric matrix in fp32
         A = random_symmetric_matrix(
@@ -162,7 +165,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
             seed=self.seed,
             eigenvalues=eigenvalues,
         )
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (M, M))
@@ -172,7 +175,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check spectral matrix properties
         self.assertAlmostEqual(props_A.lambda_min, np.min(eigenvalues), places=5)
@@ -191,7 +194,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
             seed=self.seed,
             rank=rank,
         )
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (M, M))
@@ -201,7 +204,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check spectral matrix properties
         self.assertAlmostEqual(props_A.rank, rank)
@@ -219,7 +222,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
             seed=self.seed,
             rank=rank,
         )
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (M, M))
@@ -229,7 +232,7 @@ class TestLinAlgUtilsRandomMatrixSymmetric(unittest.TestCase):
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check spectral matrix properties
         self.assertAlmostEqual(props_A.rank, rank)
@@ -246,20 +249,20 @@ class TestLinAlgUtilsRandomMatrixSPD(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_make_small_random_spd_matrix_in_fp64(self):
         # Generate a small random SPD matrix in fp64
         A = random_spd_matrix(dim=10, dtype=np.float64, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (10, 10))
@@ -269,7 +272,7 @@ class TestLinAlgUtilsRandomMatrixSPD(unittest.TestCase):
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check spectral matrix properties
         self.assertGreater(props_A.lambda_min, 0.0)
@@ -278,7 +281,7 @@ class TestLinAlgUtilsRandomMatrixSPD(unittest.TestCase):
     def test_02_make_medium_random_spd_matrix_in_fp64(self):
         # Generate a small random SPD matrix in fp64
         A = random_spd_matrix(dim=100, dtype=np.float64, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (100, 100))
@@ -288,7 +291,7 @@ class TestLinAlgUtilsRandomMatrixSPD(unittest.TestCase):
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check spectral matrix properties
         self.assertGreater(props_A.lambda_min, 0.0)
@@ -297,7 +300,7 @@ class TestLinAlgUtilsRandomMatrixSPD(unittest.TestCase):
     def test_03_make_large_random_spd_matrix_in_fp64(self):
         # Generate a small random SPD matrix in fp64
         A = random_spd_matrix(dim=1000, dtype=np.float64, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (1000, 1000))
@@ -307,7 +310,7 @@ class TestLinAlgUtilsRandomMatrixSPD(unittest.TestCase):
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check spectral matrix properties
         self.assertGreater(props_A.lambda_min, 0.0)
@@ -316,7 +319,7 @@ class TestLinAlgUtilsRandomMatrixSPD(unittest.TestCase):
     def test_04_make_small_random_spd_matrix_in_fp32(self):
         # Generate a small random SPD matrix in fp32
         A = random_spd_matrix(dim=10, dtype=np.float32, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (10, 10))
@@ -326,7 +329,7 @@ class TestLinAlgUtilsRandomMatrixSPD(unittest.TestCase):
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check spectral matrix properties
         self.assertGreater(props_A.lambda_min, 0.0)
@@ -335,7 +338,7 @@ class TestLinAlgUtilsRandomMatrixSPD(unittest.TestCase):
     def test_05_make_medium_random_spd_matrix_in_fp32(self):
         # Generate a small random SPD matrix in fp32
         A = random_spd_matrix(dim=100, dtype=np.float32, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (100, 100))
@@ -345,7 +348,7 @@ class TestLinAlgUtilsRandomMatrixSPD(unittest.TestCase):
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check spectral matrix properties
         self.assertGreater(props_A.lambda_min, 0.0)
@@ -354,7 +357,7 @@ class TestLinAlgUtilsRandomMatrixSPD(unittest.TestCase):
     def test_06_make_large_random_spd_matrix_in_fp32(self):
         # Generate a small random SPD matrix in fp32
         A = random_spd_matrix(dim=1000, dtype=np.float32, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Check basic matrix properties
         self.assertEqual(A.shape, (1000, 1000))
@@ -364,7 +367,7 @@ class TestLinAlgUtilsRandomMatrixSPD(unittest.TestCase):
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check spectral matrix properties
         self.assertGreater(props_A.lambda_min, 0.0)
@@ -382,27 +385,27 @@ class TestLinAlgUtilsRandomRhsVectors(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_make_rhs_for_small_random_spd_matrix_in_fp64(self):
         # Generate a small random SPD matrix in fp64
         A = random_spd_matrix(dim=10, dtype=np.float64, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Generate a random rhs vector for A
         b, x = random_rhs_for_matrix(A, seed=self.seed, return_source=True)
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check basic vector properties
         self.assertEqual(b.shape, (A.shape[0],))
@@ -411,9 +414,9 @@ class TestLinAlgUtilsRandomRhsVectors(unittest.TestCase):
         # Check norm properties
         norm_b = np.linalg.norm(b, ord=2)
         norm_x = np.linalg.norm(x, ord=2)
-        msg.debug("||b||_2 = %f\n", norm_b)
-        msg.debug("||x||_2 = %f\n", norm_x)
-        msg.debug("||A||_2 = %f\n", props_A.lambda_max)
+        logger.debug("||b||_2 = %f\n", norm_b)
+        logger.debug("||x||_2 = %f\n", norm_x)
+        logger.debug("||A||_2 = %f\n", props_A.lambda_max)
         self.assertGreater(norm_b, 0.0)
         self.assertGreater(norm_x, 0.0)
         self.assertLessEqual(norm_b, props_A.lambda_max * norm_x)
@@ -421,20 +424,20 @@ class TestLinAlgUtilsRandomRhsVectors(unittest.TestCase):
         # Check that A*x = b
         b_computed = A @ x
         error = np.linalg.norm(b - b_computed, ord=2)
-        msg.debug("Error in A*x = b: ||b - A*x||_2 = %e\n", error)
+        logger.debug("Error in A*x = b: ||b - A*x||_2 = %e\n", error)
         self.assertAlmostEqual(error, 0.0, places=12)
 
     def test_02_make_rhs_for_large_random_spd_matrix_in_fp64(self):
         # Generate a small random SPD matrix in fp64
         A = random_spd_matrix(dim=1000, dtype=np.float64, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Generate a random rhs vector for A
         b, x = random_rhs_for_matrix(A, seed=self.seed, return_source=True)
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check basic vector properties
         self.assertEqual(b.shape, (A.shape[0],))
@@ -443,9 +446,9 @@ class TestLinAlgUtilsRandomRhsVectors(unittest.TestCase):
         # Check norm properties
         norm_b = np.linalg.norm(b, ord=2)
         norm_x = np.linalg.norm(x, ord=2)
-        msg.debug("||b||_2 = %f\n", norm_b)
-        msg.debug("||x||_2 = %f\n", norm_x)
-        msg.debug("||A||_2 = %f\n", props_A.lambda_max)
+        logger.debug("||b||_2 = %f\n", norm_b)
+        logger.debug("||x||_2 = %f\n", norm_x)
+        logger.debug("||A||_2 = %f\n", props_A.lambda_max)
         self.assertGreater(norm_b, 0.0)
         self.assertGreater(norm_x, 0.0)
         self.assertLessEqual(norm_b, props_A.lambda_max * norm_x)
@@ -453,20 +456,20 @@ class TestLinAlgUtilsRandomRhsVectors(unittest.TestCase):
         # Check that A*x = b
         b_computed = A @ x
         error = np.linalg.norm(b - b_computed, ord=2)
-        msg.debug("Error in A*x = b: ||b - A*x||_2 = %e\n", error)
+        logger.debug("Error in A*x = b: ||b - A*x||_2 = %e\n", error)
         self.assertAlmostEqual(error, 0.0, places=12)
 
     def test_03_make_rhs_for_small_random_spd_matrix_in_fp32(self):
         # Generate a small random SPD matrix in fp32
         A = random_spd_matrix(dim=10, dtype=np.float32, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Generate a random rhs vector for A
         b, x = random_rhs_for_matrix(A, seed=self.seed, return_source=True)
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check basic vector properties
         self.assertEqual(b.shape, (A.shape[0],))
@@ -475,9 +478,9 @@ class TestLinAlgUtilsRandomRhsVectors(unittest.TestCase):
         # Check norm properties
         norm_b = np.linalg.norm(b, ord=2)
         norm_x = np.linalg.norm(x, ord=2)
-        msg.debug("||b||_2 = %f\n", norm_b)
-        msg.debug("||x||_2 = %f\n", norm_x)
-        msg.debug("||A||_2 = %f\n", props_A.lambda_max)
+        logger.debug("||b||_2 = %f\n", norm_b)
+        logger.debug("||x||_2 = %f\n", norm_x)
+        logger.debug("||A||_2 = %f\n", props_A.lambda_max)
         self.assertGreater(norm_b, 0.0)
         self.assertGreater(norm_x, 0.0)
         self.assertLessEqual(norm_b, props_A.lambda_max * norm_x)
@@ -485,20 +488,20 @@ class TestLinAlgUtilsRandomRhsVectors(unittest.TestCase):
         # Check that A*x = b
         b_computed = A @ x
         error = np.linalg.norm(b - b_computed, ord=2)
-        msg.debug("Error in A*x = b: ||b - A*x||_2 = %e\n", error)
+        logger.debug("Error in A*x = b: ||b - A*x||_2 = %e\n", error)
         self.assertAlmostEqual(error, 0.0, places=12)
 
     def test_02_make_rhs_for_large_random_spd_matrix_in_fp32(self):
         # Generate a small random SPD matrix in fp32
         A = random_spd_matrix(dim=1000, dtype=np.float32, seed=self.seed)
-        msg.debug("A:\n%s\n", A)
+        logger.debug("A:\n%s\n", A)
 
         # Generate a random rhs vector for A
         b, x = random_rhs_for_matrix(A, seed=self.seed, return_source=True)
 
         # Compute matrix properties
         props_A = SquareSymmetricMatrixProperties(A)
-        msg.debug("Matrix properties of A:\n%s\n", props_A)
+        logger.debug("Matrix properties of A:\n%s\n", props_A)
 
         # Check basic vector properties
         self.assertEqual(b.shape, (A.shape[0],))
@@ -507,9 +510,9 @@ class TestLinAlgUtilsRandomRhsVectors(unittest.TestCase):
         # Check norm properties
         norm_b = np.linalg.norm(b, ord=2)
         norm_x = np.linalg.norm(x, ord=2)
-        msg.debug("||b||_2 = %f\n", norm_b)
-        msg.debug("||x||_2 = %f\n", norm_x)
-        msg.debug("||A||_2 = %f\n", props_A.lambda_max)
+        logger.debug("||b||_2 = %f\n", norm_b)
+        logger.debug("||x||_2 = %f\n", norm_x)
+        logger.debug("||A||_2 = %f\n", props_A.lambda_max)
         self.assertGreater(norm_b, 0.0)
         self.assertGreater(norm_x, 0.0)
         self.assertLessEqual(norm_b, props_A.lambda_max * norm_x)
@@ -517,7 +520,7 @@ class TestLinAlgUtilsRandomRhsVectors(unittest.TestCase):
         # Check that A*x = b
         b_computed = A @ x
         error = np.linalg.norm(b - b_computed, ord=2)
-        msg.debug("Error in A*x = b: ||b - A*x||_2 = %e\n", error)
+        logger.debug("Error in A*x = b: ||b - A*x||_2 = %e\n", error)
         self.assertAlmostEqual(error, 0.0, places=12)
 
 

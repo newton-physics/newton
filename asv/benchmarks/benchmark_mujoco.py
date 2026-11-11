@@ -30,7 +30,6 @@ if __package__:
 else:
     from benchmark_metrics import validate_simulation_state
 
-_NEW_LAYOUT_AVAILABLE = hasattr(newton, "use_coord_layout_targets")
 _MAX_BODY_LINEAR_SPEED = 100.0
 _MAX_BODY_ANGULAR_SPEED = 500.0
 
@@ -315,6 +314,7 @@ def _setup_quadruped(articulation_builder):
         xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
         floating=True,
         enable_self_collisions=False,
+        joint_damping_mode="passive",
     )
     armature_inertia = wp.mat33(np.eye(3, dtype=np.float32)) * 0.01
     for i in range(articulation_builder.body_count):
@@ -339,7 +339,7 @@ def _setup_allegro(articulation_builder):
     for i in range(articulation_builder.joint_dof_count):
         articulation_builder.joint_target_ke[i] = 150
         articulation_builder.joint_target_kd[i] = 20
-    if _NEW_LAYOUT_AVAILABLE:
+    if hasattr(articulation_builder, "joint_target_q"):
         articulation_builder.joint_target_q[:] = articulation_builder.joint_q
     else:
         for i in range(articulation_builder.joint_dof_count):
@@ -394,8 +394,6 @@ class Example:
         *,
         startup_phase_times: dict[str, float] | None = None,
     ):
-        if _NEW_LAYOUT_AVAILABLE:
-            newton.use_coord_layout_targets = True
         if fps <= 0 or sim_substeps <= 0:
             raise ValueError("fps and sim_substeps must be positive")
         self.sim_time = 0.0
@@ -469,7 +467,13 @@ class Example:
                 self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
             )
             self.contacts = self.collision_pipeline.contacts()
-            self.solver_observables = self.solver.observables(self.sensor_contact.solver_observable_flags)
+            # ASV also runs this benchmark against revisions with the older API.
+            if hasattr(self.sensor_contact, "solver_observable_kinds"):
+                self.solver_observables = self.solver.observables(
+                    contacts=self.contacts, kinds=self.sensor_contact.solver_observable_kinds
+                )
+            else:
+                self.solver_observables = self.solver.observables(self.sensor_contact.solver_observable_flags)
 
         self.graph = None
         if self.use_cuda_graph:

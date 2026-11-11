@@ -21,7 +21,41 @@ from . import utils as usd
 if TYPE_CHECKING:
     from pxr import Usd
 
-logger = logging.getLogger("newton")
+logger = logging.getLogger(__name__)
+
+
+def _geometry_path(prim: Usd.Prim) -> str:
+    """Return the path of the prim that authors ``prim``'s geometry.
+
+    Instance proxies resolve to their prim in the shared USD prototype.
+    """
+    if prim.IsInstanceProxy():
+        prim = prim.GetPrimInPrototype()
+    return str(prim.GetPath())
+
+
+def _freeze(value: Any) -> Any:
+    """Return a hashable stand-in for one resolved material property value.
+
+    Arrays, such as decoded textures, are keyed by identity: hashing their contents
+    would copy whole images per prim. The import's material cache keeps them alive.
+    """
+    if isinstance(value, np.ndarray):
+        return ("ndarray", id(value))
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    if isinstance(value, dict):
+        return tuple(sorted((key, _freeze(item)) for key, item in value.items()))
+    try:
+        hash(value)
+    except TypeError:
+        return ("id", id(value))
+    return value
+
+
+def _material_key(material_props: dict[str, Any]) -> tuple:
+    """Return a hashable key identifying a resolved material."""
+    return _freeze(material_props)
 
 
 class _UsdVisuals:
@@ -31,6 +65,10 @@ class _UsdVisuals:
         self.stage = stage
         self.material_props_cache: dict[str, dict[str, Any]] = {}
         self.mesh_cache: dict[tuple[str, bool, bool], Mesh] = {}
+        self.material_mesh_cache: dict[tuple[str | None, ...], Mesh] = {}
+        self.uv_primvar_name_cache: dict[str, str | None] = {}
+        # Subset index (-1 for the uncovered-face fallback) and render mesh per instanced mesh.
+        self.subset_mesh_cache: dict[tuple, list[tuple[int, Mesh]]] = {}
 
     def get_material_props_cached(self, prim: Usd.Prim) -> dict[str, Any]:
         """Get material properties with caching to avoid repeated traversal."""
@@ -39,10 +77,28 @@ class _UsdVisuals:
             self.material_props_cache[prim_path] = usd.resolve_material_properties_for_prim(prim)
         return self.material_props_cache[prim_path]
 
-    def get_mesh_cached(self, prim: Usd.Prim, *, load_uvs: bool = False, load_normals: bool = False) -> Mesh:
-        """Load and cache mesh data to avoid repeated expensive USD mesh extraction."""
+    def _get_geometry_key(self, prim: Usd.Prim, load_uvs: bool) -> tuple[str, str | None]:
+        """Return the prototype geometry path and, when loading UVs, the material-selected UV set.
+
+        A mesh may carry several UV sets, and the material bound to each instance can
+        select a different one, so instances share UV-loaded geometry only per UV set.
+        """
+        if not load_uvs:
+            return _geometry_path(prim), None
         prim_path = str(prim.GetPath())
-        key = (prim_path, load_uvs, load_normals)
+        if prim_path not in self.uv_primvar_name_cache:
+            from ._mesh_loading import _resolve_material_uv_primvar_name  # noqa: PLC0415
+
+            self.uv_primvar_name_cache[prim_path] = _resolve_material_uv_primvar_name(prim)
+        return _geometry_path(prim), self.uv_primvar_name_cache[prim_path]
+
+    def get_mesh_cached(self, prim: Usd.Prim, *, load_uvs: bool = False, load_normals: bool = False) -> Mesh:
+        """Load and cache mesh data to avoid repeated expensive USD mesh extraction.
+
+        Instance proxies of one USD prototype share the cache entry, since their
+        geometry is authored once in the prototype.
+        """
+        key = (*self._get_geometry_key(prim, load_uvs), load_uvs, load_normals)
         if key in self.mesh_cache:
             return self.mesh_cache[key]
 
@@ -72,18 +128,46 @@ class _UsdVisuals:
             if value is not None:
                 setattr(mesh, key, value)
 
-    def get_mesh_with_visual_material(self, prim: Usd.Prim, *, path_name: str) -> Mesh:
-        """Load a renderable mesh without changing physics mass properties."""
+    def get_mesh_with_material(
+        self,
+        prim: Usd.Prim,
+        *,
+        load_uvs: bool = False,
+        load_normals: bool = False,
+        maxhullvert: int | None = None,
+    ) -> Mesh:
+        """Return a cached mesh carrying the prim's resolved visual material.
+
+        The geometry cache entry stays unmodified. Prims sharing geometry, an identical
+        resolved material, and hull-vertex limit, such as instances of one USD prototype,
+        share the returned mesh, so callers must not mutate it per prim.
+
+        Args:
+            prim: Mesh prim to load.
+            load_uvs: Whether to load the material-selected UV set.
+            load_normals: Whether to load normals.
+            maxhullvert: Hull-vertex limit to store on the mesh, or ``None`` for the default.
+        """
         material_props = self.get_material_props_cached(prim)
-        texture = material_props.get("texture")
-        mesh = self.get_mesh_cached(
-            prim,
-            load_uvs=texture is not None,
-            load_normals=True,
-        ).copy(recompute_inertia=False)
-        self.apply_visual_material(mesh, material_props)
+        geometry_key = self._get_geometry_key(prim, load_uvs)
+        key = (*geometry_key, load_uvs, load_normals, maxhullvert, _material_key(material_props))
+        mesh = self.material_mesh_cache.get(key)
+        if mesh is None:
+            mesh = self.get_mesh_cached(prim, load_uvs=load_uvs, load_normals=load_normals).copy()
+            self.apply_visual_material(mesh, material_props)
+            if maxhullvert is not None:
+                mesh.maxhullvert = maxhullvert
+            self.material_mesh_cache[key] = mesh
+        return mesh
+
+    def get_mesh_with_visual_material(self, prim: Usd.Prim, *, path_name: str, maxhullvert: int | None = None) -> Mesh:
+        """Load a renderable mesh without changing physics mass properties."""
+        texture = self.get_material_props_cached(prim).get("texture")
+        mesh = self.get_mesh_with_material(
+            prim, load_uvs=texture is not None, load_normals=True, maxhullvert=maxhullvert
+        )
         if mesh.texture is not None and mesh.uvs is None:
-            logger.info("Mesh %s has a texture but no UV coordinates; texture sampling is disabled.", path_name)
+            logger.debug("Mesh %s has a texture but no UV coordinates; texture sampling is disabled.", path_name)
         return mesh
 
     def get_face_material_subsets(self, prim: Usd.Prim) -> list[Usd.Prim]:
@@ -186,7 +270,7 @@ class _UsdVisuals:
 
         self.apply_visual_material(submesh, material_props)
         if submesh.texture is not None and submesh.uvs is None:
-            logger.info(
+            logger.debug(
                 "Mesh material subset %s has a texture but no UV coordinates; texture sampling is disabled.",
                 path_name,
             )
@@ -209,6 +293,19 @@ class _UsdVisuals:
             return []
 
         subset_props = [(str(subset.GetPath()), usd.resolve_material_properties_for_prim(subset)) for subset in subsets]
+        # Instance proxies of one prototype mesh share subset topology, so instances resolving
+        # the same materials share their render meshes. Materials can still differ per instance.
+        cache_key = None
+        if prim.IsInstanceProxy():
+            cache_key = (
+                *self._get_geometry_key(prim, load_uvs=True),
+                tuple(_material_key(material_props) for _, material_props in subset_props),
+                _material_key(self.get_material_props_cached(prim)),
+            )
+            cached = self.subset_mesh_cache.get(cache_key)
+            if cached is not None:
+                prim_path = str(prim.GetPath())
+                return [(subset_props[index][0] if index >= 0 else prim_path, mesh) for index, mesh in cached]
         # Load UVs (and matching authored normals) so each submesh slices real
         # per-corner texture coordinates instead of recovering per-vertex UVs,
         # which scrambles faceVarying UV sets. UV loading unwelds vertices while
@@ -218,7 +315,8 @@ class _UsdVisuals:
         covered_faces = np.zeros(len(face_counts), dtype=bool)
 
         submeshes = []
-        for subset_path, material_props in subset_props:
+        submesh_indices = []
+        for subset_index, (subset_path, material_props) in enumerate(subset_props):
             # Split on authored binding structure, not on whether the bound material's properties
             # resolve: a subset that binds a material Newton does not recognize still becomes its
             # own (unshaded) submesh, so import topology never depends on material vocabulary.
@@ -239,7 +337,7 @@ class _UsdVisuals:
             subset_indices = np.asarray(subset.GetIndicesAttr().Get(), dtype=np.int32)
             valid = (subset_indices >= 0) & (subset_indices < len(face_counts))
             if not np.all(valid):
-                logger.info(
+                logger.debug(
                     "Mesh material subset %s: face indices outside the mesh face range; "
                     "out-of-range indices will be ignored.",
                     subset_path,
@@ -256,8 +354,11 @@ class _UsdVisuals:
                 continue
             covered_faces[subset_indices] = True
             submeshes.append((subset_path, submesh))
+            submesh_indices.append(subset_index)
 
         if not submeshes:
+            if cache_key is not None:
+                self.subset_mesh_cache[cache_key] = []
             return []
 
         uncovered_faces = np.nonzero(~covered_faces)[0]
@@ -274,7 +375,12 @@ class _UsdVisuals:
             )
             if fallback_mesh is not None:
                 submeshes.insert(0, (str(prim.GetPath()), fallback_mesh))
+                submesh_indices.insert(0, -1)
 
+        if cache_key is not None:
+            self.subset_mesh_cache[cache_key] = [
+                (index, mesh) for index, (_, mesh) in zip(submesh_indices, submeshes, strict=True)
+            ]
         return submeshes
 
     def get_axial_visual_dimensions(

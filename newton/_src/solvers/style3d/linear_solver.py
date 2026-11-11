@@ -398,4 +398,4 @@ if __name__ == "__main__":
 
     rTr = wp.zeros(1, dtype=float)
     array_inner(solver.r, solver.r, rTr.ptr)
-    print(rTr.numpy()[0])
+    print(rTr.numpy()[0])  # noqa: T201

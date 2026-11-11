@@ -4,7 +4,7 @@
 """NxN (all-pairs) broad phase collision detection.
 
 Provides O(N^2) broad phase using AABB overlap tests. Simple and effective
-for small scenes (<100 shapes). For larger scenes, use SAP broad phase.
+for worlds with few shapes. For larger worlds, consider SAP broad phase.
 
 See Also:
     :class:`BroadPhaseSAP` in ``broad_phase_sap.py`` for O(N log N) performance.
@@ -12,10 +12,13 @@ See Also:
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
+from ..exceptions import NewtonWarning
 from .broad_phase_common import (
     check_aabb_overlap_moving,
     is_pair_excluded,
@@ -25,6 +28,9 @@ from .broad_phase_common import (
     test_world_and_group_pair,
     write_pair,
 )
+
+_EXPLICIT_LARGE_PAIR_COUNT_PER_WORLD = 20_000
+_EXPLICIT_LARGE_PAIR_COUNT_TOTAL = 100_000_000
 
 
 @wp.kernel(enable_backward=False)
@@ -75,22 +81,27 @@ def _nxn_broadphase_precomputed_pairs(
 
 @wp.func
 def _get_lower_triangular_indices(index: int, matrix_size: int) -> tuple[int, int]:
-    total = (matrix_size * (matrix_size - 1)) >> 1
+    total = (wp.int64(matrix_size) * wp.int64(matrix_size - 1)) >> wp.int64(1)
     if index >= total:
         # In Warp, we can't throw, so return an invalid pair
         return -1, -1
+    if index < 0:
+        return -1, index + matrix_size
 
-    low = int(0)
-    high = matrix_size - 1
-    while low < high:
-        mid = (low + high) >> 1
-        count = (mid * (2 * matrix_size - mid - 1)) >> 1
-        if count <= index:
-            low = mid + 1
-        else:
-            high = mid
-    r = low - 1
-    f = (r * (2 * matrix_size - r - 1)) >> 1
+    # Invert the row prefix r * (2*n-r-1) / 2, then correct float rounding
+    # using exact integer prefixes. Widen products before multiplication.
+    b = wp.int64(2 * matrix_size - 1)
+    discriminant = b * b - wp.int64(8) * wp.int64(index)
+    r = wp.min(matrix_size - 2, wp.max(0, int(0.5 * (float(b) - wp.sqrt(float(discriminant))))))
+    f = int((wp.int64(r) * wp.int64(2 * matrix_size - r - 1)) >> wp.int64(1))
+    while f > index:
+        r -= 1
+        f = int((wp.int64(r) * wp.int64(2 * matrix_size - r - 1)) >> wp.int64(1))
+    next_f = f + matrix_size - r - 1
+    while next_f <= index:
+        r += 1
+        f = next_f
+        next_f = f + matrix_size - r - 1
     c = (index - f) + r + 1
     return r, c
 
@@ -293,7 +304,8 @@ class BroadPhaseAllPairs:
         start_idx = 0
         cumsum = 0
         for world_idx in range(world_count):
-            end_idx = slice_ends_np[world_idx]
+            # Use Python integers so the product cannot overflow before division.
+            end_idx = int(slice_ends_np[world_idx])
             # Number of geometries in this world (including shared geometries)
             num_geoms_in_world = end_idx - start_idx
             # Number of lower triangular elements for this world
@@ -386,22 +398,16 @@ class BroadPhaseAllPairs:
         if device is None:
             device = shape_lower.device
 
-        # If no gaps provided, pass empty array (kernel will use 0.0 gaps)
-        if shape_gap is None:
-            shape_gap = wp.empty(0, dtype=wp.float32, device=device)
-        if shape_body is None:
-            shape_body = wp.empty(0, dtype=wp.int32, device=device)
-        if body_flags is None:
-            body_flags = wp.empty(0, dtype=wp.int32, device=device)
+        # Warp passes None arrays as zero-sized descriptors to the kernels.
         if shape_displacement is not None and shape_displacement.shape[0] != shape_lower.shape[0]:
             raise ValueError(
                 "shape_displacement length must match the shape bounds "
                 f"({shape_lower.shape[0]}), got {shape_displacement.shape[0]}"
             )
 
-        # Exclusion filter: empty array and 0 when not provided or empty
+        # Exclusion filter: null array and 0 when not provided or empty
         if filter_pairs is None or filter_pairs.shape[0] == 0:
-            filter_pairs_arr = wp.empty(0, dtype=wp.vec2i, device=device)
+            filter_pairs_arr = None
             n_filter = 0
         else:
             filter_pairs_arr = filter_pairs
@@ -444,6 +450,31 @@ class BroadPhaseExplicit:
     The class checks for axis-aligned bounding box (AABB) overlaps between the specified geometry pairs,
     taking into account per-geometry cutoff distances.
     """
+
+    def _warn_large_pair_count(
+        self,
+        shape_pairs: wp.array[wp.vec2i] | np.ndarray,
+        shape_world: wp.array[wp.int32] | np.ndarray,
+        world_count: int,
+    ) -> None:
+        """Warn during setup when explicit pair testing is large per world."""
+        shape_pair_count = len(shape_pairs)
+        if shape_pair_count <= _EXPLICIT_LARGE_PAIR_COUNT_TOTAL:
+            return
+        if world_count <= 1:
+            busiest_world = shape_pair_count
+        else:
+            pairs = shape_pairs.numpy() if isinstance(shape_pairs, wp.array) else shape_pairs
+            worlds = shape_world.numpy() if isinstance(shape_world, wp.array) else shape_world
+            pair_counts = np.bincount(np.maximum(worlds[pairs[:, 0]], worlds[pairs[:, 1]]) + 1)
+            busiest_world = int(pair_counts[0] + np.max(pair_counts[1:], initial=0))
+        if busiest_world >= _EXPLICIT_LARGE_PAIR_COUNT_PER_WORLD:
+            warnings.warn(
+                f"Explicit broad phase tests {shape_pair_count:,} shape pairs per collision call "
+                f"({busiest_world:,} in the busiest world). Consider broad_phase='sap' for large worlds.",
+                NewtonWarning,
+                stacklevel=3,
+            )
 
     def launch(
         self,
@@ -508,13 +539,7 @@ class BroadPhaseExplicit:
         if device is None:
             device = shape_lower.device
 
-        # If no gaps provided, pass empty array (kernel will use 0.0 gaps)
-        if shape_gap is None:
-            shape_gap = wp.empty(0, dtype=wp.float32, device=device)
-        if shape_body is None:
-            shape_body = wp.empty(0, dtype=wp.int32, device=device)
-        if body_flags is None:
-            body_flags = wp.empty(0, dtype=wp.int32, device=device)
+        # Warp passes None arrays as zero-sized descriptors to the kernels.
         if shape_displacement is not None and shape_displacement.shape[0] != shape_lower.shape[0]:
             raise ValueError(
                 "shape_displacement length must match the shape bounds "

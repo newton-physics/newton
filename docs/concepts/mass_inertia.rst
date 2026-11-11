@@ -124,6 +124,33 @@ Special cases:
   ``barrel_radius``.
 
 
+Rod and cable mass
+^^^^^^^^^^^^^^^^^^
+
+:meth:`~newton.ModelBuilder.add_rod` builds each segment as a capsule, and
+neighboring capsules overlap at their tips. Rods therefore take segment mass
+from the cylindrical part only, ``density * area * rest_length``, so refining
+the same centerline preserves total mass. ``area`` is ``pi * radius**2``, or
+for hollow rods (``is_solid=False``) the tube wall of thickness ``margin``.
+``total_mass`` [kg] instead sets the mass of the whole rod, distributed by rest
+length, and overrides ``ShapeConfig.density``.
+
+Segment inertia is the solid-cylinder or open-tube tensor at the assigned mass
+and rest length. For outer radius ``r``, inner radius ``a`` (zero for a solid
+rod), and rest length ``L``, the local axial moment is ``m * (r**2 + a**2) / 2``
+and both transverse moments are ``m * ((r**2 + a**2) / 4 + L**2 / 12)``.
+Collision geometry stays capsule-based. USD cable import uses the same solid
+cylinder mass and inertia model; ``default_shape_cfg.is_solid`` does not apply
+to imported cables. Capsules joined manually with rod joints keep ordinary
+capsule mass and inertia.
+
+This replaces the previous capsule-based inertia for native rods and USD
+cables, changing their angular response. Scenes tuned to that approximation
+may need to retune their solver settings. Hollow mass and inertia use the tube
+wall; material-derived rod stiffness retains its solid-circle convention.
+Use explicit section rigidities when modeling a hollow material section.
+
+
 .. _Mass resolution during file import:
 
 Mass resolution during file import
@@ -150,7 +177,17 @@ For format-specific details, see:
 - **MJCF**: :meth:`~newton.ModelBuilder.add_mjcf` — follows MuJoCo semantics
   where ``<inertial>`` fully overrides geom-derived mass (via
   ``lock_inertia``), and geoms contribute via density when ``<inertial>`` is
-  absent.
+  absent. Mesh geoms use the ``inertia`` mode of their ``<mesh>`` asset:
+  MuJoCo's default ``legacy`` sums absolute tetrahedron volumes, ``exact`` uses
+  the signed volume, ``convex`` the convex hull (limited by ``maxhullvert`` as
+  in MuJoCo), and ``shell`` the surface area. A mesh without faces uses
+  MuJoCo's convex hull of all its vertices, not the collision hull, and a
+  primitive geom fitted to a mesh is sized and posed by the equivalent inertia
+  box of the mesh's mode, as in MuJoCo. A mesh with too little surface area or
+  volume for its mode, which MuJoCo rejects, adds no mass and logs a warning;
+  use ``inertia="shell"`` to give flat or open surface meshes mass. An
+  ``exact`` mesh whose faces have inconsistent orientation, which MuJoCo also
+  rejects, logs a warning and keeps its signed volume.
 - **URDF**: :meth:`~newton.ModelBuilder.add_urdf` — uses ``<inertial>``
   directly when present; falls back to collision geometry with default density
   otherwise.  By default visual shapes do not contribute mass; however,
@@ -195,6 +232,75 @@ behavior:
      - When ``True``, uses CPU validation with per-body warnings.  When
        ``False``, uses a fast GPU kernel that returns only the count of
        corrected bodies.
+   * - :attr:`~newton.ModelBuilder.inertia_relative_tolerance`
+     - ``1e-6``
+     - Non-negative relative eigenvalue threshold (dimensionless).
+   * - :attr:`~newton.ModelBuilder.inertia_absolute_tolerance`
+     - ``1e-10``
+     - Positive absolute floor for eigenvalue and triangle-inequality
+       tolerances [kg·m²].
+   * - :attr:`~newton.ModelBuilder.inertia_correction`
+     - ``1e-6``
+     - Non-negative extra diagonal shift applied when repairing inertia
+       [kg·m²]. Zero disables the extra shift, not validation.
+
+Small-inertia models
+^^^^^^^^^^^^^^^^^^^^
+
+The eigenvalue threshold is
+``max(inertia_relative_tolerance * largest_moment, inertia_absolute_tolerance)``.
+When the smallest moment is below this threshold, all three moments are
+shifted by ``threshold - smallest_moment + inertia_correction``. Thus the
+correction is not a minimum imposed on every tensor.
+
+For example, a 0.1 mm diameter capsule with 0.5 mm cylindrical length and density
+1,000 kg/m³ has an axial moment of approximately 5.4e-18 kg·m². To preserve this
+valid tensor while retaining validation, lower the absolute tolerance before
+finalization:
+
+.. code-block:: python
+
+    builder.inertia_absolute_tolerance = 1e-20
+    model = builder.finalize()
+
+This example value is specific to that scale, not a universal recommended
+tolerance. Lowering ``inertia_correction`` alone does not prevent a tensor
+below the threshold from being adjusted. The numerical settings apply equally
+to the detailed CPU and fast Warp paths. They must be finite and within the
+float32 range; the absolute tolerance must remain positive in float32.
+Changing ``inertia_correction`` is a separate repair-policy choice. Setting it
+to zero removes the extra padding for tensors that fail validation; for example,
+a positive-mass body with zero inertia is repaired to approximately
+``inertia_absolute_tolerance * identity``. Retaining the default correction
+avoids that change and does not affect tensors that pass validation. A repair
+still includes a representable positive shift if rounding would leave the
+tensor singular. Inverse inertia is computed with float64 intermediates and
+stored in float32; both the tensor and its inverse must remain representable
+in float32.
+
+To skip the entire mass/inertia validation and correction stage:
+
+.. code-block:: python
+
+    model = builder.finalize(skip_validation_inertia=True)
+
+This preserves the builder's mass and inertia, including invalid values.
+Finalization always recomputes derived inverses from the final properties,
+including after manual edits or imports. Non-positive masses receive zero
+inverse mass and zero inverse inertia; singular tensors receive zero inverse
+inertia. Validation skipping omits finiteness, symmetry, positive-definiteness,
+mass and inertia bounds, and triangle-inequality checks. The caller is
+responsible for supplying consistent properties supported by the chosen
+solver. ``finalize(skip_all_validations=True)`` also skips this stage.
+Unlike earlier releases, ``skip_all_validations=True`` now also disables mass
+and inertia bounds and balancing. To retain those corrections while skipping
+other checks, leave ``skip_all_validations=False`` and
+``skip_validation_inertia=False`` and enable the individual skip flags for
+the checks you want to omit.
+
+Neither option undoes earlier importer processing, shape-derived mass
+computation, or fixed-joint merging. These settings are model-compilation
+policy, applied after import; they do not introduce new USD-authored fields.
 
 Checks performed
 ^^^^^^^^^^^^^^^^
@@ -210,7 +316,7 @@ The following checks are applied in order:
    is set).
 3. **Zero mass with non-zero inertia** — inertia zeroed.
 4. **Inertia symmetry** — enforced via :math:`(I + I^T) / 2`.
-5. **Positive definiteness** — negative eigenvalues adjusted.
+5. **Positive definiteness** — eigenvalues below the configured threshold adjusted.
 6. **Eigenvalue bounds** — all eigenvalues clamped to at least
    ``bound_inertia`` (if set).
 7. **Triangle inequality** — principal moments must satisfy

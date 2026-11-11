@@ -123,7 +123,7 @@ def _mult_left_diag_matrix_with_vector(
 def _make_masked_zero_kernel_1d(dtype: Any):
     """Factory method producing a kernel for masked zero_() operation on a flattened 2d array"""
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def masked_zero_kernel_1d(
         # Inputs:
         segment_offset: wp.array[wp.int32],
@@ -146,7 +146,7 @@ def _make_masked_zero_kernel_1d(dtype: Any):
 def _make_masked_zero_kernel_2d(dtype: Any):
     """Factory method producing a kernel for masked zero_() operation on a 2d array"""
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def masked_zero_kernel_2d(
         # Inputs:
         row_mask: wp.array[wp.bool],
@@ -190,7 +190,7 @@ def _make_block_sparse_matvec_kernel(block_type: BlockDType):
     # Determine (static) block size for kernel.
     block_shape = block_type.shape_2d
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def block_sparse_matvec_kernel(
         # Matrix data:
         num_nzb: wp.array[wp.int32],
@@ -254,7 +254,7 @@ def _make_block_sparse_matvec_kernel_2d(block_type: BlockDType):
     # Determine (static) block size for kernel.
     block_shape = block_type.shape_2d
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def block_sparse_matvec_kernel(
         # Matrix data:
         num_nzb: wp.array[wp.int32],
@@ -315,7 +315,7 @@ def _make_block_sparse_transpose_matvec_kernel(block_type: BlockDType):
     # Determine (static) block size for kernel.
     block_shape = block_type.shape_2d
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def block_sparse_transpose_matvec_kernel(
         # Matrix data:
         num_nzb: wp.array[wp.int32],
@@ -377,7 +377,7 @@ def _make_block_sparse_transpose_matvec_kernel_2d(block_type: BlockDType):
     # Determine (static) block size for kernel.
     block_shape = block_type.shape_2d
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def block_sparse_transpose_matvec_kernel(
         # Matrix data:
         num_nzb: wp.array[wp.int32],
@@ -442,7 +442,7 @@ def _make_scale_vector_kernel(space_dim: int):
 
     sp_dim = wp.constant(space_dim)
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def scale_vector_kernel(
         # Matrix data:
         matrix_dims: wp.array2d[wp.int32],
@@ -482,7 +482,7 @@ def _make_scale_vector_kernel_2d(space_dim: int):
 
     sp_dim = wp.constant(space_dim)
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def scale_vector_kernel(
         # Matrix data:
         matrix_dims: wp.array2d[wp.int32],
@@ -508,7 +508,7 @@ def _make_block_sparse_gemv_kernel(block_type: BlockDType):
     # Determine (static) block size for kernel.
     block_shape = block_type.shape_2d
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def block_sparse_gemv_kernel(
         # Matrix data:
         num_nzb: wp.array[wp.int32],
@@ -574,7 +574,7 @@ def _make_block_sparse_gemv_kernel_2d(block_type: BlockDType):
     # Determine (static) block size for kernel.
     block_shape = block_type.shape_2d
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def block_sparse_gemv_kernel(
         # Matrix data:
         num_nzb: wp.array[wp.int32],
@@ -637,7 +637,7 @@ def _make_block_sparse_transpose_gemv_kernel(block_type: BlockDType):
     # Determine (static) block size for kernel.
     block_shape = block_type.shape_2d
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def block_sparse_transpose_gemv_kernel(
         # Matrix data:
         num_nzb: wp.array[wp.int32],
@@ -701,7 +701,7 @@ def _make_block_sparse_transpose_gemv_kernel_2d(block_type: BlockDType):
     # Determine (static) block size for kernel.
     block_shape = block_type.shape_2d
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def block_sparse_transpose_gemv_kernel(
         # Matrix data:
         num_nzb: wp.array[wp.int32],
@@ -824,7 +824,7 @@ def _make_block_sparse_ATA_diagonal_kernel_2d(block_type: BlockDType):
     # Determine (static) block size for kernel.
     block_shape = block_type.shape_2d
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def block_sparse_ATA_diagonal_kernel(
         # Matrix data:
         num_nzb: wp.array[wp.int32],
@@ -928,7 +928,7 @@ def block_sparse_ATA_diagonal_3_4_blocks_kernel_2d(
 
 @functools.cache
 def _make_cwise_inverse_kernel_2d(dtype: FloatType):
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def cwise_inverse_kernel(
         # Inputs
         offset: wp.float32,

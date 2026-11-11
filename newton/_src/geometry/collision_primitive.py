@@ -54,6 +54,54 @@ def closest_segment_point(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> wp.vec3:
 
 
 @wp.func
+def _collide_capsule_cylinder_barrel(
+    capsule_pos: wp.vec3,
+    capsule_axis: wp.vec3,
+    capsule_radius: float,
+    capsule_half_length: float,
+    cylinder_pos: wp.vec3,
+    cylinder_axis: wp.vec3,
+    cylinder_radius: float,
+    cylinder_half_height: float,
+) -> tuple[bool, float, wp.vec3, wp.vec3]:
+    """Solve a capsule core's exterior closest point on a finite cylinder barrel.
+
+    Return an unhandled result for near-parallel cores, cap/rim witnesses, or core
+    intersection. Those cases retain the general convex query and its manifold.
+    Axes are normalized. The handled witness attains the infinite-cylinder
+    distance bound inside the finite barrel, so it is also a global closest pair.
+    """
+    if capsule_half_length <= 0.0 or cylinder_radius <= 0.0 or cylinder_half_height <= 0.0:
+        return False, float(MAXVAL), wp.vec3(0.0), wp.vec3(0.0)
+
+    relative = capsule_pos - cylinder_pos
+    radial_center = relative - cylinder_axis * wp.dot(relative, cylinder_axis)
+    radial_axis = capsule_axis - cylinder_axis * wp.dot(capsule_axis, cylinder_axis)
+    radial_axis_sq = wp.dot(radial_axis, radial_axis)
+    # This dimensionless guard preserves the parallel side-contact manifold.
+    if radial_axis_sq <= 1.0e-6:
+        return False, float(MAXVAL), wp.vec3(0.0), wp.vec3(0.0)
+    along = wp.clamp(
+        -wp.dot(radial_center, radial_axis) / radial_axis_sq,
+        -capsule_half_length,
+        capsule_half_length,
+    )
+    closest = relative + along * capsule_axis
+    axial = wp.dot(closest, cylinder_axis)
+    radial = closest - axial * cylinder_axis
+    radial_distance = wp.length(radial)
+    # Keep numerically ambiguous rim and core-boundary witnesses on MPR/GJK.
+    tolerance = 1.0e-6 * wp.max(cylinder_radius, wp.max(cylinder_half_height, capsule_half_length))
+    if radial_distance <= cylinder_radius + tolerance or wp.abs(axial) >= cylinder_half_height - tolerance:
+        return False, float(MAXVAL), wp.vec3(0.0), wp.vec3(0.0)
+    normal = -radial / radial_distance
+    separation = radial_distance - cylinder_radius - capsule_radius
+    capsule_surface = capsule_pos + along * capsule_axis + capsule_radius * normal
+    cylinder_surface = cylinder_pos + axial * cylinder_axis - cylinder_radius * normal
+    return True, separation, 0.5 * (capsule_surface + cylinder_surface), normal
+
+
+@wp.func
 def closest_segment_point_and_dist(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> tuple[wp.vec3, float]:
     """Returns closest point on the line segment and the distance squared."""
     closest = closest_segment_point(a, b, pt)
@@ -393,6 +441,11 @@ def collide_plane_box(
 ) -> tuple[wp.vec4, wp.types.matrix((4, 3), wp.float32), wp.vec3]:
     """Core contact geometry calculation for plane-box collision.
 
+    Report corners of the box face whose outward normal is most opposed to
+    ``plane_normal``, provided their signed plane distance is at most ``margin``.
+    Fill remaining slots with the deepest eligible opposite-face corners,
+    for at most four contacts.
+
     Args:
       plane_normal: Normal vector of the plane
       plane_pos: Position point on the plane
@@ -408,52 +461,56 @@ def collide_plane_box(
         contact_normal: contact normal vector
     """
 
-    corner = wp.vec3()
     center_dist = wp.dot(box_pos - plane_pos, plane_normal)
 
+    # Ranking all corners by depth loses the opposite support edge of a thin
+    # plate once its tilt exceeds atan(thickness / width).
+    alignment = wp.transpose(box_rot) @ plane_normal
+    face_axis = wp.int32(0)
+    if wp.abs(alignment[1]) > wp.abs(alignment[face_axis]):
+        face_axis = 1
+    if wp.abs(alignment[2]) > wp.abs(alignment[face_axis]):
+        face_axis = 2
+    face_side = wp.where(alignment[face_axis] > 0.0, -1.0, 1.0)
+
+    axis1 = (face_axis + 1) % 3
+    axis2 = (face_axis + 2) % 3
     dist = wp.vec4(MAXVAL)
     pos = _mat43f()
-
-    # Test all corners and keep up to 4 deepest (most negative) contacts.
-    # Track the current worst kept contact by index for O(1) replacement checks.
     ncontact = wp.int32(0)
+    nface = wp.int32(0)
     worst_idx = wp.int32(0)
     for i in range(8):
-        # get corner in local coordinates
-        corner.x = wp.where((i & 1) != 0, box_size.x, -box_size.x)
-        corner.y = wp.where((i & 2) != 0, box_size.y, -box_size.y)
-        corner.z = wp.where((i & 4) != 0, box_size.z, -box_size.z)
-
-        # get corner in global coordinates relative to box center
+        # Incident-face corners first (i < 4), then the opposite face.
+        corner = wp.vec3()
+        side = wp.where(i < 4, face_side, -face_side)
+        corner[face_axis] = side * box_size[face_axis]
+        corner[axis1] = wp.where((i & 1) != 0, box_size[axis1], -box_size[axis1])
+        corner[axis2] = wp.where((i & 2) != 0, box_size[axis2], -box_size[axis2])
         corner = box_rot @ corner
 
-        # Compute distance to plane and skip corners beyond margin.
-        ldist = wp.dot(plane_normal, corner)
-        cdist = center_dist + ldist
+        # Skip corners beyond the margin.
+        cdist = center_dist + wp.dot(plane_normal, corner)
         if cdist > margin:
             continue
-
         cpos = corner + box_pos - 0.5 * plane_normal * cdist
 
         if ncontact < 4:
             dist[ncontact] = cdist
             pos[ncontact] = cpos
-            if ncontact == 0 or cdist > dist[worst_idx]:
+            if i < 4:
+                nface += 1
+            elif ncontact == nface or cdist > dist[worst_idx]:
                 worst_idx = ncontact
             ncontact += 1
-        else:
-            if cdist < dist[worst_idx]:
-                dist[worst_idx] = cdist
-                pos[worst_idx] = cpos
-
-                # Recompute worst index (largest distance among kept contacts).
-                worst_idx = 0
-                if dist[1] > dist[worst_idx]:
-                    worst_idx = 1
-                if dist[2] > dist[worst_idx]:
-                    worst_idx = 2
-                if dist[3] > dist[worst_idx]:
-                    worst_idx = 3
+        elif nface < 4 and cdist < dist[worst_idx]:
+            # Replace the shallowest opposite corner kept so far.
+            dist[worst_idx] = cdist
+            pos[worst_idx] = cpos
+            worst_idx = nface
+            for j in range(4):
+                if j > nface and dist[j] > dist[worst_idx]:
+                    worst_idx = j
 
     return dist, pos, plane_normal
 
@@ -751,7 +808,6 @@ def collide_box_box(
         contact_dist[i] = MAXVAL
     contact_pos = _mat83f()
     contact_normals = _mat83f()
-    contact_count = 0
 
     # Compute transforms between box's frames
     pos21 = wp.transpose(box1_rot) @ (box2_pos - box1_pos)
@@ -770,6 +826,8 @@ def collide_box_box(
     s_sum_3 = 3.0 * (box1_size + box2_size)
     separation = wp.float32(margin + s_sum_3[0] + s_sum_3[1] + s_sum_3[2])
     axis_code = wp.int32(-1)
+    # An edge axis must beat the best face axis by more than float32 rounding at box scale.
+    edge_bias = 1.0e-5 * (s_sum_3[0] + s_sum_3[1] + s_sum_3[2]) / 3.0
 
     # First test: consider boxes' face normals
     for i in range(3):
@@ -826,7 +884,7 @@ def collide_box_box(
                 return contact_dist, contact_pos, contact_normals
 
             # Track minimum separation and which edge-edge pair it occurs on
-            if c3 < separation * (1.0 - 1e-12):
+            if c3 < separation - edge_bias:
                 separation = c3
                 # Determine which corners/edges are closest
                 cle1 = 0
@@ -877,7 +935,6 @@ def collide_box_box(
         for i in range(wp.static(3)):
             lp += rt[i] * s[i] * wp.where(clcorner & 1 << i, 1.0, -1.0)
 
-        m = wp.int32(1)
         dirs = wp.int32(0)
 
         cn1 = wp.vec3(0.0)
@@ -895,68 +952,91 @@ def collide_box_box(
         k = dirs * dirs
 
         # Find potential contact points
-
+        # Face clipping can emit 16 edge clips plus 4 reference and 4 incident corners. The first attempt keeps them in
+        # that order; if more than eight lie within the margin, the second keeps distinct incident corners, then
+        # reference corners, then edge clips. Candidates of one corner differ by float32 rounding of box-scale
+        # coordinates, so the dedup tolerance stays at that scale.
+        dedup_tol = 1.0e-6 * wp.length(box1_size + box2_size)
         n = wp.int32(0)
+        for attempt in range(2):
+            n = wp.int32(0)
+            overflow = wp.bool(False)
+            for f in range(3):
+                family = wp.where(attempt == 0, f, 2 - f)
+                if family == 0:
+                    for i in range(k):
+                        for q in range(2):
+                            # lines_a and lines_b (lines between corners) computed on the fly
+                            lav = lp + wp.where(i < 2, wp.vec3(0.0), wp.where(i == 2, cn1, cn2))
+                            lbv = wp.where(i == 0 or i == 3, cn1, cn2)
 
-        for i in range(k):
-            for q in range(2):
-                # lines_a and lines_b (lines between corners) computed on the fly
-                lav = lp + wp.where(i < 2, wp.vec3(0.0), wp.where(i == 2, cn1, cn2))
-                lbv = wp.where(i == 0 or i == 3, cn1, cn2)
+                            if wp.abs(lbv[q]) > MINVAL:
+                                br = 1.0 / lbv[q]
+                                for j in range(-1, 2, 2):
+                                    l = ss[q] * wp.float32(j)
+                                    c1 = (l - lav[q]) * br
+                                    if c1 < 0 or c1 > 1:
+                                        continue
+                                    c2 = lav[1 - q] + lbv[1 - q] * c1
+                                    if wp.abs(c2) > ss[1 - q]:
+                                        continue
 
-                if wp.abs(lbv[q]) > MINVAL:
-                    br = 1.0 / lbv[q]
-                    for j in range(-1, 2, 2):
-                        l = ss[q] * wp.float32(j)
-                        c1 = (l - lav[q]) * br
-                        if c1 < 0 or c1 > 1:
-                            continue
-                        c2 = lav[1 - q] + lbv[1 - q] * c1
-                        if wp.abs(c2) > ss[1 - q]:
-                            continue
+                                    cand = lav + c1 * lbv
+                                    if cand[2] <= margin and (
+                                        attempt == 0 or _box_face_candidate_is_new(points, n, cand, dedup_tol)
+                                    ):
+                                        if n < 8:
+                                            points[n] = cand
+                                            n += 1
+                                        else:
+                                            overflow = True
+                elif family == 1:
+                    if dirs == 2:
+                        ax = cn1[0]
+                        bx = cn2[0]
+                        ay = cn1[1]
+                        by = cn2[1]
+                        C = safe_div(1.0, ax * by - bx * ay)
 
-                        points[n] = lav + c1 * lbv
-                        n += 1
+                        for i in range(4):
+                            llx = wp.where(i // 2, lx, -lx)
+                            lly = wp.where(i % 2, ly, -ly)
 
-        if dirs == 2:
-            ax = cn1[0]
-            bx = cn2[0]
-            ay = cn1[1]
-            by = cn2[1]
-            C = safe_div(1.0, ax * by - bx * ay)
+                            x = llx - lp[0]
+                            y = lly - lp[1]
 
-            for i in range(4):
-                llx = wp.where(i // 2, lx, -lx)
-                lly = wp.where(i % 2, ly, -ly)
+                            u = (x * by - y * bx) * C
+                            v = (y * ax - x * ay) * C
 
-                x = llx - lp[0]
-                y = lly - lp[1]
+                            if u > 0 and v > 0 and u < 1 and v < 1:
+                                cand = wp.vec3(llx, lly, lp[2] + u * cn1[2] + v * cn2[2])
+                                if cand[2] <= margin and (
+                                    attempt == 0 or _box_face_candidate_is_new(points, n, cand, dedup_tol)
+                                ):
+                                    if n < 8:
+                                        points[n] = cand
+                                        n += 1
+                                    else:
+                                        overflow = True
+                else:
+                    for i in range(1 << dirs):
+                        tmpv = lp + wp.float32(i & 1) * cn1 + wp.float32((i & 2) != 0) * cn2
+                        if tmpv[0] > -lx and tmpv[0] < lx and tmpv[1] > -ly and tmpv[1] < ly:
+                            cand = tmpv
+                            if cand[2] <= margin and (
+                                attempt == 0 or _box_face_candidate_is_new(points, n, cand, dedup_tol)
+                            ):
+                                if n < 8:
+                                    points[n] = cand
+                                    n += 1
+                                else:
+                                    overflow = True
+            if not overflow:
+                break
 
-                u = (x * by - y * bx) * C
-                v = (y * ax - x * ay) * C
-
-                if u > 0 and v > 0 and u < 1 and v < 1:
-                    points[n] = wp.vec3(llx, lly, lp[2] + u * cn1[2] + v * cn2[2])
-                    n += 1
-
-        for i in range(1 << dirs):
-            tmpv = lp + wp.float32(i & 1) * cn1 + wp.float32((i & 2) != 0) * cn2
-            if tmpv[0] > -lx and tmpv[0] < lx and tmpv[1] > -ly and tmpv[1] < ly:
-                points[n] = tmpv
-                n += 1
-
-        m = n
-        n = wp.int32(0)
-
-        for i in range(m):
-            if points[i][2] > margin:
-                continue
-            if i != n:
-                points[n] = points[i]
-
-            points[n, 2] *= 0.5
-            depth[n] = points[n, 2] * 2.0
-            n += 1
+        for i in range(n):
+            points[i, 2] *= 0.5
+            depth[i] = points[i, 2] * 2.0
 
         # Set up contact frame
         rw = wp.where(box_idx, box2_rot, box1_rot) @ wp.transpose(rotmore)
@@ -1171,6 +1251,16 @@ def collide_box_box(
         contact_normals[i] = normal
 
     return contact_dist, contact_pos, contact_normals
+
+
+@wp.func
+def _box_face_candidate_is_new(points: _mat83f, count: int, candidate: wp.vec3, tol: float) -> bool:
+    """Return whether a face-clipping candidate is farther than ``tol`` in x or y from every kept candidate."""
+    for kept in range(count):
+        offset = points[kept] - candidate
+        if wp.abs(offset[0]) < tol and wp.abs(offset[1]) < tol:
+            return False
+    return True
 
 
 @wp.func

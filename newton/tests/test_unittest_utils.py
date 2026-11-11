@@ -75,6 +75,18 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         unittest.defaultTestLoader.loadTestsFromTestCase(cls).run(result)
         return result
 
+    def _run_with_text_runner_on_stderr(self, cls: type[unittest.TestCase]) -> tuple[unittest.TestResult, str]:
+        unittest_utils.wp.init()
+        stderr_capture = unittest_utils.StdErrCapture()
+        stderr_capture.begin()
+        try:
+            result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(
+                unittest.defaultTestLoader.loadTestsFromTestCase(cls)
+            )
+        finally:
+            runner_output = stderr_capture.end()
+        return result, runner_output
+
     def test_allowlisted_deprecation_is_replayed_after_validation(self):
         """Accept and replay an allowlisted in-process deprecation warning."""
         unittest_utils.wp.init()
@@ -299,16 +311,49 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         )
         self.assertTrue(result.wasSuccessful(), stream.getvalue())
 
-        stderr_capture = unittest_utils.StdErrCapture()
-        stderr_capture.begin()
-        try:
-            result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(
-                unittest.defaultTestLoader.loadTestsFromTestCase(QuietTest)
-            )
-        finally:
-            stderr_capture.end()
+        result, runner_output = self._run_with_text_runner_on_stderr(QuietTest)
 
-        self.assertTrue(result.wasSuccessful())
+        self.assertTrue(result.wasSuccessful(), runner_output)
+
+    def test_text_runner_subtest_progress_is_not_captured(self):
+        """Keep the runner's subtest skip and failure lines out of the output contract."""
+
+        class SkipsSubtest(NewtonTestCase):
+            def test_variants(self):
+                with self.subTest(variant="skipped"):
+                    self.skipTest("optional dependency missing")
+                with self.subTest(variant="passed"):
+                    pass
+
+        class FailsSubtest(NewtonTestCase):
+            def test_variants(self):
+                with self.subTest(variant="failed"):
+                    self.fail("variant failed")
+
+        skip_result, _ = self._run_with_text_runner_on_stderr(SkipsSubtest)
+        fail_result, _ = self._run_with_text_runner_on_stderr(FailsSubtest)
+
+        self.assertTrue(skip_result.wasSuccessful(), skip_result.failures)
+        self.assertEqual(len(skip_result.skipped), 1)
+        self.assertEqual(len(fail_result.failures), 1, fail_result.failures)
+        self.assertIn("variant failed", fail_result.failures[0][1])
+
+    def test_subtest_skip_does_not_hide_other_output(self):
+        """Report unexpected output from one subtest when another subtest skips."""
+
+        class SkipsOneSubtest(NewtonTestCase):
+            def test_variants(self):
+                with self.subTest(variant="skipped"):
+                    self.skipTest("optional dependency missing")
+                with self.subTest(variant="prints"):
+                    print("unexpected output")
+
+        result, _ = self._run_with_text_runner_on_stderr(SkipsOneSubtest)
+
+        self.assertEqual(len(result.failures), 1, result.failures)
+        self.assertIn("Unexpected stdout", result.failures[0][1])
+        self.assertIn("unexpected output", result.failures[0][1])
+        self.assertNotIn("skipped", result.failures[0][1])
 
     def test_text_runner_buffering_is_supported(self):
         class EmitsExpectedOutput(NewtonTestCase):
@@ -347,14 +392,7 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
 
         unittest_utils.add_function_test(GeneratedTest, "test_generated", test_func, devices=[])
 
-        stderr_capture = unittest_utils.StdErrCapture()
-        stderr_capture.begin()
-        try:
-            result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(
-                unittest.defaultTestLoader.loadTestsFromTestCase(GeneratedTest)
-            )
-        finally:
-            runner_output = stderr_capture.end()
+        result, runner_output = self._run_with_text_runner_on_stderr(GeneratedTest)
 
         self.assertTrue(result.wasSuccessful(), runner_output)
         self.assertEqual(len(result.skipped), 1)
@@ -388,6 +426,137 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertTrue(stderr_capture.begin_called)
         self.assertTrue(stdout_capture.end_called)
         self.assertFalse(output_capture.active)
+
+
+class TestRequires(unittest.TestCase):
+    _MISSING = "newton_tests_nonexistent_module"
+
+    def _run(self, cls: type[unittest.TestCase]) -> unittest.TestResult:
+        result = unittest.TestResult()
+        unittest.defaultTestLoader.loadTestsFromTestCase(cls).run(result)
+        return result
+
+    def test_skips_classes_and_methods_with_missing_modules(self):
+        """Skip only the decorated class or method whose module does not import."""
+
+        @unittest_utils.requires(self._MISSING)
+        class MissingClass(unittest.TestCase):
+            def test_case(self):
+                pass
+
+        class MixedClass(unittest.TestCase):
+            @unittest_utils.requires("json")
+            def test_present(self):
+                pass
+
+            @unittest_utils.requires("json", self._MISSING)
+            def test_missing(self):
+                pass
+
+        class_result = self._run(MissingClass)
+        mixed_result = self._run(MixedClass)
+
+        self.assertEqual([reason for _, reason in class_result.skipped], [f"Requires {self._MISSING}"])
+        self.assertEqual(mixed_result.testsRun, 2)
+        self.assertEqual([test._testMethodName for test, _ in mixed_result.skipped], ["test_missing"])
+        self.assertTrue(mixed_result.wasSuccessful())
+
+    def test_add_function_test_skips_generated_tests_before_setup(self):
+        """Skip generated tests from requires= or a skipped argument such as a solver factory."""
+        calls = []
+
+        class GeneratedTest(unittest.TestCase):
+            def setUp(self):
+                calls.append(self._testMethodName)
+
+        def test_func(test, device, solver_fn=None):
+            pass
+
+        missing_factory = unittest_utils.requires(self._MISSING)(lambda model: None)
+        unittest_utils.add_function_test(GeneratedTest, "test_requires", test_func, requires=(self._MISSING,))
+        unittest_utils.add_function_test(GeneratedTest, "test_factory", test_func, solver_fn=missing_factory)
+        unittest_utils.add_function_test(GeneratedTest, "test_present", test_func, requires=("json",))
+
+        result = self._run(GeneratedTest)
+
+        self.assertEqual(sorted(test._testMethodName for test, _ in result.skipped), ["test_factory", "test_requires"])
+        self.assertEqual(calls, ["test_present"])
+        self.assertTrue(result.wasSuccessful())
+
+    def test_missing_dependency_of_installed_module_counts_as_broken(self):
+        """Treat a module whose own import fails on another missing module as broken, not missing."""
+        name = "newton_tests_parent.child"
+        unittest_utils._import_error.cache_clear()
+        try:
+            for missing, broken in (("newton_tests_parent", False), (name, False), ("numpy_missing_dep", True)):
+                with self.subTest(missing=missing):
+                    unittest_utils._import_error.cache_clear()
+                    error = ModuleNotFoundError(f"No module named {missing!r}", name=missing)
+                    with mock.patch.object(unittest_utils.importlib, "import_module", side_effect=error):
+                        self.assertEqual(unittest_utils._broken_error(name) is not None, broken)
+        finally:
+            unittest_utils._import_error.cache_clear()
+
+    def test_broken_installed_module_fails_only_the_tests_that_need_it(self):
+        """Fail, rather than skip, the tests that require an installed module that fails to import."""
+        name = "newton_tests_broken_module"
+        unittest_utils._import_error.cache_clear()
+        try:
+            with mock.patch.object(unittest_utils.importlib, "import_module", side_effect=OSError("missing library")):
+                self.assertFalse(unittest_utils.has_module(name))
+                with self.assertRaises(unittest_utils.BrokenTestDependencyError):
+                    unittest_utils.missing_modules([name])
+
+                @unittest_utils.requires(name)
+                class BrokenClass(unittest.TestCase):
+                    def test_case(self):
+                        pass
+
+                class MixedClass(unittest.TestCase):
+                    @unittest_utils.requires(name)
+                    def test_broken(self):
+                        pass
+
+                    def test_unaffected(self):
+                        pass
+
+            class_result = self._run(BrokenClass)
+            mixed_result = self._run(MixedClass)
+        finally:
+            unittest_utils._import_error.cache_clear()
+
+        self.assertEqual(len(class_result.errors), 1)
+        self.assertIn("BrokenTestDependencyError", class_result.errors[0][1])
+        self.assertEqual([test._testMethodName for test, _ in mixed_result.errors], ["test_broken"])
+        self.assertEqual(mixed_result.testsRun, 2)
+
+
+class TestWarpVersionAtLeast(unittest.TestCase):
+    def test_orders_pre_releases_before_their_release(self):
+        """Order releases, .devN, and rcN builds the way PEP 440 does."""
+        cases = (
+            ("1.19.0.dev20261020", "1.19.0.dev20261020", True),
+            ("1.19.0.dev20261021", "1.19.0.dev20261020", True),
+            ("1.19.0.dev20261019", "1.19.0.dev20261020", False),
+            ("1.19.0", "1.19.0.dev20261020", True),
+            ("1.19.0.dev20261020", "1.19.0", False),
+            ("1.18.0", "1.19.0.dev0", False),
+            ("1.20.0.dev0", "1.19.0", True),
+            ("1.19.0rc1", "1.19.0.dev20261020", True),
+            ("1.19.0rc1", "1.19.0", False),
+            ("1.19.0rc2", "1.19.0rc1", True),
+            ("1.17.0+cu12", "1.17.0", True),
+        )
+        for installed, required, expected in cases:
+            with self.subTest(installed=installed, required=required):
+                with mock.patch.object(unittest_utils.wp, "__version__", installed):
+                    self.assertEqual(unittest_utils.warp_version_at_least(required), expected)
+
+    def test_rejects_thresholds_it_cannot_order(self):
+        """Reject thresholds whose suffix would otherwise be ignored."""
+        for required in ("1.19.0+cu13", "1.19.0.post1", "1.19"):
+            with self.subTest(required=required), self.assertRaisesRegex(ValueError, "Unsupported version"):
+                unittest_utils.warp_version_at_least(required)
 
 
 class TestShardSelection(unittest.TestCase):

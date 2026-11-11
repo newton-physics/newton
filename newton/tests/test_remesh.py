@@ -11,7 +11,6 @@ This test suite validates:
 Note: SurfaceReconstructor requires Open3D which is an optional dependency.
 """
 
-import importlib.util
 import unittest
 
 import numpy as np
@@ -27,9 +26,7 @@ from newton._src.geometry.remesh import (
     compute_camera_basis,
     compute_voxel_key,
 )
-
-# Check if Open3D is available for reconstruction tests
-OPEN3D_AVAILABLE = importlib.util.find_spec("open3d") is not None
+from newton.tests.unittest_utils import requires
 
 # Check if CUDA is available (required for Warp mesh raycasting)
 _cuda_available = wp.is_cuda_available()
@@ -311,7 +308,8 @@ class TestPointCloudExtractor(unittest.TestCase):
             extractor.extract(vertices, bad_indices)
 
 
-@unittest.skipUnless(_cuda_available and OPEN3D_AVAILABLE, "Requires CUDA and Open3D")
+@requires("open3d")
+@unittest.skipUnless(_cuda_available, "Requires CUDA")
 class TestSurfaceReconstructor(unittest.TestCase):
     """Test the SurfaceReconstructor class."""
 
@@ -466,7 +464,7 @@ class TestVoxelHashGrid(unittest.TestCase):
         grid = VoxelHashGrid(capacity=1000, voxel_size=0.1)
 
         # Accumulate a single point using the kernel
-        @wp.kernel
+        @wp.kernel(module="unique")
         def accumulate_test_point(
             point: wp.vec3,
             normal: wp.vec3,
@@ -552,7 +550,7 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def accumulate_points(
             points: wp.array[wp.vec3],
             normals: wp.array[wp.vec3],
@@ -653,7 +651,7 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def accumulate_points(
             points: wp.array[wp.vec3],
             normals: wp.array[wp.vec3],
@@ -717,7 +715,7 @@ class TestVoxelHashGrid(unittest.TestCase):
         grid = VoxelHashGrid(capacity=1000, voxel_size=0.1)
 
         # Add a point
-        @wp.kernel
+        @wp.kernel(module="unique")
         def add_point(
             inv_voxel_size: float,
             keys: wp.array[wp.uint64],
@@ -780,7 +778,7 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def accumulate_points(
             points: wp.array[wp.vec3],
             normals: wp.array[wp.vec3],
@@ -882,7 +880,7 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def accumulate_points(
             points: wp.array[wp.vec3],
             normals: wp.array[wp.vec3],
@@ -1034,7 +1032,7 @@ class TestRemeshHelperFunctions(unittest.TestCase):
 
 
 @unittest.skipUnless(_cuda_available, "Remeshing requires CUDA")
-@unittest.skipUnless(OPEN3D_AVAILABLE, "SurfaceReconstructor requires Open3D")
+@requires("open3d")
 class TestRemeshUnifiedAPI(unittest.TestCase):
     """Test the unified remeshing API in utils.py with method='poisson'."""
 

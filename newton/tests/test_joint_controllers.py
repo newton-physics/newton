@@ -8,7 +8,7 @@ import warp as wp
 
 import newton
 from newton._src.utils.import_mjcf import parse_mjcf
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 class TestJointController(unittest.TestCase):
@@ -57,8 +57,8 @@ def test_revolute_controller(
         parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
         axis=wp.vec3(0.0, 0.0, 1.0),
-        target_pos=pos_target_val,
-        target_vel=vel_target_val,
+        target_q=pos_target_val,
+        target_qd=vel_target_val,
         armature=0.0,
         # limit_lower=-wp.pi,
         # limit_upper=wp.pi,
@@ -90,7 +90,9 @@ def test_revolute_controller(
 
         sim_time += sim_dt
 
-    if not isinstance(solver, newton.solvers.SolverMuJoCo | newton.solvers.SolverFeatherstone):
+    if not isinstance(
+        solver, newton.solvers.SolverMuJoCo | newton.solvers.SolverFeatherstone | newton.solvers.SolverSteel
+    ):
         newton.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
 
     joint_q = state_0.joint_q.numpy()
@@ -282,8 +284,8 @@ def test_free_plus_revolute_position_target(
         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), wp.quat_identity()),
         axis=wp.vec3(0.0, 0.0, 1.0),
-        target_pos=target_pos,
-        target_vel=0.0,
+        target_q=target_pos,
+        target_qd=0.0,
         target_ke=target_ke,
         target_kd=0.0,
         armature=0.0,
@@ -304,7 +306,7 @@ def test_free_plus_revolute_position_target(
         test.skipTest("qfrc_actuator-based check is MuJoCo-specific")
 
     state_0, state_1 = model.state(), model.state()
-    observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
+    observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     control = model.control()
 
@@ -346,8 +348,8 @@ def test_effort_limit_clamping(
         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         axis=wp.vec3(0.0, 0.0, 1.0),
-        target_pos=0.0,
-        target_vel=0.0,
+        target_q=0.0,
+        target_qd=0.0,
         armature=0.0,
         limit_ke=0.0,
         limit_kd=0.0,
@@ -432,8 +434,8 @@ def test_qfrc_actuator(
         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         axis=wp.vec3(0.0, 0.0, 1.0),
-        target_pos=0.0,
-        target_vel=0.0,
+        target_q=0.0,
+        target_qd=0.0,
         armature=0.0,
         limit_ke=0.0,
         limit_kd=0.0,
@@ -450,7 +452,7 @@ def test_qfrc_actuator(
 
     state_0 = model.state()
     state_1 = model.state()
-    observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
+    observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
 
     test.assertIsNotNone(observables.qfrc_actuator)
     test.assertEqual(len(observables.qfrc_actuator), model.joint_dof_count)
@@ -545,7 +547,7 @@ def test_free_joint_qfrc_actuator_frame(
 
     state_0 = model.state()
     state_1 = model.state()
-    observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
+    observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
 
     control = model.control()
     # Set ctrl: [thrust=10, yaw=10]
@@ -586,14 +588,24 @@ def test_free_joint_qfrc_actuator_frame(
     )
 
 
+def _steel(model):
+    return newton.solvers.SolverSteel(model)
+
+
 devices = get_test_devices()
+# Steel drives act on PRISMATIC, REVOLUTE and D6 DOFs, so it runs the revolute controller tests only.
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
+    "mujoco_cpu": requires(*MUJOCO_MODULES)(
+        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+    ),
+    "mujoco_warp": requires(*MUJOCO_MODULES)(
+        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+    ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0, iterations=5),
     # "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
     "kamino": newton.solvers.SolverKamino,
+    "steel": _steel,
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():

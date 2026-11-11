@@ -11,6 +11,7 @@ types from :mod:`newton.usd`.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
     from pxr import Usd
 
     from ..sim.builder import ModelBuilder
+
+logger = logging.getLogger(__name__)
 
 
 class PrimType(IntEnum):
@@ -250,11 +253,13 @@ class SchemaResolverManager:
         except (AttributeError, RuntimeError):
             prim_path = "<invalid>"
         if verbose:
-            error_message = (
-                f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "
-                + "no authored value, no explicit default, and no solver mapping default."
+            logger.info(
+                "Cannot resolve value for '%s:%s' on prim '%s'; "
+                "no authored value, no explicit default, and no solver mapping default.",
+                prim_type.name.lower(),
+                key,
+                prim_path,
             )
-            print(error_message)
         return None, None
 
     def deformable_compat_namespaces(self) -> list[str]:
@@ -299,6 +304,18 @@ class SchemaResolverManager:
             # only collect if we haven't seen this prim for this resolver
             if prim_path not in self._schema_attrs[resolver.name]:
                 self._schema_attrs[resolver.name][prim_path] = resolver.collect_prim_attrs(prim)
+
+    def share_collected_attrs(self, source_path: str, target_path: str) -> None:
+        """Record the attributes collected for one prim path under another path.
+
+        Args:
+            source_path: Path whose attributes were already collected.
+            target_path: Path of a prim authoring the same attributes, such as another
+                instance proxy of one USD prototype prim.
+        """
+        for attrs in self._schema_attrs.values():
+            if source_path in attrs and target_path not in attrs:
+                attrs[target_path] = dict(attrs[source_path])
 
     @property
     def schema_attrs(self) -> dict[str, dict[str, dict[str, Any]]]:

@@ -18,7 +18,7 @@ Most Newton sensors follow a common pattern:
 
 .. note::
 
-   Solver-dependent sensors expose ``solver_observable_flags``. Combine these sets,
+   Solver-dependent sensors expose ``solver_observable_kinds``. Combine these sets,
    allocate :doc:`solver observables <solver_observables>` once, and pass the
    container to the solver and sensor updates.
 
@@ -44,7 +44,7 @@ Most Newton sensors follow a common pattern:
 
    # Create solver and state
    solver = newton.solvers.SolverMuJoCo(model)
-   observables = solver.observables(imu.solver_observable_flags)
+   observables = solver.observables(kinds=imu.solver_observable_kinds)
    state = model.state()
 
    # Simulation loop
@@ -115,7 +115,8 @@ attributes, and usage examples.
 * :class:`~newton.sensors.SensorFrameTransform` -- relative transforms of shapes/sites with respect to reference sites.
 * :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
 * :class:`~newton.sensors.SensorCamera` -- raytraced color, HDR color, depth, forward-depth, normal, albedo, and
-  shape-index rendering; one view per camera transform, mapped to worlds via a per-view selector.
+  shape-index rendering; one view per camera transform, mapped to worlds via a per-view selector. Deformable
+  visual meshes render too; see :ref:`deformable-visual-camera-output`.
 * :class:`~newton.sensors.SensorTiledCamera` -- deprecated; superseded by :class:`~newton.sensors.SensorCamera`.
 
 Camera Rays from USD and Calibration Data
@@ -184,26 +185,25 @@ they use an off-center pair so the sample pattern remains centered on the pixel.
 Solver Observables
 ------------------
 
-``SensorIMU`` requires ``SolverObservableFlags.BODY_QDD`` and ``SensorContact``
-requires ``SolverObservableFlags.CONTACT_F``. ``SensorContact`` uses only the
+``SensorIMU`` requires ``SolverBase.ObservableKind.BODY_QDD`` and ``SensorContact``
+requires ``SolverBase.ObservableKind.CONTACT_F``. ``SensorContact`` uses only the
 linear part of each ``CONTACT_F`` wrench (force [N]); the torque part is ignored.
-Each sensor's ``solver_observable_flags`` property provides its requirements
+Each sensor's ``solver_observable_kinds`` property provides its requirements
 without mutating the model. Union the sets when both sensors are present.
-Construct the collision pipeline before requesting contact-indexed observables,
-then pass its contacts buffer to the solver step and sensor. The first step binds
-the observable container to that storage:
+Pass a contacts buffer to the factory when requesting contact-indexed
+observables, and pass each solver step's buffer to the sensor:
 
 .. code-block:: python
 
-   flags = imu.solver_observable_flags | contact_sensor.solver_observable_flags
-   observables = solver.observables(flags)
+   kinds = imu.solver_observable_kinds | contact_sensor.solver_observable_kinds
+   observables = solver.observables(kinds=kinds, contacts=contacts)
 
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
    imu.update(state_out, observables=observables)
    contact_sensor.update(state_out, contacts, observables=observables)
 
-Contact observables are allocated from the model's resolved rigid and soft contact
-capacities, not the current number of contacts. See :ref:`solver_observables` for
+Contact observables are sized from the supplied contacts' capacities, not the
+current number of contacts. See :ref:`solver_observables` for
 pipeline setup with native collision backends and graph capture.
 
 Both :class:`~newton.solvers.SolverKamino` and
@@ -220,7 +220,7 @@ every step -- this lets Newton pre-allocate output arrays and avoid per-frame
 overhead.
 
 Requested solver observables may add nontrivial cost to the solver step itself.
-Request only the flags consumed by the application and reuse the allocation.
+Request only the kinds consumed by the application and reuse the allocation.
 
 See Also
 --------

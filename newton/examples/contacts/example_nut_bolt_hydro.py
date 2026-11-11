@@ -1,15 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example SDF Mesh Collision
-#
-# Demonstrates nut/bolt mesh collision using hydroelastic contacts.
-#
-# Command: python -m newton.examples nut_bolt_hydro
-#          python -m newton.examples nut_bolt_hydro --solver kamino
-#
-###########################################################################
+"""Example SDF Mesh Collision
+
+Demonstrates nut/bolt mesh collision using hydroelastic contacts.
+
+Success criteria:
+- Identical setups appear, each consisting of a nut-and-bolt system.
+- The nut is slowly screwing into the bolt until reaching the end of the bolt.
+
+Runs:
+- `python -m newton.examples nut_bolt_hydro`
+  - 20 identical setups appear.
+- `python -m newton.examples nut_bolt_hydro --solver kamino`
+  - 8 identical setups appear.
+"""
 
 import argparse
 import tempfile
@@ -150,7 +155,6 @@ def load_mesh_with_sdf(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -208,7 +212,7 @@ class Example:
             length=0.0,
             label="ground_plane",
         )
-        main_scene.replicate(world_builder, world_count=self.world_count)
+        main_scene.replicate(world_builder, copy_count=self.world_count)
 
         self.model = main_scene.finalize()
 
@@ -265,9 +269,9 @@ class Example:
             )
         elif self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
-            solver_config.dvi.max_alternating_iterations = 4
+            solver_config.scc.max_alternating_iterations = 4
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             raise ValueError(f"Unknown solver '{self.solver_type}'")

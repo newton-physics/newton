@@ -31,6 +31,17 @@ def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, den
     return curves
 
 
+def _author_cable_rest_shape(curves, *, points=None, normals=None):
+    """Author rest points and normals at default time when supplied."""
+    from pxr import Sdf
+
+    prim = curves.GetPrim()
+    if points is not None:
+        prim.CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(points)
+    if normals is not None:
+        prim.CreateAttribute("physics:restNormals", Sdf.ValueTypeNames.Normal3fArray).Set(normals)
+
+
 def _author_deformable_element_array(prim, name, values, element_type):
     """Author a deformable simulation array with its required element-type token."""
     from pxr import Sdf
@@ -154,6 +165,50 @@ def _add_cloth_mesh(stage, path, *, collision=True):
     return mesh
 
 
+def _add_mesh_prim(stage, path, points=((0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0)), *, collision=False):
+    """Author a single-face GeomMesh over ``points``, optionally as an enabled collider."""
+    from pxr import UsdGeom
+
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr([tuple(float(c) for c in point) for point in points])
+    mesh.CreateFaceVertexCountsAttr([len(points)])
+    mesh.CreateFaceVertexIndicesAttr(list(range(len(points))))
+    if collision:
+        mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+    return mesh
+
+
+def _author_unit_tet(stage, path, *, sim_api=False, collision=None, y=0.0):
+    """Author a single-tetrahedron TetMesh (volume 1/6), optionally marked as a simulation mesh.
+
+    ``collision`` authors an enabled ``PhysicsCollisionAPI``; defaults to ``sim_api`` so
+    deformable-marked fixtures represent the common colliding case, while bare TetMeshes
+    keep the legacy import untouched. ``y`` offsets the tetrahedron so several fit one stage.
+    """
+    from pxr import UsdGeom
+
+    tet = UsdGeom.TetMesh.Define(stage, path)
+    tet.CreatePointsAttr([(0.0, y, 1.0), (1.0, y, 1.0), (0.0, y + 1.0, 1.0), (0.0, y, 2.0)])
+    tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+    if sim_api:
+        tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+    if sim_api if collision is None else collision:
+        tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+    return tet
+
+
+def _add_rigid_cube(stage, path, pos, *, size=0.1):
+    """Author a colliding rigid-body cube at ``pos``."""
+    from pxr import Gf, UsdGeom, UsdPhysics
+
+    cube = UsdGeom.Cube.Define(stage, path)
+    cube.CreateSizeAttr(size)
+    cube.AddTranslateOp().Set(Gf.Vec3d(*pos))
+    UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+    UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+    return cube
+
+
 def _apply_deformable_body_api(prim, *, mass=None, density=None):
     """Apply PhysicsDeformableBodyAPI with optional mass / density overrides."""
     from pxr import Sdf
@@ -163,6 +218,17 @@ def _apply_deformable_body_api(prim, *, mass=None, density=None):
         prim.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Float).Set(mass)
     if density is not None:
         prim.CreateAttribute("physics:density", Sdf.ValueTypeNames.Float).Set(density)
+
+
+def _author_pose(prim, name, points, *, purposes=("bindPose",)):
+    """Author proposal pose attributes without requiring the proposal schema plugin."""
+    from pxr import Sdf
+
+    prim.AddAppliedSchema(f"PhysicsDeformablePoseAPI:{name}")
+    prefix = f"physics:deformablePose:{name}"
+    prim.CreateAttribute(f"{prefix}:purposes", Sdf.ValueTypeNames.TokenArray).Set(purposes)
+    if points is not None:
+        prim.CreateAttribute(f"{prefix}:points", Sdf.ValueTypeNames.Point3fArray).Set(points)
 
 
 def _deformable_stage(up_axis="z"):

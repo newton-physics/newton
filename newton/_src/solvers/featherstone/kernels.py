@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from functools import cache
+
 import warp as wp
 
 from ...math import transform_twist, velocity_at_point
@@ -18,18 +20,11 @@ from ...sim.articulation import (
 from ..semi_implicit.kernels_body import joint_force
 
 
-@wp.kernel
-def compute_spatial_inertia(
-    body_inertia: wp.array[wp.mat33],
-    body_mass: wp.array[float],
-    # outputs
-    body_I_m: wp.array[wp.spatial_matrix],
-):
-    tid = wp.tid()
-    I = body_inertia[tid]
-    m = body_mass[tid]
+@wp.func
+def spatial_inertia(m: float, I: wp.mat33):
+    """Spatial inertia of a body about its center of mass."""
     # fmt: off
-    body_I_m[tid] = wp.spatial_matrix(
+    return wp.spatial_matrix(
         m,   0.0, 0.0, 0.0,     0.0,     0.0,
         0.0, m,   0.0, 0.0,     0.0,     0.0,
         0.0, 0.0, m,   0.0,     0.0,     0.0,
@@ -38,6 +33,17 @@ def compute_spatial_inertia(
         0.0, 0.0, 0.0, I[2, 0], I[2, 1], I[2, 2],
     )
     # fmt: on
+
+
+@wp.kernel
+def compute_spatial_inertia(
+    body_inertia: wp.array[wp.mat33],
+    body_mass: wp.array[float],
+    # outputs
+    body_I_m: wp.array[wp.spatial_matrix],
+):
+    tid = wp.tid()
+    body_I_m[tid] = spatial_inertia(body_mass[tid], body_inertia[tid])
 
 
 @wp.kernel
@@ -120,13 +126,14 @@ def reduce_mimic_inertia(
                     )
 
     # Follower columns are unused by the reduced mapping. Give each one a unit
-    # diagonal so the fixed-size matrix remains positive definite.
+    # diagonal so the fixed-size matrix remains positive definite. These entries
+    # are still zero; adding keeps deterministic mode from rejecting a direct write.
     for joint in range(joint_start, joint_end):
         if joint_mimic_joint[joint] >= 0:
             dof_count = joint_qd_start[joint + 1] - joint_qd_start[joint]
             for axis in range(dof_count):
                 follower_dof = joint_qd_start[joint] + axis - dof_start
-                H_reduced[matrix_start + follower_dof * matrix_rows + follower_dof] = 1.0
+                wp.atomic_add(H_reduced, matrix_start + follower_dof * matrix_rows + follower_dof, 1.0)
 
 
 @wp.kernel
@@ -385,44 +392,57 @@ def jcalc_motion(
         return v_j_s, wp.spatial_vector()
 
     if type == JointType.D6:
-        # Apparent (intra-joint) derivative of the motion subspace. Non-zero only
-        # for >= 2 angular axes, whose FK-transported axes (see below) depend on
-        # the joint coordinates; ``c_app_ang`` collects Σ_k (Σ_{j<k} a_j x a_k q̇_j) q̇_k.
+        # Apparent (intra-joint) derivative of the motion subspace. The angular axes pass through the
+        # translated joint origin, so they move with the linear DOFs (v_lin x w_ang) and, for >= 2 angular
+        # axes, with the preceding angular DOFs (c_app_ang = sum_{j<k} a_j x a_k qd_j qd_k).
         c_app_ang = wp.vec3()
         v_j_s = wp.spatial_vector()
+        pos = wp.vec3()
+        v_lin = wp.vec3()
         if lin_axis_count > 0:
             axis = joint_axis[qd_start + 0]
             S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 0]
             joint_S_s[qd_start + 0] = S_s
+            pos += axis * joint_q[q_start + 0]
+            v_lin += axis * joint_qd[qd_start + 0]
         if lin_axis_count > 1:
             axis = joint_axis[qd_start + 1]
             S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 1]
             joint_S_s[qd_start + 1] = S_s
+            pos += axis * joint_q[q_start + 1]
+            v_lin += axis * joint_qd[qd_start + 1]
         if lin_axis_count > 2:
             axis = joint_axis[qd_start + 2]
             S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 2]
             joint_S_s[qd_start + 2] = S_s
+            pos += axis * joint_q[q_start + 2]
+            v_lin += axis * joint_qd[qd_start + 2]
+        # FK translates before it rotates (jcalc_transform), so the angular axes pivot about the translated origin.
+        X_sa = X_sc * wp.transform(pos, wp.quat_identity())
         # Use the FK-transported axes (transform_*_rotational_axes), not the raw joint
         # axes, so velocity and motion subspace stay consistent with FK for multi-angular D6 joints.
         iqd = qd_start + lin_axis_count
         iq = q_start + lin_axis_count
+        w_ang = wp.vec3()
         if ang_axis_count == 1:
             axis = joint_axis[iqd]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = transform_twist(X_sa, wp.spatial_vector(wp.vec3(), axis))
             v_j_s += S_s * joint_qd[iqd]
             joint_S_s[iqd] = S_s
+            w_ang = axis * joint_qd[iqd]
         if ang_axis_count == 2:
             a0, a1 = transform_2d_rotational_axes(joint_axis[iqd + 0], joint_axis[iqd + 1], joint_q[iq + 0])
-            S_0 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a0))
-            S_1 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a1))
+            S_0 = transform_twist(X_sa, wp.spatial_vector(wp.vec3(), a0))
+            S_1 = transform_twist(X_sa, wp.spatial_vector(wp.vec3(), a1))
             qd0 = joint_qd[iqd + 0]
             qd1 = joint_qd[iqd + 1]
             v_j_s += S_0 * qd0 + S_1 * qd1
             joint_S_s[iqd + 0] = S_0
             joint_S_s[iqd + 1] = S_1
+            w_ang = a0 * qd0 + a1 * qd1
             # a1 = R(a0, q0) * axis_1, so da1/dq0 = a0 x a1.
             c_app_ang += wp.cross(a0, a1) * (qd0 * qd1)
         if ang_axis_count == 3:
@@ -433,9 +453,9 @@ def jcalc_motion(
                 joint_q[iq + 0],
                 joint_q[iq + 1],
             )
-            S_0 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a0))
-            S_1 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a1))
-            S_2 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a2))
+            S_0 = transform_twist(X_sa, wp.spatial_vector(wp.vec3(), a0))
+            S_1 = transform_twist(X_sa, wp.spatial_vector(wp.vec3(), a1))
+            S_2 = transform_twist(X_sa, wp.spatial_vector(wp.vec3(), a2))
             qd0 = joint_qd[iqd + 0]
             qd1 = joint_qd[iqd + 1]
             qd2 = joint_qd[iqd + 2]
@@ -443,12 +463,13 @@ def jcalc_motion(
             joint_S_s[iqd + 0] = S_0
             joint_S_s[iqd + 1] = S_1
             joint_S_s[iqd + 2] = S_2
+            w_ang = a0 * qd0 + a1 * qd1 + a2 * qd2
             # Intrinsic-Euler chain: da_k/dq_j = a_j x a_k for j < k.
             c_app_ang += wp.cross(a0, a1) * (qd0 * qd1)
             c_app_ang += wp.cross(a0, a2) * (qd0 * qd2)
             c_app_ang += wp.cross(a1, a2) * (qd1 * qd2)
 
-        c_app_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), c_app_ang))
+        c_app_s = transform_twist(X_sa, wp.spatial_vector(wp.cross(v_lin, w_ang), c_app_ang))
         return v_j_s, c_app_s
 
     if type == JointType.BALL:
@@ -505,6 +526,8 @@ def jcalc_tau(
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
     joint_damping: wp.array[float],
+    joint_stiffness: wp.array[float],
+    joint_rest_q: wp.array[float],
     joint_S_s: wp.array[wp.spatial_vector],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
@@ -569,6 +592,8 @@ def jcalc_tau(
             drive_f = joint_force(
                 q, qd, target_pos, target_vel, target_ke, target_kd, lower, upper, limit_ke, limit_kd, damping
             )
+
+            drive_f += joint_stiffness[j] * (joint_rest_q[coord_start + i] - q)
 
             # total torque / force on the joint
             t = -wp.dot(S_s, body_f_s) + drive_f + joint_f[j]
@@ -889,6 +914,7 @@ def compute_link_velocity(
     joint_qd_start: wp.array[int],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
+    joint_qdd: wp.array[float],
     joint_axis: wp.array[wp.vec3],
     joint_dof_dim: wp.array2d[int],
     body_I_m: wp.array[wp.spatial_matrix],
@@ -950,8 +976,11 @@ def compute_link_velocity(
     v_s = v_parent_s + v_j_s
     # spatial_cross(v_s, v_j_s) is the v x S q̇ bias for a body-fixed motion subspace;
     # c_app_s adds the apparent derivative Ṡ|_local q̇ that arises when the subspace
-    # itself is configuration-dependent (multi-angular D6). See jcalc_motion.
-    a_s = a_parent_s + spatial_cross(v_s, v_j_s) + c_app_s  # + joint_S_s[i]*self.joint_qdd[i]
+    # itself is configuration-dependent (D6). See jcalc_motion.
+    a_s = a_parent_s + spatial_cross(v_s, v_j_s) + c_app_s
+    if joint_qdd:
+        for j in range(qd_start, joint_qd_start[i + 1]):
+            a_s = a_s + joint_S_s[j] * joint_qdd[j]
 
     # compute body forces
     X_sm = body_q_com[child]
@@ -1216,8 +1245,6 @@ def convert_free_distance_joint_f_internal_to_public(
     joint_X_p: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
     body_q_com: wp.array[wp.transform],
-    body_mass: wp.array[float],
-    joint_qd_public: wp.array[float],
     # in/out
     joint_f: wp.array[float],
 ):
@@ -1230,43 +1257,24 @@ def convert_free_distance_joint_f_internal_to_public(
     :func:`eval_inverse_dynamics_force` (and the form a controller would
     feed forward to compensate for gravity / Coriolis).
 
-    For free and distance joints the joint motion subspace is the 6x6
-    identity, so ``joint_f`` IS the body's spatial wrench. Three convention
-    adjustments are needed to map the RNEA bias output to Newton's
-    documented free-joint convention:
+    The forward pass must have been given the internal joint accelerations
+    that correspond to the public ``joint_qdd``. For free and distance joints
+    the internal linear acceleration is ``a_com - alpha x r - omega x v_com``,
+    with ``r`` from the origin of the joint's parent frame to the child CoM.
+    The bias is then correct for every body, and only the frame conventions
+    differ. For
+    free and distance joints the joint motion subspace is the 6x6 identity, so
+    ``joint_f`` IS the body's spatial wrench, referenced to the origin of the
+    joint's parent frame (a point fixed in the parent, so a fixed world point
+    for a root joint) and expressed in the parent frame. Newton's convention
+    places it at the body CoM, in the world frame::
 
-    1. Linear velocity-product correction (qdd convention). Featherstone's
-       spatial RNEA produces ``f_origin = I_s * a_F + v_s x* (I_s * v_s)``
-       at the body origin under its spatial-acceleration convention. With
-       ``qdd = 0`` the implicit ``a_F = 0`` corresponds to *classical*
-       ``a_origin = omega x v_origin``, not ``a_origin = 0``. Under Newton's
-       documented convention ``joint_qdd[0:3]`` is classical ``a_com``, so
-       ``qdd = 0`` means ``a_com = 0`` (free coasting), and the bias linear
-       must satisfy ``F = m * a_com = 0``. RNEA emits a spurious
-       ``omega x m * v_com`` in F_linear; subtract it from f_origin (i.e.
-       add it to ``joint_f = -f_origin``).
+        F_linear_at_com    = F_linear_at_anchor                    (invariant)
+        tau_angular_at_com = tau_angular_at_anchor - r_com x F_linear
 
-    2. Wrench shift origin -> CoM. The bias output is referenced to the
-       body origin, but Newton's convention places the wrench at the body
-       CoM (paired with ``joint_qd[0:3]`` being CoM velocity)::
-
-           F_linear_at_com    = F_linear_at_origin                    (invariant)
-           tau_angular_at_com = tau_angular_at_origin - r_com x F_linear
-
-    3. Angular velocity-product correction. After steps 1 and 2 the bias
-       moment at CoM equals ``omega x (I_com * omega) + m * r_com x (omega x v_com)``,
-       but Newton's documented bias is the gyroscopic ``omega x (I_com * omega)``
-       alone. The residual ``m * r_com x (omega x v_com)`` -- which arises
-       from the same spatial-vs-classical acceleration mismatch as the
-       linear term and only vanishes when ``r_com = 0`` -- is subtracted
-       from the moment (i.e. added to ``joint_f``'s angular part).
-
-    The linear correction is applied first so the subsequent wrench shift
-    uses the corrected F_linear; the angular correction is applied after
-    the shift. After all three corrections (or for non-free / non-distance
-    joints, where ``joint_f`` is a per-axis scalar invariant under the
-    reference-point shift), every per-DOF entry is negated to flip from
-    RNEA's ``-bias`` convention to the standard ``+bias`` convention.
+    Every per-DOF entry is then negated to flip from RNEA's ``-bias``
+    convention to the standard ``+bias`` convention. Other joints only get the
+    sign flip; their ``joint_f`` is invariant under the reference-point shift.
     """
     joint_id = wp.tid()
 
@@ -1293,24 +1301,7 @@ def convert_free_distance_joint_f_internal_to_public(
         x_child_com_world = wp.transform_get_translation(body_q_com[child])
         r_child_com_parent = wp.quat_rotate_inv(q_p, x_child_com_world - x_anchor_world)
 
-        # Velocity-product correction. tau = -f_b_s, so adding to tau is
-        # equivalent to subtracting the spurious omega x m * v_com from f_b_s.
-        v_com_parent = wp.vec3(
-            joint_qd_public[qd_start + 0],
-            joint_qd_public[qd_start + 1],
-            joint_qd_public[qd_start + 2],
-        )
-        omega_parent = wp.vec3(
-            joint_qd_public[qd_start + 3],
-            joint_qd_public[qd_start + 4],
-            joint_qd_public[qd_start + 5],
-        )
-        bias_correction = body_mass[child] * wp.cross(omega_parent, v_com_parent)
-        joint_f[qd_start + 0] = joint_f[qd_start + 0] + bias_correction[0]
-        joint_f[qd_start + 1] = joint_f[qd_start + 1] + bias_correction[1]
-        joint_f[qd_start + 2] = joint_f[qd_start + 2] + bias_correction[2]
-
-        # Wrench shift origin -> CoM, using the corrected F_linear.
+        # Wrench shift anchor -> CoM.
         F_linear = wp.vec3(
             joint_f[qd_start + 0],
             joint_f[qd_start + 1],
@@ -1321,20 +1312,11 @@ def convert_free_distance_joint_f_internal_to_public(
         joint_f[qd_start + 4] = joint_f[qd_start + 4] - shift[1]
         joint_f[qd_start + 5] = joint_f[qd_start + 5] - shift[2]
 
-        # Angular velocity-product correction. The residual after the linear
-        # correction + wrench shift is m * r_com x (omega x v_com); subtract
-        # it from M_at_CoM (i.e. add to joint_f_ang since joint_f_ang = -M_at_CoM).
-        ang_correction = body_mass[child] * wp.cross(r_child_com_parent, wp.cross(omega_parent, v_com_parent))
-        joint_f[qd_start + 3] = joint_f[qd_start + 3] + ang_correction[0]
-        joint_f[qd_start + 4] = joint_f[qd_start + 4] + ang_correction[1]
-        joint_f[qd_start + 5] = joint_f[qd_start + 5] + ang_correction[2]
-
-        # Rotate the corrected wrench from joint-parent frame to world frame.
+        # Rotate the wrench from joint-parent frame to world frame.
         # Newton's public convention (Model.joint_f) requires world-frame forces
-        # at CoM for FREE/DISTANCE joints. All prior corrections were computed in
-        # parent frame; q_p is the parent-frame orientation in world. Rotation
-        # commutes with the subsequent negation, so applying it here is equivalent
-        # to applying it after the sign flip.
+        # at CoM for FREE/DISTANCE joints. q_p is the parent-frame orientation
+        # in world. Rotation commutes with the subsequent negation, so applying
+        # it here is equivalent to applying it after the sign flip.
         f_lin_parent = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
         f_ang_parent = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
         f_lin_world = wp.quat_rotate(q_p, f_lin_parent)
@@ -1367,6 +1349,7 @@ def eval_rigid_id(
     joint_qd_start: wp.array[int],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
+    joint_qdd: wp.array[float],
     joint_axis: wp.array[wp.vec3],
     joint_dof_dim: wp.array2d[int],
     body_I_m: wp.array[wp.spatial_matrix],
@@ -1416,6 +1399,7 @@ def eval_rigid_id(
             joint_qd_start,
             joint_q,
             joint_qd,
+            joint_qdd,
             joint_axis,
             joint_dof_dim,
             body_I_m,
@@ -1458,6 +1442,8 @@ def eval_rigid_tau(
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
     joint_damping: wp.array[float],
+    joint_stiffness: wp.array[float],
+    joint_rest_q: wp.array[float],
     joint_S_s: wp.array[wp.spatial_vector],
     body_q_com: wp.array[wp.transform],
     body_solve_origin: wp.array[wp.vec3],
@@ -1511,6 +1497,8 @@ def eval_rigid_tau(
             joint_limit_ke,
             joint_limit_kd,
             joint_damping,
+            joint_stiffness,
+            joint_rest_q,
             joint_S_s,
             joint_q,
             joint_qd,
@@ -1533,6 +1521,170 @@ def eval_rigid_tau(
         # iteration of the backward pass.
         if parent >= 0:
             body_ft_s[parent] = body_ft_s[parent] + f_s
+
+
+@wp.kernel(enable_backward=False)
+def eval_rigid_id_joint_motion(
+    articulation_mask: wp.array[bool],
+    joint_articulation: wp.array[wp.int32],
+    articulation_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_qdd: wp.array[float],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_q: wp.array[wp.transform],
+    body_q_com: wp.array[wp.transform],
+    joint_X_p: wp.array[wp.transform],
+    # outputs
+    joint_S_s: wp.array[wp.spatial_vector],
+    joint_v_s: wp.array[wp.spatial_vector],
+    joint_a_s: wp.array[wp.spatial_vector],
+    body_solve_origin: wp.array[wp.vec3],
+):
+    """Per-joint part of :func:`eval_rigid_id`, one thread per joint.
+
+    Writes the joint's motion subspace, its velocity ``S qd``, the part of the
+    child acceleration that does not depend on the parent velocity,
+    ``c_app + S qdd``, all in the articulation's solve frame, and the solve
+    origin of the child body.
+    """
+    i = wp.tid()
+    art_idx = joint_articulation[i]
+    if art_idx < 0:
+        return
+    if articulation_mask:
+        if not articulation_mask[art_idx]:
+            return
+
+    root = articulation_start[art_idx]
+    solve_origin = wp.vec3()
+    root_type = joint_type[root]
+    if root_type == JointType.FREE or root_type == JointType.DISTANCE:
+        solve_origin = wp.transform_get_translation(body_q_com[joint_child[root]])
+
+    parent = joint_parent[i]
+    X_wpj = joint_X_p[i]
+    if parent >= 0:
+        X_wpj = body_q[parent] * X_wpj
+    X_wpj_s = wp.transform(wp.transform_get_translation(X_wpj) - solve_origin, wp.transform_get_rotation(X_wpj))
+
+    qd_start = joint_qd_start[i]
+    v_j_s, c_app_s = jcalc_motion(
+        joint_type[i],
+        joint_axis,
+        joint_q,
+        joint_dof_dim[i, 0],
+        joint_dof_dim[i, 1],
+        X_wpj_s,
+        joint_qd,
+        joint_q_start[i],
+        qd_start,
+        joint_S_s,
+    )
+    if joint_qdd:
+        for j in range(qd_start, joint_qd_start[i + 1]):
+            c_app_s = c_app_s + joint_S_s[j] * joint_qdd[j]
+
+    joint_v_s[i] = v_j_s
+    joint_a_s[i] = c_app_s
+    body_solve_origin[joint_child[i]] = solve_origin
+
+
+@wp.kernel(enable_backward=False)
+def eval_rigid_id_body_force(
+    articulation_mask: wp.array[bool],
+    joint_articulation: wp.array[wp.int32],
+    joint_ancestor: wp.array[int],
+    joint_child: wp.array[int],
+    joint_v_s: wp.array[wp.spatial_vector],
+    joint_a_s: wp.array[wp.spatial_vector],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    body_q_com: wp.array[wp.transform],
+    body_solve_origin: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
+    # outputs
+    body_f_s: wp.array2d[wp.spatial_vector],
+):
+    """Bias wrenches of the joint's child body as in :func:`eval_rigid_id`, one thread per joint.
+
+    Sums the child body's velocity and acceleration over the joint's ancestor
+    chain. ``body_f_s[b, 0]`` is the velocity-product wrench and
+    ``body_f_s[b, 1]`` the gravity wrench.
+    """
+    i = wp.tid()
+    art_idx = joint_articulation[i]
+    if art_idx < 0:
+        return
+    if articulation_mask:
+        if not articulation_mask[art_idx]:
+            return
+
+    v_s = wp.spatial_vector()
+    a = i
+    while a != -1:
+        v_s = v_s + joint_v_s[a]
+        a = joint_ancestor[a]
+
+    a_s = wp.spatial_vector()
+    v_a = v_s
+    a = i
+    while a != -1:
+        v_j_s = joint_v_s[a]
+        a_s = a_s + spatial_cross(v_a, v_j_s) + joint_a_s[a]
+        v_a = v_a - v_j_s
+        a = joint_ancestor[a]
+
+    child = joint_child[i]
+    X_sm = body_q_com[child]
+    x_com_s = wp.transform_get_translation(X_sm) - body_solve_origin[child]
+    m = body_mass[child]
+    f_g = m * gravity[body_world[child]]
+    I_s = transform_spatial_inertia(
+        wp.transform(x_com_s, wp.transform_get_rotation(X_sm)), spatial_inertia(m, body_inertia[child])
+    )
+    body_f_s[child, 0] = I_s * a_s + spatial_cross_dual(v_s, I_s * v_s)
+    body_f_s[child, 1] = -wp.spatial_vector(f_g, wp.cross(x_com_s, f_g))
+
+
+@wp.kernel(enable_backward=False)
+def eval_rigid_id_bias_tau(
+    articulation_mask: wp.array[bool],
+    joint_articulation: wp.array[wp.int32],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_S_s: wp.array[wp.spatial_vector],
+    body_f_s: wp.array2d[wp.spatial_vector],
+    # outputs
+    coriolis_tau: wp.array[float],
+    gravity_tau: wp.array[float],
+):
+    """Joint forces ``-S^T f`` from the two subtree wrenches of :func:`eval_rigid_id_body_force`, one thread per joint.
+
+    Matches :func:`eval_rigid_tau` with zero gains, applied forces and external
+    body forces. Either output may be ``None``.
+    """
+    i = wp.tid()
+    art_idx = joint_articulation[i]
+    if art_idx < 0:
+        return
+    if articulation_mask:
+        if not articulation_mask[art_idx]:
+            return
+
+    child = joint_child[i]
+    for j in range(joint_qd_start[i], joint_qd_start[i + 1]):
+        if coriolis_tau:
+            coriolis_tau[j] = -wp.dot(joint_S_s[j], body_f_s[child, 0])
+        if gravity_tau:
+            gravity_tau[j] = -wp.dot(joint_S_s[j], body_f_s[child, 1])
 
 
 # builds spatial Jacobian J which is an (joint_count*6)x(dof_count) matrix
@@ -1625,7 +1777,6 @@ def dense_gemm(
     p: int,
     transpose_A: bool,
     transpose_B: bool,
-    add_to_C: bool,
     A_start: int,
     B_start: int,
     C_start: int,
@@ -1649,122 +1800,55 @@ def dense_gemm(
                     b_j = k * n + j
                 sum += A[A_start + a_i] * B[B_start + b_j]
 
-            if add_to_C:
-                C[C_start + i * n + j] += sum
-            else:
-                C[C_start + i * n + j] = sum
+            C[C_start + i * n + j] = sum
 
 
-# @wp.func_grad(dense_gemm)
-# def adj_dense_gemm(
-#     m: int,
-#     n: int,
-#     p: int,
-#     transpose_A: bool,
-#     transpose_B: bool,
-#     add_to_C: bool,
-#     A_start: int,
-#     B_start: int,
-#     C_start: int,
-#     A: wp.array[float],
-#     B: wp.array[float],
-#     # outputs
-#     C: wp.array[float],
-# ):
-#     add_to_C = True
-#     if transpose_A:
-#         dense_gemm(p, m, n, False, True, add_to_C, A_start, B_start, C_start, B, wp.adjoint[C], wp.adjoint[A])
-#         dense_gemm(p, n, m, False, False, add_to_C, A_start, B_start, C_start, A, wp.adjoint[C], wp.adjoint[B])
-#     else:
-#         dense_gemm(
-#             m, p, n, False, not transpose_B, add_to_C, A_start, B_start, C_start, wp.adjoint[C], B, wp.adjoint[A]
-#         )
-#         dense_gemm(p, n, m, True, False, add_to_C, A_start, B_start, C_start, A, wp.adjoint[C], wp.adjoint[B])
+def _create_inertia_matrix_func(num_joints: int, num_dofs: int):
+    @wp.func
+    def eval_inertia_matrix_tile(J: wp.array2d[float], M: wp.array2d[float]):
+        # Accumulate H = J^T M J per 6x6 diagonal block of M; forming P = M J with tile_assign() breaks the adjoint.
+        H = wp.tile_zeros(shape=(num_dofs, num_dofs), dtype=float, storage="shared")
+        for i in range(num_joints):
+            M_body = wp.tile_load(M, shape=(6, 6), offset=(i * 6, i * 6))
+            J_body = wp.tile_load(J, shape=(6, num_dofs), offset=(i * 6, 0))
+            wp.tile_matmul(wp.tile_transpose(J_body), wp.tile_matmul(M_body, J_body), H)
+        return H
+
+    return eval_inertia_matrix_tile
 
 
-def create_inertia_matrix_kernel(num_joints, num_dofs):
-    @wp.kernel
-    def eval_dense_gemm_tile(J_arr: wp.array3d[float], M_arr: wp.array3d[float], H_arr: wp.array3d[float]):
-        articulation = wp.tid()
+@cache
+def create_inertia_matrix_kernel(num_joints: int, num_dofs: int):
+    eval_inertia_matrix_tile = _create_inertia_matrix_func(num_joints, num_dofs)
 
-        J = wp.tile_load(J_arr[articulation], shape=(wp.static(6 * num_joints), num_dofs))
-        P = wp.tile_zeros(shape=(wp.static(6 * num_joints), num_dofs), dtype=float)
-
-        # compute P = M*J where M is a 6x6 block diagonal mass matrix
-        for i in range(int(num_joints)):
-            # 6x6 block matrices are on the diagonal
-            M_body = wp.tile_load(M_arr[articulation], shape=(6, 6), offset=(i * 6, i * 6))
-
-            # load a 6xN row from the Jacobian
-            J_body = wp.tile_view(J, offset=(i * 6, 0), shape=(6, num_dofs))
-
-            # compute weighted row
-            P_body = wp.tile_matmul(M_body, J_body)
-
-            # assign to the P slice
-            wp.tile_assign(P, P_body, offset=(i * 6, 0))
-
-        # compute H = J^T*P
-        H = wp.tile_matmul(wp.tile_transpose(J), P)
-
-        wp.tile_store(H_arr[articulation], H)
+    @wp.kernel(module="unique")
+    def eval_dense_gemm_tile(J: wp.array3d[float], M: wp.array3d[float], H: wp.array3d[float]):
+        idx = wp.tid()
+        wp.tile_store(H[idx], eval_inertia_matrix_tile(J[idx], M[idx]))
 
     return eval_dense_gemm_tile
 
 
-def create_batched_cholesky_kernel(num_dofs):
-    assert num_dofs == 18
+@cache
+def create_inertia_matrix_cholesky_kernel(num_joints: int, num_dofs: int):
+    eval_inertia_matrix_tile = _create_inertia_matrix_func(num_joints, num_dofs)
 
-    @wp.kernel
-    def eval_tiled_dense_cholesky_batched(A: wp.array3d[float], R: wp.array2d[float], L: wp.array3d[float]):
-        articulation = wp.tid()
-
-        a = wp.tile_load(A[articulation], shape=(num_dofs, num_dofs), storage="shared")
-        r = wp.tile_load(R[articulation], shape=num_dofs, storage="shared")
-        a_r = wp.tile_diag_add(a, r)
-        l = wp.tile_cholesky(a_r)
-        wp.tile_store(L[articulation], wp.tile_transpose(l))
-
-    return eval_tiled_dense_cholesky_batched
-
-
-def create_inertia_matrix_cholesky_kernel(num_joints, num_dofs):
-    @wp.kernel
+    @wp.kernel(module="unique")
     def eval_dense_gemm_and_cholesky_tile(
-        J_arr: wp.array3d[float],
-        M_arr: wp.array3d[float],
-        R_arr: wp.array2d[float],
-        H_arr: wp.array3d[float],
-        L_arr: wp.array3d[float],
+        J: wp.array3d[float],
+        M: wp.array3d[float],
+        group_to_art: wp.array[int],
+        articulation_dof_start: wp.array[int],
+        armature: wp.array[float],
+        H: wp.array3d[float],
+        L: wp.array3d[float],
     ):
-        articulation = wp.tid()
+        idx = wp.tid()
+        H_tile = eval_inertia_matrix_tile(J[idx], M[idx])
+        wp.tile_store(H[idx], H_tile)
 
-        J = wp.tile_load(J_arr[articulation], shape=(wp.static(6 * num_joints), num_dofs))
-        P = wp.tile_zeros(shape=(wp.static(6 * num_joints), num_dofs), dtype=float)
-
-        # compute P = M*J where M is a 6x6 block diagonal mass matrix
-        for i in range(int(num_joints)):
-            # 6x6 block matrices are on the diagonal
-            M_body = wp.tile_load(M_arr[articulation], shape=(6, 6), offset=(i * 6, i * 6))
-
-            # load a 6xN row from the Jacobian
-            J_body = wp.tile_view(J, offset=(i * 6, 0), shape=(6, num_dofs))
-
-            # compute weighted row
-            P_body = wp.tile_matmul(M_body, J_body)
-
-            # assign to the P slice
-            wp.tile_assign(P, P_body, offset=(i * 6, 0))
-
-        # compute H = J^T*P
-        H = wp.tile_matmul(wp.tile_transpose(J), P)
-        wp.tile_store(H_arr[articulation], H)
-
-        # cholesky L L^T = (H + diag(R))
-        R = wp.tile_load(R_arr[articulation], shape=num_dofs, storage="shared")
-        H_R = wp.tile_diag_add(H, R)
-        L = wp.tile_cholesky(H_R)
-        wp.tile_store(L_arr[articulation], L)
+        R = wp.tile_load(armature, shape=num_dofs, offset=articulation_dof_start[group_to_art[idx]], storage="shared")
+        wp.tile_store(L[idx], wp.tile_cholesky(wp.tile_diag_add(H_tile, R)))
 
     return eval_dense_gemm_and_cholesky_tile
 
@@ -1786,7 +1870,6 @@ def eval_dense_gemm_batched(
     # on the CPU each thread computes the whole matrix multiply
     # on the GPU each block computes the multiply with one output per-thread
     batch = wp.tid()  # /kNumThreadsPerBlock;
-    add_to_C = False
 
     dense_gemm(
         m[batch],
@@ -1794,7 +1877,6 @@ def eval_dense_gemm_batched(
         p[batch],
         transpose_A,
         transpose_B,
-        add_to_C,
         A_start[batch],
         B_start[batch],
         C_start[batch],
@@ -2509,7 +2591,7 @@ def compute_body_parent_f(
     inbound joint, expressed in Featherstone's internal solve frame. For
     floating-root articulations this frame is translated to the root COM; for
     other roots it remains at the world origin. We translate it to the body's
-    COM (matching :class:`SolverMuJoCo` and the ``SolverObservables.body_parent_f``
+    COM (matching :class:`SolverMuJoCo` and the ``SolverBase.Observables.body_parent_f``
     convention -- linear ``[N]`` first, torque ``[N·m]`` referenced to the COM,
     both in world frame).
 

@@ -48,6 +48,8 @@ class CpuMuJoCoAnt:
                 use_cuda_graph=False,
                 world_count=1,
             )
+            # Load the stepping kernels before timing.
+            self.example.step()
 
     def time_simulate(self):
         with wp.ScopedDevice("cpu"):
@@ -99,6 +101,8 @@ class CpuIKFranka:
 
             self.seeds = wp.zeros((self.batch_size, n_coords), dtype=wp.float32)
             self.winners = wp.zeros((self.batch_size, n_coords), dtype=wp.float32)
+            # Load the solve kernels before timing.
+            self.solver.step(self.seeds, self.winners, iterations=self.iterations, step_size=1.0)
 
     def time_solve(self):
         with wp.ScopedDevice("cpu"):

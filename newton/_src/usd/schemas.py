@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import math
 import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
 
 from ..core.types import override
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..usd.schema_resolver import PrimType, SchemaResolver
 from . import utils as usd
 
@@ -38,6 +40,16 @@ def _physx_gap_from_prim(prim: Usd.Prim) -> float | None:
     return float(contact_offset) - float(rest_offset)
 
 
+def _physx_max_hull_vertices(prim: Usd.Prim) -> int | None:
+    """Prefer decomposition limits for meshes using the applied decomposition API."""
+    approximation = str(usd.get_attribute(prim, "physics:approximation", "")).lower()
+    if approximation == "convexdecomposition" and usd.has_applied_api_schema(
+        prim, "PhysxConvexDecompositionCollisionAPI"
+    ):
+        return usd.get_attribute(prim, "physxConvexDecompositionCollision:hullVertexLimit")
+    return usd.get_attribute(prim, "physxConvexHullCollision:hullVertexLimit")
+
+
 def _newton_legacy_contact_attr(legacy_name: str, material_attr: str):
     """Return a getter that reads a legacy contact custom attr with a deprecation warning."""
 
@@ -47,7 +59,7 @@ def _newton_legacy_contact_attr(legacy_name: str, material_attr: str):
             warnings.warn(
                 f"'{legacy_name}' on shape prim is deprecated; "
                 f"author '{material_attr}' on the bound NewtonMaterialAPI material instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=4,
             )
             return float(value)
@@ -66,7 +78,7 @@ def _newton_non_schema_joint_state_attr(attr_name: str):
                 f"'{attr_name}' on joint prim is a non-schema attribute. "
                 f"Please file an issue at https://github.com/newton-physics/newton/issues "
                 f"describing your use case so we can provide a supported alternative.",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=4,
             )
             return float(value)
@@ -83,7 +95,7 @@ def _newton_legacy_joint_limit_attr(legacy_name: str, schema_attr: str):
         if value is not None:
             warnings.warn(
                 f"'{legacy_name}' on joint prim is deprecated; use '{schema_attr}' instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=4,
             )
             return float(value)
@@ -102,7 +114,7 @@ def _mjc_legacy_material_solref(converter, material_attr: str):
                 f"'mjc:solref' on material prim is deprecated; author '{material_attr}' on the "
                 f"bound NewtonMaterialAPI material, or use per-shape 'mjc:solref' (MjcGeomAPI) "
                 f"instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=4,
             )
             return converter(value)
@@ -374,7 +386,16 @@ class SchemaResolverPhysx(SchemaResolver):
         },
         PrimType.SHAPE: {
             # Mesh
-            "max_hull_vertices": SchemaAttribute("physxConvexHullCollision:hullVertexLimit", 64),
+            "max_hull_vertices": SchemaAttribute(
+                "physxConvexHullCollision:hullVertexLimit",
+                64,
+                usd_value_getter=_physx_max_hull_vertices,
+                attribute_names=(
+                    "physxConvexHullCollision:hullVertexLimit",
+                    "physxConvexDecompositionCollision:hullVertexLimit",
+                ),
+            ),
+            "convex_decomposition_max_hulls": SchemaAttribute("physxConvexDecompositionCollision:maxConvexHulls", 32),
             # Collisions: newton margin == physx restOffset, newton gap == physx contactOffset - restOffset.
             # PhysX uses -inf to mean "engine default"; treat as unset (None).
             "margin": SchemaAttribute(
@@ -391,11 +412,7 @@ class SchemaResolverPhysx(SchemaResolver):
             "ke": SchemaAttribute("physxMaterial:compliantContactStiffness", None),
             "kd": SchemaAttribute("physxMaterial:compliantContactDamping", None),
         },
-        PrimType.BODY: {
-            # Rigid body damping
-            "rigid_body_linear_damping": SchemaAttribute("physxRigidBody:linearDamping", 0.0),
-            "rigid_body_angular_damping": SchemaAttribute("physxRigidBody:angularDamping", 0.05),
-        },
+        PrimType.BODY: {},
         PrimType.ARTICULATION: {
             "self_collision_enabled": SchemaAttribute("physxArticulation:enabledSelfCollisions", True),
         },
@@ -458,6 +475,13 @@ def solref_to_damping(solref: Sequence[float] | None) -> float | None:
     return damping
 
 
+def _mjc_angle_scale(physics_scene_prim: Usd.Prim | None) -> float:
+    """Convert MuJoCo USD angles to radians, defaulting unauthored compiler units to degrees."""
+    if not physics_scene_prim or usd.get_attribute(physics_scene_prim, "mjc:compiler:angle", "degree") == "degree":
+        return math.pi / 180.0
+    return 1.0
+
+
 def _mjc_joint_effort_limit(prim: Usd.Prim) -> float | None:
     """Read a joint effort limit [N or N·m] from MuJoCo ``mjc:actuatorfrcrange``.
 
@@ -495,6 +519,9 @@ class SchemaResolverMjc(SchemaResolver):
             # DOFs), unlike the USD per-degree convention behind the plain
             # "damping" key, so it resolves through the _per_rad variant.
             "damping_per_rad": SchemaAttribute("mjc:damping", None),
+            "stiffness": SchemaAttribute("mjc:stiffness", None),
+            "springref": SchemaAttribute("mjc:springref", None),
+            "ref": SchemaAttribute("mjc:ref", None),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
             "effort_limit": SchemaAttribute(
                 "mjc:actuatorfrcrange:min",

@@ -21,7 +21,8 @@ from collections.abc import Callable
 import numpy as np
 import warp as wp
 
-from ..sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
+from ..sim.articulation import _eval_mass_matrix, eval_fk, eval_jacobian
+from ..sim.enums import JointType
 from ..sim.model import Model
 from ..sim.state import State
 
@@ -30,21 +31,15 @@ __all__ = ["JointSpaceResponse"]
 _FLOAT32_EPS = wp.constant(wp.float32(np.finfo(np.float32).eps))
 
 
-@wp.kernel(enable_backward=False)
-def _inverse_block_from_mass_matrix_kernel(
+@wp.func
+def _floored_cholesky_inverse(
+    a: int,
+    n: int,
     H: wp.array3d[float],
-    art_dof_count: wp.array[wp.int32],
     L: wp.array3d[float],
     inv_block: wp.array3d[float],
 ):
-    """Write the full inverse block ``inv_block[a] = H_a^{-1}`` per articulation.
-
-    Cholesky ``H = L L^T``, then for each column c solve ``H x = e_c`` (forward
-    then backward substitution) and store x as column c of the inverse.
-    """
-    a = wp.tid()
-    n = art_dof_count[a]
-
+    """``inv_block[a] = H_a^{-1}`` by Cholesky ``H = L L^T`` with floored pivots, one column at a time."""
     for j in range(n):
         s = H[a, j, j]
         for k in range(j):
@@ -78,22 +73,180 @@ def _inverse_block_from_mass_matrix_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _add_armature_kernel(
-    armature: wp.array[float],
+def _inverse_block_from_mass_matrix_kernel(
+    H: wp.array3d[float],
+    art_dof_count: wp.array[wp.int32],
+    L: wp.array3d[float],
+    inv_block: wp.array3d[float],
+):
+    """Write the full inverse block ``inv_block[a] = H_a^{-1}`` per articulation.
+
+    Cholesky ``H = L L^T``, then for each column c solve ``H x = e_c`` (forward
+    then backward substitution) and store x as column c of the inverse.
+    """
+    a = wp.tid()
+    _floored_cholesky_inverse(a, art_dof_count[a], H, L, inv_block)
+
+
+@wp.kernel(enable_backward=False)
+def _repair_tile_inverse_kernel(
+    H: wp.array3d[float],
+    art_dof_count: wp.array[wp.int32],
+    L: wp.array3d[float],
+    inv_block: wp.array3d[float],
+):
+    """Redo an articulation's inverse with floored pivots when the tile Cholesky hit a tiny or invalid pivot.
+
+    ``tile_cholesky`` has no pivot floor, so a singular block (zero inertia and
+    zero armature) would yield non-finite or unbounded entries. Only flagged
+    articulations pay for the per-thread path.
+    """
+    a = wp.tid()
+    n = art_dof_count[a]
+    bad = int(0)
+    for j in range(n):
+        d = L[a, j, j]
+        if not wp.isfinite(d) or d * d < _FLOAT32_EPS * wp.max(wp.abs(H[a, j, j]), 1.0):
+            bad = 1
+    if bad != 0:
+        _floored_cholesky_inverse(a, n, H, L, inv_block)
+
+
+@wp.kernel(enable_backward=False)
+def _pad_mass_matrix_kernel(art_dof_count: wp.array[wp.int32], H: wp.array3d[float], H_pad: wp.array3d[float]):
+    """Copy ``H`` into a tile-sized block with identity padding so the tile stays SPD."""
+    a, i, j = wp.tid()
+    n = art_dof_count[a]
+    v = float(0.0)
+    if i < n and j < n:
+        v = H[a, i, j]
+    elif i == j:
+        v = 1.0
+    H_pad[a, i, j] = v
+
+
+@wp.kernel(enable_backward=False)
+def _copy_inverse_kernel(art_dof_count: wp.array[wp.int32], inv_pad: wp.array3d[float], inv_block: wp.array3d[float]):
+    """Copy the tile inverse into the blocks, zero beyond each articulation's DOF count."""
+    a, i, j = wp.tid()
+    n = art_dof_count[a]
+    v = float(0.0)
+    if i < n and j < n:
+        v = inv_pad[a, i, j]
+    inv_block[a, i, j] = v
+
+
+_tile_inverse_cache: dict[int, wp.Kernel] = {}
+
+_TILE_MIN_DOFS = 6
+"""Smallest articulation DOF count for the tile path; smaller ones are faster with the per-thread kernel."""
+
+_TILE_MAX_DOFS = 64
+"""Largest padded articulation DOF count for the tile path; larger ones keep the per-thread kernel."""
+
+_TILE_BLOCK_DIM = 128
+"""Threads per block of the tile inverse kernel."""
+
+
+def _build_tile_inverse_kernel(tile: int) -> wp.Kernel:
+    """One thread block per articulation: ``H^-1`` of the padded block by tile Cholesky."""
+    cached = _tile_inverse_cache.get(tile)
+    if cached is not None:
+        return cached
+
+    @wp.kernel(enable_backward=False, module="unique", module_options={"block_dim": _TILE_BLOCK_DIM})
+    def tile_inverse(
+        H_pad: wp.array3d[float],
+        eye: wp.array2d[float],
+        L_out: wp.array3d[float],
+        inv_block: wp.array3d[float],
+    ):
+        a = wp.tid()
+        L = wp.tile_load(H_pad[a], shape=(tile, tile))
+        wp.tile_cholesky_inplace(L)
+        wp.tile_store(L_out[a], L)
+        X = wp.tile_load(eye, shape=(tile, tile))
+        wp.tile_cholesky_solve_inplace(L, X)
+        wp.tile_store(inv_block[a], X)
+
+    _tile_inverse_cache[tile] = tile_inverse
+    return tile_inverse
+
+
+@wp.kernel(enable_backward=False)
+def _mujoco_to_newton_coordinates_kernel(
+    articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     art_dof_start: wp.array[wp.int32],
     art_dof_count: wp.array[wp.int32],
-    H: wp.array3d[float],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    joint_q: wp.array[float],
+    body_q: wp.array[wp.transform],
+    along_rows: int,
+    inv_block: wp.array3d[float],
 ):
-    """Add joint armature to the mass-matrix diagonal.
+    """Apply ``x <- T x`` to every free and ball joint segment of one row or column.
 
-    Solvers carry armature as extra rotor inertia on the diagonal (MuJoCo's
-    ``dof_armature``, Featherstone's ``joint_armature``), but
-    :func:`~newton.eval_mass_matrix` builds ``J^T M J`` without it. Omitting it
-    here would overstate the response and make the solve under-drive the joint.
+    ``T`` maps MuJoCo's joint velocities to Newton's. A FREE joint moves in
+    MuJoCo by its body-origin velocity in world and its angular velocity in the
+    body frame; Newton uses the child-CoM velocity and the angular velocity, both
+    in the joint parent frame. A BALL joint turns in MuJoCo's body frame and in
+    Newton's anchor frame. Other joints share coordinates. Running over rows and
+    then over columns turns MuJoCo's ``M^-1`` into Newton's ``T M^-1 T^T``.
     """
-    a, j = wp.tid()
-    if j < art_dof_count[a]:
-        H[a, j, j] = H[a, j, j] + armature[art_dof_start[a] + j]
+    a, line = wp.tid()
+    if line >= art_dof_count[a]:
+        return
+    base = art_dof_start[a]
+    for joint_id in range(articulation_start[a], articulation_end[a]):
+        o = joint_qd_start[joint_id] - base
+        jtype = joint_type[joint_id]
+        if jtype == JointType.FREE:
+            X_wpj = joint_X_p[joint_id]
+            parent = joint_parent[joint_id]
+            if parent >= 0:
+                X_wpj = body_q[parent] * X_wpj
+            q_p = wp.transform_get_rotation(X_wpj)
+            child = joint_child[joint_id]
+            q_b = wp.transform_get_rotation(body_q[child])
+            com_world = wp.quat_rotate(q_b, body_com[child])
+            if along_rows:
+                v = wp.vec3(inv_block[a, line, o], inv_block[a, line, o + 1], inv_block[a, line, o + 2])
+                w = wp.vec3(inv_block[a, line, o + 3], inv_block[a, line, o + 4], inv_block[a, line, o + 5])
+            else:
+                v = wp.vec3(inv_block[a, o, line], inv_block[a, o + 1, line], inv_block[a, o + 2, line])
+                w = wp.vec3(inv_block[a, o + 3, line], inv_block[a, o + 4, line], inv_block[a, o + 5, line])
+            w_world = wp.quat_rotate(q_b, w)
+            v = wp.quat_rotate_inv(q_p, v + wp.cross(w_world, com_world))
+            w = wp.quat_rotate_inv(q_p, w_world)
+            for k in range(3):
+                if along_rows:
+                    inv_block[a, line, o + k] = v[k]
+                    inv_block[a, line, o + 3 + k] = w[k]
+                else:
+                    inv_block[a, o + k, line] = v[k]
+                    inv_block[a, o + 3 + k, line] = w[k]
+        elif jtype == JointType.BALL:
+            qs = joint_q_start[joint_id]
+            r = wp.quat(joint_q[qs], joint_q[qs + 1], joint_q[qs + 2], joint_q[qs + 3])
+            mj_to_anchor = r * wp.quat_inverse(joint_X_c[joint_id].q)
+            if along_rows:
+                w = wp.vec3(inv_block[a, line, o], inv_block[a, line, o + 1], inv_block[a, line, o + 2])
+            else:
+                w = wp.vec3(inv_block[a, o, line], inv_block[a, o + 1, line], inv_block[a, o + 2, line])
+            w = wp.quat_rotate(mj_to_anchor, w)
+            for k in range(3):
+                if along_rows:
+                    inv_block[a, line, o + k] = w[k]
+                else:
+                    inv_block[a, o + k, line] = w[k]
 
 
 @wp.kernel(enable_backward=False)
@@ -161,7 +314,6 @@ class JointSpaceResponse:
 
         device = model.device
         art_count = model.articulation_count
-        max_links = model.max_joints_per_articulation
         max_dofs = model.max_dofs_per_articulation
 
         joint_qd_start = model.joint_qd_start.numpy()
@@ -174,10 +326,9 @@ class JointSpaceResponse:
             end = int(joint_qd_start[int(articulation_end[a])])
             starts.append(base)
             counts.append(end - base)
-        self._art_dof_starts_host = starts
         self._art_dof_counts_host = counts
-        self._art_dof_start = wp.array(starts, dtype=wp.int32, device=device)
         self._art_dof_count = wp.array(counts, dtype=wp.int32, device=device)
+        self._art_dof_start = wp.array(starts, dtype=wp.int32, device=device)
 
         # Reverse lookup used to scatter a solver's mass matrix into the blocks.
         dof_articulation = [-1] * model.joint_dof_count
@@ -190,11 +341,25 @@ class JointSpaceResponse:
         self._dof_local_index = wp.array(dof_local_index, dtype=wp.int32, device=device)
 
         self._H = wp.zeros((art_count, max_dofs, max_dofs), dtype=float, device=device)
-        self._J = wp.zeros((art_count, max_links * 6, max_dofs), dtype=float, device=device)
         self._body_I_s = wp.zeros(model.body_count, dtype=wp.spatial_matrix, device=device)
         self._joint_S_s = wp.zeros(model.joint_dof_count, dtype=wp.spatial_vector, device=device)
-        self._L = wp.zeros_like(self._H)
+        self._J = None
+        if model._fk_articulation_level_start is None:
+            self._J = wp.zeros((art_count, model.max_joints_per_articulation * 6, max_dofs), dtype=float, device=device)
         self._inv_block = wp.zeros_like(self._H)
+
+        # Tile path: one thread block per articulation inverts its block.
+        self._tile = None
+        tile = ((max_dofs + 15) // 16) * 16
+        if wp.get_device(device).is_cuda and _TILE_MIN_DOFS <= max_dofs and tile <= _TILE_MAX_DOFS:
+            self._tile = tile
+            self._eye = wp.array(np.eye(tile, dtype=np.float32), dtype=float, device=device)
+            self._H_pad = wp.zeros((art_count, tile, tile), dtype=float, device=device)
+            self._L_pad = wp.zeros_like(self._H_pad)
+            self._inv_pad = wp.zeros_like(self._H_pad)
+            self._tile_kernel = _build_tile_inverse_kernel(tile)
+        else:
+            self._L = wp.zeros_like(self._H)
 
         # Scratch so refresh() never writes to the caller's state.
         self._fk_state = model.state()
@@ -247,28 +412,31 @@ class JointSpaceResponse:
         """
         model = self.model
         # eval_fk overwrites body_q/body_qd, so keep it off the caller's state. It
-        # only reads joint_q/joint_qd, and eval_jacobian reads joint_q from the
+        # only reads joint_q/joint_qd, and eval_mass_matrix reads joint_q from the
         # state it is handed, so the scratch state can alias rather than copy.
         fk_state = self._fk_state
         fk_state.joint_q = state.joint_q
         fk_state.joint_qd = state.joint_qd
         eval_fk(model, state.joint_q, state.joint_qd, fk_state)
-        eval_jacobian(model, fk_state, J=self._J, joint_S_s=self._joint_S_s)
-        eval_mass_matrix(model, fk_state, H=self._H, J=self._J, body_I_s=self._body_I_s)
-        if model.joint_armature is not None:
-            wp.launch(
-                _add_armature_kernel,
-                dim=(model.articulation_count, self._H.shape[1]),
-                inputs=[model.joint_armature, self._art_dof_start, self._art_dof_count],
-                outputs=[self._H],
-                device=model.device,
-            )
+        if self._J is not None:
+            eval_jacobian(model, fk_state, J=self._J, joint_S_s=self._joint_S_s)
+        _eval_mass_matrix(
+            model,
+            fk_state,
+            H=self._H,
+            J=self._J,
+            body_I_s=self._body_I_s,
+            joint_S_s=self._joint_S_s,
+            requires_grad=False,
+        )
         self._invert_blocks()
 
     def refresh_from_solve(
         self,
         solve_inverse: Callable[[wp.array2d[float], wp.array2d[float]], None],
         dof_map: wp.array2d[wp.int32] | None = None,
+        *,
+        state: State | None = None,
     ) -> None:
         """Recompute :attr:`inverse_blocks` from a solver's own joint-space inertia.
 
@@ -291,7 +459,7 @@ class JointSpaceResponse:
 
 
             # Simulation loop
-            response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+            response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof, state=sim_state)
 
         Args:
             solve_inverse: Callable ``(x, y)`` writing ``x = M^-1 y``, both shaped
@@ -300,6 +468,14 @@ class JointSpaceResponse:
                 negative where a solver DOF has no Newton counterpart. If
                 ``None``, the solver is assumed to use Newton DOF order with the
                 same DOF count in every world.
+            state: Pose at which to convert free and ball joints from MuJoCo's
+                joint coordinates to Newton's. Pass it when *solve_inverse* is
+                MuJoCo's: its free joint moves the body origin in world and
+                turns in the body frame, and its ball joint turns in the body
+                frame, while Newton's :attr:`State.joint_qd
+                <newton.State.joint_qd>` uses the child CoM and the parent
+                frame. ``None`` (default) takes *solve_inverse* to use Newton's
+                coordinates already.
         """
         model = self.model
         if dof_map is None:
@@ -343,8 +519,70 @@ class JointSpaceResponse:
                 device=model.device,
             )
 
+        if state is not None:
+            fk_state = self._fk_state
+            fk_state.joint_q = state.joint_q
+            fk_state.joint_qd = state.joint_qd
+            eval_fk(model, state.joint_q, state.joint_qd, fk_state)
+            for along_rows in (1, 0):
+                wp.launch(
+                    _mujoco_to_newton_coordinates_kernel,
+                    dim=self._inv_block.shape[:2],
+                    inputs=[
+                        model.articulation_start,
+                        model.articulation_end,
+                        self._art_dof_start,
+                        self._art_dof_count,
+                        model.joint_type,
+                        model.joint_parent,
+                        model.joint_child,
+                        model.joint_q_start,
+                        model.joint_qd_start,
+                        model.joint_X_p,
+                        model.joint_X_c,
+                        model.body_com,
+                        state.joint_q,
+                        fk_state.body_q,
+                        along_rows,
+                    ],
+                    outputs=[self._inv_block],
+                    device=model.device,
+                )
+
     def _invert_blocks(self) -> None:
         """Invert the per-articulation blocks of ``self._H`` into :attr:`inverse_blocks`."""
+        if self._tile is not None:
+            wp.launch(
+                _pad_mass_matrix_kernel,
+                dim=self._H_pad.shape,
+                inputs=[self._art_dof_count, self._H],
+                outputs=[self._H_pad],
+                device=self.model.device,
+            )
+            wp.launch_tiled(
+                self._tile_kernel,
+                dim=[self.model.articulation_count],
+                inputs=[self._H_pad, self._eye],
+                outputs=[self._L_pad, self._inv_pad],
+                block_dim=_TILE_BLOCK_DIM,
+                device=self.model.device,
+            )
+            wp.launch(
+                _repair_tile_inverse_kernel,
+                dim=self.model.articulation_count,
+                inputs=[self._H_pad, self._art_dof_count],
+                outputs=[self._L_pad, self._inv_pad],
+                device=self.model.device,
+            )
+            wp.launch(
+                _copy_inverse_kernel,
+                dim=self._inv_block.shape,
+                inputs=[self._art_dof_count, self._inv_pad],
+                outputs=[self._inv_block],
+                device=self.model.device,
+            )
+            return
+
         self._inv_block.zero_()
         wp.launch(
             _inverse_block_from_mass_matrix_kernel,
