@@ -982,12 +982,12 @@ like explicit values. The source builder and its declared default stay unchanged
 
 ``ONCE`` attributes have one value for the whole model. A source default does
 not replace an existing destination value; an explicit source value does.
-``WORLD`` values and reference defaults are copied into the destination world,
-which receives the source's global value (key ``-1``), or else its world ``0``
-value. Adding global entities with ``add_builder()`` writes the global-world entry
-instead, never world ``0``; as for ``ONCE``, a source reference default does not
-replace an existing global value. Values for other source worlds, or different
-source values for world ``0`` and the global world, raise :class:`ValueError`.
+``WORLD`` values and reference defaults are copied into the destination world.
+A merge places all source entities in one world, so the source's explicit values,
+including its global value (key ``-1``), must agree; different values raise
+:class:`ValueError` before any entity is copied. Adding global entities with
+``add_builder()`` writes the global-world entry instead, never world ``0``; as for
+``ONCE``, a source reference default does not replace an existing global value.
 
 For scalar and integer-vector references, copying offsets each nonnegative
 index and preserves negative ones. Vector values may be lists, tuples, NumPy

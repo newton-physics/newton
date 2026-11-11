@@ -392,9 +392,9 @@ global value is also the default of local worlds without their own value, unless
 the attribute stores references; other unset entries hold the attribute default.
 Merging a builder with :meth:`~newton.ModelBuilder.add_builder`,
 :meth:`~newton.ModelBuilder.add_world`, or :meth:`~newton.ModelBuilder.replicate`
-places all its entities in one world, so the destination entry takes the source's
-global value, or else its world ``0`` value; values for other source worlds raise
-:class:`ValueError`. Consumers without global entities may ignore the final
+places all its entities in one world, so the source's explicit values must agree;
+different values raise :class:`ValueError`. The destination entry takes the agreed
+value, or else the attribute default. Consumers without global entities may ignore the final
 entry; a single :class:`~newton.solvers.SolverMuJoCo` world reads world ``0``
 options when that world owns bodies and global options otherwise.
 

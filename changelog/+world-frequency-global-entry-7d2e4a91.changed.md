@@ -18,8 +18,8 @@ such models:
     local worlds without their own value, unless the attribute stores
     references.
 
-Merging a builder places all its entities in one destination world, which
-takes the source's global value or else its world `0` value; global
-`add_builder()` merges write the global entry instead of world `0`, and
-values for other source worlds raise `ValueError`. Use
+Merging a builder places all its entities in one destination world, so the
+source's explicit `WORLD` values must agree, and different values raise
+`ValueError`; global `add_builder()` merges write the global entry instead of
+world `0`. Use
 `values[:model.world_count]` for the previous per-world layout.
