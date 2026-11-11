@@ -505,6 +505,44 @@ class TestInertia(unittest.TestCase):
                         GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=thickness
                     )
 
+    def test_hollow_mesh_array_thickness_is_validated(self):
+        """Verify 0-d and per-vertex hollow mesh thickness are honored or rejected, never read out of bounds."""
+        box = newton.Mesh.create_box(0.5, 0.75, 1.0, duplicate_vertices=False, compute_inertia=False)
+        hollow = newton.Mesh(box.vertices, box.indices, is_solid=False)
+        num_vertices = len(hollow.vertices)
+
+        m_ref, com_ref, I_ref = compute_inertia_shape(
+            GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=0.01
+        )
+        for thickness in (np.array(0.01), [0.01] * num_vertices, np.full(num_vertices, 0.01, dtype=np.float32)):
+            with self.subTest(thickness=type(thickness).__name__):
+                m, com, I = compute_inertia_shape(
+                    GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=thickness
+                )
+                self.assertAlmostEqual(m, m_ref, delta=1e-5 * m_ref)
+                assert_np_equal(np.array(com), np.array(com_ref), tol=1e-6)
+                assert_np_equal(np.array(I), np.array(I_ref), tol=1e-5 * np.abs(np.array(I_ref)).max())
+
+        with self.assertWarnsRegex(UserWarning, "zero mass and inertia"):
+            m, _com, _I = compute_inertia_shape(
+                GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=[0.0] * num_vertices
+            )
+        self.assertEqual(m, 0.0)
+
+        valid_prefix = [0.01] * (num_vertices - 1)
+        for thickness, pattern in (
+            ([0.01] * 3, "one value per vertex"),
+            ([0.01] * (num_vertices + 1), "one value per vertex"),
+            (np.full((num_vertices, 1), 0.01), "one value per vertex"),
+            ([*valid_prefix, -0.01], ">= 0"),
+            ([*valid_prefix, float("inf")], "finite"),
+        ):
+            with self.subTest(thickness=thickness):
+                with self.assertRaisesRegex(ValueError, pattern):
+                    compute_inertia_shape(
+                        GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=thickness
+                    )
+
     def test_hollow_primitive_thickness_must_fit_inside_shape(self):
         cases = [
             (GeoType.SPHERE, (0.5, 0.0, 0.0), 0.5, "sphere radius"),
