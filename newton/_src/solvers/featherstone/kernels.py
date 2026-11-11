@@ -1933,14 +1933,11 @@ def adj_dense_cholesky(
     # outputs
     L: wp.array[float],
 ):
-    # The gradient w.r.t. the factorized matrix is deposited into adjoint[A]
-    # by adj_dense_solve (the factorization itself is differentiated through
-    # (A^-1)b = x). R regularizes the diagonal (A_jj + R_j), so the gradient
-    # w.r.t. R is the diagonal of that deposit.
-    if not wp.adjoint[A] or not wp.adjoint[R]:
-        return
-    for j in range(n):
-        wp.adjoint[R][R_start + j] += wp.adjoint[A][A_start + dense_index(n, j, j)]
+    # nop: the factorization is differentiated through (A^-1)b = x - the
+    # solve adjoint (adj_dense_solve) deposits the product gradient into
+    # adjoint[A] and its diagonal directly into adjoint[R]. adjoint[L] stays
+    # untouched: L is internal.
+    pass
 
 
 @wp.kernel
@@ -1997,13 +1994,16 @@ def dense_solve(
     L_start: int,
     b_start: int,
     A: wp.array[float],
+    R: wp.array[float],
+    R_start: int,
     L: wp.array[float],
     b: wp.array[float],
     # outputs
     x: wp.array[float],
     tmp: wp.array[float],
 ):
-    # helper function to include tmp argument for backward pass
+    # helper function to include adjoint-only arguments (A, R, tmp) for the
+    # backward pass
     dense_subs(n, L_start, b_start, L, b, x)
 
 
@@ -2013,14 +2013,15 @@ def adj_dense_solve(
     L_start: int,
     b_start: int,
     A: wp.array[float],
+    R: wp.array[float],
+    R_start: int,
     L: wp.array[float],
     b: wp.array[float],
     # outputs
     x: wp.array[float],
     tmp: wp.array[float],
 ):
-    # adjoint[L] is intentionally not checked: L is internal and this adjoint
-    # never deposits into it (see the deposit below)
+    # adjoint[L] is intentionally not checked - see the deposit below
     if not tmp or not wp.adjoint[x] or not wp.adjoint[A]:
         return
     for i in range(n):
@@ -2036,15 +2037,25 @@ def adj_dense_solve(
     # moves both the (i, j) and the (j, i) entry of L L^T. Deposit the
     # symmetrized product gradient -(tmp x^T + x tmp^T) on the lower triangle
     # and diagonal; the upper triangle is never read, so its gradient is 0.
-    # The Cholesky factor is internal (adj_dense_cholesky relies on this
-    # deposit instead of differentiating the factorization), so adjoint[L]
-    # must stay untouched.
+    # The Cholesky factor is internal: the factorization is differentiated
+    # through (A^-1)b = x via this deposit, so adjoint[L] must stay untouched.
     for i in range(n):
         for j in range(i + 1):
             g = -tmp[b_start + i] * x[b_start + j]
             if i != j:
                 g -= tmp[b_start + j] * x[b_start + i]
             wp.adjoint[A][L_start + dense_index(n, i, j)] += g
+
+    # R regularizes the diagonal (B_jj = A_jj + R_j before factorization), so
+    # R's gradient is the diagonal of the product gradient above. Depositing
+    # it here keeps the solve's own contribution separate from any other
+    # gradient that later lands on adjoint[A] (a relay in adj_dense_cholesky
+    # would misattribute a direct reader's contribution to R), and it is the
+    # only armature route on the fused tile path, where no
+    # adj_dense_cholesky launch exists at all.
+    if wp.adjoint[R]:
+        for i in range(n):
+            wp.adjoint[R][R_start + i] += -tmp[b_start + i] * x[b_start + i]
 
 
 @wp.kernel
@@ -2053,6 +2064,8 @@ def eval_dense_solve_batched(
     L_dim: wp.array[int],
     b_start: wp.array[int],
     A: wp.array[float],
+    R: wp.array[float],
+    R_start: wp.array[int],
     L: wp.array[float],
     b: wp.array[float],
     # outputs
@@ -2061,7 +2074,7 @@ def eval_dense_solve_batched(
 ):
     batch = wp.tid()
 
-    dense_solve(L_dim[batch], L_start[batch], b_start[batch], A, L, b, x, tmp)
+    dense_solve(L_dim[batch], L_start[batch], b_start[batch], A, R, R_start[batch], L, b, x, tmp)
 
 
 @wp.kernel

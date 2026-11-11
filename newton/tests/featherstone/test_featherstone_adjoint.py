@@ -348,6 +348,13 @@ def test_dense_cholesky_solve_adjoint(test, device):
     - adj_dense_cholesky was a nop: the gradient w.r.t. the armature
       regularization R (entering as A_jj + R_j) was silently dropped -
       tape adjoint[R] was exactly 0 while the FD is nonzero.
+
+    Current contract: adj_dense_solve deposits the symmetrized product
+    gradient into adjoint[A] and its diagonal directly into adjoint[R]
+    (adj_dense_cholesky is a nop again - no relay that could misattribute
+    another reader's contribution to R). The direct deposit is also the
+    only armature route on the fused tile path, which has no
+    adj_dense_cholesky launch at all - see test_tile_gemm_armature_gradient.
     """
     N = 8
     rng = np.random.default_rng(7)
@@ -419,7 +426,11 @@ def test_dense_cholesky_solve_adjoint(test, device):
     with tape:
         wp.launch(eval_dense_cholesky_batched, dim=1, inputs=[starts, dims, starts, H, R], outputs=[L], device=device)
         wp.launch(
-            eval_dense_solve_batched, dim=1, inputs=[starts, dims, starts, H, L, b], outputs=[x, tmp], device=device
+            eval_dense_solve_batched,
+            dim=1,
+            inputs=[starts, dims, starts, H, R, starts, L, b],
+            outputs=[x, tmp],
+            device=device,
         )
         wp.launch(_lin_loss_kernel, dim=1, inputs=[x, g, loss], device=device)
     tape.backward(loss)
@@ -464,6 +475,104 @@ def _lin_loss_kernel(x: wp.array[float], g: wp.array[float], loss: wp.array[floa
     for i in range(x.shape[0]):
         s = s + g[i] * x[i]
     loss[0] = s
+
+
+def test_tile_gemm_armature_gradient(test, device):
+    """Check that the fused tile Cholesky path routes the solve's diagonal
+    gradient to armature exactly like the batched path.
+
+    The fused kernel (use_tile_gemm + fuse_cholesky) produces H and its
+    Cholesky factor in one launch with no adj_dense_cholesky behind it, so
+    the armature gradient can only come from adj_dense_solve's direct
+    deposit into adjoint[R]. Before that deposit existed, the tile path's
+    armature gradient was exactly zero while the batched path's was not
+    (measured L2 0.0 vs 0.113 on this setup at a K=4 horizon)."""
+    model = _build_model(device)
+    solver_b = newton.solvers.SolverFeatherstone(model)
+    solver_t = newton.solvers.SolverFeatherstone(model, use_tile_gemm=True, fuse_cholesky=True)
+    pipe = newton.CollisionPipeline(model, soft_contact_gap=10.0, requires_grad=True)
+    cts = pipe.contacts()
+    stand_arr = wp.array(STAND, dtype=wp.float32, device=device)
+    dofs_arr = wp.array(HINGE_DOFS, dtype=wp.int32, device=device)
+    newton.eval_fk(model, model.joint_q, model.joint_qd, model)
+
+    # settle to a grounded stance (batched, eager) so both tapes start from
+    # the same state, then freeze the control at the snapshot
+    s0 = model.state()
+    s1 = model.state()
+    s0 = _eager_segment(model, solver_b, pipe, cts, stand_arr, dofs_arr, s0, s1, 1200, mode=0)
+    s0 = _eager_segment(model, solver_b, pipe, cts, stand_arr, dofs_arr, s0, s1, 100, mode=1, amp=-0.12)
+    snap0 = _snapshot(s0)
+
+    # contact-free tapes: one allocating collide, then zero the count so
+    # both paths see identical (empty) contact sets
+    pipe.collide(model.state(), cts)
+    cts.rigid_contact_count.zero_()
+
+    params0 = wp.array([0.0], dtype=wp.float32, device=device)
+    ctrl_e = model.control()
+    wp.launch(
+        _servo_kernel,
+        dim=12,
+        inputs=[
+            params0,
+            wp.array(snap0[0], dtype=wp.float32, device=device),
+            wp.array(snap0[1], dtype=wp.float32, device=device),
+            ctrl_e.joint_f,
+            stand_arr,
+            dofs_arr,
+            1,
+        ],
+        device=device,
+    )
+    frozen0 = ctrl_e.joint_f.numpy().copy()
+
+    K = 2
+
+    def tape_grads(solver):
+        """Two-step tape under the frozen control; returns (armature grad, joint_q grad)."""
+        states = [model.state() for _ in range(K + 1)]
+        states[0].joint_q.assign(snap0[0])
+        states[0].joint_qd.assign(snap0[1])
+        states[0].body_q.assign(snap0[2])
+        states[0].body_qd.assign(snap0[3])
+        ctrl = model.control()
+        ctrl.joint_f.assign(frozen0)
+        loss = wp.zeros(1, dtype=wp.float32, requires_grad=True, device=device)
+        tape = wp.Tape()
+        with tape:
+            for t in range(K):
+                states[t].clear_forces()
+                solver.step(states[t], states[t + 1], ctrl, cts, SIM_DT)
+            wp.launch(_joint_qd_loss_kernel, dim=1, inputs=[states[K].joint_qd, loss], device=device)
+        tape.backward(loss)
+        arm = solver.joint_armature_effective.grad.numpy().copy()
+        jq = states[0].joint_q.grad.numpy().copy()
+        tape.zero()
+        return arm, jq
+
+    arm_b, jq_b = tape_grads(solver_b)
+    arm_t, jq_t = tape_grads(solver_t)
+
+    test.assertGreater(
+        float(np.linalg.norm(arm_b)),
+        1e-6,
+        "batched armature gradient is zero - harness broken",
+    )
+    tol = max(1e-6, 1e-4 * float(np.linalg.norm(arm_b)))
+    test.assertLessEqual(
+        float(np.max(np.abs(arm_b - arm_t))),
+        tol,
+        f"fused tile path's armature gradient deviates from the batched path's "
+        f"(max {np.max(np.abs(arm_b - arm_t)):.3e}, tol {tol:.3e}) - the solve adjoint's "
+        "direct R deposit is not reaching the fused-tile armature",
+    )
+    # the state-side route (the H-product deposit) must agree between the paths too
+    test.assertLessEqual(
+        float(np.max(np.abs(jq_b - jq_t))),
+        1e-5,
+        "joint_q gradient differs between the batched and fused tile paths",
+    )
 
 
 def test_rigid_tau_external_wrench(test, device):
@@ -638,6 +747,12 @@ add_function_test(
     TestFeatherstoneAdjoint,
     "test_dense_cholesky_solve_adjoint",
     test_dense_cholesky_solve_adjoint,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestFeatherstoneAdjoint,
+    "test_tile_gemm_armature_gradient",
+    test_tile_gemm_armature_gradient,
     devices=get_test_devices(),
 )
 add_function_test(

@@ -1066,9 +1066,14 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     # solve for qdd
                     state_aug.joint_qdd.zero_()
                     solve_H = self._mass_scratch_holder.H
+                    # the R the factorization regularized with; the solve
+                    # adjoint deposits the diagonal product gradient here
+                    # (also the armature route on the fused tile path)
+                    solve_armature = self.joint_armature_effective
                     solve_tau = state_aug.joint_tau
                     if self._has_joint_mimics:
                         solve_H = self._mass_scratch_holder.H_mimic
+                        solve_armature = self.joint_armature_zero
                         state_aug.joint_tau_mimic.zero_()
                         wp.launch(
                             reduce_mimic_forces,
@@ -1094,6 +1099,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             self.articulation_H_rows,
                             self.articulation_dof_start,
                             solve_H,
+                            solve_armature,
+                            self.articulation_dof_start,
                             self._mass_scratch_holder.L,
                             solve_tau,
                         ],
