@@ -1110,6 +1110,7 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertAlmostEqual(model.approx_attr.numpy()[visual_shape], keep_visual_attr, places=6)
 
+    @requires("scipy")
     def test_mesh_approximation_shares_replacements_per_source_mesh(self):
         """Share one convex-hull replacement per source mesh and keep hull-vertex limits distinct."""
         sphere = newton.Mesh.create_sphere(1.0, num_latitudes=16, num_longitudes=16, compute_inertia=False)

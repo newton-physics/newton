@@ -620,6 +620,7 @@ class TestEqualityConstraints(unittest.TestCase):
         self.assertEqual(model.joint_count, 3)
         self.assertEqual(model.mujoco.equality_constraint_count, 5)
 
+    @requires(*MUJOCO_MODULES)
     def test_collapse_fixed_joints_keeps_a_satisfied_weld_satisfied(self):
         """Verify a satisfied weld stays satisfied when collapse_fixed_joints merges either of its bodies."""
 

@@ -2391,12 +2391,14 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
           <worldbody><body name="body"><freejoint/><geom type="mesh" mesh="mesh" {geom_attributes}/></body></worldbody>
         </mujoco>"""
 
+    @requires("scipy", *MUJOCO_MODULES)
     def test_inline_mesh_inertia_modes(self):
         """The default and each authored mode match native MuJoCo."""
         for mode in (None, "legacy", "exact", "convex", "shell"):
             with self.subTest(mode=mode):
                 self.assert_matches_native(self.inline_mjcf(f'inertia="{mode}"' if mode else ""))
 
+    @requires("scipy", *MUJOCO_MODULES)
     def test_mesh_inertia_from_default_class(self):
         """Mesh class defaults select the inertia mode."""
         self.assert_matches_native(self.inline_mjcf(defaults='<mesh inertia="shell"/>'))
@@ -2404,6 +2406,7 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
             self.inline_mjcf('class="hull"', defaults='<default class="hull"><mesh inertia="convex"/></default>')
         )
 
+    @requires("trimesh", *MUJOCO_MODULES)
     def test_file_mesh_inertia_with_scale_ref_pose_and_mass(self):
         """File meshes apply the mode after scale and reference pose; an authored mass sets the density.
 
@@ -2460,6 +2463,7 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported inertia 'solid'"):
             newton.ModelBuilder().add_mjcf(self.inline_mjcf('inertia="solid"'))
 
+    @requires("scipy", "trimesh", *MUJOCO_MODULES)
     def test_convex_inertia_with_maxhullvert(self):
         """A limited convex hull keeps the vertices MuJoCo's qhull options select before scale and pose."""
         import trimesh
@@ -2499,6 +2503,7 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
             with self.subTest(file="sphere.obj"):
                 self.assert_matches_native(mjcf, directory)
 
+    @requires("scipy", *MUJOCO_MODULES)
     def test_mesh_without_faces_uses_mujoco_hull(self):
         """Take the mass of a mesh without faces from MuJoCo's hull of all its vertices, not the collision hull."""
         # 100 points on a sphere: all lie on the hull, which then has more than the collision hull's 64 vertices.
@@ -2526,6 +2531,7 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
                     with self.subTest(source=source.split("=")[0], attributes=attributes):
                         self.assert_matches_native(mjcf, directory)
 
+    @requires("scipy", *MUJOCO_MODULES)
     def test_fitted_primitives_use_inertia_mode(self):
         """Fit primitives to the equivalent inertia box of the mesh's mode, as MuJoCo does."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
@@ -2555,6 +2561,7 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
                         np.testing.assert_allclose(size[:2], native_size[:2], rtol=1e-5)
                         self.assertAlmostEqual(abs(axes[:, 2] @ native_axes[:, 2]), 1.0, places=5)
 
+    @requires(*MUJOCO_MODULES)
     def test_exact_inertia_warns_about_inconsistent_orientation(self):
         """Warn about faces with inconsistent orientation, which MuJoCo rejects for ``inertia="exact"``."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
@@ -2575,6 +2582,7 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
                     with self.assertNoLogs("newton", level="WARNING"):
                         newton.ModelBuilder().add_mjcf(mjcf)
 
+    @requires("scipy", *MUJOCO_MODULES)
     def test_mesh_without_volume_adds_no_mass(self):
         """A mesh that its mode gives no volume adds no mass, where MuJoCo rejects it; ``shell`` gives it mass."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
@@ -2599,6 +2607,7 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
             self.inline_mjcf('inertia="shell"', geom_attributes=geom, vertices=square, faces=triangles)
         )
 
+    @requires("trimesh", *MUJOCO_MODULES)
     def test_file_mesh_skips_exact_inertia(self):
         """File meshes compute exact mass properties only for ``inertia="exact"``.
 
@@ -6825,6 +6834,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             np.testing.assert_allclose(np.array(x_p.p), pivot, atol=1e-5)
             np.testing.assert_allclose(np.array(wp.transform_point(builder.body_q[c], x_c.p)), pivot, atol=1e-5)
 
+    @requires(*MUJOCO_MODULES)
     def test_converted_weld_torquescale_selects_the_loop_joint(self):
         """Convert a weld to a BALL loop joint on its anchor for torquescale 0 and to FIXED otherwise, logging unless 1."""
         mjcf = """<?xml version="1.0" ?>
