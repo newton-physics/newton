@@ -1,0 +1,1 @@
+Fix tilted thin boxes on planes losing the contacts of their opposite edge: plane-box collision now reports the corners of the face the box settles onto, so thin plates such as playing cards no longer tunnel into or get stuck below the ground.

@@ -677,7 +677,7 @@ def test_identical_meshes_share_contact_precomputation(test, device):
         mock.patch.object(soft_contacts_mesh, "_mesh_feature_data", feature_data),
         warnings.catch_warnings(),
     ):
-        warnings.simplefilter("error", newton.exceptions.NewtonDeprecationWarning)
+        warnings.simplefilter("error", newton.NewtonDeprecationWarning)
         pipeline = newton.CollisionPipeline(model, enable_rigid_soft_full_surface_contact=True)
     test.assertEqual(feature_data.call_count, 1)
     # Identical instances share the actual adjacency spans, not just feature construction.
@@ -1866,10 +1866,12 @@ def test_mesh_complete_rigid_indices_and_reuse(test, device):
     particle_pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.02)
     for clear_buffers in (False, True):
         contacts.soft_contact_rigid_indices.fill_(wp.vec3i(1, 2, 3))
+        contacts._soft_contact_mesh_features.fill_(wp.vec3i(4, 5, 6))
         contacts.clear_buffers = clear_buffers
         particle_pipeline.collide(state, contacts)
         test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
         test.assertTrue(np.all(contacts.soft_contact_rigid_indices.numpy() == -1))
+        test.assertTrue(np.all(contacts._soft_contact_mesh_features.numpy() == -1))
 
     contacts.soft_contact_rigid_indices.fill_(wp.vec3i(1, 2, 3))
     contacts.clear_buffers = True
@@ -1963,6 +1965,7 @@ def test_mesh_vertex_fallback_sign(test, device):
                 state.body_qd,
                 model.body_com,
                 0.01,
+                False,
                 False,
                 penalty,
                 zero_material,

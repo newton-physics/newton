@@ -37,6 +37,7 @@ from newton.tests.steel._fixtures import (
     _reset_state,
     _shape_cfg,
     _sphere_inertia,
+    printf_capture_is_reliable,
     set_torsion_radius,
 )
 from newton.tests.unittest_utils import (
@@ -571,7 +572,7 @@ def test_shared_anchors_warn_with_patch_friction(test, device):
     """Explain that patch anchors keep their friction points when shared anchors are requested."""
     model = _free_body_model(device)
     for flag in ("contact_shared_anchor", "contact_friction_shared_anchor"):
-        with test.subTest(flag=flag), test.assertWarnsRegex(newton.exceptions.NewtonWarning, "friction_anchor_beta=0"):
+        with test.subTest(flag=flag), test.assertWarnsRegex(newton.NewtonWarning, "friction_anchor_beta=0"):
             SolverSteel(model, **{flag: True})
         solver = SolverSteel(model, friction_anchor_beta=0.0, **{flag: True})
         test.assertTrue(getattr(solver, flag))
@@ -602,8 +603,7 @@ def test_shared_anchors_step_on_every_route(test, device):
     builder.add_ground_plane()
     model = builder.finalize(device=device)
     routes = (
-        {"solve_mode": "matrix_free"},
-        {"solve_mode": "split"},
+        {},
         {"articulated_contact_response": "propagation"},
     )
 
@@ -642,7 +642,7 @@ def test_shared_anchors_step_on_every_route(test, device):
 def test_solver_exposes_documented_defaults(test, device):
     """Expose the documented contact-control defaults, with friction patches on."""
     model = _free_body_model(device)
-    solver = SolverSteel(model, solve_mode="matrix_free")
+    solver = SolverSteel(model)
     test.assertEqual(solver.friction_anchor_beta, 0.2)
     test.assertTrue(solver._friction_anchors_enabled)
     test.assertEqual(solver.contact_speculative_scale, 1.0)
@@ -654,10 +654,10 @@ def test_solver_exposes_documented_defaults(test, device):
     test.assertEqual(solver.restitution_velocity_threshold, 0.5)
     test.assertTrue(solver.warn_constraint_overflow)
     test.assertIsNotNone(solver._row_overflow_warning_emitted)
-    quiet_solver = SolverSteel(model, solve_mode="matrix_free", warn_constraint_overflow=False)
+    quiet_solver = SolverSteel(model, warn_constraint_overflow=False)
     test.assertFalse(quiet_solver.warn_constraint_overflow)
     test.assertIsNotNone(quiet_solver._row_overflow_warning_emitted)
-    point = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
+    point = SolverSteel(model, friction_anchor_beta=0.0)
     test.assertFalse(point._friction_anchors_enabled)
 
 
@@ -666,7 +666,6 @@ def test_solver_validates_and_stores_contact_controls(test, device):
     model = _free_body_model(device)
     solver = SolverSteel(
         model,
-        solve_mode="matrix_free",
         contact_speculative_scale=0.0,
         contact_gap_gate=0.001,
         contact_friction_gap_max=-0.5,
@@ -684,9 +683,9 @@ def test_solver_validates_and_stores_contact_controls(test, device):
         for value in (-0.1, float("nan"), float("inf"), "invalid"):
             with test.subTest(name=name, value=value):
                 with test.assertRaisesRegex(ValueError, name):
-                    SolverSteel(model, solve_mode="matrix_free", **{name: value})
+                    SolverSteel(model, **{name: value})
     with test.assertRaisesRegex(ValueError, "contact_friction_gap_max"):
-        SolverSteel(model, solve_mode="matrix_free", contact_friction_gap_max=float("nan"))
+        SolverSteel(model, contact_friction_gap_max=float("nan"))
 
 
 def test_zero_gap_gate_keeps_touching_contacts_only(test, device):
@@ -785,7 +784,6 @@ def test_friction_gap_max_keeps_the_constructed_row_layout(test, device):
     transforms[model.shape_body.numpy() >= 0, 3:] = np.asarray(wp.quat_rpy(0.2, 0.3, 0.1))
     model.shape_transform.assign(transforms)
     options = {
-        "solve_mode": "matrix_free",
         "iterations": 8,
         "enable_joint_limits": True,
         "articulation_constraint_max": 96,
@@ -837,31 +835,32 @@ def test_overflow_warning_enabled_after_construction_latches(test, device):
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
-    solver = SolverSteel(model, solve_mode="split", articulation_constraint_max=1, warn_constraint_overflow=False)
+    solver = SolverSteel(model, friction_anchor_beta=0.0, articulation_constraint_max=1, warn_constraint_overflow=False)
     solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
     test.assertTrue(solver.constraint_overflow.numpy().any())
     test.assertEqual(solver._row_overflow_warning_emitted.numpy().tolist(), [0, 0, 0, 0, 0])
     solver.warn_constraint_overflow = True
+    check_output = printf_capture_is_reliable()
     capture = StdOutCapture()
-    capture.begin()
+    if check_output:
+        capture.begin()
     try:
         solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
     finally:
         try:
             wp.synchronize()
         finally:
-            printed = capture.end()
-    test.assertRegex(printed, "constraint-row overflow")
+            printed = capture.end() if check_output else ""
+    if check_output:
+        test.assertRegex(printed, "constraint-row overflow")
     test.assertEqual(int(solver._row_overflow_warning_emitted.numpy()[0]), 1)
     test.assertTrue(np.isfinite(output.joint_q.numpy()).all())
 
 
-def test_restitution_threshold_cannot_enable_split_restitution(test, device):
-    """Reject positive restitution in the split solve at any threshold, so later threshold edits stay supported."""
+def test_disabled_restitution_ignores_threshold_edits(test, device):
+    """Keep restitution off after a threshold edit when ``enable_restitution=False``."""
     model, _ = _build_plane_model(device, separation=1.0e-3, restitution=0.5, scene="articulated")
-    with test.assertRaisesRegex(NotImplementedError, "restitution"):
-        SolverSteel(model, solve_mode="split", restitution_velocity_threshold=float(np.finfo(np.float32).max))
-    solver = SolverSteel(model, solve_mode="split", enable_restitution=False)
+    solver = SolverSteel(model, enable_restitution=False)
     solver.restitution_velocity_threshold = 0.5
     test.assertEqual(solver._rebound_velocity_threshold, float(np.finfo(np.float32).max))
 
@@ -888,7 +887,7 @@ for _fn in (
     test_gap_gate_keeps_contacts_at_threshold,
     test_allocator_skips_contacts_without_response_dofs,
     test_friction_gap_max_keeps_the_constructed_row_layout,
-    test_restitution_threshold_cannot_enable_split_restitution,
+    test_disabled_restitution_ignores_threshold_edits,
 ):
     add_function_test(TestSteelContactControls, _fn.__name__, _fn, devices=devices)
 # The test captures the device warning it expects.
@@ -923,7 +922,7 @@ def _box_on_ground(device, gravity=None, mu=None):
     return builder.finalize(device=device)
 
 
-def test_resting_box_reports_weight_as_linear_force(test, device, solve_mode="matrix_free", response="immediate"):
+def test_resting_box_reports_weight_as_linear_force(test, device, solve_mode="serial", response="immediate"):
     """Report the resting box's weight through the linear contact force and leave the torque zero."""
     model = _box_on_ground(device)
     solver = SolverSteel(model, solve_mode=solve_mode, iterations=32, articulated_contact_response=response)
@@ -951,7 +950,7 @@ def test_resting_box_reports_weight_as_linear_force(test, device, solve_mode="ma
     np.testing.assert_array_equal(wrench[:, 3:], np.zeros((count, 3)))
 
 
-def _tilted_gravity_box_velocity(device, slope_angle, mu, steps, solve_mode="matrix_free", response="immediate"):
+def _tilted_gravity_box_velocity(device, slope_angle, mu, steps, solve_mode="serial", response="immediate"):
     """Box on the ground under gravity tilted by ``slope_angle``, as on an incline; return its x velocity."""
     g = 9.81
     gravity = (g * np.sin(slope_angle), 0.0, -g * np.cos(slope_angle))
@@ -968,7 +967,7 @@ def _tilted_gravity_box_velocity(device, slope_angle, mu, steps, solve_mode="mat
     return float(state_0.body_qd.numpy()[0, 0])
 
 
-def test_friction_holds_inside_the_cone(test, device, solve_mode="matrix_free", response="immediate"):
+def test_friction_holds_inside_the_cone(test, device, solve_mode="serial", response="immediate"):
     """Hold the box at rest when the tangential load is inside the friction cone."""
     # tan(0.3) = 0.31 < mu = 0.5.
     velocity = _tilted_gravity_box_velocity(
@@ -977,7 +976,7 @@ def test_friction_holds_inside_the_cone(test, device, solve_mode="matrix_free", 
     test.assertLess(abs(velocity), 1.0e-3)
 
 
-def test_friction_slides_at_the_coulomb_bound(test, device, solve_mode="matrix_free", response="immediate"):
+def test_friction_slides_at_the_coulomb_bound(test, device, solve_mode="serial", response="immediate"):
     """Accelerate the box at ``g (sin a - mu cos a)`` when the load exceeds the friction cone."""
     slope_angle, mu, steps = 0.6, 0.3, 120
     velocity = _tilted_gravity_box_velocity(
@@ -1030,7 +1029,7 @@ def _impact(model, solver, joint_qd):
     return state_out.joint_qd.numpy()[:6], observables.contact_f.numpy()[:count, :3].sum(axis=0)
 
 
-def test_free_body_contact_response_includes_armature(test, device, solve_mode="matrix_free", response="immediate"):
+def test_free_body_contact_response_includes_armature(test, device, solve_mode="serial", response="immediate"):
     """Respond on free-body rows with the same armature-augmented inertia as on articulated rows."""
     stop = (0.0, 0.0, -1.0, 0.0, 0.0, 0.0)
     for armature, expected in ((0.0, 100.0), (9.0, 1000.0)):
@@ -1066,7 +1065,7 @@ def test_free_body_contact_response_includes_armature(test, device, solve_mode="
     test.assertAlmostEqual(abs(float(force[2])), 1000.0, delta=5.0)
 
 
-def test_free_body_impact_shares_armature_momentum(test, device, solve_mode="matrix_free", response="immediate"):
+def test_free_body_impact_shares_armature_momentum(test, device, solve_mode="serial", response="immediate"):
     """Conserve the armature-augmented momentum in a frictionless plastic impact between free bodies."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.0)
@@ -1169,7 +1168,7 @@ def _anchored_sphere_cases():
     }
 
 
-def test_rotated_anchor_free_body_matches_world_aligned(test, device, solve_mode="matrix_free", response="immediate"):
+def test_rotated_anchor_free_body_matches_world_aligned(test, device, solve_mode="serial", response="immediate"):
     """Give a FREE body the same world motion whatever the rotation of its parent anchor."""
     for case, (world_twist, gravity, steps, dt, max_speed, inertia) in _anchored_sphere_cases().items():
         twists = []
@@ -1190,7 +1189,7 @@ def test_rotated_anchor_free_body_matches_world_aligned(test, device, solve_mode
 
 
 def test_rotated_anchor_free_body_on_articulation_matches_world_aligned(
-    test, device, solve_mode="matrix_free", response="immediate"
+    test, device, solve_mode="serial", response="immediate"
 ):
     """Give a FREE body rolling on a driven articulated plate the same world motion whatever its anchor rotation."""
     twists = []
@@ -1238,7 +1237,7 @@ def test_rotated_anchor_free_body_on_articulation_matches_world_aligned(
     np.testing.assert_allclose(twists[1], twists[0], rtol=0.0, atol=1.0e-4)
 
 
-def test_free_anchor_rotated_after_construction(test, device, solve_mode="matrix_free", response="immediate"):
+def test_free_anchor_rotated_after_construction(test, device, solve_mode="serial", response="immediate"):
     """Follow a FREE body's parent anchor rotated after construction, eagerly and in a replayed graph."""
     world_twist, gravity, steps, dt, _, _ = _anchored_sphere_cases()["gravity"]
     rotation = ANCHOR_ROTATION
@@ -1289,7 +1288,7 @@ class TestSteelContactForce(unittest.TestCase):
     pass
 
 
-split_devices = get_test_devices()
+all_devices = get_test_devices()
 
 
 for _name in (
@@ -1302,10 +1301,7 @@ for _name in (
     "test_rotated_anchor_free_body_on_articulation_matches_world_aligned",
     "test_free_anchor_rotated_after_construction",
 ):
-    add_function_test(TestSteelContactForce, _name, globals()[_name], devices=devices)
-    add_function_test(
-        TestSteelContactForce, f"{_name}_split", globals()[_name], devices=split_devices, solve_mode="split"
-    )
+    add_function_test(TestSteelContactForce, _name, globals()[_name], devices=all_devices)
     # The propagation response solves these contacts as body-space rows.
     add_function_test(
         TestSteelContactForce, f"{_name}_propagation", globals()[_name], devices=devices, response="propagation"
@@ -1319,10 +1315,11 @@ for _name in (
 ):
     add_function_test(
         TestSteelContactForce,
-        f"{_name}_propagation_colored",
+        f"{_name}_colored",
         globals()[_name],
         devices=devices,
-        response="propagation_colored",
+        solve_mode="colored",
+        response="propagation",
     )
 
 
@@ -1384,19 +1381,25 @@ def test_contact_f_reports_each_box_weight(test, device, steps=150, torsion_radi
     observables.contact_f.fill_(wp.spatial_vector(FILL, FILL, FILL, FILL, FILL, FILL))
     states = [model.state(), model.state()]
     control = model.control()
-    for _ in range(steps):
+    row_overflow = options.get("free_body_constraint_max") is not None
+    for step in range(steps):
         pipeline.collide(states[0], contacts)
         solver.step(states[0], states[1], control, contacts, DT, observables=observables)
         states.reverse()
+        if row_overflow and step == min(10, steps) - 1:
+            # Check dropped rows before the unsupported boxes leave the ground.
+            contact_f = observables.contact_f.numpy()
+            _check_rows(test, contacts, contact_f)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            dropped = solver._contact_slot.numpy()[:count] < 0
+            test.assertTrue(dropped.any())
+            np.testing.assert_array_equal(contact_f[:count][dropped], 0.0)
     contact_f = observables.contact_f.numpy()
-    _check_rows(test, contacts, contact_f)
-    if options.get("free_body_constraint_max") is not None:
-        # Rows beyond the capacity were dropped; those contacts report zero.
-        count = int(contacts.rigid_contact_count.numpy()[0])
-        dropped = solver._contact_slot.numpy()[:count] < 0
-        test.assertTrue(dropped.any())
-        np.testing.assert_array_equal(contact_f[:count][dropped], 0.0)
+    if row_overflow and int(contacts.rigid_contact_count.numpy()[0]) == 0:
+        np.testing.assert_array_equal(contact_f, 0.0)
     else:
+        _check_rows(test, contacts, contact_f)
+    if not row_overflow:
         weight = np.linalg.norm(model.gravity.numpy()[0])
         net = _net_body_forces(model, contacts, contact_f)
         np.testing.assert_allclose(net[0], [0.0, 0.0, LOWER_MASS * weight], atol=0.03 * LOWER_MASS * weight)
@@ -1406,7 +1409,7 @@ def test_contact_f_reports_each_box_weight(test, device, steps=150, torsion_radi
 def test_unrequested_contact_f_is_left_untouched(test, device):
     """Write nothing when the observable is allocated but not selected for the step."""
     model, pipeline = _stacked_boxes(device)
-    solver = SolverSteel(model, solve_mode="matrix_free" if wp.get_device(device).is_cuda else "split")
+    solver = SolverSteel(model)
     contacts = pipeline.contacts()
     observables = solver.observables({SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
     observables.contact_f.fill_(wp.spatial_vector(FILL, FILL, FILL, FILL, FILL, FILL))
@@ -1533,8 +1536,7 @@ def test_overflowing_contact_count_stays_in_the_rigid_rows(test, device, capture
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
     model = builder.finalize(device=device)
     # Built before the pipeline, the solver's contact scratch is larger than the contact buffer.
-    solve_mode = "matrix_free" if wp.get_device(device).is_cuda else "split"
-    solver = SolverSteel(model, solve_mode=solve_mode, warn_constraint_overflow=False)
+    solver = SolverSteel(model, warn_constraint_overflow=False)
     rigid_capacity, soft_capacity = 4, 2
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=rigid_capacity, soft_contact_max=soft_capacity)
     contacts = pipeline.contacts()
@@ -1622,16 +1624,7 @@ add_function_test(
     TestSteelContactObservable,
     "test_contact_f_reports_each_box_weight",
     test_contact_f_reports_each_box_weight,
-    devices=cuda_devices,
-)
-
-
-add_function_test(
-    TestSteelContactObservable,
-    "test_contact_f_reports_each_box_weight_split",
-    test_contact_f_reports_each_box_weight,
     devices=all_devices,
-    solve_mode="split",
 )
 
 
@@ -1750,7 +1743,7 @@ class TestSteelPersistentContacts(unittest.TestCase):
         builder.add_ground_plane()
         model = builder.finalize(device=_DEVICE)
         pipeline = newton.CollisionPipeline(model, contact_matching="latest")
-        solver = SolverSteel(model, solve_mode="matrix_free", contact_warmstart=True)
+        solver = SolverSteel(model, contact_warmstart=True)
         state, output = model.state(), model.state()
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
@@ -1790,7 +1783,7 @@ class TestSteelPersistentContacts(unittest.TestCase):
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=device)
         model.shape_material_mu.fill_(1.0)
-        solver = SolverSteel(model, solve_mode="matrix_free", contact_warmstart=True, iterations=0)
+        solver = SolverSteel(model, contact_warmstart=True, iterations=0)
         pipeline = newton.CollisionPipeline(model, contact_matching="latest")
         contacts = pipeline.contacts()
         state_in, state_out = model.state(), model.state()
@@ -1944,7 +1937,7 @@ def _make_solver(
     }
     if restitution_velocity_threshold is not None:
         kwargs["restitution_velocity_threshold"] = restitution_velocity_threshold
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **kwargs)
+    solver = newton.solvers.SolverSteel(model, **kwargs)
     solver._rigid_body_angular_damping.zero_()
     return solver
 
@@ -2312,7 +2305,8 @@ def test_bouncing_ball_settles_to_rest_under_gravity(test, device):
     test.assertGreater(float(tail_heights.min()), RADIUS - 1.5e-3, "resting contact sank into the plane")
 
 
-RESPONSE_MODES = ("immediate", "propagation", "propagation_colored")
+# "colored" is the colored sweep of the propagation response.
+RESPONSE_MODES = ("immediate", "propagation", "colored")
 
 
 PRESSED_DT = 5.0e-3
@@ -2375,7 +2369,7 @@ def test_pressed_landing_rebounds_from_step_start_speed_and_settles(test, device
     The press adds about 1.3 m/s (foot) or 2 m/s (box) of closing speed per step. A rebound target that included it
     would leave every later landing above the threshold, a bounce cycle that never settles.
     """
-    cases = [("rows", "immediate"), ("explicit", "propagation_colored")]
+    cases = [("rows", "immediate"), ("explicit", "colored")]
     cases += [(drive, response) for drive in ("explicit", "augmented", "body_f") for response in RESPONSE_MODES[:2]]
     for drive, response in cases:
         label = f"{drive}/{response}"
@@ -2483,7 +2477,8 @@ def _pressed_solver(model, response, drive_mode="augmented"):
         model,
         iterations=16,
         restitution_velocity_threshold=PRESSED_THRESHOLD,
-        articulated_contact_response=response,
+        solve_mode="colored" if response == "colored" else "serial",
+        articulated_contact_response="propagation" if response == "colored" else response,
         drive_mode=drive_mode,
     )
 
@@ -3217,7 +3212,7 @@ EXPECTED_PATHS_velocity_pass_speculative = {
 
 def _make_solver_velocity_pass_speculative(model, **kwargs):
     """Create the solver without angular damping, which would mask the contact response."""
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **kwargs)
+    solver = newton.solvers.SolverSteel(model, **kwargs)
     solver._rigid_body_angular_damping.zero_()
     return solver
 
@@ -3608,7 +3603,7 @@ def test_velocity_iterations_keep_angular_damping(test, device):
                 builder.add_shape_sphere(body, radius=RADIUS, cfg=cfg)
                 builder.add_ground_plane(cfg=cfg)
             model = builder.finalize(device=device)
-            solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", velocity_iterations=iterations)
+            solver = newton.solvers.SolverSteel(model, velocity_iterations=iterations)
             solver._rigid_body_angular_damping.fill_(damping)
             state_in, state_out = model.state(), model.state()
             state_in.joint_qd.assign(np.array([0.0, 0.0, 0.0, 0.0, 0.0, spin], dtype=np.float32))
@@ -3775,7 +3770,6 @@ def _run_mixed_response(
     with kernel_overrides({"hinv_jt_kernel": kernel}):
         solver = SolverSteel(
             model,
-            solve_mode="matrix_free",
             contact_warmstart=warmstart,
             enable_bilateral_preelimination=preelimination,
             enable_joint_limits=inactive_joint_limit_capacity,
@@ -3892,9 +3886,9 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
                 with self.subTest(response=response, capture=capture):
                     self._published(wp.get_cuda_device(), capture, articulated_contact_response=response)
 
-    def test_jointless_kinematic_body_publishes_its_prescribed_state_split_cpu(self):
-        """Pass jointless kinematic bodies' input poses and velocities through split steps beside a free body."""
-        self._published("cpu", solve_mode="split")
+    def test_jointless_kinematic_body_publishes_its_prescribed_state_cpu(self):
+        """Pass jointless kinematic bodies' input poses and velocities through CPU steps beside a free body."""
+        self._published("cpu")
 
     @unittest.skipUnless(wp.is_cuda_available(), "friction patches require CUDA")
     def test_jointless_kinematic_floor_velocity_leaves_patch_friction_unchanged(self):
@@ -3921,7 +3915,7 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
                 cfg=newton.ModelBuilder.ShapeConfig(mu=mu, density=mass / (2 * half) ** 3),
             )
             model = builder.finalize(device=wp.get_cuda_device())
-            solver = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.2)
+            solver = SolverSteel(model, friction_anchor_beta=0.2)
             pipeline = newton.CollisionPipeline(model)
             contacts = pipeline.contacts()
             states = [model.state(), model.state()]
@@ -3958,7 +3952,7 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device="cpu")
         self.assertEqual(model.joint_count, 0)
-        solver = SolverSteel(model, solve_mode="split")
+        solver = SolverSteel(model)
         state_in, state_out = model.state(), model.state()
         body_q, body_qd = state_in.body_q.numpy(), state_in.body_qd.numpy()
         body_q[body, 0] = 0.25
@@ -3981,7 +3975,7 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         self.assertEqual((model.joint_count, model.articulation_count), (1, 0))
         with self.assertWarns(DeprecationWarning):
             model.request_state_attributes("body_parent_f")
-        solver = SolverSteel(model, solve_mode="split")
+        solver = SolverSteel(model)
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
         kinds = {SolverBase.ObservableKind.CONTACT_F, SolverBase.ObservableKind.BODY_PARENT_F}
@@ -4011,7 +4005,7 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         builder.add_joint_revolute(parent=-1, child=body, axis=(0.0, 1.0, 0.0))
         model = builder.finalize(device="cpu")
         self.assertEqual((model.joint_dof_count, model.articulation_count), (1, 0))
-        solver = SolverSteel(model, solve_mode="split")
+        solver = SolverSteel(model)
         state_in, state_out = model.state(), model.state()
         state_in.joint_q.fill_(0.3)
         state_in.joint_qd.fill_(0.5)
@@ -4117,7 +4111,6 @@ class TestSteelPairedResponse(unittest.TestCase):
                 set_torsion_radius(model, radius)
                 solvers[radius] = SolverSteel(
                     model,
-                    solve_mode="matrix_free",
                     enable_joint_limits=True,
                     joint_limit_activation_gap=0.0,
                     iterations=8,
@@ -4127,7 +4120,6 @@ class TestSteelPairedResponse(unittest.TestCase):
             set_torsion_radius(model, 0.0)
             point = SolverSteel(
                 model,
-                solve_mode="matrix_free",
                 enable_joint_limits=True,
                 joint_limit_activation_gap=0.0,
                 iterations=8,

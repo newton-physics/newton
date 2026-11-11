@@ -29,7 +29,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.exceptions import NewtonWarning
+from newton import NewtonWarning
 from newton.solvers import SolverSteel
 
 TOWER_HEIGHTS = (6, 7, 5, 6)
@@ -141,7 +141,7 @@ class Example:
 
         self.solver = SolverSteel(
             self.model,
-            solve_mode="matrix_free",
+            solve_mode="serial",
             articulated_contact_response="immediate",
             enable_sleeping=True,
         )

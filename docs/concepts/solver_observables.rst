@@ -148,8 +148,8 @@ post-constraint RNE stage independently of sensors.
 With ``use_mujoco_cpu=True``, body and contact observables are exported
 from the step's input dynamics, including with RK4; use the input state for
 contact positions. Body observables require Euler, RK4, implicit, or implicitfast
-integration. ``CONTACT_F`` requires ``use_mujoco_contacts=True`` and, like
-the ``SolverMuJoCo.ObservableKind.QFRC_*`` kinds, supports any integrator; overflow observable requests are rejected.
+integration. ``CONTACT_F``, like the ``SolverMuJoCo.ObservableKind.QFRC_*`` kinds,
+supports any integrator; overflow observable requests are rejected.
 
 :class:`~newton.solvers.SolverSteel` accounts ``BODY_PARENT_F`` from the step's solved
 motion, including its contact, friction, spin and loop-closure impulses, so loads carried by a
@@ -466,8 +466,10 @@ the force on the soft contact point, and distribute it to the record's particles
 final configuration of the step -- the forces the last iteration balanced -- not time-step
 averages; records without penetration are zero.
 
-For soft contacts this is the penalty law at the final per-contact stiffness, damping while
-the contact point approaches the surface, and regularized Coulomb friction on the step's slip,
+For soft contacts this is the penalty law at the final per-contact stiffness, damping on the
+normal gap rate (while the contact point approaches the surface and, with the default
+``soft_contact_damping_bidirectional=True``, while it separates), and regularized Coulomb
+friction on the step's slip,
 bounded by the elastic normal load. Body-body contacts use the compliant ALM or legacy AVBD
 contact law with its multipliers. Both evaluations retain the step-start pose history used
 by the iterations.

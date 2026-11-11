@@ -1,0 +1,1 @@
+Speed up the count-aware prefix scans used by hydroelastic contact generation and by `SolverSteel` with `deterministic=RUN_TO_RUN`: each scan is now a single launch on CUDA and a single pass on CPU. Results are unchanged. No migration is required.

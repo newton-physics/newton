@@ -2223,6 +2223,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 container is accepted.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         model = self.model
 
         with wp.ScopedDevice(model.device):
@@ -3965,6 +3966,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             momentum_data = MomentumData(
                 inv_volume=scratch.inv_mass_matrix,
                 velocity=scratch.velocity_field.dof_values,
+                velocity_environment_offsets=scratch.velocity_environment_offsets,
             )
             rheology_data = RheologyData(
                 strain_mat=scratch.strain_matrix,
@@ -4038,6 +4040,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 colored_cell_offsets=contact_cell_offsets,
                 colored_cell_rows=contact_cell_rows,
                 colored_velocity_nodes_per_cell=scratch.velocity_nodes_per_element,
+                collider_environment_offsets=scratch.collider_environment_offsets,
             )
 
             # Retain graph to avoid immediate CPU sync
