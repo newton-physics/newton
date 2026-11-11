@@ -583,7 +583,7 @@ class TestViewerRTXRendering(unittest.TestCase):
                                 if frame == 1:
                                     with (
                                         mock.patch("PIL.Image.Image.save", side_effect=OSError("disk full")),
-                                        self.assertWarnsRegex(newton.exceptions.NewtonWarning, "failed to export"),
+                                        self.assertWarnsRegex(newton.NewtonWarning, "failed to export"),
                                     ):
                                         viewer.log_mesh("/left", left, indices, uvs=uvs, texture=texture)
                                     # Retry the same image object after the export failure.

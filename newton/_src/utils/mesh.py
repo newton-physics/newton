@@ -1154,6 +1154,7 @@ def load_meshes_from_file(
     maxhullvert: int,
     override_color: np.ndarray | list[float] | tuple[float, float, float] | None = None,
     override_texture: np.ndarray | str | None = None,
+    compute_inertia: bool = True,
 ) -> list[Mesh]:
     """Load meshes from a file using trimesh and capture texture data if present.
 
@@ -1163,6 +1164,7 @@ def load_meshes_from_file(
         maxhullvert: Maximum vertices for convex hull approximation.
         override_color: Optional base color override (RGB).
         override_texture: Optional texture path/URL or image override.
+        compute_inertia: If True, compute each mesh's unit-density mass properties.
 
     Returns:
         List of Mesh objects.
@@ -1427,6 +1429,7 @@ def load_meshes_from_file(
                     remapped_faces.flatten(),
                     normals=sub_normals,
                     uvs=sub_uvs,
+                    compute_inertia=compute_inertia,
                     maxhullvert=maxhullvert,
                     color=mat_color,
                     texture=mesh_texture,
@@ -1559,6 +1562,7 @@ def load_meshes_from_file(
                 faces.flatten(),
                 normals=normals,
                 uvs=uvs,
+                compute_inertia=compute_inertia,
                 maxhullvert=maxhullvert,
                 color=color,
                 texture=texture,

@@ -677,7 +677,7 @@ def test_identical_meshes_share_contact_precomputation(test, device):
         mock.patch.object(soft_contacts_mesh, "_mesh_feature_data", feature_data),
         warnings.catch_warnings(),
     ):
-        warnings.simplefilter("error", newton.exceptions.NewtonDeprecationWarning)
+        warnings.simplefilter("error", newton.NewtonDeprecationWarning)
         pipeline = newton.CollisionPipeline(model, enable_rigid_soft_full_surface_contact=True)
     test.assertEqual(feature_data.call_count, 1)
     # Identical instances share the actual adjacency spans, not just feature construction.
@@ -1965,6 +1965,7 @@ def test_mesh_vertex_fallback_sign(test, device):
                 state.body_qd,
                 model.body_com,
                 0.01,
+                False,
                 False,
                 penalty,
                 zero_material,

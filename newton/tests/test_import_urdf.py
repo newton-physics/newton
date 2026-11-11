@@ -2075,7 +2075,7 @@ f 1/1 2/2 3/3
         with self.assertRaises(FileNotFoundError):
             newton.ModelBuilder().add_urdf(uri)
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "Could not resolve URI"):
+        with self.assertWarnsRegex(newton.NewtonWarning, "Could not resolve URI"):
             builder.add_urdf(self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename=uri)))
         self.assertEqual(builder.shape_count, 0)
 

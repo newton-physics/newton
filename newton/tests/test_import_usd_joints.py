@@ -9,13 +9,13 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonWarning
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from newton.exceptions import NewtonWarning
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 from newton.usd import SchemaResolverNewton, SchemaResolverPhysx

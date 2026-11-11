@@ -16,8 +16,8 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonWarning
 from newton._src.viewer.viewer_file import HAS_CBOR2, transfer_to_model
-from newton.exceptions import NewtonWarning
 from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
 from newton.tests.unittest_utils import assert_np_equal, get_test_devices, requires
 from newton.viewer import ViewerFile, ViewerNull, ViewerUSD

@@ -893,7 +893,7 @@ def test_effective_mass_ignores_loop_closures(test, device):
                     bodies.append(body)
                 builder.add_articulation(joints)
                 if closure:
-                    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "Parallel joints"):
+                    with test.assertWarnsRegex(newton.NewtonWarning, "Parallel joints"):
                         builder.add_joint_ball(-1, bodies[0], enabled=False)
             model = builder.finalize(device=device)
             solver = _steel(model)

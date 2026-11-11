@@ -17,7 +17,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.exceptions import NewtonWarning
+from newton import NewtonWarning
 from newton.tests._usd_deformable_test_utils import (
     _apply_deformable_body_api,
     _author_deformable_element_array,

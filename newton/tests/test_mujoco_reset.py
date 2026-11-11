@@ -9,8 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton import StateFlags
-from newton.exceptions import NewtonDeprecationWarning
+from newton import NewtonDeprecationWarning, StateFlags
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 

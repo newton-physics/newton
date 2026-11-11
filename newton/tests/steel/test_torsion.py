@@ -2073,7 +2073,7 @@ def test_torsion_overflow_warns_once(test, device):
     matches = [w for w in caught if "contact torsion row overflow" in str(w.message)]
     test.assertEqual(len(matches), 1, [str(w.message) for w in caught])
     test.assertIn("in world 2: requested", str(matches[0].message))
-    test.assertTrue(issubclass(matches[0].category, newton.exceptions.NewtonWarning))
+    test.assertTrue(issubclass(matches[0].category, newton.NewtonWarning))
     test.assertEqual(matches[0].filename, __file__)
 
 
@@ -4095,6 +4095,25 @@ class TestTorsionSweepLinks(unittest.TestCase):
         _, solver, *_ = fixture(0.0075, articulation_constraint_max=8192, free_body_constraint_max=512, step=False)
         self.assertFalse(solver._mfgs_torsion_links)
         self.assertNotIn("_links", solver._pgs_solve_mf_gs_kernel.key)
+
+    def test_links_take_precedence_over_pair_cache(self):
+        """Keep the lists and drop the pair cache when the two do not fit the static limit together."""
+        device = wp.get_device("cuda:0")
+        shape = {"shared_metadata": False, "has_drive_rows": False, "fuse_vel_limits": False}
+        residency = {"world_count": 1, "sm_count": device.sm_count}
+        limit = device.max_shared_memory_per_block
+        # At 3072 rows the cache fits alone but not beside the lists; at 1024 both fit.
+        self.assertTrue(_use_mfgs_pair_cache(3072, 16, 12, limit, **shape, **residency))
+        self.assertFalse(_use_mfgs_pair_cache(3072, 16, 12, limit, **shape, **residency, torsion_links=True))
+        for rows, pair_cache in ((1024, True), (3072, False)):
+            with self.subTest(rows=rows):
+                _, solver, *_ = fixture(
+                    0.0075, articulation_constraint_max=rows, free_body_constraint_max=16, step=False
+                )
+                self.assertTrue(solver._mfgs_torsion_links)
+                self.assertEqual(solver._mfgs_pair_cache, pair_cache)
+                self.assertIn("_torsion_links", solver._pgs_solve_mf_gs_kernel.key)
+                self.assertEqual("_paircache" in solver._pgs_solve_mf_gs_kernel.key, pair_cache)
 
 
 def _link_layouts():

@@ -1,0 +1,1 @@
+The split of SolverSteel's kinematics and inverse-dynamics pass is bitwise identical to the fused kernel it replaces; the opt-in carry has its own +steel-reuse-kinematics-6a2d8f3e.added.md entry.
