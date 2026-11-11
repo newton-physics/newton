@@ -15,6 +15,7 @@ from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.solver_configs import (
     KAMINO_CONFIGS,
     PADMM_CONFIG_NAMES,
+    PADMM_CONFIGS,
     make_padmm_sparse_fused_config,
     make_single_iteration_config,
 )
@@ -376,7 +377,7 @@ class TestSolverKaminoJointEffortLimitDominantArmature(unittest.TestCase):
 
     def test_bounded_pd_with_dominant_armature(self):
         """Solve effort-limited PD accurately when the armature dwarfs the body inertia."""
-        self._check_bounded_pd(KAMINO_CONFIGS[:2])
+        self._check_bounded_pd(PADMM_CONFIGS)
 
     def test_bounded_pd_with_dominant_armature_fused_cr(self):
         """Solve effort-limited PD with the fused conjugate residual solver, see the test above."""

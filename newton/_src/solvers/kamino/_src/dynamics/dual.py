@@ -1660,7 +1660,9 @@ class DualProblem:
         if any(c.constraints.contact_compliance for c in self._config):
             self._data.v_b_friction = wp.zeros_like(self._data.v_b)
 
-        # Pair the joint friction and effort rows with the joint dynamics rows of the same DoFs
+        # Pair the joint friction and effort rows with the joint dynamics rows of the same DoFs,
+        # dropping any decoupling of a previously finalized model
+        self._joint_decoupling = None
         if self._decouple_joint_dynamics:
             decoupling = DynamicJointDecoupling(model, device=self._device)
             if decoupling.num_dofs > 0:

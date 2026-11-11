@@ -11,14 +11,20 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.delassus import _set_decoupled_coupled_rows
+from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.dynamics.joint_decoupling import DynamicJointDecoupling
+from newton._src.solvers.kamino._src.linalg import LLTBlockedSolver
+from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
-from newton.tests.kamino.utils.make import make_containers
+from newton.tests.kamino.utils.make import make_containers, update_containers
 
 
-def _build_decoupled_model(num_joints: int = 3) -> ModelKamino:
-    """Build one world with revolute joints that each have a joint dynamics, friction and effort row."""
+def _build_decoupled_model(num_joints: int = 3, friction: float = 0.5, effort_limit: float = 2.0) -> ModelKamino:
+    """Build one world with revolute joints that each have a joint dynamics, friction and effort row.
+
+    A zero ``friction`` and an unbounded ``effort_limit`` give the joints a joint dynamics row only.
+    """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverKamino.register_custom_attributes(builder)
     parent = -1
@@ -31,19 +37,33 @@ def _build_decoupled_model(num_joints: int = 3) -> ModelKamino:
                 body,
                 axis=newton.Axis.Z,
                 armature=0.1,
-                friction=0.5,
+                friction=friction,
                 target_ke=10.0,
                 target_kd=1.0,
-                effort_limit=2.0,
+                effort_limit=effort_limit,
                 actuator_mode=newton.JointTargetMode.POSITION,
             )
         )
         parent = body
     builder.add_articulation(joints)
-    model = ModelKamino.from_newton(builder.finalize(device=test_context.device))
-    # Constructs the constraint offsets of the model
-    model, *_ = make_containers(model=model)
-    return model
+    return ModelKamino.from_newton(builder.finalize(device=test_context.device))
+
+
+def _make_dual_problem(model: ModelKamino) -> tuple[DualProblem, ModelKamino]:
+    """Build the dense dual problem of a model with joint decoupling, as PADMM uses it."""
+    model, data, state, limits, _, jacobians = make_containers(model=model, sparse=False)
+    update_containers(model=model, data=data, state=state, limits=limits, jacobians=jacobians)
+    problem = DualProblem(
+        model=model,
+        data=data,
+        limits=limits,
+        jacobians=jacobians,
+        solver=LLTBlockedSolver,
+        sparse=False,
+        decouple_joint_dynamics=True,
+    )
+    problem.build(model=model, data=data, limits=limits, jacobians=jacobians)
+    return problem, model
 
 
 class TestDynamicJointDecoupling(unittest.TestCase):
@@ -53,7 +73,8 @@ class TestDynamicJointDecoupling(unittest.TestCase):
         """Initialize the shared public Kamino test context."""
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
-        self.model = _build_decoupled_model()
+        # Constructs the constraint offsets of the model
+        self.model, *_ = make_containers(model=_build_decoupled_model())
         self.decoupling = DynamicJointDecoupling(self.model)
         self.table = self.decoupling.dofs.numpy()
         self.num_rows = self.model.size.sum_of_max_total_cts
@@ -149,6 +170,29 @@ class TestDynamicJointDecoupling(unittest.TestCase):
         )
         rows = np.concatenate([self.table["dynamic_row"], self.table["friction_row"], self.table["effort_row"]])
         np.testing.assert_array_equal(coupled_coef.numpy()[rows], 0.0)
+
+    def test_solve_records_solution_body_share(self):
+        """A cold-started PADMM solve records the body share its solution is expressed in."""
+        problem, model = _make_dual_problem(_build_decoupled_model())
+        decoupling = problem.joint_decoupling
+        body_share = decoupling.body_share.numpy()
+        self.assertTrue(np.all(body_share > 0.0))
+        solver = PADMMSolver(model=model, warmstart=PADMMWarmStartMode.INTERNAL)
+        solver.reset()
+        solver.coldstart()
+        solver.solve(problem=problem)
+        # An internal warm-start of the next solve rebases from this body share
+        np.testing.assert_array_equal(decoupling.solution_body_share.numpy(), body_share)
+
+    def test_finalize_drops_decoupling_of_previous_model(self):
+        """Finalizing a dual problem for a model without decoupled DoFs drops the previous decoupling."""
+        problem, _ = _make_dual_problem(_build_decoupled_model())
+        self.assertIsNotNone(problem.joint_decoupling)
+        model, data, _, limits, _, jacobians = make_containers(
+            model=_build_decoupled_model(friction=0.0, effort_limit=float("inf")), sparse=False
+        )
+        problem.finalize(model=model, jacobians=jacobians, data=data, limits=limits)
+        self.assertIsNone(problem.joint_decoupling)
 
 
 if __name__ == "__main__":

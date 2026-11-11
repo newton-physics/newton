@@ -573,7 +573,8 @@ class DynamicJointDecoupling:
 
         The body share changes with the Jacobian, the body inertias and the joint compliance, and the
         solution is in the variables of the body share it was computed with, which
-        :attr:`solution_body_share` records. Call this exactly once per solve that writes the solution.
+        :attr:`solution_body_share` records, see :meth:`record_solution_body_share`. Rebasing records
+        the current body share, so a second call has no effect.
 
         Args:
             lambdas: Unpreconditioned constraint impulses of the solution, modified in place.
@@ -586,6 +587,10 @@ class DynamicJointDecoupling:
             outputs=[self.solution_body_share, lambdas, v_plus],
             device=self.device,
         )
+
+    def record_solution_body_share(self):
+        """Records the current body share as the one of a solution that was just computed in its variables."""
+        wp.copy(self.solution_body_share, self.body_share)
 
     def recouple_impulses(
         self,

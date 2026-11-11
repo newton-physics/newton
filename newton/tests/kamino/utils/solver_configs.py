@@ -10,11 +10,13 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 
 __all__ = [
     "KAMINO_CONFIGS",
+    "PADMM_CONFIGS",
     "PADMM_CONFIG_NAMES",
     "make_dvi_dense_config",
     "make_dvi_sparse_config",
     "make_padmm_dense_config",
     "make_padmm_sparse_config",
+    "make_padmm_sparse_fused_config",
     "make_single_iteration_config",
 ]
 
@@ -117,3 +119,6 @@ KAMINO_CONFIGS = (
 
 # DVI has no ``use_acceleration`` knob, so only PADMM configs vary over it.
 PADMM_CONFIG_NAMES = ("dense", "sparse")
+
+# The PADMM entries of KAMINO_CONFIGS
+PADMM_CONFIGS = tuple(entry for entry in KAMINO_CONFIGS if entry[0] in PADMM_CONFIG_NAMES)

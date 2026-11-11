@@ -429,6 +429,11 @@ class PADMMSolver:
         # Update the final solution from the terminal PADMM state
         self._update_solution(problem)
 
+        # The solution is in the variables of the current joint decoupling, which an internal
+        # warm-start must know to rebase it, whichever way this solve was started
+        if problem.joint_decoupling is not None:
+            problem.joint_decoupling.record_solution_body_share()
+
     ###
     # Internals - High-Level Operations
     ###
