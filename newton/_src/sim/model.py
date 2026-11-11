@@ -1420,12 +1420,12 @@ class Model:
         """Scale of the gravity force on each rigid body [dimensionless], shape [body_count], float.
 
         The gravity force on body ``b`` is ``body_gravity_scale[b] * body_mass[b] * gravity[body_world[b]]``:
-        ``1`` is normal gravity, ``0`` disables it, and any other finite value scales it. The scale
-        removes force from the body rather than compensating it, so joint reactions such as
-        ``body_parent_f`` exclude the removed weight. :class:`~newton.solvers.SolverFeatherstone`,
-        :class:`~newton.solvers.SolverSteel`, :class:`~newton.solvers.SolverMuJoCo` and the
-        inverse dynamics functions apply it; the other rigid-body solvers raise
-        :class:`NotImplementedError` when a dynamic body has a scale other than ``1``. After
+        ``1`` is normal gravity, ``0`` disables it, and any other finite value scales it.
+        :class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverSteel` and the inverse
+        dynamics functions remove the force from the body, so joint reactions such as ``body_parent_f``
+        exclude the removed weight. :class:`~newton.solvers.SolverMuJoCo` compensates it with MuJoCo's
+        gravity compensation, with the limitations listed there. The other rigid-body solvers raise
+        :class:`NotImplementedError` when a dynamic body they integrate has a scale other than ``1``. After
         changing values in place, call ``notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)``
         outside CUDA graph capture.
         """

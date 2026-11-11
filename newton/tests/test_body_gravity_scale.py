@@ -160,7 +160,8 @@ def _chain_model(device, *, mujoco: bool):
 
 
 def test_chain_hold(test, device, solver_fn, mujoco):
-    """Hold a chain with inverse-dynamics gravity torques and report reactions without the removed weight."""
+    """Hold a chain with inverse-dynamics gravity torques. MuJoCo compensates the removed weight, so its reactions
+    and bias forces are those of the unscaled chain; the other solvers report reactions without it."""
     model = _chain_model(device, mujoco=mujoco)
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
@@ -171,15 +172,24 @@ def test_chain_hold(test, device, solver_fn, mujoco):
     np.testing.assert_allclose(gravity_force.numpy(), [-10.0, 0.0], atol=1.0e-4)
 
     solver = solver_fn(model)
-    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
+    kinds = {newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F}
+    if mujoco:
+        kinds.add(SolverMuJoCo.ObservableKind.QFRC_BIAS)
+    observables = solver.observables(kinds=kinds)
     control = model.control()
     wp.copy(control.joint_f, gravity_force)
     solver.step(state_0, state_1, control, None, 1.0e-3, observables=observables)
 
     np.testing.assert_allclose(state_1.joint_qd.numpy(), [0.0, 0.0], atol=1.0e-4)
     parent_f = observables.body_parent_f.numpy()
-    np.testing.assert_allclose(parent_f[0], [0.0, 0.0, 20.0, 0.0, 0.0, 0.0], atol=1.0e-3)
-    np.testing.assert_allclose(parent_f[1], np.zeros(6), atol=1.0e-3)
+    if mujoco:
+        # Weights of 20 N at x = 0.5 and 30 N at x = 1.5.
+        np.testing.assert_allclose(parent_f[0], [0.0, 0.0, 50.0, 0.0, -30.0, 0.0], atol=1.0e-3)
+        np.testing.assert_allclose(parent_f[1], [0.0, 0.0, 30.0, 0.0, 0.0, 0.0], atol=1.0e-3)
+        np.testing.assert_allclose(observables.qfrc_bias.numpy(), [-55.0, -15.0], atol=1.0e-3)
+    else:
+        np.testing.assert_allclose(parent_f[0], [0.0, 0.0, 20.0, 0.0, 0.0, 0.0], atol=1.0e-3)
+        np.testing.assert_allclose(parent_f[1], np.zeros(6), atol=1.0e-3)
 
 
 def test_graph_replay_after_notify(test, device, solver_fn, mujoco):
