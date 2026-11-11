@@ -14698,6 +14698,31 @@ class TestActuatorTypes(unittest.TestCase):
         </actuator>
     </mujoco>"""
 
+    GEARED_MJCF = """<?xml version="1.0" ?>
+    <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+            <body name="a" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+            </body>
+            <body name="b" pos="1 0 1">
+                <joint name="j2" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+            </body>
+            <body name="c" pos="2 0 1">
+                <joint name="j3" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <position joint="j1" kp="100" kv="2" gear="3"/>
+            <velocity joint="j2" kv="7" gear="2"/>
+            <position joint="j3" kp="50" kv="1"/>
+        </actuator>
+    </mujoco>
+    """
+
     def _mjcf(self, dyntype="none", gaintype="fixed", biastype="none", extra=""):
         return self.MJCF.format(dyntype=dyntype, gaintype=gaintype, biastype=biastype, extra=extra)
 
@@ -14734,6 +14759,33 @@ class TestActuatorTypes(unittest.TestCase):
                 assert_np_equal(mj_model.actuator_dyntype, native.actuator_dyntype)
                 assert_np_equal(mj_model.actuator_gaintype, native.actuator_gaintype)
                 assert_np_equal(mj_model.actuator_biastype, native.actuator_biastype)
+
+    def test_geared_position_velocity_actuators_match_native(self):
+        """Keep geared position/velocity actuators direct so MuJoCo applies the gear, as in native MuJoCo."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.GEARED_MJCF)
+        model = builder.finalize()
+        np.testing.assert_array_equal(
+            model.mujoco.ctrl_source.numpy(),
+            [
+                SolverMuJoCo.CtrlSource.CTRL_DIRECT,
+                SolverMuJoCo.CtrlSource.CTRL_DIRECT,
+                SolverMuJoCo.CtrlSource.JOINT_TARGET,
+            ],
+        )
+
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        native = solver._mujoco.MjModel.from_xml_string(self.GEARED_MJCF)
+        native_data = solver._mujoco.MjData(native)
+        native_data.ctrl[:] = 0.5
+        solver._mujoco.mj_forward(native, native_data)
+        self.assertTrue(np.all(np.abs(native_data.qfrc_actuator) > 1.0))
+
+        control = model.control()
+        control.mujoco.ctrl.fill_(0.5)
+        control.joint_target_q.fill_(0.5)
+        solver.step(model.state(), model.state(), control, None, 0.002)
+        np.testing.assert_allclose(solver.mj_data.qfrc_actuator, native_data.qfrc_actuator, rtol=1e-5)
 
     def test_unsupported_type_warns(self):
         """Warn on unsupported types, naming the attribute, value, and MJCF actuator."""

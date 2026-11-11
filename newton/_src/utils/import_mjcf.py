@@ -671,6 +671,8 @@ def parse_mjcf(
             See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
             actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
             from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
+            Position/velocity actuators with a transmission ``gear`` other than the default stay
+            :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT`, because joint targets are applied without gear.
             For position-only drives using ``dampratio``, constructing
             :class:`~newton.solvers.SolverMuJoCo` initializes zero entries in
             :attr:`newton.Model.joint_target_kd` with the resolved damping coefficients.
@@ -4072,7 +4074,13 @@ def parse_mjcf(
 
             ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
             if actuator_type in {"position", "velocity"} and trntype == 0 and total_dofs != 0 and not ctrl_direct:
-                ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
+                # SolverMuJoCo rebuilds JOINT_TARGET actuators with unit gear, which would drop an authored
+                # gear (stiffness/damping gear**2 too small, force range unscaled). Keep those CTRL_DIRECT.
+                gear = np.zeros(6)
+                authored_gear = np.array(merged_attrib.get("gear", "1").split(), dtype=float)
+                gear[: len(authored_gear)] = authored_gear
+                if np.allclose(gear, (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)):
+                    ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
             ctrlrange_is_derived = False
             if actuator_type == "position":
                 kp = parse_float(merged_attrib, "kp", 1.0)  # MuJoCo default kp=1

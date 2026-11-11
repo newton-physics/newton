@@ -5631,6 +5631,8 @@ class ModelBuilder:
                 See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
                 actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
                 from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
+                Position/velocity actuators with a transmission ``gear`` other than the default stay
+                :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT`, because joint targets are applied without gear.
                 For position-only drives using ``dampratio``, constructing
                 :class:`~newton.solvers.SolverMuJoCo` initializes zero entries in
                 :attr:`newton.Model.joint_target_kd` with the resolved damping coefficients.
