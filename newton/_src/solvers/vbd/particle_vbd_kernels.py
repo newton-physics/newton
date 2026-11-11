@@ -2215,7 +2215,6 @@ def accumulate_contact_force_and_hessian_no_self_contact(
         particle_idx = body_particle_contact_particle[t_id]
 
         if particle_colors[particle_idx] == current_color:
-            # Read the per-contact material shared with the rigid side.
             contact_ke = body_particle_contact_material_ke[t_id]
             contact_kd = body_particle_contact_material_kd[t_id]
             contact_mu = body_particle_contact_material_mu[t_id]
