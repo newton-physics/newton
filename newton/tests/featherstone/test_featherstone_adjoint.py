@@ -358,6 +358,7 @@ def test_dense_cholesky_solve_adjoint(test, device):
     G64 = rng.standard_normal(N)
 
     def chol64(S):
+        """Left-looking Cholesky factorization S = L L^T in float64."""
         L = np.zeros_like(S)
         for j in range(N):
             s = S[j, j] - np.dot(L[j, :j], L[j, :j])
@@ -367,6 +368,7 @@ def test_dense_cholesky_solve_adjoint(test, device):
         return L
 
     def solve64(L, b):
+        """Solve L x = b by forward/back substitution in float64."""
         y = np.zeros(N)
         for i in range(N):
             y[i] = (b[i] - np.dot(L[i, :i], y[:i])) / L[i, i]
@@ -376,14 +378,17 @@ def test_dense_cholesky_solve_adjoint(test, device):
         return x
 
     def phi64(H=None, R=None, b=None):
+        """Scalar probe G^T L^-1 b through the float64 Cholesky path."""
         Ll = chol64((H64 if H is None else H) + np.diag(R64 if R is None else R))
         return float(np.dot(G64, solve64(Ll, B64 if b is None else b)))
 
     def fd64(which, eps=1e-6):
+        """Central finite difference of phi64 w.r.t. the chosen input's entries."""
         out = np.zeros(N * N if which == "H" else N)
         for c in range(out.size):
 
             def val(delta, c=c, which=which):
+                """phi64 with entry c of the chosen input perturbed by delta."""
                 if which == "H":
                     Hl = H64.copy()
                     Hl.flat[c] += delta

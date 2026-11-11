@@ -526,6 +526,7 @@ def _quat_rot_np(q, v):
 
 
 def _quat_mul(a, b):
+    """Hamilton product of two (x, y, z, w) quaternions."""
     ax, ay, az, aw = a
     bx, by, bz, bw = b
     return np.array(
@@ -539,6 +540,7 @@ def _quat_mul(a, b):
 
 
 def _quat_conj(a):
+    """Conjugate of a (x, y, z, w) quaternion."""
     return np.array([-a[0], -a[1], -a[2], a[3]])
 
 
@@ -556,11 +558,13 @@ def _rotvec_incr(q_prev, q_cur):
 
 
 def _tilt_of(b):
+    """Tilt angle (radians) of a body quaternion away from upright."""
     qx, qy = float(b[3]), float(b[4])
     return float(np.arccos(np.clip(1.0 - 2.0 * (qx * qx + qy * qy), -1.0, 1.0)))
 
 
 def _up_z_of_np(b):
+    """Up-axis z component of a body quaternion (1 upright, -1 inverted)."""
     return 1.0 - 2.0 * (float(b[3]) ** 2 + float(b[4]) ** 2)
 
 
@@ -745,6 +749,7 @@ class Example:
         return st0
 
     def _foot_row_count(self):
+        """Number of live contacts involving a paw collision shape."""
         n_c = int(self.cts.rigid_contact_count.numpy()[0])
         if n_c == 0:
             return 0
@@ -877,6 +882,7 @@ class Example:
         if mode == "crouch":
 
             def fn(n, amps, sps, snap):
+                """Crouch loss: knee-order penalty plus end-of-phase depth, vertical speed, and levelness."""
                 bqs, _qds, _ = self._unroll(mode, n, amps, sps, snap)
                 total = 0.0
                 for bq in bqs:
@@ -893,6 +899,7 @@ class Example:
         if mode == "jump":
 
             def fn(n, amps, sps, snap):
+                """Jump loss: flip completion under touchdown/airborne windows, uprightness, knee order, and apex band."""
                 bqs, qds, _ = self._unroll(mode, n, amps, sps, snap)
                 total = 0.0
                 pitch = 0.0
@@ -923,6 +930,7 @@ class Example:
             return fn
 
         def fn(n, amps, sps, snap):
+            """Landing loss: paw penetration, damping, uprightness, knee order, and settle-to-stance arrival."""
             bqs, qds, _ = self._unroll(mode, n, amps, sps, snap)
             total = 0.0
             for t in range(n + 1):
@@ -957,6 +965,7 @@ class Example:
         """Tape-differentiable loss closure for a phase; consumed by the optimizers."""
 
         def fn(n, amps0, sps, snap):
+            """Tape phase loss: records an n-step rollout and accumulates the phase's loss kernels."""
             loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
             params = wp.array(np.asarray(amps0, dtype=np.float32), dtype=wp.float32, requires_grad=True)
             states = [self.model.state(requires_grad=True) for _ in range(n + 1)]
@@ -1570,6 +1579,7 @@ class Example:
         return rep
 
     def _land_round_score(self, rep):
+        """Comparison key for landing rounds: settle score, stance quality, bounce."""
         return (
             0.0 if rep["blew_up"] else 1.0 if rep["settled"] else 0.5,
             -abs(rep["final_vz"]) - 0.01 * rep["final_tilt_deg"] - 0.5 * abs(rep["final_z"] - self.z_stand),
