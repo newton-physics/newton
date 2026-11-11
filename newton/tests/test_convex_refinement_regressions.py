@@ -360,10 +360,10 @@ def test_refinement_triangle_box_tilted_rest(test, device):
 
 
 def test_refinement_triangle_thin_box_face(test, device):
-    """Push a thin box through its thickness when a triangle is nearly parallel to its face.
+    """Keep a thin box's contact shallow when a triangle is nearly parallel to its face.
 
-    The triangle tilts 0.7 mrad from the box's +x face, so projecting the +x axis onto
-    its plane gives a direction along the box's 2 m length.
+    The triangle tilts 0.7 mrad from the box's +x face and dips 0.8 um into it. The +x axis
+    leans behind the triangle, and its part in the triangle's plane runs along the box's 2 m length.
     """
     half = np.array([0.0007, 2.0, 0.1])
     vertices = np.array(
@@ -375,8 +375,28 @@ def test_refinement_triangle_thin_box_face(test, device):
                 test, device, half, vertices, [0, 1, 2], wp.transform_identity(), np.ones(3), swap=swap, triangle=True
             )
             depths = np.sum((pa - pb) * normals, axis=1)
-            test.assertAlmostEqual(float(np.max(depths)), 1.4e-3, delta=1.0e-5)
-            np.testing.assert_allclose(normals, np.tile([-1.0, 0.0, 0.0], (len(normals), 1)), atol=1.0e-3)
+            test.assertAlmostEqual(float(np.max(depths)), 8.0e-7, delta=1.0e-6)
+            np.testing.assert_allclose(normals, np.tile([1.0, 0.0, 0.0], (len(normals), 1)), atol=1.0e-3)
+
+
+def test_refinement_triangle_box_tilted_face(test, device):
+    """Keep a box's contact shallow when a triangle tilted 23 degrees off its face dips into it.
+
+    The triangle's front faces away from the box, so the front-side exit crosses the box's
+    28 mm thickness, but the box can slide off the 1 mm triangle along the triangle's plane.
+    """
+    half = np.array([0.1, 0.4, 0.0139])
+    vertices = np.array(
+        [[-0.00907, 0.14372, 0.0139], [-0.00903, 0.144, 0.01401], [-0.00937, 0.14382, 0.01387]], dtype=np.float32
+    )
+    for swap in (False, True):
+        with test.subTest(swap=swap):
+            pa, pb, normals = _contacts(
+                test, device, half, vertices, [0, 1, 2], wp.transform_identity(), np.ones(3), swap=swap, triangle=True
+            )
+            depths = np.sum((pa - pb) * normals, axis=1)
+            test.assertAlmostEqual(float(np.max(depths)), 3.0e-5, delta=1.0e-6)
+            np.testing.assert_allclose(normals, np.tile([0.0, 0.0, 1.0], (len(normals), 1)), atol=1.0e-3)
 
 
 def test_refinement_triangle_above_wide_ground(test, device):
@@ -594,6 +614,7 @@ for function in (
     test_refinement_triangle_box_seam,
     test_refinement_triangle_box_tilted_rest,
     test_refinement_triangle_thin_box_face,
+    test_refinement_triangle_box_tilted_face,
     test_refinement_triangle_above_wide_ground,
     test_refinement_resting_box_stack,
     test_refinement_box_hull_depth,
