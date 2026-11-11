@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..utils import is_graph_capture_allocation_enabled
 from ..utils.deprecation import RemovedAttribute
 from .clamping.base import ClampingBase
 from .clamping.clamping_current_duty import ClampingCurrentDuty
@@ -362,8 +363,8 @@ class Actuator:
         input_processors: list[InputProcessorBase] | None = None,
         motor: MotorDC | None = None,
         actuator_indices: wp.array[wp.uint32] | None = None,
-        control_supply_voltage_attr: str = "actuator_supply_voltage",
-        control_supply_current_attr: str = "actuator_supply_current",
+        state_supply_voltage_attr: str = "actuator_supply_voltage",
+        state_supply_current_attr: str = "actuator_supply_current",
     ):
         """Initialize actuator.
 
@@ -408,9 +409,9 @@ class Actuator:
             actuator_indices: Index of each actuator into per-actuator arrays,
                 i.e. arrays with one entry per actuator of the model rather
                 than per DOF. Required when the motor draws from a battery.
-            control_supply_voltage_attr: Attribute on sim_control for the
+            state_supply_voltage_attr: Attribute on sim_state for the
                 per-actuator supply voltage the motor reads from its battery.
-            control_supply_current_attr: Attribute on sim_control for the
+            state_supply_current_attr: Attribute on sim_state for the
                 per-actuator current the motor draws from its battery.
         """
         if drive is None:
@@ -463,8 +464,8 @@ class Actuator:
         for clamp in self.clamping:
             if isinstance(clamp, ClampingCurrentDuty):
                 clamp._use_motor_parameters(motor)
-        self.control_supply_voltage_attr = control_supply_voltage_attr
-        self.control_supply_current_attr = control_supply_current_attr
+        self.state_supply_voltage_attr = state_supply_voltage_attr
+        self.state_supply_current_attr = state_supply_current_attr
         self._uses_battery = motor is not None and motor.uses_battery
         if self._uses_battery and actuator_indices is None:
             raise ValueError(f"{type(motor).__name__} draws from a battery, which requires actuator_indices")
@@ -537,39 +538,45 @@ class Actuator:
         return _input_container_class("sim_control", tuple(frequencies.items()))()
 
     def register_custom_attributes(self, builder: ModelBuilder) -> None:
-        """Register drive inputs and battery arrays as custom Newton Control attributes.
+        """Register drive inputs and battery arrays as custom Newton attributes.
 
         :class:`~newton.ModelBuilder` calls this method automatically while
         finalizing its actuators. Every input declared by the drive is
         registered as a ``wp.float32`` joint-DOF array on
         :class:`~newton.Control`. When the motor draws from a battery,
-        :attr:`control_supply_voltage_attr` and
-        :attr:`control_supply_current_attr` are registered as per-actuator
-        arrays (:attr:`~newton.Model.AttributeFrequency.ACTUATOR` frequency).
+        :attr:`state_supply_voltage_attr` and
+        :attr:`state_supply_current_attr` are registered as per-actuator
+        arrays (:attr:`~newton.Model.AttributeFrequency.ACTUATOR` frequency)
+        on :class:`~newton.State`.
         Registration allocates the arrays but does not populate or clear them;
         the caller must update the declared inputs before each actuator
         evaluation.
 
         This method is a Newton convenience. Other simulation engines should
-        provide arrays with the same names through their ``sim_control``
-        adapter instead.
+        provide arrays with the same names through their ``sim_control`` and
+        ``sim_state`` adapters instead.
 
         Args:
             builder: Newton model builder on which to register the attributes.
         """
         from ..sim.model import Model  # noqa: PLC0415
 
-        frequencies = dict.fromkeys(self.drive.custom_inputs, Model.AttributeFrequency.JOINT_DOF)
+        attributes = [
+            (name, Model.AttributeFrequency.JOINT_DOF, Model.AttributeAssignment.CONTROL)
+            for name in self.drive.custom_inputs
+        ]
         if self._uses_battery:
-            frequencies[self.control_supply_voltage_attr] = Model.AttributeFrequency.ACTUATOR
-            frequencies[self.control_supply_current_attr] = Model.AttributeFrequency.ACTUATOR
-        for name, frequency in frequencies.items():
+            attributes += [
+                (name, Model.AttributeFrequency.ACTUATOR, Model.AttributeAssignment.STATE)
+                for name in (self.state_supply_voltage_attr, self.state_supply_current_attr)
+            ]
+        for name, frequency, assignment in attributes:
             builder.add_custom_attribute(
                 builder.CustomAttribute(
                     name=name,
                     dtype=wp.float32,
                     frequency=frequency,
-                    assignment=Model.AttributeAssignment.CONTROL,
+                    assignment=assignment,
                     default=0.0,
                 )
             )
@@ -674,7 +681,13 @@ class Actuator:
         return any(p.is_stateful() for p in self.input_processors) or self.drive.is_stateful()
 
     def is_graphable(self) -> bool:
-        """Return True if all components can be captured in a CUDA graph."""
+        """Return True if all components can be captured in a CUDA graph.
+
+        With ``requires_grad``, each step allocates fresh buffers, so capture
+        also needs allocation during capture (Warp's CUDA memory pool).
+        """
+        if self.requires_grad and not is_graph_capture_allocation_enabled(self.device):
+            return False
         return all(p.is_graphable() for p in self.input_processors) and self._effort_mode.is_graphable()
 
     def state(self) -> Actuator.State | None:
@@ -700,13 +713,17 @@ class Actuator:
         frequency = Model.AttributeFrequency
         battery_attrs = (
             [
-                (self.control_supply_voltage_attr, frequency.ACTUATOR),
-                (self.control_supply_current_attr, frequency.ACTUATOR),
+                (self.state_supply_voltage_attr, frequency.ACTUATOR),
+                (self.state_supply_current_attr, frequency.ACTUATOR),
             ]
             if self._uses_battery
             else []
         )
-        state_attrs = [(self.state_pos_attr, frequency.JOINT_COORD), (self.state_vel_attr, frequency.JOINT_DOF)]
+        state_attrs = [
+            (self.state_pos_attr, frequency.JOINT_COORD),
+            (self.state_vel_attr, frequency.JOINT_DOF),
+            *battery_attrs,
+        ]
         control_attrs = [
             (self.control_target_pos_attr, frequency.JOINT_COORD),
             (self.control_target_vel_attr, frequency.JOINT_DOF),
@@ -714,7 +731,6 @@ class Actuator:
             (self.control_output_attr, frequency.JOINT_DOF),
             (self.control_computed_output_attr, frequency.JOINT_DOF),
             *((name, frequency.JOINT_DOF) for name in self.drive.custom_inputs),
-            *battery_attrs,
         ]
         required = {"sim_state": state_attrs, "sim_control": [(a, f) for a, f in control_attrs if a is not None]}
         return {source: dict(attrs) for source, attrs in required.items() if attrs}
@@ -752,11 +768,10 @@ class Actuator:
 
         Args:
             sim_state: Object or mapping carrying the arrays named by
-                :attr:`state_pos_attr` and :attr:`state_vel_attr`. Build one
-                with :meth:`sim_state`.
+                :attr:`state_pos_attr` and :attr:`state_vel_attr`, plus the
+                battery arrays of the motor. Build one with :meth:`sim_state`.
             sim_control: Object or mapping carrying the target and output
-                arrays, plus the drive's custom inputs and the battery arrays
-                of the motor. Build one
+                arrays, plus the drive's custom inputs. Build one
                 with :meth:`sim_control`.
             current_act_state: Current composed state (None if stateless).
             next_act_state: Next composed state (None if stateless).
@@ -839,8 +854,8 @@ class Actuator:
         # --- 2. Supply voltage from the motor ---
         battery_voltage = supply_current = None
         if self._uses_battery:
-            battery_voltage = _require_array(sim_control, self.control_supply_voltage_attr)
-            supply_current = _require_array(sim_control, self.control_supply_current_attr)
+            battery_voltage = _require_array(sim_state, self.state_supply_voltage_attr)
+            supply_current = _require_array(sim_state, self.state_supply_current_attr)
         if self.motor is not None:
             self.motor.compute_supply_voltage(
                 battery_voltage, self.actuator_indices, supply_voltage, device=self.device

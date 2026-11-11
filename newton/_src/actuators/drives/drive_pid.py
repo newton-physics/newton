@@ -308,8 +308,6 @@ class DrivePID(DriveBase):
         *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
-        if self._next_integral.requires_grad:
-            self._next_integral = wp.empty_like(self._next_integral)
         wp.launch(
             kernel=_pid_effort_kernel,
             dim=len(output),

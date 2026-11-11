@@ -15,7 +15,7 @@ class BatteryBase:
     :class:`~newton.actuators.MotorDC`).  One object holds several
     batteries of the same type: its parameter arrays have one entry per
     battery.  :meth:`step` and :meth:`reset` read and write these arrays on
-    ``sim_control``, with one entry per actuator of the model, indexed like
+    the simulation state, with one entry per actuator of the model, indexed like
     :attr:`Actuator.actuator_indices <newton.actuators.Actuator.actuator_indices>`:
 
     * input ``actuator_supply_current``: the current each motor draws from
@@ -24,7 +24,8 @@ class BatteryBase:
       [V], read by the motor.
 
     The motors and the batteries form an explicit loop: the motors read the
-    voltage of the previous step.
+    voltage of the previous step.  Like the joint positions, the voltage is
+    carried from ``state_in`` to ``state_out``.
 
     Subclasses must override :meth:`resolve_arguments`, :meth:`step` and
     :meth:`reset`.
@@ -86,28 +87,30 @@ class BatteryBase:
         if self.world.shape != (self.num_batteries,):
             raise ValueError(f"world shape {self.world.shape} must be ({self.num_batteries},)")
 
-    def step(self, sim_control: Any) -> None:
+    def step(self, state_in: Any, state_out: Any) -> None:
         """Update the supply voltage of the actuators from their current.
 
-        Reads ``actuator_supply_current`` and writes ``actuator_supply_voltage``
-        for the actuators of the batteries. Call once per step, after the
-        actuators have stepped.
+        Reads ``actuator_supply_current`` from *state_in* and writes
+        ``actuator_supply_voltage`` to *state_out* for the actuators of the
+        batteries. Call once per step, after the actuators have stepped.
 
         Args:
-            sim_control: Object carrying ``actuator_supply_current`` and
-                ``actuator_supply_voltage``, e.g. :class:`~newton.Control`.
+            state_in: Object carrying ``actuator_supply_current``, e.g.
+                :class:`~newton.State`.
+            state_out: Object carrying ``actuator_supply_voltage``, e.g.
+                :class:`~newton.State`.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement step")
 
-    def reset(self, sim_control: Any, *, world_mask: wp.array[wp.bool] | None = None) -> None:
+    def reset(self, state: Any, *, world_mask: wp.array[wp.bool] | None = None) -> None:
         """Reset the batteries and the supply voltage of their actuators.
 
         Writes ``actuator_supply_voltage`` for the actuators of the reset
         batteries. Call after resetting worlds.
 
         Args:
-            sim_control: Object carrying ``actuator_supply_voltage``, e.g.
-                :class:`~newton.Control`.
+            state: Object carrying ``actuator_supply_voltage``, e.g.
+                :class:`~newton.State`.
             world_mask: Optional boolean mask of shape ``(world_count + 1,)``
                 specifying which worlds to reset. Entries before the last select
                 local worlds by index, and the final entry selects batteries
