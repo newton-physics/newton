@@ -693,6 +693,14 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
         self.viewer.set_model(self.model)
 
+        # optional side-recording of the playback (see --rec): a ViewerFile
+        # alongside the interactive viewer, closed after one full pass
+        self.recorder = None
+        self.rec_done = False
+        if self.args.rec:
+            self.recorder = newton.viewer.ViewerFile(self.args.rec, auto_save=False)
+            self.recorder.set_model(self.model)
+
         # ---- settle to a grounded stance (hold stand, then one pulse) ----
         s0 = self.model.state()
         s1 = self.model.state()
@@ -1740,27 +1748,50 @@ class Example:
             return
         self.run_chain()
 
+    def _rec_frame(self, st, t):
+        """Mirror one playback frame into the --rec ViewerFile (if any)."""
+        if self.recorder is not None and not self.rec_done:
+            self.recorder.begin_frame(t)
+            self.recorder.log_state(st)
+            self.recorder.end_frame()
+
+    def _rec_close(self):
+        """Flush and close the recording; safe to call repeatedly."""
+        if self.recorder is not None and not self.rec_done:
+            self.recorder.close()
+            self.rec_done = True
+
     def render(self):
+        t = self.frame * SIM_DT * FRAME_EVERY
         if not self.playback:
             # nothing optimized yet (or --test): render the settled stance
             st = self._fresh(self.snap)
-            self.viewer.begin_frame(self.frame * SIM_DT * FRAME_EVERY)
+            self.viewer.begin_frame(t)
             self.viewer.log_state(st)
             self.viewer.end_frame()
+            self._rec_frame(st, t)
             self.frame += 1
             return
         _ph, snap = self.playback[min(self.frame, len(self.playback) - 1)]
         st = self._fresh(snap)
-        self.viewer.begin_frame(self.frame * SIM_DT * FRAME_EVERY)
+        self.viewer.begin_frame(t)
         self.viewer.log_state(st)
         self.viewer.end_frame()
+        self._rec_frame(st, t)
         self.frame += 1
         if self.frame >= len(self.playback):
             self.frame = 0  # loop the achieved behavior
+            self._rec_close()  # the recording holds exactly one full pass
 
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--rec",
+            type=str,
+            default=None,
+            help="Save the optimized playback to this ViewerFile recording (.bin).",
+        )
         return parser
 
     def test_final(self):
@@ -1892,8 +1923,8 @@ def _probe_loss_kernel(joint_q: wp.array[float], loss: wp.array[float]):
 if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
-
-    def _build():
-        return Example(viewer, args)
-
-    newton.examples.run(_build(), args)
+    ex = Example(viewer, args)
+    try:
+        newton.examples.run(ex, args)
+    finally:
+        ex._rec_close()  # flush the recording on any exit path
