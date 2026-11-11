@@ -20,7 +20,12 @@ from newton import GeoType
 from newton._src.solvers.steel import contact_torsion, solver_steel
 from newton._src.solvers.steel import contact_torsion as host
 from newton._src.solvers.steel._testing import kernel_overrides
-from newton._src.solvers.steel.contact_torsion import _TORSION_SPIN_RETIRED, _contact_groups, _group_budget
+from newton._src.solvers.steel.contact_torsion import (
+    _TORSION_SPIN_RETIRED,
+    _TORSION_WARNING,
+    _contact_groups,
+    _group_budget,
+)
 from newton._src.solvers.steel.contact_torsion_device import (
     DeviceTorsionPreparation,
     _host_dot3,
@@ -49,6 +54,7 @@ from newton.tests.steel._fixtures import (
     _loop_anchor_gap,
     _patch_fixture,
     fixture,
+    printf_capture_is_reliable,
     set_torsion_radius,
 )
 from newton.tests.steel.test_propagation import _add_fixed_chain
@@ -2056,24 +2062,29 @@ def test_torsion_overflow_warns_once(test, device):
     """Warn once, naming the world, from the device and the host preparation."""
     capacity = _pad_capacity(test, device)
     wp.synchronize_device(device)
+    check_output = printf_capture_is_reliable()
     capture = StdOutCapture()
-    capture.begin()
+    if check_output:
+        capture.begin()
     try:
-        _pad_rollout([1, 1, 2], capacity, device=device, warn=True)
+        _, overflow, solver = _pad_rollout([1, 1, 2], capacity, device=device, warn=True)
     finally:
         try:
             wp.synchronize_device(device)
         finally:
-            output = capture.end()
-    test.assertEqual(output.count("contact torsion row overflow"), 1, output)
-    test.assertIn("in world 2: requested", output)
+            output = capture.end() if check_output else ""
+    np.testing.assert_array_equal(overflow, [False, False, True, False])
+    test.assertEqual(int(solver._row_overflow_warning_emitted.numpy()[_TORSION_WARNING]), 1)
+    if check_output:
+        test.assertEqual(output.count("contact torsion row overflow"), 1, output)
+        test.assertIn("in world 2: requested", output)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         _pad_rollout([1, 1, 2], capacity, device=device, preparation="host", warn=True)
     matches = [w for w in caught if "contact torsion row overflow" in str(w.message)]
     test.assertEqual(len(matches), 1, [str(w.message) for w in caught])
     test.assertIn("in world 2: requested", str(matches[0].message))
-    test.assertTrue(issubclass(matches[0].category, newton.exceptions.NewtonWarning))
+    test.assertTrue(issubclass(matches[0].category, newton.NewtonWarning))
     test.assertEqual(matches[0].filename, __file__)
 
 
@@ -2772,22 +2783,25 @@ def test_propagation_dropped_members_leave_the_highest_kept_host(test, device):
         **_PROPAGATION_TORSION,
     )
     wp.synchronize_device(model.device)
+    check_output = printf_capture_is_reliable()
     capture = StdOutCapture()
-    capture.begin()
+    if check_output:
+        capture.begin()
     try:
         solver.step(state, model.state(), model.control(), contacts, 0.0025)
     finally:
         try:
             wp.synchronize_device(model.device)
         finally:
-            output = capture.end()
-    lines = [line for line in output.splitlines() if line.strip() and not line.startswith("Module")]
-    test.assertEqual(len(lines), 1, output)
-    test.assertRegex(
-        lines[0],
-        r"Warning: Steel propagation constraint-row overflow in world 0: requested 16 rows, limit 10; "
-        r"dropped 8 contact, friction or torsion rows\.",
-    )
+            output = capture.end() if check_output else ""
+    if check_output:
+        lines = [line for line in output.splitlines() if line.strip() and not line.startswith("Module")]
+        test.assertEqual(len(lines), 1, output)
+        test.assertRegex(
+            lines[0],
+            r"Warning: Steel propagation constraint-row overflow in world 0: requested 16 rows, limit 10; "
+            r"dropped 8 contact, friction or torsion rows\.",
+        )
     count = int(contacts.rigid_contact_count.numpy()[0])
     slots = solver._contact_slot.numpy()[:count]
     kept = [c for c in range(count) if slots[c] >= 0]

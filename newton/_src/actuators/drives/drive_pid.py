@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import warp as wp
 
+from ..space import DriveOutputSpace
 from .base import DriveBase, _masked_zero_1d
 
 
@@ -149,6 +150,8 @@ class DrivePID(DriveBase):
                 device=self.integral.device,
             )
 
+    SHARED_PARAMS: ClassVar[set[str]] = {"output_space"}
+
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         kp = args.get("kp", 0.0)
@@ -164,6 +167,7 @@ class DrivePID(DriveBase):
         if integral_max < 0:
             raise ValueError(f"integral_max must be non-negative, got {integral_max}")
         return {
+            "output_space": DriveOutputSpace(args.get("output_space", DriveOutputSpace.EFFORT)),
             "kp": kp,
             "ki": ki,
             "kd": kd,
@@ -178,6 +182,8 @@ class DrivePID(DriveBase):
         kd: wp.array[float],
         integral_max: wp.array[float],
         const_effort: wp.array[float] | None = None,
+        *,
+        output_space: DriveOutputSpace = DriveOutputSpace.EFFORT,
     ):
         """Initialize the PID drive.
 
@@ -186,7 +192,9 @@ class DrivePID(DriveBase):
             ki: Integral gains [N/(m·s) or N·m/(rad·s)]. Shape ``(N,)``.
             kd: Derivative gains [N·s/m or N·m·s/rad]. Shape ``(N,)``.
             integral_max: Anti-windup limits [m·s or rad·s]. Shape ``(N,)``.
-            const_effort: Constant bias effort [N or N·m]. Shape ``(N,)``. ``None`` to skip.
+            const_effort: Constant bias in the selected output units. Shape ``(N,)``. ``None`` to skip.
+            output_space: EFFORT or DUTY. Gains and feedforward must produce
+                these units; DUTY gains use duty in place of N or N·m above.
         """
         if kp.shape != ki.shape:
             raise ValueError(f"kp shape {kp.shape} must match ki shape {ki.shape}")
@@ -196,6 +204,7 @@ class DrivePID(DriveBase):
             raise ValueError(f"kp shape {kp.shape} must match integral_max shape {integral_max.shape}")
         if const_effort is not None and const_effort.shape != kp.shape:
             raise ValueError(f"const_effort shape {const_effort.shape} must match kp shape {kp.shape}")
+        self.output_space = DriveOutputSpace(output_space)
         self.kp = kp
         self.ki = ki
         self.kd = kd
@@ -290,7 +299,7 @@ class DrivePID(DriveBase):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        forces: wp.array[float],
+        output: wp.array[float],
         state: DrivePID.State,
         dt: float,
         device: wp.Device | None = None,
@@ -299,7 +308,7 @@ class DrivePID(DriveBase):
     ) -> None:
         wp.launch(
             kernel=_pid_effort_kernel,
-            dim=len(forces),
+            dim=len(output),
             inputs=[
                 positions,
                 velocities,
@@ -318,7 +327,7 @@ class DrivePID(DriveBase):
                 dt,
                 state.integral,
             ],
-            outputs=[forces, self._next_integral],
+            outputs=[output, self._next_integral],
             device=device,
         )
 
