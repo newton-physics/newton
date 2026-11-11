@@ -2020,8 +2020,8 @@ def update_axis_properties_kernel(
             and actuators MuJoCo compiled without a force limit (MJCF ``forcelimited="false"``,
             or a zero limit at construction) are 0.
         joint_effort_limit: Per-DOF effort limits; a ball actuator's force range is
-            ``(-limit, limit)`` for its DOF. Zero is not written (MuJoCo reads a [0, 0] range
-            as unset), so the existing range is kept.
+            ``(-limit, limit)`` for its DOF. A zero limit writes a [0, 0] range, which
+            clamps the force to zero on an actuator that is already force-limited.
         dofs_per_world: Number of DOFs per world
     """
     world, actuator = wp.tid()
@@ -2058,8 +2058,7 @@ def update_axis_properties_kernel(
 
     if mjc_actuator_effort_limited[actuator] != 0:
         effort_limit = joint_effort_limit[world_dof]
-        if effort_limit != 0.0:
-            actuator_forcerange[world, actuator] = wp.vec2(-effort_limit, effort_limit)
+        actuator_forcerange[world, actuator] = wp.vec2(-effort_limit, effort_limit)
 
 
 @wp.kernel

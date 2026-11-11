@@ -9671,11 +9671,14 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                     control.joint_target_qd.fill_(1.0)
                     solver.step(state_in, state_out, control, None, dt)
                     qd = state_out.joint_qd.numpy().reshape(world_count, 4)[:, 1:]
-                    np.testing.assert_allclose(qd, limits * dt, rtol=1.0e-3)
+                    np.testing.assert_allclose(qd, limits * dt, rtol=1.0e-3, atol=1.0e-8)
 
                 check(model, solver, world_count, use_mujoco_cpu, [[1.0, 2.0, 3.0], [4.0, 0.5, 2.0]])
                 check(model, solver, world_count, use_mujoco_cpu, [[2.0, 1.0, 0.5], [1.0, 3.0, 5.0]])
                 check(model, solver, world_count, use_mujoco_cpu, [[0.5, 4.0, 1.0], [2.0, 2.0, 0.25]])
+                # A zero limit clamps the torque to [0, 0] instead of keeping the previous range.
+                check(model, solver, world_count, use_mujoco_cpu, [[0.0, 1.0, 0.0], [3.0, 0.0, 0.0]])
+                check(model, solver, world_count, use_mujoco_cpu, [[1.0, 0.0, 2.0], [0.0, 2.0, 1.0]])
 
         # Force ranges authored in MJCF, and actuators MuJoCo does not force-limit, keep their range.
         mjcf = """<mujoco>
