@@ -15,14 +15,13 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton import ModelBuilder
+from newton import ModelBuilder, NewtonWarning
 from newton._src.geometry import broad_phase_nxn
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
 from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.exceptions import NewtonWarning
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.test_kamino_geometry_primitive import check_contacts
 from newton.tests.utils import basics, testing
