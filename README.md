@@ -19,11 +19,11 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
 
 - **Python** 3.10+ (3.10 support is deprecated; removal planned for Newton 1.9; use 3.11+)
 - **OS:** Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
-- **GPU:** Fresh installs currently select Warp 1.18, which requires an NVIDIA Turing GPU (compute capability 7.5+) and driver R580+ for CUDA acceleration.
+- **GPU:** This release is tested with Warp 1.19, whose standard wheel requires an NVIDIA Turing GPU (compute capability 7.5+) and driver R580+ for CUDA acceleration.
   On an R545–R579 driver or an older supported GPU, install with `warp-lang==1.17.0` (see the installation guide).
   No local CUDA Toolkit is required; macOS runs on CPU.
 
-For detailed system requirements, see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html). For tested configurations and Newton's versioning and deprecation policies, see the [compatibility guide](https://newton-physics.github.io/newton/latest/guide/compatibility.html).
+For detailed system requirements, see the [installation guide](https://newton-physics.github.io/newton/1.8.0/guide/installation.html). For tested configurations and Newton's versioning and deprecation policies, see the [compatibility guide](https://newton-physics.github.io/newton/1.8.0/guide/compatibility.html).
 
 ## Quickstart
 
@@ -32,7 +32,7 @@ pip install "newton[examples]"
 python -m newton.examples
 ```
 
-To install from source with [uv](https://docs.astral.sh/uv/), see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
+To install from source with [uv](https://docs.astral.sh/uv/), see the [installation guide](https://newton-physics.github.io/newton/1.8.0/guide/installation.html).
 
 ## Community Projects
 
@@ -1218,11 +1218,11 @@ See [PUBLICATIONS.md](https://github.com/newton-physics/newton/blob/main/PUBLICA
 
 ## Contributing and Development
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for ways to contribute and the pull-request process. The [governance contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) cover legal requirements, project roles, and approval authority. Use the [development guide](https://newton-physics.github.io/newton/latest/guide/development.html) for environment setup and development workflows. Code and public API changes must follow the [source code guidelines](CODING_GUIDELINES.rst); reviewers may use the suggested [review guidelines](REVIEW_GUIDELINES.rst).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for ways to contribute and the pull-request process. The [governance contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) cover legal requirements, project roles, and approval authority. Use the [development guide](https://newton-physics.github.io/newton/1.8.0/guide/development.html) for environment setup and development workflows. Code and public API changes must follow the [source code guidelines](CODING_GUIDELINES.rst); reviewers may use the suggested [review guidelines](REVIEW_GUIDELINES.rst).
 
 ## Support and Community Discussion
 
-For questions, please consult the [Newton documentation](https://newton-physics.github.io/newton/latest/guide/overview.html) first before creating [a discussion in the main repository](https://github.com/newton-physics/newton/discussions).
+For questions, please consult the [Newton documentation](https://newton-physics.github.io/newton/1.8.0/guide/overview.html) first before creating [a discussion in the main repository](https://github.com/newton-physics/newton/discussions).
 
 ## Code of Conduct
 
