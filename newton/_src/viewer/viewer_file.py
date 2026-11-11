@@ -567,6 +567,10 @@ _MODEL_BVH_RECORDING_DEFAULTS = {
     "bvh_shape_count_enabled": 0,
     "bvh_shape_bounds": None,
     "bvh_shape_world_transforms": None,
+    "_bvh_shape_class": None,
+    "_bvh_shape_class_count": 1,
+    "_bvh_shape_filters": [],
+    "_shape_filters": [],
     "bvh_particles": None,
     "bvh_particles_group_roots": None,
 }

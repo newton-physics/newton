@@ -60,6 +60,7 @@ from ..geometry import (
     GeoType,
     Mesh,
     ParticleFlags,
+    ShapeFilter,
     ShapeFlags,
     _convex_cache,
     compute_inertia_shape,
@@ -79,6 +80,7 @@ from ..geometry.inertia import (
 )
 from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
+from ..geometry.shape_filter import SHAPE_GROUP_MAX_COUNT, ShapeSelector, _shape_selector_mask
 from ..geometry.support_function import _CONVEX_HULL_VALID
 from ..geometry.types import Heightfield, _normalize_texture_input
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex_hull, remesh_mesh
@@ -1215,6 +1217,9 @@ class ModelBuilder:
         """Indicates whether the shape is visible in the simulation. Defaults to True."""
         is_site: bool = False
         """Indicates whether the shape is a site (non-colliding reference point). Directly setting this to True will NOT enforce site invariants. Use `mark_as_site()` or set via the `flags` property to ensure invariants. Defaults to False."""
+        groups: tuple[str, ...] = ()
+        """Names of the shape groups the shape belongs to; see :meth:`ModelBuilder.add_shape_group`.
+        Names not yet registered with the builder are registered when the shape is added."""
         sdf_narrow_band_range: tuple[float, float] | list[float] = (-0.1, 0.1)
         """The narrow band distance range (inner, outer) for primitive SDF computation."""
         sdf_target_voxel_size: float | None = None
@@ -2154,6 +2159,13 @@ class ModelBuilder:
         """Body indices accumulated for :attr:`Model.shape_body`."""
         self.shape_flags: list[int] = []
         """Shape flags accumulated for :attr:`Model.shape_flags`."""
+        self.shape_groups: list[int] = []
+        """Shape group bit masks accumulated for :attr:`Model.shape_groups`; bit ``i`` stands for the group
+        named :attr:`shape_group_names` ``[i]``."""
+        self.shape_group_names: list[str] = []
+        """Names of the shape groups registered with :meth:`add_shape_group`, indexed by bit of :attr:`shape_groups`."""
+        self._shape_filters: list[ShapeFilter] = []
+        """Shape filters registered with :meth:`add_shape_filter`; filter id ``i`` is entry ``i - 1``."""
         self.shape_type: list[int] = []
         """Geometry type ids accumulated for :attr:`Model.shape_type`."""
         self.shape_scale: list[Vec3] = []
@@ -4256,6 +4268,11 @@ class ModelBuilder:
             t = 2.0 * np.cross(xyz, vectors)
             vectors += np.cross(xyz, t) + w * t
 
+        if builder._shape_filters:
+            raise ValueError(
+                "Cannot add a builder with registered shape filters; register shape filters with "
+                "add_shape_filter() on the builder that is finalized."
+            )
         counts = self._builder_merge_counts(builder)
         self._validate_builder_merge(builder, set(counts))
         attribute_specs = self._builder_merge_attribute_specs()
@@ -4370,6 +4387,11 @@ class ModelBuilder:
 
         shape_starts = starts("shape")
         body_starts = starts("body")
+
+        attribute_specs.pop("shape_groups")
+        self.shape_groups.extend(
+            self._remap_shape_groups(source_list("shape_groups"), builder.shape_group_names) * copy_count
+        )
 
         attribute_specs.pop("shape_transform")
         shape_transform_start = array_starts.get("shape_transform", int(bases["shape"]))
@@ -5499,6 +5521,7 @@ class ModelBuilder:
         path_resolver: Callable[[str | None, str], str] | None = None,
         override_root_xform: bool = False,
         legacy_margin_gap: bool = False,
+        geom_groups_as_shape_groups: bool = False,
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -5640,6 +5663,10 @@ class ModelBuilder:
                 where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
                 Use for MJCF files authored against MuJoCo <= 3.8. Defaults
                 to False (identity translation matching MuJoCo 3.9 semantics).
+            geom_groups_as_shape_groups: If True, add each geom to the shape group
+                ``"mujoco_group_<g>"`` of its MuJoCo ``group`` attribute ``g``, so that
+                :class:`~newton.ShapeFilter` can select geoms by MuJoCo group, such as
+                the collision geoms commonly kept in group 3.
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
@@ -5680,6 +5707,7 @@ class ModelBuilder:
             path_resolver=path_resolver,
             override_root_xform=override_root_xform,
             legacy_margin_gap=legacy_margin_gap,
+            geom_groups_as_shape_groups=geom_groups_as_shape_groups,
         )
 
     # endregion
@@ -6459,7 +6487,7 @@ class ModelBuilder:
         A row takes everything authored on the variant shape it holds: geometry, flags, color,
         opacity, materials, and model-assigned shape custom attributes. It keeps its label, world,
         collision group, and filter pairs, so the i-th colliders of all variants must share a
-        collision group. An
+        collision group, and belongs to the shape groups of all the variant shapes it can hold. An
         empty row has its collision and visibility flags cleared, so it neither collides nor
         renders. Variant shapes are expressed in the variant body's frame, which maps onto
         ``body``'s frame; the variant body's pose, joints, and other entities are ignored, as are
@@ -6488,7 +6516,7 @@ class ModelBuilder:
                 colliders held by the same row have different collision groups, a shape custom
                 attribute is declared differently than here or in another variant, shapes of a later
                 world or trailing global shapes were added after ``body``'s world, or a variant
-                builder is this builder, declares variants itself, uses a different up axis, does
+                builder is this builder, declares variants or shape filters itself, uses a different up axis, does
                 not contain exactly one body, contains shapes not attached to it, contains planes,
                 heightfields, Gaussians, or hydroelastic shapes, or has values for shape custom
                 attributes not assigned to the model.
@@ -6520,6 +6548,13 @@ class ModelBuilder:
         for variant in variants:
             _validate_variant_builder(self, variant)
         variant_set = _snapshot_variants(variants, labels, self._shape_row_attributes())
+        # Variant builders name their own shape groups; express them in this builder's groups.
+        for variant, snapshot in zip(variants, variant_set.variants, strict=True):
+            groups = [shape.values["shape_groups"] for shape in snapshot.shapes]
+            for shape, remapped in zip(
+                snapshot.shapes, self._remap_shape_groups(groups, variant.shape_group_names), strict=True
+            ):
+                shape.values["shape_groups"] = remapped
         rows = _plan_variant_rows(variant_set, initial, self.body_label[body])
         declarations = dict(self.custom_attributes)
         for row in rows:
@@ -6536,15 +6571,18 @@ class ModelBuilder:
             if key not in self.custom_attributes:
                 self.add_custom_attribute(declaration)
 
-        # A row's builder flags are the union over the shapes it can hold, which all have the row's
-        # role, so contact pairs and joint filters include every one of them.
+        # A row's builder flags and shape groups are the union over the shapes it can hold, which all have
+        # the row's role, so contact pairs, joint filters, and shape filters include every one of them.
         row_start = self.shape_count
         for row in rows:
             shape = self._append_shape_row(row.seed, body, world, row.label)
             flags = 0
+            groups = 0
             for candidate in row.candidates:
                 flags |= int(candidate.values["shape_flags"])
+                groups |= int(candidate.values["shape_groups"])
             self.shape_flags[shape] = flags
+            self.shape_groups[shape] = groups
             self.body_shapes[body].append(shape)
             if flags & ShapeFlags.COLLIDE_SHAPES:
                 self._add_joint_collision_filter_pairs(shape, body)
@@ -9287,6 +9325,89 @@ class ModelBuilder:
 
     # region shapes
 
+    def add_shape_group(self, name: str, *, shapes: ShapeSelector | None = None) -> None:
+        """Register a shape group and optionally add shapes to it.
+
+        A shape group is a named set of shapes, such as ``"terrain"`` or
+        ``"robot"``, that :class:`~newton.ShapeFilter` can select or exclude.
+        A shape can belong to several groups. Shapes added later join groups
+        through :attr:`ShapeConfig.groups`. Groups are copied with their shapes
+        by :meth:`add_builder` and :meth:`replicate`, which match groups by
+        name; add a world's shapes to groups on the builder of that world to
+        match labels only once.
+
+        Args:
+            name: Name of the group. Registering an existing name adds
+                ``shapes`` to that group.
+            shapes: Shapes to add to the group, as a label glob, list of label
+                globs, compiled regular expression, or list of shape indices;
+                see :ref:`label-matching`. ``None`` adds no shapes.
+
+        Raises:
+            ValueError: If the builder would have more than 32 shape groups.
+        """
+        bit = self._shape_group_bits((name,))
+        if shapes is not None:
+            for shape in np.flatnonzero(_shape_selector_mask(shapes, self.shape_label)).tolist():
+                self.shape_groups[shape] |= bit
+
+    def add_shape_filter(self, shape_filter: ShapeFilter) -> int:
+        """Register a shape filter for the shape queries of the finalized model.
+
+        :meth:`finalize` resolves the filters registered here and partitions
+        the model's shape BVH by them, so that a query given a filter id,
+        such as :func:`~newton.intersect_ray` or
+        :class:`~newton.sensors.SensorCamera`, only visits the shapes its
+        filter selects and queries with different filters do not slow each
+        other down. Register every filter the model's queries use before
+        finalizing; queries then take the id, which keeps them free of host
+        synchronization and safe to capture in a CUDA graph.
+
+        Args:
+            shape_filter: Filter selecting the shapes of the query.
+
+        Returns:
+            Id of the filter in the finalized model. Registering an equal filter
+            again returns the same id. Id ``0`` is reserved for the default filter,
+            which selects the shapes with any of :attr:`BvhConfig.shape_flags`.
+        """
+        if not isinstance(shape_filter, ShapeFilter):
+            raise TypeError(f"Expected a ShapeFilter, got {type(shape_filter).__name__}.")
+        for index, registered in enumerate(self._shape_filters):
+            if registered == shape_filter:
+                return index + 1
+        self._shape_filters.append(shape_filter)
+        return len(self._shape_filters)
+
+    def _shape_group_bits(self, names: Iterable[str]) -> int:
+        """Bit mask of the shape groups ``names``, registering the names not yet known."""
+        if isinstance(names, str):
+            raise TypeError(f"Expected a sequence of shape group names, got the string {names!r}.")
+        bits = 0
+        for name in names:
+            if name not in self.shape_group_names:
+                if not isinstance(name, str) or not name:
+                    raise ValueError(f"Shape group names must be non-empty strings, got {name!r}.")
+                if len(self.shape_group_names) == SHAPE_GROUP_MAX_COUNT:
+                    raise ValueError(
+                        f"Cannot register shape group {name!r}: a builder holds at most {SHAPE_GROUP_MAX_COUNT} "
+                        f"shape groups ({', '.join(self.shape_group_names)})."
+                    )
+                self.shape_group_names.append(name)
+            bits |= 1 << self.shape_group_names.index(name)
+        return bits
+
+    def _remap_shape_groups(self, groups: Sequence[int], group_names: Sequence[str]) -> list[int]:
+        """Translate shape group masks of another builder with ``group_names`` into this builder's groups."""
+        if not group_names or list(group_names) == self.shape_group_names[: len(group_names)]:
+            return list(groups)
+        targets = [self._shape_group_bits((name,)) for name in group_names]
+        source = np.asarray(groups, dtype=np.int64)
+        remapped = np.zeros_like(source)
+        for bit, target in enumerate(targets):
+            remapped |= np.where(source & (1 << bit), target, 0)
+        return remapped.tolist()
+
     def add_shape(
         self,
         *,
@@ -9417,6 +9538,8 @@ class ModelBuilder:
             resolved_opacity = 1.0
         resolved_opacity = _validate_opacity(resolved_opacity, "Shape opacity")
 
+        shape_groups = self._shape_group_bits(cfg.groups)
+
         self.shape_body.append(body)
         shape = self.shape_count
         self.body_shapes[body].append(shape)
@@ -9436,6 +9559,7 @@ class ModelBuilder:
             resolved_color = ModelBuilder._shape_palette_color(shape)
 
         self.shape_flags.append(shape_flags)
+        self.shape_groups.append(shape_groups)
         self.shape_type.append(type)
         self.shape_scale.append((float(scale[0]), float(scale[1]), float(scale[2])))
         self.shape_source.append(src)
@@ -10400,7 +10524,7 @@ class ModelBuilder:
                     has_particle_collision=False,
                     is_visible=True,
                 )
-                self.add_shape_mesh(
+                visual = self.add_shape_mesh(
                     body=body,
                     xform=xform,
                     cfg=cfg,
@@ -10411,6 +10535,7 @@ class ModelBuilder:
                     scale=self.shape_scale[shape],
                     custom_attributes=custom_attributes,
                 )
+                self.shape_groups[visual] = self.shape_groups[shape]
 
                 # disable visibility of the original shape
                 self.shape_flags[shape] &= ~ShapeFlags.VISIBLE
@@ -10566,6 +10691,7 @@ class ModelBuilder:
                                 label=f"{self.shape_label[shape]}_convex_{i}",
                                 custom_attributes=custom_attributes,
                             )
+                            self.shape_groups[extra_shape] = self.shape_groups[shape]
                             for filtered_shape in filtered_shapes:
                                 self.add_shape_collision_filter_pair(filtered_shape, extra_shape)
                                 for filtered_part in convex_parts_by_shape.get(filtered_shape, ()):
@@ -15485,6 +15611,9 @@ class ModelBuilder:
             )
             m.shape_body = wp.array(self.shape_body, dtype=wp.int32)
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
+            m.shape_groups = wp.array(self.shape_groups, dtype=wp.uint32)
+            m.shape_group_names = list(self.shape_group_names)
+            m._shape_filters = list(self._shape_filters)
             m.body_shapes = self.body_shapes
 
             def _shape_requests_planar_sdf(shape_idx: int) -> bool:

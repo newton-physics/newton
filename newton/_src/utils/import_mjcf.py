@@ -538,6 +538,7 @@ def parse_mjcf(
     path_resolver: Callable[[str | None, str], str] | None = None,
     override_root_xform: bool = False,
     legacy_margin_gap: bool = False,
+    geom_groups_as_shape_groups: bool = False,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -680,6 +681,10 @@ def parse_mjcf(
             where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
             Use for MJCF files authored against MuJoCo <= 3.8. Defaults
             to False (identity translation matching MuJoCo 3.9 semantics).
+        geom_groups_as_shape_groups: If True, add each geom to the shape group
+            ``"mujoco_group_<g>"`` of its MuJoCo ``group`` attribute ``g``, so that
+            :class:`~newton.ShapeFilter` can select geoms by MuJoCo group, such as
+            the collision geoms commonly kept in group 3.
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
@@ -1654,6 +1659,8 @@ def parse_mjcf(
             shape_cfg.has_shape_collision = not just_visual
             shape_cfg.has_particle_collision = not just_visual
             shape_cfg.density = geom_density
+            if geom_groups_as_shape_groups:
+                shape_cfg.groups = (*shape_cfg.groups, f"mujoco_group_{geom_group}")
 
             # Respect MJCF contype/conaffinity=0: disable automatic broadphase contacts
             # while keeping the shape as a collider for explicit <pair> contacts.

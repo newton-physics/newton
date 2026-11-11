@@ -161,6 +161,8 @@ def _validate_variant_builder(builder: ModelBuilder, variant: ModelBuilder) -> N
     """Raise if ``variant`` cannot be a variant of a body of ``builder``."""
     if variant is builder or variant._body_variants:
         raise ValueError("Variant builders must not be this builder or declare variants themselves.")
+    if variant._shape_filters:
+        raise ValueError("Variant builders must not register shape filters.")
     if variant.up_axis != builder.up_axis:
         raise ValueError("Variant builders must use the same up axis as this builder.")
     if variant.body_count != 1:

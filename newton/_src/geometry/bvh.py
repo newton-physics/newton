@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -148,86 +149,51 @@ def compute_ellipsoid_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[
     return compute_box_bounds(transform, extent)
 
 
-@wp.func
-def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
-    if shape_type == GeoType.BOX:
-        return True
-    if shape_type == GeoType.CAPSULE:
-        return True
-    if shape_type == GeoType.CYLINDER:
-        return True
-    if shape_type == GeoType.ELLIPSOID:
-        return True
-    if shape_type == GeoType.PLANE:
-        return True
-    if shape_type == GeoType.SPHERE:
-        return True
-    if shape_type == GeoType.CONE:
-        return True
-    if shape_type == GeoType.MESH:
-        return True
-    if shape_type == GeoType.CONVEX_MESH:
-        return True
-    if shape_type == GeoType.HFIELD:
-        return True
-    if shape_type == GeoType.GAUSSIAN:
-        return True
-    return False
+BVH_SUPPORTED_SHAPE_TYPES = (
+    GeoType.BOX,
+    GeoType.CAPSULE,
+    GeoType.CYLINDER,
+    GeoType.ELLIPSOID,
+    GeoType.PLANE,
+    GeoType.SPHERE,
+    GeoType.CONE,
+    GeoType.MESH,
+    GeoType.CONVEX_MESH,
+    GeoType.HFIELD,
+    GeoType.GAUSSIAN,
+)
+"""Shape types the shape BVH can hold."""
 
 
 BVH_SHAPE_INACTIVE = wp.constant(wp.uint32(0xFFFFFFFF))
-"""BVH leaf entry of an empty variant row in ``Model._bvh_shape_active_leaves``; ray queries skip it."""
+"""BVH leaf entry of an empty variant row in the leaves of a shape filter; ray queries skip it."""
 
 
 @wp.kernel(enable_backward=False)
 def mark_inactive_bvh_shapes(
     bvh_shape_leaves: wp.array[wp.uint32],
     shape_variant_row: wp.array[wp.bool],
+    shape_variant_shape: wp.array[wp.int32],
     shape_flags: wp.array[wp.int32],
     shape_flags_mask: wp.int32,
     shape_opacity: wp.array[wp.float32],
     out_shape_enabled: wp.array[wp.uint32],
 ):
-    """Copy the BVH leaf shapes, replacing variant rows that :func:`compute_enabled_shapes` would
-    exclude now, such as empty or fully transparent rows, by :data:`BVH_SHAPE_INACTIVE`."""
+    """Copy the BVH leaf shapes, replacing variant rows that are empty or, for a nonzero
+    ``shape_flags_mask``, whose current flags miss it, such as fully transparent rows, by
+    :data:`BVH_SHAPE_INACTIVE`."""
     tid = wp.tid()
     shape = bvh_shape_leaves[tid]
     s = wp.int32(shape)
     active = True
     if shape_variant_row[s]:
-        flags = shape_flags[s]
-        if shape_opacity.shape[0] > 0 and shape_opacity[s] <= 0.0:
-            flags = flags & ~_SHAPE_FLAG_VISIBLE
-        active = (flags & shape_flags_mask) != 0
+        active = shape_variant_shape[s] >= 0
+        if active and shape_flags_mask != 0:
+            flags = shape_flags[s]
+            if shape_opacity.shape[0] > 0 and shape_opacity[s] <= 0.0:
+                flags = flags & ~_SHAPE_FLAG_VISIBLE
+            active = (flags & shape_flags_mask) != 0
     out_shape_enabled[tid] = wp.where(active, shape, BVH_SHAPE_INACTIVE)
-
-
-@wp.kernel(enable_backward=False)
-def compute_enabled_shapes(
-    shape_type: wp.array[wp.int32],
-    shape_flags: wp.array[wp.int32],
-    shape_flags_mask: wp.int32,
-    shape_opacity: wp.array[wp.float32],
-    out_shape_enabled: wp.array[wp.uint32],
-    out_shape_enabled_count: wp.array[wp.int32],
-):
-    tid = wp.tid()
-
-    flags = shape_flags[tid]
-
-    # A fully transparent shape (e.g. an MJCF helper geom with rgba alpha 0) is not visible, so it must not occlude
-    # other shapes. Clear VISIBLE before applying the mask so shapes selected through other flags are kept.
-    if shape_opacity.shape[0] > 0 and shape_opacity[tid] <= 0.0:
-        flags = flags & ~_SHAPE_FLAG_VISIBLE
-
-    if not bool(flags & shape_flags_mask):
-        return
-
-    if not is_supported_shape_type(shape_type[tid]):
-        return
-
-    index = wp.atomic_add(out_shape_enabled_count, 0, 1)
-    out_shape_enabled[index] = wp.uint32(tid)
 
 
 @wp.func
@@ -304,6 +270,8 @@ def compute_shape_bvh_bounds(
     world_count: wp.int32,
     shape_world_index: wp.array[wp.int32],
     shape_enabled: wp.array[wp.uint32],
+    shape_class: wp.array[wp.int32],
+    class_count: wp.int32,
     shape_types: wp.array[wp.int32],
     shape_sizes: wp.array[wp.vec3f],
     shape_transforms: wp.array[wp.transformf],
@@ -359,7 +327,7 @@ def compute_shape_bvh_bounds(
 
     out_bvh_lowers[bvh_index_local] = lower
     out_bvh_uppers[bvh_index_local] = upper
-    out_bvh_groups[bvh_index_local] = world_index
+    out_bvh_groups[bvh_index_local] = world_index * class_count + shape_class[bvh_index_local]
 
 
 @wp.kernel(enable_backward=False)
@@ -400,6 +368,35 @@ def compute_bvh_group_roots(bvh_id: wp.uint64, out_bvh_group_roots: wp.array[wp.
     out_bvh_group_roots[tid] = wp.bvh_get_group_root(bvh_id, tid)
 
 
+@wp.kernel(enable_backward=False)
+def compute_shape_filter_roots(
+    bvh_id: wp.uint64,
+    class_count: wp.int32,
+    filter_classes: wp.array[wp.int32],
+    out_roots: wp.array2d[wp.int32],
+):
+    """Gather the BVH root of each (world, class) group a shape filter traverses."""
+    world, i = wp.tid()
+    out_roots[world, i] = wp.bvh_get_group_root(bvh_id, world * class_count + filter_classes[i])
+
+
+@dataclass
+class ShapeFilterBvh:
+    """Shape BVH traversal data of one shape filter, built by :meth:`Model.bvh_build_shapes`."""
+
+    roots: wp.array2d[wp.int32]
+    """Root of each group to traverse, shape ``[world_count + 1, class_count]`` (last row is the global
+    world); ``-1`` marks an empty group."""
+    leaves: wp.array[wp.uint32]
+    """Shape of each BVH leaf, or :data:`BVH_SHAPE_INACTIVE` for leaves the filter skips at the last refit."""
+    flags_mask: int
+    """Flags a body variant row must currently have for the filter to keep its leaf, or ``0`` for a filter
+    without flags, which keeps the leaf of every row that holds a shape."""
+    world_leaves: wp.array[wp.int32] | None
+    """BVH leaf of the only shape the filter selects in each world, shape ``[world_count + 1]`` (last entry is
+    the global world), ``-1`` for worlds without one; ``None`` if the filter selects several shapes of a world."""
+
+
 def compute_shape_bvh_bounds_launch(
     model: Model,
     lowers: wp.array[wp.vec3f],
@@ -415,6 +412,8 @@ def compute_shape_bvh_bounds_launch(
             model.world_count + 1,
             model.shape_world,
             model.bvh_shape_enabled,
+            model._bvh_shape_class,
+            model._bvh_shape_class_count,
             model.shape_type,
             model.shape_scale,
             model.bvh_shape_world_transforms,

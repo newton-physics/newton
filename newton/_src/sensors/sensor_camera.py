@@ -143,6 +143,7 @@ class SensorCamera:
         default_render_config: RenderConfig | None = None,
         load_textures: bool = True,
         deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
+        shape_filter: int | None = None,
     ):
         """Construct a camera sensor for a model.
 
@@ -174,6 +175,17 @@ class SensorCamera:
                 .. experimental::
                     This deformable-visual option may change without a formal
                     deprecation cycle.
+            shape_filter: Id of the shape filter, returned by
+                :meth:`ModelBuilder.add_shape_filter() <newton.ModelBuilder.add_shape_filter>`,
+                that selects the shapes this sensor renders, for example
+                ``ShapeFilter(flags=ShapeFlags.VISIBLE, exclude_groups=["markers"])``.
+                ``None`` renders the shapes of the default filter, the shapes with
+                any of :attr:`ModelBuilder.BvhConfig.shape_flags
+                <newton.ModelBuilder.BvhConfig.shape_flags>`, which are the
+                visible shapes by default.
+
+        Raises:
+            ValueError: If ``shape_filter`` is not a shape filter id of ``model``.
         """
         self.default_clear_data: ClearData = default_clear_data if default_clear_data is not None else ClearData()
         """Clear values used by :meth:`update` when its ``clear_data`` argument is ``None``."""
@@ -188,6 +200,7 @@ class SensorCamera:
             model,
             load_textures=load_textures,
             deformable_surface_mode=DeformableSurfaceMode(deformable_surface_mode),
+            shape_filter=shape_filter,
         )
 
     @property

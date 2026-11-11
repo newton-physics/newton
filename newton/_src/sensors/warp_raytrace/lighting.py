@@ -22,7 +22,7 @@ def create_compute_lighting_function(config: RenderContext.Config, state: Render
         world_index: wp.int32,
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
+        bvh_shapes_group_roots: wp.array2d[wp.int32],
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,
         bvh_particles_group_roots: wp.array[wp.int32],

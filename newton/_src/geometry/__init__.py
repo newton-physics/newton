@@ -24,6 +24,7 @@ from .inertia import compute_inertia_shape, compute_inertia_sphere, transform_in
 from .particle_surface import ParticleSurface, extract_particle_surface
 from .raycast import intersect_ray as intersect_ray
 from .sdf_utils import SDF
+from .shape_filter import ShapeFilter
 from .terrain_generator import create_mesh_heightfield, create_mesh_terrain
 from .tri_mesh_collision import (
     TriMeshCollisionInfo,
@@ -59,6 +60,7 @@ __all__ = [
     "Mesh",
     "ParticleFlags",
     "ParticleSurface",
+    "ShapeFilter",
     "ShapeFlags",
     "TetMesh",
     "TriMeshCollisionInfo",

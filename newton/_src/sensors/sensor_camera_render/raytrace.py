@@ -78,6 +78,17 @@ def get_group_roots(group_roots: wp.array[wp.int32], world_index: wp.int32, want
     return group_roots[world_index]
 
 
+@wp.func
+def get_shape_group_root(
+    shape_group_roots: wp.array2d[wp.int32], world_index: wp.int32, traversal: wp.int32
+) -> wp.int32:
+    """Root of the ``traversal``-th shape group of a ray: the classes of its world, then of the global world."""
+    class_count = shape_group_roots.shape[1]
+    if traversal >= class_count:
+        return shape_group_roots[shape_group_roots.shape[0] - 1, traversal - class_count]
+    return shape_group_roots[world_index, traversal]
+
+
 def create_closest_hit_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
     shade_gaussians = gaussians.create_shade_function(config, state)
 
@@ -86,7 +97,7 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
         closest_hit: ClosestHit,
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
+        bvh_shapes_group_roots: wp.array2d[wp.int32],
         world_index: wp.int32,
         shape_enabled: wp.array[wp.uint32],
         shape_types: wp.array[wp.int32],
@@ -103,8 +114,8 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
         if bvh_shapes_size:
             # int() makes the bound dynamic in Warp, preventing loop unrolling
             # that duplicates BVH traversal state and increases register pressure.
-            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
-                group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
+            for i in range(int(wp.static(2 if config.enable_global_world else 1)) * bvh_shapes_group_roots.shape[1]):
+                group_root = get_shape_group_root(bvh_shapes_group_roots, world_index, i)
                 if group_root < 0:
                     continue
 
@@ -283,7 +294,7 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
     def closest_hit(
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
+        bvh_shapes_group_roots: wp.array2d[wp.int32],
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,
         bvh_particles_group_roots: wp.array[wp.int32],
@@ -361,7 +372,7 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
         closest_hit: ClosestHit,
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
+        bvh_shapes_group_roots: wp.array2d[wp.int32],
         world_index: wp.int32,
         shape_enabled: wp.array[wp.uint32],
         shape_types: wp.array[wp.int32],
@@ -376,8 +387,8 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
         camera_forward: wp.vec3f,
     ) -> ClosestHit:
         if bvh_shapes_size:
-            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
-                group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
+            for i in range(int(wp.static(2 if config.enable_global_world else 1)) * bvh_shapes_group_roots.shape[1]):
+                group_root = get_shape_group_root(bvh_shapes_group_roots, world_index, i)
                 if group_root < 0:
                     continue
 
@@ -523,7 +534,7 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
     def closest_hit_depth_only(
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
+        bvh_shapes_group_roots: wp.array2d[wp.int32],
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,
         bvh_particles_group_roots: wp.array[wp.int32],
@@ -597,7 +608,7 @@ def create_first_hit_function(config: RenderConfig, state: RenderContext.RenderS
     def first_hit_shape(
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
+        bvh_shapes_group_roots: wp.array2d[wp.int32],
         world_index: wp.int32,
         shape_enabled: wp.array[wp.uint32],
         shape_types: wp.array[wp.int32],
@@ -609,8 +620,8 @@ def create_first_hit_function(config: RenderConfig, state: RenderContext.RenderS
         max_dist: wp.float32,
     ) -> wp.bool:
         if bvh_shapes_size:
-            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
-                group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
+            for i in range(int(wp.static(2 if config.enable_global_world else 1)) * bvh_shapes_group_roots.shape[1]):
+                group_root = get_shape_group_root(bvh_shapes_group_roots, world_index, i)
                 if group_root < 0:
                     continue
 
@@ -719,7 +730,7 @@ def create_first_hit_function(config: RenderConfig, state: RenderContext.RenderS
     def first_hit(
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
+        bvh_shapes_group_roots: wp.array2d[wp.int32],
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,
         bvh_particles_group_roots: wp.array[wp.int32],

@@ -682,6 +682,7 @@ def parse_usd(
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     traverse_instance_proxies = Usd.TraverseInstanceProxies()
     visuals = _UsdVisuals(stage)
+    shape_groups = usd.ShapeGroupResolver()
 
     def _xform_to_mat44(xform: wp.transform) -> wp.mat44:
         return wp.transform_compose(xform.p, xform.q, wp.vec3(1.0))
@@ -935,6 +936,7 @@ def parse_usd(
 
         visual_shape_cfg_for_prim = copy.copy(visual_shape_cfg)
         visual_shape_cfg_for_prim.is_visible = is_site or visuals.is_viewport_drawn(prim)
+        visual_shape_cfg_for_prim.groups = shape_groups(prim)
         material_props = visuals.get_material_props_cached(prim)
         shape_color = material_props.get("color")
         shape_visual_kwargs = {}
@@ -1928,6 +1930,7 @@ def parse_usd(
         ret_dict=ret_dict,
         R=R,
         visuals=visuals,
+        shape_groups=shape_groups,
         mass_properties=mass_properties,
         material_specs=material_specs,
         default_shape_density=default_shape_density,

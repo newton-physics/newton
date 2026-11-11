@@ -48,6 +48,7 @@ newton
    ParticleFlags
    Rod
    SDF
+   ShapeFilter
    ShapeFlags
    State
    StateFlags

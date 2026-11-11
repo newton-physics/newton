@@ -87,6 +87,7 @@ class RenderContext:
         load_textures: bool = True,
         *,
         deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
+        shape_filter: int | None = None,
     ):
         """Create a render context for a Newton simulation model.
 
@@ -103,8 +104,12 @@ class RenderContext:
             load_textures: Load shape and visual mesh textures from file paths or in-memory images.
             deformable_surface_mode: Which deformable surfaces to upload: the simulation triangles,
                 the visual meshes, or both.
+            shape_filter: Id of the shape filter selecting the rendered shapes, or ``None`` for the
+                model's default filter.
         """
         self._model = model
+        self._shape_filter = model._shape_filter_index(shape_filter)
+        self._no_shape_group_roots = wp.empty((model.world_count + 1, 0), dtype=wp.int32, device=self.device)
         self._deformable_surface_mode = deformable_surface_mode
         self._render_state = RenderContext.RenderState()
 
@@ -525,6 +530,7 @@ class RenderContext:
         has_shapes = model.bvh_shape_count_enabled > 0
         if has_shapes and (model.bvh_shapes is None or model.bvh_shapes_group_roots is None):
             raise RuntimeError("Shape BVH is incomplete; rebuild it with model.bvh_build_shapes(state).")
+        shape_bvh = model._bvh_shape_filter(self._shape_filter) if has_shapes else None
 
         has_particles = (
             config.enable_particles
@@ -647,9 +653,9 @@ class RenderContext:
                     # Shape BVH
                     model.bvh_shape_count_enabled,
                     model.bvh_shapes.id if model.bvh_shapes is not None else 0,
-                    model.bvh_shapes_group_roots,
+                    shape_bvh.roots if shape_bvh is not None else self._no_shape_group_roots,
                     # Shapes
-                    model._bvh_shape_active_leaves,
+                    shape_bvh.leaves if shape_bvh is not None else model.bvh_shape_enabled,
                     self._get_shape_render_type(),  # HFIELD and CONVEX_MESH remapped to MESH
                     model.shape_scale,
                     model.shape_color,
