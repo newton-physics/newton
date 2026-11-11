@@ -955,13 +955,22 @@ class Example:
                 wy_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
                 z_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
                 paw_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
-            ctrl = self.model.control(requires_grad=True)
+            # per-step controls and per-collide contacts: every buffer is
+            # written at most once inside the tape. Sharing one buffer across
+            # steps leaves the array holding a LATER step's values by the time
+            # an earlier step's adjoint replay re-derives its primal locals
+            # from it — the same staleness class the solver's shared J/M/P/H/L
+            # scratch had (fixed in this PR, pinned by test_multistep_gradient);
+            # wp.config.verify_autograd_array_access also flags the pattern.
+            ctrls = [self.model.control(requires_grad=True) for _ in range(n)]
+            cts_list = [self.pipe.contacts() for _ in range((n + COLLIDE_EVERY - 1) // COLLIDE_EVERY)]
             nseg = len(amps0) // (2 if mode == "jump" else 1)
             tape = wp.Tape()
             with tape:
                 for t in range(n):
                     if t % COLLIDE_EVERY == 0:
-                        self.pipe.collide(states[t], self.cts)
+                        cur_cts = cts_list[t // COLLIDE_EVERY]
+                        self.pipe.collide(states[t], cur_cts)
                     if mode == "crouch":
                         if t < CR_N:
                             wp.launch(
@@ -971,7 +980,7 @@ class Example:
                                     params,
                                     states[t].joint_q,
                                     states[t].joint_qd,
-                                    ctrl.joint_f,
+                                    ctrls[t].joint_f,
                                     self.stand_arr,
                                     self.dofs_arr,
                                     self.chan_arr,
@@ -991,7 +1000,7 @@ class Example:
                                     self.zero_amp_arr,
                                     states[t].joint_q,
                                     states[t].joint_qd,
-                                    ctrl.joint_f,
+                                    ctrls[t].joint_f,
                                     self.stand_arr,
                                     self.dofs_arr,
                                     self.group_arr,
@@ -1007,7 +1016,7 @@ class Example:
                                 params,
                                 states[t].joint_q,
                                 states[t].joint_qd,
-                                ctrl.joint_f,
+                                ctrls[t].joint_f,
                                 self.stand_arr,
                                 self.dofs_arr,
                                 self.group_arr,
@@ -1023,7 +1032,7 @@ class Example:
                                 params,
                                 states[t].joint_q,
                                 states[t].joint_qd,
-                                ctrl.joint_f,
+                                ctrls[t].joint_f,
                                 self.stand_arr,
                                 self.dofs_arr,
                                 self.prof_knots_arr,
@@ -1035,7 +1044,7 @@ class Example:
                             ],
                         )
                     states[t].clear_forces()
-                    self.solver.step(states[t], states[t + 1], ctrl, self.cts, SIM_DT)
+                    self.solver.step(states[t], states[t + 1], ctrls[t], cur_cts, SIM_DT)
                 if mode == "crouch":
                     for t in range(n + 1):
                         wp.launch(
@@ -1812,13 +1821,16 @@ class Example:
         states[0].joint_qd.assign(snap[1])
         states[0].body_q.assign(snap[2])
         states[0].body_qd.assign(snap[3])
-        ctrl = model.control(requires_grad=True)
+        # same freshness discipline as the phase tapes (see _tape_loss): the
+        # servo writes per-step controls and collide writes its own buffer
+        ctrls = [model.control(requires_grad=True) for _ in range(2)]
+        cts_tape = self.pipe.contacts()
         loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
         tape = wp.Tape()
         with tape:
             for t in range(2):
                 if t % COLLIDE_EVERY == 0:
-                    self.pipe.collide(states[t], cts)
+                    self.pipe.collide(states[t], cts_tape)
                 wp.launch(
                     servo_profile_kernel,
                     dim=12,
@@ -1826,7 +1838,7 @@ class Example:
                         params,
                         states[t].joint_q,
                         states[t].joint_qd,
-                        ctrl.joint_f,
+                        ctrls[t].joint_f,
                         self.stand_arr,
                         self.dofs_arr,
                         self.prof_knots_arr,
@@ -1838,7 +1850,7 @@ class Example:
                     ],
                 )
                 states[t].clear_forces()
-                solver.step(states[t], states[t + 1], ctrl, cts, SIM_DT)
+                solver.step(states[t], states[t + 1], ctrls[t], cts_tape, SIM_DT)
             jq = states[2].joint_q
             wp.launch(
                 _probe_loss_kernel,
