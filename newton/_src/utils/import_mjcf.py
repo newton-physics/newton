@@ -516,6 +516,7 @@ def parse_mjcf(
     parse_visuals_as_colliders: bool = False,
     parse_meshes: bool = True,
     parse_sites: bool = True,
+    parse_cameras: bool = True,
     parse_visuals: bool = True,
     parse_mujoco_options: bool = True,
     up_axis: AxisType = Axis.Z,
@@ -638,6 +639,12 @@ def parse_mjcf(
         parse_visuals_as_colliders: If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
         parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
         parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+        parse_cameras: Whether ``<camera>`` elements should be added as model cameras (see
+            :meth:`~newton.ModelBuilder.add_camera`). Tracking cameras (``track``, ``trackcom``,
+            ``targetbody``, ``targetbodycom``) are imported as fixed mounts on their body, which match
+            MuJoCo only at the initial pose; their ``mode`` and ``target`` are kept in the
+            ``mujoco:camera_mode`` and ``mujoco:camera_target`` custom attributes. Orthographic cameras
+            are skipped and logged. Default is True.
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
         parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -2272,6 +2279,113 @@ def parse_mjcf(
 
         return site_shapes
 
+    pending_camera_targets: list[tuple[int, str, str]] = []
+    builder_custom_attr_camera: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [Model.AttributeFrequency.CAMERA]
+    )
+
+    def _parse_cameras_impl(defaults, body_name, link, cameras, incoming_xform=None, label_prefix=""):
+        """Parse camera elements from MJCF into model cameras.
+
+        Camera frames follow MuJoCo's convention (look along local -Z, +Y up), which matches
+        :meth:`ModelBuilder.add_camera`, so the frame is used as authored.
+        """
+        for camera_count, camera in enumerate(cameras):
+            camera_class = camera.attrib.get("class")
+            if camera_class is not None and is_ignored_class(camera_class):
+                continue
+            camera_attrib = resolve_element_attrib(camera, "camera", defaults)
+            camera_name = camera_attrib.get("name", f"{body_name}_camera_{camera_count}")
+            if any(re.match(pattern, camera_name) for pattern in ignore_names):
+                continue
+
+            if camera_attrib.get("orthographic", "false").lower() == "true":
+                logger.warning("MJCF camera '%s' is orthographic, which is not supported; skipping.", camera_name)
+                continue
+            mode = camera_attrib.get("mode", "fixed")
+            if mode != "fixed":
+                # Tracking cameras are common in MuJoCo assets and their mode and target are kept as custom
+                # attributes, so the documented fixed-mount approximation is logged at debug level.
+                logger.debug(
+                    "MJCF camera '%s' uses mode='%s'; it is imported as a fixed mount that matches MuJoCo only "
+                    "at the initial pose. The mode is kept in the mujoco:camera_mode custom attribute.",
+                    camera_name,
+                    mode,
+                )
+
+            camera_pos = parse_vec(camera_attrib, "pos", (0.0, 0.0, 0.0)) * scale
+            camera_xform = wp.transform(camera_pos, parse_orientation(camera_attrib))
+            if incoming_xform is not None:
+                camera_xform = incoming_xform * camera_xform
+
+            resolution = None
+            if "resolution" in camera_attrib:
+                res = np.array(camera_attrib["resolution"].split(), dtype=float)
+                if len(res) >= 2 and res[0] > 0 and res[1] > 0:
+                    resolution = (int(res[0]), int(res[1]))
+
+            # MuJoCo switches to intrinsic parameters when a sensor size is authored; fovy is
+            # then ignored. Pixel-valued intrinsics convert through the sensor pixel pitch.
+            intrinsics: dict[str, Any] = {}
+            sensorsize = np.array(camera_attrib.get("sensorsize", "0 0").split(), dtype=float)
+            if len(sensorsize) >= 2 and sensorsize[0] > 0.0 and sensorsize[1] > 0.0:
+                pitch = sensorsize[:2] / np.array(resolution, dtype=float) if resolution is not None else None
+                focal = None
+                if "focal" in camera_attrib:
+                    focal = np.array(camera_attrib["focal"].split(), dtype=float)[:2]
+                elif "focalpixel" in camera_attrib:
+                    if pitch is None:
+                        logger.warning(
+                            "MJCF camera '%s' sets focalpixel without a resolution; using fovy.", camera_name
+                        )
+                    else:
+                        focal = np.array(camera_attrib["focalpixel"].split(), dtype=float)[:2] * pitch
+                if focal is None or len(focal) < 2 or focal[0] <= 0.0 or focal[1] <= 0.0:
+                    fovy = float(camera_attrib.get("fovy", 45.0))
+                    fy = 0.5 * sensorsize[1] / np.tan(0.5 * np.radians(fovy))
+                    focal = np.array([fy, fy])
+                principal = np.zeros(2)
+                if "principal" in camera_attrib:
+                    principal = np.array(camera_attrib["principal"].split(), dtype=float)[:2]
+                elif "principalpixel" in camera_attrib:
+                    if pitch is None:
+                        logger.warning(
+                            "MJCF camera '%s' sets principalpixel without a resolution; ignoring it.", camera_name
+                        )
+                    else:
+                        principal = np.array(camera_attrib["principalpixel"].split(), dtype=float)[:2] * pitch
+                # add_camera takes one focal length; fold an anisotropic fx into the horizontal
+                # aperture and offset so their ratios to the focal length are preserved.
+                x_to_y = focal[1] / focal[0]
+                intrinsics = {
+                    "focal_length": float(focal[1]) * scale,
+                    "horizontal_aperture": float(sensorsize[0] * x_to_y) * scale,
+                    "vertical_aperture": float(sensorsize[1]) * scale,
+                    "horizontal_aperture_offset": float(principal[0] * x_to_y) * scale,
+                    "vertical_aperture_offset": float(principal[1]) * scale,
+                }
+            else:
+                # fovy is in degrees regardless of the compiler angle setting.
+                intrinsics = {"fov": float(np.radians(float(camera_attrib.get("fovy", 45.0))))}
+
+            camera_label = f"{label_prefix}/{camera_name}" if label_prefix else camera_name
+            camera_custom_attrs = (
+                parse_custom_attributes(camera_attrib, builder_custom_attr_camera, parsing_mode="mjcf")
+                if builder_custom_attr_camera
+                else None
+            )
+            camera_id = builder.add_camera(
+                link,
+                xform=camera_xform,
+                resolution=resolution,
+                label=camera_label,
+                custom_attributes=camera_custom_attrs,
+                **intrinsics,
+            )
+            if "target" in camera_attrib:
+                # Targets may name bodies defined later; they are resolved once every body is parsed.
+                pending_camera_targets.append((camera_id, camera_name, camera_attrib["target"]))
+
     def get_frame_xform(frame_element, incoming_xform: wp.transform) -> wp.transform:
         """Compute composed transform for a frame element."""
         frame_pos = parse_vec(frame_element.attrib, "pos", (0.0, 0.0, 0.0)) * scale
@@ -2500,6 +2614,24 @@ def parse_mjcf(
                         parent_body,
                         child_sites,
                         incoming_xform=composed_body_rel,
+                        label_prefix=label_prefix,
+                    )
+
+            # Process child cameras (need body-relative transform)
+            if parse_cameras:
+                child_cameras = frame.findall("camera")
+                if child_cameras:
+                    body_name = "world" if parent_body == -1 else builder.body_label[parent_body]
+                    camera_xform = composed_body_rel
+                    if body_relative_xform is None and parent_body != -1:
+                        # Worldbody frames compose world transforms; mount cameras relative to parent_body.
+                        camera_xform = wp.transform_inverse(builder.body_q[parent_body]) * composed_world
+                    _parse_cameras_impl(
+                        _defaults,
+                        body_name,
+                        parent_body,
+                        child_cameras,
+                        incoming_xform=camera_xform,
                         label_prefix=label_prefix,
                     )
 
@@ -2980,6 +3112,11 @@ def parse_mjcf(
                     sites=sites,
                     label_prefix=body_label_path,
                 )
+
+        if parse_cameras:
+            cameras = body.findall("camera")
+            if cameras:
+                _parse_cameras_impl(defaults, body_name, link, cameras, label_prefix=body_label_path)
 
         if not infer_body_inertia_from_geoms and not ignore_inertial_definitions and has_inertial_definition:
             inertial = body.find("inertial")
@@ -3532,6 +3669,16 @@ def parse_mjcf(
                 label_prefix=root_label_path,
             )
 
+        if parse_cameras:
+            _parse_cameras_impl(
+                world_defaults,
+                "world",
+                -1,
+                world.findall("camera"),
+                incoming_xform=xform,
+                label_prefix=root_label_path,
+            )
+
         # -----------------
         # process frame elements at worldbody level
 
@@ -3545,6 +3692,15 @@ def parse_mjcf(
             label_prefix=root_label_path,
             track_root_boundaries=True,
         )
+
+        if pending_camera_targets:
+            camera_target = builder.custom_attributes["mujoco:camera_target"]
+            for camera_id, camera_name, target_name in pending_camera_targets:
+                target = body_name_to_idx.get(sanitize_name(target_name))
+                if target is None:
+                    logger.warning("MJCF camera '%s' targets unknown body '%s'; ignoring it.", camera_name, target_name)
+                    continue
+                camera_target.values[camera_id] = target
 
     # -----------------
     # Report once outside the recursive body parser so the warning points to the caller.

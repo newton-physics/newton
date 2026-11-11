@@ -893,6 +893,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         INIT = 5
         """Initialize the tree asleep."""
 
+    class CameraMode(IntEnum):
+        """How a MuJoCo camera follows its body (MuJoCo ``mjtCamLight``)."""
+
+        FIXED = 0
+        """Rigidly attached to its body."""
+        TRACK = 1
+        """Keeps its world-frame offset from the body and its world orientation."""
+        TRACKCOM = 2
+        """Like :attr:`TRACK`, following the center of mass of the body's subtree."""
+        TARGETBODY = 3
+        """Attached to its body and turned toward the target body."""
+        TARGETBODYCOM = 4
+        """Attached to its body and turned toward the center of mass of the target body's subtree."""
+
     # Class variables to cache the imported modules
     _mujoco = None
     _mujoco_warp = None
@@ -1011,6 +1025,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 "never": SolverMuJoCo.SleepPolicy.NEVER,
                 "allowed": SolverMuJoCo.SleepPolicy.ALLOWED,
                 "init": SolverMuJoCo.SleepPolicy.INIT,
+            },
+        )
+
+    @staticmethod
+    def _parse_camera_mode(value: str | int, context: dict[str, Any] | None = None) -> int:
+        """Parse an MJCF camera ``mode`` into a :class:`CameraMode` value."""
+        return SolverMuJoCo._parse_named_int(
+            value,
+            {
+                "fixed": SolverMuJoCo.CameraMode.FIXED,
+                "track": SolverMuJoCo.CameraMode.TRACK,
+                "trackcom": SolverMuJoCo.CameraMode.TRACKCOM,
+                "targetbody": SolverMuJoCo.CameraMode.TARGETBODY,
+                "targetbodycom": SolverMuJoCo.CameraMode.TARGETBODYCOM,
             },
         )
 
@@ -3142,6 +3170,33 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         )
         # endregion actuator attributes
+
+        # region camera attributes
+        # Newton cameras are fixed mounts; these keep MuJoCo's tracking settings for later use.
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="camera_mode",
+                frequency=AttributeFrequency.CAMERA,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=int(SolverMuJoCo.CameraMode.FIXED),
+                namespace="mujoco",
+                mjcf_attribute_name="mode",
+                mjcf_value_transformer=cls._parse_camera_mode,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="camera_target",
+                frequency=AttributeFrequency.CAMERA,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="body",
+            )
+        )
+        # endregion camera attributes
 
         # region tendon attributes
         # --- Fixed Tendon attributes (variable-length, from MJCF <tendon><fixed> tag) ---
