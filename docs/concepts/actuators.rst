@@ -29,11 +29,14 @@ customize and extend for specific actuator models.
 Architecture
 ------------
 
-An actuator is composed of four building blocks, applied in this order:
+An actuator is composed of five building blocks, applied in this order:
 
 .. code-block:: text
 
    Actuator
+   ├── Transmission  (maps the joints onto one actuator coordinate, and the effort back)
+   │   ├── TransmissionDirect      (default: the actuator is its single joint)
+   │   └── TransmissionFixed       (constant gear ratio per joint)
    ├── InputProcessor[]  (optional: transforms state and command inputs)
    │   ├── InputProcessorDelay       (delays command inputs by N actuator timesteps)
    │   └── InputProcessorEncoder     (position encoder, e.g. behind an output joint)
@@ -43,8 +46,16 @@ An actuator is composed of four building blocks, applied in this order:
    │   ├── ClampingCurrentDuty     (current estimate and duty limits; DUTY only)
    │   ├── ClampingDCMotor         (velocity-dependent saturation; EFFORT only)
    │   └── ClampingPositionBased   (position-dependent lookup table; EFFORT only)
-   └── Motor       (optional: converts motor voltage into joint effort)
+   └── Motor       (optional: converts motor voltage into actuator effort)
        └── MotorDC                 (DC motor, optionally on a battery)
+
+**Transmission**
+   Starts and concludes each step.  It maps the joints of the actuator
+   (:attr:`Actuator.indices`) onto one **actuator coordinate**, e.g. the motor
+   angle behind a gearbox or the opening of a gripper, and maps the actuator
+   effort back onto the same joints with the same ratios, so that power is
+   conserved.  The default, :class:`TransmissionDirect`, makes the actuator its
+   single joint.
 
 **Input processor**
    Transforms the inputs to the drive: the simulation state (positions,
@@ -82,11 +93,44 @@ An actuator is composed of four building blocks, applied in this order:
    Before the motor runs, the actuator bounds duty to ``[-1, 1]`` even without
    a clamp, then multiplies it by the actual fixed or battery supply voltage.
 
+An actuator drives one or more joints (:attr:`Actuator.indices`, shape
+``(joints, N)``) and works with one **actuator coordinate** ``s`` per
+actuator.  With :class:`TransmissionFixed`, ``s = Σ gear·q`` and joint ``j``
+receives ``gear_j · τ``.  The drive, its targets and gains, the clamps and the
+motor all work in actuator units, as in MuJoCo.  For example, with
+``gear=3``, a joint at 0.1 rad is an actuator at 0.3; a PD drive with
+``kp=10`` and target 0.6 computes ``10 · (0.6 - 0.3) = 3`` and the joint
+receives 9 N·m; a ``ClampingMaxEffort`` limit of 2 N·m allows 6 N·m at the
+joint.  With the default :class:`TransmissionDirect`, actuator units are joint
+units.
+
+The input processors, drive, clamps and motor read the actuator position and
+velocity, e.g. the motor velocity for back-EMF.  With a transmission, the
+targets and feedforward are per actuator: :class:`~newton.ModelBuilder`
+registers ``control.actuator_target_pos``, ``actuator_target_vel`` and
+``actuator_feedforward``, one entry per actuator of the model.  Without them,
+the actuator reads ``joint_target_q``, ``joint_target_qd`` and ``joint_act``
+at its joint.  Drives with custom inputs require the default transmission.
+
+Typical cases:
+
+* Gearbox or belt: one joint with a gear ratio; the drive works with the
+  motor angle.
+* Gripper: ``gear=[0.5, 0.5]`` over both fingers; the drive works with the
+  opening ``0.5 qL + 0.5 qR``, e.g. a target of 0.04, and each finger
+  receives half the effort.
+* Differential (e.g. two motors driving the wheels of a mobile base): two
+  actuators share the two joints, each with its own row of ratios, and their
+  efforts add up at the joints.
+* Backlash: the actuator drives the actuated joint, and an
+  :class:`InputProcessorEncoder` adds the passive backlash joint, so the drive
+  reads ``q_motor + q_backlash``.
+
 The per-step pipeline is:
 
 .. code-block:: text
 
-   Input processors → Supply voltage → Drive → Clamping → Motor (optional) → Scatter-add → Drive state update
+   Transmission state → Input processors → Supply voltage → Drive → Clamping → Motor (optional) → Transmission effort → Drive state update
 
 Drives, clamping objects, and input processors are pluggable: implement the
 :class:`DriveBase`, :class:`ClampingBase` or :class:`InputProcessorBase` class
@@ -106,9 +150,9 @@ to add new models.
 
 .. note::
 
-   **Current limitations:** the first version does not include a transmission
-   model (gear ratios / linkage transforms), supports only one DOF per
-   actuator, and does not model
+   **Current limitations:** transmissions are constant gear ratios only (no
+   pose-dependent linkages), and the
+   actuators do not model
    actuator dynamics (inertia, friction, thermal effects).
 
 Usage
@@ -150,7 +194,7 @@ components directly:
 
 .. testcode:: actuator-usage
 
-   indices = wp.array([0], dtype=wp.uint32)
+   indices = wp.array([[0]], dtype=wp.uint32)
    kp = wp.array([100.0], dtype=wp.float32)
    kd = wp.array([10.0], dtype=wp.float32)
    max_e = wp.array([50.0], dtype=wp.float32)
@@ -761,6 +805,14 @@ supplied voltage, by default) or ``NOMINAL`` (requiring ``nominal_voltage``).
 The nominal estimate is independent of actual motor voltage, including when
 using a battery. See :class:`ClampingCurrentDuty` for the limiting equations
 and voltage threshold.
+
+Transmissions
+^^^^^^^^^^^^^
+
+* :class:`TransmissionDirect` — default: the actuator is its single joint.
+* :class:`TransmissionFixed` — constant gear ratio per joint, e.g.
+  ``add_actuator(DrivePD, index=[left, right], transmission=(TransmissionFixed, {"gear": [0.5, 0.5]}))``
+  for a gripper.  Not supported in implicit mode.
 
 Motors
 ^^^^^^

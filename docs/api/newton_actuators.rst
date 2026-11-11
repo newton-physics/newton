@@ -27,6 +27,7 @@ construction.
    :nosignatures:
 
    Actuator
+   ActuatorBase
    ActuatorParsed
    BatteryBase
    BatteryConstantResistance
@@ -50,6 +51,9 @@ construction.
    JointSpaceResponse
    MotorDC
    SchemaNames
+   TransmissionBase
+   TransmissionDirect
+   TransmissionFixed
 
 .. rubric:: Functions
 

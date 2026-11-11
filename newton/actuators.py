@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from ._src.actuators import (
     Actuator,
+    ActuatorBase,
     ActuatorParsed,
     BatteryBase,
     BatteryConstantResistance,
@@ -43,6 +44,9 @@ from ._src.actuators import (
     JointSpaceResponse,
     MotorDC,
     SchemaNames,
+    TransmissionBase,
+    TransmissionDirect,
+    TransmissionFixed,
     parse_actuator_prim,
     parse_battery_prim,
     register_actuator_component,
@@ -51,6 +55,7 @@ from ._src.exceptions import NewtonDeprecationWarning
 
 __all__ = [
     "Actuator",
+    "ActuatorBase",
     "ActuatorParsed",
     "BatteryBase",
     "BatteryConstantResistance",
@@ -74,6 +79,9 @@ __all__ = [
     "JointSpaceResponse",
     "MotorDC",
     "SchemaNames",
+    "TransmissionBase",
+    "TransmissionDirect",
+    "TransmissionFixed",
     "parse_actuator_prim",
     "parse_battery_prim",
     "register_actuator_component",

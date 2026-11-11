@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .actuator import Actuator
+from .actuator_base import ActuatorBase
 from .batteries import BatteryBase, BatteryConstantResistance
 from .clamping import (
     ClampingBase,
@@ -26,6 +27,7 @@ from .input_processors import (
 from .joint_space_response import JointSpaceResponse
 from .motor_dc import MotorDC
 from .space import DriveOutputSpace
+from .transmissions import TransmissionBase, TransmissionDirect, TransmissionFixed
 from .usd_parser import (
     ActuatorParsed,
     BatteryParsed,
@@ -38,6 +40,7 @@ from .usd_parser import (
 
 __all__ = [
     "Actuator",
+    "ActuatorBase",
     "ActuatorParsed",
     "BatteryBase",
     "BatteryConstantResistance",
@@ -61,6 +64,9 @@ __all__ = [
     "JointSpaceResponse",
     "MotorDC",
     "SchemaNames",
+    "TransmissionBase",
+    "TransmissionDirect",
+    "TransmissionFixed",
     "parse_actuator_prim",
     "parse_battery_prim",
     "register_actuator_component",

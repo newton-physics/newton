@@ -2520,11 +2520,11 @@ class ArticulationView:
         lookup = wp.full(
             dof_layout.max_model_index(self.world_count, self.count_per_world) + 1, -1, dtype=int, device=device
         )
-        if actuator.indices.shape[0] > 0:
+        if actuator.num_actuators > 0:
             wp.launch(
                 _build_actuator_dof_lookup_kernel,
-                dim=actuator.indices.shape[0],
-                inputs=[actuator.indices],
+                dim=actuator.num_actuators,
+                inputs=[actuator.indices[0]],
                 outputs=[lookup],
                 device=device,
             )
@@ -2565,6 +2565,10 @@ class ArticulationView:
         per DOF, one row per world).  DOFs that are not driven by
         *actuator* are left at zero; driven DOFs contain the
         corresponding value gathered from ``component.<name>``.
+
+        Each actuator maps to its first joint (``actuator.indices[0]``);
+        further joints of an actuator with a transmission and sensor joints
+        of an encoder are not included.
 
         The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
         an actuator builds the view's DOF mapping for it with device kernels and caches it. A call
@@ -2619,6 +2623,8 @@ class ArticulationView:
         *values* must cover all DOFs in the view (one column per DOF, one row
         per world).  Only entries whose DOFs are actually driven by *actuator*
         are written back to ``component.<name>``; the rest are ignored.
+        As in :meth:`get_actuator_parameter`, each actuator maps to its
+        actuated DOF, ``actuator.indices[0]``.
 
         The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
         an actuator builds the view's DOF mapping for it with device kernels and caches it. A call

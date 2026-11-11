@@ -480,7 +480,13 @@ def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> Actuator
                 claimed.update(cls.resolve_arguments({"supply_from_battery": bool(batteries), **kwargs}))
             except ValueError as exc:
                 raise ValueError(f"Actuator prim '{prim.GetPath()}': {exc}") from None
-        drive_kwargs = {name: value for name, value in drive_kwargs.items() if name not in claimed}
+        try:
+            drive_params = set(drive_class.resolve_arguments({}))
+        except (ValueError, KeyError, TypeError):
+            drive_params = set()
+        drive_kwargs = {
+            name: value for name, value in drive_kwargs.items() if name not in claimed or name in drive_params
+        }
 
     if len(batteries) > 1:
         warnings.warn(

@@ -13,6 +13,7 @@ import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..utils.deprecation import RemovedAttribute
+from .actuator_base import ActuatorBase
 from .clamping.base import ClampingBase
 from .clamping.clamping_current_duty import ClampingCurrentDuty
 from .drives.base import DriveBase
@@ -23,6 +24,8 @@ from .input_processors.input_processor_delay import InputProcessorDelay
 from .input_processors.input_processor_encoder import InputProcessorEncoder
 from .motor_dc import MotorDC
 from .space import _validate_spaces
+from .transmissions.base import TransmissionBase
+from .transmissions.transmission_direct import TransmissionDirect
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
@@ -37,25 +40,29 @@ _DELAY_UPDATE_STATE_OVERRIDE_DEPRECATION_MSG = (
     "vel_indices, current_state, next_state) signature is deprecated in Newton 1.9; override "
     "update_state(inputs, current_state, next_state) instead."
 )
+_INDICES_1D_DEPRECATION_MSG = (
+    "Passing a 1-D {name} to Actuator is deprecated in Newton 1.9; pass a 2-D array of shape (1, N) instead."
+)
 _DELAY_STATE_DEPRECATION_MSG = (
     "Actuator.State.delay_state is deprecated in Newton 1.9; use input_processor_states instead."
 )
 
 
-@wp.kernel
-def _scatter_add_kernel(
-    forces: wp.array[float],
-    computed_forces: wp.array[float],
-    indices: wp.array[wp.uint32],
-    output: wp.array[float],
-    computed_output: wp.array[float],
-):
-    """Scatter-add effort into output; optionally scatter computed effort too."""
-    i = wp.tid()
-    idx = indices[i]
-    wp.atomic_add(output, idx, forces[i])
-    if computed_output:
-        wp.atomic_add(computed_output, idx, computed_forces[i])
+_ACTUATOR_CONTROL_ATTRS = {
+    "joint_target_q": "actuator_target_pos",
+    "joint_target_qd": "actuator_target_vel",
+    "joint_act": "actuator_feedforward",
+}
+
+
+def _as_rows(indices: Any, name: str) -> Any:
+    """Return an index array as ``(joints, N)``; a 1-D array is the single-joint case."""
+    if indices.ndim == 1:
+        warnings.warn(_INDICES_1D_DEPRECATION_MSG.format(name=name), NewtonDeprecationWarning, stacklevel=3)
+        return indices.reshape((1, indices.shape[0]))
+    if indices.ndim != 2:
+        raise ValueError(f"{name} must be 1-D or 2-D, got {indices.ndim} dimensions")
+    return indices
 
 
 def _assign_state_value(dst: Any, src: Any, name: str) -> None:
@@ -205,15 +212,18 @@ def _input_container_class(name: str, frequencies: tuple[tuple[str, Model.Attrib
     return cls
 
 
-class Actuator:
-    """Composed actuator: input processors → drive → clamping → motor.
+class Actuator(ActuatorBase):
+    """Composed actuator: transmission → input processors → drive → clamping → motor → transmission.
 
-    An actuator reads from simulation state/control arrays, optionally
-    transforms them with input processors (e.g. a command delay), computes
-    effort via a drive, applies clamping (effort limits, saturation, etc.),
-    optionally turns it into the effort of a motor, and **accumulates** the
-    result into the output array (scatter-add).  The caller must zero the
-    output array before stepping actuators.
+    An actuator reads from simulation state/control arrays, maps its joints
+    onto one actuator coordinate through a transmission (the joint itself by
+    default), transforms the inputs with input processors (e.g. a command
+    delay or an encoder),
+    computes effort via a drive, applies clamping (effort limits, saturation,
+    etc.), optionally turns it into the effort of a motor, and
+    **accumulates** the result into the output array (scatter-add) through
+    the transmission.  The caller must zero the output array before stepping
+    actuators.
 
     Usage::
 
@@ -343,13 +353,13 @@ class Actuator:
 
     def __init__(
         self,
-        indices: wp.array[wp.uint32],
+        indices: wp.array[wp.uint32] | wp.array2d[wp.uint32],
         drive: DriveBase | None = None,
         delay: InputProcessorDelay | None = None,
         clamping: list[ClampingBase] | None = None,
-        pos_indices: wp.array[wp.uint32] | None = None,
+        pos_indices: wp.array[wp.uint32] | wp.array2d[wp.uint32] | None = None,
         target_pos_indices: wp.array[wp.uint32] | None = None,
-        effort_indices: wp.array[wp.uint32] | None = None,
+        effort_indices: wp.array[wp.uint32] | wp.array2d[wp.uint32] | None = None,
         state_pos_attr: str = "joint_q",
         state_vel_attr: str = "joint_qd",
         control_target_pos_attr: str | None = "joint_target_q",
@@ -361,6 +371,7 @@ class Actuator:
         *,
         input_processors: list[InputProcessorBase] | None = None,
         motor: MotorDC | None = None,
+        transmission: TransmissionBase | None = None,
         actuator_indices: wp.array[wp.uint32] | None = None,
         control_supply_voltage_attr: str = "actuator_supply_voltage",
         control_supply_current_attr: str = "actuator_supply_current",
@@ -368,23 +379,30 @@ class Actuator:
         """Initialize actuator.
 
         Args:
-            indices: DOF indices into velocity-shaped arrays (velocities,
-                velocity targets, feedforward, effort output). Shape ``(N,)``.
+            indices: DOF indices of the joints each actuator drives into
+                velocity-shaped arrays, shape ``(joints, N)``: row ``j`` names
+                the ``j``-th joint of actuator ``i``. The *transmission* reads
+                their velocities and writes the effort to them. A 1-D array,
+                the single-joint case ``(1, N)``, is deprecated in Newton 1.9.
+                With more than one row, a *transmission* must map them onto
+                one actuator coordinate.
             drive: Drive that computes effort without a motor, or duty with a motor.
             delay: Deprecated in Newton 1.9; pass the delay in
                 ``input_processors`` instead.
             clamping: Clamps applied in list order. Their input_space must match
                 the drive output: EFFORT without a motor, DUTY with one.
-            pos_indices: Indices into coordinate-shaped arrays (positions =
-                ``state.joint_q``). Defaults to *indices*. Differs from
-                *indices* when position and velocity arrays have different
-                layouts (e.g. floating-base or ball-joint articulations).
-            target_pos_indices: Indices into ``control.joint_target_q``.
-                Defaults to *pos_indices*. Override for custom target buffers
-                with a different index mapping.
-            effort_indices: DOF indices into effort output arrays. Defaults to
-                *indices*. Differs from *indices* for coupled transmissions
-                or tendon-driven joints.
+            pos_indices: Indices of the same joints into coordinate-shaped
+                arrays (positions = ``state.joint_q``), same shape as *indices*.
+                Defaults to *indices*. Differs from *indices* when position
+                and velocity arrays have different layouts (e.g.
+                floating-base or ball-joint articulations).
+            target_pos_indices: Indices into ``control.joint_target_q``, shape
+                ``(N,)``. Defaults to row 0 of *pos_indices*, or to
+                *actuator_indices* in actuator space. Override for custom
+                target buffers with a different index mapping.
+            effort_indices: DOF indices into effort output arrays, same shape
+                as *indices*; a 1-D array, the single-joint case, is
+                deprecated in Newton 1.9. Defaults to *indices*.
             state_pos_attr: Attribute on sim_state for positions.
             state_vel_attr: Attribute on sim_state for velocities.
             control_target_pos_attr: Attribute on sim_control for target positions.
@@ -392,6 +410,11 @@ class Actuator:
             control_target_vel_attr: Attribute on sim_control for target velocities.
                 ``None`` selects the default ``"joint_target_qd"``.
             control_feedforward_attr: Attribute on sim_control for feedforward effort. None to skip.
+                With a *transmission*, the targets and feedforward are per
+                actuator, read
+                through *actuator_indices*, and the defaults become
+                ``"actuator_target_pos"``, ``"actuator_target_vel"`` and
+                ``"actuator_feedforward"``.
             control_output_attr: Attribute on sim_control for clamped output effort.
             control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
                 effort. With a motor, this is achieved motor effort after duty
@@ -405,9 +428,17 @@ class Actuator:
                 :class:`~newton.actuators.MotorDC`). With a motor, the drive
                 computes signed duty. The actuator converts duty to motor
                 voltage using the actual supply voltage.
+            transmission: Optional transmission that maps the joints in
+                *indices* onto one actuator position and velocity, which the
+                drive, clamps and motor read, and maps the actuator effort
+                back onto them (e.g.
+                :class:`~newton.actuators.TransmissionFixed`). ``None`` uses
+                :class:`~newton.actuators.TransmissionDirect`: the actuator is
+                its single joint.
             actuator_indices: Index of each actuator into per-actuator arrays,
                 i.e. arrays with one entry per actuator of the model rather
-                than per DOF. Required when the motor draws from a battery.
+                than per DOF. Required when the motor draws from a battery or
+                the actuator has a *transmission*.
             control_supply_voltage_attr: Attribute on sim_control for the
                 per-actuator supply voltage the motor reads from its battery.
             control_supply_current_attr: Attribute on sim_control for the
@@ -420,25 +451,52 @@ class Actuator:
             warnings.warn(_DELAY_KEYWORD_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             input_processors.insert(0, delay)
 
-        self.indices = indices
-        self.pos_indices = pos_indices if pos_indices is not None else indices
-        self.target_pos_indices = target_pos_indices if target_pos_indices is not None else self.pos_indices
-        self.effort_indices = effort_indices if effort_indices is not None else indices
+        self.indices = _as_rows(indices, "indices")
+        """DOF indices of the driven joints into velocity-shaped arrays, shape ``(joints, N)``."""
+        num_actuators = self.indices.shape[1]
+        self.pos_indices = _as_rows(pos_indices, "pos_indices") if pos_indices is not None else self.indices
+        """Indices of the driven joints into coordinate-shaped arrays, shape ``(joints, N)``."""
+        self.transmission = transmission if transmission is not None else TransmissionDirect()
+        """Transmission mapping the joints in :attr:`indices` onto the actuator coordinate."""
+        # With a transmission, the drive compares an actuator coordinate (e.g.
+        # a gripper opening 0.5 qL + 0.5 qR, or a motor angle behind a gear),
+        # so its target and feedforward are per actuator too, read through
+        # actuator_indices.
+        self._actuator_space_targets = not isinstance(self.transmission, TransmissionDirect)
+        if self._actuator_space_targets and actuator_indices is None:
+            raise ValueError(
+                "an actuator with a transmission reads per-actuator targets, which requires actuator_indices"
+            )
+        if target_pos_indices is None:
+            target_pos_indices = actuator_indices if self._actuator_space_targets else self.pos_indices[0]
+        self.target_pos_indices = target_pos_indices
+        """Indices into the target position array, shape ``(N,)``."""
+        self._target_vel_indices = actuator_indices if self._actuator_space_targets else self.indices[0]
+        self.effort_indices = _as_rows(effort_indices, "effort_indices") if effort_indices is not None else self.indices
+        """DOF indices of the driven joints into effort output arrays, shape ``(joints, N)``."""
         self.actuator_indices = actuator_indices
         """Index of each actuator into per-actuator arrays, or ``None``."""
-        if actuator_indices is not None and actuator_indices.shape != indices.shape:
+        if actuator_indices is not None and actuator_indices.shape != (num_actuators,):
+            raise ValueError(f"actuator_indices shape {actuator_indices.shape} must be ({num_actuators},)")
+        if self.pos_indices.shape != self.indices.shape:
             raise ValueError(
-                f"actuator_indices shape {actuator_indices.shape} must match indices shape {indices.shape}"
+                f"pos_indices shape {self.pos_indices.shape} must match indices shape {self.indices.shape}"
             )
-        if self.pos_indices.shape != indices.shape:
-            raise ValueError(f"pos_indices shape {self.pos_indices.shape} must match indices shape {indices.shape}")
-        if self.target_pos_indices.shape != indices.shape:
+        if self.target_pos_indices.shape != (num_actuators,):
+            raise ValueError(f"target_pos_indices shape {self.target_pos_indices.shape} must be ({num_actuators},)")
+        if self.effort_indices.shape != self.indices.shape:
             raise ValueError(
-                f"target_pos_indices shape {self.target_pos_indices.shape} must match indices shape {indices.shape}"
+                f"effort_indices shape {self.effort_indices.shape} must match indices shape {self.indices.shape}"
             )
-        if self.effort_indices.shape != indices.shape:
+        if self.indices.shape[0] > 1 and transmission is None:
             raise ValueError(
-                f"effort_indices shape {self.effort_indices.shape} must match indices shape {indices.shape}"
+                f"indices names {self.indices.shape[0]} joints per actuator; add a transmission that maps them "
+                "onto one actuator coordinate, e.g. TransmissionFixed"
+            )
+        if self._actuator_space_targets and drive.custom_inputs:
+            raise NotImplementedError(
+                f"{type(drive).__name__} declares custom inputs, which are indexed by DOF; "
+                "a transmission works in actuator space, so they cannot be combined"
             )
         self.drive = drive
         self.input_processors = input_processors
@@ -446,7 +504,7 @@ class Actuator:
         self._legacy_delay_updates = _legacy_delay_updates(input_processors)
         self.clamping = clamping or []
         _validate_spaces(drive.output_space, (c.input_space for c in self.clamping), motor is not None)
-        self.num_actuators = len(indices)
+        self.num_actuators = num_actuators
 
         self.state_pos_attr = state_pos_attr
         self.state_vel_attr = state_vel_attr
@@ -456,6 +514,17 @@ class Actuator:
         self.control_target_pos_attr = "joint_target_q" if control_target_pos_attr is None else control_target_pos_attr
         self.control_target_vel_attr = "joint_target_qd" if control_target_vel_attr is None else control_target_vel_attr
         self.control_feedforward_attr = control_feedforward_attr
+        if self._actuator_space_targets:
+            self.control_target_pos_attr = _ACTUATOR_CONTROL_ATTRS.get(
+                self.control_target_pos_attr, self.control_target_pos_attr
+            )
+            self.control_target_vel_attr = _ACTUATOR_CONTROL_ATTRS.get(
+                self.control_target_vel_attr, self.control_target_vel_attr
+            )
+            if control_feedforward_attr is not None:
+                self.control_feedforward_attr = _ACTUATOR_CONTROL_ATTRS.get(
+                    control_feedforward_attr, control_feedforward_attr
+                )
         self.control_output_attr = control_output_attr
         self.control_computed_output_attr = control_computed_output_attr
         self.motor = motor
@@ -469,7 +538,7 @@ class Actuator:
         if self._uses_battery and actuator_indices is None:
             raise ValueError(f"{type(motor).__name__} draws from a battery, which requires actuator_indices")
 
-        self.device = indices.device
+        self.device = self.indices.device
         self.requires_grad = requires_grad
         self._computed_forces = wp.zeros(
             self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
@@ -496,6 +565,9 @@ class Actuator:
             clamp.finalize(self.device, self.num_actuators)
         if motor is not None:
             motor.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
+        self.transmission.finalize(
+            self.device, self.num_actuators, self.effort_indices.shape[0], requires_grad=requires_grad
+        )
 
         self.set_effort_mode_explicit()
 
@@ -560,6 +632,10 @@ class Actuator:
         from ..sim.model import Model  # noqa: PLC0415
 
         frequencies = dict.fromkeys(self.drive.custom_inputs, Model.AttributeFrequency.JOINT_DOF)
+        if self._actuator_space_targets:
+            for name in (self.control_target_pos_attr, self.control_target_vel_attr, self.control_feedforward_attr):
+                if name is not None:
+                    frequencies[name] = Model.AttributeFrequency.ACTUATOR
         if self._uses_battery:
             frequencies[self.control_supply_voltage_attr] = Model.AttributeFrequency.ACTUATOR
             frequencies[self.control_supply_current_attr] = Model.AttributeFrequency.ACTUATOR
@@ -619,8 +695,10 @@ class Actuator:
 
         Raises:
             NotImplementedError: The actuator was built with ``requires_grad=True``,
-                as the implicit solve is not differentiable, or has a motor,
-                which the implicit solve does not model.
+                as the implicit solve is not differentiable, or has a motor or
+                a transmission other than
+                :class:`~newton.actuators.TransmissionDirect`, which the
+                implicit solve does not model.
 
         Warns:
             NewtonWarning: The actuator has an :class:`~newton.actuators.InputProcessorEncoder`.
@@ -635,6 +713,10 @@ class Actuator:
             )
         if self.motor is not None:
             raise NotImplementedError(f"Implicit actuation does not support the motor {type(self.motor).__name__}.")
+        if not isinstance(self.transmission, TransmissionDirect):
+            raise NotImplementedError(
+                f"Implicit actuation does not support the transmission {type(self.transmission).__name__}."
+            )
         if self.drive.custom_inputs and type(self.drive).prepare_implicit is DriveBase.prepare_implicit:
             raise NotImplementedError(
                 f"{type(self.drive).__name__} declares custom inputs but does not override prepare_implicit, "
@@ -654,7 +736,7 @@ class Actuator:
             options,
             self.num_actuators,
             self.device,
-            self.indices,
+            self.indices[0],
         )
 
     def set_effort_mode_explicit(self) -> None:
@@ -706,10 +788,15 @@ class Actuator:
             else []
         )
         state_attrs = [(self.state_pos_attr, frequency.JOINT_COORD), (self.state_vel_attr, frequency.JOINT_DOF)]
+        target_frequencies = (
+            (frequency.ACTUATOR,) * 3
+            if self._actuator_space_targets
+            else (frequency.JOINT_COORD, frequency.JOINT_DOF, frequency.JOINT_DOF)
+        )
         control_attrs = [
-            (self.control_target_pos_attr, frequency.JOINT_COORD),
-            (self.control_target_vel_attr, frequency.JOINT_DOF),
-            (self.control_feedforward_attr, frequency.JOINT_DOF),
+            (self.control_target_pos_attr, target_frequencies[0]),
+            (self.control_target_vel_attr, target_frequencies[1]),
+            (self.control_feedforward_attr, target_frequencies[2]),
             (self.control_output_attr, frequency.JOINT_DOF),
             (self.control_computed_output_attr, frequency.JOINT_DOF),
             *((name, frequency.JOINT_DOF) for name in self.drive.custom_inputs),
@@ -730,6 +817,9 @@ class Actuator:
     ) -> None:
         """Execute one control step.
 
+        0. **Transmission state** — map the joint positions and velocities
+           onto the actuator position and velocity, which the input
+           processors, drive, clamps and motor read.
         1. **Input processors** — transform the state and command inputs
            in list order (e.g. read delayed targets from ``current_state``),
            and write each processor's ``next_state`` (e.g. push the current
@@ -744,8 +834,8 @@ class Actuator:
            solve.
         5. **Motor** — convert duty to motor voltage, then compute effort. A motor that
            draws from a battery writes the current it draws.
-        6. **Scatter-add** — *accumulate* applied (and optionally computed)
-           effort into the output array.  The caller must zero the output
+        6. **Transmission** — *accumulate* applied (and optionally computed)
+           effort of the output DOFs into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
         7. **Drive state update** — write the drive's ``next_state``.
 
@@ -793,17 +883,22 @@ class Actuator:
         current_states = (current_act_state and current_act_state.input_processor_states) or no_states
         next_states = (next_act_state and next_act_state.input_processor_states) or no_states
 
+        # --- 0. Transmission state: actuator position and velocity ---
+        actuator_positions, actuator_pos_indices, motor_velocities, motor_vel_indices = self.transmission.compute_state(
+            positions, velocities, self.pos_indices, self.indices, device=self.device
+        )
+
         # --- 1. Input processors (read current_state, write next_state) ---
         inputs = InputProcessorBase.Inputs(
-            positions=positions,
-            velocities=velocities,
+            positions=actuator_positions,
+            velocities=motor_velocities,
             target_pos=target_pos,
             target_vel=target_vel,
             feedforward=feedforward,
-            pos_indices=self.pos_indices,
-            vel_indices=self.indices,
+            pos_indices=actuator_pos_indices,
+            vel_indices=motor_vel_indices,
             target_pos_indices=self.target_pos_indices,
-            target_vel_indices=self.indices,
+            target_vel_indices=self._target_vel_indices,
             sim_positions=positions,
             sim_velocities=velocities,
         )
@@ -858,9 +953,11 @@ class Actuator:
             self._supply_voltage,
             supply_current,
             self.actuator_indices,
+            motor_velocities,
+            motor_vel_indices,
         )
 
-        # --- 6. Scatter-add to output ---
+        # --- 6. Transmission: map effort onto the output DOFs ---
         applied_output = _require_array(sim_control, self.control_output_attr)
         computed_output = None
         if (
@@ -868,15 +965,12 @@ class Actuator:
             and self.control_computed_output_attr != self.control_output_attr
         ):
             computed_output = _require_array(sim_control, self.control_computed_output_attr)
-        wp.launch(
-            kernel=_scatter_add_kernel,
-            dim=self.num_actuators,
-            inputs=[
-                output_forces,
-                self._computed_forces,
-                self.effort_indices,
-            ],
-            outputs=[applied_output, computed_output],
+        self.transmission.compute(
+            output_forces,
+            self._computed_forces,
+            self.effort_indices,
+            applied_output,
+            computed_output,
             device=self.device,
         )
 
