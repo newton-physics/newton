@@ -702,7 +702,9 @@ Whether an actuator supports differentiability and CUDA graph capture depends on
 its components.  All built-in input processors, clamps, motors and drives are
 graphable, except neural-network drives with a Torch checkpoint, due to
 framework interop overhead; with an ONNX checkpoint they are graphable.
-Implicit mode is not differentiable.  :meth:`Actuator.is_graphable` returns
+Implicit mode is not differentiable.  Gradients are correct for one actuator
+step per tape; several steps on one tape reuse internal buffers and give wrong
+gradients.  :meth:`Actuator.is_graphable` returns
 ``True`` when all components can be captured in a CUDA graph.
 
 :meth:`Actuator.is_graphable` describes the components, not the captured region.

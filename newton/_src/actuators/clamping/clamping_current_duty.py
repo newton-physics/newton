@@ -22,6 +22,8 @@ def _current_duty_clamp_kernel(
     min_voltage: wp.array[float],
     kt_estimate: wp.array[float],
     resistance_estimate: wp.array[float],
+    motor_kt: wp.array[float],
+    motor_resistance: wp.array[float],
     src: wp.array[float],
     dst: wp.array[float],
 ):
@@ -29,8 +31,14 @@ def _current_duty_clamp_kernel(
     duty = src[i]
     voltage = voltage_estimate[i]
     if max_current[i] > 0.0 and voltage > min_voltage[i]:
-        back_emf = kt_estimate[i] * velocities[vel_indices[i]]
-        span = resistance_estimate[i] * max_current[i]
+        kt = kt_estimate[i]
+        if kt == 0.0:
+            kt = motor_kt[i]
+        resistance = resistance_estimate[i]
+        if resistance == 0.0:
+            resistance = motor_resistance[i]
+        back_emf = kt * velocities[vel_indices[i]]
+        span = resistance * max_current[i]
         duty = wp.clamp(duty, (back_emf - span) / voltage, (back_emf + span) / voltage)
     dst[i] = wp.clamp(duty, -max_duty[i], max_duty[i])
 
@@ -54,7 +62,7 @@ class ClampingCurrentDuty(ClampingBase):
     ``kt_estimate`` and ``resistance_estimate`` are the firmware's estimates of
     the motor parameters. By default they are the motor's own ``kt`` and
     ``resistance`` arrays; set them to model firmware estimates that differ
-    from the physical motor.
+    from the physical motor. A zero entry uses the motor's value for that slot.
 
     A zero ``max_current`` disables the current window. An estimated voltage at or below
     ``min_voltage`` also skips it, avoiding division by a near-zero voltage. This
@@ -166,6 +174,7 @@ class ClampingCurrentDuty(ClampingBase):
         """Firmware estimate of the motor torque constant [N/A or N·m/A], shape (N,); the motor's ``kt`` by default."""
         self.resistance_estimate = resistance_estimate
         """Firmware estimate of the motor winding resistance [Ω], shape (N,); the motor's ``resistance`` by default."""
+        self._motor = None
         for name in ("kt_estimate", "resistance_estimate", "max_duty", "nominal_voltage", "min_voltage"):
             value = getattr(self, name)
             if value is not None and value.shape != max_current.shape:
@@ -177,13 +186,14 @@ class ClampingCurrentDuty(ClampingBase):
 
         A group where no actuator sets an estimate keeps it unset, so it shares the motor's array.
         """
-        for name, motor_name in (("kt_estimate", "kt"), ("resistance_estimate", "resistance")):
+        for name in ("kt_estimate", "resistance_estimate"):
             if any(name in a for a in args) and not all(name in a for a in args):
-                args = [a if name in a else {**a, name: m[motor_name]} for a, m in zip(args, motor_args, strict=True)]
+                args = [a if name in a else {**a, name: 0.0} for a in args]
         return args
 
     def _use_motor_parameters(self, motor) -> None:
         """Share the motor's ``kt`` and ``resistance`` arrays for estimates left unset."""
+        self._motor = motor
         if self.kt_estimate is None:
             self.kt_estimate = motor.kt
         if self.resistance_estimate is None:
@@ -225,6 +235,7 @@ class ClampingCurrentDuty(ClampingBase):
             raise ValueError(
                 "kt_estimate and resistance_estimate are required unless the clamp belongs to an Actuator with a motor"
             )
+        motor = self._motor
         wp.launch(
             kernel=_current_duty_clamp_kernel,
             dim=len(src_forces),
@@ -237,6 +248,8 @@ class ClampingCurrentDuty(ClampingBase):
                 self.min_voltage,
                 self.kt_estimate,
                 self.resistance_estimate,
+                motor.kt if motor else self.kt_estimate,
+                motor.resistance if motor else self.resistance_estimate,
                 src_forces,
             ],
             outputs=[dst_forces],

@@ -3672,18 +3672,15 @@ class ModelBuilder:
         if len(set(actuators)) != len(actuators):
             raise ValueError("add_battery: an actuator is listed more than once")
         with_battery = self._actuators_with_battery()
+        rows = {
+            row: (dof, entry.motor_args[i] if entry.motor_args else {})
+            for entry in self.actuator_entries.values()
+            for i, (row, dof) in enumerate(zip(entry.actuator_indices, entry.indices, strict=False))
+        }
         for actuator in actuators:
             if not 0 <= actuator < self.actuator_count:
                 raise ValueError(f"add_battery: actuator {actuator} does not exist")
-            dof, motor_args = next(
-                (
-                    (dof, entry.motor_args[i] if entry.motor_args else {})
-                    for entry in self.actuator_entries.values()
-                    for i, (row, dof) in enumerate(zip(entry.actuator_indices, entry.indices, strict=False))
-                    if row == actuator
-                ),
-                (None, {}),
-            )
+            dof, motor_args = rows.get(actuator, (None, {}))
             if dof is not None:
                 world = self.joint_world[bisect_right(self.joint_qd_start, dof) - 1]
                 if world != self.current_world:
