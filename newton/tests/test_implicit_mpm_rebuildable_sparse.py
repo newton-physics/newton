@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
-import warnings
 from types import SimpleNamespace
 from unittest import mock
 
@@ -536,7 +535,7 @@ def test_rebuildable_sparse_warmstarts_collider_impulses(test, device):
 
 
 def test_particle_properties_notify_refreshes_masks_in_place(test, device):
-    """Verify PARTICLE_PROPERTIES refreshes the particle masks in place, with flag-independent extrema."""
+    """Verify PARTICLE_PROPERTIES refreshes the particle masks in place."""
     active = int(newton.ParticleFlags.ACTIVE)
     proxy = int(newton.ParticleFlags.PROXY)
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
@@ -548,7 +547,6 @@ def test_particle_properties_notify_refreshes_masks_in_place(test, device):
             mass=1.0,
             radius=0.01 * (i + 1),
             flags=flags,
-            custom_attributes={"mpm:viscosity": 10.0 if i == 2 else 0.0, "mpm:dilatancy": 0.5 if i == 3 else 0.0},
         )
     model = builder.finalize(device=device)
     solver = _make_sparse_solver(model, max_active_cell_count=8)
@@ -556,10 +554,6 @@ def test_particle_properties_notify_refreshes_masks_in_place(test, device):
     masks = (mpm_model.particle_flags, mpm_model.material_particle_flags, mpm_model.material_particle_volume)
     pointers = [array.ptr for array in masks]
     volume = mpm_model.particle_volume.numpy()
-
-    # The inactive viscous particle and the dilatant proxy particle select their code paths up front.
-    test.assertTrue(mpm_model.has_viscosity)
-    test.assertTrue(mpm_model.has_dilatancy)
 
     def check_masks(flags):
         material = np.where(flags & proxy, flags & ~active, flags)
@@ -569,8 +563,6 @@ def test_particle_properties_notify_refreshes_masks_in_place(test, device):
             mpm_model.material_particle_volume.numpy(), np.where(material & active, volume, 0.0)
         )
         test.assertEqual([array.ptr for array in masks], pointers)
-        test.assertTrue(mpm_model.has_viscosity)
-        test.assertTrue(mpm_model.has_dilatancy)
 
     check_masks(model.particle_flags.numpy())
 
@@ -663,101 +655,116 @@ def test_particle_properties_notify_in_cuda_graph(test, device):
 
 
 def _make_material_block_model(device, **custom_attributes):
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
-    for i in range(2):
-        for j in range(2):
-            for k in range(2):
+    for i in range(4):
+        for j in range(4):
+            for k in range(4):
                 builder.add_particle(
-                    wp.vec3(0.01 + 0.02 * i, 0.5 + 0.02 * j, 0.01 + 0.02 * k),
+                    wp.vec3(0.05 + 0.05 * i, 0.5 + 0.05 * j, 0.05 + 0.05 * k),
                     wp.vec3(0.0),
                     mass=1.0,
-                    radius=0.01,
+                    radius=0.025,
                     custom_attributes=custom_attributes,
                 )
     return builder.finalize(device=device)
 
 
-def test_particle_properties_notify_refreshes_material_extrema(test, device):
-    """Verify PARTICLE_PROPERTIES refreshes volumes and material extrema in place."""
-    model = _make_material_block_model(device)
-    solver = _make_sparse_solver(model, max_active_cell_count=8)
-    mpm_model = solver._mpm_model
-    arrays = (mpm_model._material_extrema, mpm_model.particle_volume, mpm_model.particle_density)
-    pointers = [array.ptr for array in arrays]
-    test.assertEqual(mpm_model.code_path_switches(), (False, False, False, False))
+def _make_material_block_state(model):
+    """Return a state whose particles shear the block, so that material parameters matter."""
+    state = model.state()
+    q = state.particle_q.numpy()
+    qd = np.zeros_like(q)
+    qd[:, 0] = 20.0 * (q[:, 1] - q[:, 1].mean())
+    state.particle_qd.assign(qd)
+    return state
 
-    model.mpm.young_modulus.fill_(1.0e4)
-    model.mpm.hardening.fill_(5.0)
-    model.mpm.viscosity.fill_(2.0)
-    model.mpm.dilatancy.fill_(0.5)
+
+_COHESIVE = {"yield_stress": 1.0e3, "yield_pressure": 1.0e3}
+_COMPLIANT_VISCOUS = {"young_modulus": 1.0e3, "viscosity": 500.0, "dilatancy": 0.5}
+
+
+def _set_material(model, values):
+    for name, value in values.items():
+        getattr(model.mpm, name).fill_(value)
+
+
+def test_particle_properties_notify_refreshes_volumes(test, device):
+    """Verify PARTICLE_PROPERTIES refreshes particle volumes and densities in place."""
+    model = _make_material_block_model(device)
+    solver = _make_sparse_solver(model, max_active_cell_count=64)
+    mpm_model = solver._mpm_model
+    arrays = (mpm_model.particle_volume, mpm_model.particle_density)
+    pointers = [array.ptr for array in arrays]
+
     model.particle_radius.fill_(0.02)
+    model.particle_mass.fill_(2.0)
     solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
 
-    test.assertAlmostEqual(mpm_model.min_young_modulus, 1.0e4, places=2)
-    test.assertAlmostEqual(mpm_model.max_hardening, 5.0, places=5)
-    test.assertEqual(mpm_model.code_path_switches(), (True, True, True, True))
     np.testing.assert_allclose(mpm_model.particle_volume.numpy(), 8.0 * 0.02**3, rtol=1.0e-5)
+    np.testing.assert_allclose(mpm_model.particle_density.numpy(), 2.0 / (8.0 * 0.02**3), rtol=1.0e-5)
     test.assertEqual([array.ptr for array in arrays], pointers)
 
 
-def test_material_notify_in_cuda_graph_syncs_on_eager_step(test, device):
-    """Verify a material change notified inside a CUDA graph reaches the host on the next eager step."""
-    if not wp.is_mempool_enabled(device):
-        test.skipTest("CUDA graph capture requires the Warp memory pool")
+def _run_material_block(device, *, capture, change=None, initial=None, steps=4, **config_kwargs):
+    """Step the sheared block and return the particle velocities, optionally changing the material after the first step.
 
+    With ``capture``, the steps after the change are replayed from a graph
+    captured before the change, with the notification recorded in the graph.
+    """
     model = _make_material_block_model(device)
-    solver = _make_sparse_solver(model, max_active_cell_count=64)
-    mpm_model = solver._mpm_model
-    state_0, state_1 = model.state(), model.state()
+    if initial:
+        _set_material(model, initial)
+    solver = _make_sparse_solver(model, max_active_cell_count=256, **config_kwargs)
+    state_0 = _make_material_block_state(model)
+    state_1 = model.state()
     solver.step(state_0, state_1, None, None, 0.005)
+    state_0, state_1 = state_1, state_0
 
-    with wp.ScopedCapture(device=device) as scope:
+    def two_steps():
         solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
-    graph = scope.graph
-
-    model.mpm.viscosity.fill_(2.0)
-    wp.capture_launch(graph)
-    # The host has not read the graph's extrema back yet.
-    test.assertFalse(mpm_model.has_viscosity)
-    solver.step(state_1, state_0, None, None, 0.005)
-    test.assertTrue(mpm_model.has_viscosity)
-
-    # Every eager step reads back once a notification was captured.
-    model.mpm.viscosity.zero_()
-    wp.capture_launch(graph)
-    solver.step(state_0, state_1, None, None, 0.005)
-    test.assertFalse(mpm_model.has_viscosity)
-
-
-def test_material_change_after_step_capture_warns(test, device):
-    """Verify switching a code path after capturing step() warns, and other material changes do not."""
-    if not wp.is_mempool_enabled(device):
-        test.skipTest("CUDA graph capture requires the Warp memory pool")
-
-    model = _make_material_block_model(device, **{"mpm:young_modulus": 1.0e4})
-    solver = _make_sparse_solver(model, max_active_cell_count=64)
-    state_0, state_1 = model.state(), model.state()
-    solver.step(state_0, state_1, None, None, 0.005)
-    with wp.ScopedCapture(device=device):
+        solver.step(state_0, state_1, None, None, 0.005)
         solver.step(state_1, state_0, None, None, 0.005)
 
-    # Values within the captured code paths are read at run time: no warning.
-    model.mpm.young_modulus.fill_(1.0e3)
-    model.mpm.friction.fill_(0.2)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
+    graph = None
+    if capture:
+        with wp.ScopedCapture(device=device) as scope:
+            two_steps()
+        graph = scope.graph
+    if change:
+        _set_material(model, change)
+    for _ in range(steps // 2):
+        if graph is not None:
+            wp.capture_launch(graph)
+        else:
+            two_steps()
+    solver.check_sparse_grid_rebuild_status()
+    return state_0.particle_qd.numpy()
 
-    model.mpm.viscosity.fill_(2.0)
-    with test.assertWarnsRegex(UserWarning, "viscosity on.*capture them again"):
-        solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
 
-    # Warned once per capture.
-    model.mpm.dilatancy.fill_(0.5)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
+def test_material_change_reaches_captured_graph(test, device):
+    """Verify a step graph captured with rigid material follows a later compliant, viscous, dilatant material."""
+    if not wp.is_mempool_enabled(device):
+        test.skipTest("CUDA graph capture requires the Warp memory pool")
+
+    rigid = _run_material_block(device, capture=False)
+    eager = _run_material_block(device, capture=False, change=_COMPLIANT_VISCOUS)
+    graph = _run_material_block(device, capture=True, change=_COMPLIANT_VISCOUS)
+
+    test.assertGreater(np.max(np.abs(eager - rigid)), 1.0e-4)
+    np.testing.assert_allclose(graph, eager, rtol=1.0e-5, atol=1.0e-6)
+
+
+def test_disabled_compliance_is_ignored(test, device):
+    """Verify disabling compliance ignores the elastic material parameters."""
+    # Cohesion keeps the sheared block below the yield surface, where elasticity matters
+    compliant = {**_COHESIVE, "young_modulus": 1.0e3}
+    rigid = _run_material_block(device, capture=False, initial=_COHESIVE, enable_compliance=False)
+    material = _run_material_block(device, capture=False, initial=compliant, enable_compliance=False)
+    enabled = _run_material_block(device, capture=False, initial=compliant)
+
+    test.assertGreater(np.max(np.abs(enabled - rigid)), 1.0e-4)
+    np.testing.assert_allclose(material, rigid, rtol=1.0e-5, atol=1.0e-6)
 
 
 class TestImplicitMPMRebuildableSparse(unittest.TestCase):
@@ -926,23 +933,23 @@ add_function_test(
 
 add_function_test(
     TestImplicitMPMRebuildableSparse,
-    "test_particle_properties_notify_refreshes_material_extrema",
-    test_particle_properties_notify_refreshes_material_extrema,
+    "test_particle_properties_notify_refreshes_volumes",
+    test_particle_properties_notify_refreshes_volumes,
     devices=devices,
     check_output=False,
 )
 add_function_test(
     TestImplicitMPMRebuildableSparse,
-    "test_material_notify_in_cuda_graph_syncs_on_eager_step",
-    test_material_notify_in_cuda_graph_syncs_on_eager_step,
+    "test_material_change_reaches_captured_graph",
+    test_material_change_reaches_captured_graph,
     devices=cuda_devices,
     check_output=False,
 )
 add_function_test(
     TestImplicitMPMRebuildableSparse,
-    "test_material_change_after_step_capture_warns",
-    test_material_change_after_step_capture_warns,
-    devices=cuda_devices,
+    "test_disabled_compliance_is_ignored",
+    test_disabled_compliance_is_ignored,
+    devices=devices,
     check_output=False,
 )
 

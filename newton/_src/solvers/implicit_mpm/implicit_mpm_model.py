@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import math
-import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -226,48 +225,6 @@ def _refresh_particle_masks(
         material_particle_volume[i] = 0.0
 
 
-_EXTREMA_MIN_YOUNG_MODULUS = 0
-_EXTREMA_MAX_HARDENING = 1
-_EXTREMA_MAX_VISCOSITY = 2
-_EXTREMA_MAX_DILATANCY = 3
-_EXTREMA_COUNT = 4
-
-
-@wp.kernel
-def _reset_material_extrema(extrema: wp.array[float]):
-    extrema[_EXTREMA_MIN_YOUNG_MODULUS] = wp.inf
-    extrema[_EXTREMA_MAX_HARDENING] = 0.0
-    extrema[_EXTREMA_MAX_VISCOSITY] = 0.0
-    extrema[_EXTREMA_MAX_DILATANCY] = 0.0
-
-
-@wp.kernel
-def _reduce_material_extrema(
-    is_collider_particle: wp.array[wp.int32],
-    young_modulus: wp.array[float],
-    hardening: wp.array[float],
-    viscosity: wp.array[float],
-    dilatancy: wp.array[float],
-    extrema: wp.array[float],
-):
-    """Reduce the material extrema over the particles that can carry material.
-
-    Each atomic is guarded by a plain read of the current extremum, so most
-    particles skip it and the contention stays low.
-    """
-    i = wp.tid()
-    if is_collider_particle[i] != 0:
-        return
-    if young_modulus[i] < extrema[_EXTREMA_MIN_YOUNG_MODULUS]:
-        wp.atomic_min(extrema, _EXTREMA_MIN_YOUNG_MODULUS, young_modulus[i])
-    if hardening[i] > extrema[_EXTREMA_MAX_HARDENING]:
-        wp.atomic_max(extrema, _EXTREMA_MAX_HARDENING, hardening[i])
-    if viscosity[i] > extrema[_EXTREMA_MAX_VISCOSITY]:
-        wp.atomic_max(extrema, _EXTREMA_MAX_VISCOSITY, viscosity[i])
-    if dilatancy[i] > extrema[_EXTREMA_MAX_DILATANCY]:
-        wp.atomic_max(extrema, _EXTREMA_MAX_DILATANCY, dilatancy[i])
-
-
 def _get_body_collision_shapes(model: newton.Model, body_index: int):
     """Returns the ids of the shapes of a body with active collision flags."""
 
@@ -402,22 +359,8 @@ class ImplicitMPMModel:
         self.collider_body_q = None
         self.deformable_collider_vertex_ranges: list[tuple[int, int, int]] = []
 
-        self.min_young_modulus = math.inf
-        """Smallest Young's modulus [Pa] over material-capable particles, as last read back on the host."""
-        self.max_hardening = 0.0
-        """Largest hardening factor over material-capable particles, as last read back on the host."""
-        self.has_viscosity = False
-        """Whether any material-capable particle has viscosity, as last read back on the host."""
-        self.has_dilatancy = False
-        """Whether any material-capable particle has dilatancy, as last read back on the host."""
-
-        # Host copy of the device extrema is out of date (set by a notification).
-        self._extrema_host_stale = False
-        # A notification ran inside a CUDA graph capture, so graph replays may
-        # change the device extrema without the host knowing.
-        self._extrema_refreshed_in_graph = False
-        # Code-path switches in effect when ``step()`` was last captured.
-        self._captured_code_paths: tuple[bool, ...] | None = None
+        self.enable_compliance = bool(options.enable_compliance)
+        """Whether the elasticity system is built, see ``SolverImplicitMPM.Config.enable_compliance``."""
 
         self.notify_particle_material_changed()
         self.setup_collider()
@@ -435,12 +378,11 @@ class ImplicitMPMModel:
         - ``particle_volume`` and ``particle_density``, from
           ``model.particle_radius`` and ``model.particle_mass``.
         - The transfer and material particle masks (see :meth:`refresh_particle_flags`).
-        - The material extrema that select solver code paths (see
-          :meth:`sync_material_extrema`).
 
-        After the first call, this only launches kernels that write existing
-        arrays, so it may be recorded in a CUDA graph. Outside a graph capture
-        it also reads the extrema back to the host.
+        The code paths do not depend on the material values: they are fixed by
+        the ``enable_*`` options at construction. After the first call, this
+        only launches kernels that write existing arrays, so it may be recorded
+        in a CUDA graph.
         """
         model = self.model
 
@@ -474,7 +416,6 @@ class ImplicitMPMModel:
 
         self._require_particle_arrays()
         self.refresh_particle_flags()
-        self._refresh_material_extrema()
 
     def refresh_particle_flags(self):
         """Refresh the transfer and material particle masks from ``model.particle_flags``.
@@ -482,9 +423,7 @@ class ImplicitMPMModel:
         Runs a single kernel that writes the existing ``particle_flags``,
         ``material_particle_flags`` and ``material_particle_volume`` arrays in
         place: no host synchronization or allocation, so it may be called every
-        step and recorded in a CUDA graph. The material extrema do not depend on
-        the ``ACTIVE`` or ``PROXY`` flags, so changing them never changes the
-        solver's code paths.
+        step and recorded in a CUDA graph.
         """
         model = self.model
         wp.launch(
@@ -496,7 +435,7 @@ class ImplicitMPMModel:
         )
 
     def _require_particle_arrays(self):
-        """Allocate the particle masks and extrema on first use; later calls keep the same arrays.
+        """Allocate the particle masks on first use; later calls keep the same arrays.
 
         The arrays are written in place afterwards, so arrays bound in captured graphs stay valid.
         """
@@ -513,8 +452,6 @@ class ImplicitMPMModel:
             if getattr(self, "_is_collider_particle", None) is None:
                 # Filled by setup_collider(); no particle is a collider before that.
                 self._is_collider_particle = wp.zeros(num_particles, dtype=wp.int32)
-            if getattr(self, "_material_extrema", None) is None:
-                self._material_extrema = wp.empty(_EXTREMA_COUNT, dtype=float)
 
     def _refresh_collider_particle_mask(self):
         """Mark the particles that belong to deformable colliders, which never carry material."""
@@ -525,93 +462,6 @@ class ImplicitMPMModel:
             if collider_particle_ids_np.size:
                 is_collider_particle[collider_particle_ids_np] = 1
         self._is_collider_particle.assign(is_collider_particle)
-
-    def _refresh_material_extrema(self):
-        """Reduce the material extrema on the device over every particle that can carry material.
-
-        Collider particles never carry material, so they are excluded. Inactive
-        and proxy particles are included, so that the ``ACTIVE`` and ``PROXY``
-        flags can change at runtime without changing the solver's code paths.
-        Unset ``model.mpm.*`` attributes default to rigid material without
-        hardening, viscosity or dilatancy, and so do not enable additional code
-        paths.
-
-        Outside a graph capture, the extrema are read back to the host right
-        away. Inside a capture, the readback is left to the next
-        :meth:`sync_material_extrema` call outside a capture.
-        """
-        model = self.model
-        params = self.material_parameters
-        wp.launch(_reset_material_extrema, dim=1, outputs=[self._material_extrema], device=model.device)
-        wp.launch(
-            _reduce_material_extrema,
-            dim=model.particle_count,
-            inputs=[
-                self._is_collider_particle,
-                params.young_modulus,
-                params.hardening,
-                params.viscosity,
-                params.dilatancy,
-            ],
-            outputs=[self._material_extrema],
-            device=model.device,
-        )
-        self._extrema_host_stale = True
-        if model.device.is_capturing:
-            self._extrema_refreshed_in_graph = True
-        else:
-            self.sync_material_extrema()
-
-    def code_path_switches(self) -> tuple[bool, bool, bool, bool]:
-        """Return the host-side switches that select solver code paths.
-
-        Returns:
-            ``(has_compliant_particles, has_hardening, has_viscosity, has_dilatancy)``.
-        """
-        return (self.has_compliant_particles, self.has_hardening, self.has_viscosity, self.has_dilatancy)
-
-    def record_captured_code_paths(self):
-        """Remember the code-path switches in effect while ``step()`` is being captured in a CUDA graph."""
-        self._captured_code_paths = self.code_path_switches()
-
-    def sync_material_extrema(self):
-        """Copy the device material extrema to the host if they may have changed.
-
-        Does nothing during a graph capture, where the host keeps its last
-        values. If a notification was ever recorded in a graph, every call
-        outside a capture reads the extrema back, since graph replays can change
-        them without the host knowing.
-
-        Warns when the code-path switches changed since ``step()`` was last
-        captured: the captured graph keeps the code paths in effect at capture
-        time, so the change only takes effect in a graph captured afterwards.
-        """
-        if not (self._extrema_host_stale or self._extrema_refreshed_in_graph):
-            return
-        if self.model.device.is_capturing:
-            return
-
-        extrema = self._material_extrema.numpy()
-        self.min_young_modulus = float(extrema[_EXTREMA_MIN_YOUNG_MODULUS])
-        self.max_hardening = float(extrema[_EXTREMA_MAX_HARDENING])
-        self.has_viscosity = bool(extrema[_EXTREMA_MAX_VISCOSITY] > 0.0)
-        self.has_dilatancy = bool(extrema[_EXTREMA_MAX_DILATANCY] > 0.0)
-        self._extrema_host_stale = False
-
-        captured = self._captured_code_paths
-        if captured is not None and captured != self.code_path_switches():
-            names = ("compliant particles", "hardening", "viscosity", "dilatancy")
-            changed = ", ".join(
-                f"{name} {'on' if now else 'off'}"
-                for name, was, now in zip(names, captured, self.code_path_switches(), strict=True)
-                if was != now
-            )
-            warnings.warn(
-                f"SolverImplicitMPM material change switches code paths ({changed}). CUDA graphs that "
-                "captured step() before this change keep the previous code paths; capture them again.",
-                stacklevel=3,
-            )
-            self._captured_code_paths = None
 
     def notify_collider_changed(self, body_mass: np.ndarray | None = None):
         """Refresh cached extrema for collider parameters.
@@ -1148,16 +998,7 @@ class ImplicitMPMModel:
 
         self._refresh_collider_particle_mask()
         self.refresh_particle_flags()
-        self._refresh_material_extrema()
         self.notify_collider_changed(effective_body_mass)
-
-    @property
-    def has_compliant_particles(self):
-        return self.min_young_modulus < _INFINITY
-
-    @property
-    def has_hardening(self):
-        return self.max_hardening > 0.0
 
     @property
     def has_compliant_colliders(self):
