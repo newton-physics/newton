@@ -385,12 +385,12 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             def offsets(sizes):
                 start = np.empty_like(sizes)
                 start[order] = np.cumsum(sizes[order]) - sizes[order]
-                return wp.array(start, dtype=wp.int32, device=model.device), int(sizes.sum())
+                return wp.array(start, dtype=wp.int32, device=model.device), int(sizes.sum()), start
 
             # matrix offsets for batched gemm
-            self.articulation_J_start, self.J_size = offsets(6 * joint_count * dof_count)
-            self.articulation_M_start, self.M_size = offsets(36 * joint_count * joint_count)
-            self.articulation_H_start, self.H_size = offsets(dof_count * dof_count)
+            self.articulation_J_start, self.J_size, J_start_host = offsets(6 * joint_count * dof_count)
+            self.articulation_M_start, self.M_size, M_start_host = offsets(36 * joint_count * joint_count)
+            self.articulation_H_start, self.H_size, H_start_host = offsets(dof_count * dof_count)
 
             group_to_art = {}
             for art in order:
@@ -398,6 +398,19 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     group_to_art.setdefault((int(joint_count[art]), int(dof_count[art])), []).append(art)
             self._group_to_art = {
                 size: wp.array(arts, dtype=wp.int32, device=model.device) for size, arts in group_to_art.items()
+            }
+            # host copy of the per-size group metadata (first-articulation
+            # offsets into J/M/H and the group batch size). The articulation
+            # layout is topology-static, so this is computed once here and
+            # reused by every system-matrix allocation without host syncs.
+            self._tile_group_meta = {
+                size: (
+                    int(J_start_host[arts[0]]),
+                    int(M_start_host[arts[0]]),
+                    int(H_start_host[arts[0]]),
+                    len(arts),
+                )
+                for size, arts in group_to_art.items()
             }
 
             self.articulation_M_rows = wp.array(6 * joint_count, dtype=wp.int32, device=model.device)
@@ -410,36 +423,43 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                 joint_q_start[articulation_start], dtype=wp.int32, device=model.device
             )
 
+    def _allocate_system_matrices(self, target, requires_grad):
+        """Allocate the per-step system matrices (J, M, P, H, L, H_mimic) plus
+        the tile-gemm per-size views on ``target``.
+
+        ``target`` is the step's output state on the differentiable path and
+        the solver itself otherwise, so every tape step keeps its own scratch:
+        solver-owned matrices would alias across the steps of one gradient
+        tape (earlier steps' adjoints would read later steps' rewritten
+        values, and later steps' covector deposits would be consumed again).
+        """
+        model = self.model
+        target.J = wp.zeros((self.J_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
+        target.M = wp.zeros((self.M_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
+        target.P = wp.empty_like(target.J, requires_grad=requires_grad)
+        target.H = wp.empty((self.H_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
+        # zero since only the lower triangle is set which can trigger NaN detection
+        target.L = wp.zeros_like(target.H)
+        target.H_mimic = wp.zeros_like(target.H) if self._has_joint_mimics else None
+
+        if self.use_tile_gemm:
+            target._J_by_size, target._M_by_size, target._H_by_size, target._L_by_size = {}, {}, {}, {}
+            for size, (j_start, m_start, h_start, n) in self._tile_group_meta.items():
+                joint_count, dof_count = size
+                target._J_by_size[size] = _group_view(target.J, j_start, (n, 6 * joint_count, dof_count))
+                target._M_by_size[size] = _group_view(target.M, m_start, (n, 6 * joint_count, 6 * joint_count))
+                target._H_by_size[size] = _group_view(target.H, h_start, (n, dof_count, dof_count))
+                target._L_by_size[size] = _group_view(target.L, h_start, (n, dof_count, dof_count))
+
     def _allocate_model_aux_vars(self, model):
         # allocate mass, Jacobian matrices, and other auxiliary variables pertaining to the model
         if model.joint_count:
-            # system matrices
-            self.M = wp.zeros((self.M_size,), dtype=wp.float32, device=model.device, requires_grad=model.requires_grad)
-            self.J = wp.zeros((self.J_size,), dtype=wp.float32, device=model.device, requires_grad=model.requires_grad)
-            self.P = wp.empty_like(self.J, requires_grad=model.requires_grad)
-            self.H = wp.empty((self.H_size,), dtype=wp.float32, device=model.device, requires_grad=model.requires_grad)
-
-            # zero since only upper triangle is set which can trigger NaN detection
-            self.L = wp.zeros_like(self.H)
+            # solver-owned system matrices, used by the requires_grad=False path
+            self._allocate_system_matrices(self, model.requires_grad)
             if self._has_joint_mimics:
-                self.H_mimic = wp.zeros_like(self.H)
                 self.joint_armature_zero = wp.zeros_like(model.joint_armature)
             else:
-                self.H_mimic = None
                 self.joint_armature_zero = None
-
-            if self.use_tile_gemm:
-                J_start = self.articulation_J_start.numpy()
-                M_start = self.articulation_M_start.numpy()
-                H_start = self.articulation_H_start.numpy()
-                self._J_by_size, self._M_by_size, self._H_by_size, self._L_by_size = {}, {}, {}, {}
-                for size, arts in self._group_to_art.items():
-                    joint_count, dof_count = size
-                    first, n = int(arts.numpy()[0]), arts.shape[0]
-                    self._J_by_size[size] = _group_view(self.J, J_start[first], (n, 6 * joint_count, dof_count))
-                    self._M_by_size[size] = _group_view(self.M, M_start[first], (n, 6 * joint_count, 6 * joint_count))
-                    self._H_by_size[size] = _group_view(self.H, H_start[first], (n, dof_count, dof_count))
-                    self._L_by_size[size] = _group_view(self.L, H_start[first], (n, dof_count, dof_count))
 
         if model.body_count:
             self.body_I_m = wp.empty(
@@ -539,37 +559,10 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             )
 
         if model.joint_count and target is not self:
-            # Per-step system matrices. The mass-matrix chain rewrites these
-            # every step, so keeping them on the solver would alias the steps
-            # inside one gradient tape: earlier steps' adjoints would read
-            # later steps' matrix values, and later steps' covector deposits
-            # left in the shared adjoint buffers would be consumed again by
-            # earlier steps' gemm/cholesky adjoints. Attaching them to the
-            # step's output state gives every step its own scratch, matching
-            # the state-side aux arrays above. When the target is the solver
-            # itself (the requires_grad=False path) the solver-owned matrices
-            # allocated in _allocate_model_aux_vars are used instead.
-            target.J = wp.zeros((self.J_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
-            target.M = wp.zeros((self.M_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
-            target.P = wp.empty_like(target.J, requires_grad=requires_grad)
-            target.H = wp.empty((self.H_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
-            # zero since only the lower triangle is set which can trigger NaN detection
-            target.L = wp.zeros_like(target.H)
-            target.H_mimic = wp.zeros_like(target.H) if self._has_joint_mimics else None
-            if self.use_tile_gemm:
-                J_start = self.articulation_J_start.numpy()
-                M_start = self.articulation_M_start.numpy()
-                H_start = self.articulation_H_start.numpy()
-                target._J_by_size, target._M_by_size, target._H_by_size, target._L_by_size = {}, {}, {}, {}
-                for size, arts in self._group_to_art.items():
-                    joint_count, dof_count = size
-                    first, n = int(arts.numpy()[0]), arts.shape[0]
-                    target._J_by_size[size] = _group_view(target.J, J_start[first], (n, 6 * joint_count, dof_count))
-                    target._M_by_size[size] = _group_view(
-                        target.M, M_start[first], (n, 6 * joint_count, 6 * joint_count)
-                    )
-                    target._H_by_size[size] = _group_view(target.H, H_start[first], (n, dof_count, dof_count))
-                    target._L_by_size[size] = _group_view(target.L, H_start[first], (n, dof_count, dof_count))
+            # Per-state scratch so each tape step keeps its own system
+            # matrices (solver-owned ones would alias across tape steps); the
+            # requires_grad=False path reuses the solver-owned matrices.
+            self._allocate_system_matrices(target, requires_grad)
 
         # mark the target augmented so step() allocates only once per target
         target._featherstone_augmented = True

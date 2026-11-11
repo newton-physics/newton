@@ -1287,8 +1287,10 @@ add_diffsim_example_test(
     name="diffsim.example_diffsim_anymal_backflip",
     devices=test_devices,
     # --test mode: settle + gradient check only (the full optimization is a
-    # deliberate ~1 h interactive run and is never executed by CI)
-    test_options={"num-frames": 2, "usd_required": True, "test_timeout": 1200},
+    # deliberate ~1 h interactive run and is never executed by CI).
+    # Measured --test runtimes: ~12 s CUDA, ~9 s CPU - the default 600 s
+    # timeout is plenty.
+    test_options={"num-frames": 2, "usd_required": True},
     test_options_cpu={"num-frames": 1},
     use_viewer=True,
 )

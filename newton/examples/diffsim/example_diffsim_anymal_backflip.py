@@ -37,17 +37,13 @@ and takes roughly 45-60 minutes on a single GPU. That is the honest cost of
 the behavior; nothing about the method is abbreviated. ``--test`` skips the
 optimization entirely and runs only the gradient check (seconds).
 
-Implementation note - Warp auto-adjoint pitfall (learned the hard way while
-building this example): the landing servo originally looked up the active
-spline segment with an in-kernel loop
-``k = 0; for kk in range(n): if t >= knots[kk]: k = kk``. The FORWARD was
-correct, but Warp's auto-adjoint replays loop-carried variables mutated
-inside conditionals incorrectly (k=0 for every step in the backward), which
-piled the entire adjoint onto the first parameter and zeroed the rest - the
-optimizer could only ever use one knot per joint. The bracket is therefore
-precomputed on the host per launch (see ``_bracket``), which makes the
-adjoint exact. Avoid loop-carried index variables inside differentiable
-kernels.
+Warp auto-adjoint pitfall: an in-kernel linear scan
+(``k = 0; for kk in range(n): if t >= knots[kk]: k = kk``) is correct in the
+forward, but the auto-adjoint mishandles loop-carried variables mutated
+inside conditionals (k stays 0 in the backward here) and concentrates the
+whole adjoint on one parameter. The active segment is therefore precomputed
+on the host per launch (``_bracket``), which makes the adjoint exact. Avoid
+loop-carried index variables inside differentiable kernels.
 
 Success criteria:
 - Phase A: a clean crouch (depth ~0.34 m, upright, knees clear of the ground).
@@ -1168,8 +1164,8 @@ class Example:
 
     @staticmethod
     def _clipped_step(amps, d, r, lo, hi, r_min):
-        # trust-region projection: clip onto the feasible box, accept if it
-        # moved at all (reject-unless-inside silently killed warm starts)
+        # project onto the feasible box; accept any real move so warm starts
+        # stay usable
         while r >= r_min:
             trial = np.clip(amps + r * d, lo, hi)
             if not np.array_equal(trial, amps):
@@ -1226,8 +1222,8 @@ class Example:
             else:
                 imp = L_cur - L_new
                 rho = imp / pred if pred > 0 else None
-            # strict_rho (crouch, ~smooth): classic trust region. relaxed
-            # (jump/land, chaotic tapes): accept ANY improvement
+            # rho is meaningless on the chaotic jump/land tapes - only the
+            # crouch phase gates on it
             ok = imp > 0 and (rho is None or rho >= 0.1 or not strict_rho)
             if ok:
                 amps, L_cur = trial, L_new
@@ -1420,7 +1416,7 @@ class Example:
             if not np.isfinite(m["z"]) or m["z"] > 3.5:
                 rep["blew_up"] = True
                 break
-            if record:
+            if record and t % FRAME_EVERY == 0:
                 self.playback.append(("jump", self._snapshot(st)))
             # graze-filtered touchdown (physical gates: descending + low)
             if rows == 0:
@@ -1461,12 +1457,15 @@ class Example:
                 max_p = z
         return max_p
 
-    def _land_replay(self, amps, snap, record=False, extra=0):
+    def _land_replay(self, amps, snap, record=False, extra=0, frame_offset=0):
         """Landing replay. extra > 0 = settle-check tail: keep simulating on
         with the final spline values held so a delayed bounce-back cannot
         hide past the window end. The settled gate is evaluated both at
         window end (settled_win) and at the true end of the run (settled);
-        the chain itself runs extra=0."""
+        the chain itself runs extra=0. Recorded playback frames are sampled
+        every FRAME_EVERY steps counted from the jump phase's touchdown step
+        (``frame_offset`` = ``rep["td_step"]``) so the frames stay evenly
+        spaced across the touchdown boundary."""
         rep = {
             "knee_margin_min": 1e9,
             "bounce": 0.0,
@@ -1517,7 +1516,7 @@ class Example:
             pmx = self._paw_max_z(bqd)
             rep["paw_lift_max"] = max(rep["paw_lift_max"], pmx)
             rep["bounce"] += max(m["vz"], 0.0) ** 2 * SIM_DT
-            if record and t < N_C:
+            if record and t < N_C and (t + frame_offset) % FRAME_EVERY == 0:
                 self.playback.append(("land", self._snapshot(st)))
             if t == N_C - 1:
                 rep["bounce_win"] = rep["bounce"]
@@ -1648,9 +1647,7 @@ class Example:
             print(f"  r{rnd}: plan {res['L_init']:+.3f}->{res['L_cur']:+.3f} (acc {res['accepts']:2d})", flush=True)
             if not same:
                 td_r, rep_r = self._jump_replay(res["amps"], crouch_snap, record=False)
-                # round score: a blown-up round scores -1e9;
-                # otherwise flip accuracy at TD + 0.02 x TD tilt, knee margin
-                # as tiebreak; a no-TD round still scores by its end pitch
+                # lexicographic tuple: a blown-up round loses to everything
                 if rep_r["blew_up"]:
                     sc = (-1e9, 0.0, 0.0)
                 else:
@@ -1710,7 +1707,12 @@ class Example:
                 break
         # final recorded replay of the chosen landing (bit-identical execution;
         # the playback frames come from THIS replay)
-        rep_c = self._land_replay(best_c["amps"] if best_c is not None else warm_c, td_snap, record=True)
+        rep_c = self._land_replay(
+            best_c["amps"] if best_c is not None else warm_c,
+            td_snap,
+            record=True,
+            frame_offset=rep_b["td_step"],
+        )
         land_ok = rep_c.get("settled", False)
         print(
             f"  => phase C final: z={rep_c['final_z']:.3f} tilt={rep_c['final_tilt_deg']:.1f}deg "
@@ -1866,11 +1868,8 @@ class Example:
         for arr_idx, c in channels:
             fd = (rollout(arr_idx, c, +eps) - rollout(arr_idx, c, -eps)) / (2 * eps)
             gv = (g_q if arr_idx == 0 else g_qd)[c]
-            # probe gradients span 1e-6 (near-dead channels, float32 noise
-            # floor on a 2-step rollout) to ~1: pass on a 15% RELATIVE bar
-            # OR a 5e-5 ABSOLUTE bar (well below any physically meaningful
-            # sensitivity in this problem, same spirit as the engine
-            # adjoint test's dead-channel + spread guards)
+            # 15% relative bar; the 5e-5 absolute bar covers channels at the
+            # float32 noise floor of a 2-step rollout
             err = abs(gv - fd)
             rel = err / max(abs(fd), 1e-12)
             assert rel <= 0.15 or err <= 5e-5, (
