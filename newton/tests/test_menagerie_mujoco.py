@@ -135,6 +135,9 @@ def create_newton_model_from_mjcf(
     """
     # Create articulation builder for the robot
     robot_builder = newton.ModelBuilder()
+    # MJCF geoms default to gap=0; Newton's builder default is 0.1. Authored gaps
+    # still import, so geom_gap stays comparable against the native model.
+    robot_builder.rigid_gap = 0.0
 
     # floating defaults to None, which honors the MJCF's explicit joint definitions.
     # Menagerie models define their own <freejoint> tags for floating-base robots.
@@ -396,8 +399,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "tendon_solref_lim",
     # RGBA: Newton uses different default color for geoms without explicit rgba
     "geom_rgba",
-    # Size: Compared via compare_geom_fields_unordered() which understands type-specific semantics
-    "geom_size",
     # Site size: Only a subset of the 3 elements is meaningful per type (sphere=1,
     # capsule/cylinder=2, box=3). Compared via _compare_sites() instead.
     "site_size",
@@ -410,13 +411,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Integrator: Newton may select a different integrator than the MJCF default.
     # The solver forces the correct integrator at runtime regardless.
     "opt.integrator",
-    # Geom ordering: Newton's solver may order geoms differently (e.g. colliders before
-    # visuals). Content is verified by compare_geom_fields_unordered() instead.
-    "body_geomadr",
-    "body_geomnum",
-    "geom_",
-    "pair_geom",  # geom indices depend on geom ordering
-    "nxn_",  # broadphase pairs depend on geom ordering
     # Compilation-dependent fields: validated at 1e-3 by compare_compiled_model_fields()
     # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
     "body_invweight0",
@@ -454,6 +448,20 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "nmeshdegmax",
     "npolygonmax",
     "mesh_",
+}
+
+# Geom ordering: Newton's solver may order geoms differently (e.g. colliders before
+# visuals), so compare_models() always skips these index-dependent fields in the
+# ordered comparison and verifies geom content via compare_geom_fields_unordered()
+# instead. Kept separate from DEFAULT_MODEL_SKIP_FIELDS so that the broad "geom_"
+# entry does not also disable the unordered comparison; add "geom_" to skip_fields
+# to disable it explicitly.
+GEOM_ORDER_SKIP_FIELDS: set[str] = {
+    "body_geomadr",
+    "body_geomnum",
+    "geom_",
+    "pair_geom",  # geom indices depend on geom ordering
+    "nxn_",  # broadphase pairs depend on geom ordering
 }
 
 
@@ -524,6 +532,11 @@ def compare_models(
     geom, joint, or DOF comparison are skipped when the corresponding field
     prefix is in skip_fields (as used by USD tests with reordered indices).
 
+    Geom fields are never compared by index: the ordered comparison always
+    skips :data:`GEOM_ORDER_SKIP_FIELDS`, and geom content is compared by
+    :func:`compare_geom_fields_unordered` instead, honoring the same
+    skip_fields. Add ``"geom_"`` to skip_fields to disable that too.
+
     Args:
         skip_fields: Substrings to skip in field-level comparison.
         backfill_fields: Fields to validate at relaxed tolerance via
@@ -535,7 +548,7 @@ def compare_models(
     def _skipped(prefix: str) -> bool:
         return any(s in prefix for s in skip_fields)
 
-    compare_mjw_models(newton_mjw, native_mjw, skip_fields=skip_fields)
+    compare_mjw_models(newton_mjw, native_mjw, skip_fields=skip_fields | GEOM_ORDER_SKIP_FIELDS)
 
     if not _skipped("body_inertia"):
         compare_inertia_tensors(newton_mjw, native_mjw)
@@ -707,7 +720,12 @@ def compare_geom_fields_unordered(
     Matches geoms by (body_id, geom_type) pairs within each body, then compares
     physics-relevant fields for each matched pair. This handles models where
     Newton and native MuJoCo order geoms differently (e.g. colliders first vs
-    MJCF order).
+    MJCF order). Geoms of the same type within one body are matched in order.
+
+    Plane pos/quat and mesh pos/quat/size are not compared: plane placement is
+    cosmetic, and MuJoCo re-centers mesh geoms at compile time (mesh_pos,
+    mesh_quat), so the compiled frame and size depend on the mesh data each
+    side supplied rather than on the imported geom.
 
     Args:
         newton_mjw: Newton's mujoco_warp model.
@@ -760,8 +778,34 @@ def compare_geom_fields_unordered(
 
     assert np.all(newton_to_native >= 0), "Failed to match all geoms"
 
+    def _as_batched(arr: Any) -> np.ndarray:
+        """Return a per-geom field as (nworld, ngeom, ...), adding a world axis if needed.
+
+        Uses the warp array's ndim: the numpy view adds a trailing axis for vector types.
+        """
+        arr_np = arr.numpy()
+        return arr_np if arr.ndim == 2 else arr_np[np.newaxis]
+
+    def _assert_matched(field_name: str, newton_np: np.ndarray, native_np: np.ndarray, geom_mask: np.ndarray):
+        """Assert masked geoms match per world; native_np is already in Newton's geom order."""
+        assert newton_np.shape == native_np.shape, f"{field_name}: shape {newton_np.shape} != {native_np.shape}"
+        for w in range(newton_np.shape[0]):
+            mismatch = ~np.isclose(newton_np[w], native_np[w], rtol=0.0, atol=tol, equal_nan=True)
+            bad = np.flatnonzero(mismatch.any(axis=tuple(range(1, mismatch.ndim))) & geom_mask)
+            assert bad.size == 0, (
+                f"{field_name}[world={w}] differs for newton geoms {bad.tolist()}: "
+                f"newton={newton_np[w, bad[0]]} vs native={native_np[w, bad[0]]}"
+            )
+
     # Compare fields using the mapping
     GEOM_PLANE = 0
+    GEOM_SPHERE = 2
+    GEOM_CAPSULE = 3
+    GEOM_CYLINDER = 5
+    GEOM_MESH = 7
+
+    all_geoms = np.ones(ngeom, dtype=bool)
+    comparable_frame = ~np.isin(newton_type, (GEOM_PLANE, GEOM_MESH))
 
     geom_fields = [
         "geom_pos",
@@ -770,8 +814,8 @@ def compare_geom_fields_unordered(
         "geom_margin",
         "geom_gap",
         "geom_solmix",
-        "geom_solref",
         "geom_solimp",
+        "geom_group",
     ]
 
     for field_name in geom_fields:
@@ -781,72 +825,25 @@ def compare_geom_fields_unordered(
         native_arr = getattr(native_mjw, field_name, None)
         if newton_arr is None or native_arr is None:
             continue
-        newton_np = newton_arr.numpy()
-        native_np = native_arr.numpy()
+        geom_mask = comparable_frame if field_name in ("geom_pos", "geom_quat") else all_geoms
+        _assert_matched(field_name, _as_batched(newton_arr), _as_batched(native_arr)[:, newton_to_native], geom_mask)
 
-        if newton_np.ndim >= 2 and newton_np.shape[0] == newton_mjw.nworld:
-            # Batched: (nworld, ngeom, ...)
-            for w in range(newton_np.shape[0]):
-                reordered_native = native_np[w][newton_to_native]
-                for g in range(ngeom):
-                    if newton_type[g] == GEOM_PLANE and field_name in ("geom_pos", "geom_quat"):
-                        continue  # plane pos/quat may differ cosmetically
-                    np.testing.assert_allclose(
-                        newton_np[w, g],
-                        reordered_native[g],
-                        atol=tol,
-                        rtol=0,
-                        err_msg=f"{field_name}[world={w}, geom={g}]",
-                    )
-        else:
-            # Non-batched: (ngeom, ...)
-            reordered_native = native_np[newton_to_native]
-            for g in range(ngeom):
-                if newton_type[g] == GEOM_PLANE and field_name in ("geom_pos", "geom_quat"):
-                    continue
-                np.testing.assert_allclose(
-                    newton_np[g],
-                    reordered_native[g],
-                    atol=tol,
-                    rtol=0,
-                    err_msg=f"{field_name}[geom={g}]",
-                )
-
-    # Compare geom_size with type-specific semantics
-    if not any("geom_size" in s for s in skip_fields):
-        newton_size = newton_mjw.geom_size.numpy()
-        native_size = native_mjw.geom_size.numpy()
-        for w in range(newton_size.shape[0]):
-            for g in range(ngeom):
-                gtype = newton_type[g]
-                n_sz = newton_size[w, g]
-                nat_sz = native_size[w, newton_to_native[g]]
-                if gtype == GEOM_PLANE:
-                    continue
-                elif gtype == 2:  # SPHERE
-                    np.testing.assert_allclose(
-                        n_sz[0],
-                        nat_sz[0],
-                        atol=tol,
-                        rtol=0,
-                        err_msg=f"geom_size[{w},{g}] (SPHERE) radius",
-                    )
-                elif gtype in (3, 5):  # CAPSULE, CYLINDER
-                    np.testing.assert_allclose(
-                        n_sz[:2],
-                        nat_sz[:2],
-                        atol=tol,
-                        rtol=0,
-                        err_msg=f"geom_size[{w},{g}] (CAPSULE/CYLINDER)",
-                    )
-                else:
-                    np.testing.assert_allclose(
-                        n_sz,
-                        nat_sz,
-                        atol=tol,
-                        rtol=0,
-                        err_msg=f"geom_size[{w},{g}] (type={gtype})",
-                    )
+    # Compare geom_size with type-specific semantics: only a type-dependent prefix of
+    # the 3 entries is meaningful (sphere=1, capsule/cylinder=2, otherwise 3).
+    if not any(s in "geom_size" for s in skip_fields):
+        size_count = np.full(ngeom, 3)
+        size_count[~comparable_frame] = 0
+        size_count[newton_type == GEOM_SPHERE] = 1
+        size_count[np.isin(newton_type, (GEOM_CAPSULE, GEOM_CYLINDER))] = 2
+        size_mask = np.arange(3)[np.newaxis, :] < size_count[:, np.newaxis]  # (ngeom, 3)
+        newton_size = _as_batched(newton_mjw.geom_size)
+        native_size = _as_batched(native_mjw.geom_size)[:, newton_to_native]
+        _assert_matched(
+            "geom_size",
+            np.where(size_mask, newton_size, 0.0),
+            np.where(size_mask, native_size, 0.0),
+            all_geoms,
+        )
 
 
 def compare_site_sizes(
@@ -2584,6 +2581,60 @@ class TestMenagerie_I2rtYam(TestMenagerieMJCF):
     robot_folder = "i2rt_yam"
 
     skip_reason = "Not yet implemented"
+
+
+# =============================================================================
+# Comparison Helper Tests
+# =============================================================================
+
+
+@unittest.skipIf(not MUJOCO_AVAILABLE, "mujoco/mujoco_warp not installed")
+class TestCompareGeomFieldsUnordered(unittest.TestCase):
+    """compare_models() must compare geom content even though geoms are matched unordered."""
+
+    # Two geoms of different types on one body: reversing their declaration order moves
+    # them to different indices while keeping the (body, type) matching unique.
+    BOX = '<geom name="box" type="box" size="0.1 0.2 0.3" pos="0.1 0 0" friction="1 0.005 0.0001"/>'
+    SPHERE = '<geom name="sphere" type="sphere" size="0.05" pos="-0.1 0 0" friction="0.5 0.005 0.0001" group="3"/>'
+
+    @staticmethod
+    def _put_model(geoms: list[str]) -> Any:
+        """Build a mujoco_warp model of one hinged body carrying the given geoms."""
+        xml = f'<mujoco><worldbody><body pos="0 0 1"><joint axis="0 0 1"/>{"".join(geoms)}</body></worldbody></mujoco>'
+        return _mujoco_warp.put_model(_mujoco.MjModel.from_xml_string(xml))
+
+    def test_reordered_geoms_compare_equal(self):
+        """Models that differ only in geom declaration order compare equal."""
+        ref = self._put_model([self.BOX, self.SPHERE])
+        reordered = self._put_model([self.SPHERE, self.BOX])
+        compare_models(ref, reordered, skip_fields=DEFAULT_MODEL_SKIP_FIELDS)
+
+    def test_reordered_geom_mismatch_detected(self):
+        """A geom field that differs on a reordered geom is reported unless skipped."""
+        ref = self._put_model([self.BOX, self.SPHERE])
+        for field, old, new in (
+            ("geom_group", 'group="3"', 'group="2"'),
+            ("geom_friction", 'friction="0.5', 'friction="0.9'),
+        ):
+            with self.subTest(field=field):
+                changed = self._put_model([self.SPHERE.replace(old, new), self.BOX])
+                with self.assertRaisesRegex(AssertionError, field):
+                    compare_models(ref, changed, skip_fields=DEFAULT_MODEL_SKIP_FIELDS)
+                # The explicit skips still take effect.
+                compare_models(ref, changed, skip_fields=DEFAULT_MODEL_SKIP_FIELDS | {field})
+                compare_models(ref, changed, skip_fields=DEFAULT_MODEL_SKIP_FIELDS | {"geom_"})
+        # A size change also changes mass and inertia, so check the type-aware size
+        # comparison through the helper alone.
+        with self.subTest(field="geom_size"):
+            changed = self._put_model([self.SPHERE.replace('size="0.05"', 'size="0.07"'), self.BOX])
+            with self.assertRaisesRegex(AssertionError, "geom_size"):
+                compare_geom_fields_unordered(ref, changed)
+            compare_geom_fields_unordered(ref, changed, skip_fields={"geom_size"})
+
+    def test_empty_models_compare_equal(self):
+        """A model without geoms compares equal to itself."""
+        empty = _mujoco_warp.put_model(_mujoco.MjModel.from_xml_string("<mujoco/>"))
+        compare_models(empty, empty, skip_fields=DEFAULT_MODEL_SKIP_FIELDS)
 
 
 # =============================================================================
