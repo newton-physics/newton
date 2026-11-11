@@ -8523,17 +8523,17 @@ class ModelBuilder:
                 if last_dynamic_body > -1:
                     source_m = body_data[last_dynamic_body]["mass"]
                     source_com = body_data[last_dynamic_body]["com"]
-                    # add inertia to last_dynamic_body
                     m = body_data[child_body]["mass"]
                     com = wp.transform_point(incoming_xform, body_data[child_body]["com"])
                     inertia = body_data[child_body]["inertia"]
-                    body_data[last_dynamic_body]["inertia"] += transform_inertia(
-                        m, inertia, incoming_xform.p, incoming_xform.q
-                    )
-                    body_data[last_dynamic_body]["mass"] += m
                     total_mass = m + source_m
+                    merged_com = (m * com + source_m * source_com) / total_mass if total_mass > 0.0 else source_com
+                    # Both tensors must be expressed about the merged COM.
+                    body_data[last_dynamic_body]["inertia"] = transform_inertia(
+                        source_m, body_data[last_dynamic_body]["inertia"], source_com - merged_com, wp.quat_identity()
+                    ) + transform_inertia(m, inertia, com - merged_com, incoming_xform.q)
+                    body_data[last_dynamic_body]["mass"] = total_mass
                     if total_mass > 0.0:
-                        merged_com = (m * com + source_m * source_com) / total_mass
                         qd = body_data[last_dynamic_body]["qd"]
                         angular_velocity = wp.spatial_bottom(qd)
                         # Preserve the velocity field when shifting the COM reference.
