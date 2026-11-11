@@ -486,14 +486,8 @@ def trim_all_in_place(
             other_length_sq = wp.length_sq(other_direction)
             cross = direction[0] * other_direction[1] - direction[1] * other_direction[0]
             if other_length_sq > 0.0 and wp.abs(cross) > 1.0e-6 * wp.sqrt(length_sq * other_length_sq):
-                # Nonparallel lines meet at one crossing. Simulated edges are
-                # never parallel to float precision, so keep the part of the
-                # overlap where the lines stay within the sample resolution EPS
-                # [m] of their closest separation in the overlap. Normal error
-                # can offset the projected lines, as tolerated for parallel
-                # lines above; the band then tends to the whole overlap as the
-                # angle vanishes. It has half-length EPS / sin(angle) around a
-                # crossing inside the overlap.
+                # Keep separation within EPS of its closest value so normal
+                # error does not drop nearly parallel contacts.
                 inv_other_length = 1.0 / wp.sqrt(other_length_sq)
                 offset = (
                     other_direction[0] * (start[1] - other_start[1]) - other_direction[1] * (start[0] - other_start[0])
@@ -509,9 +503,7 @@ def trim_all_in_place(
                 overlap = (hi - lo) * wp.sqrt(length_sq)
                 lo = wp.max(lo, wp.min(band_lo, band_hi))
                 hi = wp.min(hi, wp.max(band_lo, band_hi))
-                # Like clipped polygon vertices, endpoints closer than the merge
-                # radius (half the overlap, capped) form a single contact; the
-                # caller then uses the deepest GJK/MPR witness.
+                # A short band uses the caller's single deepest GJK/MPR witness.
                 if (hi - lo) * wp.sqrt(length_sq) < wp.min(0.5 * overlap, MAX_CLIP_VERTEX_MERGE_DISTANCE):
                     return 0
         else:

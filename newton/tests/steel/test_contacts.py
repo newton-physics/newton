@@ -1377,19 +1377,25 @@ def test_contact_f_reports_each_box_weight(test, device, steps=150, torsion_radi
     observables.contact_f.fill_(wp.spatial_vector(FILL, FILL, FILL, FILL, FILL, FILL))
     states = [model.state(), model.state()]
     control = model.control()
-    for _ in range(steps):
+    row_overflow = options.get("free_body_constraint_max") is not None
+    for step in range(steps):
         pipeline.collide(states[0], contacts)
         solver.step(states[0], states[1], control, contacts, DT, observables=observables)
         states.reverse()
+        if row_overflow and step == min(10, steps) - 1:
+            # Check dropped rows before the unsupported boxes leave the ground.
+            contact_f = observables.contact_f.numpy()
+            _check_rows(test, contacts, contact_f)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            dropped = solver._contact_slot.numpy()[:count] < 0
+            test.assertTrue(dropped.any())
+            np.testing.assert_array_equal(contact_f[:count][dropped], 0.0)
     contact_f = observables.contact_f.numpy()
-    _check_rows(test, contacts, contact_f)
-    if options.get("free_body_constraint_max") is not None:
-        # Rows beyond the capacity were dropped; those contacts report zero.
-        count = int(contacts.rigid_contact_count.numpy()[0])
-        dropped = solver._contact_slot.numpy()[:count] < 0
-        test.assertTrue(dropped.any())
-        np.testing.assert_array_equal(contact_f[:count][dropped], 0.0)
+    if row_overflow and int(contacts.rigid_contact_count.numpy()[0]) == 0:
+        np.testing.assert_array_equal(contact_f, 0.0)
     else:
+        _check_rows(test, contacts, contact_f)
+    if not row_overflow:
         weight = np.linalg.norm(model.gravity.numpy()[0])
         net = _net_body_forces(model, contacts, contact_f)
         np.testing.assert_allclose(net[0], [0.0, 0.0, LOWER_MASS * weight], atol=0.03 * LOWER_MASS * weight)
@@ -1624,9 +1630,7 @@ for _suffix, _options in (
     ("torsion", {"torsion_radius": 0.01}),
     ("device_torsion", {"torsion_radius": 0.01, "contact_torsion_device": True}),
     ("double_buffer", {"double_buffer": True}),
-    # Dropped rows leave the boxes unsupported, so they fall through the ground
-    # and tumble; check the reported rows while the stack still overflows.
-    ("row_overflow", {"free_body_constraint_max": 6, "warn_constraint_overflow": False, "steps": 10}),
+    ("row_overflow", {"free_body_constraint_max": 6, "warn_constraint_overflow": False}),
 ):
     add_function_test(
         TestSteelContactObservable,

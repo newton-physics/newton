@@ -1351,7 +1351,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             )
 
     def test_plane_box_thin_plate_spans_incident_face(self):
-        """A tilted thin plate reports the corners of its large lower face.
+        """Verify a tilted thin plate reports the corners of its large lower face.
 
         Ranking all eight corners by depth would report both corner pairs of the
         low edge once the tilt exceeds atan(thickness / width) and drop the
@@ -1376,9 +1376,36 @@ class TestCollisionPrimitives(unittest.TestCase):
             # The four contacts span the plate's width, not just its thickness.
             spread = pos[:, 1].max() - pos[:, 1].min()
             self.assertGreater(spread, 0.9 * math.cos(math.radians(tilt)), msg=f"tilt {tilt}: spread {spread}")
-            # The deepest corner is among them.
             deepest = 0.01 - 0.5 * math.sin(math.radians(tilt)) - 0.0005 * math.cos(math.radians(tilt))
             self.assertAlmostEqual(float(dist.min()), deepest, places=5)
+            expected_xy = np.array(
+                [
+                    (x, y * math.cos(math.radians(tilt)) + 0.0005 * math.sin(math.radians(tilt)))
+                    for x in (-0.5, 0.5)
+                    for y in (-0.5, 0.5)
+                ]
+            )
+            order = np.lexsort((pos[:, 1], pos[:, 0]))
+            np.testing.assert_allclose(pos[order, :2], expected_xy, rtol=0.0, atol=1.0e-7)
+
+        # Exclude the highest incident corner so later, deeper opposite corners
+        # must replace the first opposite corner admitted into the last slot.
+        rotation = wp.quat_to_matrix(
+            wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.radians(10.0))
+            * wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.radians(-20.0))
+        )
+        wp.launch(
+            test_plane_box_with_margin_kernel,
+            dim=1,
+            inputs=[wp.array([rotation], dtype=wp.mat33), box_size, 0.01, 0.2],
+            outputs=[distances, positions],
+        )
+        corners = np.array([(0.5, -0.5, -0.0005), (-0.5, 0.5, -0.0005), (0.5, 0.5, -0.0005), (0.5, 0.5, 0.0005)])
+        expected = corners @ np.asarray(rotation).reshape(3, 3).T + [0.0, 0.0, 0.01]
+        expected_dist = expected[:, 2].copy()
+        expected[:, 2] *= 0.5
+        np.testing.assert_allclose(distances.numpy()[0], expected_dist, rtol=0.0, atol=1.0e-7)
+        np.testing.assert_allclose(positions.numpy()[0], expected, rtol=0.0, atol=1.0e-7)
 
     def test_plane_box(self):
         """Test plane-box collision with analytical penetration depth validation.

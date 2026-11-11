@@ -887,7 +887,10 @@ def test_near_parallel_plank_edge_contact(test, device):
             if expected_spread:
                 test.assertGreaterEqual(count, 2)
                 test.assertGreater(spread, 5.0e-3)
-                np.testing.assert_allclose(points[:, 2], 0.05, atol=hz + 1.0e-5)
+                # Allow four float32 ulps at the scene's 4 m offset; the small
+                # crossing angle amplifies projected error into band length.
+                band_half_length = (EPS + 4.0 * np.spacing(np.float32(4.0))) / np.sin(crossing)
+                np.testing.assert_allclose(points[:, 2], 0.05, rtol=0.0, atol=band_half_length)
             else:
                 test.assertEqual(count, 1)
 

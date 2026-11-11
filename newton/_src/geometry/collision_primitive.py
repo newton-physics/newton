@@ -441,6 +441,11 @@ def collide_plane_box(
 ) -> tuple[wp.vec4, wp.types.matrix((4, 3), wp.float32), wp.vec3]:
     """Core contact geometry calculation for plane-box collision.
 
+    Report corners of the box face whose outward normal is most opposed to
+    ``plane_normal``, provided their signed plane distance is at most ``margin``.
+    Fill remaining slots with the deepest eligible opposite-face corners,
+    for at most four contacts.
+
     Args:
       plane_normal: Normal vector of the plane
       plane_pos: Position point on the plane
@@ -458,15 +463,8 @@ def collide_plane_box(
 
     center_dist = wp.dot(box_pos - plane_pos, plane_normal)
 
-    # The contacts are the corners of the incident face: the face whose outward
-    # normal is most anti-parallel to the plane normal, onto which the box
-    # settles. Its corners span the box's support area and include the deepest
-    # corner, and every other corner lies above its twin on this face. Ranking
-    # all eight corners by depth instead weights face alignment by the box
-    # half-extents, so a thin plate tilted by only atan(thickness / width)
-    # reports both corner pairs of one edge and loses the support of the
-    # opposite edge. Slots left by incident corners beyond the margin go to the
-    # deepest opposite corners, which bound the adjacent faces of the low edge.
+    # Ranking all corners by depth loses the opposite support edge of a thin
+    # plate once its tilt exceeds atan(thickness / width).
     alignment = wp.transpose(box_rot) @ plane_normal
     face_axis = wp.int32(0)
     if wp.abs(alignment[1]) > wp.abs(alignment[face_axis]):
