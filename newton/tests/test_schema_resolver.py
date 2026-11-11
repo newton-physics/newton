@@ -465,9 +465,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(time_steps_per_second, 100)
 
     def test_gravity_enabled(self):
-        """
-        Test gravity_enabled priority.
-        """
+        """Resolve scene priority and authored body gravity flags without a body default."""
         # Open the USD stage
         stage = Usd.Stage.Open(str(self.ant_usda_path))
         self.assertIsNotNone(stage)
@@ -494,6 +492,16 @@ class TestSchemaResolver(unittest.TestCase):
         physics_scene_prim.CreateAttribute("physxRigidBody:disableGravity", Sdf.ValueTypeNames.Bool).Set(False)
         gravity_enabled = resolver.get_value(physics_scene_prim, PrimType.SCENE, "gravity_enabled")
         self.assertEqual(gravity_enabled, True)
+
+        body = stage.DefinePrim("/GravityBody", "Xform")
+        disabled = body.CreateAttribute("physxRigidBody:disableGravity", Sdf.ValueTypeNames.Bool)
+        for authored, expected in ((True, False), (False, True), (None, None)):
+            with self.subTest(body_disable_gravity=authored):
+                if authored is None:
+                    disabled.Clear()
+                else:
+                    disabled.Set(authored)
+                self.assertIs(resolver.get_value(body, PrimType.BODY, "gravity_enabled"), expected)
 
     def test_mjc_solref(self):
         """Verify that MuJoCo joint solref remains separate from generic Newton gains.
