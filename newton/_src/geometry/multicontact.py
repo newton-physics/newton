@@ -326,7 +326,7 @@ def intersection_point(trim_seg_start: wp.vec2, trim_seg_end: wp.vec2, a: wp.vec
 
 
 @wp.func
-def insert_vec2(arr: wp.array[wp.vec2], arr_count: int, index: int, element: wp.vec2):
+def insert_vec2(arr: Any, arr_count: int, index: int, element: wp.vec2):
     """
     Insert an element into an array at the specified index, shifting elements to the right.
 
@@ -347,7 +347,7 @@ def insert_vec2(arr: wp.array[wp.vec2], arr_count: int, index: int, element: wp.
 def trim_in_place(
     trim_seg_start: wp.vec2,
     trim_seg_end: wp.vec2,
-    loop: wp.array[wp.vec2],
+    loop: Any,
     loop_count: int,
 ) -> int:
     """
@@ -436,9 +436,9 @@ def trim_in_place(
 
 @wp.func
 def trim_all_in_place(
-    trim_poly: wp.array[wp.vec2],
+    trim_poly: Any,
     trim_poly_count: int,
-    loop: wp.array[wp.vec2],
+    loop: Any,
     loop_count: int,
 ) -> int:
     """
@@ -523,7 +523,7 @@ def trim_all_in_place(
 
 
 @wp.func
-def approx_max_quadrilateral_area_with_calipers(hull: wp.array[wp.vec2], hull_count: int) -> wp.vec4i:
+def approx_max_quadrilateral_area_with_calipers(hull: Any, hull_count: int) -> wp.vec4i:
     """
     Finds an approximate maximum area quadrilateral inside a convex hull in O(n) time
     using the Rotating Calipers algorithm to find the hull's diameter.
@@ -619,7 +619,7 @@ def approx_max_quadrilateral_area_with_calipers(hull: wp.array[wp.vec2], hull_co
 
 
 @wp.func
-def polygon_width(loop: wp.array[wp.vec2], loop_count: int) -> float:
+def polygon_width(loop: Any, loop_count: int) -> float:
     """Estimate a convex polygon's narrowest width [m].
 
     Area over the larger bounding extent is between half and sqrt(2) times
@@ -651,7 +651,7 @@ def polygon_width(loop: wp.array[wp.vec2], loop_count: int) -> float:
 
 
 @wp.func
-def remove_zero_length_edges(loop: wp.array[wp.vec2], loop_count: int, eps: float) -> int:
+def remove_zero_length_edges(loop: Any, loop_count: int, eps: float) -> int:
     """
     Remove zero-length edges from a polygon loop.
 
@@ -691,7 +691,7 @@ def remove_zero_length_edges(loop: wp.array[wp.vec2], loop_count: int, eps: floa
 
 
 @wp.func
-def add_avoid_duplicates_vec2(arr: wp.array[wp.vec2], arr_count: int, vec: wp.vec2, eps: float) -> tuple[int, bool]:
+def add_avoid_duplicates_vec2(arr: Any, arr_count: int, vec: wp.vec2, eps: float) -> tuple[int, bool]:
     """
     Add a vector to an array, avoiding duplicates.
 
@@ -720,7 +720,7 @@ def add_avoid_duplicates_vec2(arr: wp.array[wp.vec2], arr_count: int, vec: wp.ve
 
 @wp.func
 def add_contact_feature_point(
-    projected: wp.array[wp.vec2],
+    projected: Any,
     points: _SamplePoints,
     count: int,
     point_2d: wp.vec2,
@@ -814,9 +814,9 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
     @wp.func
     def extract_4_point_contact_manifolds(
-        m_a: wp.array[wp.vec2],
+        m_a: Any,
         m_a_count: int,
-        m_b: wp.array[wp.vec2],
+        m_b: Any,
         m_b_count: int,
         normal_local: wp.vec3,
         cross_vector_1: wp.vec3,
@@ -930,7 +930,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
     @wp.func
     def point_in_contact_polygon(
         point: wp.vec2,
-        polygon: wp.array[wp.vec2],
+        polygon: Any,
         count: int,
     ) -> bool:
         """Test a projected point against a convex polygon of either winding, within EPS [m]."""
@@ -950,12 +950,12 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
     @wp.func
     def write_vertex_face_contacts(
         vertex_points: _SamplePoints,
-        vertex_polygon: wp.array[wp.vec2],
+        vertex_polygon: Any,
         vertex_count: int,
         vertex_anchor: wp.vec3,
         vertex_on_a: bool,
         face_projector: BodyProjector,
-        face_points: wp.array[wp.vec2],
+        face_points: Any,
         face_count: int,
         normal_local: wp.vec3,
         orientation_a: wp.quat,
@@ -1134,9 +1134,14 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
         center = 0.5 * (p_a + p_b)
 
-        # Allocate buffers: 5 for A, up to 10 for B (5 + clipping headroom)
+        # Allocate buffers: 5 for A, up to 10 for B (5 + clipping headroom).
+        # a_buffer must not alias b_buffer's storage through a device pointer
+        # (wp.array(ptr=...)): the fixedarray storage is thread-local, which a
+        # device pointer may not address on Metal. An independent fixedarray of
+        # the same size keeps a single Any-specialization for the shared
+        # helpers; a_count <= 5 guards every access.
         b_buffer = wp.zeros(shape=(10,), dtype=wp.vec2f)
-        a_buffer = wp.array(ptr=b_buffer.ptr + wp.uint64(5 * 8), shape=(5,), dtype=wp.vec2f)
+        a_buffer = wp.zeros(shape=(10,), dtype=wp.vec2f)
 
         # --- Step 1: Find Contact Polygons using Perturbed Support Mapping ---
         # Shape A: support_func returns points in A-local frame directly, no quat_rotate needed.
@@ -1210,13 +1215,13 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                 vertex_polygon = a_buffer
                 vertex_count = a_count
                 vertex_anchor = p_a
-                face_points = wp.array(ptr=b_buffer.ptr, shape=(5,), dtype=wp.vec2)
+                face_points = b_buffer  # count-guarded view; no ptr aliasing (Metal-safe)
                 face_count = b_count
                 face_tracker = plane_tracker_b
                 face_anchor = p_b
                 if not face_on_b:
                     vertex_points = points_b
-                    vertex_polygon = wp.array(ptr=b_buffer.ptr, shape=(5,), dtype=wp.vec2)
+                    vertex_polygon = b_buffer  # count-guarded view; no ptr aliasing (Metal-safe)
                     vertex_count = b_count
                     vertex_anchor = p_b
                     face_points = a_buffer
