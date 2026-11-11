@@ -581,13 +581,13 @@ class Contacts:
                 self.rigid_contact_match_index.fill_(-1)
                 self.rigid_contact_match_generation.fill_(GENERATION_SENTINEL)
 
-            self.soft_contact_indices.fill_(wp.vec3i(-1, -1, -1))
-            self.soft_contact_rigid_indices.fill_(wp.vec3i(-1, -1, -1))
+            self.soft_contact_indices.view(wp.int32).fill_(-1)
+            self.soft_contact_rigid_indices.view(wp.int32).fill_(-1)
             self.soft_contact_particle.fill_(-1)
             self.soft_contact_shape.fill_(-1)
             self.soft_contact_tids.fill_(-1)
             if self._soft_contact_mesh_features is not None:
-                self._soft_contact_mesh_features.fill_(wp.vec3i(-1, -1, -1))
+                self._soft_contact_mesh_features.view(wp.int32).fill_(-1)
         # else: Optimized path (default) - only counter clear needed
         #   Collision detection overwrites all active contacts [0, contact_count)
         #   Solvers only read [0, contact_count), so stale data is never accessed

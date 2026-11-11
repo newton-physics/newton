@@ -2301,6 +2301,92 @@ def _check_attribute_access_after_capture(test, device, layout, scenario):
     replay(*capture_access(), offset=500.0)
 
 
+# Articulations interleaved with others within a world
+
+
+_ACTUATED_HINGE_MJCF = """
+<mujoco model="robot">
+  <worldbody>
+    <body name="link">
+      <joint name="hinge" type="hinge"/>
+      <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="drive" joint="hinge"/>
+  </actuator>
+</mujoco>
+"""
+
+# Selected articulation ids per world: the other articulations sit at different places between them.
+_INTERLEAVED_ORDERS = (("robot", "other", "robot", "other", "other", "robot"), ("robot", "robot", "other", "robot"))
+_INTERLEAVED_IDS = np.array([[0, 2, 5], [6, 7, 9]])
+
+
+def test_interleaved_articulations_within_worlds(test, device):
+    """Gather and scatter articulations whose rows are irregularly spaced within each world."""
+    scene = newton.ModelBuilder()
+    for order in _INTERLEAVED_ORDERS:
+        world = newton.ModelBuilder()
+        for index, kind in enumerate(order):
+            body = world.add_link(label=f"{kind}_{index}/body", mass=1.0)
+            world.add_articulation([world.add_joint_free(child=body)], label=f"{kind}_{index}")
+            world.add_shape_sphere(body=body, radius=0.1)
+        scene.add_world(world)
+    model = scene.finalize(device=device)
+    view = ArticulationView(model, "robot_*", verbose=False, homogeneous=False)
+    assert_np_equal(view.articulation_ids.numpy(), _INTERLEAVED_IDS)
+    test.assertTrue(view.uses_explicit_model_indices)
+
+    # one body, shape and free joint per articulation, so body rows are articulation ids
+    masses = np.arange(model.body_count, dtype=np.float32) + 10.0
+    model.body_mass.assign(masses)
+    assert_np_equal(view.get_attribute("body_mass", model).numpy()[..., 0], masses[_INTERLEAVED_IDS])
+    q = np.arange(model.joint_coord_count, dtype=np.float32)
+    model.joint_q.assign(q)
+    q_rows = _INTERLEAVED_IDS[..., None] * 7 + np.arange(7)
+    assert_np_equal(view.get_dof_positions(model).numpy(), q[q_rows])
+
+    values = np.arange(1.0, 7.0, dtype=np.float32).reshape(2, 3, 1)
+    view.set_attribute("body_mass", model, values, mask=[False, True])
+    expected = masses.copy()
+    expected[_INTERLEAVED_IDS[1]] = values[1, :, 0]
+    assert_np_equal(model.body_mass.numpy(), expected)
+    view.set_attribute("body_mass", model, values)
+    expected[_INTERLEAVED_IDS.ravel()] = values.ravel()
+    assert_np_equal(model.body_mass.numpy(), expected)
+
+
+def test_custom_frequency_interleaved_within_worlds(test, device):
+    """Address a custom frequency whose rows are irregularly spaced within each world."""
+    robot = newton.ModelBuilder()
+    robot.add_mjcf(_ACTUATED_HINGE_MJCF)
+    other = newton.ModelBuilder()
+    other.add_mjcf(_ACTUATED_HINGE_MJCF.replace('model="robot"', 'model="other"'))
+    scene = newton.ModelBuilder()
+    for order in _INTERLEAVED_ORDERS:
+        world = newton.ModelBuilder()
+        for kind in order:
+            world.add_builder(robot if kind == "robot" else other)
+        scene.add_world(world)
+    model = scene.finalize(device=device)
+    control = model.control()
+    view = ArticulationView(model, "robot", verbose=False, homogeneous=False)
+    assert_np_equal(view.articulation_ids.numpy(), _INTERLEAVED_IDS)
+    test.assertEqual(view.custom_frequency_counts["mujoco:actuator"], 1)
+    test.assertTrue(view.frequency_layouts["mujoco:actuator"].uses_explicit_model_indices)
+
+    # one actuator per articulation, so actuator rows are articulation ids
+    ctrl = np.arange(model.articulation_count, dtype=np.float32) + 10.0
+    control.mujoco.ctrl.assign(ctrl)
+    assert_np_equal(view.get_attribute("mujoco.ctrl", control).numpy()[..., 0], ctrl[_INTERLEAVED_IDS])
+    values = -np.arange(1.0, 7.0, dtype=np.float32).reshape(2, 3, 1)
+    view.set_attribute("mujoco.ctrl", control, values, mask=[True, False])
+    expected = ctrl.copy()
+    expected[_INTERLEAVED_IDS[0]] = values[0, :, 0]
+    assert_np_equal(control.mujoco.ctrl.numpy(), expected)
+
+
 class TestSelectionSparseWorlds(unittest.TestCase):
     pass
 
@@ -2316,6 +2402,8 @@ for _test in (
     test_sparse_world_gradients,
     test_sparse_world_custom_frequency,
     test_irregular_custom_frequency_requires_non_homogeneous,
+    test_interleaved_articulations_within_worlds,
+    test_custom_frequency_interleaved_within_worlds,
 ):
     add_function_test(TestSelectionSparseWorlds, _test.__name__, _test, devices=devices)
 for _test in (test_sparse_world_getters_capture_cold, test_attribute_access_after_capture_before_replay):

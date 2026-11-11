@@ -106,7 +106,7 @@ class TestImportMjcfNative(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_mjcf_native(xml, ctrl_direct=True, **kwargs)
         expected_warning = (
-            self.assertWarnsRegex(newton.exceptions.NewtonWarning, "does not support actuator armature")
+            self.assertWarnsRegex(newton.NewtonWarning, "does not support actuator armature")
             if np.any(reference.actuator_armature)
             else nullcontext()
         )
@@ -732,7 +732,7 @@ class TestImportMjcfNative(unittest.TestCase):
                         <equality><{kind} {kind}1="{first}" {other} polycoef=".1 .5 .3 0 0"/></equality></mujoco>'''
                     builder = newton.ModelBuilder()
                     warning = (
-                        self.assertWarnsRegex(newton.exceptions.NewtonWarning, "omit joint2")
+                        self.assertWarnsRegex(newton.NewtonWarning, "omit joint2")
                         if kind == "joint" and not second
                         else nullcontext()
                     )
@@ -1057,7 +1057,7 @@ class TestImportMjcfNative(unittest.TestCase):
         reference = mujoco.MjModel.from_xml_string(xml)
         builder = newton.ModelBuilder()
         builder.add_mjcf_native(xml)
-        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "does not support actuator group disabling"):
+        with self.assertWarnsRegex(newton.NewtonWarning, "does not support actuator group disabling"):
             solver = SolverMuJoCo(builder.finalize())
         self.assertEqual(solver.mj_model.opt.enableflags, reference.opt.enableflags)
         self.assertEqual(solver.mj_model.opt.disableflags & reference.opt.disableflags, reference.opt.disableflags)
@@ -1287,7 +1287,7 @@ class TestImportMjcfNative(unittest.TestCase):
         reference = mujoco.MjModel.from_xml_string(assembled)
         builder = newton.ModelBuilder()
         builder.add_mjcf_native(arm)
-        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "zero or negative mass"):
+        with self.assertWarnsRegex(newton.NewtonWarning, "zero or negative mass"):
             builder.add_mjcf_native(f"<mujoco><worldbody>{hand}</worldbody></mujoco>", parent_body=0)
         self.assertEqual(builder.custom_attributes["mujoco:ctrl_source"].values, [SolverMuJoCo.CtrlSource.JOINT_TARGET])
         self.assertGreater(builder.joint_target_kd[0], 0)

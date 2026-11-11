@@ -2,3 +2,4 @@ Add experimental `ModelBuilder.add_mjcf_native()` to import MJCF through MuJoCo'
 Add experimental `ModelBuilder.CustomAttribute.mjcf_native_value_transformer` to extract typed native fields and standard MJCF user data into custom attributes.
 Preserve actuator damping, armature, and DC-motor control signatures through the native importer, along with mesh roughness, metallic values, and RGB/RGBA texture bindings.
 Populate core joint stiffness and rest positions from native MJCF, with authored values taking precedence over builder defaults, and reuse shared compound-joint equality references.
+Use builder friction defaults when MJCF omits friction, and let authored friction replace both static and dynamic coefficients.

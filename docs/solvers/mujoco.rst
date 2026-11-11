@@ -336,8 +336,10 @@ reference poses on their concrete elements. References to generated Newton
 hierarchical labels are also legacy behavior; native parsing resolves authored
 MJCF names.
 
-Joint damping and armature and geometry gap use explicit MJCF values, inherited
+Joint damping and armature and geometry gap and friction use explicit MJCF values, inherited
 MJCF defaults, then builder defaults. Explicit zeros override inherited values.
+Authored sliding friction sets both Newton friction coefficients; omitted friction
+retains the builder's static/dynamic pair.
 The fallback gap is ``default_shape_cfg.gap`` when set, otherwise ``rigid_gap``.
 Builder gaps are in meters and are unaffected by import ``scale``; file-authored
 gaps scale with the model. ``armature_scale`` applies to both authored and
@@ -992,7 +994,7 @@ Actuator damping is preserved on both backends. MuJoCo-Warp 3.15 folds it into
 joint and tendon damping; Newton retains that contribution when publishing
 joint or tendon property updates. Actuator armature is preserved only on the
 native MuJoCo CPU backend (``use_mujoco_cpu=True``); the Warp backend emits a
-:class:`~newton.exceptions.NewtonWarning` when it is nonzero. This limitation applies to all actuator
+:class:`~newton.NewtonWarning` when it is nonzero. This limitation applies to all actuator
 types, not only DC motors. MJCF ``damping`` accepts one, two, or three coefficients:
 the first is stored in ``mujoco:actuator_damping`` and the remaining two in
 ``mujoco:actuator_dampingpoly``. Partial overrides retain inherited trailing

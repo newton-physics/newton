@@ -740,7 +740,7 @@ def _validate(spec: mujoco.MjSpec) -> None:
             dcmotor.parse_input(int(actuator.ctrlspec) or 8)
 
 
-def _parse_spec(builder: ModelBuilder, source: str, scale: float) -> tuple[mujoco.MjSpec, list[bool]]:
+def _parse_spec(builder: ModelBuilder, source: str, scale: float) -> tuple[mujoco.MjSpec, list[bool], list[bool]]:
     import mujoco
 
     is_xml = source.lstrip().startswith("<")
@@ -768,7 +768,7 @@ def _parse_spec(builder: ModelBuilder, source: str, scale: float) -> tuple[mujoc
     if gap is None:
         gap = builder.rigid_gap
     # Builder gaps are already in meters; only file-authored gaps should scale.
-    ET.SubElement(defaults, "geom", gap=str(gap / scale))
+    geom_defaults = ET.SubElement(defaults, "geom", gap=str(gap / scale))
     root.insert(0, defaults)
 
     def parse():
@@ -784,11 +784,20 @@ def _parse_spec(builder: ModelBuilder, source: str, scale: float) -> tuple[mujoc
     joint_defaults.set("solreflimit", "0.03 1")
     joint_defaults.set("ref", "1")
     joint_defaults.set("springref", "1")
+    geom_defaults.set("friction", "2")
     probe = parse()
     default_limits = [
         not np.array_equal(joint.solref_limit, other.solref_limit, equal_nan=True)
         for joint, other in zip(spec.joints, probe.joints, strict=True)
     ]
+    default_friction = [
+        not np.array_equal(geom.friction[:1], other.friction[:1], equal_nan=True)
+        for geom, other in zip(spec.geoms, probe.geoms, strict=True)
+    ]
+    for geom, omitted in zip(spec.geoms, default_friction, strict=True):
+        if omitted:
+            cfg = builder.default_shape_cfg
+            geom.friction[:] = (cfg.mu, cfg.mu_torsional, cfg.mu_rolling)
     for joint, other in zip(spec.joints, probe.joints, strict=True):
         if (
             builder.default_joint_cfg.rest_q is not None
@@ -803,7 +812,7 @@ def _parse_spec(builder: ModelBuilder, source: str, scale: float) -> tuple[mujoc
                     if spec.compiler.degree
                     else builder.default_joint_cfg.rest_q
                 )
-    return spec, default_limits
+    return spec, default_limits, default_friction
 
 
 def parse_mjcf(
@@ -861,7 +870,7 @@ def parse_mjcf(
         root, _ = _load_and_expand_mjcf(source, path_resolver)
         source = ET.tostring(root, encoding="unicode")
     try:
-        spec, default_limits = _parse_spec(builder, source, scale)
+        spec, default_limits, default_friction = _parse_spec(builder, source, scale)
     except (ValueError, ET.ParseError) as exc:
         raise ValueError(f"Native MJCF parsing failed: {exc}") from exc
     custom = _extract_custom_attributes(builder, spec, scale, parse_mujoco_options)
@@ -1134,6 +1143,8 @@ def parse_mjcf(
         if kd is not None:
             cfg.kd = kd
         cfg.mu, cfg.mu_torsional, cfg.mu_rolling = map(float, model.geom_friction[i])
+        if not default_friction[i]:
+            cfg.mu_static = None
         cfg.margin, cfg.gap = float(model.geom_margin[i]), float(model.geom_gap[i])
         if legacy_margin_gap:
             cfg.margin -= cfg.gap

@@ -253,6 +253,8 @@ class Example:
             # Capture after binding the model so viewer-force kernels use
             # this layer's picking state, including picks made after capture.
             layer.graph = layer._capture()
+        # Leave room for the chain to swing to either side of the anchor.
+        self.viewer.set_camera(wp.vec3(22.0, 0.0, 2.0), pitch=0.0, yaw=-180.0)
 
     def step(self):
         for layer in self.layers:

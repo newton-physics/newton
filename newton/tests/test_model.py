@@ -20,12 +20,11 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton import ModelBuilder
+from newton import ModelBuilder, NewtonDeprecationWarning
 from newton._src.geometry.utils import transform_points
 from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
-from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import assert_np_equal, patch_sys_module
 
 
@@ -2437,6 +2436,61 @@ class TestShapeConfigValidation(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "density must be finite and >= 0"):
                     cfg.validate(shape_type=newton.GeoType.SPHERE)
 
+    def test_shape_config_rejects_invalid_mu_static(self):
+        """Reject a negative or non-finite static friction coefficient."""
+        for mu_static in (-0.5, float("nan"), float("inf")):
+            with self.subTest(mu_static=mu_static):
+                cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, mu_static=mu_static)
+
+                with self.assertRaisesRegex(ValueError, "mu_static must be finite and >= 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_mu_static_below_mu(self):
+        """Reject a static coefficient below mu instead of correcting it quietly; an equal one is accepted."""
+        cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, mu_static=0.3)
+        with self.assertRaisesRegex(ValueError, "mu_static must be >= mu"):
+            cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0)
+        with self.assertRaisesRegex(ValueError, "mu_static must be >= mu"):
+            builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
+
+        newton.ModelBuilder.ShapeConfig(mu=0.5, mu_static=0.5).validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_material_mu_static_resolves_to_mu_when_unset(self):
+        """An unset mu_static is stored as the shape's mu, so the model never carries an "unset" marker."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4))
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4, mu_static=0.9))
+        scene = newton.ModelBuilder()
+        scene.replicate(builder, copy_count=2)
+        model = scene.finalize()
+
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), [0.4, 0.4, 0.4, 0.4])
+        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [0.4, 0.9, 0.4, 0.9])
+
+    def test_shape_material_mu_edited_in_the_builder_keeps_unset_mu_static_in_step(self):
+        """mu_static is resolved in finalize: an unset value follows a direct edit of the builder's mu, an explicit
+        value below the edited mu is rejected."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.0))
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4, mu_static=0.9))
+        builder.shape_material_mu[0] = 0.7
+        builder.shape_material_mu[1] = 0.5
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), [0.7, 0.5])
+        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [0.7, 0.9])
+
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4, mu_static=0.9))
+        builder.shape_material_mu[0] = 1.0
+        with self.assertRaisesRegex(ValueError, "is below shape_material_mu"):
+            builder.finalize(device="cpu")
+
     def test_shape_config_rejects_invalid_sdf_target_voxel_size(self):
         """Reject non-positive and non-finite target voxel sizes."""
         for target_voxel_size in (0.0, -0.01, float("nan"), float("inf"), float("-inf")):
@@ -2750,7 +2804,7 @@ class TestModelJoints(unittest.TestCase):
                         builder.add_joint_ball(parent=p, child=c, label="ball")
                 keep = ["fix"] if order == "fixed_kept_first" else []
                 # "fix" parallels the child's free joint, so it is a FIXED loop-closing joint.
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, r"FIXED loop-closing joints \('fix'\)"):
+                with self.assertWarnsRegex(newton.NewtonWarning, r"FIXED loop-closing joints \('fix'\)"):
                     builder.collapse_fixed_joints(joints_to_keep=keep)
                 labels = list(builder.joint_label)
                 # add_body() gives each body a free joint; only assert on ours.

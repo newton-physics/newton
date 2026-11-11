@@ -13,8 +13,8 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonWarning
 from newton._src.solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
-from newton.exceptions import NewtonWarning
 from newton.solvers import SolverMuJoCo
 
 
@@ -706,6 +706,19 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                         np.testing.assert_allclose(builder.shape_material_kf, 321)
                         self.assertEqual(builder.default_joint_cfg.damping, 7)
                         self.assertEqual(builder.default_shape_cfg.gap, 0.2)
+
+    def test_geom_friction_defaults(self):
+        """Let authored friction replace both coefficients while omitted values use builder defaults."""
+        xml = """<mujoco><default><default class="explicit"><geom friction="1"/></default></default>
+            <worldbody><geom size=".1" friction="1"/><geom size=".1" class="explicit"/>
+            <geom size=".1" friction="0"/><geom size=".1"/></worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.mu = 0.5
+        builder.default_shape_cfg.mu_static = 0.8
+        builder.add_mjcf_native(xml)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), [1, 1, 0, 0.5])
+        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [1, 1, 0, 0.8])
 
     def test_native_builder_defaults_per_import(self):
         for gap in (None, 0.0, 0.2):
