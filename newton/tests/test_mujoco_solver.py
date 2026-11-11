@@ -15683,6 +15683,28 @@ class TestMuJoCoBodyGravityScale(unittest.TestCase):
                     dv = states[0].body_qd.numpy()[0, 2] - before
                     np.testing.assert_allclose(dv, -10.0 * scale * (1.0 - gravcomp) * self.DT, atol=1.0e-5)
 
+    def test_native_mujoco_negative_gravcomp(self):
+        """Apply s * (1 - gravcomp) > 1 on native MuJoCo next to a positive gravcomp, and raise without one."""
+        builder = self._builder((0.0, 0.0, -10.0))
+        self._add_free_body(builder, 2.0, 0.25)
+        model = builder.finalize(device="cpu")
+        with self.assertRaisesRegex(NotImplementedError, "unless a body has a positive one"):
+            SolverMuJoCo(model, use_mujoco_cpu=True)
+
+        builder = self._builder((0.0, 0.0, -10.0))
+        self._add_free_body(builder, 1.0, 0.0)
+        self._add_free_body(builder, 1.0, 0.5, x=2.0)
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        model.body_gravity_scale.assign([2.0, 1.0])
+        solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+        state_0, state_1 = model.state(), model.state()
+        solver.step(state_0, state_1, model.control(), None, self.DT)
+        np.testing.assert_allclose(state_1.body_qd.numpy()[:, 2], [-20.0 * self.DT, -5.0 * self.DT], atol=1.0e-5)
+        model.mujoco.gravcomp.zero_()
+        with self.assertRaisesRegex(NotImplementedError, "unless a body has a positive one"):
+            solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+
     def test_clamped_actuator_gravcomp(self):
         """Count the compensation of removed weight against the actuator force limit; the coupling hook ignores it."""
         for scale, gravcomp in ((1.0, 1.0), (0.5, 0.0), (0.0, 0.0)):
