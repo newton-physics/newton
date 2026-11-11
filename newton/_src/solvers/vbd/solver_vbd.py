@@ -1014,7 +1014,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             collision_frequency=collision_frequency,
             collision_frequency_type=collision_frequency_type,
         )
-        self._validate_body_gravity_scale(applies_scale=False)
+        # Bodies integrated by another solver get their gravity there.
+        self._validate_body_gravity_scale(applies_scale=not integrates_rigid_bodies)
         # The solver's warm-start setting is authoritative for an owned pipeline:
         # lambda/penalty restores ride the pipeline's matched contact indices, so
         # history without matching silently cold-starts every refresh (k times per
@@ -1630,7 +1631,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # A kinematic body made dynamic brings its scale into the dynamics.
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._validate_body_gravity_scale(
-                applies_scale=False, scale_changed=bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES)
+                applies_scale=not self._integrates_rigid_bodies,
+                scale_changed=bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES),
             )
         self._apply_module_options()
         if flags & ModelFlags.TENDON_PROPERTIES:

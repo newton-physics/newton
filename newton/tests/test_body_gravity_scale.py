@@ -265,6 +265,35 @@ def test_unsupported_solver_notify_after_unit_scales(test, device, solver_fn):
         solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
 
 
+def test_vbd_external_rigid_solver_accepts_scale(test, device):
+    """Accept scaled bodies in SolverVBD when another solver integrates them, and still reject non-finite scales."""
+    builder = newton.ModelBuilder()
+    link = builder.add_link(mass=1.0, inertia=INERTIA, gravity_scale=0.0)
+    builder.add_articulation([builder.add_joint_revolute(-1, link, axis=(0.0, 1.0, 0.0))])
+    builder.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, 1.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=2,
+        dim_y=2,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    with test.assertRaisesRegex(NotImplementedError, "body_gravity_scale"):
+        SolverVBD(model)
+
+    solver = SolverVBD(model, integrate_with_external_rigid_solver=True)
+    flags = newton.ModelFlags.BODY_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES
+    model.body_gravity_scale.fill_(0.5)
+    solver.notify_model_changed(flags)
+    model.body_gravity_scale.fill_(float("nan"))
+    with test.assertRaisesRegex(ValueError, "body_gravity_scale of body 0 must be finite"):
+        solver.notify_model_changed(flags)
+
+
 def test_coupled_proxy(test, device, destination_fn):
     """Proxy scaled bodies owned by Featherstone into a solver that rejects scales, and fall at the owner's gravity."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
@@ -411,6 +440,12 @@ for device in get_test_devices():
                 devices=[device],
                 solver_fn=solver_fn,
             )
+    add_function_test(
+        TestBodyGravityScaleUnsupported,
+        "test_vbd_external_rigid_solver_accepts_scale",
+        test_vbd_external_rigid_solver_accepts_scale,
+        devices=[device],
+    )
     for name in ("semi_implicit", "xpbd", "vbd"):
         add_function_test(
             TestBodyGravityScaleCoupled,
