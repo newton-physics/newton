@@ -1978,7 +1978,7 @@ class TestMassMatrix(TestInverseDynamicsBase):
         world = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
         self._add_armature_chain(world, label="chain")
         scene = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
-        scene.replicate(world, world_count=2)
+        scene.replicate(world, copy_count=2)
         model, state = self._finalize_armature_model(scene, articulation_count=2)
         self.assertEqual(model.articulation_count, 2)
 
@@ -3428,7 +3428,7 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
 
         # Replicate to 2 worlds → 4 articulations: [A0, B0, A1, B1].
         scene = newton.ModelBuilder()
-        scene.replicate(world, world_count=2)
+        scene.replicate(world, copy_count=2)
         model = scene.finalize(device=self.device)
         self.assertEqual(model.articulation_count, 4)
 
@@ -3630,7 +3630,7 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         _add_two_link_pendulum(world, m_first=1.0, m_second=2.0, label="A")
         _add_two_link_pendulum(world, m_first=3.0, m_second=5.0, label="B")
         scene = newton.ModelBuilder()
-        scene.replicate(world, world_count=2)
+        scene.replicate(world, copy_count=2)
         model = scene.finalize(device=self.device)
 
         joint_q = [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]

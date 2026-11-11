@@ -11,6 +11,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+import numpy as np
 import warp as wp
 
 from ...core.types import override
@@ -28,6 +29,7 @@ __all__ = [
     "DVIAPGDConfig",
     "DVISolverConfig",
     "ForwardKinematicsSolverConfig",
+    "LOXSolverConfig",
     "PADMMSolverConfig",
 ]
 
@@ -222,14 +224,34 @@ class CollisionDetectorConfig(ConfigBase):
         self.validate()
 
 
+_CONSTRAINT_RECOVERY_FIELDS = (
+    "joint_recovery_time",
+    "joint_recovery_speed",
+    "limit_recovery_time",
+    "limit_recovery_speed",
+    "contact_recovery_time",
+    "contact_recovery_speed",
+    "contact_compliance",
+    "limit_compliance",
+)
+
+
 @dataclass
 class ConstraintStabilizationConfig(ConfigBase):
     """
     A container to hold configurations for global constraint stabilization parameters.
 
-    These parameters serve as global defaults/overrides, to be used
-    in combination with the per-constraint stabilization parameters
-    specified in the model, if the latter are provided.
+    PADMM and DVI share these settings. The recovery times are the spring-damper
+    time scales ``c / k`` [s], giving the Euler positional bias ``phi / (dt + time)``.
+    Compliant rows under Moreau use the midpoint violation and ``dt / 2 + time``.
+    Their speed caps apply only to positional recovery. Bilateral joints remain
+    hard; contacts and limits can opt into model stiffness/damping.
+
+    The dimensionless ``alpha``, ``beta``, and ``gamma`` fields retain their
+    legacy meaning. They apply to hard rows without an explicit recovery time.
+    A recovery time takes precedence over the corresponding legacy fraction.
+    Leaving all new settings at their defaults preserves the existing law.
+    The new settings currently support PADMM and DVI, not LOX.
     """
 
     alpha: float = 0.01
@@ -258,6 +280,66 @@ class ConstraintStabilizationConfig(ConfigBase):
     Contact penetration margin used for unilateral contact constraints.\n
     Must be non-negative.\n
     Defaults to `1.0e-6`.
+    """
+
+    joint_recovery_time: float | None = field(default=None, kw_only=True)
+    """Global bilateral recovery time [s]; ``None`` retains legacy ``alpha / dt``."""
+
+    joint_recovery_speed: float = field(default=math.inf, kw_only=True)
+    """Maximum bilateral recovery speed [m/s or rad/s], applied independently to each row.
+
+    The same numerical cap applies to linear and angular rows. Zero disables
+    positional recovery; infinity leaves recovery uncapped.
+    """
+
+    limit_recovery_time: float | None = field(default=None, kw_only=True)
+    """Global limit recovery time [s], overriding model ``c / k`` when set.
+
+    ``None`` uses model damping for compliant limits and legacy ``beta / dt``
+    for hard limits. An override sets effective damping to ``k * time`` in
+    both the bias and the impulse-space compliance.
+    """
+
+    limit_recovery_speed: float = field(default=math.inf, kw_only=True)
+    """Maximum limit recovery speed [m/s or rad/s], applied independently to each row.
+
+    The same numerical cap applies to linear and angular limits. Zero disables
+    positional recovery; infinity leaves recovery uncapped.
+    """
+
+    contact_recovery_time: float | None = field(default=None, kw_only=True)
+    """Global contact recovery time [s], overriding model ``c / k`` when set.
+
+    ``None`` uses model damping for compliant contacts and legacy ``gamma / dt``
+    for hard contacts. Speculative positive gaps retain their ``gap / dt``
+    closing allowance independently of this setting and the recovery-speed cap.
+    """
+
+    contact_recovery_speed: float = field(default=math.inf, kw_only=True)
+    """Maximum normal penetration recovery speed [m/s]; infinity leaves recovery uncapped."""
+
+    contact_compliance: bool = field(default=False, kw_only=True)
+    """Use positive normal contact stiffness and damping as an implicit spring-damper.
+
+    Positive per-contact stiffness takes precedence over the arithmetic mean of
+    the two shape materials. Compliance is added only to the normal row as
+    ``1 / (dt * (k * position_dt + c))``, where ``position_dt`` is ``dt`` for
+    Euler and ``dt / 2`` for Moreau's remaining pose update. Moreau evaluates the
+    violation at the midpoint and requires the internal collision detector.
+    Non-positive or infinite stiffness retains hard contact.
+    Compliant contacts obtain their bounce from the spring-damper and ignore
+    material restitution. Tangential rows retain the existing Coulomb law.
+    This option supports PADMM and DVI. LOX's separate option uses per-contact
+    stiffness only and does not fall back to shape materials.
+    """
+
+    limit_compliance: bool = field(default=False, kw_only=True)
+    """Use positive ``Model.joint_limit_ke`` and ``joint_limit_kd`` for implicit limits.
+
+    Non-positive or infinite stiffness retains hard limits. This setting does not change
+    limit detection, drive gains, or passive joint damping.
+    Compliance uses the remaining pose-update interval: ``dt`` for Euler and
+    ``dt / 2`` for Moreau, whose limit violations are evaluated at the midpoint.
     """
 
     @override
@@ -321,36 +403,53 @@ class ConstraintStabilizationConfig(ConfigBase):
         Args:
             model: The Newton model from which to parse configurations.
         """
-        cfg = ConstraintStabilizationConfig(**kwargs)
-
-        # Parse solver-specific attributes imported from USD
+        # Retain legacy model precedence; new recovery settings are Python-only.
+        values = dict(kwargs)
         kamino_attrs = getattr(model, "kamino", None)
         if kamino_attrs is not None:
-            if hasattr(kamino_attrs, "constraints_alpha"):
-                cfg.alpha = float(kamino_attrs.constraints_alpha.numpy()[0])
-            if hasattr(kamino_attrs, "constraints_beta"):
-                cfg.beta = float(kamino_attrs.constraints_beta.numpy()[0])
-            if hasattr(kamino_attrs, "constraints_gamma"):
-                cfg.gamma = float(kamino_attrs.constraints_gamma.numpy()[0])
-
-        # Return the fully constructed config with configurations
-        # parsed from the model's custom attributes if available,
-        # otherwise using defaults or provided kwargs.
-        return cfg
+            for name in ("alpha", "beta", "gamma"):
+                attribute = getattr(kamino_attrs, f"constraints_{name}", None)
+                if attribute is not None:
+                    values[name] = float(attribute.numpy()[0])
+        return ConstraintStabilizationConfig(**values)
 
     @override
     def validate(self) -> None:
         """
         Validates the current values held by the :class:`ConstraintStabilizationConfig` instance.
         """
-        if self.alpha < 0.0 or self.alpha > 1.0:
+        if not math.isfinite(self.alpha) or self.alpha < 0.0 or self.alpha > 1.0:
             raise ValueError(f"Invalid alpha: {self.alpha}. Must be in range [0, 1.0].")
-        if self.beta < 0.0 or self.beta > 1.0:
+        if not math.isfinite(self.beta) or self.beta < 0.0 or self.beta > 1.0:
             raise ValueError(f"Invalid beta: {self.beta}. Must be in range [0, 1.0].")
-        if self.gamma < 0.0 or self.gamma > 1.0:
+        if not math.isfinite(self.gamma) or self.gamma < 0.0 or self.gamma > 1.0:
             raise ValueError(f"Invalid gamma: {self.gamma}. Must be in range [0, 1.0].")
-        if self.delta < 0.0:
+        if not math.isfinite(self.delta) or self.delta < 0.0:
             raise ValueError(f"Invalid delta: {self.delta}. Must be non-negative.")
+        for name in _CONSTRAINT_RECOVERY_FIELDS:
+            value = getattr(self, name)
+            if name.endswith("_compliance"):
+                if not isinstance(value, bool):
+                    raise TypeError(f"{name} must be a boolean.")
+            elif name.endswith("_time"):
+                if value is not None and (not math.isfinite(value) or value < 0.0):
+                    raise ValueError(f"{name} must be None or finite and non-negative [s].")
+            elif math.isnan(value) or value < 0.0:
+                raise ValueError(f"{name} must be non-negative; infinity means unlimited recovery.")
+
+    def _has_recovery_settings(self) -> bool:
+        """Identify opt-in shared recovery settings for backend validation."""
+        for name in _CONSTRAINT_RECOVERY_FIELDS:
+            value = getattr(self, name)
+            if name.endswith("_time"):
+                if value is not None:
+                    return True
+            elif name.endswith("_compliance"):
+                if value:
+                    return True
+            elif value != math.inf:
+                return True
+        return False
 
     @override
     def __post_init__(self):
@@ -391,6 +490,9 @@ class ConstrainedDynamicsConfig(ConfigBase):
     Whether to cull speculative (= separated) contacts in the dynamics solve.
     These contacts have occasionally led to numerical instabilities, and
     can yield inaccurate restitutive impacts.
+
+    The LOX backend keeps speculative contacts independently of this setting:
+    its contact law lets a separated contact close its gap within the step.
     """
 
     @override
@@ -1017,7 +1119,7 @@ class DVISolverConfig:
 
         DVI-specific tuning options are currently Python-only. The shared
         ``max_solver_iterations`` attribute is registered by
-        :class:`PADMMSolverConfig` and parsed by both dynamics solvers.
+        :class:`PADMMSolverConfig` and parsed by every dynamics solver.
         """
 
     @override
@@ -1088,6 +1190,418 @@ class DVISolverConfig:
         if self.contact_warmstart_method not in implemented_contact_warmstart_methods:
             raise ValueError(
                 f"DVI contact warmstart method is not implemented: {self.contact_warmstart_method}. "
+                f"Choose one of {sorted(implemented_contact_warmstart_methods)}."
+            )
+
+    @override
+    def __post_init__(self):
+        """Post-initialization to validate configurations."""
+        self.validate()
+
+
+@dataclass(kw_only=True)
+class LOXSolverConfig:
+    """A container to hold configurations for the LOX forward dynamics solver.
+
+    .. experimental::
+
+        The LOX backend, including all of its options, may change without
+        following the normal deprecation policy. It supports rigid bodies
+        only; cable and deformable extensions are not supported.
+
+    Unlike the PADMM and DVI backends, LOX advances kinematic bodies, and massless bodies
+    whose only joints are free joints to the world, with their velocity in ``state_in.body_qd``.
+    Bodies welded to a kinematic body move rigidly with it. LOX keeps speculative contacts
+    regardless of :attr:`ConstrainedDynamicsConfig.cull_speculative_contacts`.
+    It solves its own primal problem, so ``sparse_dynamics`` and the linear solver and
+    preconditioning settings of :class:`ConstrainedDynamicsConfig` only affect the dual
+    problem of the optional solution metrics, and it always warm-starts from its containers.
+    LOX bounds joint drift with :attr:`joint_max_correction`, :attr:`position_tolerance` and
+    :attr:`rotation_tolerance`, so it ignores :attr:`ConstraintStabilizationConfig.alpha`.
+    ``SolverKamino.Config.collect_solver_info`` collects the PADMM and DVI iteration logs; LOX
+    reports its iterations and residuals through ``SolverKamino.status``.
+    """
+
+    max_iterations: int = 16
+    """Maximum LOX splitting iterations per forward-dynamics solve."""
+
+    use_graph_conditionals: bool = True
+    """Whether to terminate LOX splitting with a device condition.
+
+    Outside graph capture, this permits early termination through an eager
+    :func:`warp.capture_while` loop. When disabled, the solver unrolls
+    :attr:`max_iterations` iterations instead.
+
+    Capturing the loop in a CUDA graph requires conditional graph nodes, i.e. a
+    CUDA driver and a Warp build with CUDA 12.4 or newer. Disable this option
+    to capture the solver with older drivers.
+    """
+
+    fixed_iterations: bool = False
+    """Whether to skip convergence checks and run exactly :attr:`max_iterations`.
+
+    This reduces per-iteration synchronization for throughput-oriented
+    simulations. Failed projections still deactivate their worlds.
+    """
+
+    eliminate_fixed_world_islands: bool = True
+    """Whether to eliminate fixed-joint tree islands attached to the world.
+
+    Disable this to retain those bodies in the dynamic solve and compute their
+    fixed-joint support reactions. Bodies marked with :attr:`newton.BodyFlags.KINEMATIC`
+    remain prescribed, and the bodies welded to them move rigidly with them.
+    """
+
+    projection_sweeps_per_iteration: int = 5
+    """Primary unilateral projection sweeps per splitting iteration.
+
+    One colored Gauss--Seidel iteration visits every unilateral color; after
+    these iterations, one global mass-split Jacobi sweep smooths the resulting
+    impulses.
+    """
+
+    projection_acceleration: Literal["none", "apgd", "anderson"] = "none"
+    """Acceleration applied to the body-space projection map.
+
+    ``"apgd"`` applies restarted Nesterov extrapolation and requires the
+    mass-split Jacobi map, i.e. :attr:`gauss_seidel_max_colors` equal to one.
+    ``"anderson"`` applies one safeguarded Anderson direction to either the
+    Jacobi or the colored Gauss--Seidel map. Anderson acceleration retains one
+    direction and uses a delayed residual-growth safeguard.
+    """
+
+    projection_anderson_recycle: bool = True
+    """Whether Anderson retains its direction across LOX splitting iterations.
+
+    Reuse is limited to one frozen LOX solve. Raw samples always restart when
+    the projection right-hand side changes; only secants formed under a single
+    right-hand side are retained.
+    """
+
+    inertial_warmstart_fraction: float = 0.0
+    """Fraction of the predicted velocity increment pre-applied to the initial LOX guess.
+
+    Dynamic rigid bodies start from their step-start velocity plus this
+    fraction of ``dt`` times the acceleration due to external forces, joint
+    actuation, gravity, gyroscopic torques, and the contact, limit, and joint
+    friction wrench of the previous time step. Zero starts from the step-start
+    velocity; one starts from the velocity that the previous constraint wrench
+    predicts, so that saturated sliding and rolling friction converge in about
+    one iteration while that wrench is unchanged. Prescribed rigid twists are
+    always used in full.
+    """
+
+    joint_max_correction: float = 1.0e-3
+    """Largest joint residual corrected in one step [m or rad].
+
+    Each structural joint row corrects the part of its begin-step residual beyond
+    :attr:`position_tolerance` for a translation, or :attr:`rotation_tolerance` for a rotation,
+    by at most this value, so that a large joint violation is recovered over several steps.
+    Residuals within the tolerances are left to average out over the steps.
+    """
+
+    joint_proximal_relaxation: float = 0.0
+    """Relaxation factor for exact candidate-pose structural joint residuals.
+
+    Zero retains the frozen linear residual. Positive values relax a stored
+    nonlinear residual correction of the three positional rows of fixed,
+    revolute, and spherical joints toward their exact candidate-pose residual,
+    expressed in the frozen joint frame, while reusing the frozen Jacobian,
+    primal matrix, and factorization. The relaxation changes convergence speed
+    without changing the nonlinear fixed point. The angular rows and the
+    positional rows of the other joint types retain the frozen linear residual.
+    """
+
+    position_tolerance: float = 1.0e-5
+    """Translational end-of-step convergence tolerance [m].
+
+    Also the translational joint residual left uncorrected (see :attr:`joint_max_correction`).
+    """
+
+    rotation_tolerance: float = 1.0e-5
+    """Rotational end-of-step convergence tolerance [rad].
+
+    Also the rotational joint residual left uncorrected (see :attr:`joint_max_correction`).
+    """
+
+    velocity_tolerance: float = 1.0e-5
+    """Velocity-space convergence tolerance [m/s or rad/s].
+
+    Bounds the splitting residual, the actuator residuals, and the unilateral
+    natural-map residuals mapped back to velocity by their Delassus scale.
+    """
+
+    selective_weights: bool = True
+    """Whether to restrict proximal weights to unilateral-constraint incidence.
+
+    When enabled, the LOX splitting operator applies its proximal metric only
+    to rigid bodies incident to a unilateral constraint.
+    """
+
+    min_joint_penalty_ratio: float = 1.0e2
+    """Smallest ratio of the seeded structural penalty to the effective mass of the lightest structural mode.
+
+    The joint penalty seed gives each joint-connected component the penalty scale
+    ``s = clamp(mu_max / mu_min, min_joint_penalty_ratio, max_joint_penalty_ratio) / mu_max``,
+    with ``mu_min`` and ``mu_max`` the extreme eigenvalues of the effective-mass-normalized structural
+    Delassus. ``s mu`` is the ratio of the penalty to the effective mass of the structural mode of
+    eigenvalue ``mu``, so the ratio ``s mu_max`` of the lightest structural mode is the conditioning
+    ``mu_max / mu_min`` of the structural Delassus, clamped to the two bounds. Within the bounds, the
+    penalty matches the effective mass of the heaviest structural mode. Every component starts at the
+    scale ``min_joint_penalty_ratio``, which components whose seed fails keep.
+    """
+
+    max_joint_penalty_ratio: float = 1.0e5
+    """Largest ratio of the seeded structural penalty to the effective mass of the lightest structural mode.
+
+    The penalty adds at most ``1 + max_joint_penalty_ratio`` to the conditioning of the smooth system.
+    See :attr:`min_joint_penalty_ratio` for the seed of the penalty scale.
+    """
+
+    joint_penalty_seed_time_step: float = 1.0e-3
+    """Reference time step [s] of the joint penalty seed made when the solver is constructed.
+
+    The time step enters the smooth system only through the implicit drive inertia
+    ``dt * k_d + dt^2 * k_p``, so the seed grows with it. The default sits below the time steps of
+    typical simulations, which errs toward a softer penalty. Set it to the simulation time step to seed
+    the penalty for that step. Model changes notified through :meth:`SolverKamino.notify_model_changed`
+    that affect masses, armature or joint gains seed the penalty again at this time step.
+    """
+
+    projected_twist_fraction: float = 0.0
+    """Fraction of the projected twist in the structural updates and in the accepted twist, in [0, 1].
+
+    The accepted twist, which is integrated and written to the outputs, blends the projected
+    twist with this weight and the smooth twist with its complement. The default of zero
+    integrates the smooth twist and recovers the global-twist product-space ADMM update, like
+    the other Kamino dynamics solvers. One integrates the projected twist and reconciles the
+    structural reactions with it.
+    """
+
+    joint_warmstart_scale: float = 0.9
+    """Fraction of the previous structural reaction used to warm-start the next time step."""
+
+    contact_compliance: bool = False
+    """Enable compliant contacts with the per-contact stiffness of Newton contacts.
+
+    Contacts with a positive :attr:`~newton.Contacts.rigid_contact_stiffness` ``k``
+    [N/m] become implicit spring-dampers with the damping ``d`` [N s/m] of
+    :attr:`~newton.Contacts.rigid_contact_damping`: they add ``1 / (dt (k dt + d))``
+    to their normal contact operator, recover the fraction ``k dt / (k dt + d)`` of
+    their penetration per step, and ignore restitution. Other contacts, and contacts
+    detected by Kamino's own collision pipelines, remain hard. :class:`~newton.CollisionPipeline`
+    provides per-contact stiffness only for hydroelastic contacts.
+    This option requires the LOX backend. For PADMM and DVI, use
+    ``constraints.contact_compliance``, which also falls back to shape materials.
+    """
+
+    contact_implicit_restitution: bool = False
+    """Whether each local contact solve decides the restitution of a speculative impact implicitly.
+
+    Restitution applies either way. By default, the bounce target of each contact is fixed at the
+    beginning of the step from its gap and impact velocity. When enabled, each local contact solve
+    chooses between closing the speculative gap and bouncing from its current reaction-free normal
+    velocity, with the beginning-of-step gap and impact velocity, which better preserves energy in
+    speculative impacts.
+    """
+
+    contact_spatial_friction: bool = False
+    """Enable coupled sliding, torsional, and rolling friction.
+
+    Uses shape ``mu_torsional`` and ``mu_rolling`` coefficients [m], mixed between the two
+    shapes like the sliding friction for Newton contacts, and averaged for Kamino's unified pipeline.
+    All friction components share one elliptic friction budget. Zero angular coefficients
+    retain the 3D path.
+    """
+
+    contact_warmstart_method: Literal[
+        "key_and_position",
+        "geom_pair_net_force",
+        "key_and_position_with_net_force_backup",
+        "key_and_position_with_tangential_net_force",
+        "key_and_position_with_net_force_backup_and_tangential_net_force",
+    ] = "key_and_position"
+    """Method used to warm-start contacts."""
+
+    gauss_seidel_max_colors: int = 4
+    """Maximum colors used by Gauss--Seidel unilateral projection.
+
+    One selects mass-split Jacobi projection. Values greater than
+    one process approximate colors sequentially while solving each color with
+    mass-split Jacobi. The multi-color path uses the smaller of this value and
+    its allocated
+    unilateral capacity, retaining one inert internal color for an empty
+    system. It finishes with one global Jacobi smoothing sweep.
+    """
+
+    weight_beta: float | None = 4.0
+    """Largest eigenvalue of each body weight ``W`` relative to the free patch Schur complement of the body.
+
+    The weight stays between the free complement and ``weight_beta`` times it, and at least
+    :attr:`weight_sigma` times the geometric mean of the patch bounds. The cap keeps the consensus term
+    from slowing the motions that stiff joints leave free, such as the translation of a whole
+    articulation. ``None`` keeps the geometric mean, and one gives the free complement.
+    """
+
+    weight_sigma: float = 1.0e-3
+    """Smallest fraction of the geometric mean of the patch bounds that the :attr:`weight_beta` cap keeps."""
+
+    consensus_fraction: float = 0.5
+    """Fraction ``alpha`` of the consensus penalty that the smooth solve takes implicitly, in [0, 1].
+
+    Each iteration solves ``(A + alpha W) v = f + W (u + alpha p)``, projects ``p = Pi_W(v - u)``,
+    and updates the splitting dual ``u <- u + p - v``. The dual ``u`` equals ``W^-1 J^T r``, the
+    unilateral impulses in velocity units, so every fraction shares the fixed point
+    ``A v = f + J^T r``. Zero gives a staggered solve, which keeps ``W`` as the projection metric
+    only, and one gives ADMM.
+
+    ``W`` takes for each body the matrix geometric mean of two ``6 x 6`` Schur complements of the body
+    in the matrix of the body and its joint neighbors, which bound ``[(A^-1)_ii]^-1``: from below when
+    each neighbor keeps only its joint to the body, and from above when the neighbors keep their full
+    rows of ``A`` with the other bodies held fixed, capped by :attr:`weight_beta`.
+    """
+
+    @override
+    @staticmethod
+    def register_custom_attributes(builder: ModelBuilder) -> None:
+        """Register LOX custom attributes supported by the Kamino USD schema.
+
+        LOX-specific tuning options are currently Python-only. The shared
+        ``max_solver_iterations`` attribute is registered by
+        :class:`PADMMSolverConfig`.
+        """
+
+    @override
+    @staticmethod
+    def from_model(model: Model, **kwargs: dict[str, Any]) -> LOXSolverConfig:
+        """Creates a :class:`LOXSolverConfig` from model attributes if available.
+
+        Args:
+            model: The Newton model from which to parse configurations.
+        """
+        cfg = LOXSolverConfig(**kwargs)
+        kamino_attrs = getattr(model, "kamino", None)
+        if kamino_attrs is not None and hasattr(kamino_attrs, "max_solver_iterations"):
+            max_iterations = int(kamino_attrs.max_solver_iterations.numpy()[0])
+            if max_iterations >= 0:
+                cfg.max_iterations = max_iterations
+        cfg.validate()
+        return cfg
+
+    @override
+    def validate(self) -> None:
+        """Validates the current values held by this config instance."""
+        from ._src.solvers.warmstart import WarmstarterContacts  # noqa: PLC0415
+
+        iteration_fields = {
+            "max_iterations": self.max_iterations,
+            "projection_sweeps_per_iteration": self.projection_sweeps_per_iteration,
+        }
+        for name, value in iteration_fields.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"Invalid {name}: {value}. Must be an integer greater than or equal to one.")
+        if not isinstance(self.use_graph_conditionals, bool):
+            raise ValueError(f"Invalid use_graph_conditionals: {self.use_graph_conditionals}. Must be a boolean.")
+        if not isinstance(self.fixed_iterations, bool):
+            raise ValueError(f"Invalid fixed_iterations: {self.fixed_iterations}. Must be a boolean.")
+        if not isinstance(self.eliminate_fixed_world_islands, bool):
+            raise ValueError(
+                f"Invalid eliminate_fixed_world_islands: {self.eliminate_fixed_world_islands}. Must be a boolean."
+            )
+        if not np.isfinite(self.joint_max_correction) or self.joint_max_correction <= 0.0:
+            raise ValueError(f"Invalid joint_max_correction: {self.joint_max_correction}. Must be positive and finite.")
+        if (
+            not np.isfinite(self.joint_proximal_relaxation)
+            or self.joint_proximal_relaxation < 0.0
+            or self.joint_proximal_relaxation > 1.0
+        ):
+            raise ValueError(
+                f"Invalid joint_proximal_relaxation: {self.joint_proximal_relaxation}. Must be in range [0, 1]."
+            )
+        if (
+            not isinstance(self.gauss_seidel_max_colors, int)
+            or isinstance(self.gauss_seidel_max_colors, bool)
+            or self.gauss_seidel_max_colors < 1
+        ):
+            raise ValueError(
+                f"Invalid gauss_seidel_max_colors: {self.gauss_seidel_max_colors}. "
+                "Must be an integer greater than or equal to one."
+            )
+        if self.weight_beta is not None and not (np.isfinite(self.weight_beta) and self.weight_beta >= 1.0):
+            raise ValueError(f"Invalid weight_beta: {self.weight_beta}. Must be None or at least one.")
+        if not np.isfinite(self.weight_sigma) or not (0.0 <= self.weight_sigma <= 1.0):
+            raise ValueError(f"Invalid weight_sigma: {self.weight_sigma}. Must be in range [0, 1].")
+        if not np.isfinite(self.consensus_fraction) or not (0.0 <= self.consensus_fraction <= 1.0):
+            raise ValueError(f"Invalid consensus_fraction: {self.consensus_fraction}. Must be in range [0, 1].")
+        if not np.isfinite(self.min_joint_penalty_ratio) or self.min_joint_penalty_ratio <= 0.0:
+            raise ValueError(
+                f"Invalid min_joint_penalty_ratio: {self.min_joint_penalty_ratio}. Must be greater than zero."
+            )
+        if not np.isfinite(self.max_joint_penalty_ratio) or self.max_joint_penalty_ratio < self.min_joint_penalty_ratio:
+            raise ValueError(
+                f"Invalid max_joint_penalty_ratio: {self.max_joint_penalty_ratio}. "
+                f"Must be at least min_joint_penalty_ratio ({self.min_joint_penalty_ratio})."
+            )
+        if not np.isfinite(self.joint_penalty_seed_time_step) or self.joint_penalty_seed_time_step <= 0.0:
+            raise ValueError(
+                f"Invalid joint_penalty_seed_time_step: {self.joint_penalty_seed_time_step}. Must be positive."
+            )
+        if self.projection_acceleration not in ("none", "apgd", "anderson"):
+            raise ValueError(
+                f"Invalid projection_acceleration: {self.projection_acceleration}. "
+                "Must be 'none', 'apgd', or 'anderson'."
+            )
+        if self.projection_acceleration == "apgd" and self.gauss_seidel_max_colors != 1:
+            raise ValueError("projection_acceleration='apgd' requires gauss_seidel_max_colors=1.")
+        if not isinstance(self.projection_anderson_recycle, bool):
+            raise ValueError(
+                f"Invalid projection_anderson_recycle: {self.projection_anderson_recycle}. Must be a boolean."
+            )
+        if (
+            not np.isfinite(self.inertial_warmstart_fraction)
+            or self.inertial_warmstart_fraction < 0.0
+            or self.inertial_warmstart_fraction > 1.0
+        ):
+            raise ValueError(
+                f"Invalid inertial_warmstart_fraction: {self.inertial_warmstart_fraction}. Must be in range [0, 1]."
+            )
+
+        if not np.isfinite(self.position_tolerance) or self.position_tolerance <= 0.0:
+            raise ValueError(f"Invalid position_tolerance: {self.position_tolerance}. Must be greater than zero.")
+        if not np.isfinite(self.rotation_tolerance) or self.rotation_tolerance <= 0.0:
+            raise ValueError(f"Invalid rotation_tolerance: {self.rotation_tolerance}. Must be greater than zero.")
+        if not np.isfinite(self.velocity_tolerance) or self.velocity_tolerance <= 0.0:
+            raise ValueError(f"Invalid velocity_tolerance: {self.velocity_tolerance}. Must be greater than zero.")
+        if not isinstance(self.selective_weights, bool):
+            raise ValueError(f"Invalid selective_weights: {self.selective_weights}. Must be a boolean.")
+        if (
+            not np.isfinite(self.projected_twist_fraction)
+            or self.projected_twist_fraction < 0.0
+            or self.projected_twist_fraction > 1.0
+        ):
+            raise ValueError(
+                f"Invalid projected_twist_fraction: {self.projected_twist_fraction}. Must be in range [0, 1]."
+            )
+        if (
+            not np.isfinite(self.joint_warmstart_scale)
+            or self.joint_warmstart_scale < 0.0
+            or self.joint_warmstart_scale > 1.0
+        ):
+            raise ValueError(f"Invalid joint_warmstart_scale: {self.joint_warmstart_scale}. Must be in range [0, 1].")
+        for name in ("contact_compliance", "contact_implicit_restitution", "contact_spatial_friction"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"Invalid {name}: {getattr(self, name)}. Must be a boolean.")
+        WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
+        implemented_contact_warmstart_methods = {
+            "key_and_position",
+            "geom_pair_net_force",
+            "key_and_position_with_net_force_backup",
+            "key_and_position_with_tangential_net_force",
+            "key_and_position_with_net_force_backup_and_tangential_net_force",
+        }
+        if self.contact_warmstart_method not in implemented_contact_warmstart_methods:
+            raise ValueError(
+                f"LOX contact warmstart method is not implemented: {self.contact_warmstart_method}. "
                 f"Choose one of {sorted(implemented_contact_warmstart_methods)}."
             )
 

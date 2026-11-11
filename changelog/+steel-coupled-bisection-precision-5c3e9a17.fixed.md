@@ -1,0 +1,1 @@
+Fix `SolverSteel` `friction_mode="bisection"` and `"bisection_desaxce"` lifting a resting body by up to one float32 step in height per step, which made a box resting on zero-gap contacts lose them and rock. The coupled normal-and-friction solve now interpolates the normal impulse within its final bisection bracket, and its zero-load check includes the sliding impulses.

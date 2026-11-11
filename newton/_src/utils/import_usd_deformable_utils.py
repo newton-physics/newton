@@ -5,13 +5,14 @@
 
 This module owns builder-independent leaf helpers and the shared mass / density / anchor utilities
 used by the cable / cloth / volume / attachment /
-collision-filter import passes, plus the :class:`_DeformableImportContext` that carries the
+collision-filter / visual import passes, plus the :class:`_DeformableImportContext` that carries the
 ``parse_usd()`` inputs, helper closures, and result maps the passes mutate. The passes
-themselves live in the sibling ``import_usd_deformable_{cable,cloth,volume,attachments}`` modules.
+themselves live in the sibling ``import_usd_deformable_{cable,cloth,volume,attachments,visual}`` modules.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import warnings
@@ -23,6 +24,8 @@ import numpy as np
 import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -191,16 +194,83 @@ def _read_deformable_element_array(
     return _DeformableElementArray(values, element_type, legacy_implicit_type)
 
 
+def _world_points(points, world_mat, *, translate: bool) -> np.ndarray:
+    """Apply the world affine, or only its linear part, to points in float64."""
+    m = np.asarray(world_mat, dtype=np.float64).reshape(4, 4)
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    transformed = pts @ m[:3, :3].T
+    return transformed + m[:3, 3] if translate else transformed
+
+
 def _bake_world_points(points, world_mat) -> list[wp.vec3]:
     """Bake the full world affine into points (vectorized), returning ``wp.vec3`` s.
 
     Applies non-uniform scale, shear, and reflection exactly -- a rotation/scale
     decomposition cannot represent either. Shared by the cable / cloth / volume passes.
     """
-    m = np.array(world_mat, dtype=np.float64).reshape(4, 4)
+    return [wp.vec3(float(x), float(y), float(z)) for x, y, z in _world_points(points, world_mat, translate=True)]
+
+
+def _rest_index_array(values, element_width: int, name: str) -> np.ndarray:
+    """Read integer rest indices without truncating malformed floating-point values."""
+    indices = np.asarray(values)
+    if indices.size == 0:
+        return np.empty((0, element_width), dtype=np.int64)
+    if not np.issubdtype(indices.dtype, np.integer):
+        raise ValueError(f"{name} must contain integer indices")
+    return indices.reshape(-1, element_width)
+
+
+def _rest_shape_indices(
+    authored_indices,
+    simulation_indices: np.ndarray,
+    simulation_point_count: int,
+    rest_point_count: int,
+    name: str,
+) -> np.ndarray:
+    """Default or validate rest topology, preserving simulation element order.
+
+    The simulation indices already have the caller's orientation correction. Explicit rest
+    indices retain their authored orientation for the caller to correct after validation.
+    """
+    if authored_indices is None or np.size(authored_indices) == 0:
+        if rest_point_count != simulation_point_count:
+            raise ValueError(f"restShapePoints must match points when {name} is omitted")
+        return simulation_indices
+    indices = _rest_index_array(authored_indices, simulation_indices.shape[1], name)
+    if len(indices) != len(simulation_indices):
+        raise ValueError(f"{name} must contain {len(simulation_indices)} elements to match the simulation topology")
+    if np.any(indices < 0) or np.any(indices >= rest_point_count):
+        raise ValueError(f"{name} contains an out-of-range point index")
+    return indices
+
+
+def _rest_topology_matches(rest_indices, simulation_indices, element_width: int) -> bool:
+    """Whether a rest topology authored without rest points equals the simulation topology.
+
+    The proposal derives ``restShapePoints`` from ``points`` only in that case; any other
+    authored rest topology is unusable without rest points.
+    """
+    try:
+        return np.array_equal(
+            _rest_index_array(rest_indices, element_width, "rest topology"),
+            np.asarray(simulation_indices, dtype=np.int64).reshape(-1, element_width),
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _transform_rest_points(points, world_mat) -> np.ndarray:
+    """Apply the world's linear transform to rest points in float64.
+
+    Rest geometry depends only on point differences, so the translation is omitted: it would
+    swamp small rest edges at large world offsets, and the live float32 bake already carries
+    the placement.
+    """
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-    baked = pts @ m[:3, :3].T + m[:3, 3]
-    return [wp.vec3(float(x), float(y), float(z)) for x, y, z in baked]
+    if not np.all(np.isfinite(pts)):
+        raise ValueError("restShapePoints contains non-finite coordinates")
+    return _world_points(pts, world_mat, translate=False)
 
 
 class _UnionFind:
@@ -358,6 +428,23 @@ def _warn_subset_material_bindings(prim, path: str) -> None:
         )
 
 
+def _has_graphics_material_subsets(prim) -> bool:
+    """Whether a non-empty ``UsdGeomSubset`` of ``prim`` carries its own graphics (non-physics) material binding."""
+    from pxr import UsdShade
+
+    physics_bindings = ("material:binding:physics", "material:binding:collection:physics:")
+    return any(
+        subset.GetIndicesAttr().Get()
+        and any(
+            rel.GetName().startswith("material:binding")
+            and not rel.GetName().startswith(physics_bindings)
+            and rel.GetTargets()
+            for rel in subset.GetPrim().GetRelationships()
+        )
+        for subset in UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets()
+    )
+
+
 def _enabled_collider_prim(prim) -> bool:
     """Whether a prim carries an enabled ``PhysicsCollisionAPI``.
 
@@ -421,6 +508,21 @@ def _iter_deformable_collider_prims(body_root, ignore_paths: Sequence[str] = ())
     for prim in _iter_deformable_pointbased_prims(body_root, ignore_paths):
         if _prim_has_collision_api(prim):
             yield prim
+
+
+# Applied API schemas of the AOUSD proposal's deformable simulation families.
+_AOUSD_DEFORMABLE_SIM_APIS = frozenset(
+    {
+        "PhysicsCurvesDeformableSimAPI",
+        "PhysicsSurfaceDeformableSimAPI",
+        "PhysicsVolumeDeformableSimAPI",
+    }
+)
+
+
+def _is_aousd_deformable_sim_prim(prim) -> bool:
+    """Whether a prim applies one of the AOUSD deformable simulation APIs."""
+    return not _AOUSD_DEFORMABLE_SIM_APIS.isdisjoint(prim.GetPrimTypeInfo().GetAppliedAPISchemas())
 
 
 def _deformable_collision_enabled(prim, ignore_paths: Sequence[str] = ()) -> tuple[bool, list[str]]:
@@ -591,23 +693,6 @@ def _mark_attachment_unsupported(attrs: dict, path: str, reason: str) -> None:
     warnings.warn(f"{path}: {reason}", NewtonWarning, stacklevel=2)
 
 
-def _warn_unsupported_rest_fields(prim: Usd.Prim, path: str, names: Sequence[str], read_attr: Callable) -> None:
-    """Warn (once) if any authored rest-state field in ``names`` is present but not yet imported.
-
-    Rest-state import (rest shape, rest dihedral angles) is not implemented yet; warn rather than
-    silently drop an authored rest configuration.
-    """
-    authored = [name for name in names if read_attr(prim, name) is not None]
-    if not authored:
-        return
-    fields = ", ".join(f"'physics:{name}'" for name in authored)
-    if len(authored) == 1:
-        message = f"{fields} is authored but its import is not yet supported; it is ignored."
-    else:
-        message = f"{fields} are authored but their import is not yet supported; they are ignored."
-    warnings.warn(f"{path}: {message}", NewtonWarning, stacklevel=2)
-
-
 def _warn_dropped_velocities(prim: Usd.Prim, path: str) -> None:
     """Warn if the geometry authors velocities; deformable dynamic state is not imported yet, so the
     body starts at rest rather than being silently reset."""
@@ -685,15 +770,6 @@ def _deformable_body_skip_reason(prim: Usd.Prim, read_attr: Callable) -> str | N
     return None
 
 
-def _builder_body_xform(builder: ModelBuilder, body_id: int) -> wp.transform:
-    """Return body ``body_id``'s current world transform from the builder's ``body_q``."""
-    body_q = builder.body_q[body_id]
-    return wp.transform(
-        wp.vec3(float(body_q[0]), float(body_q[1]), float(body_q[2])),
-        wp.quat(float(body_q[3]), float(body_q[4]), float(body_q[5]), float(body_q[6])),
-    )
-
-
 def _resolve_attachment_target(
     ctx: _DeformableImportContext, target_path: str, local_point: wp.vec3
 ) -> tuple[int, wp.vec3] | None:
@@ -715,7 +791,10 @@ def _resolve_attachment_target(
     body = ctx.path_body_map.get(body_path)
     if body is None:
         return None
-    body_point = wp.transform_point(wp.transform_inverse(_builder_body_xform(ctx.builder, body)), world_point)
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    body_xform = ctx.incoming_world_xform * usd.get_transform(ctx.stage.GetPrimAtPath(body_path), local=False)
+    body_point = wp.transform_point(wp.transform_inverse(body_xform), world_point)
     return body, body_point
 
 
@@ -1205,6 +1284,8 @@ class _DeformablePrimBuckets:
     # first candidate of any family in traversal order); a body's mass must not be applied
     # once per family, so the passes skip every other candidate under the same body.
     body_owner: dict[str, str] = field(default_factory=dict)
+    # Graphics meshes in traversal order, grouped by their owning deformable body.
+    visual_meshes: dict[str, list[Usd.Prim]] = field(default_factory=dict)
     # Prim paths the native rigid-physics loader must not parse: deformable simulation
     # geometry (any family) and collider prims governed by an imported deformable body.
     # Excluding them avoids duplicate rigid shapes for dedicated deformable colliders and
@@ -1363,49 +1444,38 @@ def _scout_deformable_prims(
                 buckets.cloth.append(prim)
                 claim_body(prim)
 
-    # Every PointBased prim governed by an imported deformable body belongs to the
-    # deformable contract, never to the native rigid loader: colliders feed the
-    # collision-gating approximation, and untagged graphics geometry must deform with
-    # the simulation geometry per the proposal. Embedding is not implemented, so the
-    # graphics geometry is skipped with a warning -- importing it as a static shape
-    # would leave a frozen copy behind while the deformable moves away. Resolved after
-    # the traversal over just the discovered body subtrees, so a stage without
-    # deformables pays nothing extra.
+    # Claim graphics before the rigid loader can create a frozen duplicate.
+    # Only discovered body subtrees are visited, not the whole stage again.
     if buckets.body_owner:
-        deformable_sim_apis = (
-            "PhysicsCurvesDeformableSimAPI",
-            "PhysicsSurfaceDeformableSimAPI",
-            "PhysicsVolumeDeformableSimAPI",
-        )
         stage = root_prim.GetStage()
-        for body_path, owner_path in buckets.body_owner.items():
+        for body_path in buckets.body_owner:
             body_prim = stage.GetPrimAtPath(body_path)
             if not body_prim or not body_prim.IsValid():
                 continue
+            for prim in usd.find_deformable_visual_prims(body_prim):
+                if usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI"):
+                    continue
+                path = str(prim.GetPath())
+                if not prim.GetPath().HasPrefix(root_prim.GetPath()) or _is_ignored_path(path, ignore_paths):
+                    continue
+                buckets.native_physics_exclude_paths.append(path)
+                if prim.IsA(UsdGeom.Mesh):
+                    buckets.visual_meshes.setdefault(body_path, []).append(prim)
+                elif not prim.IsA(UsdGeom.TetMesh):
+                    # The volume pass already reports untagged TetMeshes.
+                    logger.warning(
+                        "%s: unsupported graphics geometry under deformable body %s; skipping.", path, body_path
+                    )
             for prim in _iter_deformable_pointbased_prims(body_prim, ignore_paths):
                 path = str(prim.GetPath())
                 if _prim_has_collision_api(prim):
                     buckets.native_physics_exclude_paths.append(path)
-                elif path != owner_path and not (
-                    prim.IsA(UsdGeom.TetMesh)
-                    or any(s in deformable_sim_apis for s in prim.GetPrimTypeInfo().GetAppliedAPISchemas())
-                ):
-                    # Simulation candidates of any family are handled (or warned) by their
-                    # own passes; everything else is unembedded graphics geometry.
-                    buckets.native_physics_exclude_paths.append(path)
-                    warnings.warn(
-                        f"{path}: PointBased geometry under deformable body {body_path} cannot "
-                        f"deform with the simulation geometry (embedding is not implemented); "
-                        f"skipping it.",
-                        NewtonWarning,
-                        stacklevel=2,
-                    )
     return buckets
 
 
 @dataclass(slots=True)
 class _DeformableImportContext:
-    """Shared state for the deformable import passes (cable / cloth / volume / attachment).
+    """Shared state for the deformable import passes (cable / cloth / volume / attachment / visual).
 
     Bundles the ``parse_usd()`` inputs, the helper closures the passes need, and the result maps
     they populate, so the passes can live in sibling modules instead of as closures in
@@ -1424,6 +1494,9 @@ class _DeformableImportContext:
     get_rigid_body_ancestor_path: Callable
     get_first_target: Callable
     get_tetmesh_cached: Callable
+    is_viewport_drawn: Callable
+    load_visual_shapes: bool
+    hide_collision_shapes: bool
     incoming_world_xform: wp.transform
     linear_unit: float
     ignore_paths: Sequence[str]
@@ -1444,3 +1517,10 @@ class _DeformableImportContext:
     articulation_has_self_collision: dict[int, bool]
     # Filled by _scout_deformable_prims so the passes iterate buckets instead of the stage.
     prims: _DeformablePrimBuckets = field(default_factory=_DeformablePrimBuckets)
+    # Reference poses of imported cable bodies for visual binding, and per-body reasons when
+    # a curve's bind pose could not be used; both filled by the cable pass.
+    cable_visual_bind_poses: dict[int, wp.transform] = field(default_factory=dict)
+    cable_visual_bind_errors: dict[int, str] = field(default_factory=dict)
+    cable_visual_sim_paths: set[str] = field(default_factory=set)
+    cable_visual_bind_points: dict[str, np.ndarray | None] = field(default_factory=dict)
+    path_deformable_visual_map: dict[str, int] = field(default_factory=dict)

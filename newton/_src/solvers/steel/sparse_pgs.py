@@ -13,7 +13,10 @@ from .kernels import (
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
     PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
+    WARP_DETERMINISM_OFF,
 )
+
+wp.set_module_options(WARP_DETERMINISM_OFF)
 
 
 @cache
@@ -33,8 +36,9 @@ def _get_pgs_solve_sparse_kernel(
     once; physical free blocks store J and their response separately. All
     coordinates accumulate deltas from v_hat; only factor blocks need decoding.
 
-    The row order, the coupled Coulomb friction law and the early exit after a
-    stationary sweep are those of the dense matrix-free sweep. Joint velocity-limit
+    The row order, the coupled Coulomb friction law, the pooled patch normal load
+    of linked normal rows and the early exit after a stationary sweep are those of
+    the dense matrix-free sweep. Joint velocity-limit
     rows of articulations are not supported; the caller selects this kernel only
     without them. Free-body rows follow the articulated rows in every sweep with
     their own response, capacity, friction law and impulse buffer.
@@ -142,7 +146,11 @@ def _get_pgs_solve_sparse_kernel(
             float new_impulse = old_impulse;
             float sibling_change = 0.0f;
             if (friction) {{
-                const float normal_load = mf_impulse[parent];
+                // Patch normal rows link the region's next normal (circular list, -1 ends a point contact).
+                float normal_load = mf_impulse[parent];
+                for (int next = mf_meta.data[(mf_offset + parent) * 4 + 3] >> 16;
+                     next >= 0 && next != parent; next = mf_meta.data[(mf_offset + next) * 4 + 3] >> 16)
+                    normal_load += mf_impulse[next];
                 const float radius = fmaxf(mf_row_mu.data[global_row] * normal_load, 0.0f);
                 const float old_sibling = mf_impulse[sibling];
                 float2 pair = make_float2(0.0f, 0.0f);
@@ -269,7 +277,11 @@ def _get_pgs_solve_sparse_kernel(
             float new_impulse = old_impulse;
             float sibling_change = 0.0f;
             if (friction) {{
-                const float normal_load = impulse[parent];
+                // Patch normal rows link the region's next normal (circular list, -1 ends a point contact).
+                float normal_load = impulse[parent];
+                for (int next = world_row_parent.data[offset + parent]; next >= 0 && next != parent;
+                     next = world_row_parent.data[offset + next])
+                    normal_load += impulse[next];
                 const float radius = fmaxf(world_row_mu.data[offset + row] * normal_load, 0.0f);
                 const float old_sibling = impulse[sibling];
                 float2 pair = make_float2(0.0f, 0.0f);
@@ -409,4 +421,4 @@ def _get_pgs_solve_sparse_kernel(
 
     solve.__name__ = f"pgs_solve_sparse_{M}_{D}_{S}_{F}_{P}"
     solve.__qualname__ = solve.__name__
-    return wp.kernel(enable_backward=False, module="unique")(solve)
+    return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(solve)

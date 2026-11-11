@@ -1,0 +1,1 @@
+Remove the `JointType.CABLE` alias, deprecated in 1.6; use `JointType.ROD` instead. Its integer value remains `7`, and its canonical enum name is now `"ROD"`, so code that stores enum names must use `"ROD"`. Remove the `ModelBuilder.add_joint_cable()` alias, deprecated in 1.6; use `ModelBuilder.add_joint_rod()` instead.

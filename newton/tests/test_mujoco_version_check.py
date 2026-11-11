@@ -6,8 +6,8 @@ import unittest
 import warnings
 from unittest import mock
 
+from newton import NewtonWarning
 from newton._src.solvers.mujoco import solver_mujoco
-from newton.exceptions import NewtonWarning
 
 _MOCK_REQUIREMENTS = (
     "mujoco~=3.8.0 ; extra == 'sim'",
@@ -144,6 +144,10 @@ class TestMuJoCoDeterminismConfig(unittest.TestCase):
                 mock.call(dynamic_options, module=smooth_module),
                 mock.call(generated_options, module=forward_module),
                 mock.call(generated_options, module=solver_mujoco.kernels),
+                mock.call(
+                    generated_options,
+                    module=solver_mujoco.convert_newton_contacts_to_mjwarp_kernel.module,
+                ),
             ],
         )
 

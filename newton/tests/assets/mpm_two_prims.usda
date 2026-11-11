@@ -55,7 +55,7 @@ def Xform "World"
         {
             int64[] ids = [10, 11]
             point3f[] points = [(1, 0, 0), (2, 0, 0)]
-            float[] physics:masses = [2000, 16000]
+            float[] newton:masses = [3000, 12000]
             vector3f[] velocities = [(3, 0, 0), (0, 1, 0)]
             float[] widths = [0.5, 1]
             rel material:binding:physics = </World/SandMaterial>

@@ -1192,7 +1192,7 @@ class TestTendonCapstan(unittest.TestCase):
     def test_rejects_invalid_guide_parameters(self):
         """Reject invalid guide data before mutating builder arrays."""
         invalid_parameters = (
-            ({"body": -1}, "body index"),
+            ({"body": -2}, "body index"),
             ({"body": 0.5}, "body index"),
             ({"guide_type": 99}, "guide type"),
             ({"orientation": 0}, "orientation"),
@@ -1302,23 +1302,26 @@ class TestTendonCapstan(unittest.TestCase):
         model = builder.finalize()
         newton.solvers.SolverXPBD(model, iterations=1)
 
-    def test_collapse_fixed_joints_retains_world_tendon_body(self):
-        """Retain a tendon body frame instead of collapsing it into the world."""
+    def test_collapse_fixed_joints_maps_tendon_into_world(self):
+        """Preserve the guide frame when collapsing its attached body into world."""
         builder = newton.ModelBuilder()
         inertia = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-        anchor = builder.add_link(mass=1.0, inertia=inertia)
+        pose = wp.transform(wp.vec3(0.3, 0.4, 0.5), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.7))
+        anchor = builder.add_link(xform=pose, mass=1.0, inertia=inertia)
         endpoint = builder.add_link(mass=1.0, inertia=inertia)
-        builder.add_joint_fixed(parent=-1, child=anchor)
+        builder.add_joint_fixed(parent=-1, child=anchor, parent_xform=pose)
         route = []
-        route.append(newton.TendonGuide(body=anchor))
+        route.append(newton.TendonGuide(body=anchor, offset=(0.2, 0.0, 0.0)))
         route.append(newton.TendonGuide(body=endpoint))
         builder.add_tendon(route)
 
         builder.collapse_fixed_joints()
 
-        self.assertEqual(builder.body_count, 2)
-        self.assertEqual(builder.joint_count, 1)
-        self.assertEqual(builder.tendon_guide_body, [0, 1])
+        self.assertEqual(builder.body_count, 1)
+        self.assertEqual(builder.joint_count, 0)
+        self.assertEqual(builder.tendon_guide_body, [-1, 0])
+        np.testing.assert_allclose(builder.tendon_guide_offset[0], wp.transform_point(pose, wp.vec3(0.2, 0.0, 0.0)))
+        np.testing.assert_allclose(builder.tendon_guide_axis[0], wp.transform_vector(pose, wp.vec3(0.0, 0.0, 1.0)))
         model = builder.finalize()
         newton.solvers.SolverXPBD(model, iterations=1)
 
@@ -1632,6 +1635,7 @@ def _run_mujoco_switch_example(num_frames=220):
     example = MujocoSwitchExample(None, None)
     for _ in range(num_frames):
         example.step()
+        example.test_post_step()
     return example
 
 
@@ -2068,7 +2072,7 @@ def test_dynamic_route_cuda_graph_capture(test, device):
 
 
 def test_mujoco_switch_optional_middle_capstan_activates(test, device):
-    """A rotating endpoint should switch one middle rolling guide in and out."""
+    """Replay the animated endpoint and switch a middle rolling guide in and out."""
     with wp.ScopedDevice(device):
         example = _run_mujoco_switch_example()
         example.test_final()
@@ -2085,6 +2089,11 @@ def test_mujoco_switch_optional_middle_capstan_activates(test, device):
         test.assertEqual(int(np.max(active_history)), 1, f"Middle capstan should activate: {active_history}")
         test.assertGreaterEqual(example._transition_count, 2)
         test.assertEqual(example._activation_mismatch_count, 0)
+
+        if wp.get_device(device).is_cuda and not wp.config.verify_cuda:
+            with wp.ScopedTimer("switch frame", cuda_filter=wp.TIMING_GRAPH, print=False) as timer:
+                example.step()
+            test.assertEqual(len(timer.timing_results), 1, "The example should replay one simulation graph per frame")
 
 
 def test_mujoco_switch_preserves_active_route_segments(test, device):

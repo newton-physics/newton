@@ -3,6 +3,7 @@
 
 """Unit tests for the RandomController class."""
 
+import logging
 import unittest
 
 import numpy as np
@@ -11,10 +12,12 @@ import warp as wp
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src import ModelKamino
 from newton._src.solvers.kamino._src.core.time import advance_time
-from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.control.rand import RandomJointController
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 from newton.tests.utils.basics import build_boxes_fourbar
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -32,15 +35,15 @@ class TestRandomController(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_00_make_default(self):
         # Create a default random controller
@@ -72,7 +75,7 @@ class TestRandomController(unittest.TestCase):
 
         # Check dimensions of the interval array
         self.assertEqual(controller.data.interval.shape, (model.size.num_worlds,))
-        self.assertTrue((controller.data.interval.numpy() == 1.0).all())
+        self.assertTrue((controller.data.interval.numpy() == 0.0).all())
 
         # Check that the seed is set correctly
         self.assertEqual(controller.seed, self.seed)
@@ -81,13 +84,13 @@ class TestRandomController(unittest.TestCase):
         self.assertEqual(np.linalg.norm(control.tau_j.numpy()), 0.0)
         controller.compute(time=data.time, control=control)
         tau_j_np_0 = control.tau_j.numpy().copy()
-        msg.info("control.tau_j: %s", tau_j_np_0)
+        logger.debug("control.tau_j: %s", tau_j_np_0)
         self.assertGreaterEqual(np.linalg.norm(control.tau_j.numpy()), 0.0)
 
     def test_02_make_for_multiple_fourbar(self):
         # Define a model builder for the boxes_fourbar problem with 4 worlds
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(), world_count=4)
+        builder.replicate(builder=build_boxes_fourbar(), copy_count=4)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         data = model.data()
         control = model.control()
@@ -103,7 +106,7 @@ class TestRandomController(unittest.TestCase):
 
         # Check dimensions of the interval array
         self.assertEqual(controller.data.interval.shape, (model.size.num_worlds,))
-        self.assertTrue((controller.data.interval.numpy() == 1.0).all())
+        self.assertTrue((controller.data.interval.numpy() == 0.0).all())
 
         # Check that the seed is set correctly
         self.assertEqual(controller.seed, self.seed)
@@ -112,13 +115,13 @@ class TestRandomController(unittest.TestCase):
         self.assertEqual(np.linalg.norm(control.tau_j.numpy()), 0.0)
         controller.compute(time=data.time, control=control)
         tau_j_np_0 = control.tau_j.numpy().copy()
-        msg.info("control.tau_j: %s", tau_j_np_0)
+        logger.debug("control.tau_j: %s", tau_j_np_0)
         self.assertGreaterEqual(np.linalg.norm(control.tau_j.numpy()), 0.0)
 
     def _build_replicated_fourbar(self, num_worlds: int):
         """Build a replicated fourbar ``ModelKamino`` and its data/control containers."""
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_fourbar(), copy_count=num_worlds)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         return model, model.data(), model.control()
 

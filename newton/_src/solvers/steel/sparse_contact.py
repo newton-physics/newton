@@ -8,7 +8,17 @@ from functools import cache
 import warp as wp
 
 from .friction import contact_tangent_basis
-from .kernels import PGS_CONSTRAINT_TYPE_JOINT_LIMIT
+from .friction_patches import FrictionPatches
+from .kernels import (
+    PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
+    ROW_SLOTS_ATOMIC,
+    ROW_SLOTS_COUNT,
+    WARP_DETERMINISM_OFF,
+    contact_base_rows,
+    contact_row_points,
+)
+
+wp.set_module_options(WARP_DETERMINISM_OFF)
 
 
 @cache
@@ -304,6 +314,7 @@ def _get_sparse_contact_response_kernel(
         contact_art_a: wp.array[int],
         contact_art_b: wp.array[int],
         contact_path: wp.array[int],
+        contact_slots_needed: wp.array[int],
         art_group_idx: wp.array[int],
         articulation_response_dof_count: wp.array[int],
         is_free_rigid: wp.array[int],
@@ -316,6 +327,7 @@ def _get_sparse_contact_response_kernel(
         body_q: wp.array[wp.transform],
         contact_shared_anchor: int,
         contact_friction_shared_anchor: int,
+        friction_patches: FrictionPatches,
         permutation: wp.array[int],
         factor_row_offsets: wp.array[int],
         inverse_factor: wp.array2d[float],
@@ -331,9 +343,9 @@ def _get_sparse_contact_response_kernel(
         worker = tid // lanes
         total_contacts = wp.min(contact_count[0], contact_point0.shape[0])
         for c in range(worker, total_contacts, total_num_workers):
-            # Every dense contact owns a normal row and two friction rows.
-            row_count = 3
-            if contact_path[c] != 0 or contact_slot[c] < 0:
+            # A normal row and, for point friction or a surviving patch anchor, two friction rows.
+            row_count = contact_base_rows(contact_slots_needed[c])
+            if contact_path[c] != 0 or contact_slot[c] < 0 or row_count <= 0:
                 continue
             body_a = int(-1)
             body_b = int(-1)
@@ -354,28 +366,28 @@ def _get_sparse_contact_response_kernel(
                     point_a = wp.transform_point(body_q[body_a], contact_point0[c]) - contact_thickness0[c] * normal
                 if body_b >= 0:
                     point_b = wp.transform_point(body_q[body_b], contact_point1[c]) + contact_thickness1[c] * normal
-                friction_point_a = point_a
-                friction_point_b = point_b
-                # Shared anchors put both bodies' points at the witness midpoint.
-                midpoint = 0.5 * (point_a + point_b)
-                if contact_shared_anchor != 0:
-                    point_a = midpoint
-                    point_b = midpoint
-                if contact_shared_anchor != 0 or contact_friction_shared_anchor != 0:
-                    friction_point_a = midpoint
-                    friction_point_b = midpoint
-                tangent0, tangent1 = contact_tangent_basis(normal)
+                tangent0 = wp.vec3(0.0)
+                tangent1 = wp.vec3(0.0)
+                if row_count > 1:
+                    tangent0, tangent1 = contact_tangent_basis(normal)
                 for row in range(3):
+                    if row >= row_count:
+                        continue
                     direction = normal
-                    row_point_a = point_a
-                    row_point_b = point_b
                     if row == 1:
                         direction = tangent0
                     elif row == 2:
                         direction = tangent1
-                    if row > 0:
-                        row_point_a = friction_point_a
-                        row_point_b = friction_point_b
+                    # Shared anchors and patch friction move the row's points as in the dense builder.
+                    row_point_a, row_point_b = contact_row_points(
+                        c,
+                        row,
+                        point_a,
+                        point_b,
+                        contact_shared_anchor,
+                        contact_friction_shared_anchor,
+                        friction_patches,
+                    )
                     # J = [direction, (point - origin) x direction] dot motion.
                     wrench_a = wp.vec3(0.0)
                     wrench_b = wp.vec3(0.0)
@@ -420,7 +432,7 @@ def _get_sparse_contact_response_kernel(
 
     contact_kernel.__name__ = f"populate_sparse_contact_response_{n}_{lanes}_{warps}"
     contact_kernel.__qualname__ = contact_kernel.__name__
-    return wp.kernel(enable_backward=False, module="unique")(contact_kernel)
+    return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(contact_kernel)
 
 
 @wp.func_native(
@@ -471,16 +483,30 @@ def _get_sparse_contact_response_kernel(
         const unsigned active_mask = __ballot_sync(MASK, active != 0);
         const int active_count = __popc(active_mask);
         int first_slot = 0;
-        if (lane == 0 && active_count != 0)
-            first_slot = atomicAdd(&slot_counter.data[world], active_count);
+        if (lane == 0 && active_count != 0) {
+            if (row_slot_mode == $ROW_SLOTS_ATOMIC) {
+                first_slot = atomicAdd(&slot_counter.data[world], active_count);
+            } else {
+                // One warp owns the articulation; see reserve_world_row_slots.
+                first_slot = element_row_cursor.data[art];
+                element_row_cursor.data[art] = first_slot + active_count;
+            }
+        }
         first_slot = __shfl_sync(MASK, first_slot, 0);
 #else
         const unsigned active_mask = active != 0 ? 1u : 0u;
-        const int first_slot = slot_counter.data[world];
-        slot_counter.data[world] += active;
+        int first_slot = 0;
+        if (row_slot_mode == $ROW_SLOTS_ATOMIC) {
+            first_slot = slot_counter.data[world];
+            slot_counter.data[world] += active;
+        } else {
+            first_slot = element_row_cursor.data[art];
+            element_row_cursor.data[art] = first_slot + active;
+        }
 #endif
         // Visit the ballot in lane order, matching the existing lower/upper DOF order.
-        unsigned pending = active_mask;
+        // A COUNT pass only advances the cursor.
+        unsigned pending = row_slot_mode == $ROW_SLOTS_COUNT ? 0u : active_mask;
         int rank = 0;
         while (pending != 0) {
             const int row = first_slot + rank;
@@ -534,6 +560,8 @@ def _get_sparse_contact_response_kernel(
         }
     }
 """.replace("$LIMIT_TYPE", str(PGS_CONSTRAINT_TYPE_JOINT_LIMIT))
+    .replace("$ROW_SLOTS_ATOMIC", str(ROW_SLOTS_ATOMIC))
+    .replace("$ROW_SLOTS_COUNT", str(ROW_SLOTS_COUNT))
 )
 def _build_sparse_joint_limit_rows(
     tid: int,
@@ -561,6 +589,8 @@ def _build_sparse_joint_limit_rows(
     row_factor: wp.array3d[float],
     row_incident: wp.array2d[float],
     diagonal: wp.array2d[float],
+    row_slot_mode: int,
+    element_row_cursor: wp.array[int],
 ): ...
 
 
@@ -590,6 +620,8 @@ def build_sparse_joint_limit_rows(
     row_factor: wp.array3d[float],
     row_incident: wp.array2d[float],
     diagonal: wp.array2d[float],
+    row_slot_mode: int,
+    element_row_cursor: wp.array[int],
 ):
     """Build ordered limit rows and sparse responses with one warp per articulation.
 
@@ -623,6 +655,8 @@ def build_sparse_joint_limit_rows(
         row_factor,
         row_incident,
         diagonal,
+        row_slot_mode,
+        element_row_cursor,
     )
 
 

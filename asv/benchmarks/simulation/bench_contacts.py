@@ -25,7 +25,19 @@ from newton.viewer import ViewerNull
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
 ISAACGYM_NUT_BOLT_FOLDER = "assets/factory/mesh/factory_nut_bolt"
 IRREGULAR_ROCK_VERTEX_COUNTS = (10, 14, 18, 26)
-CONVEX_COLLISION_CASES = (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 64), ("mixed", 153), ("mixed", 191))
+CONVEX_COLLISION_CASES = (
+    ("hulls", 56),
+    ("hulls_duplicate", 192),
+    ("mixed", 64),
+    ("mixed", 153),
+    ("mixed", 191),
+    ("plane_hulls", 64),
+    ("plane_hulls", 512),
+    ("hulls_plane", 4),
+    ("hulls_plane", 56),
+    ("mixed_plane", 16),
+    ("mixed_plane", 64),
+)
 # Large enough that the split GJK/MPR path is active and its launch is the
 # limit, which the cases above are an order of magnitude too small to reach.
 SPLIT_CONVEX_COLLISION_CASES = (("hulls_split", 4096),)
@@ -142,6 +154,7 @@ def _build_convex_scene(
     pair_types: tuple[tuple[str, str], ...],
     *,
     triangle_local_vertices: bool = False,
+    ground_plane: bool = False,
 ) -> newton.Model:
     """Build replicated isolated convex pairs."""
     rocks = [
@@ -151,6 +164,8 @@ def _build_convex_scene(
 
     world_builder = newton.ModelBuilder()
     shape_cfg = newton.ModelBuilder.ShapeConfig(gap=0.01, margin=0.0)
+    if ground_plane:
+        world_builder.add_ground_plane(cfg=shape_cfg)
     axis = wp.normalize(wp.vec3(0.3, 0.2, 1.0))
     for pair_index, (shape_a, shape_b) in enumerate(pair_types):
         x = 3.0 * (pair_index % 4)
@@ -167,7 +182,26 @@ def _build_convex_scene(
         _add_mixed_convex_shape(world_builder, body_b, shape_b, rocks, 2 * pair_index + 1, shape_cfg)
 
     builder = newton.ModelBuilder()
-    builder.replicate(world_builder, world_count=world_count)
+    builder.replicate(world_builder, world_count)
+    return builder.finalize()
+
+
+def _build_plane_convex_scene(world_count: int) -> newton.Model:
+    """Build differently oriented irregular hulls resting on an infinite plane."""
+    world = newton.ModelBuilder()
+    cfg = world.ShapeConfig(gap=0.01, margin=0.0)
+    world.add_ground_plane(cfg=cfg)
+    axis = wp.normalize(wp.vec3(0.3, 0.2, 1.0))
+    for index, vertex_count in enumerate(IRREGULAR_ROCK_VERTEX_COUNTS):
+        mesh = _make_irregular_rock(vertex_count, 200 + index)
+        rotation = wp.quat_from_axis_angle(axis, 0.3 * index)
+        rotated = np.asarray(mesh.vertices) @ np.asarray(wp.quat_to_matrix(rotation)).reshape(3, 3).T
+        body = world.add_body(
+            xform=wp.transform(wp.vec3(3.0 * index, 0.0, -float(rotated[:, 2].min()) - 0.01), rotation)
+        )
+        world.add_shape_convex_hull(body, mesh=mesh, cfg=cfg)
+    builder = newton.ModelBuilder()
+    builder.replicate(world, world_count)
     return builder.finalize()
 
 
@@ -223,7 +257,7 @@ def _build_mesh_convex_scene(world_count: int, resolution: int) -> tuple[newton.
     world.add_shape_convex_hull(body=body, mesh=hull, cfg=shape_cfg)
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    builder.replicate(world, world_count=world_count)
+    builder.replicate(world, world_count)
     triangles_per_world = 4 * resolution * resolution
     return builder.finalize(), triangles_per_world * world_count
 
@@ -242,7 +276,7 @@ def _build_mesh_sdf_scene(world_count: int, device) -> newton.Model:
     world.add_shape_mesh(body=body_b, mesh=mesh_b)
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    builder.replicate(world, world_count=world_count)
+    builder.replicate(world, world_count)
     return builder.finalize(device=device)
 
 
@@ -424,17 +458,21 @@ class FastConvexCollision:
 
         self.launch_count = 100
         scene, world_count = case
-        if scene in ("hulls", "hulls_duplicate"):
-            pair_types = (("hull", "hull"),) * len(MIXED_CONVEX_PAIR_TYPES)
-        elif scene == "mixed":
-            pair_types = MIXED_CONVEX_PAIR_TYPES
+        if scene == "plane_hulls":
+            self.model = _build_plane_convex_scene(world_count)
         else:
-            raise ValueError(f"Unsupported convex benchmark scene: {scene}")
-        self.model = _build_convex_scene(
-            world_count,
-            pair_types,
-            triangle_local_vertices=scene == "hulls_duplicate",
-        )
+            if scene in ("hulls", "hulls_duplicate", "hulls_plane"):
+                pair_types = (("hull", "hull"),) * len(MIXED_CONVEX_PAIR_TYPES)
+            elif scene in ("mixed", "mixed_plane"):
+                pair_types = MIXED_CONVEX_PAIR_TYPES
+            else:
+                raise ValueError(f"Unsupported convex benchmark scene: {scene}")
+            self.model = _build_convex_scene(
+                world_count,
+                pair_types,
+                triangle_local_vertices=scene == "hulls_duplicate",
+                ground_plane=scene in ("hulls_plane", "mixed_plane"),
+            )
         self.state = self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
         self.collision_pipeline = newton.CollisionPipeline(

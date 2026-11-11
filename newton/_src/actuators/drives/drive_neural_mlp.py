@@ -9,7 +9,15 @@ from typing import Any, ClassVar
 
 import warp as wp
 
-from ..utils import _looks_like_torch_checkpoint, _parse_metadata_scale, load_checkpoint, load_metadata
+from ...utils.deprecation import warn_deprecation
+from ..space import DriveOutputSpace
+from ..utils import (
+    _TORCH_CHECKPOINT_DEPRECATION_MSG,
+    _looks_like_torch_checkpoint,
+    _parse_metadata_scale,
+    load_checkpoint,
+    load_metadata,
+)
 from ._linearization import (
     IMPLICIT_JACOBIAN_MARGIN as _JACOBIAN_MARGIN,
 )
@@ -181,6 +189,9 @@ class DriveNeuralMLP(DriveBase):
     through Warp-NN. Torch checkpoints keep the Torch backend and must be pt2
     archives saved with ``torch.export.save``.
 
+    .. deprecated:: 1.8
+        Torch checkpoints are deprecated; export the network to ONNX.
+
     Implicit actuation linearizes the network about the current state each
     step (:meth:`prepare_implicit`) and enters the shared implicit solve as
     the linearized force law ``tau0 + a*(q-q0) + b*(qd-qd0)`` (see
@@ -188,7 +199,7 @@ class DriveNeuralMLP(DriveBase):
     checkpoints with ``input_idx == [0]``.
     """
 
-    SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"model_path", "output_space"}
 
     @dataclass
     class State(DriveBase.State):
@@ -228,19 +239,27 @@ class DriveNeuralMLP(DriveBase):
         model_path = args["model_path"]
         if not model_path:
             raise ValueError("DriveNeuralMLP requires a non-empty 'model_path'")
-        return {"model_path": model_path}
+        return {
+            "model_path": model_path,
+            "output_space": DriveOutputSpace(args.get("output_space", DriveOutputSpace.EFFORT)),
+        }
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, *, output_space: DriveOutputSpace = DriveOutputSpace.EFFORT):
         """Initialize the MLP drive from a checkpoint file.
 
         Args:
             model_path: Path to the ``.onnx`` checkpoint or the pt2 archive
-                (``.pt2``, ``.pt``, or ``.pth``).
+                (``.pt2``, ``.pt``, or ``.pth``). Torch checkpoints are
+                deprecated since 1.8; use ONNX.
+            output_space: Interpretation of checkpoint outputs, EFFORT or DUTY.
+                The checkpoint must be trained for these units.
         """
+        self.output_space = DriveOutputSpace(output_space)
         self.model_path = model_path
         self._is_torch_checkpoint = _looks_like_torch_checkpoint(model_path)
 
         if self._is_torch_checkpoint:
+            warn_deprecation(_TORCH_CHECKPOINT_DEPRECATION_MSG)
             import torch
 
             self._torch_device = torch.device("cpu")
@@ -504,7 +523,7 @@ class DriveNeuralMLP(DriveBase):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        forces: wp.array[float],
+        output: wp.array[float],
         state: DriveNeuralMLP.State,
         dt: float,
         device: wp.Device | None = None,
@@ -522,7 +541,7 @@ class DriveNeuralMLP(DriveBase):
                 pos_indices,
                 vel_indices,
                 target_pos_indices,
-                forces,
+                output,
                 state,
             )
             return
@@ -570,8 +589,8 @@ class DriveNeuralMLP(DriveBase):
 
         wp.launch(
             _scale_and_copy_kernel,
-            dim=len(forces),
-            inputs=[effort, forces, self.effort_scale, 1],
+            dim=len(output),
+            inputs=[effort, output, self.effort_scale, 1],
             device=device,
         )
 

@@ -1,0 +1,1 @@
+Write the `VBD Tuning` concepts page: a mental model of the particle and rigid blocks, parameter effect tables, a contact margin and gap guide, jitter and explosion checklists, seven failure-mode entries with measured figures, example-sourced parameter combinations and rules of thumb for `SolverVBD` particle systems.

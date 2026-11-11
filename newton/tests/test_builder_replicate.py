@@ -9,10 +9,10 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton import Mesh, Model, ModelBuilder, Rod, eval_fk
+from newton import Axis, Mesh, Model, ModelBuilder, NewtonDeprecationWarning, Rod
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
-from newton.actuators import DrivePD
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.actuators import BatteryConstantResistance, DriveOutputSpace, DrivePD, MotorDC
+from newton.tests.unittest_utils import HOST_TRANSFORMS_BIT_EXACT, add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
 
 
@@ -98,7 +98,9 @@ class TestModelBuilderReplicate(unittest.TestCase):
             kp=100.0,
             kd=10.0,
         )
-        builder.add_muscle([root, child], [wp.vec3(), wp.vec3(0.0, 0.0, 0.5)], 1.0, 1.0, 1.0, 1.0, 0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", NewtonDeprecationWarning)
+            builder.add_muscle([root, child], [wp.vec3(), wp.vec3(0.0, 0.0, 0.5)], 1.0, 1.0, 1.0, 1.0, 0.0)
         builder.body_color_groups = [np.asarray([root, child, fixed])]
         # Uneven group sizes exercise the balancing in the merge combine.
         builder.set_coloring([[0], [1, 2, 3]])
@@ -162,7 +164,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(set(expected.actuator_entries), set(actual.actuator_entries))
         for key, expected_entry in expected.actuator_entries.items():
             actual_entry = actual.actuator_entries[key]
-            for field in ("indices", "pos_indices", "drive_args", "delay_args", "clamping_args"):
+            for field in ("indices", "pos_indices", "drive_args", "input_processor_args", "clamping_args"):
                 self.assertEqual(getattr(expected_entry, field), getattr(actual_entry, field))
 
     def test_replicate_matches_add_world_loop(self):
@@ -216,218 +218,61 @@ class TestModelBuilderReplicate(unittest.TestCase):
                 np.testing.assert_array_equal(source.particle_q, [[1.0, 2.0, 3.0]])
                 np.testing.assert_array_equal(source.particle_qd, [[2.0, -1.0, 0.5]])
 
-    def test_add_builder_preserves_mixed_particle_velocity_types(self):
-        """Preserve each velocity representation and native operations when composing particles."""
-        velocities = [(1.0, 2.0, 3.0), [4.0, 5.0, 6.0], wp.vec3(7.0, 8.0, 9.0), np.array([10.0, 11.0, 12.0])]
-        rotation = np.diag([-1.0, -1.0, 1.0])
-        for first in range(len(velocities)):
-            source = ModelBuilder()
-            for velocity in velocities[first:] + velocities[:first]:
-                source.add_particle((1.0, 2.0, 3.0), velocity, 1.0)
-            original = np.asarray(source.particle_qd).copy()
-            for xform, rot in (
-                (None, np.eye(3)),
-                (wp.transform((2.0, 3.0, 4.0)), np.eye(3)),
-                (wp.transform((2.0, 3.0, 4.0), wp.quat(0.0, 0.0, 1.0, 0.0)), rotation),
-            ):
-                with self.subTest(first=first, xform=xform):
-                    target = ModelBuilder()
-                    target.add_particle((0.0, 0.0, 0.0), wp.vec3(-1.0, -2.0, -3.0), 1.0)
-                    target.add_builder(source, xform)
-                    for before, after in zip(source.particle_qd, target.particle_qd[1:], strict=True):
-                        self.assertIs(type(after), type(before))
-                        np.testing.assert_array_equal(after, rot @ np.asarray(before))
-                        if isinstance(before, wp.vec3):
-                            self.assertEqual(after.x, (rot @ np.asarray(before))[0])
-                            np.testing.assert_array_equal(after * 0.5, 0.5 * (rot @ np.asarray(before)))
-                    self.assertIsInstance(target.particle_qd[0], wp.vec3)
-                    np.testing.assert_array_equal(target.particle_qd[0], [-1.0, -2.0, -3.0])
-                    np.testing.assert_array_equal(source.particle_qd, original)
-                    model = target.finalize(device="cpu")
-                    np.testing.assert_array_equal(model.particle_qd.numpy()[1:], original @ rot.T)
-
-                    nested = ModelBuilder()
-                    nested.add_builder(target, wp.transform(q=wp.quat(0.0, 0.0, 1.0, 0.0)))
-                    for before, after in zip(target.particle_qd, nested.particle_qd, strict=True):
-                        self.assertIs(type(after), type(before))
-                        np.testing.assert_array_equal(after, rotation @ np.asarray(before))
-
-    def test_composition_transforms_free_state_and_targets(self):
-        """Transform free-root state and targets in the parent frame in both target layouts."""
-        rotation = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
-        anchor_rotation = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
-        anchor_position = np.array([0.25, -0.5, 1.0])
-        offset = np.array([3.0, -2.0, 1.0])
+    def test_composition_transforms_free_root_targets(self):
+        """Transform free-root pose and velocity targets with the copy, in each joint's parent frame."""
+        anchors = [
+            wp.transform((0.2, 0.3, 0.4), wp.quat(0.5, 0.5, 0.5, 0.5)),
+            wp.transform((-0.4, 0.7, 0.1), wp.quat(0.0, 1.0, 0.0, 0.0)),
+        ]
+        source = ModelBuilder()
+        for i, anchor in enumerate(anchors):
+            root = source.add_link()
+            free = source.add_joint_free(root, parent_xform=anchor)
+            hinge = source.add_joint_revolute(root, source.add_link(), target_pos=0.3, target_vel=0.4)
+            source.add_articulation([free, hinge])
+            q, qd = source.joint_q_start[free], source.joint_qd_start[free]
+            source.joint_target_q[q : q + 7] = [i + 1.0, 2.0, 3.0, *wp.quat_rpy(0.2, -0.3, 0.4 + i)]
+            source.joint_target_qd[qd : qd + 6] = [i + 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        offset = (3.0, -2.0, 1.0)
         xforms = [
             wp.transform(),
             wp.transform(offset),
             wp.transform(offset, wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2)),
         ]
-        for coord_layout in (False, True):
-            with mock.patch("newton.use_coord_layout_targets", coord_layout), warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message="The legacy DOF-shaped joint_target_q layout is deprecated.*",
-                    category=DeprecationWarning,
-                )
-                source = ModelBuilder()
-                root = source.add_link(
-                    xform=wp.transform((1.0, 2.0, 3.0)), mass=1.0, inertia=wp.mat33(np.eye(3)), com=(0.2, 0.1, 0.0)
-                )
-                free = source.add_joint_free(
-                    root,
-                    parent_xform=wp.transform(anchor_position, wp.quat_from_axis_angle(wp.vec3(1, 0, 0), np.pi / 2)),
-                )
-                child = source.add_link(xform=wp.transform((1.0, 2.0, 4.0)), mass=1.0, inertia=wp.mat33(np.eye(3)))
-                hinge = source.add_joint_revolute(root, child, target_pos=0.3, target_vel=0.4)
-                source.add_articulation([free, hinge])
-                source.joint_qd[:] = [1.0, 2.0, 0.5, 0.5, -1.0, 0.25, 0.7]
-                target_position = np.array([2.0, 1.0, -0.5])
-                target_angles = wp.vec3(0.2, -0.3, 0.4)
-                target_quat = wp.quat_from_euler(target_angles, 2, 1, 0)
-                source.joint_target_q[:7] = [
-                    *target_position,
-                    *(target_quat if coord_layout else [*target_angles, 1.0]),
-                ]
-                source.joint_target_qd[:6] = [2.0, -0.5, 1.0, -0.5, 0.25, 1.0]
-                original_model = source.finalize(device="cpu")
-                original_state = original_model.state()
-                eval_fk(original_model, original_model.joint_q, original_model.joint_qd, original_state)
-                source.body_qd = [wp.spatial_vector(*row) for row in original_state.body_qd.numpy()]
-                source_state = {
-                    name: np.asarray(getattr(source, name)).copy()
-                    for name in ("body_qd", "joint_q", "joint_qd", "joint_target_q", "joint_target_qd")
-                }
-                for method in ("add_builder", "replicate"):
-                    with self.subTest(layout=coord_layout, method=method):
-                        target = ModelBuilder()
-                        target.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-                        prefix_target = np.asarray(target.joint_target_q).copy()
-                        if method == "replicate":
-                            target.replicate(source, len(xforms), xforms=xforms)
-                        else:
-                            for xform in xforms:
-                                target.add_builder(source, xform)
-                        model = target.finalize(device="cpu")
-                        control = model.control()
-                        state = model.state()
-                        fk_state = model.state()
-                        eval_fk(model, model.joint_q, model.joint_qd, fk_state)
-                        body_velocities = state.body_qd.numpy()
-                        joint_velocities = state.joint_qd.numpy()
-                        target_velocities = control.joint_target_qd.numpy()
-                        target_positions = control.joint_target_q.numpy()
-                        for i, (rot, shift) in enumerate(
-                            ((np.eye(3), np.zeros(3)), (np.eye(3), offset), (rotation, offset))
-                        ):
-                            body_start, q_start, qd_start = 1 + 2 * i, 7 + 8 * i, 6 + 7 * i
-                            local_rotation = anchor_rotation.T @ rot @ anchor_rotation
-                            with self.subTest(copy=i, field="body_qd"):
-                                expected = (np.asarray(source.body_qd).reshape(-1, 3) @ rot.T).reshape(2, 6)
-                                np.testing.assert_allclose(
-                                    body_velocities[body_start : body_start + 2], expected, atol=2e-6, rtol=0
-                                )
-                            for field, velocities in (
-                                ("joint_qd", joint_velocities),
-                                ("joint_target_qd", target_velocities),
-                            ):
-                                with self.subTest(copy=i, field=field):
-                                    expected = (
-                                        np.asarray(getattr(source, field)[:6]).reshape(2, 3) @ local_rotation.T
-                                    ).ravel()
-                                    np.testing.assert_allclose(
-                                        velocities[qd_start : qd_start + 6], expected, atol=2e-6, rtol=0
-                                    )
-                            target_start = q_start if coord_layout else qd_start
-                            values = target_positions[target_start : target_start + (7 if coord_layout else 6)]
-                            with self.subTest(copy=i, field="target_position"):
-                                world_position = anchor_rotation @ values[:3] + anchor_position
-                                np.testing.assert_allclose(
-                                    world_position,
-                                    rot @ (anchor_rotation @ target_position + anchor_position) + shift,
-                                    atol=2e-6,
-                                    rtol=0,
-                                )
-                            with self.subTest(copy=i, field="target_orientation"):
-                                quat = (
-                                    wp.quat(*values[3:])
-                                    if coord_layout
-                                    else wp.quat_from_euler(wp.vec3(*values[3:]), 2, 1, 0)
-                                )
-                                np.testing.assert_allclose(
-                                    anchor_rotation @ np.asarray(wp.quat_to_matrix(quat)).reshape(3, 3),
-                                    rot @ anchor_rotation @ np.asarray(wp.quat_to_matrix(target_quat)).reshape(3, 3),
-                                    atol=2e-6,
-                                    rtol=0,
-                                )
-                            self.assertAlmostEqual(target.joint_qd[qd_start + 6], 0.7)
-                            self.assertAlmostEqual(target.joint_target_q[q_start + 7], 0.3)
-                            self.assertAlmostEqual(target.joint_target_qd[qd_start + 6], 0.4)
-                        np.testing.assert_allclose(fk_state.body_qd.numpy(), body_velocities, atol=2e-6, rtol=0)
-                        np.testing.assert_array_equal(target.joint_target_q[:7], prefix_target)
-                        for name, values in source_state.items():
-                            np.testing.assert_array_equal(getattr(source, name), values)
-
-    def test_composition_transforms_multiple_free_targets(self):
-        """Keep distinct free-root targets and anchors independent across copied worlds."""
-        source = ModelBuilder()
-        anchors = [
-            wp.transform((0.2, 0.3, 0.4), wp.quat(0.5, 0.5, 0.5, 0.5)),
-            wp.transform((-0.4, 0.7, 0.1), wp.quat(0.0, 1.0, 0.0, 0.0)),
-        ]
-        anchor_rotations = [np.array([[0, 0, 1], [1, 0, 0], [0, 1, 0]]), np.diag([-1, 1, -1])]
-        for i, anchor in enumerate(anchors):
-            root = source.add_link()
-            free = source.add_joint_free(root, parent_xform=anchor)
-            source.add_articulation([free])
-            source.joint_target_q[7 * i : 7 * i + 3] = [i + 1, i + 2, i + 3]
-            source.joint_target_qd[6 * i : 6 * i + 6] = [i + 1, 2, 3, 4, 5, i + 6]
-        rot = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
-        shift = np.array([2.0, -1.0, 3.0])
-        xform = wp.transform(shift, wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2))
         for method in ("add_builder", "replicate"):
             with self.subTest(method=method):
                 target = ModelBuilder()
+                target.add_body()
+                target.joint_target_q[:3] = [7.0, 8.0, 9.0]
                 if method == "replicate":
-                    target.replicate(source, 2, xforms=[wp.transform(), xform])
+                    target.replicate(source, len(xforms), xforms=xforms)
                 else:
-                    target.add_builder(source)
-                    target.add_builder(source, xform)
-                np.testing.assert_array_equal(target.joint_target_q[:14], source.joint_target_q)
-                for i, (anchor, anchor_rot) in enumerate(zip(anchors, anchor_rotations, strict=True)):
-                    original = np.asarray(source.joint_target_q[7 * i : 7 * i + 3])
-                    expected = anchor_rot.T @ (rot @ (anchor_rot @ original + anchor.p) + shift - anchor.p)
-                    np.testing.assert_allclose(
-                        target.joint_target_q[14 + 7 * i : 17 + 7 * i], expected, atol=2e-6, rtol=0
-                    )
-                    original_twist = np.asarray(source.joint_target_qd[6 * i : 6 * i + 6]).reshape(2, 3)
-                    expected_twist = original_twist @ (anchor_rot.T @ rot @ anchor_rot).T
-                    np.testing.assert_allclose(
-                        target.joint_target_qd[12 + 6 * i : 18 + 6 * i], expected_twist.ravel(), atol=2e-6, rtol=0
-                    )
-
-    def test_composition_preserves_body_velocity_operations(self):
-        """Preserve native spatial-vector operations before finalizing rotated copies."""
-        source = ModelBuilder()
-        body = source.add_body(mass=1.0)
-        source.body_qd[body] = wp.spatial_vector(1, 2, 3, 4, 5, 6)
-        rotation = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
-        xform = wp.transform((1, 2, 3), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2))
-        for method in ("add_builder", "replicate"):
-            with self.subTest(method=method):
-                target = ModelBuilder()
-                if method == "add_builder":
-                    target.add_builder(source, xform)
-                else:
-                    target.replicate(source, 1, xforms=[xform])
-                np.testing.assert_allclose(wp.spatial_top(target.body_qd[0]), rotation @ [1, 2, 3], atol=1e-6)
-                np.testing.assert_allclose(wp.spatial_bottom(target.body_qd[0]), rotation @ [4, 5, 6], atol=1e-6)
-                copied = ModelBuilder()
-                copied.replicate(target, 2)
-                for velocity in copied.body_qd:
-                    np.testing.assert_allclose(wp.spatial_top(velocity), rotation @ [1, 2, 3], atol=1e-6)
-                    np.testing.assert_allclose(wp.spatial_bottom(velocity), rotation @ [4, 5, 6], atol=1e-6)
-        np.testing.assert_array_equal(source.body_qd[0], [1, 2, 3, 4, 5, 6])
+                    for xform in xforms:
+                        target.add_builder(source, xform)
+                np.testing.assert_array_equal(target.joint_target_q[:7], [7.0, 8.0, 9.0, 0.0, 0.0, 0.0, 1.0])
+                np.testing.assert_array_equal(target.joint_target_q[7:23], source.joint_target_q)
+                np.testing.assert_array_equal(target.joint_target_qd[6:20], source.joint_target_qd)
+                for copy, xform in enumerate(xforms):
+                    for i, anchor in enumerate(anchors):
+                        q, qd = 8 * i, 7 * i
+                        copy_q, copy_qd = 7 + 16 * copy + q, 6 + 14 * copy + qd
+                        with self.subTest(copy=copy, root=i):
+                            # Compare in the world frame, where the copy transform applies directly.
+                            pose = anchor * wp.transform(*target.joint_target_q[copy_q : copy_q + 7])
+                            expected = xform * anchor * wp.transform(*source.joint_target_q[q : q + 7])
+                            np.testing.assert_allclose(pose, expected, atol=1e-5, rtol=0)
+                            for part in (0, 3):
+                                twist = wp.vec3(*target.joint_target_qd[copy_qd + part : copy_qd + part + 3])
+                                source_twist = wp.vec3(*source.joint_target_qd[qd + part : qd + part + 3])
+                                np.testing.assert_allclose(
+                                    wp.quat_rotate(anchor.q, twist),
+                                    wp.quat_rotate(xform.q, wp.quat_rotate(anchor.q, source_twist)),
+                                    atol=1e-5,
+                                    rtol=0,
+                                )
+                            # Hinge targets are joint-local and stay exact.
+                            self.assertEqual(target.joint_target_q[copy_q + 7], 0.3)
+                            self.assertEqual(target.joint_target_qd[copy_qd + 6], 0.4)
 
     def test_composition_transforms_tetrahedral_reference(self):
         """Rotate tetrahedral references while retaining deformation and existing data."""
@@ -545,6 +390,104 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
         self.assert_builder_merge_state_equal(expected, actual)
 
+    def test_replicate_matches_add_world_loop_with_many_transforms(self):
+        """Match per-world composition when copies transform enough rows to batch with NumPy."""
+        source = self._make_source()
+        rng = np.random.default_rng(42)
+        xforms = [
+            wp.transform(wp.vec3(*rng.uniform(-3.0, 3.0, 3)), wp.quat_rpy(*rng.uniform(-np.pi, np.pi, 3).tolist()))
+            for _ in range(24)
+        ]
+
+        expected = self._make_destination()
+        for xform in xforms:
+            expected.add_world(source, xform)
+
+        actual = self._make_destination()
+        actual.replicate(source, len(xforms), xforms=xforms)
+
+        for name in ("body_q", "body_qd", "joint_q", "joint_qd", "joint_X_p", "shape_transform"):
+            with self.subTest(attribute=name):
+                actual_values = np.asarray(getattr(actual, name), dtype=np.float32)
+                expected_values = np.asarray(getattr(expected, name), dtype=np.float32)
+                if HOST_TRANSFORMS_BIT_EXACT:
+                    np.testing.assert_array_equal(actual_values, expected_values)
+                else:
+                    np.testing.assert_allclose(actual_values, expected_values, rtol=1e-6, atol=1e-6)
+
+    def test_replicate_into_current_world_matches_add_builder_loop(self):
+        """Match repeated add_builder calls when copies share the current world context."""
+        source = self._make_source()
+        xforms = [
+            wp.transform((1.0, 2.0, 3.0), wp.quat_rpy(0.1, 0.2, 0.3)),
+            wp.transform((-2.0, 1.0, 0.5), wp.quat_identity()),
+            wp.transform((0.5, -1.0, 2.0), wp.quat_rpy(-0.2, 0.4, 0.1)),
+        ]
+        label_prefixes = ["a", None, "c"]
+        for in_world in (False, True):
+            with self.subTest(in_world=in_world):
+                expected = self._make_destination()
+                actual = self._make_destination()
+                if in_world:
+                    expected.begin_world()
+                    actual.begin_world()
+                for xform, label_prefix in zip(xforms, label_prefixes, strict=True):
+                    expected.add_builder(source, xform=xform, label_prefix=label_prefix)
+                actual.replicate(
+                    source, len(xforms), separate_worlds=False, xforms=xforms, label_prefixes=label_prefixes
+                )
+                if in_world:
+                    expected.end_world()
+                    actual.end_world()
+
+                self.assert_builder_merge_state_equal(expected, actual)
+
+    def test_replicate_into_current_world_adds_no_worlds(self):
+        """Add shared-world copies to the current world without changing the world count."""
+        source = ModelBuilder(gravity=(0.0, 0.0, -3.0))
+        body = source.add_body()
+        source.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
+
+        builder = ModelBuilder()
+        builder.replicate(source, copy_count=5, spacing=(1.5, 0.0, 0.0), separate_worlds=False)
+        self.assertEqual(builder.world_count, 0)
+        self.assertEqual(builder.body_count, 5)
+        self.assertEqual(builder.body_world, [-1] * 5)
+        np.testing.assert_allclose(np.asarray(builder._gravity_as_vector()), [0.0, 0.0, -3.0])
+
+        builder.begin_world()
+        builder.replicate(source, copy_count=2, separate_worlds=False)
+        builder.end_world()
+        self.assertEqual(builder.world_count, 1)
+        self.assertEqual(builder.body_world, [-1] * 5 + [0] * 2)
+        np.testing.assert_allclose(np.asarray(builder.world_gravity[0]), [0.0, 0.0, -3.0])
+
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.body_count, 7)
+
+    def test_replicate_world_count_is_deprecated(self):
+        """Warn for the deprecated world_count keyword and reject conflicting or missing counts."""
+        source = self._make_source()
+        expected = self._make_destination()
+        expected.replicate(source, copy_count=2)
+
+        actual = self._make_destination()
+        with self.assertWarnsRegex(NewtonDeprecationWarning, r"replicate\(world_count=\.\.\.\)"):
+            actual.replicate(source, world_count=2)
+        self.assert_builder_merge_state_equal(expected, actual)
+
+        with self.assertRaisesRegex(TypeError, "only one of"):
+            ModelBuilder().replicate(source, 2, world_count=2)
+        with self.assertRaisesRegex(TypeError, "copy_count"):
+            ModelBuilder().replicate(source)
+
+    def test_replicate_separate_worlds_rejects_world_context(self):
+        """Reject separate-world replication inside an active world context."""
+        builder = ModelBuilder()
+        builder.begin_world()
+        with self.assertRaisesRegex(RuntimeError, "already in world context"):
+            builder.replicate(self._make_source(), copy_count=2)
+
     def test_replicate_remaps_joint_mimic_references(self):
         """Verify replication remaps dense mimic references per world."""
         source = ModelBuilder()
@@ -568,6 +511,22 @@ class TestModelBuilderReplicate(unittest.TestCase):
     def test_replicate_rejects_mismatched_explicit_transforms(self):
         with self.assertRaisesRegex(ValueError, "xforms must contain 2 entries, got 1"):
             ModelBuilder().replicate(self._make_source(), 2, xforms=[wp.transform_identity()])
+
+    def test_replicate_zero_copies_validates_per_copy_inputs(self):
+        """Reject per-copy inputs with entries for zero copies, and add nothing for zero or negative counts."""
+        source = self._make_source()
+        with self.assertRaisesRegex(ValueError, "xforms must contain 0 entries, got 1"):
+            ModelBuilder().replicate(source, 0, xforms=[wp.transform_identity()])
+        with self.assertRaisesRegex(ValueError, "label_prefixes must contain 0 entries, got 1"):
+            ModelBuilder().replicate(source, 0, label_prefixes=["a"])
+
+        builder = ModelBuilder()
+        builder.begin_world()
+        builder.replicate(source, 0, xforms=[], label_prefixes=[])
+        builder.end_world()
+        builder.replicate(source, -1)
+        self.assertEqual(builder.world_count, 1)
+        self.assertEqual(builder.body_count, 0)
 
     def test_replicate_does_not_call_add_world(self):
         source = self._make_source()
@@ -888,7 +847,8 @@ class TestModelBuilderReplicate(unittest.TestCase):
         source = ModelBuilder()
         body0 = source.add_body()
         body1 = source.add_body()
-        source.add_muscle([body0, body1], [wp.vec3(), wp.vec3(0.0, 0.0, 1.0)], 1.0, 2.0, 3.0, 4.0, 5.0)
+        with self.assertWarnsRegex(NewtonDeprecationWarning, r"add_muscle\(\) is deprecated"):
+            source.add_muscle([body0, body1], [wp.vec3(), wp.vec3(0.0, 0.0, 1.0)], 1.0, 2.0, 3.0, 4.0, 5.0)
         source.body_color_groups = [np.asarray([body0, body1])]
 
         scene = ModelBuilder()
@@ -1173,6 +1133,15 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertIs(specs["shape_body"], Model._CORE_ATTRIBUTE_SPECS["shape_body"])
         self.assertEqual(specs["joint_target_q"].frequency, Model.AttributeFrequency.JOINT_COORD)
 
+        for family, references in ModelBuilder._BUILDER_GROUP_REFERENCES.items():
+            for suffix in references:
+                name = f"{family}_{suffix}"
+                with self.subTest(attribute=name):
+                    builder_spec = specs[f"_{name}"]
+                    model_spec = Model._CORE_ATTRIBUTE_SPECS[name]
+                    self.assertEqual(builder_spec.references, model_spec.references)
+                    self.assertEqual(builder_spec.compaction_policy, model_spec.compaction_policy)
+
         base_attributes, base_lists = ModelBuilder._base_builder_attributes()
 
         added = {"_missing_merge_metadata"}
@@ -1208,6 +1177,40 @@ class TestModelBuilderReplicate(unittest.TestCase):
                 self.assertEqual(specs[name].compaction_policy, "generic")
                 scalar_dtype = getattr(warp_dtype, "_wp_scalar_type_", warp_dtype)
                 self.assertIsNotNone(wp.dtype_to_numpy(scalar_dtype))
+
+    def test_battery_after_builder_without_batteries(self):
+        """Batteries work after merging a builder whose actuators predate any battery."""
+
+        def robot(with_battery: bool) -> ModelBuilder:
+            builder = ModelBuilder()
+            link = builder.add_link()
+            joint = builder.add_joint_revolute(parent=-1, child=link, axis=Axis.Z)
+            builder.add_articulation([joint])
+            dof = builder.joint_qd_start[joint]
+            if with_battery:
+                actuator = builder.add_actuator(
+                    DrivePD,
+                    output_space=DriveOutputSpace.DUTY,
+                    index=dof,
+                    motor=(MotorDC, {"kt": 1.0, "resistance": 1.0, "vin": 12.0, "supply_from_battery": True}),
+                )
+                builder.add_battery(
+                    BatteryConstantResistance, [actuator], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0
+                )
+            else:
+                builder.add_actuator(DrivePD, index=dof, kp=1.0)
+            return builder
+
+        builder = ModelBuilder()
+        builder.add_world(robot(False))
+        builder.add_world(robot(True))
+        builder.add_world(robot(True))
+        model = builder.finalize()
+
+        (batteries,) = model.batteries
+        np.testing.assert_array_equal(batteries.actuators.numpy(), [1, 2])
+        np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 1, 2])
+        np.testing.assert_array_equal(batteries.world.numpy(), [1, 2])
 
 
 @wp.kernel

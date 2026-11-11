@@ -14,25 +14,32 @@ state is rebuilt per step; there is no anchor or elastic orientation memory.
 Host grouping precludes graphs and throughput use.
 """
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
 
+from ...exceptions import NewtonWarning
 from ...geometry import GeoType
 from .kernels import (
     _CONTACT_END_GAP_SLOP,
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_TORSION,
+    WARP_DETERMINISM_OFF,
 )
 
 # SolverSteel rejects models with ``requires_grad``, so no kernel needs an adjoint.
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, **WARP_DETERMINISM_OFF})
 
 _TOUCH_TOLERANCE = 1.0e-5
 _NORMAL_COSINE = 0.999
 _MAX_GROUP_CONTACTS = 4096
+
+# Entry of the solver's row-overflow warning flags that the torsion rows use.
+_TORSION_WARNING = 4
+
 # Normal rows store their spin-row index in the membership array. A spin row
 # has no parent membership, so its otherwise-unused cell records admission.
 # Both host and device preparation reset every cell to -1 each step.
@@ -50,15 +57,27 @@ _SUPPORTED_TYPES = (
 
 
 def configure_contact_torsion(solver):
-    """Enable contact torsion when any shape has a positive torsion radius, and validate the radii."""
+    """Enable contact torsion when any shape has a positive torsion radius, and validate the radii.
+
+    A body variant row takes the radius and type of the variant shape it holds, so each row is
+    checked with every variant shape it can hold.
+    """
+    model = solver.model
     radius_array = solver._contact_torsion_shape_radius
     radii = radius_array.numpy() if radius_array is not None else np.zeros(0, dtype=np.float32)
+    types = model.shape_type.numpy()
+    shapes = np.arange(len(radii))
+    variant_radius = model._variant_shape_custom.get("steel:min_torsional_patch_radius")
+    if radius_array is not None and variant_radius is not None:
+        rows, options = model._variant_row_options()
+        radii = np.concatenate((radii, variant_radius[0].numpy()[options]))
+        types = np.concatenate((types, model._variant_shape_geometry["shape_type"].numpy()[options]))
+        shapes = np.concatenate((shapes, rows))
     if not np.all(np.isfinite(radii)) or np.any(radii < 0.0):
         raise ValueError("steel:min_torsional_patch_radius must be finite and non-negative [m]")
     enabled = bool(np.any(radii > 0.0))
     if enabled:
-        types = solver.model.shape_type.numpy()
-        unsupported = np.flatnonzero((radii > 0.0) & ~np.isin(types, _SUPPORTED_TYPES)).tolist()
+        unsupported = np.unique(shapes[(radii > 0.0) & ~np.isin(types, _SUPPORTED_TYPES)]).tolist()
         if unsupported:
             raise ValueError(f"Contact torsion does not support the geometry of shapes {unsupported}")
     solver._contact_torsion_enabled = enabled
@@ -144,6 +163,7 @@ def _contact_groups(solver, state, contacts):
     row_types = solver._row_type.numpy()
     parents = solver._row_parent.numpy()
     row_counts = solver._constraint_count.numpy()
+    dense_dropped = solver._row_dropped_dense.numpy()
     patches = bool(solver._friction_anchors_enabled)
     owners = solver._friction_patches.current.owner.numpy()[:count] if patches else None
     groups = {}
@@ -154,6 +174,9 @@ def _contact_groups(solver, state, contacts):
     for c in range(count):
         world, slot = int(worlds[c]), int(slots[c])
         if paths[c] != 0 or slot < 0:
+            continue
+        # The surviving dense rows of a world that dropped some cannot prove complete groups.
+        if 0 <= world < len(dense_dropped) and dense_dropped[world] != 0:
             continue
         region = (world, int(owners[c])) if patches else None
         a, b = int(shape_a[c]), int(shape_b[c])
@@ -342,10 +365,6 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     solver._torsion_stats = {"rows": 0, "groups": []}
     if contacts is None:
         return
-    # The allocator rolls counters back on failure; count <= capacity cannot
-    # prove that every contact was retained. Tracking is mandatory for torsion.
-    if np.any(solver._row_dropped_dense.numpy()):
-        raise RuntimeError("Dense contact row overflow before contact torsion; refusing dropped rows")
     groups = _contact_groups(solver, state, contacts)
     if not groups:
         return
@@ -353,7 +372,7 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     membership = np.full(solver._contact_torsion_group.shape, -1, dtype=np.int32)
     fields = {
         key: getattr(solver, f"_{key}").numpy()
-        for key in ("row_type", "row_parent", "row_mu", "phi", "target_velocity", "row_restitution")
+        for key in ("row_type", "row_parent", "row_mu", "phi", "target_velocity", "row_rebound_velocity")
     }
     jacobians = {size: array.numpy() for size, array in solver._J_by_size.items()}
     body_joint = solver._body_to_joint.numpy()
@@ -368,6 +387,7 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     body_velocities = augmented_state._body_v_s.numpy()
     shape_radius = solver._contact_torsion_shape_radius.numpy()
     row_radius = solver._torsion_row_radius.numpy()
+    requested = count.copy()
     for group in groups:
         world = group[0].world
         budget = _group_budget(solver, group, fields["row_mu"])
@@ -375,9 +395,10 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
             continue
         coefficient, anchors, touching = budget
         lead = touching[0]
+        requested[world] += 1
         row = int(count[world])
         if row >= solver._articulation_constraint_max:
-            raise RuntimeError("Experimental torsion row capacity exceeded; refusing dropped work")
+            continue
         count[world] += 1
         for field in fields.values():
             field[world, row] = 0
@@ -422,6 +443,9 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
             }
         )
     solver._torsion_stats["rows"] = len(solver._torsion_stats["groups"])
+    _flag_torsion_overflow(solver, requested, count)
+    # The row watermarks read the slot counter as the world's requested rows.
+    solver._slot_counter.assign(np.maximum(solver._slot_counter.numpy(), requested))
     if not solver._torsion_stats["rows"]:
         return
     for name, values in fields.items():
@@ -430,25 +454,124 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     for size, values in jacobians.items():
         solver._J_by_size[size].assign(values)
     solver._constraint_count.assign(count)
-    solver._slot_counter.assign(count)
     solver._contact_torsion_group.assign(membership)
 
 
-def torque_sweep_source(dofs):
-    """Return the coupled residual-budget angular solve inside each PGS sweep."""
+def _flag_torsion_overflow(solver, requested, count):
+    """Flag the worlds whose torsion groups did not all get a row, and warn once as the device path does."""
+    overflowed = np.flatnonzero(requested > count)
+    if not overflowed.size:
+        return
+    overflow = solver.constraint_overflow.numpy()
+    overflow[overflowed] = True
+    # Global articulations are solved in world 0's rows.
+    if overflowed[0] == 0 and solver._has_responding_global:
+        overflow[-1] = True
+    solver.constraint_overflow.assign(overflow)
+    emitted = solver._row_overflow_warning_emitted.numpy()
+    if not solver._warn_constraint_overflow or emitted[_TORSION_WARNING]:
+        return
+    emitted[_TORSION_WARNING] = 1
+    solver._row_overflow_warning_emitted.assign(emitted)
+    world = int(overflowed[0])
+    warnings.warn(
+        f"Steel contact torsion row overflow in world {world}: requested {int(requested[world])} rows, "
+        f"limit {solver._articulation_constraint_max}; dropped {int(requested[world] - count[world])} torsion rows. "
+        "Increase articulation_constraint_max.",
+        NewtonWarning,
+        stacklevel=5,
+    )
+
+
+def torque_links_shared_bytes(max_constraints):
+    """Return the shared-memory footprint [B] of :func:`torque_links_source`'s two lists."""
+    return 2 * max_constraints * (2 if max_constraints <= 32767 else 4)
+
+
+def torque_links_source(max_constraints):
+    """Return the once-per-launch build of the torsion row lists the sweep walks.
+
+    Defines ``torsion_head``, the first torsion row, and two shared arrays: for a torsion row,
+    ``s_torsion_next`` is the next torsion row and ``s_torsion_first`` its first member contact row;
+    for a member, ``s_torsion_next`` is the next member. Every list ascends, so the sweep visits rows
+    in the order of a full scan.
+    """
+    index_type = "short" if max_constraints <= 32767 else "int"
+    return f"""
+    __shared__ {index_type} s_torsion_next[{max_constraints}];
+    __shared__ {index_type} s_torsion_first[{max_constraints}];
+    int torsion_head = -1;
+    if (contact_rows) {{
+        if (lane == 0) {{
+            for (int n = m_dense - 1; n >= 0; --n) {{
+                if (world_row_type.data[off_dense + n] != {PGS_CONSTRAINT_TYPE_TORSION}) continue;
+                s_torsion_next[n] = torsion_head;
+                s_torsion_first[n] = -1;
+                torsion_head = n;
+            }}
+            if (torsion_head >= 0) {{
+                for (int n = m_dense - 1; n >= 0; --n) {{
+                    if (world_row_type.data[off_dense + n] != {PGS_CONSTRAINT_TYPE_CONTACT}) continue;
+                    int spin = world_torsion_group.data[off_dense + n];
+                    if (spin < 0 || spin >= m_dense ||
+                        world_row_type.data[off_dense + spin] != {PGS_CONSTRAINT_TYPE_TORSION}) continue;
+                    s_torsion_next[n] = s_torsion_first[spin];
+                    s_torsion_first[spin] = n;
+                }}
+            }}
+        }}
+        torsion_head = __shfl_sync(0xFFFFFFFF, torsion_head, 0);
+        __syncwarp();
+    }}
+"""
+
+
+def torque_sweep_source(dofs, *, linked=False):
+    """Return the coupled residual-budget angular solve inside each PGS sweep.
+
+    ``linked`` walks the lists of :func:`torque_links_source`; otherwise every dense row is scanned
+    for torsion rows and their members, in the same ascending order.
+    """
+    if linked:
+        torsion_rows = "for (int spin = torsion_head; spin >= 0; spin = s_torsion_next[spin]) {"
+        members = "for (int n = s_torsion_first[spin]; n >= 0; n = s_torsion_next[n]) {"
+        non_member = ""
+    else:
+        torsion_rows = f"""for (int spin = 0; spin < m_dense; ++spin) {{
+                if (world_row_type.data[off_dense + spin] != {PGS_CONSTRAINT_TYPE_TORSION}) continue;"""
+        members = "for (int n = 0; n < m_dense; ++n) {"
+        non_member = f"""world_row_type.data[off_dense + n] != {PGS_CONSTRAINT_TYPE_CONTACT} ||
+                        world_torsion_group.data[off_dense + n] != spin"""
+    first_skip = f"if ({non_member}) continue;" if non_member else ""
+    rescale_skip = f"{non_member} ||" if non_member else ""
+    lanes = [f"lane + {k * 32}" if k else "lane" for k in range((dofs + 31) // 32)]
+    # The spin row's own loads do not depend on the member walk, so they are issued before it.
+    row_loads = "\n".join(
+        f"""                float spin_J_{k} = {d} < {dofs} ? J_world.data[jy_world_base + spin * {dofs} + {d}] : 0.0f;
+                float spin_Y_{k} = {d} < {dofs} ? Y_world.data[jy_world_base + spin * {dofs} + {d}] : 0.0f;"""
+        for k, d in enumerate(lanes)
+    )
+    spin_dot = "\n".join(
+        f"                if ({d} < {dofs}) dot += spin_J_{k} * s_v[{d}];" for k, d in enumerate(lanes)
+    )
+    spin_update = "\n".join(
+        f"                    if ({d} < {dofs}) s_v[{d}] += spin_Y_{k} * delta;" for k, d in enumerate(lanes)
+    )
     return f"""
         {{
-            for (int spin = 0; spin < m_dense; ++spin) {{
-                if (world_row_type.data[off_dense + spin] != {PGS_CONSTRAINT_TYPE_TORSION}) continue;
+            {torsion_rows}
                 float radius = torsion_row_radius.data[off_dense + spin];
                 // The torsion row carries its group's undivided coefficient. Persistent
                 // patches divide the anchor tangent rows' coefficient by the anchor count.
                 float mu = fmaxf(world_row_mu.data[off_dense + spin], 0.0f);
+{row_loads}
+                float spin_rhs = rhs_bias.data[off_dense + spin];
+                float spin_diag = world_diag.data[off_dense + spin];
+                int spin_group = world_torsion_group.data[off_dense + spin];
                 float normal_load = 0.0f;
                 float sliding_used = 0.0f;
-                for (int n = 0; n < m_dense; ++n) {{
-                    if (world_row_type.data[off_dense + n] != {PGS_CONSTRAINT_TYPE_CONTACT} ||
-                        world_torsion_group.data[off_dense + n] != spin) continue;
+                {members}
+                    {first_skip}
                     normal_load += fmaxf(s_lam_dense[n], 0.0f);
                     // Only a normal followed by its own tangent pair consumes sliding budget;
                     // under persistent patches, non-anchor normals occupy a single slot.
@@ -471,9 +594,8 @@ def torque_sweep_source(dofs):
                 if (sliding_used > normal_budget) {{
                     float scale = normal_budget / sliding_used;
                     sliding_used = 0.0f;
-                    for (int n = 0; n < m_dense; ++n) {{
-                        if (world_row_type.data[off_dense + n] != {PGS_CONSTRAINT_TYPE_CONTACT} ||
-                            world_torsion_group.data[off_dense + n] != spin ||
+                    {members}
+                        if ({rescale_skip}
                             n + 2 >= m_dense ||
                             world_row_type.data[off_dense + n + 1] != {PGS_CONSTRAINT_TYPE_FRICTION} ||
                             world_row_parent.data[off_dense + n + 1] != n ||
@@ -483,6 +605,8 @@ def torque_sweep_source(dofs):
                         float t2 = s_lam_dense[n + 2] * scale;
                         float delta1 = t1 - s_lam_dense[n + 1];
                         float delta2 = t2 - s_lam_dense[n + 2];
+                        // Every lane has read the tangent pair before lane 0 rescales it.
+                        __syncwarp();
                         if (delta1 != 0.0f || delta2 != 0.0f) {{
                             iteration_changed = 1;
                             if (lane == 0) {{
@@ -499,26 +623,21 @@ def torque_sweep_source(dofs):
                     }}
                 }}
                 float bound = radius * fmaxf(normal_budget - sliding_used, 0.0f);
-                if (world_torsion_group.data[off_dense + spin] == {_TORSION_SPIN_RETIRED}) bound = 0.0f;
+                if (spin_group == {_TORSION_SPIN_RETIRED}) bound = 0.0f;
                 float dot = 0.0f;
-                for (int d = lane; d < {dofs}; d += 32)
-                    dot += J_world.data[jy_world_base + spin * {dofs} + d] * s_v[d];
-                dot += __shfl_down_sync(MASK, dot, 16);
-                dot += __shfl_down_sync(MASK, dot, 8);
-                dot += __shfl_down_sync(MASK, dot, 4);
-                dot += __shfl_down_sync(MASK, dot, 2);
-                dot += __shfl_down_sync(MASK, dot, 1);
-                float residual = __shfl_sync(MASK, dot, 0) + rhs_bias.data[off_dense + spin];
+{spin_dot}
+                float residual = warp_sum(dot) + spin_rhs;
                 float old = s_lam_dense[spin];
-                float diagonal = world_diag.data[off_dense + spin];
+                float diagonal = spin_diag;
                 float trial = diagonal > 0.0f ? old - omega * residual / diagonal : 0.0f;
                 float next = fminf(fmaxf(trial, -bound), bound);
                 float delta = next - old;
+                // Every lane has read the torsion impulse before lane 0 overwrites it.
+                __syncwarp();
                 if (delta != 0.0f) {{
                     iteration_changed = 1;
                     if (lane == 0) s_lam_dense[spin] = next;
-                    for (int d = lane; d < {dofs}; d += 32)
-                        s_v[d] += Y_world.data[jy_world_base + spin * {dofs} + d] * delta;
+{spin_update}
                 }}
                 __syncwarp();
             }}
