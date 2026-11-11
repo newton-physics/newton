@@ -905,8 +905,47 @@ Multi-world support
 -------------------
 
 Constructing :class:`~newton.solvers.SolverMuJoCo` with
-``separate_worlds=True`` (the default for GPU mode with multiple
-worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
+``separate_worlds=True`` (the default for any multi-world model) builds
+a MuJoCo model from the **first world** only. The GPU backend replicates
+it through ``mujoco_warp``. The CPU backend shares that model across one
+independent ``MjData`` per Newton world and steps all of them synchronously.
+The CPU backend shares native model parameters. Corresponding worlds must have
+identical body inertia and gravity compensation, joint axes and local frames,
+joint force parameters and scalar references, geom materials and sizes, equality
+parameters (including polynomial and mimic coefficients), explicit contact-pair
+parameters, and actuator and tendon parameters. Construction and model-change notifications reject differences before
+publishing updates, including notifications that combine several flags.
+Solver options must also match, unless a constructor argument overrides them
+for every world. CONNECT and inferred WELD constraints, including loop joints,
+require matching body-local reference geometry. Translating both body endpoints
+together preserves this geometry; translating a body relative to the shared world
+endpoint does not. An explicit WELD target can still be shared by worlds with
+different initial poses. Changing an equality type, an actuator's effective
+transmission target, articulation membership, or an explicit contact pair's
+targets or parameters requires recreating the multi-world CPU solver, even when
+every world requests the same change. This includes global contact pairs.
+Equivalent actuator target encodings remain accepted.
+Standalone nonkinematic fixed roots compile as static bodies; their joint frames
+must match across worlds and cannot change after construction. Fixed roots
+compiled as mocap bodies retain independent, updatable poses.
+Joint frames and axes that define compiled geometry also require rebuilding,
+including world-attached FIXED loop joints. Frames and motion axes consumed by
+FREE or mocap state conversion, and CONNECT-loop anchor updates, remain runtime
+inputs. Exported geom and site sizes and local transforms, and geom margins
+and gaps, require rebuilding.
+This includes shared global shapes; unexported visual geometry is unaffected.
+Ordinary geom contact materials remain updatable through
+:attr:`~newton.ModelFlags.SHAPE_PROPERTIES`.
+Joint state, controls, applied forces, gravity, equality activation, and free or
+mocap root poses remain independent. A scalar ``dof_ref`` is a model reference,
+not an independent runtime pose; it must match across CPU worlds.
+CPU actuator and tendon rows must have matching contiguous world-local layouts;
+global actuator and tendon rows are unsupported. Equality, actuator, tendon-path,
+and explicit contact-pair references must identify corresponding local entities
+or the same global shapes. Heightfield source dimensions and elevation data must
+also match. Reference geometry is compared after removing common world
+translations. These CPU restrictions do not remove the GPU backend's supported
+per-world parameter variation.
 Bodies, joints, equality constraints, mimic relationships, primitive geoms,
 and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh,
 heightfield, and cone assets, scales, and convex-hull counts may differ across worlds. Collision
@@ -917,6 +956,11 @@ per-world mesh scales are compiled into the MuJoCo assets, so changing their
 :attr:`~newton.Model.shape_scale` after construction raises ``ValueError``;
 recreate the solver to resize them. The solver validates
 compatibility at construction and raises ``ValueError`` on a mismatch.
+
+Calling :meth:`~newton.solvers.SolverMuJoCo.reset` with a world mask
+resets only the selected CPU or GPU runtime worlds. It does not change
+which worlds the next :meth:`~newton.solvers.SolverMuJoCo.step` advances;
+every step advances the complete batch.
 
 Bodies, joints, equality constraints, and mimic relationships cannot have
 a negative world index — assigning any of them to the global world
@@ -938,7 +982,8 @@ same three-phase cycle:
    frequency can be controlled via the deprecated
    ``update_data_interval`` kwarg; it will be removed and the joint state
    will then be synchronized on every step.
-2. **Integrate.** ``mujoco_warp`` steps the MuJoCo model forward by ``dt``.
+2. **Integrate.** The selected backend steps the MuJoCo model forward by ``dt``.
+   On CPU, each world's ``MjData`` is stepped once in world order.
 3. **Pull MuJoCo → Newton.** ``SolverMuJoCo._update_newton_state``
    populates the output ``State`` from the integrated MuJoCo data.
    Kinematic roots pass through unchanged from ``state_in`` (see
