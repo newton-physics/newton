@@ -454,24 +454,35 @@ def test_rigid_tau_external_wrench(test, device):
 
     Pre-fix, eval_rigid_tau converted the public-frame external wrench into
     the internal solve frame by OVERWRITING the body_f_ext input array in
-    place. Warp's recompute-based adjoint re-derives the primal locals by
-    re-reading that array, so every gradient flowing through the kernel was
-    corrupted (force negated, torque shifted in the recomputed f_s). The fix
-    keeps the shift a pure local computation.
+    place (body_f_ext[child] = f_ext). Warp's recompute-based adjoint
+    re-derives the kernel locals by re-reading the arrays at backward time,
+    so the replayed force is the ALREADY-CONVERTED (-F) wrench. That has
+    two effects of very different reach:
 
-    Discriminating setup: a NONZERO external wrench on one body (with zero
-    wrenches the overwritten values equal the originals and the defect is
-    inert), one solver step, linear loss in hinge-dof velocities; the tape
-    gradient w.r.t. the six wrench components is compared against central
-    finite differences of the same rollout.
+    - The gradient w.r.t. the wrench leaf itself survives on the pre-fix
+      code: every adjoint statement on the chain back to body_f_ext is
+      linear in the covector and the only coefficient involved (x_com_s)
+      is replayed from uncorrupted arrays. The wrench check below therefore
+      PINS the leaf path rather than discriminating the fix.
+    - The covector deposit for x_com_s (d of the torque shift w.r.t. the
+      lever arm) is built from the replayed force (-F instead of F), so the
+      covector flowing into adj_body_q_com is wrong. It propagates through
+      the fk backward into the ROOT-pose channels of the initial state, and
+      those gradients DISCRIMINATE: measured on this exact setup, the
+      pre-fix code lands 247-2090% off central finite differences on
+      joint_q[3:6] (sign flips on q[3] and q[4]) while the fixed code stays
+      within 2%.
 
-    Scope note: this test PINS the wrench-path gradient (it guards the fixed
-    behavior against regressions). It does not by itself discriminate the
-    pre-fix code: the documented pre-fix anomalies live in the S_s /
-    body_q_com covector deposits, which are per-step DERIVED arrays (not
-    state leaves) and were discriminated with the launch-by-launch manual
-    backward walk in the fix's validation history. The other two tests in
-    this file carry the with/without discrimination.
+    Discriminating setup: a NONZERO external wrench on one non-root body
+    (with zero wrenches the overwritten values equal the originals and the
+    defect is inert), one solver step, linear loss in hinge-dof velocities;
+    the tape gradients w.r.t. the six wrench components, the root-pose
+    channels of the initial joint configuration, and the hinge velocities
+    are compared against central finite differences of the same rollout.
+    Hinge-angle channels are deliberately not checked here: they are
+    bit-identical pre/post fix (the corruption is confined to the root-pose
+    covector) and the multistep test covers the pose-gradient machinery
+    without a wrench.
     """
     model = _build_model(device)
     solver = newton.solvers.SolverFeatherstone(model)
@@ -486,13 +497,15 @@ def test_rigid_tau_external_wrench(test, device):
     WRENCH = np.array([5.0, -3.0, 2.0, 0.5, -0.25, 0.75], dtype=np.float64)
     C = np.array([0.3, -0.7, 1.1, -0.4, 0.9, -0.2], dtype=np.float64)
 
-    def rollout_loss(wrench64):
+    def rollout_loss(wrench64=None, q64=None):
         # a fresh state's force buffers are already zero - clear_forces()
         # must NOT be called after the assign (it would zero the wrench)
         st0 = model.state()
         st1 = model.state()
+        if q64 is not None:
+            st0.joint_q.assign(q64.astype(np.float32))
         f = np.zeros((model.body_count, 6), dtype=np.float32)
-        f[BODY] = wrench64.astype(np.float32)
+        f[BODY] = (WRENCH if wrench64 is None else wrench64).astype(np.float32)
         st0.body_f.assign(f)
         ctrl = model.control()
         solver.step(st0, st1, ctrl, cts, SIM_DT)
@@ -516,6 +529,7 @@ def test_rigid_tau_external_wrench(test, device):
         wp.launch(_joint_qd_loss_kernel, dim=1, inputs=[st1.joint_qd, loss], device=device)
     tape.backward(loss)
     ana = st0.body_f.grad.numpy().astype(np.float64)[BODY]
+    ana_q = st0.joint_q.grad.numpy().astype(np.float64).copy()
     tape.zero()
 
     eps = 1e-3
@@ -534,6 +548,34 @@ def test_rigid_tau_external_wrench(test, device):
             0.02,
             f"wrench channel {c}: tape {ana[c]:.5e} vs FD {fd:.5e} (rel {rel * 100:.2f}%) - "
             "external-wrench gradient through eval_rigid_tau is corrupted",
+        )
+
+    # root-pose channels of the INITIAL state: the discriminator. The
+    # pre-fix x_com_s covector (built from the replayed, already-converted
+    # wrench) lands in adj_body_q_com and surfaces here through the fk
+    # backward. Same two-epsilon methodology as test_multistep_gradient.
+    q_base = st0.joint_q.numpy().astype(np.float64).copy()
+    for c in (3, 4, 5, 6):
+        fds = []
+        for eps_q in (1e-3, 1e-2):
+            qp = q_base.copy()
+            qp[c] += eps_q
+            qm = q_base.copy()
+            qm[c] -= eps_q
+            fds.append((rollout_loss(q64=qp) - rollout_loss(q64=qm)) / (2.0 * eps_q))
+        scale = max(abs(fds[0]), abs(fds[1]), 1e-12)
+        if scale < 1e-8 and abs(ana_q[c]) < 1e-8:
+            continue  # dead channel: nothing to adjudicate
+        spread = abs(fds[0] - fds[1]) / scale
+        if spread > 0.15:
+            continue  # FD-unresolvable: finite differences cannot judge
+        rel = abs(ana_q[c] - fds[0]) / scale
+        test.assertLessEqual(
+            rel,
+            max(0.08, spread),
+            f"root-pose joint_q[{c}]: tape {ana_q[c]:.5e} vs FD {fds[0]:.5e} (rel {rel * 100:.2f}%, "
+            f"spread {spread * 100:.2f}%) - pose gradient through eval_rigid_tau's wrench "
+            "frame shift is corrupted (replayed f_ext from the overwritten array)",
         )
 
 
