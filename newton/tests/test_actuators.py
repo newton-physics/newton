@@ -2747,12 +2747,15 @@ class TestMotorDC(unittest.TestCase):
                         np.testing.assert_allclose(actuator.drive.kp.grad.numpy(), [0.75 if requested == 0.25 else 0.0])
                         tape.zero()
 
-    def test_battery_feedback_gradient_over_two_steps(self):
-        """Differentiate two actuator steps on one tape through the battery voltage.
+    def test_battery_feedback_gradient_over_three_steps(self):
+        """Differentiate three actuator steps on one tape through the battery voltage.
 
-        With duty ``d = 0.5 * kp``, the first step draws ``10 d^2`` A from a
-        10 V, 1 Ω battery, so the second effort is ``10 d - 10 d^3`` and its
-        derivative at ``kp = 1`` is 1.25.
+        With duty ``d = 0.5 * kp``, a 10 V, 1 Ω battery and a supply current of
+        ``d^2 V``, the voltages are 10, ``10 - 10 d^2`` and ``10 - d^2 (10 - 10 d^2)``.
+        The third effort is ``10 d - 10 d^3 + 10 d^5`` = 4.0625 and its
+        derivative at ``kp = 1`` is 2.8125. As in ``example_diffsim_drone``,
+        each step gets its own ``Control``, and the battery voltage written
+        into one is carried to the next.
         """
         for device in get_test_devices():
             with self.subTest(device=device), wp.ScopedDevice(device):
@@ -2769,17 +2772,18 @@ class TestMotorDC(unittest.TestCase):
                 builder.add_battery(BatteryConstantResistance, [slot], nominal_voltage=10.0, resistance=1.0)
                 model = builder.finalize(device=device, requires_grad=True)
                 actuator, state = model.actuators[0], model.state()
-                control_0, control_1 = model.control(), model.control()
-                control_0.joint_target_q.fill_(0.5)
-                control_1.joint_target_q.fill_(0.5)
+                controls = tuple(model.control() for _ in range(3))
+                for control in controls:
+                    control.joint_target_q.fill_(0.5)
                 with wp.Tape() as tape:
-                    actuator.step(state, control_0, dt=0.01)
-                    model.batteries[0].step(control_0)
-                    wp.copy(control_1.actuator_supply_voltage, control_0.actuator_supply_voltage)
-                    actuator.step(state, control_1, dt=0.01)
-                tape.backward(grads={control_1.joint_f: wp.ones_like(control_1.joint_f)})
-                np.testing.assert_allclose(control_1.joint_f.numpy(), [3.75], rtol=1e-6)
-                np.testing.assert_allclose(actuator.drive.kp.grad.numpy(), [1.25], rtol=1e-6)
+                    for k, control in enumerate(controls):
+                        if k > 0:
+                            wp.copy(control.actuator_supply_voltage, controls[k - 1].actuator_supply_voltage)
+                        actuator.step(state, control, dt=0.01)
+                        model.batteries[0].step(control)
+                tape.backward(grads={controls[-1].joint_f: wp.ones_like(controls[-1].joint_f)})
+                np.testing.assert_allclose(controls[-1].joint_f.numpy(), [4.0625], rtol=1e-6)
+                np.testing.assert_allclose(actuator.drive.kp.grad.numpy(), [2.8125], rtol=1e-6)
 
     def test_compute(self):
         """Construct the motor directly and call compute() from a voltage command.
@@ -4341,6 +4345,43 @@ class TestActuatorStep(unittest.TestCase):
         control.joint_f.zero_()
         _refresh_and_step(actuator, response, state, control, h)
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), implicit_tau, delta=abs(implicit_tau) * 1e-5)
+
+    def test_stateful_gradients_with_state_per_step(self):
+        """Differentiate five steps of a delay and a PID with one Control and actuator state per step.
+
+        Targets are 10, 20, 30, 40, 50 at ``q = 0``. With ``delay_steps = 3``,
+        past the buffer depth, the last effort ``kp * target_1`` = 40 depends
+        only on the second target. The PID's last effort ``kp * target_4 +
+        ki * dt * sum(targets)`` = 145 has derivative ``ki * dt`` = 0.3 for each
+        earlier target and ``kp + ki * dt`` = 2.3 for the last.
+        """
+        cases = (
+            (
+                (DrivePD, {"kp": 2.0, "input_processors": [(InputProcessorDelay, {"delay_steps": 3})]}),
+                40.0,
+                [0, 2, 0, 0, 0],
+            ),
+            ((DrivePID, {"kp": 2.0, "ki": 3.0, "kd": 0.0}), 145.0, [0.3, 0.3, 0.3, 0.3, 2.3]),
+        )
+        for device in get_test_devices():
+            for (drive_class, kwargs), effort, grads in cases:
+                with self.subTest(device=device, drive=drive_class.__name__), wp.ScopedDevice(device):
+                    builder = newton.ModelBuilder()
+                    joint = builder.add_joint_revolute(-1, builder.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA))
+                    builder.add_articulation([joint])
+                    builder.add_actuator(drive_class, index=0, **kwargs)
+                    model = builder.finalize(device=device, requires_grad=True)
+                    actuator, state = model.actuators[0], model.state()
+                    controls = tuple(model.control() for _ in range(5))
+                    act_states = tuple(actuator.state() for _ in range(6))
+                    targets = tuple(wp.full(1, 10.0 * (k + 1), dtype=float, requires_grad=True) for k in range(5))
+                    with wp.Tape() as tape:
+                        for k, control in enumerate(controls):
+                            wp.copy(control.joint_target_q, targets[k])
+                            actuator.step(state, control, act_states[k], act_states[k + 1], dt=0.1)
+                    tape.backward(grads={controls[-1].joint_f: wp.ones_like(controls[-1].joint_f)})
+                    np.testing.assert_allclose(controls[-1].joint_f.numpy(), [effort], rtol=1e-5)
+                    np.testing.assert_allclose([t.grad.numpy()[0] for t in targets], grads, rtol=1e-5, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------

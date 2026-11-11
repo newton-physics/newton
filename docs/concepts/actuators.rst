@@ -705,6 +705,20 @@ framework interop overhead; with an ONNX checkpoint they are graphable.
 Implicit mode is not differentiable.  :meth:`Actuator.is_graphable` returns
 ``True`` when all components can be captured in a CUDA graph.
 
+To differentiate several steps on one :class:`warp.Tape`, give each step its
+own ``Control`` and actuator state instead of swapping two, as Newton does for
+``State``.  Actuators write ``joint_f`` and battery quantities into ``Control``
+on every step, so reusing one would overwrite values that earlier steps need in
+the backward pass.  Neural-network drives support one step per tape.
+
+.. code-block:: python
+
+   controls = [model.control() for _ in range(num_steps)]
+   act_states = [actuator.state() for _ in range(num_steps + 1)]
+   with wp.Tape() as tape:
+       for k in range(num_steps):
+           actuator.step(state, controls[k], act_states[k], act_states[k + 1], dt=dt)
+
 :meth:`Actuator.is_graphable` describes the components, not the captured region.
 A stateful actuator also needs the region's state exchange to be graph-safe.  See
 :ref:`stateful-actuators` for the two patterns that keep an odd-length region

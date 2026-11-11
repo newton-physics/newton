@@ -39,17 +39,18 @@ def _delay_buffer_state_kernel(
     next_num_pushes: wp.array[int],
     next_write_idx: wp.array[int],
 ):
-    """Update delay circular buffer: copy previous entry, write new entry, advance write pointer."""
+    """Update delay circular buffer: copy the other entries, write new entry, advance write pointer."""
     i = wp.tid()
     pos_idx = pos_indices[i]
     vel_idx = vel_indices[i]
 
-    copy_idx = current_write_idx[0]
-    write_idx = (copy_idx + 1) % buf_depth
+    write_idx = (current_write_idx[0] + 1) % buf_depth
 
-    next_buffer_pos[copy_idx, i] = current_buffer_pos[copy_idx, i]
-    next_buffer_vel[copy_idx, i] = current_buffer_vel[copy_idx, i]
-    next_buffer_act[copy_idx, i] = current_buffer_act[copy_idx, i]
+    for row in range(buf_depth):
+        if row != write_idx:
+            next_buffer_pos[row, i] = current_buffer_pos[row, i]
+            next_buffer_vel[row, i] = current_buffer_vel[row, i]
+            next_buffer_act[row, i] = current_buffer_act[row, i]
 
     next_buffer_pos[write_idx, i] = target_pos_global[pos_idx]
     next_buffer_vel[write_idx, i] = target_vel_global[vel_idx]
