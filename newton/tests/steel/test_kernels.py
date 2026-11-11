@@ -2285,6 +2285,8 @@ def test_velocity_limit_pass_visits_every_active_row(test, device):
                     zeros((worlds, rows)),
                     zeros((worlds, rows)),
                     zeros((worlds, 1)),
+                    # Nesterov momentum history: off.
+                    zeros((1, 1)),
                     1,
                     1.0,
                     0,
