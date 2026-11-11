@@ -30,7 +30,8 @@ from .drives import (
     DrivePD,
     DrivePID,
 )
-from .input_processors import InputProcessorBase, InputProcessorEncoder
+from .encoders import StateEncoderFixed
+from .input_processors import InputProcessorBase
 from .input_processors.input_processor_delay import InputProcessorDelay
 from .motor_dc import MotorDC
 from .utils import _ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG, _looks_like_torch_checkpoint, load_metadata
@@ -63,6 +64,7 @@ class ComponentKind(enum.Enum, metaclass=_ComponentKindMeta):
     CLAMPING = "clamping"
     INPUT_PROCESSOR = "input_processor"
     MOTOR = "motor"
+    ENCODER = "encoder"
 
     @classmethod
     def _missing_(cls, value: object):
@@ -78,14 +80,14 @@ class ActuatorParsed:
 
     Each detected API schema produces a (class, kwargs) entry.
     The drive is separated out; everything else goes into
-    component_specs (input processors, clamping, motor, etc.).
+    component_specs (input processors, clamping, motor, encoder, etc.).
     """
 
     drive_class: type[DriveBase]
     drive_kwargs: dict[str, Any] = field(default_factory=dict)
-    component_specs: list[tuple[type[ClampingBase | InputProcessorBase | MotorDC], dict[str, Any]]] = field(
-        default_factory=list
-    )
+    component_specs: list[
+        tuple[type[ClampingBase | InputProcessorBase | MotorDC | StateEncoderFixed], dict[str, Any]]
+    ] = field(default_factory=list)
     target_path: str = ""
     """Joint target path (USD prim path of the driven joint)."""
     battery_path: str | None = None
@@ -245,7 +247,7 @@ _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
     SchemaNames.CURRENT_DUTY_CLAMPING: _SchemaEntry(ClampingCurrentDuty, ComponentKind.CLAMPING),
     SchemaNames.DC_MOTOR: _SchemaEntry(MotorDC, ComponentKind.MOTOR),
     SchemaNames.DELAY: _SchemaEntry(InputProcessorDelay, ComponentKind.INPUT_PROCESSOR),
-    SchemaNames.ENCODER: _SchemaEntry(InputProcessorEncoder, ComponentKind.INPUT_PROCESSOR),
+    SchemaNames.ENCODER: _SchemaEntry(StateEncoderFixed, ComponentKind.ENCODER),
 }
 
 _BASE_SCHEMAS = {
@@ -334,9 +336,10 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
     """Parse a USD Actuator prim into a composed actuator specification.
 
     Each detected schema directly maps to a component class with its
-    extracted params. A joint parameter of an input processor (see
-    :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`) is read from
-    the relationship of the same name, e.g. ``newton:outputJoint``.
+    extracted params. The ``newton:outputJoint`` relationship of
+    ``NewtonActuatorEncoderAPI`` is read as ``output_joint``: the importer
+    adds that joint as a second input joint of an
+    :class:`~newton.actuators.StateEncoderFixed` with ``position_gear=[1, 1]``.
     Returns ``None`` if the prim is not a ``NewtonActuator``.
 
     Args:
@@ -438,11 +441,10 @@ def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> Actuator
             except ValueError as exc:
                 raise ValueError(f"Actuator prim '{prim.GetPath()}': {exc}") from None
 
-        for name in getattr(cls, "JOINT_PARAMS", ()):
-            head, *rest = name.split("_")
-            targets = _get_relationship_targets(prim, "newton:" + head + "".join(part.title() for part in rest))
+        if entry.kind is ComponentKind.ENCODER:
+            targets = _get_relationship_targets(prim, "newton:outputJoint")
             if targets:
-                kwargs[name] = targets[0]
+                kwargs["output_joint"] = targets[0]
 
         if entry.kind is ComponentKind.CLAMPING and "input_space" in kwargs:
             input_space = kwargs.pop("input_space")

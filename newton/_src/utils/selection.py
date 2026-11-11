@@ -2520,11 +2520,11 @@ class ArticulationView:
         lookup = wp.full(
             dof_layout.max_model_index(self.world_count, self.count_per_world) + 1, -1, dtype=int, device=device
         )
-        if actuator.indices.shape[0] > 0:
+        if actuator.num_actuators > 0:
             wp.launch(
                 _build_actuator_dof_lookup_kernel,
-                dim=actuator.indices.shape[0],
-                inputs=[actuator.indices],
+                dim=actuator.num_actuators,
+                inputs=[actuator.indices[0]],
                 outputs=[lookup],
                 device=device,
             )

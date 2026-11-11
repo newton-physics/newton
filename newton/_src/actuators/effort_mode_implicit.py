@@ -948,6 +948,8 @@ class _EffortModeImplicit:
         supply_voltage: wp.array[float] | None = None,
         supply_current: wp.array[float] | None = None,
         actuator_indices: wp.array[wp.uint32] | None = None,
+        motor_velocities: wp.array[float] | None = None,
+        motor_vel_indices: wp.array[wp.uint32] | None = None,
     ) -> wp.array[float]:
         """Solve implicit effort and return the applied-effort buffer.
 

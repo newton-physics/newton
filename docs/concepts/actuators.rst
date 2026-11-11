@@ -29,28 +29,36 @@ customize and extend for specific actuator models.
 Architecture
 ------------
 
-An actuator is composed of four building blocks, applied in this order:
+An actuator is composed of six building blocks, applied in this order:
 
 .. code-block:: text
 
    Actuator
+   ├── StateEncoder  (optional: measures the position and velocity from several input joints)
+   │   └── StateEncoderFixed         (weighted sums of input joint positions and velocities)
    ├── InputProcessor[]  (optional: transforms state and command inputs)
-   │   ├── InputProcessorDelay       (delays command inputs by N actuator timesteps)
-   │   └── InputProcessorEncoder     (position encoder, e.g. behind an output joint)
+   │   └── InputProcessorDelay       (delays command inputs by N actuator timesteps)
    ├── Drive      (control law that computes raw effort, or the motor command)
    ├── Clamping[]  (bounds the drive output in its declared space)
    │   ├── ClampingMaxEffort       (±max_effort symmetric clamp; EFFORT only)
    │   ├── ClampingCurrentDuty     (current estimate and duty limits; DUTY only)
    │   ├── ClampingDCMotor         (velocity-dependent saturation; EFFORT only)
    │   └── ClampingPositionBased   (position-dependent lookup table; EFFORT only)
-   └── Motor       (optional: converts motor voltage into joint effort)
-       └── MotorDC                 (DC motor, optionally on a battery)
+   ├── Motor       (optional: converts motor voltage into joint effort)
+   │   └── MotorDC                 (DC motor, optionally on a battery)
+   └── Transmission  (optional: maps the effort onto several output joints)
+       └── TransmissionFixed       (constant gear ratio per output joint)
+
+**StateEncoder**
+   Measures the position and velocity the drive reads from the input joints,
+   e.g. a sensor behind a gearbox with backlash.  It is the sensing counterpart of the
+   transmission: the encoder says what the sensor measures, the transmission
+   where the effort goes.  At most one encoder per actuator.
 
 **Input processor**
    Transforms the inputs to the drive: the simulation state (positions,
    velocities) and the control targets (positions, velocities, feedforward
-   effort).  Examples include a command delay and a position encoder, e.g.
-   behind an output joint.  Multiple input processors can be combined on a single
+   effort).  An example is a command delay.  Multiple input processors can be combined on a single
    actuator.  See the individual input processor class
    documentation for details.
 
@@ -82,11 +90,29 @@ An actuator is composed of four building blocks, applied in this order:
    Before the motor runs, the actuator bounds duty to ``[-1, 1]`` even without
    a clamp, then multiplies it by the actual fixed or battery supply voltage.
 
+**Transmission**
+   Maps the one effort of each actuator onto its output joints, e.g. through
+   a gearbox, a tendon or a differential.  The same map gives the motor
+   velocity that clamps and the motor read, e.g. for back-EMF.  Without a
+   transmission the effort goes unscaled to the single output joint, and the
+   motor velocity is that joint's velocity.
+
+An actuator reads one or more **input joints** (:attr:`Actuator.indices`,
+shape ``(joints, N)``) and writes one or more **output joints**
+(:attr:`Actuator.effort_indices`).  Drive, clamping and motor always work with
+one value per actuator: with several input joints an encoder must combine
+their positions and velocities into what the sensor measures, and with several
+output joints a transmission must map the effort onto them.  The drive reads
+the encoder; clamps and the motor read the motor velocity from the
+transmission.  The velocity target, feedforward and custom inputs are indexed
+with the first input joint; drives with custom inputs do not support an
+encoder.
+
 The per-step pipeline is:
 
 .. code-block:: text
 
-   Input processors → Supply voltage → Drive → Clamping → Motor (optional) → Scatter-add → Drive state update
+   StateEncoder (optional) → Input processors → Supply voltage → Drive → Clamping → Motor (optional) → Transmission or scatter-add → Drive state update
 
 Drives, clamping objects, and input processors are pluggable: implement the
 :class:`DriveBase`, :class:`ClampingBase` or :class:`InputProcessorBase` class
@@ -106,9 +132,9 @@ to add new models.
 
 .. note::
 
-   **Current limitations:** the first version does not include a transmission
-   model (gear ratios / linkage transforms), supports only one DOF per
-   actuator, and does not model
+   **Current limitations:** transmissions are constant gear ratios only (no
+   pose-dependent linkages), input processors combine positions only, and the
+   actuators do not model
    actuator dynamics (inertia, friction, thermal effects).
 
 Usage
@@ -686,8 +712,8 @@ Limitations of the implicit mode.  In the cases marked *error*,
   (error): a drive that declares
   :attr:`~newton.actuators.DriveBase.custom_inputs` must pass them to the
   solve, or the solve would ignore them.
-* **Encoders** (warning): an actuator with an
-  :class:`~newton.actuators.InputProcessorEncoder` is accepted with a
+* **State encoders** (warning): an actuator with an
+  encoder is accepted with a
   :class:`~newton.NewtonWarning`, because the result is only
   approximate.  The drive reads the encoder behind the output joint, while the
   solve predicts the end-of-step state from the response of the actuated joint
@@ -720,11 +746,19 @@ Input processors
 ^^^^^^^^^^^^^^^^
 
 * :class:`InputProcessorDelay` — circular-buffer delay for control targets (stateful).
-* :class:`InputProcessorEncoder` — position encoder, e.g. behind an output
-  joint (stateless).
 
 Multiple input processors can be stacked on a single actuator; they are applied
-in sequence.
+in sequence, after the encoder.
+
+State encoders
+^^^^^^^^^^^^^^
+
+* :class:`StateEncoderFixed` — sensor reading weighted sums of the input joint
+  positions and velocities, e.g.
+  ``add_actuator(DrivePD, index=[motor, backlash], encoder=(StateEncoderFixed, {"position_gear": [1, 1]}))``
+  for a sensor behind a backlash joint (stateless).  ``velocity_gear``
+  defaults to ``position_gear``; ``velocity_gear=[1, 0]`` reads the velocity
+  from the motor side.
 
 Drives
 ^^^^^^
@@ -761,6 +795,13 @@ supplied voltage, by default) or ``NOMINAL`` (requiring ``nominal_voltage``).
 The nominal estimate is independent of actual motor voltage, including when
 using a battery. See :class:`ClampingCurrentDuty` for the limiting equations
 and voltage threshold.
+
+Transmissions
+^^^^^^^^^^^^^
+
+* :class:`TransmissionFixed` — constant gear ratio per output joint, e.g.
+  ``add_actuator(DrivePD, index=motor, effort_index=[left, right], transmission=(TransmissionFixed, {"gear": [0.5, 0.5]}))``.
+  Not supported in implicit mode.
 
 Motors
 ^^^^^^
@@ -898,7 +939,7 @@ package.  Each applied API schema becomes one component:
    * - ``NewtonDCMotorAPI``
      - :class:`MotorDC`
    * - ``NewtonActuatorDelayAPI``, ``NewtonActuatorEncoderAPI`` with ``newton:outputJoint``
-     - :class:`InputProcessorDelay`, :class:`InputProcessorEncoder`
+     - :class:`InputProcessorDelay`, :class:`StateEncoderFixed`
    * - A ``NewtonConstantResistanceBattery`` prim, targeted by the actuator's
        ``newton:battery`` relationship
      - :class:`BatteryConstantResistance`, added with

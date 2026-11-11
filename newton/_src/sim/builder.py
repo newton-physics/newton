@@ -119,8 +119,10 @@ if TYPE_CHECKING:
     from ..actuators.batteries.base import BatteryBase
     from ..actuators.clamping.base import ClampingBase
     from ..actuators.drives.base import DriveBase
+    from ..actuators.encoders.base import StateEncoderBase
     from ..actuators.input_processors.base import InputProcessorBase
     from ..actuators.motor_dc import MotorDC
+    from ..actuators.transmissions.base import TransmissionBase
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -977,8 +979,11 @@ class ModelBuilder:
     class ActuatorEntry:
         """Stores accumulated specs for one group of compatible composed actuators.
 
-        Each element in ``indices`` is a single DOF index.  The entry key is
-        ``(drive_class, input_processor_key, clamping_key, drive_shared_key, motor_key)``
+        Each element in ``indices``, ``pos_indices`` and ``effort_indices`` is
+        a tuple holding one DOF index per input or output joint of the
+        actuator.  The entry key is
+        ``(drive_class, input_processor_key, clamping_key, drive_shared_key, motor_key,
+        transmission_key, encoder_key, joint_counts)``
         where shared params (e.g. ``model_path``, lookup tables) must
         be identical across all actuators in a group.  Per-actuator params
         such as delay step values may differ within a group.
@@ -988,8 +993,8 @@ class ModelBuilder:
         clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
         clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
         drive_shared_kwargs: dict  # Shared drive kwargs (e.g. model_path)
-        indices: list[int]  # Per-actuator DOF indices (joint_qd layout)
-        pos_indices: list[int]  # Per-actuator position indices (joint_q layout)
+        indices: list[tuple[int, ...]]  # Per-actuator input DOF indices (joint_qd layout)
+        pos_indices: list[tuple[int, ...]]  # Per-actuator input position indices (joint_q layout)
         drive_args: list[dict[str, Any]]  # Per-actuator drive array params
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
         input_processor_classes: tuple = ()  # Tuple of InputProcessorBase subclass types (in order)
@@ -999,6 +1004,13 @@ class ModelBuilder:
         motor_class: type | None = None  # Motor class (e.g. MotorDC), or None
         motor_shared_kwargs: dict = field(default_factory=dict)  # Shared motor kwargs
         motor_args: list[dict[str, Any]] = field(default_factory=list)  # Per-actuator motor array params
+        transmission_class: type | None = None  # Transmission class (e.g. TransmissionFixed), or None
+        transmission_shared_kwargs: dict = field(default_factory=dict)  # Shared transmission kwargs
+        transmission_args: list[dict[str, list]] = field(default_factory=list)  # Per-actuator per-joint params
+        effort_indices: list[tuple[int, ...]] = field(default_factory=list)  # Per-actuator output DOF indices
+        encoder_class: type | None = None  # Encoder class (e.g. StateEncoderFixed), or None
+        encoder_shared_kwargs: dict = field(default_factory=dict)  # Shared encoder kwargs
+        encoder_args: list[dict[str, list]] = field(default_factory=list)  # Per-actuator per-joint params
 
         def __init__(
             self,
@@ -1019,6 +1031,13 @@ class ModelBuilder:
             motor_class: type | None = None,
             motor_shared_kwargs: dict | None = None,
             motor_args: list[dict[str, Any]] | None = None,
+            transmission_class: type | None = None,
+            transmission_shared_kwargs: dict | None = None,
+            transmission_args: list[dict[str, list]] | None = None,
+            effort_indices: list[tuple[int, ...]] | None = None,
+            encoder_class: type | None = None,
+            encoder_shared_kwargs: dict | None = None,
+            encoder_args: list[dict[str, list]] | None = None,
         ):
             """Initialize an actuator entry.
 
@@ -1036,8 +1055,8 @@ class ModelBuilder:
             self.clamping_classes = clamping_classes
             self.clamping_shared_kwargs = clamping_shared_kwargs
             self.drive_shared_kwargs = drive_shared_kwargs
-            self.indices = indices
-            self.pos_indices = pos_indices
+            self.indices = [(i,) if np.ndim(i) == 0 else tuple(i) for i in indices]
+            self.pos_indices = [(i,) if np.ndim(i) == 0 else tuple(i) for i in pos_indices]
             self.drive_args = drive_args
             self.clamping_args = clamping_args if clamping_args is not None else []
             self.input_processor_classes = input_processor_classes
@@ -1047,6 +1066,19 @@ class ModelBuilder:
             self.motor_class = motor_class
             self.motor_shared_kwargs = motor_shared_kwargs if motor_shared_kwargs is not None else {}
             self.motor_args = motor_args if motor_args is not None else []
+            self.transmission_class = transmission_class
+            self.transmission_shared_kwargs = (
+                transmission_shared_kwargs if transmission_shared_kwargs is not None else {}
+            )
+            self.transmission_args = transmission_args if transmission_args is not None else []
+            self.encoder_class = encoder_class
+            self.encoder_shared_kwargs = encoder_shared_kwargs if encoder_shared_kwargs is not None else {}
+            self.encoder_args = encoder_args if encoder_args is not None else []
+            self.effort_indices = (
+                [(i,) if np.ndim(i) == 0 else tuple(i) for i in effort_indices]
+                if effort_indices is not None
+                else [(i[0],) for i in self.indices]
+            )
             if delay_args is _ACTUATOR_ENTRY_DELAY_ARGS_UNSET:
                 return
             warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
@@ -3476,20 +3508,24 @@ class ModelBuilder:
     def add_actuator(
         self,
         drive_class: type[DriveBase] | None = None,
-        index: int | None = None,
+        index: int | Sequence[int] | None = None,
         clamping: list[tuple[type[ClampingBase], dict[str, Any]]] | None = None,
         delay_steps: int | None = None,
-        pos_index: int | None = None,
+        pos_index: int | Sequence[int] | None = None,
         *,
+        effort_index: int | Sequence[int] | None = None,
         input_processors: list[tuple[type[InputProcessorBase], dict[str, Any]]] | None = None,
         motor: tuple[type[MotorDC], dict[str, Any]] | None = None,
+        transmission: tuple[type[TransmissionBase], dict[str, Any]] | None = None,
+        encoder: tuple[type[StateEncoderBase], dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> int:
-        """Add an external actuator for a single DOF.
+        """Add an external actuator.
 
         External actuators apply forces computed outside the physics engine.
         Multiple calls with the same *drive_class*, *clamping*, input
-        processor and *motor* types, and identical shared parameters are
+        processor, *motor*, *transmission* and *encoder* types, the same
+        numbers of input and output joints, and identical shared parameters are
         accumulated into one
         :class:`~newton.actuators.Actuator` instance during
         :meth:`finalize <ModelBuilder.finalize>`.  Per-actuator parameters,
@@ -3498,7 +3534,10 @@ class ModelBuilder:
         Args:
             drive_class: Drive class (e.g. :class:`~newton.actuators.DrivePD`).
             index: DOF index into ``joint_qd``-shaped arrays (velocities,
-                velocity targets, feedforward, forces).
+                velocity targets, feedforward, forces), or a sequence with one
+                DOF per input joint. The first is the actuated DOF. With more
+                than one, an *encoder* must combine their positions and
+                velocities.
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
                 post-drive. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
                 Clamps must accept the drive output space. DUTY clamps run
@@ -3508,15 +3547,27 @@ class ModelBuilder:
             pos_index: DOF index into ``joint_q``-shaped arrays (positions,
                 position targets). Defaults to *index*. Differs from
                 *index* for floating-base or ball-joint articulations
-                where ``joint_q`` and ``joint_qd`` have different layouts.
+                where ``joint_q`` and ``joint_qd`` have different layouts. Takes
+                one index per input joint, like *index*.
+            effort_index: DOF index the effort is applied to, or a sequence
+                with one DOF per output joint. Defaults to the actuated DOF.
+                With more than one, a *transmission* must map the effort onto
+                them.
             input_processors: Optional list of ``(InputProcessorClass, kwargs)``
                 tuples applied in order before the drive. E.g.
-                ``[(InputProcessorDelay, {"delay_steps": 3})]``. Parameters listed in the
-                class's :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`
-                take a joint index or a joint label; ``None`` selects the
-                actuated joint.
+                ``[(InputProcessorDelay, {"delay_steps": 3})]``.
             motor: Optional ``(MotorClass, kwargs)`` tuple applied after DUTY
                 clamping and duty-to-voltage conversion. E.g. ``(MotorDC, {"kt": 1.0, "resistance": 2.0, "vin": 12.0})``.
+            transmission: Optional ``(TransmissionClass, kwargs)`` tuple that
+                maps the actuator effort onto the DOFs of *effort_index*. Its
+                parameters take one value per output joint or one for all of
+                them. E.g. ``(TransmissionFixed, {"gear": [0.5, 0.5]})``.
+            encoder: Optional ``(EncoderClass, kwargs)`` tuple that measures
+                the position and velocity the drive reads from the DOFs of
+                *index*. Its
+                parameters take one value per input joint or one for all of
+                them. E.g. ``(StateEncoderFixed, {"position_gear": [1.0, 1.0]})`` for an
+                encoder behind a backlash joint.
             **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
 
         Returns:
@@ -3524,11 +3575,11 @@ class ModelBuilder:
             :meth:`add_battery`.
 
         Raises:
-            ValueError: *index* belongs to another world than the current
-                one, a joint parameter of an input
-                processor does not identify a single-DOF joint of the current
-                world or a global joint, of the same type as the actuated joint,
-                or the
+            ValueError: A DOF of *index* or *effort_index* belongs to another
+                world than the current one, *index* names several input joints
+                without an encoder or *effort_index* several output joints
+                without a transmission, *pos_index* or a per-joint parameter
+                does not have one value per joint, or the
                 drive and clamps do not match the modeling path: DUTY with
                 a motor, EFFORT without one.
         """
@@ -3537,13 +3588,69 @@ class ModelBuilder:
 
         if index is None:
             raise TypeError("add_actuator() missing required argument: 'index'")
-        if 0 <= index < self.joint_dof_count:
-            dof_world = self.joint_world[bisect_right(self.joint_qd_start, index) - 1]
-            if dof_world not in (-1, self.current_world):
-                raise ValueError(
-                    f"add_actuator: DOF index {index} belongs to world {dof_world}, "
-                    f"but the actuator is added to world {self.current_world}"
+        input_dofs = (int(index),) if np.ndim(index) == 0 else tuple(int(i) for i in index)
+        output_dofs = (
+            (input_dofs[0],)
+            if effort_index is None
+            else (int(effort_index),)
+            if np.ndim(effort_index) == 0
+            else tuple(int(i) for i in effort_index)
+        )
+        if pos_index is None:
+            input_pos = input_dofs
+        else:
+            input_pos = (int(pos_index),) if np.ndim(pos_index) == 0 else tuple(int(i) for i in pos_index)
+            if len(input_pos) != len(input_dofs):
+                raise ValueError(f"add_actuator: pos_index has {len(input_pos)} entries; index has {len(input_dofs)}")
+        if not input_dofs or not output_dofs:
+            raise ValueError("add_actuator: index and effort_index need at least one DOF")
+        for dof in (*input_dofs, *output_dofs):
+            if 0 <= dof < self.joint_dof_count:
+                dof_world = self.joint_world[bisect_right(self.joint_qd_start, dof) - 1]
+                if dof_world not in (-1, self.current_world):
+                    raise ValueError(
+                        f"add_actuator: DOF index {dof} belongs to world {dof_world}, "
+                        f"but the actuator is added to world {self.current_world}"
+                    )
+        if len(input_dofs) > 1 and encoder is None:
+            raise ValueError(
+                f"add_actuator: index names {len(input_dofs)} input joints; add an encoder that combines "
+                "them, e.g. StateEncoderFixed"
+            )
+        if len(output_dofs) > 1 and transmission is None:
+            raise ValueError(
+                f"add_actuator: effort_index names {len(output_dofs)} output joints; add a transmission that maps "
+                "the effort onto them, e.g. TransmissionFixed"
+            )
+
+        def _resolve_joint_component(component: tuple[type, dict[str, Any]] | None, count: int):
+            """Split a transmission or encoder spec into its class, shared params and per-joint params."""
+            if component is None:
+                return None, {}, {}
+            component_class, component_kwargs = component
+            resolved = component_class.resolve_arguments(component_kwargs)
+            unrecognized = set(component_kwargs) - set(resolved)
+            if unrecognized:
+                warnings.warn(
+                    f"add_actuator: {component_class.__name__} ignoring "
+                    f"unrecognized parameter(s): {', '.join(sorted(unrecognized))}",
+                    NewtonWarning,
+                    stacklevel=3,
                 )
+            shared_names = getattr(component_class, "SHARED_PARAMS", set())
+            shared, per_joint = {}, {}
+            for name, value in resolved.items():
+                if name in shared_names:
+                    shared[name] = value
+                    continue
+                values = [value] * count if isinstance(value, int | float) else list(value)
+                if len(values) != count:
+                    raise ValueError(
+                        f"add_actuator: {component_class.__name__} '{name}' has {len(values)} value(s) "
+                        f"for {count} joint(s)"
+                    )
+                per_joint[name] = values
+            return component_class, shared, per_joint
 
         clamping = clamping or []
         input_processors = list(input_processors or [])
@@ -3587,22 +3694,6 @@ class ModelBuilder:
         input_processor_array_params_list = []
         for proc_class, proc_kwargs in input_processors:
             resolved_proc = proc_class.resolve_arguments(proc_kwargs)
-            for name in proc_class.JOINT_PARAMS:
-                joint = resolved_proc.pop(name)
-                if joint is None:
-                    resolved_proc[f"{name}_indices"] = index
-                    resolved_proc[f"{name}_pos_indices"] = pos_index if pos_index is not None else index
-                    continue
-                joint = self._resolve_actuator_joint(joint, proc_class.__name__, name, world=self.current_world)
-                if index < self.joint_dof_count:
-                    actuated = bisect_right(self.joint_qd_start, index) - 1
-                    if self.joint_type[joint] != self.joint_type[actuated]:
-                        raise ValueError(
-                            f"{proc_class.__name__}: '{name}' joint '{self.joint_label[joint]}' must have the type "
-                            f"of the actuated joint '{self.joint_label[actuated]}'"
-                        )
-                resolved_proc[f"{name}_indices"] = self.joint_qd_start[joint]
-                resolved_proc[f"{name}_pos_indices"] = self.joint_q_start[joint]
             proc_shared_names = getattr(proc_class, "SHARED_PARAMS", set())
             proc_shared = {k: resolved_proc[k] for k in proc_shared_names if k in resolved_proc}
             proc_array = {k: v for k, v in resolved_proc.items() if k not in proc_shared_names}
@@ -3629,6 +3720,12 @@ class ModelBuilder:
             motor_shared_names = getattr(motor_class, "SHARED_PARAMS", set())
             motor_shared = {k: resolved_motor[k] for k in motor_shared_names if k in resolved_motor}
             motor_array_params = {k: v for k, v in resolved_motor.items() if k not in motor_shared_names}
+        # --- Resolve transmission and encoder kwargs into shared and per-joint params ---
+        transmission_class, transmission_shared, transmission_joint_params = _resolve_joint_component(
+            transmission, len(output_dofs)
+        )
+        encoder_class, encoder_shared, encoder_joint_params = _resolve_joint_component(encoder, len(input_dofs))
+
         from ..actuators.space import _validate_spaces  # noqa: PLC0415
 
         _validate_spaces(
@@ -3656,7 +3753,20 @@ class ModelBuilder:
             for pc, shared in zip(input_processor_classes, input_processor_shared_list, strict=True)
         )
         motor_key = (motor_class, tuple(sorted((k, _make_hashable(v)) for k, v in motor_shared.items())))
-        entry_key = (drive_class, input_processor_key, clamping_key, drive_shared_key, motor_key)
+        transmission_key = (
+            transmission_class,
+            tuple(sorted((k, _make_hashable(v)) for k, v in transmission_shared.items())),
+        )
+        entry_key = (
+            drive_class,
+            input_processor_key,
+            clamping_key,
+            drive_shared_key,
+            motor_key,
+            transmission_key,
+            (encoder_class, tuple(sorted((k, _make_hashable(v)) for k, v in encoder_shared.items()))),
+            (len(input_dofs), len(output_dofs)),
+        )
 
         entry = self.actuator_entries.setdefault(
             entry_key,
@@ -3674,19 +3784,28 @@ class ModelBuilder:
                 input_processor_args=[],
                 motor_class=motor_class,
                 motor_shared_kwargs=motor_shared,
+                transmission_class=transmission_class,
+                transmission_shared_kwargs=transmission_shared,
+                encoder_class=encoder_class,
+                encoder_shared_kwargs=encoder_shared,
             ),
         )
 
         actuator = self.actuator_count
         self.actuator_count += 1
-        entry.indices.append(index)
-        entry.pos_indices.append(pos_index if pos_index is not None else index)
+        entry.indices.append(input_dofs)
+        entry.pos_indices.append(input_pos)
+        entry.effort_indices.append(output_dofs)
         entry.drive_args.append(drive_array_params)
         entry.clamping_args.append(clamping_array_params_list)
         entry.input_processor_args.append(input_processor_array_params_list)
         entry.actuator_indices.append(actuator)
         if motor_class is not None:
             entry.motor_args.append(motor_array_params)
+        if transmission_class is not None:
+            entry.transmission_args.append(transmission_joint_params)
+        if encoder_class is not None:
+            entry.encoder_args.append(encoder_joint_params)
         return actuator
 
     def add_battery(self, battery_class: type[BatteryBase], actuators: Sequence[int], **kwargs: Any) -> None:
@@ -3721,7 +3840,7 @@ class ModelBuilder:
         rows = {
             row: (dof, entry.motor_args[i] if entry.motor_args else {})
             for entry in self.actuator_entries.values()
-            for i, (row, dof) in enumerate(zip(entry.actuator_indices, entry.indices, strict=False))
+            for i, (row, (dof, *_)) in enumerate(zip(entry.actuator_indices, entry.indices, strict=False))
         }
         for actuator in actuators:
             if not 0 <= actuator < self.actuator_count:
@@ -3751,37 +3870,6 @@ class ModelBuilder:
             for actuators in entry.actuators
             for actuator in actuators
         }
-
-    def _resolve_actuator_joint(self, joint: int | str, owner: str, name: str, world: int | None = None) -> int:
-        """Resolve a joint index or joint label to a single-DOF joint index.
-
-        With *world* given, the joint must belong to that world or be global
-        (world ``-1``), and a label is looked up among those joints only.
-        """
-        if isinstance(joint, str):
-            matches = [
-                i
-                for i, label in enumerate(self.joint_label)
-                if label == joint and (world is None or self.joint_world[i] in (-1, world))
-            ]
-            if len(matches) != 1:
-                problem = "unknown" if not matches else f"ambiguous ({len(matches)} joints with this)"
-                raise ValueError(f"{owner}: '{name}' references {problem} joint label '{joint}'")
-            joint = matches[0]
-        if not 0 <= joint < self.joint_count:
-            raise ValueError(f"{owner}: '{name}' joint index {joint} is out of range")
-        if world is not None and self.joint_world[joint] not in (-1, world):
-            raise ValueError(
-                f"{owner}: '{name}' joint index {joint} belongs to world {self.joint_world[joint]}, "
-                f"but the actuator is added to world {world}"
-            )
-        next_start = self.joint_qd_start[joint + 1] if joint + 1 < self.joint_count else self.joint_dof_count
-        if next_start - self.joint_qd_start[joint] != 1:
-            raise ValueError(
-                f"{owner}: '{name}' must reference a single-DOF joint, "
-                f"but joint '{self.joint_label[joint]}' has {next_start - self.joint_qd_start[joint]} DOFs"
-            )
-        return joint
 
     def _stack_args_to_arrays(
         self,
@@ -3824,6 +3912,20 @@ class ModelBuilder:
                 result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=requires_grad)
 
         return result
+
+    @staticmethod
+    def _stack_joint_args_to_array(
+        values: list[list[float]], device: Devicelike, requires_grad: bool
+    ) -> wp.array2d[float]:
+        """Stack one list of per-joint values per actuator into a ``(joints, N)`` float array."""
+        return wp.array(
+            np.asarray(values, dtype=np.float32).T.copy(), dtype=wp.float32, device=device, requires_grad=requires_grad
+        )
+
+    @staticmethod
+    def _build_joint_index_array(indices: list[tuple[int, ...]], device: Devicelike) -> wp.array2d[wp.uint32]:
+        """Build a ``(joints, N)`` warp index array from one tuple of DOF indices per actuator."""
+        return wp.array(np.asarray(indices, dtype=np.uint32).reshape(len(indices), -1).T.copy(), device=device)
 
     @staticmethod
     def _build_index_array(indices: list[int], device: Devicelike) -> wp.array[wp.uint32]:
@@ -6181,23 +6283,24 @@ class ModelBuilder:
                     input_processor_args=[],
                     motor_class=sub_entry.motor_class,
                     motor_shared_kwargs=sub_entry.motor_shared_kwargs,
+                    transmission_class=sub_entry.transmission_class,
+                    transmission_shared_kwargs=sub_entry.transmission_shared_kwargs,
+                    encoder_class=sub_entry.encoder_class,
+                    encoder_shared_kwargs=sub_entry.encoder_shared_kwargs,
                 ),
             )
-            entry.indices.extend(idx + joint_dof_offset for idx in sub_entry.indices)
+            entry.indices.extend(tuple(idx + joint_dof_offset for idx in dofs) for dofs in sub_entry.indices)
+            entry.effort_indices.extend(
+                tuple(idx + joint_dof_offset for idx in dofs) for dofs in sub_entry.effort_indices
+            )
             entry.actuator_indices.extend(idx + actuator_offset for idx in sub_entry.actuator_indices)
-            entry.pos_indices.extend(idx + joint_coord_offset for idx in sub_entry.pos_indices)
+            entry.pos_indices.extend(tuple(idx + joint_coord_offset for idx in dofs) for dofs in sub_entry.pos_indices)
             entry.drive_args.extend(sub_entry.drive_args)
             entry.clamping_args.extend(sub_entry.clamping_args)
             entry.motor_args.extend(sub_entry.motor_args)
-            for per_actuator in sub_entry.input_processor_args:
-                offset_args = []
-                for proc_class, sub_args in zip(sub_entry.input_processor_classes, per_actuator, strict=True):
-                    proc_args = dict(sub_args)
-                    for name in proc_class.JOINT_PARAMS:
-                        proc_args[f"{name}_indices"] += joint_dof_offset
-                        proc_args[f"{name}_pos_indices"] += joint_coord_offset
-                    offset_args.append(proc_args)
-                entry.input_processor_args.append(offset_args)
+            entry.transmission_args.extend(sub_entry.transmission_args)
+            entry.encoder_args.extend(sub_entry.encoder_args)
+            entry.input_processor_args.extend(sub_entry.input_processor_args)
 
     def add_builder(
         self,
@@ -16842,11 +16945,14 @@ class ModelBuilder:
             m.actuators = []
             with_battery = self._actuators_with_battery()
             for entry in self.actuator_entries.values():
-                indices = self._build_index_array(entry.indices, device)
+                indices = self._build_joint_index_array(entry.indices, device)
 
                 pos_indices_arg = None
                 if entry.pos_indices != entry.indices:
-                    pos_indices_arg = self._build_index_array(entry.pos_indices, device)
+                    pos_indices_arg = self._build_joint_index_array(entry.pos_indices, device)
+                effort_indices_arg = None
+                if entry.effort_indices != [(dofs[0],) for dofs in entry.indices]:
+                    effort_indices_arg = self._build_joint_index_array(entry.effort_indices, device)
 
                 # Build drive from stacked per-DOF arrays + shared kwargs
                 drive_arrays = self._stack_args_to_arrays(entry.drive_args, device=device, requires_grad=requires_grad)
@@ -16857,17 +16963,11 @@ class ModelBuilder:
                 for i, (proc_class, shared_kw) in enumerate(
                     zip(entry.input_processor_classes, entry.input_processor_shared_kwargs, strict=True)
                 ):
-                    proc_args_per_actuator = [dict(per_act[i]) for per_act in entry.input_processor_args]
-                    index_arrays = {}
-                    for name in proc_class.JOINT_PARAMS:
-                        for key in (f"{name}_indices", f"{name}_pos_indices"):
-                            index_arrays[key] = self._build_index_array(
-                                [args.pop(key) for args in proc_args_per_actuator], device
-                            )
+                    proc_args_per_actuator = [per_act[i] for per_act in entry.input_processor_args]
                     proc_arrays = self._stack_args_to_arrays(
                         proc_args_per_actuator, device=device, requires_grad=requires_grad, default_dtype=wp.int32
                     )
-                    input_processor_objs.append(proc_class(**proc_arrays, **index_arrays, **shared_kw))
+                    input_processor_objs.append(proc_class(**proc_arrays, **shared_kw))
 
                 motor_obj = None
                 if entry.motor_class is not None:
@@ -16903,15 +17003,34 @@ class ModelBuilder:
                     )
                     clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
 
+                def _build_joint_component(component_class, shared_kwargs, args_list):
+                    if component_class is None:
+                        return None
+                    arrays = {
+                        key: self._stack_joint_args_to_array([args[key] for args in args_list], device, requires_grad)
+                        for key in args_list[0]
+                    }
+                    return component_class(**arrays, **shared_kwargs)
+
+                transmission_obj = _build_joint_component(
+                    entry.transmission_class, entry.transmission_shared_kwargs, entry.transmission_args
+                )
+                encoder_obj = _build_joint_component(
+                    entry.encoder_class, entry.encoder_shared_kwargs, entry.encoder_args
+                )
+
                 has_rows = len(entry.actuator_indices) == len(entry.indices)
                 actuator = Actuator(
                     indices=indices,
                     drive=drive,
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
+                    effort_indices=effort_indices_arg,
                     requires_grad=requires_grad,
                     input_processors=input_processor_objs,
                     motor=motor_obj,
+                    transmission=transmission_obj,
+                    encoder=encoder_obj,
                     actuator_indices=self._build_index_array(entry.actuator_indices, device) if has_rows else None,
                 )
 

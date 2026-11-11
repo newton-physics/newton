@@ -27,6 +27,7 @@ construction.
    :nosignatures:
 
    Actuator
+   ActuatorBase
    ActuatorParsed
    BatteryBase
    BatteryConstantResistance
@@ -46,10 +47,13 @@ construction.
    DrivePID
    InputProcessorBase
    InputProcessorDelay
-   InputProcessorEncoder
    JointSpaceResponse
    MotorDC
    SchemaNames
+   StateEncoderBase
+   StateEncoderFixed
+   TransmissionBase
+   TransmissionFixed
 
 .. rubric:: Functions
 

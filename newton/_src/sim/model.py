@@ -45,7 +45,7 @@ _COLLISION_EDGE_DEPRECATION_MSG = (
 )
 
 if TYPE_CHECKING:
-    from ..actuators.actuator import Actuator
+    from ..actuators.actuator_base import ActuatorBase
     from ..actuators.batteries import BatteryBase
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
@@ -1928,7 +1928,7 @@ class Model:
         }
         """Compatibility map from custom attributes to their assignment categories."""
 
-        self.actuators: list[Actuator] = []
+        self.actuators: list[ActuatorBase] = []
         """List of actuator instances for this model."""
         self.actuator_count: int = 0
         """Total number of actuators added with :meth:`ModelBuilder.add_actuator() <newton.ModelBuilder.add_actuator>`."""
