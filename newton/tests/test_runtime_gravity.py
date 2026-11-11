@@ -8,7 +8,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.exceptions import NewtonWarning
+from newton import NewtonWarning
 from newton.solvers import SolverKamino, SolverSemiImplicit, SolverVBD, SolverXPBD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
