@@ -19,7 +19,7 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
 
 - **Python** 3.10+ (3.10 support is deprecated; removal planned for Newton 1.9; use 3.11+)
 - **OS:** Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
-- **GPU:** This release is tested with Warp 1.19, whose standard wheel requires an NVIDIA Turing GPU (compute capability 7.5+) and driver R580+ for CUDA acceleration.
+- **GPU:** Since Warp 1.18, standard Warp wheels require an NVIDIA Turing GPU (compute capability 7.5+) and driver R580+ for CUDA acceleration.
   On an R545–R579 driver or an older supported GPU, install with `warp-lang==1.17.0` (see the installation guide).
   No local CUDA Toolkit is required; macOS runs on CPU.
 
