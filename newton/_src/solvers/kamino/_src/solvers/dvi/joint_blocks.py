@@ -18,7 +18,7 @@ import numpy as np
 import warp as wp
 
 from ...core.math import FLOAT32_EPS
-from ...core.types import vec6f
+from ...core.types import mat66f, vec6f
 from ...linalg.factorize.llt_blocked_rcm import _sync_threads, get_float32_array_offset_ptr
 from .coupling import PackedCoupling, read_packed_coupling
 from .kernels import BILATERAL_DIAGONAL_FLOOR, _compact_schur_fits
@@ -238,23 +238,52 @@ def _factor(
     rights: wp.array[wp.int32],
     nb: int,
 ):
-    w, _lane = wp.tid()
-    aa = wp.array(ptr=get_float32_array_offset_ptr(blocks, w * nb * 36), shape=(nb * 6, 6), dtype=wp.float32)
-    ll = wp.array(ptr=get_float32_array_offset_ptr(factors, w * nb * 36), shape=(nb * 6, 6), dtype=wp.float32)
+    """Factor one world per thread; worlds share the block topology, so a warp runs in lockstep."""
+    w = wp.tid()
+    base = w * nb * 36
     for b in range(nb):
-        value = wp.tile_load(aa, shape=(6, 6), offset=(b * 6, 0), storage="shared")
+        offset = base + b * 36
+        value = mat66f()
+        for i in range(6):
+            for j in range(6):
+                value[i, j] = blocks[offset + i * 6 + j]
         for update in range(starts[b], starts[b + 1]):
-            left = wp.tile_load(ll, shape=(6, 6), offset=(lefts[update] * 6, 0))
-            right = wp.tile_load(ll, shape=(6, 6), offset=(rights[update] * 6, 0))
-            wp.tile_matmul(left, wp.tile_transpose(right), value, alpha=-1.0)
+            left = base + lefts[update] * 36
+            right = base + rights[update] * 36
+            for k in range(6):
+                for i in range(6):
+                    a = factors[left + i * 6 + k]
+                    for j in range(6):
+                        value[i, j] -= a * factors[right + j * 6 + k]
         if rows[b] == cols[b]:
-            wp.tile_cholesky_inplace(value, fill_mode="upper")
-            wp.tile_store(ll, wp.tile_transpose(value), offset=(b * 6, 0))
+            # Lower Cholesky factor from the upper triangle; the stored upper part is zero.
+            lower = mat66f()
+            for j in range(6):
+                total = value[j, j]
+                for k in range(j):
+                    total -= lower[j, k] * lower[j, k]
+                pivot = wp.sqrt(total)
+                lower[j, j] = pivot
+                for i in range(j + 1, 6):
+                    total = value[j, i]
+                    for k in range(j):
+                        total -= lower[i, k] * lower[j, k]
+                    lower[i, j] = total / pivot
+            for i in range(6):
+                for j in range(6):
+                    factors[offset + i * 6 + j] = lower[i, j]
         else:
-            d = wp.tile_load(ll, shape=(6, 6), offset=(diagonal[cols[b]] * 6, 0))
-            transposed = wp.tile_transpose(value)
-            wp.tile_lower_solve_inplace(d, transposed)
-            wp.tile_store(ll, wp.tile_transpose(transposed), offset=(b * 6, 0))
+            # Each row r solves L_d x = value[r, :] by forward substitution.
+            d = base + diagonal[cols[b]] * 36
+            for r in range(6):
+                x = vec6f()
+                for i in range(6):
+                    total = value[r, i]
+                    for k in range(i):
+                        total -= factors[d + i * 6 + k] * x[k]
+                    x[i] = total / factors[d + i * 7]
+                for i in range(6):
+                    factors[offset + r * 6 + i] = x[i]
 
 
 @wp.kernel
@@ -1016,7 +1045,7 @@ class JointBlockSolver:
                 device=self._device,
             )
         else:
-            wp.launch_tiled(
+            wp.launch(
                 _factor,
                 dim=self._worlds,
                 inputs=[
