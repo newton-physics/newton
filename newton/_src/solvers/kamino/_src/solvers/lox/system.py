@@ -59,9 +59,9 @@ _WIDE_TILE_MAX_BLOCKS_PER_SM = 4
 class LOXSystem:
     """Batched dense smooth body systems over independent body components.
 
-    World-level bookkeeping remains in model body order. The dense matrices and
-    vectors are packed by ``body_components`` so disconnected articulations can
-    be factorized independently. Once the factorization has ordered the rows of
+    World-level bookkeeping remains in model body order. Each body component has
+    one matrix storage row and a packed vector block, so disconnected articulations
+    can be factorized independently. Once the factorization has ordered the rows of
     each block, the matrices are assembled directly in that order. When every
     body is prescribed, the system holds one empty placeholder block.
     The arrays live in :class:`LOXSystemData`, exposed as :attr:`data`.
@@ -192,7 +192,7 @@ class LOXSystem:
         return self._data
 
     @property
-    def matrix(self) -> wp.array[wp.float32]:
+    def matrix(self) -> wp.array2d[wp.float32]:
         """Matrix that the assembly writes: :attr:`LOXSystemData.matrix`, or the matrix of the factorization
         during :meth:`assemble_and_factorize`."""
         return self._matrix
@@ -241,7 +241,7 @@ class LOXSystem:
         """Assemble body inertia and explicit-force terms, and clear the other matrix entries of the assembly.
 
         The body terms write the whole diagonal block of each body and clear the off-diagonal blocks of the
-        body edges, which hold every matrix entry that :meth:`add_joint_rows` adds to. The packed matrix holds
+        body edges, which hold every matrix entry that :meth:`add_joint_rows` adds to. The matrix holds
         zeros elsewhere from its allocation, and the factorization copies them into its ordered matrix with
         each new row order.
         """
@@ -384,7 +384,7 @@ class LOXSystem:
             assemble()
             return
 
-        def assemble_into(matrix: wp.array[wp.float32], inverse_permutation: wp.array[wp.int32] | None) -> None:
+        def assemble_into(matrix: wp.array2d[wp.float32], inverse_permutation: wp.array[wp.int32] | None) -> None:
             self._matrix = matrix
             self._inverse_permutation = inverse_permutation
             try:

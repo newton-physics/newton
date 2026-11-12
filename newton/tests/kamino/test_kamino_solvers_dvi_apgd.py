@@ -28,6 +28,7 @@ from newton.tests.kamino.test_kamino_solver_kamino_joint_friction import (
     _run_spin_down_test,
 )
 from newton.tests.kamino.test_kamino_solvers_dvi import _build_five_box_stack
+from newton.tests.kamino.utils.extract import get_matrix_block
 from newton.tests.kamino.utils.make import make_containers, update_containers
 from newton.tests.kamino.utils.solver_configs import make_dvi_dense_config, make_dvi_sparse_config
 from newton.tests.utils import basics
@@ -43,7 +44,7 @@ def _problem(matrices, biases, families, friction, device, *, options=None, lowe
     """Build independent small unilateral problems in the actual batched storage layout."""
     sizes = [len(b) for b in biases]
     offsets = np.cumsum([0, *[max(1, n) for n in sizes]])
-    matrix_offsets = np.cumsum([0, *[max(1, n * n) for n in sizes]])
+    matrix_offsets = np.zeros(len(sizes), dtype=np.int32)
     bound_offsets = np.cumsum([0, *[f[0] for f in families]])
     contact_offsets = np.cumsum([0, *[f[2] for f in families]])
 
@@ -55,15 +56,15 @@ def _problem(matrices, biases, families, friction, device, *, options=None, lowe
         """Allocate numerical inputs on the test device."""
         return wp.array(values, dtype=wp.float32, device=device)
 
-    matrix = np.zeros(matrix_offsets[-1])
+    matrix = np.zeros((len(sizes), max(1, max(sizes) ** 2)))
     velocity = np.zeros(offsets[-1])
     for wid, (a, b) in enumerate(zip(matrices, biases, strict=True)):
-        matrix[matrix_offsets[wid] : matrix_offsets[wid] + sizes[wid] ** 2] = np.asarray(a).ravel()
+        matrix[wid, : sizes[wid] ** 2] = np.asarray(a).ravel()
         velocity[offsets[wid] : offsets[wid] + sizes[wid]] = b
     data = SimpleNamespace(
         dim=ints(sizes),
         vio=ints(offsets[:-1]),
-        mio=ints(matrix_offsets[:-1]),
+        mio=ints(matrix_offsets),
         njc=ints([0] * len(sizes)),
         nbc=ints([f[0] for f in families]),
         nl=ints([f[1] for f in families]),
@@ -830,7 +831,7 @@ class TestDVIAPGD(unittest.TestCase):
                 outputs.append((solver.data.solution.lambdas.numpy()[:n], solver.data.solution.v_plus.numpy()[:n]))
                 self.assertLess(float(np.max(np.abs(outputs[-1][1][:nb]))), 2e-4)
                 if not sparse:
-                    a = data.D.numpy()[: n * n].reshape(n, n).astype(np.float64)
+                    a = get_matrix_block(0, data.D.numpy(), [n]).astype(np.float64)
                     # Existing bilateral factorization regularizes after symmetric scaling.
                     scale = solver.data.state.bilateral_preconditioner.numpy()[:nb].astype(np.float64)
                     regularized_b = a[:nb, :nb] + np.diag(7e-7 / scale**2)

@@ -618,13 +618,14 @@ def dense_matvec(
     dim: wp.array[wp.int32],
     mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
-    matrix: wp.array[wp.float32],
+    matrix_storage: wp.array2d[wp.float32],
     mask: wp.array[wp.bool],
     x: wp.array[wp.float32],
     y: wp.array[wp.float32],
 ):
     """Apply the existing dense Delassus matrix to active worlds."""
     wid, row = wp.tid()
+    matrix = matrix_storage[wid]
     if not mask[wid] or row >= dim[wid]:
         return
     value = wp.float32(0.0)

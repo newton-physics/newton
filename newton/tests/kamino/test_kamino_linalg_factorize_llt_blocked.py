@@ -50,7 +50,7 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         # Set the tile block size for the blocked LLT kernels
         self.block_size = 16
 
-        # Pre-create kernels to avoid measuring compilation time during tests
+        # Pre-create kernels for the configured dense storage layout to avoid measuring compilation time during tests
         self.factorize_kernel = make_llt_blocked_factorize_kernel(self.block_size)
         self.solve_kernel = make_llt_blocked_solve_kernel(self.block_size)
         self.solve_inplace_kernel = make_llt_blocked_solve_inplace_kernel(self.block_size)
@@ -84,7 +84,11 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         logger.debug("X_np:\n%s\n", problem.X_np[0])
         logger.debug("y_np:\n%s\n", problem.y_np[0])
         logger.debug("x_np:\n%s\n", problem.x_np[0])
-        logger.debug("A_wp (%s):\n%s\n", problem.A_wp.shape, problem.A_wp.numpy().reshape((N, N)))
+        logger.debug(
+            "A_wp (%s):\n%s\n",
+            problem.A_wp.shape,
+            get_matrix_block(0, problem.A_wp.numpy(), problem.dims),
+        )
         logger.debug("b_wp (%s):\n%s\n", problem.b_wp.shape, problem.b_wp.numpy().reshape((N,)))
 
         # Create the linear operator meta-data
@@ -95,7 +99,11 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         # Create the linear operator data structure
         operator = DenseLinearOperatorData(info=opinfo, mat=problem.A_wp)
         logger.debug("operator.info:\n%s\n", operator.info)
-        logger.debug("operator.mat (%s):\n%s\n", operator.mat.shape, operator.mat.numpy().reshape((N, N)))
+        logger.debug(
+            "operator.mat (%s):\n%s\n",
+            operator.mat.shape,
+            get_matrix_block(0, operator.mat.numpy(), problem.dims),
+        )
 
         # Allocate LLT data arrays
         L_wp = wp.zeros_like(problem.A_wp, device=self.default_device)
@@ -116,7 +124,7 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         )
 
         # Check matrix factorization against numpy
-        L_wp_np = get_matrix_block(0, L_wp.numpy(), problem.dims, problem.maxdims)
+        L_wp_np = get_matrix_block(0, L_wp.numpy(), problem.dims)
         logger.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
         debug_print_error_stats("L", L_wp_np, problem.X_np[0], problem.dims[0])
         np.testing.assert_allclose(L_wp_np, problem.X_np[0], rtol=1e-3, atol=1e-4, err_msg="L")
@@ -221,7 +229,11 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         logger.debug("X_np:\n%s\n", problem.X_np[0])
         logger.debug("y_np:\n%s\n", problem.y_np[0])
         logger.debug("x_np:\n%s\n", problem.x_np[0])
-        logger.debug("A_wp (%s):\n%s\n", problem.A_wp.shape, problem.A_wp.numpy().reshape((N_max, N_max)))
+        logger.debug(
+            "A_wp (%s):\n%s\n",
+            problem.A_wp.shape,
+            get_matrix_block(0, problem.A_wp.numpy(), problem.dims),
+        )
         logger.debug("b_wp (%s):\n%s\n", problem.b_wp.shape, problem.b_wp.numpy().reshape((N_max,)))
 
         # Create the linear operator meta-data
@@ -232,7 +244,11 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         # Create the linear operator data structure
         operator = DenseLinearOperatorData(info=opinfo, mat=problem.A_wp)
         logger.debug("operator.info:\n%s\n", operator.info)
-        logger.debug("operator.mat (%s):\n%s\n", operator.mat.shape, operator.mat.numpy().reshape((N_max, N_max)))
+        logger.debug(
+            "operator.mat (%s):\n%s\n",
+            operator.mat.shape,
+            get_matrix_block(0, operator.mat.numpy(), problem.dims),
+        )
 
         # IMPORTANT: Now we set the active dimensions in the operator info
         operator.info.dim.fill_(N_act)
@@ -256,7 +272,7 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         )
 
         # Check matrix factorization against numpy
-        L_wp_np = get_matrix_block(0, L_wp.numpy(), problem.dims, problem.maxdims)
+        L_wp_np = get_matrix_block(0, L_wp.numpy(), problem.dims)
         logger.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
         debug_print_error_stats("L", L_wp_np, problem.X_np[0], problem.dims[0])
         np.testing.assert_allclose(L_wp_np, problem.X_np[0], rtol=1e-3, atol=1e-4, err_msg="L")
@@ -352,7 +368,7 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
 
         # Optional verbose output
         for i in range(problem.num_blocks):
-            A_wp_np = get_matrix_block(i, problem.A_wp.numpy(), problem.dims, problem.maxdims)
+            A_wp_np = get_matrix_block(i, problem.A_wp.numpy(), problem.dims)
             b_wp_np = get_vector_block(i, problem.b_wp.numpy(), problem.dims, problem.maxdims)
             logger.debug("[%d]: b_np:\n%s\n", i, problem.b_np[i])
             logger.debug("[%d]: A_np:\n%s\n", i, problem.A_np[i])
@@ -393,7 +409,7 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         # Iterate over all problems for verification
         for i in range(problem.num_blocks):
             # Check matrix factorization against numpy
-            L_wp_np = get_matrix_block(i, L_wp.numpy(), problem.dims, problem.maxdims)
+            L_wp_np = get_matrix_block(i, L_wp.numpy(), problem.dims)
             logger.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
             logger.debug("X_np (%s):\n%s\n", problem.X_np[i].shape, problem.X_np[i])
             debug_print_error_stats("L", L_wp_np, problem.X_np[i], problem.dims[i])
@@ -501,7 +517,7 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
 
         # Optional verbose output
         for i in range(problem.num_blocks):
-            A_wp_np = get_matrix_block(i, problem.A_wp.numpy(), problem.dims, problem.maxdims)
+            A_wp_np = get_matrix_block(i, problem.A_wp.numpy(), problem.dims)
             b_wp_np = get_vector_block(i, problem.b_wp.numpy(), problem.dims, problem.maxdims)
             logger.debug("[%d]: b_np:\n%s\n", i, problem.b_np[i])
             logger.debug("[%d]: A_np:\n%s\n", i, problem.A_np[i])
@@ -545,7 +561,7 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         # Iterate over all problems for verification
         for i in range(problem.num_blocks):
             # Check matrix factorization against numpy
-            L_wp_np = get_matrix_block(i, L_wp.numpy(), problem.dims, problem.maxdims)
+            L_wp_np = get_matrix_block(i, L_wp.numpy(), problem.dims)
             logger.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
             logger.debug("X_np (%s):\n%s\n", problem.X_np[i].shape, problem.X_np[i])
             debug_print_error_stats("L", L_wp_np, problem.X_np[i], problem.dims[i])

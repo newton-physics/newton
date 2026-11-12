@@ -24,6 +24,7 @@ __all__ = [
     "block_sparse_transpose_matvec",
     "dense_gemv",
     "diag_gemv",
+    "zero_dense_blocks",
 ]
 
 ###
@@ -45,12 +46,14 @@ def _mult_left_right_diag_matrix_with_matrix(
     mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     D: wp.array[wp.float32],
-    X: wp.array[wp.float32],
+    X_storage: wp.array2d[wp.float32],
     # Outputs:
-    Y: wp.array[wp.float32],
+    Y_storage: wp.array2d[wp.float32],
 ):
     # Retrieve the thread indices
     wid, tid = wp.tid()
+    X = X_storage[wid]
+    Y = Y_storage[wid]
 
     # Retrieve the number of active dimensions in the world
     n = dim[wid]
@@ -160,6 +163,22 @@ def _make_masked_zero_kernel_2d(dtype: Any):
         x[row_id, coeff_id] = dtype(0.0)
 
     return masked_zero_kernel_2d
+
+
+@wp.kernel
+def _zero_dense_blocks(
+    rows: wp.array[Any],
+    cols: wp.array[Any],
+    mio: wp.array[Any],
+    stride: wp.int32,
+    X: wp.array2d[Any],
+):
+    bid, tid = wp.tid()
+    i = wp.int64(tid)
+    size = wp.int64(rows[bid]) * wp.int64(cols[bid])
+    while i < size:
+        X[bid, wp.int64(mio[bid]) + i] = X.dtype(0.0)
+        i += wp.int64(stride)
 
 
 @functools.cache
@@ -789,7 +808,7 @@ def _diag_gemv_kernel(
 def _dense_gemv_kernel(
     x: wp.array[wp.float32],
     y: wp.array[wp.float32],
-    A: wp.array[wp.float32],
+    A_storage: wp.array2d[wp.float32],
     active_dims: wp.array[wp.int32],
     world_active: wp.array[wp.bool],
     alpha: wp.float32,
@@ -800,6 +819,7 @@ def _dense_gemv_kernel(
 ):
     """Computes y[w] = alpha * (A[w] @ x[w]) + beta * y[w] in-place for each world w."""
     world, row, lane = wp.tid()
+    A = A_storage[world]
     assert world < len(active_dims)
     dim = active_dims[world]
     if not world_active[world] or row >= dim:
@@ -1072,7 +1092,7 @@ def diag_gemv(
 
 
 def dense_gemv(
-    A: wp.array[wp.float32],
+    A: wp.array2d[wp.float32],
     x: wp.array[wp.float32],
     y: wp.array[wp.float32],
     active_dims: wp.array[wp.int32],
@@ -1088,7 +1108,7 @@ def dense_gemv(
     Launch kernel for dense matrix gemv: y = alpha * A @ x + beta * y
 
     Args:
-        A: Dense matrices stored as flat 1D array.
+        A: Dense matrix blocks stored one per row.
         x: Input vectors, flat 1D.
         y: Output vectors, flat 1D, modified in-place.
         active_dims: Active dimension per world.
@@ -1110,6 +1130,28 @@ def dense_gemv(
         inputs=[x, y, A, active_dims, world_active, dtype(alpha), dtype(beta), mio, vio, block_dim],
         device=x.device,
         block_dim=block_dim,
+    )
+
+
+def zero_dense_blocks(
+    X: wp.array2d[Any],
+    rows: wp.array[Any],
+    cols: wp.array[Any],
+    mio: wp.array[Any],
+    max_block_size: int,
+):
+    """Clear active matrix entries without touching unused capacity or row padding."""
+    num_blocks = rows.shape[0]
+    if num_blocks == 0 or max_block_size <= 0:
+        return
+    # Spread a fixed thread budget across blocks in whole warps.
+    threads = min(-(-(1 << 22) // num_blocks), max_block_size)
+    threads = max(32, -(-threads // 32) * 32)
+    wp.launch(
+        _zero_dense_blocks,
+        dim=(num_blocks, threads),
+        inputs=[rows, cols, mio, threads, X],
+        device=X.device,
     )
 
 

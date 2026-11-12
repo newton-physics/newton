@@ -27,6 +27,7 @@ from newton._src.solvers.kamino._src.linalg.utils.rand import random_spd_matrix
 from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import get_vector_block
+from newton.tests.kamino.utils.make import make_dense_matrix_storage
 from newton.tests.kamino.utils.print import debug_print_error_stats
 from newton.tests.kamino.utils.rand import RandomProblemLLT
 
@@ -290,13 +291,11 @@ class TestLinalgConjugate(unittest.TestCase):
         bsm.nzb_coords.assign(all_coords)
         bsm.assign(A_padded_list)
 
-        # Build dense operator for comparison (flat 1D matrix storage)
-        A_flat = np.concatenate([A.flatten() for A in A_padded_list]).astype(np.float32)
-        A_wp = wp.array(A_flat, dtype=wp.float32, device=device)
-        active_dims = wp.array(dims, dtype=wp.int32, device=device)
-
+        # Build dense operator for comparison
         info = DenseSquareMultiLinearInfo()
         info.finalize(dimensions=padded_dims, dtype=wp.float32, device=device)
+        A_wp = wp.array(make_dense_matrix_storage(info, A_padded_list), dtype=wp.float32, device=device)
+        active_dims = wp.array(dims, dtype=wp.int32, device=device)
         info.dim = active_dims
         dense_op = BatchedLinearOperator.from_dense(DenseLinearOperatorData(info=info, mat=A_wp))
         sparse_op = BatchedLinearOperator.from_block_sparse(bsm, active_dims)
@@ -482,15 +481,10 @@ class TestLinalgConjugate(unittest.TestCase):
         max_dim = max(dims)
 
         # Allocate with maxdim^2 per world, but only store dim*dim elements compactly
-        A_flat = np.full(n_worlds * max_dim * max_dim, np.inf, dtype=np.float32)
-        for w, (dim, matrix) in enumerate(zip(dims, original_matrices, strict=False)):
-            offset = w * max_dim * max_dim
-            # Store compactly with dim as stride (canonical format)
-            A_flat[offset : offset + dim * dim] = matrix.flatten()
-        A_wp = wp.array(A_flat, dtype=wp.float32, device=device)
-
         info = DenseSquareMultiLinearInfo()
         info.finalize(dimensions=[max_dim] * n_worlds, dtype=wp.float32, device=device)
+        A_storage = make_dense_matrix_storage(info, original_matrices, fill_value=np.inf)
+        A_wp = wp.array(A_storage, dtype=wp.float32, device=device)
         info.dim = wp.array(dims, dtype=wp.int32, device=device)
         dense_op = DenseLinearOperatorData(info=info, mat=A_wp)
 
@@ -711,15 +705,10 @@ class TestLinalgConjugate(unittest.TestCase):
         # Create DenseSquareMultiLinearInfo with heterogeneous dimensions
         info = DenseSquareMultiLinearInfo()
         info.finalize(dimensions=dims_list, dtype=wp.float32, device=device)
-        mio_np = info.mio.numpy()
         vio_np = info.vio.numpy()
 
-        # Pack matrices into flat storage at mio offsets
-        A_flat = np.zeros(info.total_mat_size, dtype=np.float32)
-        for w, (A, dim) in enumerate(zip(A_list, dims_list, strict=True)):
-            offset = mio_np[w]
-            A_flat[offset : offset + dim * dim] = A.flatten()
-        A_wp = wp.array(A_flat, dtype=wp.float32, device=device)
+        # Pack matrices into dense storage at mio offsets
+        A_wp = wp.array(make_dense_matrix_storage(info, A_list), dtype=wp.float32, device=device)
 
         dense_op = DenseLinearOperatorData(info=info, mat=A_wp)
 

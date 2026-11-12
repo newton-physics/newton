@@ -85,7 +85,7 @@ def flag_failed_llt_factors(
     dim: wp.array[wp.int32],
     ld: wp.array[wp.int32],
     mio: wp.array[wp.int32],
-    L: wp.array[wp.float32],
+    L_storage: wp.array2d[wp.float32],
     retry_dim: wp.array[wp.int32],
 ):
     """Select blocks with a non-finite pivot for refactorization.
@@ -94,6 +94,7 @@ def flag_failed_llt_factors(
     others, which should start at zero. Launch with shape ``(num_blocks, max_dim)``.
     """
     world, row = wp.tid()
+    L = L_storage[world]
     n = dim[world]
     if row < n and not wp.isfinite(L[mio[world] + row * ld[world] + row]):
         retry_dim[world] = n
@@ -105,10 +106,11 @@ def shift_failed_llt_factors(
     mio: wp.array[wp.int32],
     retry_dim: wp.array[wp.int32],
     shift: wp.float32,
-    A: wp.array[wp.float32],
+    A_storage: wp.array2d[wp.float32],
 ):
     """Add ``shift`` to the diagonal of the blocks selected by :func:`flag_failed_llt_factors`."""
     world, row = wp.tid()
+    A = A_storage[world]
     if row < retry_dim[world]:
         A[mio[world] + row * ld[world] + row] += shift
 
@@ -120,12 +122,14 @@ def make_llt_blocked_factorize_kernel(block_size: int):
         # Inputs:
         dim: wp.array[wp.int32],
         mio: wp.array[wp.int32],
-        A: wp.array[wp.float32],
+        A_storage: wp.array2d[wp.float32],
         # Outputs:
-        L: wp.array[wp.float32],
+        L_storage: wp.array2d[wp.float32],
     ):
         # Retrieve the thread index and thread-block configuration
         tid, tid_block = wp.tid()
+        A = A_storage[tid]
+        L = L_storage[tid]
         num_threads_per_block = wp.block_dim()
 
         # Retrieve the matrix block dimensions and size
@@ -332,13 +336,14 @@ def make_llt_blocked_solve_kernel(block_size: int):
         dim: wp.array[wp.int32],
         mio: wp.array[wp.int32],
         vio: wp.array[wp.int32],
-        L: wp.array[wp.float32],
+        L_storage: wp.array2d[wp.float32],
         b: wp.array[wp.float32],
         # Outputs:
         y: wp.array[wp.float32],
         x: wp.array[wp.float32],
     ):
         tid, tid_block = wp.tid()
+        L = L_storage[tid]
         solve(tid, tid_block, dim, mio, vio, L, b, y, x)
 
     return llt_blocked_solve_kernel
@@ -354,12 +359,13 @@ def make_llt_blocked_solve_inplace_kernel(block_size: int):
         dim: wp.array[wp.int32],
         mio: wp.array[wp.int32],
         vio: wp.array[wp.int32],
-        L: wp.array[wp.float32],
+        L_storage: wp.array2d[wp.float32],
         # Outputs:
         y: wp.array[wp.float32],
         x: wp.array[wp.float32],
     ):
         tid, tid_block = wp.tid()
+        L = L_storage[tid]
         solve(tid, tid_block, dim, mio, vio, L, x, y, x)
 
     return llt_blocked_solve_inplace_kernel
@@ -374,8 +380,8 @@ def llt_blocked_factorize(
     kernel,
     dim: wp.array[wp.int32],
     mio: wp.array[wp.int32],
-    A: wp.array[wp.float32],
-    L: wp.array[wp.float32],
+    A: wp.array2d[wp.float32],
+    L: wp.array2d[wp.float32],
     num_blocks: int = 1,
     # Empirically, 128 threads (4 warps) gives the best factor throughput for large
     # matrices with this kernel layout; small matrices prefer 64. Callers may override.
@@ -402,7 +408,7 @@ def llt_blocked_solve(
     dim: wp.array[wp.int32],
     mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
-    L: wp.array[wp.float32],
+    L: wp.array2d[wp.float32],
     b: wp.array[wp.float32],
     y: wp.array[wp.float32],
     x: wp.array[wp.float32],
@@ -437,7 +443,7 @@ def llt_blocked_solve_inplace(
     dim: wp.array[wp.int32],
     mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
-    L: wp.array[wp.float32],
+    L: wp.array2d[wp.float32],
     y: wp.array[wp.float32],
     x: wp.array[wp.float32],
     num_blocks: int = 1,
