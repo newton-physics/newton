@@ -10,6 +10,7 @@ import warp as wp
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
+from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
@@ -227,6 +228,10 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._rigid_restitution_enabled = False
         self._refresh_rigid_restitution_enabled()
         self._compute_body_velocity_from_position_delta = False
+
+        # Keep the defensive diagnostic for unsupported mimic metadata even
+        # though XPBD no longer launches a separate mimic kernel.
+        has_supported_joint_mimics(model, "SolverXPBD")
 
         self._init_kinematic_state()
 

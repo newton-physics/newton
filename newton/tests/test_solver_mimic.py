@@ -11,7 +11,14 @@ from newton._src.sim.joint_mimic import eval_joint_mimic_coordinate, eval_joint_
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
-def _build_mimic_model(device, vectorized, *, kinematic_reference=False, small_mismatch=False):
+def _build_mimic_model(
+    device,
+    vectorized,
+    *,
+    kinematic_reference=False,
+    kinematic_follower=False,
+    small_mismatch=False,
+):
     """Build an inconsistent scalar or vectorized mimic model."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     reference_body = builder.add_link()
@@ -20,6 +27,8 @@ def _build_mimic_model(device, vectorized, *, kinematic_reference=False, small_m
     builder.add_shape_box(follower_body, hx=0.1, hy=0.1, hz=0.1)
     if kinematic_reference:
         builder.body_flags[reference_body] = int(newton.BodyFlags.KINEMATIC)
+    if kinematic_follower:
+        builder.body_flags[follower_body] = int(newton.BodyFlags.KINEMATIC)
 
     if vectorized:
         axis = newton.ModelBuilder.JointDofConfig.create_unlimited
@@ -203,6 +212,21 @@ def test_vbd_mimic(test, device):
 def test_xpbd_mimic(test, device):
     """Enforce scalar and vectorized mimic relationships in XPBD."""
     _test_solver_mimic(test, device, "xpbd")
+
+
+def test_xpbd_mimic_kinematic_follower(test, device):
+    """Keep a kinematic follower coupled to a dynamic mimic reference."""
+    model, state_in, state_out, reference, follower, offset, multiplier = _build_mimic_model(
+        device,
+        False,
+        kinematic_follower=True,
+    )
+    solver = newton.solvers.SolverXPBD(model, iterations=8)
+    for _ in range(4):
+        solver.step(state_in, state_out, None, None, 1.0 / 60.0)
+        state_in, state_out = state_out, state_in
+    joint_q = _read_joint_q(model, state_in, False)
+    _assert_mimic_relation(model, joint_q, reference, follower, offset, multiplier)
 
 
 @wp.kernel
@@ -414,6 +438,12 @@ add_function_test(
 )
 add_function_test(TestSolverMimic, "test_vbd_mimic", test_vbd_mimic, devices=devices)
 add_function_test(TestSolverMimic, "test_xpbd_mimic", test_xpbd_mimic, devices=devices)
+add_function_test(
+    TestSolverMimic,
+    "test_xpbd_mimic_kinematic_follower",
+    test_xpbd_mimic_kinematic_follower,
+    devices=devices,
+)
 add_function_test(
     TestSolverMimic,
     "test_mimic_compound_d6_coordinate_gradients",
