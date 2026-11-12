@@ -1,1 +1,0 @@
-Remove the ignored `SolverVBD` arguments `rigid_contact_stick_motion_eps`, `rigid_contact_stick_freeze_translation_eps`, and `rigid_contact_stick_freeze_angular_eps`, deprecated in Newton 1.5; omit them from `SolverVBD` calls.
