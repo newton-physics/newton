@@ -2691,6 +2691,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             """Resolve target path label for a USD actuator prim."""
             return resolve_actuator_target_path(context["prim"])
 
+        def resolve_actuator_transmission_ids(_: str, context: dict[str, Any]) -> wp.vec2i:
+            """Preserve the optional reference site of a USD site transmission."""
+            prim = context["prim"]
+            rel = prim.GetRelationship("mjc:refSite")
+            reference_paths = rel.GetTargets() if rel else []
+            if not reference_paths:
+                return wp.vec2i(-1, -1)
+            if len(reference_paths) != 1:
+                raise ValueError(
+                    f"MjcActuator {prim.GetPath()} has unsupported number of reference sites: {len(reference_paths)}"
+                )
+            reference_path = str(reference_paths[0])
+            for i, label in enumerate(builder.shape_label):
+                if label == reference_path and (builder.shape_flags[i] & ShapeFlags.SITE):
+                    return wp.vec2i(-1, i)
+            raise ValueError(f"MjcActuator {prim.GetPath()} references unknown site '{reference_path}'")
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_trnid",
@@ -2700,6 +2717,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 default=wp.vec2i(-1, -1),
                 namespace="mujoco",
                 reference_value_transformer=_remap_actuator_trnid,
+                usd_attribute_name="*",
+                usd_value_transformer=resolve_actuator_transmission_ids,
             )
         )
 
