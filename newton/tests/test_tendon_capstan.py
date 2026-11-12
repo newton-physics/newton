@@ -1911,22 +1911,30 @@ def test_dynamic_route_deactivation_signed_arc(test, device):
                 test.assertAlmostEqual(material, expected, delta=1.0e-6)
 
 
-def test_initial_negative_wrap_uses_signed_inventory(test, device):
-    """Report invalid initial wraps and use the same signed arc as route transitions."""
+def test_fixed_negative_wrap_keeps_unsigned_reference(test, device):
+    """Keep fixed references unsigned while diagnosing unsupported accepted wraps."""
     for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
         with test.subTest(solver=solver_type.__name__):
             model, _ = _build_grazing_route(device, 1, dynamic=False)
-            with test.assertWarnsRegex(
-                NewtonWarning, "ROLLER guide 1 starts at an unsupported oriented wrap"
-            ) as caught:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", NewtonWarning)
                 solver = solver_type(model, iterations=1)
-            test.assertEqual(caught.filename, __file__)
-            material, angle = _grazing_route_inventory(solver, 1)
+            _signed_material, angle = _grazing_route_inventory(solver, 1)
             test.assertLess(angle, 0.0)
+            material = float(solver.tendon_segment_rest_length.numpy().sum()) + 0.1 * abs(angle)
             test.assertAlmostEqual(float(solver.tendon_total_cable.numpy()[0]), material, delta=1.0e-6)
             test.assertAlmostEqual(
                 float(get_tendon_total_lengths(solver, model, model.state())[0]), material, delta=1.0e-6
             )
+            capture = StdOutCapture()
+            capture.begin()
+            try:
+                solver._update_tendon_cone_rows(model, model.body_q, report_unsupported_wrap=True)
+                wp.synchronize_device(device)
+            finally:
+                message = capture.end()
+            if sys.platform != "win32":
+                test.assertIn("crossed the supported wrap range", message)
 
 
 def test_fixed_half_turn_material_reference(test, device):
@@ -2188,6 +2196,7 @@ def test_circle_pair_tangents_match_geometry(test, device):
         for radius_l, radius_r, distance, opposite in (
             (0.3, 0.3, 0.25, False),
             (0.3, 0.3, 0.02, False),
+            (0.3, 0.3, 0.005, False),
             (0.3, 0.1, 0.25, False),
             (0.1, 0.1, 0.201, True),
             (0.1, 0.2, 0.8, True),
@@ -2256,7 +2265,45 @@ def test_circle_pair_tangents_match_geometry(test, device):
                         )
                         np.testing.assert_array_equal(outputs.numpy(), points)
 
-        # Near-parallel is not coplanar: each contact must remain in its own circle plane.
+        # Axial offsets and small tilts must not resurrect the center-seeded
+        # iteration's large error on nearly concentric circles.
+        for tilt in (0.0, 2.0e-6, 5.0e-4):
+            normal_l = np.array([0.0, 1.0, 0.0])
+            normal_r_np = np.array([math.sin(tilt), math.cos(tilt), 0.0])
+            centers = np.array([[0.0, 0.0, 0.0], [0.0, 0.001, 0.005]], dtype=np.float32)
+            seeds = wp.array(centers, dtype=wp.vec3)
+            wp.launch(
+                _measure_circle_pair_attachments,
+                dim=1,
+                inputs=[*map(wp.vec3, centers), wp.vec3(normal_l), wp.vec3(normal_r_np), 0.3, 0.3, 1, 1, seeds],
+                outputs=[outputs],
+            )
+            points = outputs.numpy()
+            host = np.array(
+                _segment_attachment_points_np(
+                    *centers,
+                    int(TendonGuideType.ROLLER),
+                    int(TendonGuideType.ROLLER),
+                    0.3,
+                    0.3,
+                    1,
+                    1,
+                    normal_l,
+                    normal_r_np,
+                )
+            )
+            for measured in (points, host):
+                span = measured[1] - measured[0]
+                direction = span / np.linalg.norm(span)
+                for index, normal in enumerate((normal_l, normal_r_np)):
+                    radial = measured[index] - centers[index]
+                    test.assertAlmostEqual(float(np.linalg.norm(radial)), 0.3, delta=2.0e-7)
+                    test.assertAlmostEqual(float(np.dot(radial, normal)), 0.0, delta=2.0e-7)
+                    test.assertAlmostEqual(float(np.dot(radial, direction)), 0.0, delta=2.0e-6)
+                if tilt == 0.0:
+                    np.testing.assert_allclose(measured, centers + np.array([-0.3, 0.0, 0.0]), atol=2.0e-7, rtol=0.0)
+
+        # Tilted contacts must remain in their own circle planes.
         tilt = 5.0e-4
         normal_r = wp.vec3(math.sin(tilt), math.cos(tilt), 0.0)
         centers = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.8]], dtype=np.float32)
@@ -2351,6 +2398,19 @@ def test_dynamic_route_overlapping_neighbors(test, device):
                             solver.tendon_guide_active.assign(active)
                             solver._update_tendon_guide_active(model, model.body_q)
                             test.assertEqual(bool(solver.tendon_guide_active.numpy()[2]), expected)
+
+                    for tilt in (0.0, 2.0e-6, 5.0e-4):
+                        poses[bodies[0], :3] = (0.0, 0.0, -0.005)
+                        poses[bodies[2], :3] = (0.0, 0.001, 0.005)
+                        poses[bodies[2], 3:] = np.asarray(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -tilt))
+                        for prior in (False, True):
+                            for x, expected in ((-0.25, True), (0.0, False)):
+                                poses[bodies[1], :3] = (x * winding, 0.0, 0.0)
+                                model.body_q.assign(poses)
+                                active[2] = prior
+                                solver.tendon_guide_active.assign(active)
+                                solver._update_tendon_guide_active(model, model.body_q)
+                                test.assertEqual(bool(solver.tendon_guide_active.numpy()[2]), expected)
 
                     rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
                     for translation in (5.0, 20.0):
@@ -2569,7 +2629,7 @@ def test_dynamic_route_recovers_from_zero_initial_bypass(test, device):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         left = builder.add_body(mass=0.0)
         right = builder.add_body(mass=0.0)
-        circle = builder.add_body(xform=wp.transform(p=wp.vec3(0.1, 0.0, 0.0)), mass=0.0)
+        circle = builder.add_body(xform=wp.transform(p=wp.vec3(0.3, 0.0, 0.0)), mass=0.0)
         builder.add_tendon(
             [
                 newton.TendonGuide(body=left),
@@ -2590,6 +2650,8 @@ def test_dynamic_route_recovers_from_zero_initial_bypass(test, device):
         for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
             with test.subTest(solver=solver_type.__name__):
                 solver = solver_type(model, iterations=1)
+                test.assertFalse(solver.tendon_guide_active.numpy()[1])
+                test.assertLessEqual(float(solver.tendon_total_cable.numpy()[0]), 1.0e-6)
                 test.assertEqual(float(solver.tendon_guide_route_rest_length.numpy()[1]), 0.0)
                 state, output = model.state(), model.state()
                 poses = state.body_q.numpy()
@@ -2645,6 +2707,16 @@ def test_dynamic_route_activation_tolerance_preserves_boundary_state(test, devic
         activation_tol = 1.0e-3
         activation_gap = activation_tol * radius
         for orientation in (-1, 1):
+            # Initialization has no inactive history: contact within the full
+            # radius must start engaged, even inside the hysteresis band.
+            for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+                initial_model, initial_candidate = _build_grazing_route(device, orientation)
+                initial_pose = initial_model.body_q.numpy()
+                initial_pose[initial_candidate, 0] = (radius - 0.5 * activation_gap) * orientation
+                initial_model.body_q.assign(initial_pose)
+                initial_solver = solver_type(initial_model, iterations=1, tendon_activation_tol=activation_tol)
+                test.assertTrue(initial_solver.tendon_guide_active.numpy()[1])
+
             model, candidate, candidate_guide = build_oriented_dynamic_route(orientation, device)
             solver = newton.solvers.SolverXPBD(
                 model,
@@ -4430,9 +4502,9 @@ add_test(
 )
 add_test(
     TestTendonCapstan,
-    "initial_negative_wrap_uses_signed_inventory",
+    "fixed_negative_wrap_keeps_unsigned_reference",
     devices,
-    test_initial_negative_wrap_uses_signed_inventory,
+    test_fixed_negative_wrap_keeps_unsigned_reference,
 )
 add_test(TestTendonCapstan, "fixed_half_turn_material_reference", devices, test_fixed_half_turn_material_reference)
 add_test(TestTendonCapstan, "circle_pair_tangents_match_geometry", devices, test_circle_pair_tangents_match_geometry)

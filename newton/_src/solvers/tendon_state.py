@@ -12,13 +12,10 @@ from __future__ import annotations
 
 import math
 import operator
-import warnings
 
 import numpy as np
 import warp as wp
 
-from ..core._warnings import _external_warning_stacklevel
-from ..exceptions import NewtonWarning
 from ..sim import Model, State
 from ..sim.tendon import TendonGuideFlags, TendonGuideType
 from .tendon_kernels import (
@@ -89,11 +86,6 @@ def _transform_vector_np(pose: np.ndarray, vec: np.ndarray) -> np.ndarray:
     return vec + q[3] * t + np.cross(q[:3], t)
 
 
-def _position_roundoff_np(a: np.ndarray, b: np.ndarray) -> float:
-    """Match the float32 world-position allowance used by tendon geometry kernels."""
-    return 4.0 * np.finfo(np.float32).eps * max(float(np.max(np.abs(a))), float(np.max(np.abs(b))))
-
-
 def _tangent_point_circle_np(
     point: np.ndarray,
     center: np.ndarray,
@@ -144,25 +136,28 @@ def _segment_attachment_points_np(
     rolling = int(TendonGuideType.ROLLER)
 
     if type_l == rolling and type_r == rolling and radius_l > 0.0 and radius_r > 0.0:
-        # Match the exact planar construction in _planar_circle_tangents.
+        # Match _parallel_circle_tangents, including its tilted-axis seed.
         delta = new_r - new_l
-        distance = float(np.linalg.norm(delta))
         n_l = np.asarray(normal_l, dtype=np.float64)
         n_r = np.asarray(normal_r, dtype=np.float64)
         n_l = n_l / max(float(np.linalg.norm(n_l)), 1.0e-12)
         n_r = n_r / max(float(np.linalg.norm(n_r)), 1.0e-12)
         alignment = float(np.dot(n_l, n_r))
-        plane_tol = 1.0e-6 * distance + _position_roundoff_np(new_l, new_r)
-        if np.dot(np.cross(n_l, n_r), np.cross(n_l, n_r)) <= 1.0e-12 and abs(np.dot(delta, n_l)) <= plane_tol:
-            delta = delta - np.dot(delta, n_l) * n_l
-            distance = float(np.linalg.norm(delta))
-            side = 1.0 if orient_l * orient_r * alignment > 0.0 else -1.0
-            radius_delta = radius_l - side * radius_r
-            if distance > abs(radius_delta):
-                along = delta / distance
-                h = radius_delta / distance
-                radial = h * along - orient_l * np.sqrt(max(0.0, 1.0 - h * h)) * np.cross(n_l, along)
-                return new_l + radius_l * radial, new_r + side * radius_r * radial
+        delta = delta - np.dot(delta, n_l) * n_l
+        distance = float(np.linalg.norm(delta))
+        side = 1.0 if orient_l * orient_r * alignment > 0.0 else -1.0
+        radius_delta = radius_l - side * radius_r
+        if distance > abs(radius_delta):
+            along = delta / distance
+            h = radius_delta / distance
+            radial = h * along - orient_l * np.sqrt(max(0.0, 1.0 - h * h)) * np.cross(n_l, along)
+            radial_r = radial - np.dot(radial, n_r) * n_r
+            length_r = float(np.linalg.norm(radial_r))
+            if length_r > 1.0e-8:
+                new_l = new_l + radius_l * radial
+                new_r = new_r + side * radius_r * radial_r / length_r
+                if np.dot(np.cross(n_l, n_r), np.cross(n_l, n_r)) <= 1.0e-12:
+                    return new_l, new_r
         for _iter in range(10):
             new_r = _tangent_point_circle_np(new_l, center_r, radius_r, normal_r, orient_r)
             new_l = _tangent_point_circle_np(new_r, center_l, radius_l, normal_l, -orient_l)
@@ -431,8 +426,17 @@ class TendonStateMixin:
                 )
             )
             if self._has_dynamic_tendon_guides and model.body_q is not None:
+                # No previous topology exists yet: an undefined bypass starts
+                # inactive. A valid initial bypass uses the full contact radius.
+                active_np = np.ones(model.tendon_guide_count, dtype=bool)
+                active_np[
+                    (guide_type_np == int(TendonGuideType.ROLLER))
+                    & ((guide_flags_np & int(TendonGuideFlags.DYNAMIC)) != 0)
+                    & (model.tendon_guide_radius.numpy() > 0.0)
+                ] = False
+                self.tendon_guide_active.assign(active_np)
                 # Resolve the initial topology before measuring its free-span rest lengths.
-                self._update_tendon_guide_active(model, model.body_q)
+                self._update_tendon_guide_active(model, model.body_q, initialize=True)
                 wp.copy(self.tendon_guide_active_step, self.tendon_guide_active)
 
             route_rest_np, route_seg_mask = self._compute_active_route_rest_lengths(model)
@@ -457,7 +461,9 @@ class TendonStateMixin:
                 device=self.tendon_guide_active.device,
             )
 
-    def _update_tendon_guide_active(self, model: Model, body_q: wp.array[wp.transform]) -> None:
+    def _update_tendon_guide_active(
+        self, model: Model, body_q: wp.array[wp.transform], *, initialize: bool = False
+    ) -> None:
         """Update solver-owned dynamic routing flags from the current body poses."""
         if not self._has_dynamic_tendon_guides:
             return
@@ -475,7 +481,7 @@ class TendonStateMixin:
                 model.tendon_guide_orientation,
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
-                self.tendon_activation_tol,
+                0.0 if initialize else self.tendon_activation_tol,
                 self.tendon_guide_active,
             ],
             device=model.device,
@@ -850,27 +856,11 @@ class TendonStateMixin:
                     r_r = pt_right - center
                     cross_val = np.dot(np.cross(r_l, r_r), normal)
                     dot_val = np.dot(r_l, r_r)
-                    # Use the same signed material ledger as rolling and route transitions.
-                    theta = float(np.arctan2(cross_val, dot_val)) * float(guide_orientation_np[i])
-                    wrap_tol = 1.0e-6 + (
-                        _position_roundoff_np(center, pt_left) + _position_roundoff_np(center, pt_right)
-                    ) / max(min(float(np.linalg.norm(r_l)), float(np.linalg.norm(r_r))), 1.0e-8)
-                    # Both atan2 branches describe the supported fixed half-circle.
-                    if (
-                        (guide_flags_np[i] & int(TendonGuideFlags.DYNAMIC)) == 0
-                        and theta < 0.0
-                        and abs(theta + np.pi) <= wrap_tol
-                    ):
-                        theta = float(np.pi)
-                    if theta < -wrap_tol:
-                        warnings.warn(
-                            f"Tendon {t}: ROLLER guide {i} starts at an unsupported oriented wrap of "
-                            f"{np.degrees(theta):.1f} deg. "
-                            "Correct the guide orientation or initial route geometry. "
-                            "The material reference uses the signed arc, not its absolute length.",
-                            NewtonWarning,
-                            stacklevel=_external_warning_stacklevel(),
-                        )
+                    theta = float(np.arctan2(cross_val, dot_val))
+                    if (guide_flags_np[i] & int(TendonGuideFlags.DYNAMIC)) != 0:
+                        theta *= float(guide_orientation_np[i])
+                    else:
+                        theta = abs(theta)
                     cable_len += theta * radius
             total_cable[t] = cable_len
             seg += num_guides - 1

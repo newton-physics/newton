@@ -128,7 +128,7 @@ def _position_roundoff(a: wp.vec3, b: wp.vec3) -> float:
 
 
 @wp.func
-def _planar_circle_tangents(
+def _parallel_circle_tangents(
     center_l: wp.vec3,
     center_r: wp.vec3,
     normal_l: wp.vec3,
@@ -138,7 +138,10 @@ def _planar_circle_tangents(
     orient_l: int,
     orient_r: int,
 ):
-    """Return the required planar tangent and status: valid 1, missing -1, nonplanar 0."""
+    """Return parallel-axis tangents, or seeds for tilted axes.
+
+    Status is exact 1, missing parallel tangent -1, or needs iteration 0.
+    """
     delta = center_r - center_l
     distance = wp.length(delta)
     length_l = wp.length(normal_l)
@@ -154,11 +157,9 @@ def _planar_circle_tangents(
     n_l = normal_l / length_l
     n_r = normal_r / length_r
     alignment = wp.dot(n_l, n_r)
-    plane_tol = 1.0e-6 * distance + _position_roundoff(center_l, center_r)
-    if wp.length_sq(wp.cross(n_l, n_r)) > 1.0e-12 or wp.abs(wp.dot(delta, n_l)) > plane_tol:
-        return center_l, center_r, int(0)
+    parallel = wp.length_sq(wp.cross(n_l, n_r)) <= 1.0e-12
 
-    # Project the accepted coplanar pair before constructing its tangent.
+    # Axial separation does not affect the projected common tangent.
     delta = delta - wp.dot(delta, n_l) * n_l
     distance = wp.length(delta)
 
@@ -167,12 +168,21 @@ def _planar_circle_tangents(
         side = 1.0
     radius_delta = radius_l - side * radius_r
     if distance <= wp.abs(radius_delta):
-        return center_l, center_r, int(-1)
+        if parallel:
+            return center_l, center_r, int(-1)
+        return center_l, center_r, int(0)
 
     along = delta / distance
     h = radius_delta / distance
     radial = h * along - float(orient_l) * wp.sqrt(wp.max(0.0, 1.0 - h * h)) * wp.cross(n_l, along)
-    return center_l + radius_l * radial, center_r + side * radius_r * radial, int(1)
+    radial_r = radial - wp.dot(radial, n_r) * n_r
+    length_r = wp.length(radial_r)
+    if length_r <= 1.0e-8:
+        return center_l, center_r, int(0)
+    status = int(0)
+    if parallel:
+        status = 1
+    return center_l + radius_l * radial, center_r + side * radius_r * radial_r / length_r, status
 
 
 @wp.func
@@ -391,7 +401,7 @@ def update_tendon_guide_active(
         if prev_rolling and next_rolling:
             prev_normal = wp.transform_vector(prev_pose, tendon_guide_axis[prev_guide])
             next_normal = wp.transform_vector(next_pose, tendon_guide_axis[next_guide])
-            bypass_l, bypass_r, tangent_status = _planar_circle_tangents(
+            bypass_l, bypass_r, tangent_status = _parallel_circle_tangents(
                 prev_center,
                 next_center,
                 prev_normal,
@@ -798,13 +808,18 @@ def _tendon_segment_attachment_points(
     both_rolling = (type_l == int(TendonGuideType.ROLLER)) and (type_r == int(TendonGuideType.ROLLER))
 
     if both_rolling and radius_l > 0.0 and radius_r > 0.0:
-        planar_l, planar_r, tangent_status = _planar_circle_tangents(
+        tangent_l, tangent_r, tangent_status = _parallel_circle_tangents(
             center_l, center_r, normal_l, normal_r, radius_l, radius_r, orient_l, orient_r
         )
         if tangent_status > 0:
-            return planar_l, planar_r
+            return tangent_l, tangent_r
         new_al = seed_al
         new_ar = seed_ar
+        # The parallel solution is a better initial guess than the centers for
+        # nearby tilted circles. Preserve existing attachment history otherwise.
+        if tangent_status == 0 and (wp.length_sq(seed_al - center_l) == 0.0 or wp.length_sq(seed_ar - center_r) == 0.0):
+            new_al = tangent_l
+            new_ar = tangent_r
         # Keep accepted attachments through a temporarily impossible tangent.
         # This preserves history, not physical validity; the accepted-pose
         # diagnostic reports the missing tangent. Center seeds are not history.
@@ -1152,7 +1167,7 @@ def update_tendon_cone_rows(
         ):
             pose_l = tendon_body_pose(body_q, tendon_guide_body[guide_idx])
             pose_r = tendon_body_pose(body_q, tendon_guide_body[next_guide])
-            _unused_l, _unused_r, tangent_status = _planar_circle_tangents(
+            _unused_l, _unused_r, tangent_status = _parallel_circle_tangents(
                 wp.transform_point(pose_l, tendon_guide_offset[guide_idx]),
                 wp.transform_point(pose_r, tendon_guide_offset[next_guide]),
                 wp.transform_vector(pose_l, tendon_guide_axis[guide_idx]),
@@ -1379,7 +1394,7 @@ def solve_tendon_material(
         rest_r = wp.max(min_rest, free_rest - rest_l)
         if report_material_exhaustion != 0:
             # Allow float32 cancellation in the arc subtraction and split.
-            roundoff = 1.0e-6 * wp.max(wp.max(wp.abs(seg_rest_length_step[seg_left]), arc_rest), min_rest)
+            roundoff = 1.0e-6 * wp.max(wp.max(wp.abs(seg_rest_length_step[seg_left]), wp.abs(arc_rest)), min_rest)
             added = rest_l + rest_r - raw_free_rest
             if added > roundoff:
                 material_added = material_added + added

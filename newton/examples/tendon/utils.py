@@ -145,9 +145,8 @@ def _transform_vector_np(pose, vector):
 def get_tendon_total_lengths(solver, model, state):
     """Return geometric total cable length for each tendon.
 
-    The total includes straight segment distances plus wrap arc lengths at
-    rolling guides, using signed arcs for temporary negative wraps. This is the
-    measured counterpart of ``solver.tendon_total_cable``.
+    The total includes straight spans, unsigned fixed-roller arcs, and signed
+    dynamic-roller arcs, matching ``solver.tendon_total_cable``.
     """
     if model.tendon_count == 0:
         return np.zeros(0, dtype=np.float32)
@@ -211,26 +210,11 @@ def get_tendon_total_lengths(solver, model, state):
             r_right = pt_right - center
             cross_val = np.dot(np.cross(r_left, r_right), normal)
             dot_val = np.dot(r_left, r_right)
-            theta = float(np.arctan2(cross_val, dot_val)) * float(guide_orientation[i])
-            # Match the solver's fixed half-turn convention and float32 error bound.
-            scale_center = float(np.max(np.abs(center)))
-            roundoff = (
-                4.0
-                * np.finfo(np.float32).eps
-                * (
-                    max(scale_center, float(np.max(np.abs(pt_left))))
-                    + max(scale_center, float(np.max(np.abs(pt_right))))
-                )
-            )
-            wrap_tol = 1.0e-6 + roundoff / max(
-                min(float(np.linalg.norm(r_left)), float(np.linalg.norm(r_right))), 1.0e-8
-            )
-            if (
-                (guide_flags[i] & int(newton.TendonGuideFlags.DYNAMIC)) == 0
-                and theta < 0.0
-                and abs(theta + np.pi) <= wrap_tol
-            ):
-                theta = float(np.pi)
+            theta = float(np.arctan2(cross_val, dot_val))
+            if (guide_flags[i] & int(newton.TendonGuideFlags.DYNAMIC)) != 0:
+                theta *= float(guide_orientation[i])
+            else:
+                theta = abs(theta)
             total += theta * guide_radius[i]
 
         lengths[t] = total

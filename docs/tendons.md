@@ -275,11 +275,13 @@ and reject unsupported semantics rather than silently discard them.
   diagnostic from the accepted pose. The diagnostic does not repair the route.
 - Dynamic candidates cannot change their authored order or attach between
   non-neighboring guides.
-- Coplanar circular neighbors use an exact common tangent. Overlapping circles
+- Circular neighbors with parallel axes use an exact common tangent, including
+  when their centers are axially offset. Overlapping circles
   can have a valid external tangent; an internal tangent requires their center
-  distance to exceed the sum of their radii. A missing or collapsed bypass does
-  not change a dynamic guide's active state. Nonplanar bypass tangents use an
-  iterative solve; if it does not converge within the geometric and float32
+  distance projected into the roller plane to exceed the sum of their radii.
+  A dynamic guide with a missing or collapsed initial bypass starts inactive.
+  Later undefined bypasses preserve its previous active state. Tilted-axis bypass
+  tangents use an iterative solve; if it does not converge within the geometric and float32
   precision tolerance, routing emits a diagnostic, keeps the previous active
   state, and retries at the next substep. An impossible accepted roller span
   emits a diagnostic; preserving its previous attachment points does not make
