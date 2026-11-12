@@ -9249,7 +9249,6 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         """Build a solver for ``model`` and return its per-world pair gaps."""
         solver = SolverMuJoCo(model, iterations=1, disable_sensors=True)
         solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
-        wp.synchronize()
         return solver.mjw_model.pair_gap.numpy()
 
     def test_pair_properties_global_rows_reach_every_world(self):
@@ -9275,21 +9274,21 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
     def test_pair_properties_mixed_per_world_and_global_rows(self):
         """Verify per-world and global pair rows resolving independently.
 
-        One row per world plus one global row: the compiled pairs are the
-        template-world row and the global row, so world 0 must read its own row for
-        the first pair and the global row for the second. Inferring the row from
-        counts gave world 0 the global row's neighbour instead.
+        Two global rows surround one per-world row per world. A row-count stride
+        misassigns world 1's per-world row to a global row, so the distinct
+        per-world gaps expose it.
         """
         world_count = 2
-        pair_rows = [(0, 0.01), (1, 0.01), (-1, 0.05)]
+        pair_rows = [(-1, 0.05), (0, 0.01), (1, 0.02), (-1, 0.06)]
         model = self._build_pair_worlds(world_count, pair_rows)
         self.assertEqual(model.custom_frequency_counts.get("mujoco:pair", 0), len(pair_rows))
 
-        # Both per-world rows hold the same gap, so only the global column can tell
-        # the two layouts apart.
+        # Global rows are authored first and last, with distinct per-world gaps in
+        # between, so a row-count stride misassigns world 1's row and the
+        # distinct values expose it.
         np.testing.assert_allclose(
             self._solved_pair_gaps(model),
-            np.array([[0.01, 0.05], [0.01, 0.05]], dtype=np.float32),
+            np.array([[0.05, 0.01, 0.06], [0.05, 0.02, 0.06]], dtype=np.float32),
         )
 
     def test_pair_properties_skipped_row_does_not_shift_later_rows(self):
@@ -9346,6 +9345,62 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         # it authored for it rather than the skipped row in front of it.
         self.assertEqual(gaps.shape, (world_count, 1))
         np.testing.assert_allclose(gaps, np.array([[0.01], [0.03]], dtype=np.float32))
+
+    def test_pair_properties_use_compiled_pair_ids(self):
+        """Verify pair property updates use MuJoCo's compiled pair IDs.
+
+        Pairs that span different bodies get distinct pair signatures, so MuJoCo
+        reorders them during compilation. The mapping must therefore read each
+        pair's ID after compilation instead of assuming insertion order.
+        """
+        world_count = 2
+
+        template_builder = newton.ModelBuilder()
+        body1 = template_builder.add_body()
+        shape1 = template_builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        body2 = template_builder.add_body()
+        shape2 = template_builder.add_shape_sphere(body=body2, radius=0.1)
+
+        builder = newton.ModelBuilder()
+        builder.add_shape_plane()
+        SolverMuJoCo.register_custom_attributes(builder)
+        for i in range(world_count):
+            builder.add_world(template_builder, xform=wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity()))
+
+        shapes_per_world = template_builder.shape_count
+        # Add (body1, body2) first, then (ground, body1): MuJoCo reorders these
+        # by signature, so the compiled IDs differ from insertion order.
+        for w in range(world_count):
+            offset = 1 + w * shapes_per_world
+            s1 = offset + shape1
+            s2 = offset + shape2
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": w,
+                    "mujoco:pair_geom1": s1,
+                    "mujoco:pair_geom2": s2,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_gap": 0.02 + w * 0.10,
+                }
+            )
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": w,
+                    "mujoco:pair_geom1": 0,
+                    "mujoco:pair_geom2": s1,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_gap": 0.01 + w * 0.10,
+                }
+            )
+
+        model = builder.finalize()
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:pair", 0), world_count * 2)
+
+        gaps = self._solved_pair_gaps(model)
+        np.testing.assert_allclose(
+            gaps,
+            np.array([[0.01, 0.02], [0.11, 0.12]], dtype=np.float32),
+        )
 
     def test_global_pair_exported_to_spec(self):
         """Pairs with pair_world=-1 (global) should be included in the MuJoCo spec.

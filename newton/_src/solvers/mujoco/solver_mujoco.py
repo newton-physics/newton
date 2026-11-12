@@ -3364,7 +3364,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         worlds automatically.
 
         Every ``spec.add_pair()`` records the Newton row that produced it in
-        :attr:`_mjc_pair_to_newton_pair_dict`, which becomes the
+        :attr:`_mjc_pair_to_newton_pair_list`, which becomes the
         :attr:`mjc_pair_to_newton_pair` lookup. Recording the row here is what makes
         a row that ``_init_pairs`` skips (invalid or unmapped geoms) a no-op for the
         row mapping instead of a shift in every later one.
@@ -3467,7 +3467,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 pair_kwargs["friction"] = pair_friction[i].tolist()
 
             mjc_pair = spec.add_pair(**pair_kwargs)
-            self._mjc_pair_to_newton_pair_dict[mjc_pair.id] = i
+            self._mjc_pair_to_newton_pair_list.append((mjc_pair, i))
 
     @staticmethod
     def _validate_tendon_attributes(model: Model) -> tuple[int, int, int]:
@@ -4562,13 +4562,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from MuJoCo [world, pair] to Newton contact pair row index.
 
         Records, for every ``spec.add_pair()`` in :meth:`_init_pairs`, which Newton
-        ``mujoco:pair_*`` row produced that MuJoCo pair.         Template-world rows are resolved by rank within each world, so each world
+        ``mujoco:pair_*`` row produced that MuJoCo pair. Template-world rows are resolved by rank within each world, so each world
         reads its own replicated row; global rows (``pair_world`` < 0) are read at
         their absolute index by every world. A value of -1 indicates an unmapped slot.
 
         Shape [nworld, npair], dtype int32."""
-        self._mjc_pair_to_newton_pair_dict: dict[int, int] = {}
-        """``mjc_pair_id`` -> Newton pair row, filled by :meth:`_init_pairs`."""
+        self._mjc_pair_to_newton_pair_list: list[tuple[Any, int]] = []
+        """``(mjc_pair, newton_pair)`` entries, filled by :meth:`_init_pairs`."""
         self.body_free_qd_start: wp.array[wp.int32] | None = None
         """Per-body mapping to the free-joint qd_start index (or -1 if not free)."""
 
@@ -8970,8 +8970,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjc_tendon_to_newton_tendon = wp.array(mjc_tendon_to_newton_tendon_np, dtype=wp.int32)
 
             # Create mjc_pair_to_newton_pair: MuJoCo[world, pair] -> Newton pair row
-            # _mjc_pair_to_newton_pair_dict[mjc_pair.id] is the Newton row that
-            # _init_pairs compiled into that pair. A count cannot express which row
+            # _mjc_pair_to_newton_pair_list holds (mjc_pair, newton_row) entries;
+            # MuJoCo sorts pairs and reassigns their IDs during compilation, so the
+            # pair ID is read after compilation. A count cannot express which row
             # produced a pair: a shared block of rows, per-world blocks and global
             # rows all give a different answer from the same row and world counts.
             npair = self.mj_model.npair
@@ -8991,19 +8992,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         w = int(pair_world_np[row_idx])
                         if w >= 0:
                             per_world_rows.setdefault(w, []).append(row_idx)
-                    for mjc_pair, newton_pair in self._mjc_pair_to_newton_pair_dict.items():
+                    for mjc_pair, newton_pair in self._mjc_pair_to_newton_pair_list:
+                        # Read the compiled ID after MuJoCo sorts/reassigns pair IDs.
+                        mjc_pair_index = mjc_pair.id
                         owner = int(pair_world_np[newton_pair])
                         if owner < 0:
                             # Global rows belong to no world, so every world
                             # reads them at the absolute index they were authored at.
-                            mjc_pair_to_newton_pair_np[:, mjc_pair] = newton_pair
+                            mjc_pair_to_newton_pair_np[:, mjc_pair_index] = newton_pair
                         else:
                             # Rank of this row within its owning world.
                             rank = per_world_rows[owner].index(newton_pair)
                             for w in range(nworld_total):
                                 rows = per_world_rows.get(w, [])
                                 if rank < len(rows):
-                                    mjc_pair_to_newton_pair_np[w, mjc_pair] = rows[rank]
+                                    mjc_pair_to_newton_pair_np[w, mjc_pair_index] = rows[rank]
                 self.mjc_pair_to_newton_pair = wp.array(mjc_pair_to_newton_pair_np, dtype=wp.int32)
 
             if separate_worlds:
