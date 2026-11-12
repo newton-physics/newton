@@ -586,31 +586,54 @@ def _solve(
     ng: int,
     padded: int,
 ):
-    w, _lane = wp.tid()
+    """Solve one world per thread; worlds share the block topology, so a warp runs in lockstep."""
+    w = wp.tid()
     if active[w] == 0:
         return
-    ll = wp.array(ptr=get_float32_array_offset_ptr(factors, w * nb * 36), shape=(nb * 6, 6), dtype=wp.float32)
-    yy = wp.array(ptr=get_float32_array_offset_ptr(scratch, w * padded), shape=(padded, 1), dtype=wp.float32)
+    base = w * nb * 36
+    y0 = w * padded
     for row in range(ng):
-        value = wp.tile_load(yy, shape=(6, 1), offset=(row * 6, 0), storage="shared")
+        value = vec6f()
+        for i in range(6):
+            value[i] = scratch[y0 + row * 6 + i]
         for entry in range(previous_start[row], previous_start[row + 1]):
             block = previous[entry]
-            left = wp.tile_load(ll, shape=(6, 6), offset=(block * 6, 0))
-            right = wp.tile_load(yy, shape=(6, 1), offset=(cols[block] * 6, 0))
-            wp.tile_matmul(left, right, value, alpha=-1.0)
-        d = wp.tile_load(ll, shape=(6, 6), offset=(diagonal[row] * 6, 0))
-        wp.tile_lower_solve_inplace(d, value)
-        wp.tile_store(yy, value, offset=(row * 6, 0))
-    for row in range(ng - 1, -1, -1):
-        value = wp.tile_load(yy, shape=(6, 1), offset=(row * 6, 0), storage="shared")
+            source = y0 + cols[block] * 6
+            offset = base + block * 36
+            for j in range(6):
+                y = scratch[source + j]
+                for i in range(6):
+                    value[i] -= factors[offset + i * 6 + j] * y
+        offset = base + diagonal[row] * 36
+        for i in range(6):
+            total = value[i]
+            for j in range(i):
+                total -= factors[offset + i * 6 + j] * value[j]
+            value[i] = total / factors[offset + i * 7]
+        for i in range(6):
+            scratch[y0 + row * 6 + i] = value[i]
+    for reverse in range(ng):
+        row = ng - 1 - reverse
+        value = vec6f()
+        for i in range(6):
+            value[i] = scratch[y0 + row * 6 + i]
         for entry in range(following_start[row], following_start[row + 1]):
             block = following[entry]
-            left = wp.tile_load(ll, shape=(6, 6), offset=(block * 6, 0))
-            right = wp.tile_load(yy, shape=(6, 1), offset=(rows[block] * 6, 0))
-            wp.tile_matmul(wp.tile_transpose(left), right, value, alpha=-1.0)
-        d = wp.tile_load(ll, shape=(6, 6), offset=(diagonal[row] * 6, 0))
-        wp.tile_upper_solve_inplace(wp.tile_transpose(d), value)
-        wp.tile_store(yy, value, offset=(row * 6, 0))
+            source = y0 + rows[block] * 6
+            offset = base + block * 36
+            for j in range(6):
+                y = scratch[source + j]
+                for i in range(6):
+                    value[i] -= factors[offset + j * 6 + i] * y
+        offset = base + diagonal[row] * 36
+        for k in range(6):
+            i = 5 - k
+            total = value[i]
+            for j in range(i + 1, 6):
+                total -= factors[offset + j * 6 + i] * value[j]
+            value[i] = total / factors[offset + i * 7]
+        for i in range(6):
+            scratch[y0 + row * 6 + i] = value[i]
 
 
 @wp.kernel
@@ -1057,7 +1080,7 @@ class JointBlockSolver:
                 device=self._device,
             )
         else:
-            wp.launch_tiled(
+            wp.launch(
                 _solve,
                 dim=self._worlds,
                 inputs=[

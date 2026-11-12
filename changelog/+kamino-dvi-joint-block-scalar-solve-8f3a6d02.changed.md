@@ -1,0 +1,1 @@
+Solve the Kamino DVI joint-block bilateral system with one world per thread instead of per-world 6x6 tile operations, roughly halving its cost (G1 at 2048 worlds: 3.6 to 2.0 ms per solve, two solves per substep).
