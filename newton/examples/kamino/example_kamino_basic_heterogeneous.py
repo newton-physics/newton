@@ -6,6 +6,8 @@
 Success criteria:
 - Six sections show a fixed pendulum, cartpole, two floating pendulum variants, a rigid box, and a
   four-bar linkage.
+- The magenta box and the hinged pair of boxes rest on top of their platforms without sinking
+  through them.
 - Right-drag movable bodies: the mechanisms respond while preserving their joints and remaining
   bounded.
 
@@ -15,6 +17,7 @@ Runs:
 
 import argparse
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -107,6 +110,9 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets(spacing=(5.0, 5.0, 0.0))
 
+        # Keep the initial poses for the end-of-run checks
+        self.body_q_initial = self.state_0.body_q.numpy().copy()
+
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
         self.capture()
@@ -159,7 +165,27 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        pass  # TODO: Add some assertions here once we have a more meaningful test scenario
+        body_q = self.state_0.body_q.numpy()
+        assert np.isfinite(body_q).all(), "Non-finite body poses"
+        # Every platform's top face lies at z = 0. Bodies resting on or jointed above it must stay on
+        # top; a body whose contact with its platform is filtered out falls through and keeps falling.
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "bodies stay on top of their platforms",
+            lambda q, qd: q[2] > -0.01 and abs(q[0]) < 5.0 and abs(q[1]) < 5.0,
+        )
+        # The unjointed box and hinged pair start at rest on their platforms and must remain there.
+        free_bodies = [
+            i for i, label in enumerate(self.model.body_label) if "box_on_plane" in label or "boxes_hinged" in label
+        ]
+        assert free_bodies, "Expected the box-on-plane and hinged-boxes bodies"
+        np.testing.assert_allclose(
+            body_q[free_bodies, 2],
+            self.body_q_initial[free_bodies, 2],
+            atol=5e-3,
+            err_msg="Resting bodies left their platforms",
+        )
 
     @staticmethod
     def create_parser():
