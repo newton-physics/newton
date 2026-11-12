@@ -721,18 +721,18 @@ class TestInertia(unittest.TestCase):
         assert_np_equal(np.array(com), offset, tol=1.0e-5 * np.linalg.norm(offset))
         assert_np_equal(np.array(inertia).reshape(3, 3), I_hollow_ref, tol=1.0e-3 * np.max(I_hollow_ref))
 
-
         # A non-watertight mesh has no well-defined volume, but its result must still not
         # depend on where it sits, including across the point where its bounds reach the origin.
         open_indices = indices.reshape(-1, 3)[:-2].flatten()
         corner = -vertices.min(axis=0)
         m_open, _, I_open, _ = compute_inertia_mesh(density, vertices + corner, open_indices, is_solid=True)
         I_open = np.array(I_open).reshape(3, 3)
-        for offset in (corner + [0.0, 0.0, 1.0e-6], corner + [3.0, 0.0, 0.0], np.zeros(3)):
+        for offset in (corner + np.array([0.0, 0.0, 1.0e-6]), corner + np.array([3.0, 0.0, 0.0]), np.zeros(3)):
             with self.subTest(open_offset=offset):
                 mass, _, inertia, _ = compute_inertia_mesh(density, vertices + offset, open_indices, is_solid=True)
                 self.assertAlmostEqual(mass, m_open, delta=1.0e-4 * abs(m_open))
                 assert_np_equal(np.array(inertia).reshape(3, 3), I_open, tol=1.0e-3 * np.max(np.abs(I_open)))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
