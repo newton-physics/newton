@@ -1,0 +1,1 @@
+Fix the `ViewerGL` GUI being unavailable, with an `imgui_bundle not found` warning, when PyOpenGL is not installed, as on Windows ARM64 where the `examples` extra does not install MuJoCo. The `examples` extra now requires PyOpenGL directly.
