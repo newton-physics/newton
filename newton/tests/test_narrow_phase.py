@@ -686,28 +686,27 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.SPHERE,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([1.0, 1.0, 1.0], 0.0),
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.SPHERE,
                 "transform": ([3.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([1.0, 1.0, 1.0], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
-        # Separated spheres should produce no contacts (or contacts with positive separation)
-        if count > 0:
-            # If contact is generated, penetration should be positive (separation)
-            # Distance between centers = 3.5, sum of radii = 2.0, expected separation = 1.5
-            self.assertGreater(penetrations[0], 0.0, "Separated spheres should have positive penetration (separation)")
-            self.assertAlmostEqual(
-                penetrations[0], 1.5, places=1, msg=f"Expected separation ~1.5, got {penetrations[0]}"
-            )
+        # The contact gap exceeds the separation, so the pair reports a speculative contact
+        self.assertGreater(count, 0)
+        # A separated pair reports a positive distance
+        # Distance between centers = 3.5, sum of radii = 2.0, expected separation = 1.5
+        self.assertGreater(penetrations[0], 0.0, "Separated spheres should have positive penetration (separation)")
+        self.assertAlmostEqual(penetrations[0], 1.5, places=1, msg=f"Expected separation ~1.5, got {penetrations[0]}")
 
-            # Normal should be unit length
-            normal_length = np.linalg.norm(normals[0])
-            self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
 
     def test_sphere_sphere_touching(self):
         """Test sphere-sphere collision with small overlap."""
@@ -924,47 +923,47 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
 
     def test_sphere_box_corner_collision(self):
         """Test sphere-box collision at box corner."""
-        # Sphere approaching box corner
-        offset = 1.5  # Distance to corner
-        corner_dir = np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0)  # Unit vector toward corner
-        sphere_pos = corner_dir * offset
+        sphere_radius = 0.5
+        box_size = np.array([1.0, 1.0, 1.0])
+        corner_dir = np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0)
+        # Outside all three faces, so the corner is the closest box feature
+        corner_dist = 0.3
+        sphere_pos = box_size + corner_dir * corner_dist
 
         geom_list = [
             {
                 "type": GeoType.SPHERE,
                 "transform": (sphere_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
-                "data": ([0.5, 0.5, 0.5], 0.0),
+                "data": ([sphere_radius, sphere_radius, sphere_radius], 0.0),
             },
-            {"type": GeoType.BOX, "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), "data": ([1.0, 1.0, 1.0], 0.0)},
+            {
+                "type": GeoType.BOX,
+                "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": (box_size.tolist(), 0.0),
+            },
         ]
 
         count, _pairs, positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
-        # May or may not have contact depending on exact distance
-        if count > 0:
-            # Normal should point approximately along corner direction
-            normal_length = np.linalg.norm(normals[0])
-            self.assertAlmostEqual(normal_length, 1.0, places=2, msg="Normal should be unit length")
+        self.assertGreater(count, 0)
+        np.testing.assert_allclose(
+            normals[0], -corner_dir, atol=1e-2, err_msg="Normal should point from sphere toward box corner"
+        )
+        self.assertAlmostEqual(penetrations[0], corner_dist - sphere_radius, places=2)
 
-            # Verify surface reconstruction if penetrating
-            if penetrations[0] < 0:
-                sphere_radius = 0.5
-                box_pos = np.array([0.0, 0.0, 0.0])
-                box_size = np.array([1.0, 1.0, 1.0])
-                box_rot = np.eye(3)
+        box_pos = np.array([0.0, 0.0, 0.0])
+        box_rot = np.eye(3)
 
-                def dist_to_sphere(p):
-                    return abs(np.linalg.norm(p - sphere_pos) - sphere_radius)
+        def dist_to_sphere(p):
+            return abs(np.linalg.norm(p - sphere_pos) - sphere_radius)
 
-                def dist_to_box(p):
-                    return distance_point_to_box(p, box_pos, box_rot, box_size)
+        def dist_to_box(p):
+            return distance_point_to_box(p, box_pos, box_rot, box_size)
 
-                self.assertTrue(
-                    check_surface_reconstruction(
-                        positions[0], normals[0], penetrations[0], dist_to_sphere, dist_to_box
-                    ),
-                    msg="Contact position should be at midpoint between surfaces",
-                )
+        self.assertTrue(
+            check_surface_reconstruction(positions[0], normals[0], penetrations[0], dist_to_sphere, dist_to_box),
+            msg="Contact position should be at midpoint between surfaces",
+        )
 
     def test_box_box_face_collision(self):
         """Test box-box collision with face contact."""
@@ -1071,30 +1070,29 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.SPHERE,
                 "transform": ([0.0, 1.5, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 0.5, 0.5], 0.0),
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.CAPSULE,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 1.0, 0.0], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
-        # May not generate contact if separated beyond margin
-        if count > 0:
-            # Normal should be unit length
-            normal_length = np.linalg.norm(normals[0])
-            self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+        # The contact gap exceeds the separation, so the pair reports a speculative contact
+        self.assertGreater(count, 0)
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
 
-            # Normal should point primarily along Y axis
-            self.assertGreater(abs(normals[0][1]), 0.9, msg="Normal should be along Y axis for cylinder side collision")
+        # Normal should point primarily along Y axis
+        self.assertGreater(abs(normals[0][1]), 0.9, msg="Normal should be along Y axis for cylinder side collision")
 
-            # Check separation: distance = 1.5 - (0.5 + 0.5) = 0.5
-            self.assertGreater(penetrations[0], 0.0, "Separated shapes should have positive penetration")
-            self.assertAlmostEqual(
-                penetrations[0], 0.5, delta=0.1, msg=f"Expected separation ~0.5, got {penetrations[0]}"
-            )
+        # Check separation: distance = 1.5 - (0.5 + 0.5) = 0.5
+        self.assertGreater(penetrations[0], 0.0, "Separated shapes should have positive penetration")
+        self.assertAlmostEqual(penetrations[0], 0.5, delta=0.1, msg=f"Expected separation ~0.5, got {penetrations[0]}")
 
     def test_sphere_capsule_cap(self):
         """Test sphere collision with capsule hemispherical cap."""
@@ -1108,29 +1106,28 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.SPHERE,
                 "transform": ([0.0, 0.0, 2.2], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 0.5, 0.5], 0.0),
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.CAPSULE,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 1.0, 0.0], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
-        if count > 0:
-            # Normal should be unit length
-            normal_length = np.linalg.norm(normals[0])
-            self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+        self.assertGreater(count, 0)
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
 
-            # Normal should point primarily along Z axis
-            self.assertGreater(abs(normals[0][2]), 0.9, msg="Normal should be along Z axis for cap collision")
+        # Normal should point primarily along Z axis
+        self.assertGreater(abs(normals[0][2]), 0.9, msg="Normal should be along Z axis for cap collision")
 
-            # Check separation: distance = 2.2 - 1.0 = 1.2, combined radii = 1.0, separation = 0.2
-            self.assertGreater(penetrations[0], 0.0, "Separated shapes should have positive penetration")
-            self.assertAlmostEqual(
-                penetrations[0], 0.2, delta=0.05, msg=f"Expected separation ~0.2, got {penetrations[0]}"
-            )
+        # Check separation: distance = 2.2 - 1.0 = 1.2, combined radii = 1.0, separation = 0.2
+        self.assertGreater(penetrations[0], 0.0, "Separated shapes should have positive penetration")
+        self.assertAlmostEqual(penetrations[0], 0.2, delta=0.05, msg=f"Expected separation ~0.2, got {penetrations[0]}")
 
     def test_capsule_capsule_parallel(self):
         """Test capsule-capsule collision when parallel."""
@@ -1140,19 +1137,21 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.CAPSULE,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 1.0, 0.0], 0.0),
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.CAPSULE,
                 "transform": ([0.0, 1.5, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 1.0, 0.0], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, _normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
         # Capsules with combined radius 1.0 and separation 1.5 should be separated
-        if count > 0:
-            self.assertGreater(penetrations[0], 0.0, "Separated capsules should have positive penetration")
+        self.assertGreater(count, 0)
+        self.assertGreater(penetrations[0], 0.0, "Separated capsules should have positive penetration")
 
     def test_capsule_capsule_crossed(self):
         """Test capsule-capsule collision when crossed (perpendicular)."""
@@ -1237,19 +1236,21 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.PLANE,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.0, 0.0, 0.0], 0.0),
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.SPHERE,
                 "transform": ([0.0, 0.0, 2.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([1.0, 1.0, 1.0], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, _normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
-        # Separated - may not generate contact
-        if count > 0:
-            self.assertGreater(penetrations[0], 0.0, "Sphere above plane should have positive penetration")
+        # The contact gap exceeds the separation, so the pair reports a speculative contact
+        self.assertGreater(count, 0)
+        self.assertGreater(penetrations[0], 0.0, "Sphere above plane should have positive penetration")
 
     def test_plane_sphere_touching(self):
         """Test plane-sphere collision with small overlap."""
@@ -1512,20 +1513,22 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.CYLINDER,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 1.0, 0.0], 0.0),
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.SPHERE,
                 "transform": ([1.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 0.5, 0.5], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, _normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
         # Cylinder radius 0.5 + sphere radius 0.5 = 1.0, distance = 1.5, so separation = 0.5
-        if count > 0:
-            # If contact generated, should have positive penetration (separation)
-            self.assertGreater(penetrations[0], 0.0, "Separated should have positive penetration")
+        self.assertGreater(count, 0)
+        # A separated pair reports a positive distance
+        self.assertGreater(penetrations[0], 0.0, "Separated should have positive penetration")
 
     def test_barrel_cylinder_sphere(self):
         """Verify a sphere contacts the curved barrel through GJK/MPR."""
@@ -1944,26 +1947,25 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.ELLIPSOID,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([1.0, 0.5, 0.3], 0.0),  # semi-axes a=1.0, b=0.5, c=0.3
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.ELLIPSOID,
                 "transform": ([3.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([1.0, 0.5, 0.3], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
-        # Separated ellipsoids should produce no contacts (or contacts with positive separation)
-        if count > 0:
-            # If contact is generated, penetration should be positive (separation)
-            self.assertGreater(
-                penetrations[0], 0.0, "Separated ellipsoids should have positive penetration (separation)"
-            )
+        # The contact gap exceeds the separation, so the pair reports a speculative contact
+        self.assertGreater(count, 0)
+        # A separated pair reports a positive distance
+        self.assertGreater(penetrations[0], 0.0, "Separated ellipsoids should have positive penetration (separation)")
 
-            # Normal should be unit length
-            normal_length = np.linalg.norm(normals[0])
-            self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
 
     def test_ellipsoid_ellipsoid_penetrating(self):
         """Test ellipsoid-ellipsoid collision with penetration."""
