@@ -289,7 +289,10 @@ class SolverKaminoImpl(SolverBase):
                 solver=None if uses_lox or uses_dense_scc else linear_solver_type,
                 solver_kwargs=None if uses_lox or uses_dense_scc else linear_solver_kwargs,
                 sparse=self._config.sparse_dynamics,
-                decouple_joint_dynamics=self._config.dynamics_solver == "padmm",
+                # The sparse SCC path assembles its operators from the Jacobians directly and does
+                # not support the change of variables
+                decouple_joint_dynamics=self._config.dynamics_solver == "padmm"
+                or (self._config.dynamics_solver == "scc" and not self._config.sparse_dynamics),
             )
 
         # Allocate the impulses that act on the bodies, and the impulses of the original rows,

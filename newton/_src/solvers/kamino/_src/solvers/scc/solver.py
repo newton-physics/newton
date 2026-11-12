@@ -787,6 +787,11 @@ class SCCSolver:
             device=self.device,
         )
 
+        # The solution is in the variables of the current joint decoupling, which an internal
+        # warm-start must know to rebase it, whichever way this solve was started
+        if problem.joint_decoupling is not None:
+            problem.joint_decoupling.record_solution_body_share()
+
     def _solve_apgd(self, problem: DualProblem) -> None:
         """Replace unilateral PGS phases while retaining the existing bilateral schedule."""
         if self._bilateral_solver is None:
@@ -1179,6 +1184,10 @@ class SCCSolver:
         )
 
     def _warmstart_from_solution(self, problem: DualProblem):
+        # The stored solution is in the variables of the joint decoupling of its own step, whose
+        # body share may differ from the current one, so express it in the current variables
+        if problem.joint_decoupling is not None:
+            problem.joint_decoupling.rebase_solution(self._data.solution.lambdas, self._data.solution.v_plus)
         wp.launch(
             kernel=apply_dual_preconditioner_to_solution,
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
@@ -1237,6 +1246,11 @@ class SCCSolver:
                 ],
                 device=self.device,
             )
+            # The containers hold the impulses of the original rows
+            if problem.joint_decoupling is not None:
+                problem.joint_decoupling.decouple_solution(
+                    problem.data.P, self._data.solution.lambdas, self._data.solution.v_plus
+                )
         if limits is not None and limits.model_max_limits_host > 0:
             wp.launch(
                 kernel=warmstart_limit_constraints,
