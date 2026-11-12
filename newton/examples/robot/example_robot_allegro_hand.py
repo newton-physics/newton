@@ -160,7 +160,6 @@ class Example:
             )
             solver_config.dvi.max_alternating_iterations = 8
             solver_config.dvi.bilateral_solve_interval = 8
-            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
             solver_config.dvi.omega = 1.2
             solver_config.dvi.contact_warmstart_method = (
                 "key_and_position_with_net_force_backup_and_tangential_net_force"

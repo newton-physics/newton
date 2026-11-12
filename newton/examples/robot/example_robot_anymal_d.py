@@ -104,7 +104,6 @@ class Example:
             # Eliminate bilateral rows once before the projected inequality sweeps.
             solver_config.dvi.max_alternating_iterations = 32
             solver_config.dvi.use_schur_complement = True
-            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(

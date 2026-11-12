@@ -1,0 +1,1 @@
+Default Kamino DVI ``bilateral_solver_type`` to ``"LLTBRCM"``, which is never slower than ``"LLTB"`` in the measured robots and about 2x faster at 2048 worlds for cartpole (31 to 14 ms per frame) and UR10 (143 to 79 ms per frame). Set ``bilateral_solver_type="LLTB"`` to keep the previous behavior.

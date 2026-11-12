@@ -71,11 +71,11 @@ Set ``sparse_jacobian=False`` for fully dense DVI, or set
 ``sparse_dynamics=True`` to use sparse dynamics with the Conjugate Residual
 solver.
 
-For large bilateral systems, opt into RCM-reordered factorization explicitly:
+The bilateral block uses RCM-reordered factorization (``LLTBRCM``) by default.
+Its options can be tuned through ``bilateral_solver_kwargs``:
 
 .. code-block:: python
 
-   config.dvi.bilateral_solver_type = "LLTBRCM"
    config.dvi.bilateral_solver_kwargs = {
        "block_size": 32,
        "reuse_permutation": True,

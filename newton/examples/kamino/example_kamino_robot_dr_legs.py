@@ -128,7 +128,6 @@ class Example:
             self.config.dynamics.preconditioning = False
             self.config.dynamics.linear_solver_type = "CR"
             self.config.dynamics.linear_solver_kwargs = {"maxiter": 9}
-            self.config.dvi.bilateral_solver_type = "LLTBRCM"
             self.config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
             self.config.dvi.tolerance = 1e-4
             self.config.dvi.regularization = 1e-5

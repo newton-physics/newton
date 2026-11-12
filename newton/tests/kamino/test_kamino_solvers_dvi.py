@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import itertools
 import unittest
 from itertools import product
 from types import SimpleNamespace
@@ -444,7 +445,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertIsNone(default_config.dvi.use_schur_complement)
         self.assertEqual(default_config.dvi.tangential_warmstart_scale, 0.97)
         self.assertEqual(default_config.dvi.bilateral_solve_interval, 1)
-        self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTB")
+        self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTBRCM")
         self.assertEqual(default_config.dvi.bilateral_solver_kwargs, {})
 
         dense_config = SolverKamino.Config(
@@ -2132,10 +2133,11 @@ class TestDVISolver(NewtonTestCase):
         basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
         model = builder.finalize(device=self.device, skip_validation_joints=True)
 
-        for sparse in (False, True):
-            with self.subTest(sparse=sparse):
+        for sparse, bilateral_solver_type in itertools.product((False, True), ("LLTB", "LLTBRCM")):
+            with self.subTest(sparse=sparse, bilateral_solver_type=bilateral_solver_type):
                 config = SolverKamino.Config(
                     dynamics_solver="dvi",
+                    dvi=kamino_config.DVISolverConfig(bilateral_solver_type=bilateral_solver_type),
                     sparse_dynamics=sparse,
                     sparse_jacobian=True,
                     use_collision_detector=True,
@@ -2171,10 +2173,12 @@ class TestDVISolver(NewtonTestCase):
                 joint_dims = solver._solver_kamino._model.info.num_joint_bilateral_cts.numpy()
                 self.assertTrue(np.any(joint_dims == 0))
                 self.assertTrue(np.any(joint_dims > 0))
-                np.testing.assert_array_equal(
-                    dvi_solver.data.bilateral_operator.info.dimensions,
-                    np.maximum(joint_dims, 1),
-                )
+                if bilateral_solver_type == "LLTB":
+                    # LLTB pads joint-free worlds to one row; LLTBRCM uses a shared capacity stride.
+                    np.testing.assert_array_equal(
+                        dvi_solver.data.bilateral_operator.info.dimensions,
+                        np.maximum(joint_dims, 1),
+                    )
                 self.assertEqual(config.sparse_dynamics, sparse)
                 self.assertTrue(config.sparse_jacobian)
 

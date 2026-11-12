@@ -1079,12 +1079,11 @@ class DVISolverConfig:
     Defaults to `0.97`.
     """
 
-    bilateral_solver_type: Literal["LLTB", "LLTBRCM"] = "LLTB"
+    bilateral_solver_type: Literal["LLTB", "LLTBRCM"] = "LLTBRCM"
     """
     Direct linear solver used for the bilateral constraint block.
-    ``LLTBRCM`` can accelerate large sparse articulated systems, while
-    ``LLTB`` remains preferable for small or dense systems. Defaults to
-    ``LLTB``.
+    ``LLTBRCM`` factors in a fill-reducing ordering and skips empty tiles;
+    ``LLTB`` factors dense tiles. Defaults to ``LLTBRCM``.
     """
 
     bilateral_solver_kwargs: dict[str, Any] = field(default_factory=dict)
