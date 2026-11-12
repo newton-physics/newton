@@ -7,7 +7,7 @@ newton.solvers.mujoco
 Programmatic model-authoring helpers for :class:`~newton.solvers.SolverMuJoCo`.
 
 The module-level helpers create MuJoCo-specific actuators, tendons, contact
-pairs, and equality constraints on a :class:`~newton.ModelBuilder` without
+pairs, equality constraints, and flexes on a :class:`~newton.ModelBuilder` without
 exposing custom-frequency storage details. Use
 :class:`~newton.solvers.SolverMuJoCo` as the canonical public solver class.
 
@@ -63,6 +63,8 @@ Example::
 .. autofunction:: add_equality_tendon
 
 .. autofunction:: add_equality_weld
+
+.. autofunction:: add_flex
 
 .. autofunction:: add_tendon_fixed
 

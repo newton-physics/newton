@@ -23,7 +23,7 @@ import warp as wp
 from ...core._warnings import _external_warning_stacklevel
 from ...core.types import MAXVAL, Axis, override, vec5, vec10
 from ...exceptions import NewtonDeprecationWarning, NewtonWarning
-from ...geometry import GeoType, Mesh, ShapeFlags
+from ...geometry import GeoType, Mesh, ParticleFlags, ShapeFlags
 from ...sim import (
     BodyFlags,
     Contacts,
@@ -45,7 +45,7 @@ from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
 from ..coupled.interface import CouplingEndpointKind, CouplingInterface
 from ..solver import SolverBase
-from . import dcmotor, kernels, speculative
+from . import dcmotor, flex, kernels, speculative
 from .collision_masks import (
     MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
     MUJOCO_COLLISION_MASK_UNSET,
@@ -81,11 +81,13 @@ from .kernels import (
     capture_actuator_dampratio_kernel,
     collect_overflow_kernel,
     convert_mj_coords_to_warp_kernel,
+    convert_mj_particles_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
     convert_qfrc_from_mj_kernel,
     convert_rigid_forces_from_mj_kernel,
     convert_solref,
     convert_warp_coords_to_mj_kernel,
+    convert_warp_particles_to_mj_kernel,
     copy_actuator_moment_kernel,
     copy_qpos_and_detect_tree_change_kernel,
     create_convert_mjw_contacts_to_newton_kernel,
@@ -98,6 +100,7 @@ from .kernels import (
     mass_matrix_diagonal_kernel,
     repeat_array_kernel,
     reset_joint_state_kernel,
+    reset_particle_state_kernel,
     reset_sleeping_state_kernel,
     reset_world_buffers_kernel,
     resolve_actuator_dampratio_invweight_kernel,
@@ -1501,6 +1504,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Note: only attributes with usd_attribute_name defined are parsed from USD at the moment.
 
         _register_equality_constraint_attributes(builder)
+        flex._register_flex_attributes(builder)
 
         def parse_solreflimit_mode_usd(_value: Any, context: dict[str, Any]) -> int | None:
             prim = context.get("prim")
@@ -3537,6 +3541,143 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         )
 
+    def _init_flexes(self, model: Model, spec: Any, shape_mapping: dict[int, str], particles: np.ndarray) -> list[Any]:
+        """
+        Initialize MuJoCo flexes from Newton particles and their tetrahedra, triangles, and springs.
+
+        Elements with at least one :attr:`~newton.ParticleFlags.ACTIVE` particle are converted.
+        Each of their particles becomes a body at its initial position with three slide joints;
+        massless or inactive ones become static bodies that the solver places at ``particle_q``
+        in each world. Particles of no converted element get no body. Elements assigned to a
+        ``mujoco:flex`` row by :func:`~newton.solvers.mujoco.add_flex` form that flex. The
+        remaining elements of each dimension form one flex with the default settings, skipping
+        triangles whose particles all belong to a tetrahedral flex. Negative ``young``,
+        ``edgestiffness``, ``edgedamping``, ``radius``, and sliding ``friction`` values are derived
+        from the Newton model. Flexes collide with each other and with shapes flagged
+        :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`, and with themselves when ``selfcollide`` is
+        set. Flexes with ``edgeequality`` get a MuJoCo flex equality constraint on their edge lengths.
+
+        Args:
+            model: The Newton model.
+            spec: The MuJoCo spec to add flexes to.
+            shape_mapping: Mapping from Newton shape index to MuJoCo geom name.
+            particles: Newton particle indices of the template world.
+
+        Returns:
+            The MuJoCo body of each particle in ``particles``, or ``None`` if it has none.
+        """
+        if len(particles) == 0:
+            return []
+        mujoco, _ = self.import_mujoco()
+        converted = flex._converted_elements(model)
+
+        # Reserve a mask bit that no geom uses as contype. Flexes use it as both masks, so they
+        # collide with each other and with geoms that carry it in their conaffinity, which
+        # leaves rigid filtering unchanged.
+        used = 0
+        for geom in spec.geoms:
+            used |= geom.contype & 0xFFFFFFFF
+        free = ~used & 0xFFFFFFFF
+        if not free:
+            raise ValueError("MuJoCo flexes need a collision bit that no geom uses as contype.")
+        bit = mujoco_mask_to_signed(free & -free)
+        shape_flags = model.shape_flags.numpy()
+        particle_geoms = {
+            name for shape, name in shape_mapping.items() if shape_flags[shape] & ShapeFlags.COLLIDE_PARTICLES
+        }
+        for geom in spec.geoms:
+            mask = geom.conaffinity | bit if geom.name in particle_geoms else geom.conaffinity & ~bit
+            geom.conaffinity = mujoco_mask_to_signed(mask)
+
+        q = model.particle_q.numpy()[particles]
+        mass = model.particle_mass.numpy()[particles]
+        radius = model.particle_radius.numpy()[particles]
+        simulated = (mass > 0.0) & (model.particle_flags.numpy()[particles] & int(ParticleFlags.ACTIVE) != 0)
+        bodies = []
+        for i, p in enumerate(particles):
+            if not self._flex_particles[p]:
+                bodies.append(None)
+                continue
+            body = spec.worldbody.add_body(name=f"particle_{p}", pos=q[i])
+            if simulated[i]:
+                body.mass = mass[i]
+                body.ipos = [0.0, 0.0, 0.0]
+                # Slide joints only, so rotational inertia is unused; MuJoCo just requires it to be positive.
+                body.inertia = [max(0.4 * mass[i] * radius[i] ** 2, 1.0e-10)] * 3
+                body.explicitinertial = True
+                for axis in np.eye(3):
+                    body.add_joint(type=mujoco.mjtJoint.mjJNT_SLIDE, axis=axis)
+            bodies.append(body)
+
+        attrs = getattr(model, "mujoco", None)
+        flex_count = model.custom_frequency_counts.get("mujoco:flex", 0)
+        rows = {name: getattr(attrs, f"flex_{name}") for name in flex.FLEX_ATTRIBUTES} if flex_count else {}
+        rows = {name: values if isinstance(values, list) else values.numpy() for name, values in rows.items()}
+        defaults = {
+            name: default if dtype is str else np.array(default)
+            for name, (dtype, default) in flex.FLEX_ATTRIBUTES.items()
+        }
+        element_materials = {3: model.tet_materials, 2: model.tri_materials, 1: None}
+        local = np.full(model.particle_count, -1, dtype=np.int64)
+        local[particles] = np.arange(len(particles))
+        claimed = np.zeros(model.particle_count, dtype=bool)
+        for source, (elems, convert) in converted.items():
+            dim, attribute, _, _ = flex.ELEMENTS[source]
+            materials = element_materials[dim]
+            owner = getattr(attrs, attribute).numpy() if flex_count else np.full(len(elems), -1)
+            selected = convert & np.all(local[elems] >= 0, axis=1)
+            groups = [(row, owner == row) for row in np.unique(owner[selected & (owner >= 0)])]
+            unowned = selected & (owner < 0)
+            if dim == 2:
+                # Surface triangles of a tetrahedral mesh would duplicate its 3D flex.
+                unowned &= ~np.all(claimed[elems], axis=1)
+            groups.append((-1, unowned))
+            for row, keep in groups:
+                if not np.any(keep):
+                    continue
+                params = defaults if row < 0 else {name: values[row] for name, values in rows.items()}
+                claimed[elems[keep]] = True
+                verts = np.unique(elems[keep])
+
+                mj_flex = spec.add_flex()
+                mj_flex.name = params["label"] or f"flex_{len(spec.flexes) - 1}"
+                mj_flex.dim = dim
+                mj_flex.vertbody = [bodies[i].name for i in local[verts]]
+                mj_flex.elem = np.searchsorted(verts, elems[keep]).ravel().tolist()
+                mj_flex.contype = bit
+                mj_flex.conaffinity = bit
+                mj_flex.selfcollide = int(params["selfcollide"])
+                mj_flex.radius = params["radius"] if params["radius"] >= 0.0 else radius[local[verts]].max()
+                mj_flex.friction = params["friction"]
+                if params["friction"][0] < 0.0:
+                    mj_flex.friction[0] = model.particle_mu
+                for name in ("damping", "margin", "gap", "solref", "solimp"):
+                    setattr(mj_flex, name, params[name])
+                if dim == 2:
+                    mj_flex.thickness = params["thickness"]
+                    mj_flex.elastic2d = int(params["elastic2d"])
+                if dim == 1:
+                    for name, values in (
+                        ("edgestiffness", model.spring_stiffness),
+                        ("edgedamping", model.spring_damping),
+                    ):
+                        value = params[name]
+                        setattr(mj_flex, name, value if value >= 0.0 else flex._uniform(values.numpy()[keep], name))
+                if params["edgeequality"]:
+                    # MuJoCo rejects edge stiffness together with edge constraints.
+                    mj_flex.edgestiffness = 0.0
+                    equality = spec.add_equality(type=mujoco.mjtEq.mjEQ_FLEX)
+                    equality.name1 = mj_flex.name
+                if params["young"] >= 0.0:
+                    mj_flex.young, mj_flex.poisson = params["young"], params["poisson"]
+                elif materials is not None:
+                    # Newton materials store Lame parameters (mu, lambda) in their first two columns.
+                    mu, lam = flex._uniform(materials.numpy()[keep, :2], f"{dim}D element material")
+                    if mu + lam > 0.0:
+                        mj_flex.young = mu * (3.0 * lam + 2.0 * mu) / (mu + lam)
+                        mj_flex.poisson = lam / (2.0 * (mu + lam))
+        return bodies
+
     def _init_pairs(self, model: Model, spec: Any, shape_mapping: dict[int, str], template_world: int) -> None:
         """
         Initialize MuJoCo contact pairs from custom attributes.
@@ -4814,6 +4955,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raise NotImplementedError(
                 "SolverMuJoCo supports body variants only with Newton contacts; set use_mujoco_contacts=False."
             )
+        self._flex_particles = flex._flex_particles(model)
+        """Mask of the particles simulated as MuJoCo flex vertices."""
+        if not use_mujoco_contacts and self._flex_particles.any():
+            raise ValueError(
+                "SolverMuJoCo simulates particles of springs, triangles, and tetrahedra as MuJoCo flexes, "
+                "which requires use_mujoco_contacts=True; Newton contacts are not applied to flex particles."
+            )
         self._use_mujoco_contacts = use_mujoco_contacts
         """Whether MuJoCo handles collision detection.
 
@@ -5287,12 +5435,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         * :attr:`~newton.StateFlags.JOINT_Q` resets ``state.joint_q``.
         * :attr:`~newton.StateFlags.JOINT_QD` resets ``state.joint_qd``.
+        * :attr:`~newton.StateFlags.PARTICLE_Q` / :attr:`~newton.StateFlags.PARTICLE_QD`
+          reset ``state.particle_q`` / ``state.particle_qd`` of particles simulated as flexes.
 
         Because MuJoCo is a reduced-coordinate solver, ``state.body_q`` /
         ``state.body_qd`` are derived from the joint coordinates by forward
         kinematics on the next :meth:`step`; the corresponding
         :attr:`~newton.StateFlags.BODY_Q` / :attr:`~newton.StateFlags.BODY_QD`
-        (and particle) flags are not actionable here and are ignored.
+        flags are not actionable here and are ignored.
 
         ``qpos`` / ``qvel`` are normally synced from the reset ``state`` at the
         start of the next :meth:`step`. When the deprecated ``update_data_interval``
@@ -5326,7 +5476,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         flags_value = int(StateFlags.ALL if flags is None else flags)
         reset_q = bool(flags_value & StateFlags.JOINT_Q) and state.joint_q is not None
         reset_qd = bool(flags_value & StateFlags.JOINT_QD) and state.joint_qd is not None
-        if reset_q or reset_qd:
+        particles = self._particle_qpos_adr.shape[0]
+        reset_particle_q = bool(flags_value & StateFlags.PARTICLE_Q) and particles > 0
+        reset_particle_qd = bool(flags_value & StateFlags.PARTICLE_QD) and particles > 0
+        if reset_particle_q or reset_particle_qd:
+            wp.launch(
+                reset_particle_state_kernel,
+                dim=(world_count, particles),
+                inputs=[
+                    world_mask,
+                    self._particle_qpos_adr,
+                    self._particle_pinned_body,
+                    self.model.particle_q,
+                    self.model.particle_qd,
+                    state.particle_q if reset_particle_q else None,
+                    state.particle_qd if reset_particle_qd else None,
+                ],
+                device=self.model.device,
+            )
+        if reset_q or reset_qd or reset_particle_q or reset_particle_qd:
             coords_per_world = self.model.joint_coord_count // world_count
             dofs_per_world = self.model.joint_dof_count // world_count
             joint_dim = max(coords_per_world if reset_q else 0, dofs_per_world if reset_qd else 0)
@@ -5345,14 +5513,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     ],
                     device=self.model.device,
                 )
-                # Without sleeping, the default update interval propagates the
-                # reset on the next step. Otherwise push it now so it is not
-                # lost before the next sync. The sleeping path synchronizes
-                # below before rebuilding its cached data.
-                if self._update_data_interval != 1 and not self.enable_sleeping:
-                    data = self.mj_data if self.use_mujoco_cpu else self.mjw_data
-                    if data is not None and native_template_world_selected:
-                        self._update_mjc_data(data, self.model, state, world_mask=world_mask)
+            # Without sleeping, the default update interval propagates the
+            # reset on the next step. Otherwise push it now so it is not
+            # lost before the next sync. The sleeping path synchronizes
+            # below before rebuilding its cached data.
+            if self._update_data_interval != 1 and not self.enable_sleeping:
+                data = self.mj_data if self.use_mujoco_cpu else self.mjw_data
+                if data is not None and native_template_world_selected:
+                    self._update_mjc_data(data, self.model, state, world_mask=world_mask)
 
         # Clear the internal buffers that persist between steps.
         if self.use_mujoco_cpu:
@@ -6304,12 +6472,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             qpos = wp.empty((1, len(mj_data.qpos)), dtype=wp.float32, device=model.device)
             qvel = wp.empty((1, len(mj_data.qvel)), dtype=wp.float32, device=model.device)
             nworld = 1
-        if state is None:
-            joint_q = model.joint_q
-            joint_qd = model.joint_qd
-        else:
-            joint_q = state.joint_q
-            joint_qd = state.joint_qd
+        source = model if state is None else state
+        joint_q = source.joint_q
+        joint_qd = source.joint_qd
         joints_per_world = (
             model.joint_count // model.world_count if single_world_template else model.joint_count // nworld
         )
@@ -6359,6 +6524,28 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if not is_mjwarp and jnt_mocap is not None:
             mj_data.mocap_pos[:] = mjw_data.mocap_pos.numpy()[0]
             mj_data.mocap_quat[:] = mjw_data.mocap_quat.numpy()[0]
+        if write_state and self._particle_qpos_adr.shape[0]:
+            if is_mjwarp:
+                body_pos = self.mjw_model.body_pos
+            else:
+                body_pos = wp.array(self.mj_model.body_pos[None], dtype=wp.vec3, device=model.device)
+            wp.launch(
+                convert_warp_particles_to_mj_kernel,
+                dim=(nworld, self._particle_qpos_adr.shape[0]),
+                inputs=[
+                    source.particle_q,
+                    source.particle_qd,
+                    world_mask,
+                    self._particle_q0,
+                    self._particle_qpos_adr,
+                    self._particle_qvel_adr,
+                    self._particle_pinned_body,
+                ],
+                outputs=[self._sleep_qpos if sleep_redirect else qpos, qvel, body_pos],
+                device=model.device,
+            )
+            if not is_mjwarp:
+                self.mj_model.body_pos[:] = body_pos.numpy()[0]
         if not write_state:
             return
 
@@ -6544,6 +6731,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             outputs=[state.joint_q, state.joint_qd],
             device=model.device,
         )
+        if self._particle_qpos_adr.shape[0]:
+            wp.launch(
+                convert_mj_particles_to_warp_kernel,
+                dim=(nworld, self._particle_qpos_adr.shape[0]),
+                inputs=[
+                    qpos,
+                    qvel,
+                    self._particle_q0,
+                    self._particle_qpos_adr,
+                    self._particle_qvel_adr,
+                    state_prev.particle_q,
+                    state_prev.particle_qd,
+                ],
+                outputs=[state.particle_q, state.particle_qd],
+                device=model.device,
+            )
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
@@ -6929,10 +7132,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             mj_contact = data.contact
             geoms = mj_contact.geom[:count]
             # MuJoCo CPU simulates only the template world when worlds are separate.
-            shapes = self.mjc_geom_to_newton_shape.numpy()[0][geoms]
+            # A flex side of the contact has geom -1; it has no Newton shape and stays in world frame.
+            shapes = np.where(geoms >= 0, self.mjc_geom_to_newton_shape.numpy()[0][geoms], -1)
             frames = mj_contact.frame[:count].reshape(count, 3, 3)
             normals = frames[:, 0]
-            bodies = self.mj_model.geom_bodyid[geoms]
+            bodies = np.where(geoms >= 0, self.mj_model.geom_bodyid[geoms], 0)
             points_world = mj_contact.pos[:count, None, :] + (
                 mj_contact.dist[:count, None, None] * normals[:, None, :] * np.array([-0.5, 0.5])[None, :, None]
             )
@@ -7046,8 +7250,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             tuple[MjWarpModel, MjWarpData, MjModel, MjData]: Model and data objects for
                 ``mujoco_warp`` and MuJoCo.
         """
-        if not model.joint_count:
-            raise ValueError("The model must have at least one joint to be able to convert it to MuJoCo.")
+        particle_world = model.particle_world.numpy() if self._flex_particles.any() else np.empty(0, dtype=np.int32)
+        if not model.joint_count and not len(particle_world):
+            raise ValueError("The model must have at least one joint or particle to be able to convert it to MuJoCo.")
 
         # Set default for separate_worlds if None
         if separate_worlds is None:
@@ -7062,7 +7267,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         # Validate model compatibility with separate_worlds mode
         if separate_worlds:
-            self._validate_model_for_separate_worlds(model)
+            self._validate_model_for_separate_worlds(model, particle_world)
             if self.enable_sleeping and model.world_count > 1:
                 dofs_per_world = model.joint_dof_count // model.world_count
                 joint_qd = model.joint_qd.numpy().reshape(model.world_count, dofs_per_world)
@@ -7205,6 +7410,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Resolve ONCE frequency enum options from custom attributes if not provided
         if solver is None and mujoco_attrs and hasattr(mujoco_attrs, "solver"):
             solver = int(mujoco_attrs.solver.numpy()[0])
+        integrator_given = integrator is not None
         if integrator is None and mujoco_attrs and hasattr(mujoco_attrs, "integrator"):
             integrator = int(mujoco_attrs.integrator.numpy()[0])
         if cone is None and mujoco_attrs and hasattr(mujoco_attrs, "cone"):
@@ -7217,6 +7423,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             solver = mujoco.mjtSolver.mjSOL_NEWTON  # Newton default (not CG)
         if integrator is None:
             integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST  # Newton default (not Euler)
+        implicit = (mujoco.mjtIntegrator.mjINT_IMPLICIT, mujoco.mjtIntegrator.mjINT_IMPLICITFAST)
+        if len(particle_world) and not integrator_given and integrator in implicit:
+            # MuJoCo integrates flex elasticity only with the discrete integrator.
+            integrator = mujoco.mjtIntegrator.mjINT_DISCRETE
         if cone is None:
             cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
         if jacobian is None:
@@ -7281,7 +7491,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joint_limit_upper = model.joint_limit_upper.numpy()
         joint_type = model.joint_type.numpy()
         joint_axis = model.joint_axis.numpy()
-        joint_dof_dim = model.joint_dof_dim.numpy()
+        joint_dof_dim = model.joint_dof_dim.numpy().reshape(-1, 2)
         joint_qd_start = model.joint_qd_start.numpy()
         joint_target_q_start = model.joint_target_q_start.numpy()
         joint_q_start = model.joint_q_start.numpy()
@@ -7457,7 +7667,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if separate_worlds:
             # determine which shapes, bodies and joints belong to the first world
             # based on the body world indices: we pick objects from the first world and global shapes
-            non_negatives = body_world[body_world >= 0]
+            non_negatives = np.concatenate((body_world[body_world >= 0], particle_world[particle_world >= 0]))
             if len(non_negatives) > 0:
                 first_world = np.min(non_negatives)
             else:
@@ -7472,6 +7682,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     0
                 ].astype(np.int32)
             selected_mimic_constraints = np.where((mimic_world == first_world) | (mimic_world < 0))[0].astype(np.int32)
+            selected_particles = np.flatnonzero(particle_world == first_world)
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
             first_world = 0
@@ -7482,6 +7693,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             selected_joints = np.arange(model.joint_count, dtype=np.int32)
             selected_constraints = np.arange(model.mujoco.equality_constraint_count, dtype=np.int32)
             selected_mimic_constraints = np.arange(model.constraint_mimic_count, dtype=np.int32)
+            selected_particles = np.arange(len(particle_world))
 
         legacy_mimic_followers = {int(mimic_joint0[i]) for i in selected_mimic_constraints}
         selected_joint_mimics = np.asarray(
@@ -7701,7 +7913,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     for label in template_target_labels & site_shape_by_label.keys():
                         actuator_required_shapes.add(site_shape_by_label[label])
 
-        required_shapes = tendon_required_shapes | actuator_required_shapes | mujoco_pair_contact_shapes
+        # Shapes that collide only with particles are still needed as flex colliders.
+        flex_collider_shapes: set[int] = set()
+        if len(particle_world):
+            flex_collider_shapes = set(np.flatnonzero(shape_flags & ShapeFlags.COLLIDE_PARTICLES).tolist())
+        required_shapes = (
+            tendon_required_shapes | actuator_required_shapes | mujoco_pair_contact_shapes | flex_collider_shapes
+        )
 
         hfield_assets = {}
         shape_hfield_names = {}
@@ -9075,10 +9293,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 eq.data[3] = 0.0
                 eq.data[4] = 0.0
 
-        # Count non-colliding geoms that were kept because they are required by spatial tendons
+        # Count non-colliding geoms that were kept because spatial tendons or flexes require them
         tendon_extra_geoms = sum(
             1
-            for s in tendon_required_shapes
+            for s in tendon_required_shapes | flex_collider_shapes
             if s in selected_shapes_set
             and not (shape_flags[s] & ShapeFlags.SITE)
             and not (shape_flags[s] & ShapeFlags.COLLIDE_SHAPES)
@@ -9102,6 +9320,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         # add explicit contact pairs from custom attributes
         self._init_pairs(model, spec, shape_mapping, first_world)
+
+        particle_bodies = self._init_flexes(model, spec, shape_mapping, selected_particles)
 
         selected_tendons, mjc_tendon_names = self._init_tendons(
             model, spec, joint_mapping, shape_mapping, site_mapping, first_world
@@ -9219,7 +9439,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             eq.solref = (0.0, 0.0)
             kinematic_welds.append(eq)
 
-        self.mj_model = spec.compile()
+        with warnings.catch_warnings():
+            # MuJoCo 3.17 counts flex elasticity as a passive force, but the discrete
+            # integrator solves it in the constraint solver, so elastic flexes trip this check.
+            warnings.filterwarnings(
+                "ignore", message=r".*is not rigid and has no equality constraints or passive forces"
+            )
+            self.mj_model = spec.compile()
         if not self.use_mujoco_cpu and np.any(self.mj_model.actuator_armature != 0.0):
             warnings.warn(
                 "SolverMuJoCo's MuJoCo-Warp backend does not support actuator armature. "
@@ -9255,6 +9481,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
         self.mj_q_start = wp.array(mj_q_start_np, dtype=wp.int32, device=model.device)
         self.mj_qd_start = wp.array(mj_qd_start_np, dtype=wp.int32, device=model.device)
+        # Slide-joint coordinates of each particle body, or -1 for pinned particles and
+        # particles without a body, whose state the solver leaves untouched.
+        particle_body = np.array([-1 if body is None else body.id for body in particle_bodies], dtype=np.int32)
+        particle_jnt = np.where(particle_body >= 0, self.mj_model.body_jntadr[particle_body], -1)
+        particle_qpos_adr = np.where(particle_jnt >= 0, self.mj_model.jnt_qposadr[particle_jnt], -1)
+        particle_qvel_adr = np.where(particle_jnt >= 0, self.mj_model.jnt_dofadr[particle_jnt], -1)
+        self._particle_qpos_adr = wp.array(particle_qpos_adr, dtype=wp.int32, device=model.device)
+        self._particle_qvel_adr = wp.array(particle_qvel_adr, dtype=wp.int32, device=model.device)
+        self._particle_pinned_body = wp.array(
+            np.where(particle_jnt >= 0, -1, particle_body), dtype=wp.int32, device=model.device
+        )
+        self._particle_q0 = wp.array(model.particle_q.numpy()[selected_particles], dtype=wp.vec3, device=model.device)
         if self.enable_sleeping:
             qpos_treeid_np = np.full(self.mj_model.nq, -1, dtype=np.int32)
             for jointid in range(self.mj_model.njnt):
@@ -11595,7 +11833,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 device=self.model.device,
             )
 
-    def _validate_model_for_separate_worlds(self, model: Model) -> None:
+    def _validate_model_for_separate_worlds(self, model: Model, particle_world: np.ndarray | None = None) -> None:
         """Validate that the Newton model is compatible with MuJoCo's separate_worlds mode.
 
         MuJoCo's separate_worlds mode creates identical copies of a single MuJoCo model
@@ -11608,6 +11846,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         Args:
             model: The Newton model to validate.
+            particle_world: World index of each particle simulated as a flex, if any.
 
         Raises:
             ValueError: If the model is not compatible with separate_worlds mode.
@@ -11663,6 +11902,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             msg = f"Global world (-1) cannot contain mimic constraints. Found {len(global_mimic)} constraint(s) with world == -1"
             raise ValueError(msg)
 
+        if particle_world is None:
+            particle_world = np.empty(0, dtype=np.int32)
+        if np.any(particle_world == -1):
+            raise ValueError("Global world (-1) cannot contain particles.")
+
         # Skip homogeneity checks for single-world models
         if world_count <= 1:
             return
@@ -11695,6 +11939,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ("joints", joint_world),
             ("equality constraints", eq_constraint_world),
             ("mimic constraints", mimic_world),
+            ("particles", particle_world),
         ]:
             # Use bincount for O(n) counting instead of O(n * world_count) loop
             if len(world_arr) == 0:
@@ -11710,6 +11955,28 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     f"SolverMuJoCo requires homogeneous worlds. "
                     f"World 0 has {expected} {entity_name}, but world {w} has {counts[w]}."
                 )
+
+        # Flexes are built from the template world, so every world needs the same
+        # elements over its own particles and the same authored-flex assignment.
+        if len(particle_world):
+            particle_start = model.particle_world_start.numpy()
+            mujoco_attrs = getattr(model, "mujoco", None)
+            for name, (dim, attribute, _, field) in flex.ELEMENTS.items():
+                indices = getattr(model, field)
+                if indices is None or indices.size == 0:
+                    continue
+                elems = indices.numpy().reshape(-1, dim + 1)
+                worlds = particle_world[elems[:, 0]]
+                owner = getattr(mujoco_attrs, attribute, None)
+                owned = owner.numpy() >= 0 if owner is not None else np.zeros(len(elems), dtype=bool)
+                layout = np.column_stack((elems - particle_start[worlds][:, None], owned))
+                template = layout[worlds == 0]
+                for w in range(1, world_count):
+                    if not np.array_equal(layout[worlds == w], template):
+                        raise ValueError(
+                            f"SolverMuJoCo requires homogeneous worlds. The {name} or their flexes "
+                            f"in world {w} differ from world 0."
+                        )
 
         # --- Check type matching across worlds (vectorized) ---
         # Load type arrays lazily - only when needed for validation
