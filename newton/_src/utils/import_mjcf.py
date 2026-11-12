@@ -2712,7 +2712,9 @@ def parse_mjcf(
                 effort_limit = default_joint_effort_limit
                 actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
                 if "actuatorfrcrange" in joint_attrib or actuatorfrclimited == "true":
-                    actuatorfrcrange = [float(value) for value in joint_attrib.get("actuatorfrcrange", "0 0").split()]
+                    # MuJoCo reads an empty attribute as unspecified.
+                    actuatorfrcrange = [float(value) for value in joint_attrib.get("actuatorfrcrange", "").split()]
+                    actuatorfrcrange = actuatorfrcrange or [0.0, 0.0]
                     if len(actuatorfrcrange) != 2:
                         raise ValueError("Joint actuatorfrcrange must contain exactly two values.")
                     lower, upper = actuatorfrcrange

@@ -10140,7 +10140,7 @@ class TestMjcfJointLimited(unittest.TestCase):
         for joint_type in ("hinge", "slide"):
             for autolimits in ("true", "false"):
                 for limited in ("auto", "true", "false"):
-                    for bounds in (None, "0 0", "2 2", "2 -1", "-2 5"):
+                    for bounds in (None, "", "0 0", "2 2", "2 -1", "-2 5"):
                         with self.subTest(joint_type=joint_type, autolimits=autolimits, limited=limited, bounds=bounds):
                             range_attr = "" if bounds is None else f'actuatorfrcrange="{bounds}"'
                             xml = f'''<mujoco><compiler autolimits="{autolimits}"/>
