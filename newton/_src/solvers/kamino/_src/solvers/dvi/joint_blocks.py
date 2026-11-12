@@ -523,22 +523,6 @@ def _make_assemble_entries(shared: bool):
 
 @wp.kernel
 def _check_factor(
-    factors: wp.array[wp.float32], diagonal: wp.array[wp.int32], failure: wp.array[wp.int32], nb: int, ng: int
-):
-    w = wp.tid()
-    failed = int(0)
-    for e in range(nb * 36):
-        if not wp.isfinite(factors[w * nb * 36 + e]):
-            failed = 1
-    for row in range(ng):
-        for i in range(6):
-            if factors[w * nb * 36 + diagonal[row] * 36 + i * 6 + i] <= 0.0:
-                failed = 1
-    wp.atomic_max(failure, 0, failed)
-
-
-@wp.kernel
-def _check_factor_parallel(
     factors: wp.array[wp.float32],
     diagonal: wp.array[wp.int32],
     failure: wp.array[wp.int32],
@@ -1027,8 +1011,8 @@ class JointBlockSolver:
                 device=self._device,
             )
         wp.launch(
-            _check_factor_parallel if self._persistent else _check_factor,
-            dim=(self._worlds, 256) if self._persistent else self._worlds,
+            _check_factor,
+            dim=(self._worlds, 256),
             inputs=[self._factor, schedule["diagonal"], self.failure, self._blocks, self._groups],
             block_dim=256,
             device=self._device,

@@ -1981,13 +1981,19 @@ def _assemble_compact_unilateral_schur_blocked(
     offset = response_mio[wid]
     y = wp.array(ptr=get_float32_array_offset_ptr(response, offset), shape=(njc, nu), dtype=float32)
     blocks = (nu + int32(3)) / int32(4)
+    triangle = blocks * (blocks + int32(1)) / int32(2)
     # Each pass assigns one upper-triangle 4x4 block per thread; larger
     # operators stream the responses again for the remaining blocks.
-    for first in range(int32(0), blocks * blocks, wp.block_dim()):
+    for first in range(int32(0), triangle, wp.block_dim()):
         block = first + lane
-        block_row = block / blocks
-        block_col = block - block_row * blocks
-        active = block < blocks * blocks and block_row <= block_col
+        active = block < triangle
+        # Walk the upper-triangle rows to map the linear index to (row, col).
+        block_row = int32(0)
+        block_col = block
+        while block_row < blocks - int32(1) and block_col >= blocks - block_row:
+            block_col -= blocks - block_row
+            block_row += int32(1)
+        block_col += block_row
         row0 = int32(4) * block_row
         col0 = int32(4) * block_col
         accum = wp.mat44f()
