@@ -2711,6 +2711,11 @@ def parse_mjcf(
 
                 effort_limit = default_joint_effort_limit
                 actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
+                if actuatorfrclimited not in {"auto", "false", "true"}:
+                    raise ValueError(
+                        f"Joint {joint_name[-1]!r} actuatorfrclimited must be 'auto', 'false', or 'true'; "
+                        f"got {actuatorfrclimited!r}."
+                    )
                 if "actuatorfrcrange" in joint_attrib or actuatorfrclimited == "true":
                     # MuJoCo reads an empty attribute as unspecified.
                     actuatorfrcrange = [float(value) for value in joint_attrib.get("actuatorfrcrange", "").split()]
