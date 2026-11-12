@@ -2987,14 +2987,23 @@ def _scheduled_compact_id(
     return float32(uid)
 
 
+COMPACT_SCHUR_PGS_BLOCK_DIM = 128
+"""Threads per block for compact Schur sweeps: four one-warp worlds per block."""
+
+
 @cache
 def make_compact_schur_pgs_kernel(max_rows: int):
-    """Build a compact sweep with register storage matched to its row range."""
+    """Build a compact sweep with register storage matched to its row range.
+
+    Each world is swept by one warp; launch with ``dim = num_worlds * 32`` and
+    :data:`COMPACT_SCHUR_PGS_BLOCK_DIM` threads per block.
+    """
     if max_rows not in (32, 64, 128):
         raise ValueError("Compact Schur kernels support 32, 64, or 128 rows.")
     chunks = max_rows // 32
     min_rows = 0 if max_rows <= 64 else 64
     vector = wp.types.vector(length=chunks, dtype=float32)
+    index_vector = wp.types.vector(length=chunks, dtype=int32)
 
     @wp.func
     def get_component(values: vector, index: int32) -> float32:
@@ -3021,7 +3030,9 @@ def make_compact_schur_pgs_kernel(max_rows: int):
             values[i] = schur[base + target]
         return values
 
-    @wp.kernel(module="unique", enable_backward=False)
+    # Capping registers keeps 24 warps resident per SM with 128-thread blocks;
+    # the serial sweeps are latency bound, so occupancy outweighs minor spills.
+    @wp.kernel(module="unique", enable_backward=False, cuda_max_registers=80)
     def solve_compact_schur_pgs(
         limit_indices: wp.array[int32],
         contact_indices: wp.array[int32],
@@ -3097,9 +3108,9 @@ def make_compact_schur_pgs_kernel(max_rows: int):
 
         # Forward sweeps visit slots in storage order; odd tangent sweeps reverse
         # the colors and the slots within each group but keep groups in order.
-        # Tile element writes synchronize the block, so keep them uniform: lanes
-        # past the end of a group write to a scratch slot instead.
-        reverse = wp.tile_zeros(shape=(160,), dtype=int32, storage="shared")
+        # Each lane resolves the reversed slots it owns directly, so the sweep
+        # needs no shared memory or block barriers and blocks can hold several worlds.
+        reverse = index_vector()
         num_colors = inequality_num_colors[wid]
         position = int32(0)
         for color_index in range(num_colors):
@@ -3111,16 +3122,11 @@ def make_compact_schur_pgs_kernel(max_rows: int):
                 slot_start = inequality_group_starts[schedule_offset + group]
                 slot_end = inequality_group_starts[schedule_offset + group + int32(1)]
                 count = slot_end - slot_start
-                for base in range(int32(0), count, int32(32)):
-                    iteration = base + lane
-                    index = int32(128) + lane
-                    value = int32(0)
-                    if iteration < count:
-                        index = position + iteration
-                        value = inequality_ids_by_color[uio + slot_end - int32(1) - iteration]
-                    reverse[index] = value
+                for chunk in range(wp.static(chunks)):
+                    iteration = lane + int32(32) * chunk - position
+                    if iteration >= int32(0) and iteration < count:
+                        reverse[chunk] = inequality_ids_by_color[uio + slot_end - int32(1) - iteration]
                 position += count
-        _sync_warp_32()
 
         # Keep both schedules in registers, with skipped slots marked as -1, so
         # the serial chain shuffles them instead of issuing dependent loads.
@@ -3133,7 +3139,7 @@ def make_compact_schur_pgs_kernel(max_rows: int):
                     inequality_ids_by_color[uio + step], nbc, scalar_count, lio, cio, limit_indices, contact_indices
                 )
                 reverse_ids[chunk] = _scheduled_compact_id(
-                    reverse[step], nbc, scalar_count, lio, cio, limit_indices, contact_indices
+                    reverse[chunk], nbc, scalar_count, lio, cio, limit_indices, contact_indices
                 )
 
         # Each lane owns a fixed number of rows throughout the solve. Only Schur rows

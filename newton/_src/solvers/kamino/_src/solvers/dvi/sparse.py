@@ -42,6 +42,7 @@ from .response import (
     make_response_kernel,
 )
 from .sparse_kernels import (
+    COMPACT_SCHUR_PGS_BLOCK_DIM,
     SMALL_BILATERAL_INVERSE_SIZE,
     _apply_small_bilateral_inverse,
     _assemble_compact_unilateral_schur_blocked,
@@ -921,7 +922,7 @@ def _launch_sparse_inequality_pgs(
                 dim=path.size.num_worlds * 32,
                 inputs=fallback_inputs,
                 device=path.device,
-                block_dim=32,
+                block_dim=COMPACT_SCHUR_PGS_BLOCK_DIM,
             )
         if path.effort_limit_condensation is not None:
             path.effort_limit_condensation.publish(compact_inputs)
