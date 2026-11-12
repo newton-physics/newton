@@ -277,11 +277,15 @@ def _parse_colliders(
                 shape_custom_attrs = usd.get_custom_attribute_values(
                     prim, builder_custom_attr_shape, context={"builder": builder}
                 )
-                if collision_mask_domain != MUJOCO_COLLISION_MASK_DOMAIN_UNSET and all(
-                    shape_custom_attrs.get(key, MUJOCO_COLLISION_MASK_UNSET) != MUJOCO_COLLISION_MASK_UNSET
-                    for key in ("mujoco:contype", "mujoco:conaffinity")
-                ):
-                    shape_custom_attrs["mujoco:collision_mask_domain"] = collision_mask_domain
+                if collision_mask_domain != MUJOCO_COLLISION_MASK_DOMAIN_UNSET:
+                    # The import owns mask domains; only colliders authoring both masks join one.
+                    if all(
+                        shape_custom_attrs.get(key, MUJOCO_COLLISION_MASK_UNSET) != MUJOCO_COLLISION_MASK_UNSET
+                        for key in ("mujoco:contype", "mujoco:conaffinity")
+                    ):
+                        shape_custom_attrs["mujoco:collision_mask_domain"] = collision_mask_domain
+                    else:
+                        shape_custom_attrs.pop("mujoco:collision_mask_domain", None)
                 margin_val, gap_val = collider_properties.margin, collider_properties.gap
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes

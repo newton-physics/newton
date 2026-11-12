@@ -2412,17 +2412,20 @@ def parse_usd(
         body_owner=_deformable_prims.body_owner,
     )
 
-    # Lower masks after USD group and explicit filters so neither can be widened.
-    # Solver mask regeneration then retains the restrictions across imports.
+    # Restrict the imported colliders to their masks after USD groups and explicit
+    # filters are applied, without widening either. Solver mask regeneration then
+    # retains the restrictions across imports.
     if collision_mask_domain_attr is not None:
-        masked_shapes = np.asarray(
-            [
-                shape
-                for shape, domain in collision_mask_domain_attr.values.items()
-                if domain == collision_mask_domain and builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES
-            ],
-            dtype=np.int32,
-        )
+        masked_shapes = []
+        for shape, domain in list(collision_mask_domain_attr.values.items()):
+            if domain != collision_mask_domain or not builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES:
+                continue
+            if builder.shape_collision_group[shape] == 0:
+                # Collisions are disabled for this shape; its masks must not enable them in MuJoCo.
+                del collision_mask_domain_attr.values[shape]
+                continue
+            masked_shapes.append(shape)
+        masked_shapes = np.asarray(masked_shapes, dtype=np.int32)
         if masked_shapes.size:
             to_local = {int(shape): local for local, shape in enumerate(masked_shapes)}
             prefiltered_pairs = [
@@ -2432,36 +2435,74 @@ def parse_usd(
             ]
             contype_attr = builder.custom_attributes["mujoco:contype"]
             conaffinity_attr = builder.custom_attributes["mujoco:conaffinity"]
-            compiled = compile_collision_masks(
-                [int(contype_attr.values[int(shape)]) for shape in masked_shapes],
-                [int(conaffinity_attr.values[int(shape)]) for shape in masked_shapes],
-                prefiltered_pairs=prefiltered_pairs,
-                force_nonzero=True,
-                max_positive_groups=1,
+            collision_type = np.asarray([int(contype_attr.values[int(shape)]) for shape in masked_shapes], np.int64)
+            collision_affinity = np.asarray(
+                [int(conaffinity_attr.values[int(shape)]) for shape in masked_shapes], np.int64
             )
+            groups = np.asarray([builder.shape_collision_group[int(shape)] for shape in masked_shapes])
             default_positive_group = int(builder.default_shape_cfg.collision_group)
-            if default_positive_group <= 0:
-                default_positive_group = 1
-            used_negative_ids = {-int(group) for group in builder.shape_collision_group if int(group) < 0}
-            negative_group_map = {}
-            next_negative_id = 1
-            for raw_group in np.unique(compiled.groups):
-                group = int(raw_group)
-                if group >= 0:
-                    continue
-                while next_negative_id in used_negative_ids:
+            masked_set = set(to_local)
+            # Compiled negative groups collide with every other positive group, so the
+            # compact lowering is only safe when no other shape uses a different one.
+            other_positive_groups = {
+                int(group)
+                for shape, group in enumerate(builder.shape_collision_group)
+                if group > 0 and shape not in masked_set
+            }
+            if (
+                default_positive_group > 0
+                and np.all(groups == default_positive_group)
+                and other_positive_groups <= {default_positive_group}
+            ):
+                # Same lowering as add_mjcf(): one positive group plus unique negative groups
+                # and sparse exclusions reproduce the mask relation exactly.
+                compiled = compile_collision_masks(
+                    collision_type,
+                    collision_affinity,
+                    prefiltered_pairs=prefiltered_pairs,
+                    force_nonzero=True,
+                    max_positive_groups=1,
+                )
+                used_negative_ids = {-int(group) for group in builder.shape_collision_group if int(group) < 0}
+                negative_group_map = {}
+                next_negative_id = 1
+                for raw_group in np.unique(compiled.groups):
+                    group = int(raw_group)
+                    if group >= 0:
+                        continue
+                    while next_negative_id in used_negative_ids:
+                        next_negative_id += 1
+                    negative_group_map[group] = -next_negative_id
+                    used_negative_ids.add(next_negative_id)
                     next_negative_id += 1
-                negative_group_map[group] = -next_negative_id
-                used_negative_ids.add(next_negative_id)
-                next_negative_id += 1
-            for local_shape, shape in enumerate(masked_shapes):
-                group = int(compiled.groups[local_shape])
-                if group > 0:
-                    group = default_positive_group
-                elif group < 0:
-                    group = negative_group_map[group]
-                builder.shape_collision_group[int(shape)] = group
-            for shape_a, shape_b in compiled.excluded_pairs:
+                for local_shape, shape in enumerate(masked_shapes):
+                    group = int(compiled.groups[local_shape])
+                    if group > 0:
+                        group = default_positive_group
+                    elif group < 0:
+                        group = negative_group_map[group]
+                    builder.shape_collision_group[int(shape)] = group
+                excluded_pairs = compiled.excluded_pairs
+            else:
+                # Non-default groups restrict collisions beyond this import. Keep them and
+                # exclude every pair the masks reject that the groups still allow.
+                local_a, local_b = np.triu_indices(len(masked_shapes), k=1)
+                masks_allow = ((collision_type[local_a] & collision_affinity[local_b]) != 0) | (
+                    (collision_type[local_b] & collision_affinity[local_a]) != 0
+                )
+                group_a, group_b = groups[local_a], groups[local_b]
+                groups_allow = ((group_a > 0) & ((group_a == group_b) | (group_b < 0))) | (
+                    (group_a < 0) & (group_a != group_b)
+                )
+                prefiltered = set(map(tuple, map(sorted, prefiltered_pairs)))
+                excluded_pairs = [
+                    (int(a), int(b))
+                    for a, b in zip(
+                        local_a[groups_allow & ~masks_allow], local_b[groups_allow & ~masks_allow], strict=True
+                    )
+                    if (int(a), int(b)) not in prefiltered
+                ]
+            for shape_a, shape_b in excluded_pairs:
                 builder.add_shape_collision_filter_pair(
                     int(masked_shapes[shape_a]),
                     int(masked_shapes[shape_b]),
