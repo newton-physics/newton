@@ -14718,12 +14718,27 @@ class TestActuatorTypes(unittest.TestCase):
                 <joint name="j4" type="hinge" axis="0 1 0"/>
                 <geom type="sphere" size="0.1" mass="1"/>
             </body>
+            <body name="e" pos="4 0 1">
+                <joint name="j5" type="slide" axis="0 0 1"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+            </body>
+            <body name="f" pos="5 0 1">
+                <joint name="j6" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+            </body>
+            <body name="g" pos="6 0 1">
+                <joint name="j7" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+            </body>
         </worldbody>
         <actuator>
-            <position joint="j1" kp="100" kv="2" gear="3"/>
+            <position joint="j1" kp="100" kv="2" gear="3" damping="0.5" armature="0.2"/>
             <velocity joint="j2" kv="7" gear="2"/>
             <position joint="j3" kp="50" kv="1"/>
             <position joint="j4" kp="100" kv="2" gear="-2" forcerange="-10 40"/>
+            <position joint="j5" kp="80" kv="1" gear="4" ctrlrange="-0.8 0.8"/>
+            <position joint="j6" kp="100" dampratio="1" gear="3"/>
+            <position joint="j7" kp="100" kv="2" gear="0"/>
         </actuator>
     </mujoco>
     """
@@ -14766,47 +14781,65 @@ class TestActuatorTypes(unittest.TestCase):
                 assert_np_equal(mj_model.actuator_biastype, native.actuator_biastype)
 
     def test_geared_position_velocity_actuators_match_native(self):
-        """Keep geared position/velocity actuators direct so MuJoCo applies the gear, as in native MuJoCo."""
+        """Fold a scalar gear into the joint-target drive; keep a zero gear direct (it cannot be folded)."""
         builder = newton.ModelBuilder()
         builder.add_mjcf(self.GEARED_MJCF)
         model = builder.finalize()
-        np.testing.assert_array_equal(
-            model.mujoco.ctrl_source.numpy(),
-            [
-                SolverMuJoCo.CtrlSource.CTRL_DIRECT,
-                SolverMuJoCo.CtrlSource.CTRL_DIRECT,
-                SolverMuJoCo.CtrlSource.JOINT_TARGET,
-                SolverMuJoCo.CtrlSource.CTRL_DIRECT,
-            ],
-        )
+        joint_target, direct = SolverMuJoCo.CtrlSource.JOINT_TARGET, SolverMuJoCo.CtrlSource.CTRL_DIRECT
+        np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [joint_target] * 6 + [direct])
 
-        # Non-zero positions and velocities so the stiffness (gear**2 * kp) and damping (gear**2 * kv) terms
-        # contribute, not just gear * gain * ctrl.
-        q0 = np.array([0.3, 0.2, -0.4, 0.25])
-        qd0 = np.array([0.2, 0.4, 0.1, 0.1])
+        # Folded actuators have unit gear, gear**2 gains, forcerange * gear and ctrlrange / gear (bounds swapped
+        # for a negative gear); the zero-gear actuator keeps its authored gear and gains.
+        np.testing.assert_allclose(model.mujoco.actuator_gear.numpy()[:, 0], [1, 1, 1, 1, 1, 1, 0])
+        np.testing.assert_allclose(model.joint_target_ke.numpy()[[0, 2, 3, 4]], [900, 50, 400, 1280])
+        np.testing.assert_allclose(model.joint_target_kd.numpy()[[0, 1, 2, 3, 4]], [18, 28, 1, 8, 16])
+        np.testing.assert_allclose(model.mujoco.actuator_forcerange.numpy()[3], [-80, 20])
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy()[4], [-0.2, 0.2])
+        np.testing.assert_allclose(model.mujoco.actuator_damping.numpy()[0], 4.5)
+        np.testing.assert_allclose(model.mujoco.actuator_armature.numpy()[0], 1.8)
+
+        # Non-zero positions and velocities so the stiffness and damping terms contribute.
+        q0 = np.array([0.3, 0.2, -0.4, 0.25, 0.1, -0.2, 0.15])
+        qd0 = np.array([0.2, 0.4, 0.1, 0.1, 0.3, 0.2, 0.1])
+        # j5 asks for ctrl = 2 and is clamped by its ctrlrange to 0.8.
+        ctrl = np.array([0.5, 0.5, 0.5, 0.5, 2.0, 0.5, 0.5])
+        gear = np.array([3.0, 2.0, 1.0, -2.0, 4.0, 3.0, 0.0])
 
         solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
         native = solver._mujoco.MjModel.from_xml_string(self.GEARED_MJCF)
         native_data = solver._mujoco.MjData(native)
         native_data.qpos[:] = q0
         native_data.qvel[:] = qd0
-        native_data.ctrl[:] = 0.5
+        native_data.ctrl[:] = ctrl
         solver._mujoco.mj_forward(native, native_data)
-        self.assertTrue(np.all(np.abs(native_data.qfrc_actuator) > 1.0))
-        # j4 saturates its authored asymmetric force range (upper bound 40) and the negative gear flips the
-        # joint torque; j1..j3 stay unclipped so their feedback terms are compared as they are.
+        self.assertTrue(np.all(np.abs(native_data.qfrc_actuator[:6]) > 1.0))
+        np.testing.assert_array_equal(native.actuator_forcelimited, [0, 0, 0, 1, 0, 0, 0])
+        np.testing.assert_array_equal(native.actuator_ctrllimited, [0, 0, 0, 0, 1, 0, 0])
+        # j4 saturates its asymmetric force range (upper bound 40) and the negative gear flips the joint torque.
         self.assertAlmostEqual(native_data.actuator_force[3], 40.0)
         self.assertAlmostEqual(native_data.qfrc_actuator[3], -80.0)
-        np.testing.assert_array_equal(native.actuator_forcelimited, [0, 0, 0, 1])
+        # j7 has zero gear, so it transmits nothing.
+        self.assertEqual(native_data.qfrc_actuator[6], 0.0)
 
+        # Command the folded drives in joint units: target = ctrl / gear (j7 is driven through mujoco.ctrl).
+        target = np.divide(ctrl, gear, out=np.zeros_like(ctrl), where=gear != 0.0)
         state = model.state()
         state.joint_q.assign(q0)
         state.joint_qd.assign(qd0)
         control = model.control()
+        control.joint_target_q.assign(target)
+        control.joint_target_qd.assign(target)
         control.mujoco.ctrl.fill_(0.5)
-        control.joint_target_q.fill_(0.5)
         solver.step(state, model.state(), control, None, 0.002)
-        np.testing.assert_allclose(solver.mj_data.qfrc_actuator, native_data.qfrc_actuator, rtol=1e-5)
+        np.testing.assert_allclose(solver.mj_data.qfrc_actuator, native_data.qfrc_actuator, rtol=1e-4, atol=1e-5)
+        np.testing.assert_allclose(solver.mj_data.qfrc_passive, native_data.qfrc_passive, rtol=1e-4, atol=1e-5)
+        # The actuator armature (reflected as gear**2 * armature) matches native as well.
+        mujoco = solver._mujoco
+        native_mass = np.zeros((native.nv, native.nv))
+        mujoco.mj_fullM(native, native_data, native_mass)
+        mass = np.zeros((native.nv, native.nv))
+        mujoco.mj_fullM(solver.mj_model, solver.mj_data, mass)
+        np.testing.assert_allclose(np.diag(mass), np.diag(native_mass), rtol=1e-4)
 
     def test_unsupported_type_warns(self):
         """Warn on unsupported types, naming the attribute, value, and MJCF actuator."""
