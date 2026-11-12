@@ -43,6 +43,7 @@ from .response import (
 )
 from .sparse_kernels import (
     COMPACT_SCHUR_PGS_BLOCK_DIM,
+    COMPACT_SCHUR_PGS_TIERS,
     SMALL_BILATERAL_INVERSE_SIZE,
     _apply_small_bilateral_inverse,
     _assemble_compact_unilateral_schur_blocked,
@@ -916,7 +917,7 @@ def _launch_sparse_inequality_pgs(
         if path.effort_limit_condensation is not None:
             fallback_inputs = list(compact_inputs)
             fallback_inputs[4] = path.effort_limit_condensation.prepare_candidates(compact_inputs)
-        for max_rows in (64, 128):
+        for max_rows in COMPACT_SCHUR_PGS_TIERS:
             wp.launch(
                 kernel=make_compact_schur_pgs_kernel(max_rows),
                 dim=path.size.num_worlds * 32,

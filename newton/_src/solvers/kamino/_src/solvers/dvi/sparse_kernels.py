@@ -2990,6 +2990,9 @@ def _scheduled_compact_id(
 COMPACT_SCHUR_PGS_BLOCK_DIM = 128
 """Threads per block for compact Schur sweeps: four one-warp worlds per block."""
 
+COMPACT_SCHUR_PGS_TIERS = (64, 96, 128)
+"""Row capacities of the compact sweeps; each world uses the smallest that fits."""
+
 
 @cache
 def make_compact_schur_pgs_kernel(max_rows: int):
@@ -2998,10 +3001,11 @@ def make_compact_schur_pgs_kernel(max_rows: int):
     Each world is swept by one warp; launch with ``dim = num_worlds * 32`` and
     :data:`COMPACT_SCHUR_PGS_BLOCK_DIM` threads per block.
     """
-    if max_rows not in (32, 64, 128):
-        raise ValueError("Compact Schur kernels support 32, 64, or 128 rows.")
+    if max_rows not in (32, *COMPACT_SCHUR_PGS_TIERS):
+        raise ValueError(f"Compact Schur kernels support 32 or {COMPACT_SCHUR_PGS_TIERS} rows.")
     chunks = max_rows // 32
-    min_rows = 0 if max_rows <= 64 else 64
+    # Each tier sweeps the worlds above the next smaller tier.
+    min_rows = max((tier for tier in COMPACT_SCHUR_PGS_TIERS if tier < max_rows), default=0)
     vector = wp.types.vector(length=chunks, dtype=float32)
     index_vector = wp.types.vector(length=chunks, dtype=int32)
 

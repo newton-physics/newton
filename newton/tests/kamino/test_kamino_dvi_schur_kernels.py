@@ -10,6 +10,7 @@ import warp as wp
 
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import _compute_dvi_status_residuals
 from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
+    COMPACT_SCHUR_PGS_TIERS,
     _apply_small_bilateral_inverse,
     _assemble_compact_unilateral_schur_blocked,
     _invert_small_bilateral_block,
@@ -159,7 +160,7 @@ class TestKaminoCompactSchur(unittest.TestCase):
                 results = []
                 for kernels in (
                     (_solve_dvi_sparse_inequalities_pgs_cooperative,),
-                    (make_compact_schur_pgs_kernel(64), make_compact_schur_pgs_kernel(128)),
+                    tuple(make_compact_schur_pgs_kernel(rows) for rows in COMPACT_SCHUR_PGS_TIERS),
                 ):
                     data["compact_q"] = self.floats(np.concatenate([np.zeros(n), q0]))
                     data["solution_lambdas"] = self.floats(initial)
