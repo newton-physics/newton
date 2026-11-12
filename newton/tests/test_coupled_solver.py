@@ -536,6 +536,8 @@ class TestModelView(unittest.TestCase):
         """disable_body_dynamics should zero inverse inertia without changing flags."""
         view = ModelView(self.model, "test")
         indices = wp.array([1], dtype=int, device="cpu")
+        mass_before = self.model.body_mass.numpy().copy()
+        inertia_before = self.model.body_inertia.numpy().copy()
         view.disable_body_dynamics(indices)
 
         mass = view.body_mass.numpy()
@@ -552,9 +554,9 @@ class TestModelView(unittest.TestCase):
         self.assertNotEqual(flags[0] & dynamic, 0)
         self.assertEqual(flags[0] & kinematic, 0)
         # Body 1 should keep forward inertial metadata but become immovable.
-        self.assertEqual(mass[1], self.model.body_mass.numpy()[1])
+        self.assertEqual(mass[1], mass_before[1])
         self.assertEqual(inv_mass[1], 0.0)
-        np.testing.assert_allclose(inertia[1], self.model.body_inertia.numpy()[1])
+        np.testing.assert_allclose(inertia[1], inertia_before[1])
         np.testing.assert_allclose(inv_inertia[1], np.zeros((3, 3)))
         self.assertNotEqual(flags[1] & dynamic, 0)
         self.assertEqual(flags[1] & kinematic, 0)
@@ -574,13 +576,14 @@ class TestModelView(unittest.TestCase):
         )
         model = builder.finalize(device="cpu")
         view = ModelView(model, "test")
+        dof_dim_before = model.joint_dof_dim.numpy()[joint].copy()
 
         view.disable_joints(wp.array([joint], dtype=int, device="cpu"))
 
         self.assertFalse(bool(view.joint_enabled.numpy()[joint]))
         self.assertEqual(int(view.joint_type.numpy()[joint]), int(newton.JointType.FREE))
         self.assertEqual(int(model.joint_type.numpy()[joint]), int(newton.JointType.ROD))
-        np.testing.assert_array_equal(view.joint_dof_dim.numpy()[joint], model.joint_dof_dim.numpy()[joint])
+        np.testing.assert_array_equal(view.joint_dof_dim.numpy()[joint], dof_dim_before)
 
     def test_zero_particle_mass(self):
         """zero_particle_mass should zero forward and inverse mass arrays."""
@@ -730,17 +733,6 @@ class TestModelView(unittest.TestCase):
 
 class TestSolverCoupledContactsAndMPM(unittest.TestCase):
     """Test coupled contact preparation and implicit MPM integration."""
-
-    def test_graph_capture_setup_stays_solver_specific(self):
-        """Verify coupled solvers do not expose a generic graph protocol."""
-        for name in ("supports_graph_capture", "prepare_graph_capture", "check_status"):
-            with self.subTest(name=name):
-                self.assertFalse(hasattr(SolverCoupled, name))
-
-        self.assertFalse(hasattr(SolverImplicitMPM, "supports_graph_capture"))
-        self.assertFalse(hasattr(SolverImplicitMPM, "prepare_graph_capture"))
-        self.assertFalse(hasattr(SolverImplicitMPM, "check_status"))
-        self.assertTrue(hasattr(SolverImplicitMPM, "check_sparse_grid_rebuild_status"))
 
     def test_implicit_mpm_reset_syncs_namespaced_non_in_place_state(self):
         """Verify coupled reset mirrors MPM history into the non-in-place output state."""

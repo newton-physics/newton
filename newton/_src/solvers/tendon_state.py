@@ -10,6 +10,8 @@ mapping before applying their own numerical solve.
 
 from __future__ import annotations
 
+import math
+import operator
 import warnings
 
 import numpy as np
@@ -269,6 +271,7 @@ class TendonStateMixin:
         initial.model = model
         initial.tendon_max_sweeps = self.tendon_max_sweeps
         initial.tendon_settle_tol = self.tendon_settle_tol
+        initial.tendon_settle_atol = self.tendon_settle_atol
         initial.tendon_activation_tol = self.tendon_activation_tol
         initial._init_tendon_state(model)
         for name, array in self._tendon_initial_state.items():
@@ -294,12 +297,20 @@ class TendonStateMixin:
             self.tendon_max_sweeps = 256
         if not hasattr(self, "tendon_settle_tol"):
             self.tendon_settle_tol = 1.0e-3
+        if not hasattr(self, "tendon_settle_atol"):
+            self.tendon_settle_atol = 1.0e-6
         if not hasattr(self, "tendon_activation_tol"):
             self.tendon_activation_tol = 2.0e-3
-        if not 1 <= self.tendon_max_sweeps <= 256:
-            raise ValueError(f"tendon_max_sweeps must be between 1 and 256, got {self.tendon_max_sweeps}")
-        if self.tendon_settle_tol < 0.0:
-            raise ValueError(f"tendon_settle_tol must be non-negative, got {self.tendon_settle_tol}")
+        try:
+            self.tendon_max_sweeps = operator.index(self.tendon_max_sweeps)
+        except TypeError as error:
+            raise ValueError("tendon_max_sweeps must be a positive 32-bit integer") from error
+        if not 1 <= self.tendon_max_sweeps <= 2147483647:
+            raise ValueError("tendon_max_sweeps must be a positive 32-bit integer")
+        for name in ("tendon_settle_tol", "tendon_settle_atol"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and nonnegative")
         if not 0.0 <= self.tendon_activation_tol < 1.0:
             raise ValueError(
                 f"tendon_activation_tol must be between 0 (inclusive) and 1 (exclusive), "
@@ -338,6 +349,7 @@ class TendonStateMixin:
             self.tendon_guide_cone_seg_l = None
             self.tendon_guide_cone_seg_r = None
             self.tendon_guide_cap_ratio = None
+            self._tendon_guide_material_transfer = None
             self.tendon_total_cable = None
             return
 
@@ -373,6 +385,8 @@ class TendonStateMixin:
             self.tendon_guide_cone_seg_l = wp.full(model.tendon_guide_count, -1, dtype=wp.int32)
             self.tendon_guide_cone_seg_r = wp.full(model.tendon_guide_count, -1, dtype=wp.int32)
             self.tendon_guide_cap_ratio = wp.ones(model.tendon_guide_count, dtype=float)
+            # Per-call scratch, reset by solve_tendon_material; not trajectory history.
+            self._tendon_guide_material_transfer = wp.zeros(model.tendon_guide_count, dtype=float)
             self.tendon_total_cable = wp.zeros(model.tendon_count, dtype=float)
 
             tendon_start_np = model.tendon_start.numpy()
@@ -772,6 +786,9 @@ class TendonStateMixin:
                 0,
                 self.tendon_max_sweeps,
                 self.tendon_settle_tol,
+                self.tendon_settle_atol,
+                0,
+                self._tendon_guide_material_transfer,
             ],
             device=model.device,
         )
