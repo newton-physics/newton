@@ -324,6 +324,12 @@ class TestMuJoCoActuators(unittest.TestCase):
             if mjc_to_newton[mj_idx] >= 0:  # position sub-actuator carries the authored forceRange
                 np.testing.assert_allclose(solver.mj_model.actuator_forcerange[mj_idx], [-5.0, 5.0], atol=1e-5)
 
+        expected_ranges = solver.mjw_model.actuator_forcerange.numpy()
+        expected_ranges[0, mjc_to_newton >= 0] = [-2.0, 3.0]
+        model.mujoco.actuator_forcerange.assign([[-2.0, 3.0], [-9.0, 9.0]])
+        solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.actuator_forcerange.numpy(), expected_ranges)
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_mjc_direct_actuator_stays_ctrl_direct(self):
         """USD MjcActuator rows that are not position/velocity shortcuts stay direct."""
@@ -1019,29 +1025,36 @@ class TestMuJoCoActuators(unittest.TestCase):
     </actuator>
 </mujoco>
 """
-        builder = ModelBuilder()
-        builder.add_mjcf(mjcf, ctrl_direct=False)
-        model = builder.finalize()
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = ModelBuilder()
+                builder.add_mjcf(mjcf, ctrl_direct=False)
+                model = builder.finalize()
 
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        mj_model = solver.mj_model
-        self.assertEqual(mj_model.nu, 6)
-        mjc_to_newton = solver.mjc_actuator_to_newton_idx.numpy()
-        for mj_idx in range(mj_model.nu):
-            if mjc_to_newton[mj_idx] >= 0:
-                np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-7.0, 7.0], atol=1e-5)
-                np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-2.0, 2.0], atol=1e-5)
-            else:
-                np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-3.0, 3.0], atol=1e-5)
-                np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-5.0, 5.0], atol=1e-5)
-            self.assertTrue(bool(mj_model.actuator_forcelimited[mj_idx]))
-            self.assertTrue(bool(mj_model.actuator_ctrllimited[mj_idx]))
+                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
+                mj_model = solver.mj_model
+                self.assertEqual(mj_model.nu, 6)
+                mjc_to_newton = solver.mjc_actuator_to_newton_idx.numpy()
+                for mj_idx in range(mj_model.nu):
+                    if mjc_to_newton[mj_idx] >= 0:
+                        np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-7.0, 7.0], atol=1e-5)
+                        np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-2.0, 2.0], atol=1e-5)
+                    else:
+                        np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-3.0, 3.0], atol=1e-5)
+                        np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-5.0, 5.0], atol=1e-5)
+                    self.assertTrue(bool(mj_model.actuator_forcelimited[mj_idx]))
+                    self.assertTrue(bool(mj_model.actuator_ctrllimited[mj_idx]))
 
-        model.mujoco.actuator_ctrlrange.assign([[-4.0, 4.0], [-6.0, 6.0]])
-        solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
-        for mj_idx in range(mj_model.nu):
-            expected = [-4.0, 4.0] if mjc_to_newton[mj_idx] >= 0 else [-6.0, 6.0]
-            np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy()[0, mj_idx], expected)
+                model.mujoco.actuator_ctrlrange.assign([[-4.0, 4.0], [-6.0, 6.0]])
+                model.mujoco.actuator_forcerange.assign([[-1.0, 2.0], [-3.0, 4.0]])
+                solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+                for mj_idx in range(mj_model.nu):
+                    expected = [-4.0, 4.0] if mjc_to_newton[mj_idx] >= 0 else [-6.0, 6.0]
+                    np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy()[0, mj_idx], expected)
+                    expected_force = [-1.0, 2.0] if mjc_to_newton[mj_idx] >= 0 else [-3.0, 4.0]
+                    np.testing.assert_allclose(solver.mjw_model.actuator_forcerange.numpy()[0, mj_idx], expected_force)
+                    if use_mujoco_cpu:
+                        np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], expected_force)
 
     def test_parsing_ctrl_direct_true(self):
         """Test parsing with ctrl_direct=True."""
