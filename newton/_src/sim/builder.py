@@ -1659,6 +1659,9 @@ class ModelBuilder:
         """Storage for specific values (overrides).
 
         For enum frequencies (BODY, SHAPE, etc.): dict[int, Any] mapping entity indices to values.
+        For ``WORLD``, keys are world indices, and key ``-1`` is global world ``-1``, whose value is
+        also the default of local worlds without one unless the attribute stores
+        references through :attr:`references` or :attr:`reference_value_transformer`.
         For string frequencies ("mujoco:pair", etc.): list[Any] for sequential custom data.
 
         If None, the attribute is not initialized with any values. Values can be assigned in subsequent
@@ -1844,6 +1847,15 @@ class ModelBuilder:
             else:
                 # Enum frequency: vals is a dict, use get() to fill gaps with defaults
                 arr = [self.values.get(i, self.default) for i in range(count)]
+                if self.frequency == Model.AttributeFrequency.WORLD and count > 0 and -1 in self.values:
+                    # Key -1 is global world -1, stored after the local worlds. Like builder
+                    # gravity, it is also the default of local worlds without their own value.
+                    global_value = self.values[-1]
+                    if self.references is None and self.reference_value_transformer is None:
+                        arr = [self.values.get(i, global_value) for i in range(count - 1)]
+                        arr.append(global_value)
+                    else:
+                        arr[-1] = global_value
 
             # String dtype: return as Python list instead of warp array
             if self.dtype is str:
@@ -4259,6 +4271,10 @@ class ModelBuilder:
 
         counts = self._builder_merge_counts(builder)
         self._validate_builder_merge(builder, set(counts))
+        # Values can change without a schema change, so check them before copying entities.
+        for full_key, attr in builder.custom_attributes.items():
+            if attr.frequency == Model.AttributeFrequency.WORLD:
+                self._check_merged_world_values(full_key, attr.values)
         attribute_specs = self._builder_merge_attribute_specs()
         bases = self._builder_merge_counts(self)
 
@@ -4603,6 +4619,26 @@ class ModelBuilder:
             self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
         self.actuator_count += copy_count * counts["actuator"]
 
+    def _model_value_key(self, attribute: CustomAttribute) -> int:
+        """Return the value key of a ``ONCE`` or ``WORLD`` attribute in the current world context.
+
+        ``WORLD`` keys are world indices, so outside a world context values belong to
+        global world ``-1``.
+        """
+        return self.current_world if attribute.frequency == Model.AttributeFrequency.WORLD else 0
+
+    def _check_merged_world_values(self, key: str, values: dict[int, Any] | None) -> None:
+        """Reject different source ``WORLD`` values, which a merge into one destination world cannot keep."""
+        if not values:
+            return
+        worlds = sorted(values)
+        first = values[worlds[0]]
+        if any(not self._custom_attribute_defaults_match(first, values[world]) for world in worlds[1:]):
+            raise ValueError(
+                f"Custom attribute '{key}' has different values for source worlds {worlds}, which merge into "
+                "one destination world."
+            )
+
     @staticmethod
     @functools.cache
     def _builder_frequency_key(frequency: Model.AttributeFrequency | str) -> str:
@@ -4702,7 +4738,8 @@ class ModelBuilder:
         try:
             matches = existing == incoming
             if hasattr(matches, "__iter__") and not isinstance(matches, (str, bytes)):
-                matches = all(matches)
+                # np.all also reduces multidimensional comparisons, such as of matrices.
+                matches = np.all(matches)
         except (ValueError, TypeError):
             return False
         return bool(matches)
@@ -5919,7 +5956,8 @@ class ModelBuilder:
             elif attr.frequency == Model.AttributeFrequency.ONCE:
                 index_offset = 0
             elif attr.frequency == Model.AttributeFrequency.WORLD:
-                index_offset = 0 if world == -1 else world
+                # The destination entry: the destination world, or global world -1.
+                index_offset = world
             else:
                 index_offset = get_offset(attr.frequency)
 
@@ -6042,8 +6080,10 @@ class ModelBuilder:
                         # Implicit source defaults must not replace an existing global value.
                         count = int(full_key not in self.custom_attributes)
                     elif freq_key == Model.AttributeFrequency.WORLD:
-                        # Each copy uses one destination world, or none for global entities.
-                        count = int(world >= 0)
+                        # Each copy fills its destination world. Like ONCE, an implicit source
+                        # default must not replace an existing global value.
+                        existing = self.custom_attributes.get(full_key)
+                        count = int(world >= 0 or existing is None or -1 not in (existing.values or {}))
                     else:
                         if source_counts is None:
                             source_counts = self._builder_merge_counts(builder)
@@ -6053,6 +6093,20 @@ class ModelBuilder:
                             else source_counts.get(self._builder_frequency_key(freq_key), 0)
                         )
                     source_values = attr._values_with_defaults(count)
+
+            if freq_key == Model.AttributeFrequency.WORLD:
+                # All source entities join one destination entry. Explicit source values agree,
+                # so take the global value, or else that of an explicit world, or else the default.
+                enum_values = {}
+                if source_values:
+                    source_key = -1 if -1 in source_values else min(attr.values or source_values)
+                    value = source_values[source_key]
+                    enum_values[index_offset] = transform_enum_value(source_key, value) if needs_remap else value
+            elif not isinstance(freq_key, str):
+                enum_values = {
+                    index_offset + idx: transform_enum_value(idx, value) if needs_remap else value
+                    for idx, value in source_values.items()
+                }
 
             merged = self.custom_attributes.get(full_key)
             if merged is None:
@@ -6064,12 +6118,8 @@ class ModelBuilder:
                         )
                     else:
                         mapped_values.extend(source_values)
-                elif needs_remap:
-                    mapped_values = {
-                        index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()
-                    }
                 else:
-                    mapped_values = {index_offset + idx: value for idx, value in source_values.items()}
+                    mapped_values = enum_values
                 merged = replace(attr, values=mapped_values)
                 self.custom_attributes[full_key] = merged
                 self._custom_schema_epoch += 1
@@ -6092,12 +6142,8 @@ class ModelBuilder:
                     merged.values.extend(transform_enum_value(idx, value) for idx, value in enumerate(source_values))
                 else:
                     merged.values.extend(source_values)
-            elif needs_remap:
-                merged.values.update(
-                    {index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()}
-                )
             else:
-                merged.values.update({index_offset + idx: value for idx, value in source_values.items()})
+                merged.values.update(enum_values)
 
         if label_prefix:
             for frequency_key, frequency in builder.custom_frequencies.items():
@@ -16889,13 +16935,10 @@ class ModelBuilder:
             # enable ground plane
             m.up_axis = self.up_axis
 
-            # Explicit local worlds need a trailing global entry. Implicit
-            # single-world models retain their legacy shared gravity entry.
+            # Local worlds followed by a distinct entry for global world -1.
             global_gravity = self._gravity_as_vector()
-            if self.world_gravity:
-                gravity_vecs = [*self.world_gravity, global_gravity]
-            else:
-                gravity_vecs = [global_gravity for _ in range(self.world_count)]
+            local_gravity = self.world_gravity or [global_gravity] * self.world_count
+            gravity_vecs = [*local_gravity, global_gravity]
             m.gravity = wp.array(
                 gravity_vecs,
                 dtype=wp.vec3,
