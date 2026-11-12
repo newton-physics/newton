@@ -10,7 +10,6 @@ import warp as wp
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
-from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
@@ -29,7 +28,6 @@ from .kernels import (
     copy_kinematic_body_state_kernel,
     solve_body_contact_positions,
     solve_body_joints,
-    solve_joint_mimics,
     solve_particle_particle_contacts,
     solve_particle_shape_contacts,
     # solve_simple_body_joints,
@@ -229,10 +227,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._rigid_restitution_enabled = False
         self._refresh_rigid_restitution_enabled()
         self._compute_body_velocity_from_position_delta = False
-
-        self._has_joint_mimics = has_supported_joint_mimics(model, "SolverXPBD")
-        if self._has_joint_mimics:
-            self._set_module_options(module_options, module=solve_joint_mimics.module)
 
         self._init_kinematic_state()
 
@@ -940,38 +934,12 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 self.joint_angular_relaxation,
                                 self.joint_linear_relaxation,
                                 dt,
+                                model.joint_mimic_joint,
+                                model.joint_mimic_coeffs,
                             ],
                             outputs=[body_deltas, joint_impulse],
                             device=model.device,
                         )
-
-                        if self._has_joint_mimics:
-                            wp.launch(
-                                kernel=solve_joint_mimics,
-                                dim=model.joint_count,
-                                inputs=[
-                                    body_q,
-                                    model.body_com,
-                                    self.body_inv_mass_effective,
-                                    self.body_inv_inertia_effective,
-                                    model.joint_type,
-                                    model.joint_enabled,
-                                    model.joint_parent,
-                                    model.joint_child,
-                                    model.joint_X_p,
-                                    model.joint_X_c,
-                                    model.joint_qd_start,
-                                    model.joint_dof_dim,
-                                    model.joint_axis,
-                                    model.joint_mimic_joint,
-                                    model.joint_mimic_coeffs,
-                                    self.joint_angular_relaxation,
-                                    self.joint_linear_relaxation,
-                                    dt,
-                                ],
-                                outputs=[body_deltas, joint_impulse],
-                                device=model.device,
-                            )
 
                         body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
 

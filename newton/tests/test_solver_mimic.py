@@ -109,6 +109,9 @@ def _test_solver_mimic(test, device, solver_name):
                     rigid_compliant_alm=True,
                 )
                 generalized = False
+            elif solver_name == "xpbd":
+                solver = newton.solvers.SolverXPBD(model, iterations=8)
+                generalized = False
             else:
                 raise ValueError(f"Unknown solver {solver_name}")
 
@@ -195,6 +198,11 @@ def test_steel_mimic(test, device):
 def test_vbd_mimic(test, device):
     """Enforce scalar and vectorized mimic relationships in VBD."""
     _test_solver_mimic(test, device, "vbd")
+
+
+def test_xpbd_mimic(test, device):
+    """Enforce scalar and vectorized mimic relationships in XPBD."""
+    _test_solver_mimic(test, device, "xpbd")
 
 
 @wp.kernel
@@ -405,6 +413,7 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestSolverMimic, "test_vbd_mimic", test_vbd_mimic, devices=devices)
+add_function_test(TestSolverMimic, "test_xpbd_mimic", test_xpbd_mimic, devices=devices)
 add_function_test(
     TestSolverMimic,
     "test_mimic_compound_d6_coordinate_gradients",
