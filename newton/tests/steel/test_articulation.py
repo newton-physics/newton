@@ -2298,26 +2298,28 @@ def test_springs_skip_unsupported_joint_types(test, device, solve_mode="serial")
     sprung[qd_start[joints[2]]] = True
     sprung[: qd_start[loop_joint]] = True
 
-    def warnings_of(call):
+    def warnings_of(call, *patterns):
+        """Run ``call`` and assert it emits exactly one NewtonWarning per pattern, in order."""
         with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", newton.NewtonWarning)
+            warnings.simplefilter("always")
             result = call()
-        return result, " | ".join(str(w.message) for w in caught)
+        test.assertEqual([w.category for w in caught], [newton.NewtonWarning] * len(patterns), caught)
+        for w, pattern in zip(caught, patterns, strict=True):
+            test.assertRegex(str(w.message), pattern)
+        return result
 
-    # The FREE, BALL and unowned joints' 10 DOFs warn here; the REVOLUTE loop warns about its own inputs.
-    solver, messages = warnings_of(lambda: SolverSteel(model, solve_mode=solve_mode))
-    test.assertRegex(messages, "stiffness on 10 DOF")
-    test.assertRegex(messages, "loop-closing REVOLUTE joint .* spring stiffness")
+    # The REVOLUTE loop warns about its own inputs; the FREE, BALL and unowned joints' 10 DOFs warn here.
+    expected = ("loop-closing REVOLUTE joint .* spring stiffness", "stiffness on 10 DOF")
+    solver = warnings_of(lambda: SolverSteel(model, solve_mode=solve_mode), *expected)
     np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 5.0, 0.0))
     model.joint_stiffness.fill_(7.0)
-    _, messages = warnings_of(lambda: solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES))
-    test.assertRegex(messages, "stiffness on 10 DOF")
+    warnings_of(lambda: solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES), *expected)
     np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 7.0, 0.0))
 
     builder, _ = _build_square_loop("ball")
     builder.joint_stiffness = [5.0] * builder.joint_dof_count
-    with test.assertWarnsRegex(newton.NewtonWarning, "stiffness on 3 DOF"):
-        SolverSteel(builder.finalize(device=device), solve_mode=solve_mode)
+    model = builder.finalize(device=device)
+    warnings_of(lambda: SolverSteel(model, solve_mode=solve_mode), "stiffness on 3 DOF")
 
 
 def test_registration_adds_no_spring_attributes(test, device):
