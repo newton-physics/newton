@@ -5590,6 +5590,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.model.body_world,
                 self.mjc_body_to_newton,
                 body_gravcomp,
+                self._option_world,
             ],
             outputs=[out_body_acceleration],
             device=self.model.device,

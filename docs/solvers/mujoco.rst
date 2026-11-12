@@ -1020,6 +1020,8 @@ models built without :meth:`~newton.ModelBuilder.begin_world`, where importers s
 options in the global entry. :attr:`~newton.Model.gravity` follows the same rule;
 a MuJoCo world has one gravity, so dynamic global bodies that share it with world ``0``
 bodies must have the same gravity, or construction raises :class:`ValueError`.
+Later changes to either gravity entry or to a body's kinematic flag are not checked;
+such a MuJoCo world follows world ``0``.
 
 These values are read once during :class:`~newton.solvers.SolverMuJoCo`
 construction. Editing ``model.mujoco.<option>`` afterwards has no

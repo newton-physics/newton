@@ -261,6 +261,7 @@ def eval_mujoco_coupling_gravity_acceleration_kernel(
     body_world: wp.array[wp.int32],
     mjc_body_to_newton: wp.array2d[wp.int32],
     body_gravcomp: wp.array2d[float],
+    option_world: int,
     out: wp.array[wp.vec3],
 ):
     body = wp.tid()
@@ -269,8 +270,12 @@ def eval_mujoco_coupling_gravity_acceleration_kernel(
         gravity_world = body_world[body]
 
     mujoco_world = int(0)
-    if body_gravcomp.shape[0] > 1 and gravity_world >= 0:
-        mujoco_world = gravity_world
+    if body_gravcomp.shape[0] > 1:
+        if gravity_world >= 0:
+            mujoco_world = gravity_world
+    else:
+        # A single MuJoCo world applies one gravity to all its bodies; see update_model_properties_kernel.
+        gravity_world = option_world
 
     g = wp.vec3(0.0, 0.0, 0.0)
     if gravity_world >= -1 and gravity_world < gravity.shape[0]:
