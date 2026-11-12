@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import gc
 import itertools
 import math
@@ -7190,6 +7191,548 @@ add_function_test(
     test_unprovisioned_mesh_contacts,
     devices=soft_devices,
 )
+
+
+# ---------------------------------------------------------------------------
+# rigid_soft_full_surface_mesh_backend="sdf": meshes with a volume SDF sample it
+# for vertex, edge, and face contacts; meshes without one keep BVH contacts.
+# ---------------------------------------------------------------------------
+
+_MESH_BACKEND_BOX_HALF_EXTENT = 0.5
+
+
+def _exact_cube_sdf(points, half_extent=_MESH_BACKEND_BOX_HALF_EXTENT):
+    """Exact signed distance [m] and outward unit gradient of an origin-centered cube."""
+    points = np.asarray(points, dtype=np.float64)
+    q = np.abs(points) - half_extent
+    phi = np.linalg.norm(np.maximum(q, 0.0), axis=-1) + np.minimum(q.max(axis=-1), 0.0)
+    grad = np.zeros_like(points)
+    for i, (point, offset) in enumerate(zip(points, q, strict=True)):
+        if phi[i] > 0.0:
+            outside = np.maximum(offset, 0.0)
+            grad[i] = np.sign(point) * outside / np.linalg.norm(outside)
+        else:
+            axis = int(np.argmax(offset))
+            grad[i, axis] = 1.0 if point[axis] >= 0.0 else -1.0
+    return phi, grad
+
+
+def _add_soft_triangle_with_edges(builder, points):
+    """Add one soft triangle and its three edges so that vertex, edge, and face passes all run."""
+    ids = [builder.add_particle(wp.vec3(*point), wp.vec3(0.0), 0.1, radius=0.0) for point in points]
+    builder.add_triangle(*ids)
+    for a, b in ((0, 1), (1, 2), (2, 0)):
+        builder.add_edge(-1, -1, ids[a], ids[b])
+    return ids
+
+
+def _mesh_backend_cube_model(device, points, *, force_sdf=True):
+    """A static cube mesh of half extent 0.5 m at the origin plus one soft triangle."""
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True)
+    cfg.configure_sdf(force_sdf=force_sdf)
+    half = _MESH_BACKEND_BOX_HALF_EXTENT
+    builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(half, half, half), cfg=cfg, label="cube_mesh")
+    _add_soft_triangle_with_edges(builder, points)
+    return builder.finalize(device=device)
+
+
+def _collide_mesh_backend(model, backend, *, gap=0.02, full_surface=True):
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        soft_contact_gap=gap,
+        enable_rigid_soft_full_surface_contact=full_surface,
+        rigid_soft_full_surface_mesh_backend=backend,
+    )
+    contacts = pipeline.contacts()
+    state = model.state()
+    pipeline.collide(state, contacts)
+    return pipeline, contacts, state
+
+
+def _soft_contact_rows(contacts, state):
+    """Return per-row kind, soft-side point, rigid point, normal, shape, and soft indices."""
+    count = int(contacts.soft_contact_count.numpy()[0])
+    indices = contacts.soft_contact_indices.numpy()[:count]
+    weights = contacts.soft_contact_barycentric.numpy()[:count]
+    particle_q = state.particle_q.numpy()
+    points = np.zeros((count, 3))
+    for row in range(count):
+        for corner in range(3):
+            if indices[row, corner] >= 0:
+                points[row] += weights[row, corner] * particle_q[indices[row, corner]]
+    kinds = np.where(indices[:, 1] < 0, "V", np.where(indices[:, 2] < 0, "E", "F"))
+    return (
+        kinds,
+        points,
+        contacts.soft_contact_body_pos.numpy()[:count].astype(np.float64),
+        contacts.soft_contact_normal.numpy()[:count].astype(np.float64),
+        contacts.soft_contact_shape.numpy()[:count],
+        indices,
+    )
+
+
+def _sorted_soft_contact_rows(contacts):
+    count = int(contacts.soft_contact_count.numpy()[0])
+    rows = np.concatenate(
+        [
+            contacts.soft_contact_shape.numpy()[:count, None].astype(np.float64),
+            contacts.soft_contact_indices.numpy()[:count].astype(np.float64),
+            contacts.soft_contact_barycentric.numpy()[:count],
+            contacts.soft_contact_body_pos.numpy()[:count],
+            contacts.soft_contact_normal.numpy()[:count],
+        ],
+        axis=1,
+    )
+    return rows[np.lexsort(np.round(rows, 5).T[::-1])]
+
+
+def _check_soft_replay_slots(test, model, pipeline, contacts):
+    """Check that every soft-contact row sits in the replay slot of the pass and pair that made it.
+
+    The fixed-size passes share ``soft_contact_tids`` in this order: per-particle, edge, face,
+    heightfield face, SDF mesh vertex. Valid for scenes without BVH mesh contacts, which use no slot.
+    """
+    count = int(contacts.soft_contact_count.numpy()[0])
+    tids = contacts.soft_contact_tids.numpy()
+    indices = contacts.soft_contact_indices.numpy()
+    shapes = contacts.soft_contact_shape.numpy()
+    edge_corners = model.edge_indices.numpy()[:, 2:4]
+    tri_corners = model.tri_indices.numpy()
+    passes = (
+        ("particle", pipeline.soft_rigid_contact_pairs, None),
+        ("edge", pipeline.soft_edge_rigid_pairs, edge_corners),
+        ("face", pipeline.soft_face_rigid_pairs, tri_corners),
+        ("heightfield face", pipeline._soft_heightfield_face_pairs, tri_corners),
+        ("SDF mesh vertex", pipeline._soft_sdf_vertex_pairs, None),
+    )
+    test.assertEqual(tids.shape[0], sum(len(pairs) for _name, pairs, _corners in passes))
+    base = 0
+    rows = []
+    for name, pair_array, corners in passes:
+        pairs = pair_array.numpy().reshape(-1, 2)
+        slots = tids[base : base + len(pairs)]
+        used = slots >= 0
+        row = slots[used]
+        feature = pairs[used, 0]
+        expected = feature[:, None] if corners is None else corners[feature]
+        np.testing.assert_array_equal(shapes[row], pairs[used, 1], err_msg=name)
+        np.testing.assert_array_equal(indices[row, : expected.shape[1]], expected, err_msg=name)
+        np.testing.assert_array_equal(indices[row, expected.shape[1] :], -1, err_msg=name)
+        rows.append(row)
+        base += len(pairs)
+    np.testing.assert_array_equal(np.sort(np.concatenate(rows)), np.arange(count))
+
+
+def test_mesh_backend_rejects_unknown_value(test, device):
+    """Reject an unsupported full-surface mesh back-end name."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    model = builder.finalize(device=device)
+    with test.assertRaisesRegex(ValueError, "rigid_soft_full_surface_mesh_backend"):
+        newton.CollisionPipeline(model, rigid_soft_full_surface_mesh_backend="volume")
+
+
+def test_mesh_sdf_backend_keeps_bvh_without_volume_sdf(test, device):
+    """Keep BVH feature contacts, with a warning, for a mesh that has no volume SDF."""
+    model = _mesh_backend_cube_model(
+        device, [(-0.2, -0.2, 0.505), (0.2, -0.2, 0.505), (0.0, 0.2, 0.505)], force_sdf=False
+    )
+    _pipeline, expected, _state = _collide_mesh_backend(model, "bvh")
+    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "cube_mesh"):
+        pipeline, contacts, _state = _collide_mesh_backend(model, "sdf")
+    test.assertEqual(len(pipeline._soft_sdf_mesh_shapes), 0)
+    test.assertIsNotNone(pipeline._soft_mesh_contact_data)
+    test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
+    np.testing.assert_allclose(_sorted_soft_contact_rows(contacts), _sorted_soft_contact_rows(expected), atol=1.0e-6)
+
+
+def test_mesh_sdf_backend_deep_triangle_matches_exact_distance(test, device):
+    """Report the true depth and exit direction for a triangle deep inside a mesh.
+
+    The triangle sits 0.15 m below the cube's top face, far beyond the 0.02 m contact band and
+    far from every other face. Every vertex, edge, and face row must point to the top face.
+    The same model then checks an inactive particle, particle collision enabled after
+    construction, and that the back-end is ignored without full-surface contact.
+    """
+    points = [(-0.05, -0.04, 0.35), (0.06, -0.03, 0.35), (0.0, 0.07, 0.36)]
+    model = _mesh_backend_cube_model(device, points)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+        pipeline, contacts, state = _collide_mesh_backend(model, "sdf")
+    np.testing.assert_array_equal(pipeline._soft_sdf_mesh_shapes, [0])
+    test.assertIsNone(pipeline._soft_mesh_contact_data)
+    test.assertIsNone(contacts._soft_contact_mesh_features)
+
+    kinds, soft_points, rigid_points, normals, _shapes, indices = _soft_contact_rows(contacts, state)
+    test.assertEqual(Counter(kinds.tolist()), Counter({"V": 3, "E": 3, "F": 1}))
+    # Each deeply penetrating vertex keeps its own row.
+    test.assertEqual(sorted(indices[kinds == "V", 0].tolist()), [0, 1, 2])
+    exact_phi, exact_grad = _exact_cube_sdf(soft_points)
+    signed_distance = np.einsum("ij,ij->i", normals, soft_points - rigid_points)
+    np.testing.assert_allclose(signed_distance, exact_phi, atol=5.0e-3)
+    np.testing.assert_allclose(normals, exact_grad, atol=2.0e-2)
+    np.testing.assert_allclose(rigid_points[:, 2], _MESH_BACKEND_BOX_HALF_EXTENT, atol=5.0e-3)
+
+    with test.subTest(check="inactive particle"):
+        # An inactive particle loses its vertex row.
+        active_flags = model.particle_flags.numpy()
+        flags = active_flags.copy()
+        flags[0] &= ~int(ParticleFlags.ACTIVE)
+        model.particle_flags.assign(flags)
+        _pipeline, contacts, state = _collide_mesh_backend(model, "sdf")
+        kinds, _soft_points, _rigid_points, _normals, _shapes, indices = _soft_contact_rows(contacts, state)
+        test.assertEqual(sorted(indices[kinds == "V", 0].tolist()), [1, 2])
+        model.particle_flags.assign(active_flags)
+
+    with test.subTest(check="particle collision enabled after construction"):
+        # A mesh with a volume SDF uses SDF contacts once its particle collision is enabled.
+        enabled = model.shape_flags.numpy()
+        model.shape_flags.assign(enabled & ~int(ShapeFlags.COLLIDE_PARTICLES))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+            pipeline = newton.CollisionPipeline(
+                model,
+                broad_phase="nxn",
+                soft_contact_gap=0.02,
+                enable_rigid_soft_full_surface_contact=True,
+                rigid_soft_full_surface_mesh_backend="sdf",
+            )
+        np.testing.assert_array_equal(pipeline._soft_sdf_mesh_shapes, [0])
+        contacts = pipeline.contacts()
+        state = model.state()
+        pipeline.collide(state, contacts)
+        test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 0)
+        model.shape_flags.assign(enabled)
+        pipeline.collide(state, contacts)
+        kinds, _soft_points, _rigid_points, _normals, _shapes, _indices = _soft_contact_rows(contacts, state)
+        test.assertEqual(Counter(kinds.tolist()), Counter({"V": 3, "E": 3, "F": 1}))
+
+    with test.subTest(check="ignored without full-surface contact"):
+        _pipeline, expected, _state = _collide_mesh_backend(model, "bvh", full_surface=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+            pipeline, contacts, _state = _collide_mesh_backend(model, "sdf", full_surface=False)
+        test.assertEqual(len(pipeline._soft_sdf_mesh_shapes), 0)
+        test.assertEqual(len(pipeline._soft_sdf_vertex_pairs), 0)
+        np.testing.assert_array_equal(_sorted_soft_contact_rows(contacts), _sorted_soft_contact_rows(expected))
+
+
+def test_mesh_sdf_backend_pierced_corner_points_outward(test, device):
+    """Push the inside part of a triangle that pierces a mesh corner region outward.
+
+    One vertex lies inside the cube near its +x face; the other two lie outside above the top
+    face. Each row must report the true depth of its soft point and an outward direction.
+    """
+    points = [(0.30, 0.0, 0.62), (0.44, 0.0, 0.30), (0.30, 0.25, 0.62)]
+    model = _mesh_backend_cube_model(device, points)
+    _pipeline, contacts, state = _collide_mesh_backend(model, "sdf")
+    kinds, soft_points, rigid_points, normals, _shapes, indices = _soft_contact_rows(contacts, state)
+    test.assertEqual(Counter(kinds.tolist()), Counter({"V": 1, "E": 2, "F": 1}))
+    test.assertEqual(indices[kinds == "V", 0].tolist(), [1])
+    exact_phi, exact_grad = _exact_cube_sdf(soft_points)
+    test.assertTrue(np.all(exact_phi < 0.0), "every row must sit on the penetrating part")
+    signed_distance = np.einsum("ij,ij->i", normals, soft_points - rigid_points)
+    np.testing.assert_allclose(signed_distance, exact_phi, atol=5.0e-3)
+    np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1.0e-4)
+    # Rows near the corner's interior bisector blend the two exit directions; none points inward.
+    test.assertTrue(np.all(normals[:, 0] > 0.5))
+    test.assertTrue(np.all(normals[:, 2] > -1.0e-3))
+    test.assertTrue(np.all(np.einsum("ij,ij->i", normals, exact_grad) > 0.7))
+    # The vertex row is away from the bisector and matches the exact direction.
+    np.testing.assert_allclose(normals[kinds == "V"], exact_grad[kinds == "V"], atol=2.0e-2)
+
+
+def test_mesh_sdf_backend_mixed_scene_routes_each_mesh(test, device):
+    """Route a mesh with a volume SDF to SDF contacts while its neighbor keeps BVH contacts."""
+    builder = newton.ModelBuilder()
+    half = _MESH_BACKEND_BOX_HALF_EXTENT
+    for label, x, force_sdf in (("sdf_mesh", -1.0, True), ("bvh_mesh", 1.0, False)):
+        cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True)
+        cfg.configure_sdf(force_sdf=force_sdf)
+        builder.add_shape_mesh(
+            body=-1,
+            xform=wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity()),
+            mesh=newton.Mesh.create_box(half, half, half),
+            cfg=cfg,
+            label=label,
+        )
+        _add_soft_triangle_with_edges(builder, [(x - 0.2, -0.2, 0.505), (x + 0.2, -0.2, 0.505), (x, 0.2, 0.505)])
+    model = builder.finalize(device=device)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        pipeline, contacts, state = _collide_mesh_backend(model, "sdf")
+    messages = [str(w.message) for w in caught if issubclass(w.category, newton.exceptions.NewtonWarning)]
+    test.assertEqual(len(messages), 1)
+    test.assertIn("bvh_mesh", messages[0])
+    test.assertNotIn("sdf_mesh", messages[0])
+    np.testing.assert_array_equal(pipeline._soft_sdf_mesh_shapes, [0])
+    test.assertIsNotNone(pipeline._soft_mesh_contact_data)
+
+    kinds, _soft_points, _rigid_points, _normals, shapes, _indices = _soft_contact_rows(contacts, state)
+    features = contacts._soft_contact_mesh_features.numpy()[: len(kinds)]
+    test.assertEqual(Counter(kinds[shapes == 0].tolist()), Counter({"V": 3, "E": 3, "F": 1}))
+    np.testing.assert_array_equal(features[shapes == 0], -1)
+    test.assertGreater(int(np.count_nonzero(shapes == 1)), 0)
+    test.assertTrue(np.all(np.any(features[shapes == 1] >= 0, axis=1)), "BVH rows carry rigid feature ids")
+
+    # The BVH mesh alone produces the same rows as it does in the mixed scene.
+    _pipeline, bvh_contacts, _state = _collide_mesh_backend(model, "bvh")
+    bvh_rows = _sorted_soft_contact_rows(bvh_contacts)
+    mixed_rows = _sorted_soft_contact_rows(contacts)
+    np.testing.assert_allclose(mixed_rows[mixed_rows[:, 0] == 1], bvh_rows[bvh_rows[:, 0] == 1], atol=1.0e-6)
+
+
+def test_mesh_sdf_backend_moving_body_frames(test, device):
+    """Report SDF mesh contacts in the body frame and their normals in the world frame.
+
+    The second pose is set on the state after the pipeline is built, so the contacts must follow
+    the body pose of the state and not the initial pose of the model.
+    """
+    half = _MESH_BACKEND_BOX_HALF_EXTENT
+    body_xform = wp.transform(wp.vec3(1.0, -2.0, 0.5), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * wp.pi))
+    moved_xform = wp.transform(wp.vec3(-0.5, 1.0, 2.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.3 * wp.pi))
+    shape_xform = wp.transform(wp.vec3(0.1, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.25 * wp.pi))
+    local_points = [(-0.05, -0.04, 0.35), (0.06, -0.03, 0.35), (0.0, 0.07, 0.36)]
+
+    def world_points(xform):
+        shape_to_world = wp.transform_multiply(xform, shape_xform)
+        return [wp.transform_point(shape_to_world, wp.vec3(*p)) for p in local_points]
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body(xform=body_xform, mass=1.0, inertia=wp.mat33(np.eye(3)))
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False, has_particle_collision=True)
+    cfg.configure_sdf(force_sdf=True)
+    builder.add_shape_mesh(body=body, xform=shape_xform, mesh=newton.Mesh.create_box(half, half, half), cfg=cfg)
+    _add_soft_triangle_with_edges(builder, world_points(body_xform))
+    model = builder.finalize(device=device)
+    pipeline, contacts, state = _collide_mesh_backend(model, "sdf")
+
+    for pose, xform in (("initial", body_xform), ("moved after construction", moved_xform)):
+        with test.subTest(pose=pose):
+            state.body_q.assign(wp.array([xform], dtype=wp.transform, device=device))
+            state.particle_q.assign(wp.array(world_points(xform), dtype=wp.vec3, device=device))
+            pipeline.collide(state, contacts)
+            kinds, soft_points, body_points, normals, _shapes, _indices = _soft_contact_rows(contacts, state)
+            test.assertEqual(Counter(kinds.tolist()), Counter({"V": 3, "E": 3, "F": 1}))
+            world_to_shape = wp.transform_inverse(wp.transform_multiply(xform, shape_xform))
+            body_to_shape = wp.transform_inverse(shape_xform)
+            soft_local = np.array([wp.transform_point(world_to_shape, wp.vec3(*p)) for p in soft_points])
+            rigid_local = np.array([wp.transform_point(body_to_shape, wp.vec3(*p)) for p in body_points])
+            normals_local = np.array([wp.transform_vector(world_to_shape, wp.vec3(*n)) for n in normals])
+            exact_phi, exact_grad = _exact_cube_sdf(soft_local)
+            np.testing.assert_allclose(
+                np.einsum("ij,ij->i", normals_local, soft_local - rigid_local), exact_phi, atol=5.0e-3
+            )
+            np.testing.assert_allclose(normals_local, exact_grad, atol=2.0e-2)
+            np.testing.assert_allclose(rigid_local[:, 2], half, atol=5.0e-3)
+
+
+def test_mesh_sdf_backend_multi_world_pairs(test, device):
+    """Pair SDF mesh contacts within a world and with global shapes, never across worlds."""
+    half = _MESH_BACKEND_BOX_HALF_EXTENT
+    points = [(-0.05, -0.04, 0.35), (0.06, -0.03, 0.35), (0.0, 0.07, 0.36)]
+    cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True)
+    cfg.configure_sdf(force_sdf=True)
+
+    def world_builder(with_mesh):
+        sub = newton.ModelBuilder()
+        if with_mesh:
+            sub.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(half, half, half), cfg=cfg)
+        _add_soft_triangle_with_edges(sub, points)
+        return sub
+
+    with test.subTest(layout="per-world meshes"):
+        builder = newton.ModelBuilder()
+        builder.add_world(world_builder(True))
+        builder.add_world(world_builder(True))
+        model = builder.finalize(device=device)
+        pipeline, contacts, state = _collide_mesh_backend(model, "sdf")
+        test.assertEqual(len(pipeline._soft_sdf_mesh_shapes), 2)
+        kinds, _soft, _rigid, _normals, shapes, indices = _soft_contact_rows(contacts, state)
+        test.assertEqual(Counter(kinds.tolist()), Counter({"V": 6, "E": 6, "F": 2}))
+        particle_world = model.particle_world.numpy()
+        shape_world = model.shape_world.numpy()
+        np.testing.assert_array_equal(particle_world[indices[:, 0]], shape_world[shapes])
+
+    with test.subTest(layout="global mesh"):
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(half, half, half), cfg=cfg)
+        builder.add_world(world_builder(False))
+        builder.add_world(world_builder(False))
+        model = builder.finalize(device=device)
+        _pipeline, contacts, state = _collide_mesh_backend(model, "sdf")
+        kinds, _soft, _rigid, _normals, _shapes, _indices = _soft_contact_rows(contacts, state)
+        test.assertEqual(Counter(kinds.tolist()), Counter({"V": 6, "E": 6, "F": 2}))
+
+
+def test_mesh_sdf_backend_nonuniform_scale(test, device):
+    """Keep SDF mesh contacts accurate under nonuniform shape scale, including vertex rows."""
+    with test.subTest(gap="outside"):
+        model = _nonuniform_box_mesh_gap_model(device, tri_x=1.08)
+        _pipeline, contacts, _state = _collide_mesh_backend(model, "sdf", gap=0.06)
+        test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 0)
+    with test.subTest(gap="inside"):
+        model = _nonuniform_box_mesh_gap_model(device, tri_x=1.03)
+        pipeline, contacts, state = _collide_mesh_backend(model, "sdf", gap=0.06)
+        np.testing.assert_array_equal(pipeline._soft_sdf_mesh_shapes, [0])
+        kinds, _soft_points, rigid_points, normals, _shapes, _indices = _soft_contact_rows(contacts, state)
+        test.assertEqual(Counter(kinds.tolist()), Counter({"V": 3, "F": 1}))
+        np.testing.assert_allclose(rigid_points[:, 0], 1.0, atol=5.0e-3)
+        np.testing.assert_allclose(normals, np.broadcast_to([1.0, 0.0, 0.0], normals.shape), atol=2.0e-2)
+
+
+def test_mesh_sdf_backend_oblique_face_nonuniform_scale(test, device):
+    """Report the true distance to a face that is oblique to a nonuniform shape scale.
+
+    A cube rotated 45 degrees about z and scaled by (4, 1, 1) has a face with normal
+    ``normalize(S^-1 (1, 1, 0))``. A point 0.06 m off that face before scaling is 0.0823 m off
+    it after scaling; scaling the distance by ``|S n|`` would report 0.175 m and drop the contact.
+    """
+    cube = newton.Mesh.create_box(0.5, 0.5, 0.5)
+    c = math.sqrt(0.5)
+    rotation = np.array([[c, -c, 0.0], [c, c, 0.0], [0.0, 0.0, 1.0]])
+    rotated = newton.Mesh(
+        vertices=(np.asarray(cube.vertices) @ rotation.T).astype(np.float32), indices=np.asarray(cube.indices).copy()
+    )
+    normal = np.array([c, c, 0.0])
+    scale = np.array([4.0, 1.0, 1.0])
+    point = scale * (0.56 * normal)
+    scaled_normal = (normal / scale) / np.linalg.norm(normal / scale)
+    true_distance = 0.06 / np.linalg.norm(normal / scale)
+
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True)
+    cfg.configure_sdf(force_sdf=True)
+    builder.add_shape_mesh(body=-1, mesh=rotated, scale=tuple(scale), cfg=cfg)
+    builder.add_particle(wp.vec3(*point), wp.vec3(0.0), 0.1, radius=0.0)
+    model = builder.finalize(device=device)
+    _pipeline, contacts, state = _collide_mesh_backend(model, "sdf", gap=0.1)
+    kinds, soft_points, rigid_points, normals, _shapes, _indices = _soft_contact_rows(contacts, state)
+    test.assertEqual(kinds.tolist(), ["V"])
+    test.assertAlmostEqual(float(np.dot(normals[0], soft_points[0] - rigid_points[0])), true_distance, delta=5.0e-3)
+    np.testing.assert_allclose(normals[0], scaled_normal, atol=2.0e-2)
+    test.assertAlmostEqual(float(np.dot(rigid_points[0] - scale * (0.5 * normal), scaled_normal)), 0.0, delta=5.0e-3)
+
+
+def test_mesh_sdf_backend_negative_margin_nonuniform_scale(test, device):
+    """Keep edge and face contacts whose acceptance threshold is negative under nonuniform scale.
+
+    A negative shape margin beyond the contact gap accepts only penetrating features. The cull
+    bound must then stay below the accurate distance for points inside the shape. The scale is
+    mirrored, so the bound must also use the magnitude of each scale component.
+    """
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True, margin=-0.06)
+    cfg.configure_sdf(force_sdf=True)
+    builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5), scale=(-4.0, 1.0, 1.0), cfg=cfg)
+    # A small triangle 0.08 m inside the scaled +x face at x = 2.0.
+    _add_soft_triangle_with_edges(builder, [(1.92, -0.001, -0.001), (1.92, 0.001, -0.001), (1.92, 0.0, 0.001)])
+    model = builder.finalize(device=device)
+    _pipeline, contacts, state = _collide_mesh_backend(model, "sdf", gap=0.01)
+    kinds, soft_points, rigid_points, normals, _shapes, _indices = _soft_contact_rows(contacts, state)
+    test.assertEqual(Counter(kinds.tolist()), Counter({"V": 3, "E": 3, "F": 1}))
+    np.testing.assert_allclose(np.einsum("ij,ij->i", normals, soft_points - rigid_points), -0.08, atol=5.0e-3)
+
+
+def test_mesh_sdf_backend_compact_search_keeps_mesh_rows(test, device):
+    """Keep mesh rows when the compact search dispatches geometry-specialized kernels.
+
+    The specialized kernels process one analytic geometry type each, so a mesh sharing the pair
+    stream with a box needs its own compact kernel.
+    """
+    builder = newton.ModelBuilder()
+    half = _MESH_BACKEND_BOX_HALF_EXTENT
+    cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True)
+    cfg.configure_sdf(force_sdf=True)
+    builder.add_shape_mesh(
+        body=-1,
+        xform=wp.transform(wp.vec3(-0.6, 0.0, 0.0), wp.quat_identity()),
+        mesh=newton.Mesh.create_box(half, half, half),
+        cfg=cfg,
+    )
+    builder.add_shape_box(
+        body=-1, xform=wp.transform(wp.vec3(0.6, 0.0, 0.0), wp.quat_identity()), hx=half, hy=half, hz=half
+    )
+    builder.add_cloth_grid(
+        pos=wp.vec3(-1.0, -0.4, 0.51),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=10,
+        dim_y=4,
+        cell_x=0.2,
+        cell_y=0.2,
+        mass=0.1,
+    )
+    model = builder.finalize(device=device)
+
+    def collide(compact):
+        patches = [
+            mock.patch(f"newton._src.{module}._SDF_COMPACTION_MIN_PAIRS", 0)
+            for module in ("sim.collide", "geometry.soft_contacts_sdf")
+        ] + [
+            mock.patch(f"newton._src.geometry.soft_contacts_sdf.{name}", 0)
+            for name in ("_SDF_SPECIALIZATION_MIN_PAIRS_PER_GEO", "_SDF_EDGE_MIXED_SPECIALIZATION_MIN_PAIRS_PER_GEO")
+        ]
+        with contextlib.ExitStack() as stack:
+            if compact:
+                for patch in patches:
+                    stack.enter_context(patch)
+            pipeline, contacts, state = _collide_mesh_backend(model, "sdf", gap=0.05)
+            wp.synchronize_device(device)
+        test.assertEqual(pipeline._soft_sdf_fallback_tids.shape[0] > 0, compact)
+        # The SDF mesh vertex pass shares the replay slots with the per-particle, edge, and face passes.
+        test.assertGreater(pipeline.soft_contact_pair_count, 0)
+        test.assertGreater(len(pipeline._soft_sdf_vertex_pairs), 0)
+        _check_soft_replay_slots(test, model, pipeline, contacts)
+        return contacts, state
+
+    fused, state = collide(compact=False)
+    compact, _state = collide(compact=True)
+    kinds, _soft_points, _rigid_points, _normals, shapes, _indices = _soft_contact_rows(compact, state)
+    for shape in (0, 1):
+        for kind in ("E", "F"):
+            test.assertGreater(int(np.count_nonzero((shapes == shape) & (kinds == kind))), 0, (shape, kind))
+    # The fused and compact kernels are separately compiled variants of the same math.
+    np.testing.assert_allclose(_sorted_soft_contact_rows(compact), _sorted_soft_contact_rows(fused), atol=1.0e-6)
+
+
+# Host-side argument validation; one device is enough.
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_mesh_backend_rejects_unknown_value",
+    test_mesh_backend_rejects_unknown_value,
+    devices=soft_devices[:1],
+)
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_mesh_sdf_backend_keeps_bvh_without_volume_sdf",
+    test_mesh_sdf_backend_keeps_bvh_without_volume_sdf,
+    devices=soft_devices,
+)
+for _name, _fn in (
+    (
+        "test_mesh_sdf_backend_deep_triangle_matches_exact_distance",
+        test_mesh_sdf_backend_deep_triangle_matches_exact_distance,
+    ),
+    ("test_mesh_sdf_backend_pierced_corner_points_outward", test_mesh_sdf_backend_pierced_corner_points_outward),
+    ("test_mesh_sdf_backend_mixed_scene_routes_each_mesh", test_mesh_sdf_backend_mixed_scene_routes_each_mesh),
+    ("test_mesh_sdf_backend_moving_body_frames", test_mesh_sdf_backend_moving_body_frames),
+    ("test_mesh_sdf_backend_multi_world_pairs", test_mesh_sdf_backend_multi_world_pairs),
+    ("test_mesh_sdf_backend_nonuniform_scale", test_mesh_sdf_backend_nonuniform_scale),
+    (
+        "test_mesh_sdf_backend_oblique_face_nonuniform_scale",
+        test_mesh_sdf_backend_oblique_face_nonuniform_scale,
+    ),
+    (
+        "test_mesh_sdf_backend_negative_margin_nonuniform_scale",
+        test_mesh_sdf_backend_negative_margin_nonuniform_scale,
+    ),
+    ("test_mesh_sdf_backend_compact_search_keeps_mesh_rows", test_mesh_sdf_backend_compact_search_keeps_mesh_rows),
+):
+    # Volume SDFs are built with CUDA kernels and 3D textures.
+    add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=get_cuda_test_devices())
 
 
 # ---------------------------------------------------------------------------

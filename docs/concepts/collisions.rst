@@ -1711,7 +1711,14 @@ Soft contacts are generated automatically when particles are present. They use a
     particles = contacts.soft_contact_particle.numpy()[:n_soft]
     shapes = contacts.soft_contact_shape.numpy()[:n_soft]
 
-With full-surface deformable-rigid mesh contacts enabled, detection retains
+Full-surface deformable-rigid contacts query rigid meshes with the back-end
+selected by ``rigid_soft_full_surface_mesh_backend``. With ``"sdf"``, a mesh that
+carries a volume SDF reports one contact per deformable vertex, edge, and face
+from that SDF, as analytic shapes do; these contacts carry no rigid feature and
+:class:`~solvers.SolverVBD` applies all of them. A mesh without a volume SDF
+keeps the default ``"bvh"`` contacts, which the rest of this section describes.
+
+With the ``"bvh"`` mesh back-end, detection retains
 the returned feature pairs, including endpoint contacts. :class:`~solvers.SolverVBD`
 selects force contributions inside each consuming kernel using its current particle
 and body positions, including during CUDA graph replay. Selection can change
@@ -1741,7 +1748,8 @@ Full-surface mesh contact costs
 
 Full-surface contact catches rigid features that can pass between deformable
 vertices, which is useful for coarse cloth. On finely tessellated or complex
-rigid meshes, however, retaining nearby feature pairs can produce many more
+rigid meshes, however, retaining nearby feature pairs (the ``"bvh"`` mesh
+back-end) can produce many more
 records than particle-only contacts or SDF minimization. This increases contact
 storage and can substantially increase both collision detection and VBD solve
 time. Larger contact bands also admit more pairs. Profile the intended scene;

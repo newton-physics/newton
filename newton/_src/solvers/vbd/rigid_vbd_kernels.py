@@ -8360,8 +8360,8 @@ def apply_rigid_soft_truncation(
     particle ids) + barycentrics, uniformly for particle/edge/face records and independent
     of the detection backend that produced them. Dense BVH rows additionally identify the
     exact rigid triangle, edge, or vertex through ``soft_contact_rigid_indices``. This is
-    the primitive-pair information required by Planar-DAT. Analytic SDF rows leave those
-    indices negative and truncate only their stored rigid surface point.
+    the primitive-pair information required by Planar-DAT. Analytic SDF rows and SDF mesh
+    rows leave those indices negative and truncate only their stored rigid surface point.
 
     Both sides of each contact are constrained against the same plane within a single
     thread, which is what preserves the separating property of the plane. One thread
