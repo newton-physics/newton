@@ -27,7 +27,6 @@ from .kernels import (
     init_step_kernel,
     nonlinear_step_kernel,
     prepare_jacobi_preconditioner_kernel,
-    prepare_jacobi_preconditioner_no_contact_hessian_kernel,
     update_velocity_kernel,
 )
 from .linear_solver import PcgSolver, SparseMatrixELL
@@ -163,6 +162,9 @@ class SolverStyle3D(SolverBase):
 
         linear_iterations: int = 10
         """Number of PCG iterations per non-linear iteration, capped by PCG capacity (999 by default)."""
+
+        affine_alpha: float = 1.0
+        """SO(3) penalty scale in k = affine_alpha * body_mass / dt^2; zero disables the penalty."""
 
         drag_spring_stiff: float = 1e2
         """Stiffness of the mouse-dragging spring [N/m]."""
@@ -348,8 +350,10 @@ class SolverStyle3D(SolverBase):
         self._x_prev = wp.zeros(self._dof_block_count, dtype=wp.vec3, device=self.device)
         self._x_inertia = wp.zeros(self._dof_block_count, dtype=wp.vec3, device=self.device)
 
-        # Base diagonal excluding contact contributions.
+        # Per-step scalar mass/PD diagonal, excluding nonlinear contributions.
         self._A_diag_base = wp.zeros(self._dof_block_count, dtype=float, device=self.device)
+        # Assembled diagonal blocks, including affine orthogonality but excluding cloth contacts.
+        self._A_diag = wp.zeros(self._dof_block_count, dtype=wp.mat33, device=self.device)
         # Per-body (S_01, S_02, S_12) / dt^2, refreshed alongside the mass diagonal.
         self._affine_mass_off_diag = wp.zeros(self._affine_body_count, dtype=wp.vec3, device=self.device)
         # Inverse full diagonal blocks for Jacobi preconditioning.
@@ -520,40 +524,32 @@ class SolverStyle3D(SolverBase):
                     self._x_prev[: self._particle_count],
                     self._A_diag_base[: self._particle_count],
                 )
-                wp.launch(
-                    prepare_jacobi_preconditioner_kernel,
-                    dim=self._particle_count,
-                    inputs=[
-                        self._A_diag_base,
-                        self.collision.contact_hessian_diagonal(),
-                        self._particle_flags,
-                    ],
-                    outputs=[self._inv_A_diag],
-                    device=self.device,
+
+            if self._affine_body is not None:
+                self._affine_body.eval_orthogonality(
+                    self._x[self._particle_count :],
+                    self._rhs[self._particle_count :],
+                    self._A_diag[self._particle_count :],
+                    self.config.affine_alpha,
+                    dt,
                 )
-                if self._affine_body_count > 0:
-                    wp.launch(
-                        prepare_jacobi_preconditioner_no_contact_hessian_kernel,
-                        dim=4 * self._affine_body_count,
-                        inputs=[
-                            self._A_diag_base[self._particle_count :],
-                            self._particle_flags[self._particle_count :],
-                        ],
-                        outputs=[self._inv_A_diag[self._particle_count :]],
-                        device=self.device,
-                    )
-            else:
-                wp.launch(
-                    prepare_jacobi_preconditioner_no_contact_hessian_kernel,
-                    dim=self._dof_block_count,
-                    inputs=[self._A_diag_base, self._particle_flags],
-                    outputs=[self._inv_A_diag],
-                    device=self.device,
-                )
+
+            wp.launch(
+                prepare_jacobi_preconditioner_kernel,
+                dim=self._dof_block_count,
+                inputs=[
+                    self._particle_count,
+                    self._A_diag_base,
+                    self.collision.contact_hessian_diagonal() if self.collision is not None else self._A_diag[:0],
+                    self._particle_flags,
+                ],
+                outputs=[self._A_diag, self._inv_A_diag],
+                device=self.device,
+            )
 
             self._linear_solver.solve(
                 self._pd_off_diag,
-                self._A_diag_base,
+                self._A_diag,
                 self._dx if _iter == 0 else None,
                 self._rhs,
                 self._inv_A_diag,

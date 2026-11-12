@@ -568,7 +568,7 @@ def test_affine_body_linear_system(test, device):
             model.body_inertia.assign(initial_inertia)
             model.body_inv_inertia.assign(initial_inv_inertia)
             model.body_flags.assign(initial_flags)
-            config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0)
+            config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0, affine_alpha=0.0)
             solver = newton.solvers.SolverStyle3D(model, config=config, dynamics=dynamics)
             state_in, state_out, state_ref = model.state(), model.state(), model.state()
             state_in.body_f.assign(forces)
@@ -695,13 +695,13 @@ def test_affine_body_linear_system(test, device):
                 expected[offset:] += expected_mass_product
                 expected[:offset] += np.einsum("ijk,ik->ij", hessian, probe[:offset])
                 solver._linear_solver.step1_update_r(
-                    solver._pd_off_diag, solver._A_diag_base, solver._rhs, probe_wp, product
+                    solver._pd_off_diag, solver._A_diag, solver._rhs, probe_wp, product
                 )
                 np.testing.assert_allclose(
                     solver._linear_solver.r.numpy(), solver._rhs.numpy() - expected, rtol=2e-6, atol=2e-4
                 )
                 solver._linear_solver.p.assign(probe_wp)
-                solver._linear_solver.step5_update_Ap(solver._pd_off_diag, solver._A_diag_base, product)
+                solver._linear_solver.step5_update_Ap(solver._pd_off_diag, solver._A_diag, product)
                 np.testing.assert_allclose(solver._linear_solver.Ap.numpy(), expected, rtol=2e-6, atol=2e-4)
 
                 # Collision writes only the caller's particle view, and the
@@ -718,7 +718,81 @@ def test_affine_body_linear_system(test, device):
                 np.testing.assert_allclose(product.numpy()[offset:], expected_mass_product, rtol=2e-6, atol=2e-5)
                 solver.collision = collision
 
+            # Exercise nonlinear SO(3) forces with a larger rotation, then change
+            # alpha at runtime. NumPy Newton steps independently verify assembly.
+            velocities = state_in.body_qd.numpy()
+            velocities[0, 3:] = (4.0, -3.0, 5.0)
+            state_in.body_qd.assign(velocities)
+            config.iterations = 2
+            config.linear_iterations = 32
+            mass_block = np.kron(mass[:4, :4] / dt**2, np.eye(3))
+
+            def constraint_terms(coordinates, stiffness):
+                """Build the SO(3) force and normal tangent using NumPy SVD."""
+                affine = coordinates[1:].T
+                u, _, vt = np.linalg.svd(affine)
+                rotation = u @ np.diag([1.0, 1.0, np.linalg.det(u @ vt)]) @ vt
+                force = np.zeros((4, 3))
+                force[1:] = -stiffness * (affine - rotation).T
+                hessian = np.zeros((12, 12))
+                for i in range(3):
+                    for j in range(3):
+                        block = 0.5 * stiffness * np.outer(rotation[:, j], rotation[:, i])
+                        if i == j:
+                            block += 0.5 * stiffness * np.eye(3)
+                        hessian[3 + 3 * i : 6 + 3 * i, 3 + 3 * j : 6 + 3 * j] = block
+                return force, hessian
+
+            default_alpha = newton.solvers.SolverStyle3D.Config().affine_alpha
+            test.assertGreater(default_alpha, 0.0)
+            for alpha in (default_alpha, 0.25, 0.0):
+                config.affine_alpha = alpha
+                solver.step(state_in, state_out, control, contacts, dt)
+                if wp.get_device(device).is_cuda and alpha == default_alpha:
+                    with wp.ScopedCapture(device=device) as capture:
+                        solver.step(state_in, state_out, control, contacts, dt)
+                    wp.capture_launch(capture.graph)
+                reference = solver._x_prev.numpy()[offset : offset + 4].astype(np.float64)
+                target = solver._x_inertia.numpy()[offset : offset + 4]
+                stiffness = alpha * model.body_mass.numpy()[0] / dt**2
+                for _iteration in range(config.iterations):
+                    force, hessian = constraint_terms(reference, stiffness)
+                    expected_rhs = (mass_block @ (target - reference).reshape(-1)).reshape(4, 3) + force
+                    expected_matrix = mass_block + hessian
+                    reference += np.linalg.solve(expected_matrix, expected_rhs.reshape(-1)).reshape(4, 3)
+                if alpha > 0.0:
+                    test.assertGreater(np.linalg.norm(force), 0.1)
+                np.testing.assert_allclose(solver._x.numpy()[offset : offset + 4], reference, atol=3e-6)
+                np.testing.assert_allclose(solver._rhs.numpy()[offset : offset + 4], expected_rhs, atol=4e-4)
+                diagonal = solver._A_diag.numpy()[offset : offset + 4]
+                preconditioner = solver._inv_A_diag.numpy()[offset : offset + 4]
+                for i in range(4):
+                    block = expected_matrix[3 * i : 3 * i + 3, 3 * i : 3 * i + 3]
+                    np.testing.assert_allclose(diagonal[i], block, rtol=3e-6, atol=2e-4)
+                    np.testing.assert_allclose(preconditioner[i] @ block, np.eye(3), rtol=3e-6, atol=3e-6)
+                product = solver._matrix_free_multiply(probe_wp)
+                solver._linear_solver.p.assign(probe_wp)
+                solver._linear_solver.step5_update_Ap(solver._pd_off_diag, solver._A_diag, product)
+                expected_product = expected_matrix @ probe[offset : offset + 4].reshape(-1)
+                np.testing.assert_allclose(
+                    solver._linear_solver.Ap.numpy()[offset : offset + 4].reshape(-1),
+                    expected_product,
+                    rtol=3e-6,
+                    atol=3e-4,
+                )
+                np.testing.assert_array_equal(solver._inv_A_diag.numpy()[offset + 4 :], 0.0)
+                np.testing.assert_array_equal(solver._x.numpy()[offset + 4 :], solver._x_prev.numpy()[offset + 4 :])
+                if alpha == 0.0:
+                    np.testing.assert_allclose(
+                        solver._A_diag.numpy()[offset:],
+                        solver._A_diag_base.numpy()[offset:, None, None] * np.eye(3),
+                        rtol=2e-6,
+                        atol=2e-5,
+                    )
+                    np.testing.assert_allclose(product.numpy()[offset:], expected_mass_product, rtol=2e-6, atol=2e-5)
+
             config.linear_iterations = 0
+            config.iterations = 1
             graph = None
             if wp.get_device(device).is_cuda:
                 with wp.ScopedCapture(device=device) as capture:

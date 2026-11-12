@@ -313,33 +313,31 @@ def init_rhs_kernel(
 
 @wp.kernel
 def prepare_jacobi_preconditioner_kernel(
+    particle_count: int,
     A_diag_base: wp.array[float],
     contact_hessian_diags: wp.array[wp.mat33],
     particle_flags: wp.array[wp.int32],
     # outputs
+    A_diag: wp.array[wp.mat33],
     inv_A_diag: wp.array[wp.mat33],
 ):
+    """Add the base diagonal and invert the full diagonal for active DOFs.
+
+    Affine blocks in A_diag must contain freshly evaluated constraint
+    diagonals; particle blocks are overwritten using the base diagonal.
+    """
     tid = wp.tid()
+    diag = wp.identity(3, float) * A_diag_base[tid]
+    if tid >= particle_count:
+        diag += A_diag[tid]
+    A_diag[tid] = diag
+
     if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
         inv_A_diag[tid] = wp.mat33(0.0)
         return
-    diag = wp.identity(3, float) * A_diag_base[tid]
-    diag += contact_hessian_diags[tid]
-    inv_A_diag[tid] = wp.inverse(diag) if A_diag_base[tid] > 0.0 else wp.identity(3, float) * 0.0
-
-
-@wp.kernel
-def prepare_jacobi_preconditioner_no_contact_hessian_kernel(
-    A_diag_base: wp.array[float],
-    particle_flags: wp.array[wp.int32],
-    # outputs
-    inv_A_diag: wp.array[wp.mat33],
-):
-    tid = wp.tid()
-    if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
-        inv_A_diag[tid] = wp.mat33(0.0)
-        return
-    diag = wp.identity(3, float) * A_diag_base[tid]
+    # Cloth contacts stay in the matrix-free product, but also enter preconditioning.
+    if tid < contact_hessian_diags.shape[0]:
+        diag += contact_hessian_diags[tid]
     inv_A_diag[tid] = wp.inverse(diag) if A_diag_base[tid] > 0.0 else wp.identity(3, float) * 0.0
 
 

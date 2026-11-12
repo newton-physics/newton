@@ -40,9 +40,68 @@ def affine_mass_multiply(
 
 
 @wp.kernel
+def eval_affine_orthogonality_kernel(
+    x: wp.array[wp.vec3],
+    body_mass: wp.array[float],
+    body_flags: wp.array[int],
+    alpha: float,
+    dt: float,
+    # outputs
+    rhs: wp.array[wp.vec3],
+    hessian_diag: wp.array[wp.mat33],
+    scaled_rotation: wp.array[wp.mat33],
+):
+    """Accumulate the SO(3) penalty force and prepare its normal-space tangent.
+
+    E(A) = k/2 min_{R in SO(3)} ||A - R||_F^2, k = alpha * m / dt^2.
+    With R the closest proper rotation, P_R(X) = R sym(R^T X).
+    The force is -k P_R(A - R), removing tangential SVD roundoff.
+    Use H(X) = k P_R(X), a positive-semidefinite approximation that is
+    exact at A = R and annihilates infinitesimal rotations R Omega.
+    It is not the exact Hessian of the reduced energy away from SO(3).
+
+    For columns r_i of R, H_ii = k/2 (Id + r_i r_i^T) and
+    H_ij = k/2 r_j r_i^T for i != j. Cache B = sqrt(k/2) R so that
+    off-diagonal products use only b_j dot(b_i, x_j).
+    Overwrite constraint-only diagonal blocks and cache each nonlinear
+    iteration; the caller combines these blocks with the mass diagonal.
+    """
+    body = wp.tid()
+    start = 4 * body
+    hessian_diag[start] = wp.mat33(0.0)
+    if alpha <= 0.0 or body_mass[body] <= 0.0 or (body_flags[body] & (BodyFlags.DYNAMIC | BodyFlags.KINEMATIC)) == 0:
+        hessian_diag[start + 1] = wp.mat33(0.0)
+        hessian_diag[start + 2] = wp.mat33(0.0)
+        hessian_diag[start + 3] = wp.mat33(0.0)
+        scaled_rotation[body] = wp.mat33(0.0)
+        return
+
+    affine = wp.matrix_from_cols(x[start + 1], x[start + 2], x[start + 3])
+    # Warp's signed SVD has det(U) = det(V) = +1, including for reflections.
+    U, _, V = wp.svd3(affine)
+    rotation = wp.quat_to_matrix(wp.normalize(wp.quat_from_matrix(U @ wp.transpose(V))))
+    residual_local = wp.transpose(rotation) @ (affine - rotation)
+    normal_residual = rotation @ (0.5 * (residual_local + wp.transpose(residual_local)))
+    stiffness = alpha * body_mass[body] / (dt * dt)
+    force_columns = wp.transpose(-stiffness * normal_residual)
+    scaled = wp.sqrt(0.5 * stiffness) * rotation
+    scaled_rotation[body] = scaled
+    scaled_columns = wp.transpose(scaled)
+
+    rhs[start + 1] += force_columns[0]
+    rhs[start + 2] += force_columns[1]
+    rhs[start + 3] += force_columns[2]
+
+    hessian_diag[start + 1] = 0.5 * stiffness * wp.identity(3, float) + wp.outer(scaled_columns[0], scaled_columns[0])
+    hessian_diag[start + 2] = 0.5 * stiffness * wp.identity(3, float) + wp.outer(scaled_columns[1], scaled_columns[1])
+    hessian_diag[start + 3] = 0.5 * stiffness * wp.identity(3, float) + wp.outer(scaled_columns[2], scaled_columns[2])
+
+
+@wp.kernel
 def affine_off_diag_multiply_kernel(
     x: wp.array[wp.vec3],
     mass_off_diag: wp.array[wp.vec3],
+    scaled_rotation: wp.array[wp.mat33],
     # outputs
     Ax: wp.array[wp.vec3],
 ):
@@ -53,13 +112,17 @@ def affine_off_diag_multiply_kernel(
     x1 = x[start + 1]
     x2 = x[start + 2]
     x3 = x[start + 3]
+    scaled_columns = wp.transpose(scaled_rotation[body])
+    b1 = scaled_columns[0]
+    b2 = scaled_columns[1]
+    b3 = scaled_columns[2]
 
     # The assembled matrix already contains m / dt^2 and S_ii / dt^2.
-    # Only the cross-direction terms S_ij / dt^2 (i != j) belong here.
+    # Add only cross-direction mass and SO(3) terms; diagonal blocks are separate.
     Ax[start + 0] = wp.vec3(0.0)
-    Ax[start + 1] = coupling[0] * x2 + coupling[1] * x3
-    Ax[start + 2] = coupling[0] * x1 + coupling[2] * x3
-    Ax[start + 3] = coupling[1] * x1 + coupling[2] * x2
+    Ax[start + 1] = coupling[0] * x2 + coupling[1] * x3 + b2 * wp.dot(b1, x2) + b3 * wp.dot(b1, x3)
+    Ax[start + 2] = coupling[0] * x1 + coupling[2] * x3 + b1 * wp.dot(b2, x1) + b3 * wp.dot(b2, x3)
+    Ax[start + 3] = coupling[1] * x1 + coupling[2] * x2 + b1 * wp.dot(b3, x1) + b2 * wp.dot(b3, x2)
 
 
 @wp.kernel
@@ -180,17 +243,42 @@ class AffineBody:
 
     def __init__(self, model: Model) -> None:
         self.model = model
+        # Zero until orthogonality is evaluated; refreshed once per nonlinear iteration.
+        self._orthogonality_scaled_rotation = wp.zeros(model.body_count, dtype=wp.mat33, device=model.device)
+
+    def eval_orthogonality(
+        self,
+        x: wp.array[wp.vec3],
+        rhs: wp.array[wp.vec3],
+        hessian_diag: wp.array[wp.mat33],
+        alpha: float,
+        dt: float,
+    ) -> None:
+        """Accumulate SO(3) forces and overwrite the constraint-only diagonal blocks.
+
+        Pass affine views of length 4 * body_count for x, rhs, and hessian_diag.
+        Call once per nonlinear iteration before off_diag_multiply, with a
+        positive dt and nonnegative alpha. The cached tangent remains fixed
+        throughout the linear solve. An alpha of zero clears the constraint.
+        """
+        wp.launch(
+            eval_affine_orthogonality_kernel,
+            dim=self.model.body_count,
+            inputs=[x, self.model.body_mass, self.model.body_flags, alpha, dt],
+            outputs=[rhs, hessian_diag, self._orthogonality_scaled_rotation],
+            device=self.model.device,
+        )
 
     def off_diag_multiply(self, x: wp.array[wp.vec3], mass_off_diag: wp.array[wp.vec3], Ax: wp.array[wp.vec3]) -> None:
         """Write the affine off-diagonal contribution to A x.
 
-        Currently this is (M - diag(M)) x / dt^2, using prepared
-        (S_01, S_02, S_12) / dt^2 coefficients.
+        Combine (M - diag(M)) x / dt^2, using prepared (S_01, S_02, S_12)
+        / dt^2 coefficients, with the cached SO(3) off-diagonal tangent.
         """
         wp.launch(
             affine_off_diag_multiply_kernel,
             dim=self.model.body_count,
-            inputs=[x, mass_off_diag],
+            inputs=[x, mass_off_diag, self._orthogonality_scaled_rotation],
             outputs=[Ax],
             device=self.model.device,
         )
