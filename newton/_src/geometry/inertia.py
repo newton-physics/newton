@@ -554,12 +554,14 @@ def compute_inertia_mesh(
     # vertices sit far from the mesh origin, summing about the origin loses the volume and
     # inertia to cancellation, so meshes whose bounding box does not contain the origin
     # are integrated about the bounding box center instead. Mass and inertia about the
-    # center of mass do not depend on this reference point.
+    # center of mass do not depend on this reference point. The bounds only cover the
+    # vertices the triangles reference, so unused vertices cannot move the reference.
     vertices = np.asarray(vertices, dtype=np.float64).reshape(-1, 3)
     reference = np.zeros(3)
-    if len(vertices) > 0:
-        lower = vertices.min(axis=0)
-        upper = vertices.max(axis=0)
+    if num_tris > 0:
+        used = vertices[indices[: num_tris * 3]]
+        lower = used.min(axis=0)
+        upper = used.max(axis=0)
         if np.any(lower > 0.0) or np.any(upper < 0.0):
             reference = 0.5 * (lower + upper)
 

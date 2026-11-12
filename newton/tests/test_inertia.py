@@ -706,6 +706,20 @@ class TestInertia(unittest.TestCase):
                 assert_np_equal(np.array(com), offset, tol=1.0e-5 * np.linalg.norm(offset))
                 assert_np_equal(np.array(inertia).reshape(3, 3), I_hollow_ref, tol=1.0e-3 * np.max(I_hollow_ref))
 
+        # An unreferenced vertex far away must not shift the reference point and collapse
+        # the integrated geometry.
+        offset = np.array([2.0, 2.0, 2.0])
+        outlier = np.vstack([vertices + offset, [[1.0e8, 1.0e8, 1.0e8]]])
+        mass, com, inertia, _ = compute_inertia_mesh(density, outlier, indices, is_solid=True)
+        self.assertAlmostEqual(mass, m_ref, delta=1.0e-4 * m_ref)
+        assert_np_equal(np.array(com), offset, tol=1.0e-5 * np.linalg.norm(offset))
+        assert_np_equal(np.array(inertia).reshape(3, 3), I_ref, tol=1.0e-3 * np.max(I_ref))
+
+        _, com, inertia, vol = compute_inertia_mesh(density, outlier, indices, is_solid=False, thickness=0.002)
+        self.assertAlmostEqual(vol, vol_hollow_ref, delta=1.0e-4 * vol_hollow_ref)
+        assert_np_equal(np.array(com), offset, tol=1.0e-5 * np.linalg.norm(offset))
+        assert_np_equal(np.array(inertia).reshape(3, 3), I_hollow_ref, tol=1.0e-3 * np.max(I_hollow_ref))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
