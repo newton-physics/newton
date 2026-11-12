@@ -1184,6 +1184,6 @@ class JointBlockSolver:
                 schedule["row_offsets"],
                 *reach_inputs,
             ],
-            block_dim=32,
+            block_dim=128,
             device=self._device,
         )
