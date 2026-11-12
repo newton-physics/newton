@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any, ClassVar
 
 import warp as wp
@@ -73,7 +73,7 @@ class ClampingCurrentDuty(ClampingBase):
     This is a quasi-static current estimate, not an inductive current controller.
     """
 
-    class VoltageSource(str, Enum):  # noqa: UP042
+    class VoltageSource(StrEnum):
         """Voltage used by the firmware's current estimate."""
 
         INPUT = "input"

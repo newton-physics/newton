@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import numpy as np
@@ -19,7 +19,7 @@ from .ik_lm_optimizer import IKOptimizerLM
 from .ik_objectives import IKObjective
 
 
-class IKOptimizer(str, Enum):  # noqa: UP042
+class IKOptimizer(StrEnum):
     """Optimizer backends supported by :class:`~newton.ik.IKSolver`."""
 
     LM = "lm"
@@ -29,7 +29,7 @@ class IKOptimizer(str, Enum):  # noqa: UP042
     """Use an L-BFGS quasi-Newton optimizer."""
 
 
-class IKSampler(str, Enum):  # noqa: UP042
+class IKSampler(StrEnum):
     """Sampling strategies used by :class:`~newton.ik.IKSolver` before optimization."""
 
     NONE = "none"
