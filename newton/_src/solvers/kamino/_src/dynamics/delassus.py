@@ -1789,6 +1789,14 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         self._vec_temp_body_space = wp.empty(
             (self._model.size.sum_of_num_body_dofs,), dtype=wp.float32, device=self._device
         )
+        # Allocate the placeholder regularization inputs here: solvers may first apply the
+        # operator inside a conditional graph body, where allocation is not allowed.
+        self._coupled_rows_dummy = (
+            0,
+            wp.full((1, 2), -1, dtype=wp.int32, device=self._device),
+            wp.zeros((1, 2), dtype=wp.float32, device=self._device),
+            wp.ones((1,), dtype=wp.float32, device=self._device),
+        )
 
         # Initialize memory for combined regularization, if necessary
         if self._model.size.max_of_num_dynamic_joint_cts > 0 or self._model.size.max_of_num_effort_joint_cts > 0:
@@ -1940,13 +1948,6 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
     def _coupled_rows_inputs(self) -> tuple:
         """Coupled-row table and row scale for the regularization kernel, or placeholders without decoupling."""
         if self._joint_decoupling is None:
-            if self._coupled_rows_dummy is None:
-                self._coupled_rows_dummy = (
-                    0,
-                    wp.full((1, 2), -1, dtype=wp.int32, device=self._device),
-                    wp.zeros((1, 2), dtype=wp.float32, device=self._device),
-                    wp.ones((1,), dtype=wp.float32, device=self._device),
-                )
             return self._coupled_rows_dummy
         return (
             self._num_coupled_rows,
