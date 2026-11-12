@@ -271,6 +271,28 @@ def Xform "Robot" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
         self.assertTrue(side_site.name.startswith("/Robot/Base/side_"))
         self.assertEqual(solver.mj_model.wrap_prm[3], 2.0)
 
+    def test_nonunit_initial_pulley_divisor(self):
+        """Preserve a non-unit divisor on segment zero, including repeated targets."""
+        import mujoco
+
+        stage = self._create_stage()
+        self._add_tendon(stage, indices=[0, 1, 1, 0], segments=[0, 0, 1, 1], divisors=[2, 3])
+        model = self._import(stage).finalize(device="cpu")
+        np.testing.assert_array_equal(model.mujoco.tendon_wrap_type.numpy(), [2, 0, 0, 2, 0, 0])
+        np.testing.assert_array_equal(model.mujoco.tendon_wrap_prm.numpy(), [2, 0, 0, 3, 0, 0])
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        reference = mujoco.MjModel.from_xml_string(
+            """<mujoco>
+              <worldbody><site name="s0"/><site name="s1" pos="0 0 0.5"/></worldbody>
+              <tendon><spatial>
+                <pulley divisor="2"/><site site="s0"/><site site="s1"/>
+                <pulley divisor="3"/><site site="s1"/><site site="s0"/>
+              </spatial></tendon>
+            </mujoco>"""
+        )
+        for name in ("tendon_adr", "tendon_num", "wrap_type", "wrap_prm"):
+            np.testing.assert_array_equal(getattr(solver.mj_model, name), getattr(reference, name))
+
     def test_cylinder_wrap_and_leading_pulley(self):
         """Import a cylinder without a side site and a pulley before the first path target."""
         import mujoco
