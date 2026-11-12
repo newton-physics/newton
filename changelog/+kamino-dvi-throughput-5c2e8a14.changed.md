@@ -1,0 +1,1 @@
+Speed up Kamino DVI at reinforcement-learning batch sizes: with CUDA graphs at 2048 worlds, ANYmal, G1, H1 and Allegro step 1.26-1.32x faster, and UR10 and cartpole about 2.1x faster. The DVI ``bilateral_solver_type`` now defaults to ``"LLTBRCM"``; set ``"LLTB"`` to keep the previous dense blocked factorization.

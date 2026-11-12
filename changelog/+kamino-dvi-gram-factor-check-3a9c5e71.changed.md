@@ -1,1 +1,0 @@
-Speed up Kamino DVI at large world counts: the joint-block factor check now uses a coalesced per-world kernel, and the compact Schur Gram assembly visits only upper-triangle tiles, cutting about 6% of each G1 substep at 2048 worlds.

@@ -84,7 +84,8 @@ Its options can be tuned through ``bilateral_solver_kwargs``:
 
 The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
-changes. Keep the default ``"LLTB"`` solver for small systems.
+changes. To factor dense tiles without reordering, set
+``config.dvi.bilateral_solver_type = "LLTB"``.
 
 DVI unilateral subsolvers
 ^^^^^^^^^^^^^^^^^^^^^^^^^
