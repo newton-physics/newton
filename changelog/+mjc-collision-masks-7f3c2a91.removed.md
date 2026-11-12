@@ -1,0 +1,1 @@
+Remove reading MuJoCo collision masks from the `mjc:contype` and `mjc:conaffinity` USD attributes, which the MjcPhysics schema does not define. Express collision filtering in USD with `newton:selfCollisionEnabled`, `PhysicsFilteredPairsAPI`, or `PhysicsCollisionGroup`.
