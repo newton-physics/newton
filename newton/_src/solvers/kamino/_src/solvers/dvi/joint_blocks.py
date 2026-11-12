@@ -18,7 +18,7 @@ import numpy as np
 import warp as wp
 
 from ...core.math import FLOAT32_EPS
-from ...core.types import mat66f, vec6f
+from ...core.types import vec6f
 from ...linalg.factorize.llt_blocked_rcm import _sync_threads
 from .coupling import PackedCoupling, _count_bits
 from .kernels import BILATERAL_DIAGONAL_FLOOR, _compact_schur_fits
@@ -212,6 +212,10 @@ def _build_body_masks(path: SparseDVIPath, metadata: dict) -> tuple[wp.array, wp
     return seeds, wp.array(np.asarray(masks, dtype=np.uint64), dtype=wp.uint64, device=path.device)
 
 
+_SOLVE_LANES = 8
+"""Lanes per world in the batched joint-block factor and solve; lanes 0-5 own the six block rows."""
+
+
 @wp.kernel
 def _factor(
     blocks: wp.array[wp.float32],
@@ -223,53 +227,58 @@ def _factor(
     lefts: wp.array[wp.int32],
     rights: wp.array[wp.int32],
     nb: int,
+    num_worlds: int,
 ):
-    """Factor one world per thread; worlds share the block topology, so a warp runs in lockstep."""
-    w = wp.tid()
+    """Factor each world with a group of lanes, one per block row.
+
+    Block updates and off-diagonal triangular solves are row independent;
+    diagonal Cholesky columns gather the pivot row by warp shuffle. No lane
+    returns early, since the group shuffles span the whole warp.
+    """
+    tid = wp.tid()
+    w = wp.min(tid / _SOLVE_LANES, num_worlds - 1)
+    lane = tid % _SOLVE_LANES
+    i = wp.min(lane, 5)
+    group = tid % 32 - lane
+    store = tid / _SOLVE_LANES < num_worlds and lane < 6
     base = w * nb * 36
     for b in range(nb):
         offset = base + b * 36
-        value = mat66f()
-        for i in range(6):
-            for j in range(6):
-                value[i, j] = blocks[offset + i * 6 + j]
+        value = vec6f()
+        for j in range(6):
+            value[j] = blocks[offset + i * 6 + j]
         for update in range(starts[b], starts[b + 1]):
-            left = base + lefts[update] * 36
+            left = base + lefts[update] * 36 + i * 6
             right = base + rights[update] * 36
             for k in range(6):
-                for i in range(6):
-                    a = factors[left + i * 6 + k]
-                    for j in range(6):
-                        value[i, j] -= a * factors[right + j * 6 + k]
-        if rows[b] == cols[b]:
-            # Lower Cholesky factor from the upper triangle; the stored upper part is zero.
-            lower = mat66f()
-            for j in range(6):
-                total = value[j, j]
-                for k in range(j):
-                    total -= lower[j, k] * lower[j, k]
-                pivot = wp.sqrt(total)
-                lower[j, j] = pivot
-                for i in range(j + 1, 6):
-                    total = value[j, i]
-                    for k in range(j):
-                        total -= lower[i, k] * lower[j, k]
-                    lower[i, j] = total / pivot
-            for i in range(6):
+                a = factors[left + k]
                 for j in range(6):
-                    factors[offset + i * 6 + j] = lower[i, j]
+                    value[j] -= a * factors[right + j * 6 + k]
+        lower = vec6f()
+        if rows[b] == cols[b]:
+            # Column j: every lane forms A[i][j] - L[i,:j] . L[j,:j]; on lane j
+            # this is the pivot term, broadcast after its square root.
+            for j in range(6):
+                total = value[j]
+                for k in range(j):
+                    total -= lower[k] * _shuffle_lane_32(lower[k], group + j)
+                pivot = _shuffle_lane_32(wp.sqrt(total), group + j)
+                if i == j:
+                    lower[j] = pivot
+                elif i > j:
+                    lower[j] = total / pivot
         else:
-            # Each row r solves L_d x = value[r, :] by forward substitution.
+            # Row i solves L_d x = value by forward substitution.
             d = base + diagonal[cols[b]] * 36
-            for r in range(6):
-                x = vec6f()
-                for i in range(6):
-                    total = value[r, i]
-                    for k in range(i):
-                        total -= factors[d + i * 6 + k] * x[k]
-                    x[i] = total / factors[d + i * 7]
-                for i in range(6):
-                    factors[offset + r * 6 + i] = x[i]
+            for j in range(6):
+                total = value[j]
+                for k in range(j):
+                    total -= factors[d + j * 6 + k] * lower[k]
+                lower[j] = total / factors[d + j * 7]
+        if store:
+            for j in range(6):
+                factors[offset + i * 6 + j] = lower[j]
+        _sync_warp_32()
 
 
 @wp.kernel
@@ -583,10 +592,6 @@ def _pack_rhs(
     if order[row] >= 0:
         value = rhs[vio[w] + order[row]]
     scratch[w * padded + row] = value
-
-
-_SOLVE_LANES = 8
-"""Lanes per world in the batched joint-block solve; lanes 0-5 own the six block rows."""
 
 
 @wp.kernel
@@ -1038,7 +1043,7 @@ class JointBlockSolver:
         else:
             wp.launch(
                 _factor,
-                dim=self._worlds,
+                dim=(self._worlds * _SOLVE_LANES + 31) // 32 * 32,
                 inputs=[
                     self._matrix,
                     self._factor,
@@ -1049,6 +1054,7 @@ class JointBlockSolver:
                     schedule["left"],
                     schedule["right"],
                     self._blocks,
+                    self._worlds,
                 ],
                 block_dim=32,
                 device=self._device,
