@@ -3146,6 +3146,29 @@ def make_compact_schur_pgs_kernel(max_rows: int):
                     reverse[chunk], nbc, scalar_count, lio, cio, limit_indices, contact_indices
                 )
 
+        # Tangent phases only update contacts, so compact both schedules to their
+        # mapped contact slots once instead of skipping scalar slots every sweep.
+        tangent_forward_ids = vector()
+        tangent_reverse_ids = vector()
+        tangent_slots = int32(0)
+        for step in range(slots):
+            forward_uid = int32(_shuffle_lane_32(get_component(forward_ids, step / int32(32)), step % int32(32)))
+            if forward_uid >= scalar_count:
+                if lane == tangent_slots % int32(32):
+                    tangent_forward_ids = set_component(
+                        tangent_forward_ids, tangent_slots / int32(32), float32(forward_uid)
+                    )
+                tangent_slots += int32(1)
+        reverse_slot = int32(0)
+        for step in range(slots):
+            reverse_uid = int32(_shuffle_lane_32(get_component(reverse_ids, step / int32(32)), step % int32(32)))
+            if reverse_uid >= scalar_count:
+                if lane == reverse_slot % int32(32):
+                    tangent_reverse_ids = set_component(
+                        tangent_reverse_ids, reverse_slot / int32(32), float32(reverse_uid)
+                    )
+                reverse_slot += int32(1)
+
         # Each lane owns a fixed number of rows throughout the solve. Only Schur rows
         # are streamed during the serial update chain.
         q = vector()
@@ -3178,10 +3201,13 @@ def make_compact_schur_pgs_kernel(max_rows: int):
         for sweep in range(sweep_count):
             for phase in range(2):
                 use_reverse = phase == int32(1) and (sweep % cfg.inequality_sweeps_per_iteration) % int32(2) != int32(0)
-                for step in range(slots):
-                    ids = wp.where(use_reverse, reverse_ids, forward_ids)
+                phase_slots = wp.where(phase == int32(0), slots, tangent_slots)
+                for step in range(phase_slots):
+                    ids = forward_ids
+                    if phase != int32(0):
+                        ids = wp.where(use_reverse, tangent_reverse_ids, tangent_forward_ids)
                     uid = int32(_shuffle_lane_32(get_component(ids, step / int32(32)), step % int32(32)))
-                    if uid < int32(0) or (uid < scalar_count and phase != int32(0)):
+                    if uid < int32(0):
                         continue
                     row = _compact_unilateral_row(uid, nbc, scalar_count, bcgo, lcgo, ccgo, njc)
                     component = _cooperative_unilateral_component(uid, scalar_count, phase)
