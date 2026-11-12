@@ -5904,38 +5904,41 @@ class TestActuatorParameterCopy(unittest.TestCase):
         actuator = self.make_actuator()
         storage = wp.array(np.arange(12).reshape(6, 2), dtype=wp.vec2)
         parameter = storage[::2]
-        for shape in ((6,), (2, 3), (2, 1, 3)):
+        # DOFs 1 and 4 sit at different rows and off-diagonal positions, so a swapped or dropped axis is visible.
+        for shape in ((8,), (2, 4), (2, 2, 2)):
             with self.subTest(shape=shape):
                 selection_storage = wp.array(
-                    np.repeat(np.array([1, -1, 7, 4, 0, -1]).reshape(shape), 2, axis=-1), dtype=int
+                    np.repeat(np.array([-1, 7, 1, -1, 0, 4, -1, 7]).reshape(shape), 2, axis=-1), dtype=int
                 )
                 selection = selection_storage[(*[slice(None)] * (len(shape) - 1), slice(None, None, 2))]
                 padded = wp.zeros((*shape[:-1], 2 * shape[-1]), dtype=wp.vec2)
                 values = padded[(*[slice(None)] * (len(shape) - 1), slice(None, None, 2))]
                 actuator.copy_parameter_to(parameter, values, dof_indices=selection)
-                np.testing.assert_array_equal(
-                    values.numpy().reshape(6, 2), [[4, 5], [0, 0], [0, 0], [8, 9], [0, 0], [0, 0]]
-                )
-                values.fill_(wp.vec2(3.0))
+                expected_values = np.zeros((8, 2))
+                expected_values[[2, 5]] = [[4, 5], [8, 9]]
+                np.testing.assert_array_equal(values.numpy().reshape(8, 2), expected_values)
+                values.assign(100 + np.arange(16).reshape(*shape, 2))
                 actuator.copy_parameter_from(parameter, values, dof_indices=selection)
-                np.testing.assert_array_equal(parameter.numpy(), [[0, 1], [3, 3], [3, 3]])
+                np.testing.assert_array_equal(parameter.numpy(), [[0, 1], [104, 105], [110, 111]])
                 storage.assign(np.arange(12).reshape(6, 2))
 
                 mask = wp.array(np.arange(shape[0]) % 2 == 1, dtype=bool)
                 values.fill_(wp.vec2(-1.0))
                 actuator.copy_parameter_to(parameter, values, dof_indices=selection, mask=mask)
                 expected = np.full((*shape, 2), -1.0)
-                selected_values = np.array([[4, 5], [-1, -1], [-1, -1], [8, 9], [-1, -1], [-1, -1]])
+                selected_values = np.full((8, 2), -1.0)
+                selected_values[[2, 5]] = [[4, 5], [8, 9]]
                 enabled = mask.numpy()
                 expected[enabled] = selected_values.reshape(*shape, 2)[enabled]
                 np.testing.assert_array_equal(values.numpy(), expected)
-                values.fill_(wp.vec2(9.0))
+                masked_values = 200 + np.arange(16).reshape(*shape, 2)
+                values.assign(masked_values)
                 actuator.copy_parameter_from(parameter, values, dof_indices=selection, mask=mask)
-                expected_parameter = np.array([[0, 1], [4, 5], [9, 9]])
+                expected_parameter = np.array([[0, 1], [4, 5], [210, 211]])
                 np.testing.assert_array_equal(parameter.numpy(), expected_parameter)
                 mask.fill_(False)
                 actuator.copy_parameter_to(parameter, values, dof_indices=selection, mask=mask)
-                np.testing.assert_array_equal(values.numpy(), np.full((*shape, 2), 9.0))
+                np.testing.assert_array_equal(values.numpy(), masked_values)
                 values.fill_(wp.vec2(11.0))
                 actuator.copy_parameter_from(parameter, values, dof_indices=selection, mask=mask)
                 np.testing.assert_array_equal(parameter.numpy(), expected_parameter)
