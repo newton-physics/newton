@@ -452,8 +452,10 @@ proposal-marked deformables use the final 1000 kg/m³ fallback rather than
 TetMesh keeps ``ModelBuilder.default_tet_density`` for compatibility. Cable element volumes use
 resolved rest lengths and physical thickness: ``V = L_rest * pi * diameter**2 / 4``.
 Density-derived masses and total-mass weights use these rest volumes, as the proposal requires.
-Explicit segment masses still apply directly. Newton retains its capsule inertia approximation,
-scaled to each resolved segment mass.
+Explicit segment masses still apply directly. Newton computes solid-cylinder inertia from
+each resolved segment mass, radius and rest length, using the same assignment as native
+:meth:`~newton.ModelBuilder.add_rod`. Collision shapes remain capsules;
+``ModelBuilder.default_shape_cfg.is_solid`` does not apply to cables.
 
 Cloth element volumes use rest triangle areas and geometry thickness. Volume deformables use
 rest tetrahedron volumes. Typed mass conversion and total-mass distribution use these same volumes.

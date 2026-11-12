@@ -34,6 +34,17 @@ class TestUSDDeformableCable(unittest.TestCase):
     """Curve-deformable (cable) parsing into capsule bodies joined by rod joints."""
 
     @staticmethod
+    def _assert_matches_native_rod(native, native_bodies, builder, bodies):
+        """Compare imported cable segment mass, inertia and inverse inertia with a native rod."""
+        for attribute in ("body_mass", "body_inertia", "body_inv_inertia"):
+            np.testing.assert_allclose(
+                np.asarray(getattr(native, attribute))[native_bodies],
+                np.asarray(getattr(builder, attribute))[bodies],
+                rtol=1e-6,
+                atol=1e-9,
+            )
+
+    @staticmethod
     def _author_attached_cable_pair(*, gap, stiffness=None, damping=None):
         """Two 4-point cables separated by ``gap`` in y with a point->point attachment
         (P0 of B onto P0 of A); returns the stage."""
@@ -401,7 +412,11 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage = self._author_attached_cable_pair(gap=0.0)
 
             builder = newton.ModelBuilder()
+            # Welded cables import solid and massive even under an inherited hollow, zero-thickness default.
+            builder.default_shape_cfg.is_solid = False
             result = builder.add_usd(stage, return_deformable_results=True)
+            self.assertTrue(all(builder.shape_is_solid))
+            self.assertTrue(all(mass > 0.0 for mass in builder.body_mass))
             self.assertEqual(len(builder.articulation_label), 1)
             self.assertEqual(
                 result["path_cable_attrs"]["/World/CableA"]["graph_component"],
@@ -980,6 +995,18 @@ class TestUSDDeformableCable(unittest.TestCase):
                 np.testing.assert_allclose(np.asarray(builder.body_mass)[bodies], expected, rtol=1e-6)
                 self.assertTrue(np.isfinite(np.asarray(builder.body_inertia)[bodies]).all())
                 self.assertTrue(np.isfinite(np.asarray(builder.body_inv_inertia)[bodies]).all())
+                if mode in ("constant", "curve", "body"):
+                    native = newton.ModelBuilder()
+                    native_bodies, _ = native.add_rod(
+                        rod=newton.Rod(
+                            [(0, 0, 0), (0, 0, 0.4), (0, 0, 0.8)],
+                            rest_points=[(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)],
+                            radius=0.01,
+                        ),
+                        total_mass=values[0],
+                        cfg=native.ShapeConfig(density=0.0),
+                    )
+                    self._assert_matches_native_rod(native, native_bodies, builder, bodies)
 
     def test_periodic_cable_rest_shape_matches_native_rod(self):
         """Keep the closing segment and its rest rotation on a stretched periodic cable."""
@@ -1497,16 +1524,30 @@ class TestUSDDeformableCable(unittest.TestCase):
         np.testing.assert_allclose([builder.body_mass[body] for body in range(b0, b1)], [2.0, 2.5, 5.5])
 
     def test_cable_body_mass_rescales_total(self):
-        """PhysicsDeformableBodyAPI.mass rescales the rigid cable's segment masses."""
+        """Match a native solid rod for USD body mass, whatever the default shape solidity."""
         stage = _deformable_stage(up_axis="y")
         pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
         curves = _add_cable_curve(stage, "/World/Cable", pts)
         _apply_deformable_body_api(curves.GetPrim(), mass=2.5)
+        native = newton.ModelBuilder()
+        bodies, _ = native.add_rod(rod=newton.Rod(pts, radius=0.01), total_mass=2.5)
 
-        builder = newton.ModelBuilder()
-        builder.add_usd(stage)
-        b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
-        self.assertAlmostEqual(sum(builder.body_mass[b] for b in range(b0, b1)), 2.5, places=4)
+        for is_solid, margin in ((True, 0.0), (False, 0.002), (False, 0.0)):
+            with self.subTest(is_solid=is_solid, margin=margin):
+                builder = newton.ModelBuilder()
+                builder.default_shape_cfg.is_solid = is_solid
+                builder.default_shape_cfg.margin = margin
+                builder.add_usd(stage)
+                b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
+                self.assertAlmostEqual(sum(builder.body_mass[b] for b in range(b0, b1)), 2.5, places=4)
+                # Cables import solid, keep the requested contact margin, and leave the defaults alone.
+                shapes = [builder.body_shapes[b][0] for b in range(b0, b1)]
+                self.assertTrue(all(builder.shape_is_solid[shape] for shape in shapes))
+                self.assertEqual([builder.shape_margin[shape] for shape in shapes], [margin] * len(shapes))
+                self.assertEqual(
+                    (builder.default_shape_cfg.is_solid, builder.default_shape_cfg.margin), (is_solid, margin)
+                )
+                self._assert_matches_native_rod(native, bodies, builder, list(range(b0, b1)))
 
     def test_per_point_masses_override_proposal_density_with_finite_inertia(self):
         """Apply per-point masses ahead of the proposal density and keep inertia finite."""
@@ -1598,9 +1639,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertTrue(all(math.isfinite(value) and value > 0.0 for value in cable_stiffness))
 
     def test_cable_density_segment_mass_is_cylinder_not_capsule(self):
-        """A density-derived cable segment gets the cylinder mass m = rho*pi*r^2*L per segment
-        (so mass scales with density and segment length), not add_rod's capsule mass whose
-        constant hemispherical caps overestimate short / thick segments."""
+        """Match native cylinder-volume mass without counting overlapping capsule caps."""
         r = 0.05
         for rho in (1000.0, 2000.0):
             with self.subTest(density=rho):
@@ -1619,8 +1658,18 @@ class TestUSDDeformableCable(unittest.TestCase):
                     capsule = cylinder + rho * (4.0 / 3.0) * math.pi * r**3
                     self.assertAlmostEqual(builder.body_mass[b], cylinder, delta=cylinder * 1e-3)
                     self.assertNotAlmostEqual(builder.body_mass[b], capsule, delta=cylinder * 1e-2)
+                    transverse = cylinder * (r * r / 4.0 + seg_len * seg_len / 12.0)
+                    axial = cylinder * r * r / 2.0
+                    np.testing.assert_allclose(
+                        np.asarray(builder.body_inertia[b]).reshape(3, 3),
+                        np.diag([transverse, transverse, axial]),
+                        rtol=1e-6,
+                    )
                 # A 2x-longer segment has exactly 2x the mass (no constant-cap bias in the ratio).
                 self.assertAlmostEqual(builder.body_mass[b0 + 1] / builder.body_mass[b0], 2.0, places=3)
+                native = newton.ModelBuilder()
+                bodies, _ = native.add_rod(rod=newton.Rod(pts, radius=r), cfg=native.ShapeConfig(density=rho))
+                self._assert_matches_native_rod(native, bodies, builder, list(range(b0, b1)))
 
     def test_cable_constant_geometry_thickness_controls_physics(self):
         """Apply constant simulation thickness to cable radius, mass, and derived stiffness."""
