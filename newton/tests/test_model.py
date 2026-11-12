@@ -4092,6 +4092,111 @@ class TestModelJoints(unittest.TestCase):
         )
 
 
+class TestParticleInputTypes(unittest.TestCase):
+    POSITIONS = ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.2), (0.3, 0.4, 1.0))
+
+    @staticmethod
+    def _build(convert):
+        builder = newton.ModelBuilder()
+        for position in TestParticleInputTypes.POSITIONS:
+            builder.add_particle(convert(position), convert((0.0, 0.0, 0.0)), 1.0)
+        builder.add_triangle(0, 1, 2)
+        builder.add_edge(0, 1, 2, 3)
+        return builder
+
+    def test_triangle_and_edge_after_cloth_grid(self):
+        """Triangles and edges can be added on particles created by add_cloth_grid."""
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=1.0,
+            cell_y=1.0,
+            mass=1.0,
+        )
+        self.assertAlmostEqual(builder.add_triangle(0, 2, 6), 2.0)
+        edge = builder.add_edge(0, 8, 2, 6)
+        self.assertAlmostEqual(builder.edge_rest_length[edge], math.sqrt(8.0), places=6)
+
+    def test_triangle_and_edge_accept_any_vec3_particle_positions(self):
+        """Triangles and edges built on tuple, list, or NumPy particle positions match the wp.vec3 result."""
+        reference = self._build(lambda v: wp.vec3(*v))
+        converters = {
+            "tuple": tuple,
+            "list": list,
+            "numpy float32": lambda v: np.array(v, dtype=np.float32),
+            "numpy float64": lambda v: np.array(v, dtype=np.float64),
+        }
+        for name, convert in converters.items():
+            with self.subTest(positions=name):
+                builder = self._build(convert)
+                assert_np_equal(np.array(builder.tri_poses), np.array(reference.tri_poses), tol=1.0e-6)
+                assert_np_equal(np.array(builder.tri_areas), np.array(reference.tri_areas), tol=1.0e-6)
+                assert_np_equal(np.array(builder.edge_rest_angle), np.array(reference.edge_rest_angle), tol=1.0e-6)
+                assert_np_equal(np.array(builder.edge_rest_length), np.array(reference.edge_rest_length), tol=1.0e-6)
+
+    def test_grid_and_mesh_helpers_accept_any_vec3_and_quat(self):
+        """Particle grid and mesh helpers accept tuple, list, and NumPy pos/vel/rot and match the Warp-typed result."""
+        rot = (0.0, 0.0, math.sin(0.3), math.cos(0.3))
+        pos = (1.0, 2.0, 3.0)
+        vel = (0.1, 0.2, 0.3)
+        tet_vertices = ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+        tet_indices = [0, 1, 2, 3]
+
+        def cloth_grid(b, pos, rot, vel):
+            b.add_cloth_grid(pos=pos, rot=rot, vel=vel, dim_x=2, dim_y=2, cell_x=0.5, cell_y=0.5, mass=1.0)
+
+        def cloth_mesh(b, pos, rot, vel):
+            b.add_cloth_mesh(
+                pos=pos, rot=rot, scale=2.0, vel=vel, vertices=tet_vertices[:3], indices=[0, 1, 2], density=1.0
+            )
+
+        def particle_grid(b, pos, rot, vel):
+            b.add_particle_grid(
+                pos=pos,
+                rot=rot,
+                vel=vel,
+                dim_x=2,
+                dim_y=2,
+                dim_z=2,
+                cell_x=0.5,
+                cell_y=0.5,
+                cell_z=0.5,
+                mass=1.0,
+                jitter=0.0,
+            )
+
+        def soft_grid(b, pos, rot, vel):
+            b.add_soft_grid(
+                pos=pos, rot=rot, vel=vel, dim_x=1, dim_y=1, dim_z=1, cell_x=0.5, cell_y=0.5, cell_z=0.5,
+                density=1.0, k_mu=1.0, k_lambda=1.0, k_damp=0.0,
+            )  # fmt: skip
+
+        def soft_mesh(b, pos, rot, vel):
+            b.add_soft_mesh(
+                pos=pos, rot=rot, scale=2.0, vel=vel, vertices=tet_vertices, indices=tet_indices, density=1.0,
+                k_mu=1.0, k_lambda=1.0, k_damp=0.0,
+            )  # fmt: skip
+
+        converters = {
+            "tuple": tuple,
+            "list": list,
+            "numpy": lambda v: np.array(v, dtype=np.float64),
+        }
+        for helper in (cloth_grid, cloth_mesh, particle_grid, soft_grid, soft_mesh):
+            reference = newton.ModelBuilder()
+            helper(reference, wp.vec3(*pos), wp.quat(*rot), wp.vec3(*vel))
+            for name, convert in converters.items():
+                with self.subTest(helper=helper.__name__, inputs=name):
+                    builder = newton.ModelBuilder()
+                    helper(builder, convert(pos), convert(rot), convert(vel))
+                    assert_np_equal(np.array(builder.particle_q), np.array(reference.particle_q), tol=1.0e-6)
+                    assert_np_equal(np.array(builder.particle_qd), np.array(reference.particle_qd), tol=1.0e-6)
+
+
 class TestModelWorld(unittest.TestCase):
     def test_add_world_with_open_edges(self):
         builder = ModelBuilder()

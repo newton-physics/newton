@@ -348,6 +348,26 @@ def test_zero_mass_isolated_particle_remains_finite(test, device):
     np.testing.assert_allclose(velocities[3], 0.0)
 
 
+def test_add_cloth_mesh_accepts_tuple_rotation(test, device):
+    """Accept a tuple rotation and match the wp.quat result."""
+    rot = (0.0, 0.0, 0.3894183423086505, 0.9210609940028851)
+    positions = []
+    for rotation in (wp.quat(*rot), rot):
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+        newton.solvers.style3d.add_cloth_mesh(
+            builder,
+            pos=(1.0, 2.0, 3.0),
+            rot=rotation,
+            vel=(0.0, 0.0, 0.0),
+            vertices=((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+            indices=(0, 1, 2),
+            density=1.0,
+        )
+        positions.append(np.array(builder.particle_q))
+    np.testing.assert_allclose(positions[1], positions[0], atol=1.0e-6)
+
+
 def test_solver_flags_deactivate_zero_mass_without_mutating_model(test, device):
     """Deactivate zero-mass solver particles without changing shared model flags."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -511,6 +531,14 @@ add_function_test(
     TestSolverStyle3D,
     "test_global_particles_use_global_gravity",
     test_global_particles_use_global_gravity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_add_cloth_mesh_accepts_tuple_rotation",
+    test_add_cloth_mesh_accepts_tuple_rotation,
     devices=devices,
     check_output=False,
 )
