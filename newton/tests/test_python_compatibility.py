@@ -1,13 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compatibility checks that must hold on every supported Python version.
+"""Import smoke test for every supported Python version.
 
-``pyproject.toml`` declares support down to Python 3.11, so the stable public
-API has to resolve there. Resolving a solver export imports the module that
-defines it, and annotations in that module are evaluated at import time unless
-postponed -- which is how a Python 3.10 ``TypeError`` reached users through
-``ModelBuilder()`` in #3941.
+The full suite runs only on the version in ``.python-version``; CI runs this
+module on the others to catch import-time failures such as #3941.
 """
 
 import unittest
