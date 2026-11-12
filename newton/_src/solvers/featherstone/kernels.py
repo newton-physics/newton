@@ -2616,16 +2616,23 @@ def compute_body_parent_f(
 
     * ``body_f_s = I*a + spatial_cross_dual(v, I*v) - f_g_s``  (inertial bias minus gravity)
     * ``body_ft_s``                          (accumulated descendant wrenches)
-    * ``body_f_ext``                         (external + contact wrenches,
-      stored with the negated sign convention used by ``eval_rigid_tau``)
+    * ``body_f_ext``                         (external + contact wrenches in
+      the public convention: world-frame force, torque referenced to the
+      body COM -- ``State.body_f`` plus contact and FREE/DISTANCE wrenches)
 
-    Their sum is the spatial wrench transmitted from the parent through the
-    inbound joint, expressed in Featherstone's internal solve frame. For
-    floating-root articulations this frame is translated to the root COM; for
-    other roots it remains at the world origin. We translate it to the body's
-    COM (matching :class:`SolverMuJoCo` and the ``SolverBase.Observables.body_parent_f``
-    convention -- linear ``[N]`` first, torque ``[N·m]`` referenced to the COM,
-    both in world frame).
+    ``body_f_s`` and ``body_ft_s`` are in Featherstone's internal solve
+    frame, but ``body_f_ext`` is not: ``eval_rigid_tau`` keeps its
+    public -> solve-frame shift a pure local computation (writing the
+    shifted wrench back into ``body_f_ext`` would mutate a kernel input
+    and corrupt the recompute-based adjoint), so this kernel repeats the
+    same shift + negation locally before summing. Their sum is the spatial
+    wrench transmitted from the parent through the inbound joint, still in
+    the solve frame. For floating-root articulations this frame is
+    translated to the root COM; for other roots it remains at the world
+    origin. We translate it to the body's COM (matching
+    :class:`SolverMuJoCo` and the ``SolverBase.Observables.body_parent_f``
+    convention -- linear ``[N]`` first, torque ``[N·m]`` referenced to the
+    COM, both in world frame).
 
     The kernel does not special-case roots: it writes the same
     RNEA-backward-pass sum for every body.  For a FREE-jointed body that
@@ -2637,11 +2644,18 @@ def compute_body_parent_f(
     """
     tid = wp.tid()
 
-    f_s = body_f_s[tid] + body_ft_s[tid] + body_f_ext[tid]
+    f_ext_public = body_f_ext[tid]
+    force = wp.spatial_top(f_ext_public)
+    torque_com = wp.spatial_bottom(f_ext_public)
+    r_com = wp.transform_get_translation(body_q_com[tid]) - body_solve_origin[tid]
+    # Same public -> solve-frame shift + negation as eval_rigid_tau, whose
+    # result that kernel no longer leaves behind in body_f_ext.
+    f_ext = -wp.spatial_vector(force, torque_com + wp.cross(r_com, force))
+
+    f_s = body_f_s[tid] + body_ft_s[tid] + f_ext
     f_lin = wp.spatial_top(f_s)
     f_ang_at_origin = wp.spatial_bottom(f_s)
 
-    r_com = wp.transform_get_translation(body_q_com[tid]) - body_solve_origin[tid]
     f_ang_at_com = f_ang_at_origin - wp.cross(r_com, f_lin)
 
     body_parent_f[tid] = wp.spatial_vector(f_lin, f_ang_at_com)

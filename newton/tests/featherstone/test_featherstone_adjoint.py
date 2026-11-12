@@ -30,6 +30,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.solvers.featherstone.kernels import (
+    compute_body_parent_f,
     eval_dense_cholesky_batched,
     eval_dense_solve_batched,
 )
@@ -717,6 +718,75 @@ def test_rigid_tau_external_wrench(test, device):
         )
 
 
+def test_body_parent_f_wrench_contract(test, device):
+    """Verify compute_body_parent_f's public-wrench shift into the solve frame.
+
+    compute_body_parent_f reports body_f_s + body_ft_s + body_f_ext as the
+    per-body joint-reaction observable. Pre-PR, eval_rigid_tau left the
+    solve-frame-converted wrench behind in body_f_ext and this kernel could
+    sum it as-is; since the adjoint fix made that conversion a pure local
+    computation, the raw public wrench (world-frame force, COM-referenced
+    torque) reaches this kernel and the shift + negation must happen here.
+    Setup: zero bias (body_f_s = body_ft_s = 0), no descendants, nonzero
+    COM offset r per body. The transmitted wrench must then read (-F, -tau)
+    at the COM -- exactly the pre-PR output, because the r x F term that
+    the solve-frame shift introduces is cancelled by the COM re-reference
+    -- while a kernel that sums the raw public wrench produces
+    (F, tau - r x F) on the same input. The input buffer must also stay
+    unmutated: shifting it in place is the contract the write-back removal
+    retired (it corrupts the recompute-based adjoint's replay).
+    """
+    n = 3
+    F = np.array([[1.5, -2.0, 0.75], [-0.4, 0.9, 2.2], [0.6, 0.3, -1.1]], dtype=np.float64)
+    TAU = np.array([[0.1, 0.2, -0.3], [0.5, -0.15, 0.05], [-0.25, 0.4, 0.2]], dtype=np.float64)
+    COM = np.array([[0.7, -0.35, 1.1], [-1.2, 0.5, 0.3], [0.2, 0.8, -0.9]], dtype=np.float64)
+    ORIGIN = np.array([[0.15, 0.4, -0.6], [0.3, -0.2, 0.55], [-0.4, 0.1, 0.7]], dtype=np.float64)
+    r = COM - ORIGIN
+    test.assertTrue(
+        np.all(np.linalg.norm(r, axis=1) > 0.1),
+        "harness broken - the COM offsets are not nonzero as the setup requires",
+    )
+
+    body_q_com = wp.array(
+        [wp.transform(tuple(COM[i]), (0.0, 0.0, 0.0, 1.0)) for i in range(n)],
+        dtype=wp.transform,
+        device=device,
+    )
+    body_solve_origin = wp.array(ORIGIN.astype(np.float32), dtype=wp.vec3, device=device)
+    body_f_s = wp.zeros(n, dtype=wp.spatial_vector, device=device)
+    body_ft_s = wp.zeros(n, dtype=wp.spatial_vector, device=device)
+    f_ext_np = np.concatenate([F, TAU], axis=1).astype(np.float32)
+    body_f_ext = wp.array(f_ext_np, dtype=wp.spatial_vector, device=device)
+    body_parent_f = wp.empty(n, dtype=wp.spatial_vector, device=device)
+
+    wp.launch(
+        compute_body_parent_f,
+        dim=n,
+        inputs=[body_q_com, body_solve_origin, body_f_s, body_ft_s, body_f_ext],
+        outputs=[body_parent_f],
+        device=device,
+    )
+
+    out = body_parent_f.numpy().astype(np.float64)
+    for i in range(n):
+        test.assertTrue(
+            np.allclose(out[i, :3], -F[i], atol=1e-5),
+            f"body {i}: linear part {out[i, :3]} != {-F[i]} - the public wrench's "
+            "force was not negated before the sum (raw-buffer contract)",
+        )
+        test.assertTrue(
+            np.allclose(out[i, 3:], -TAU[i], atol=1e-5),
+            f"body {i}: torque at COM {out[i, 3:]} != {-TAU[i]} - the wrench was not "
+            "shifted into the solve frame (the r x F shift term must cancel against "
+            "the COM re-reference)",
+        )
+    test.assertTrue(
+        np.array_equal(body_f_ext.numpy().astype(np.float64), f_ext_np.astype(np.float64)),
+        "body_f_ext was mutated - the public -> solve-frame shift must stay a "
+        "pure local computation (the write-back the adjoint fix retired)",
+    )
+
+
 @wp.kernel
 def _joint_qd_loss_kernel(joint_qd: wp.array[float], loss: wp.array[float]):
     loss[0] = 0.3 * joint_qd[9] - 0.7 * joint_qd[13] + 1.1 * joint_qd[3] - 0.4 * joint_qd[16]
@@ -770,6 +840,12 @@ add_function_test(
     TestFeatherstoneAdjoint,
     "test_rigid_tau_external_wrench",
     test_rigid_tau_external_wrench,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestFeatherstoneAdjoint,
+    "test_body_parent_f_wrench_contract",
+    test_body_parent_f_wrench_contract,
     devices=get_test_devices(),
 )
 add_function_test(
