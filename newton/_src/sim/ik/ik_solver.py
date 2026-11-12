@@ -19,7 +19,7 @@ from .ik_lm_optimizer import IKOptimizerLM
 from .ik_objectives import IKObjective
 
 
-class IKOptimizer(str, Enum):
+class IKOptimizer(str, Enum):  # noqa: UP042
     """Optimizer backends supported by :class:`~newton.ik.IKSolver`."""
 
     LM = "lm"
@@ -29,7 +29,7 @@ class IKOptimizer(str, Enum):
     """Use an L-BFGS quasi-Newton optimizer."""
 
 
-class IKSampler(str, Enum):
+class IKSampler(str, Enum):  # noqa: UP042
     """Sampling strategies used by :class:`~newton.ik.IKSolver` before optimization."""
 
     NONE = "none"

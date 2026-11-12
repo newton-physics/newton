@@ -73,7 +73,7 @@ class ClampingCurrentDuty(ClampingBase):
     This is a quasi-static current estimate, not an inductive current controller.
     """
 
-    class VoltageSource(str, Enum):
+    class VoltageSource(str, Enum):  # noqa: UP042
         """Voltage used by the firmware's current estimate."""
 
         INPUT = "input"

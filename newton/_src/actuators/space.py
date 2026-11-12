@@ -4,7 +4,7 @@
 from enum import Enum
 
 
-class DriveOutputSpace(str, Enum):
+class DriveOutputSpace(str, Enum):  # noqa: UP042
     """Physical interpretation of a drive output or clamping input."""
 
     EFFORT = "effort"

@@ -48,8 +48,6 @@ jobs:
       - name: Check deprecation allowlists
         run: uv run --no-project --with packaging==26.2 scripts/ci/check_deprecation_allowlists.py
 
-      - name: Python compatibility (Python 3.10)
-        run: uv run --python 3.10 python -m unittest newton.tests.test_python_compatibility
       - name: Python compatibility (Python 3.11)
         run: uv run --python 3.11 python -m unittest newton.tests.test_python_compatibility
       - name: Python compatibility (Python 3.12)
@@ -85,8 +83,6 @@ jobs:
         with:
           version: "0.13.5"
           prune-cache: true
-      - name: Test dependency resolution (Python 3.10)
-        run: uv sync --dry-run --python 3.10 --extra dev
       - name: Test dependency resolution (Python 3.11)
         run: uv sync --dry-run --python 3.11 --extra dev
       - name: Test dependency resolution (Python 3.12)

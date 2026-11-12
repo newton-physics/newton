@@ -3,7 +3,7 @@
 
 """Compatibility checks that must hold on every supported Python version.
 
-``pyproject.toml`` declares support down to Python 3.10, so the stable public
+``pyproject.toml`` declares support down to Python 3.11, so the stable public
 API has to resolve there. Resolving a solver export imports the module that
 defines it, and annotations in that module are evaluated at import time unless
 postponed -- which is how a Python 3.10 ``TypeError`` reached users through

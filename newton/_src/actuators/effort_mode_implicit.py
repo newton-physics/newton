@@ -49,7 +49,7 @@ __all__ = ["ImplicitOptions", "JointSpaceResponse"]
 class ImplicitOptions:
     """Configuration for implicit actuation; see :meth:`Actuator.set_effort_mode_implicit`."""
 
-    class WarmStart(str, Enum):
+    class WarmStart(str, Enum):  # noqa: UP042
         """Initial impulse guess for the Newton solve."""
 
         EXPLICIT = "explicit"
