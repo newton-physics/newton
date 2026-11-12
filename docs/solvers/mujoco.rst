@@ -563,7 +563,7 @@ DC-motor trajectory parity with native MuJoCo is tested with ``integrator="euler
 MuJoCo-Warp's approximate implicit DC-motor derivatives can produce different
 trajectories with ``implicitfast``.
 
-When using ``separate_worlds=True``, corresponding high-level ``<dcmotor>``
+In multi-world models, corresponding high-level ``<dcmotor>``
 actuators (including those created by the helper) must have identical parameters because MuJoCo-Warp replicates one
 compiled template model across worlds.
 
@@ -904,9 +904,9 @@ parsed into MuJoCo's geom-pair contact structures by
 Multi-world support
 -------------------
 
-Constructing :class:`~newton.solvers.SolverMuJoCo` with
-``separate_worlds=True`` (the default for GPU mode with multiple
-worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
+For a model with multiple worlds, :class:`~newton.solvers.SolverMuJoCo`
+builds a shared MuJoCo topology across worlds via ``mujoco_warp``. The native
+MuJoCo CPU backend (``use_mujoco_cpu=True``) supports single-world models only.
 Bodies, joints, equality constraints, mimic relationships, primitive geoms,
 and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh,
 heightfield, and cone assets, scales, and convex-hull counts may differ across worlds. Collision

@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton import ModelFlags
+from newton import ModelFlags, NewtonDeprecationWarning
 from newton._src.solvers.mujoco.constants import HINGE_CONNECT_HALF_SPAN
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton.solvers import SolverMuJoCo
@@ -375,7 +375,6 @@ class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, 
             model,
             disable_contacts=True,
             use_mujoco_cpu=True,
-            separate_worlds=True,
             integrator="euler",
             iterations=1,
             tolerance=0.0,
@@ -819,7 +818,6 @@ class TestLoopJointConnectConstraintMuJoCoWarp(TestLoopJointConnectConstraintBas
             model,
             disable_contacts=True,
             use_mujoco_cpu=False,
-            separate_worlds=True,
             njmax=100,
             integrator="euler",
         )
@@ -827,13 +825,15 @@ class TestLoopJointConnectConstraintMuJoCoWarp(TestLoopJointConnectConstraintBas
 
 class TestLoopJointConnectConstraintMuJoCoCPU(TestLoopJointConnectConstraintBase, unittest.TestCase):
     def _create_solver(self, model):
-        return SolverMuJoCo(
-            model,
-            disable_contacts=True,
-            use_mujoco_cpu=True,
-            separate_worlds=True,
-            integrator="euler",
-        )
+        # TODO: remove with separate_worlds.
+        with self.assertWarns(NewtonDeprecationWarning):
+            return SolverMuJoCo(
+                model,
+                disable_contacts=True,
+                separate_worlds=True,
+                use_mujoco_cpu=True,
+                integrator="euler",
+            )
 
 
 class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase):
@@ -1008,7 +1008,6 @@ class TestMixedWeldAndConnectMuJoCoWarp(TestMixedWeldAndConnectLoopJointBase, un
             model,
             disable_contacts=True,
             use_mujoco_cpu=False,
-            separate_worlds=True,
             njmax=100,
             integrator="euler",
         )
@@ -1016,13 +1015,15 @@ class TestMixedWeldAndConnectMuJoCoWarp(TestMixedWeldAndConnectLoopJointBase, un
 
 class TestMixedWeldAndConnectMuJoCoCPU(TestMixedWeldAndConnectLoopJointBase, unittest.TestCase):
     def _create_solver(self, model):
-        return SolverMuJoCo(
-            model,
-            disable_contacts=True,
-            use_mujoco_cpu=True,
-            separate_worlds=True,
-            integrator="euler",
-        )
+        # TODO: remove with separate_worlds.
+        with self.assertWarns(NewtonDeprecationWarning):
+            return SolverMuJoCo(
+                model,
+                disable_contacts=True,
+                separate_worlds=True,
+                use_mujoco_cpu=True,
+                integrator="euler",
+            )
 
 
 class TestConnectAnchorRefPoseBase(TestEqualityConstraintWithSimStepBase):
@@ -1214,7 +1215,6 @@ class TestConnectAnchorRefPoseMuJoCoCPU(TestConnectAnchorRefPoseBase, unittest.T
             model,
             disable_contacts=True,
             use_mujoco_cpu=True,
-            separate_worlds=True,
             integrator="euler",
         )
 

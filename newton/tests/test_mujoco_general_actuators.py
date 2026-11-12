@@ -696,7 +696,7 @@ class TestMuJoCoActuators(unittest.TestCase):
             [SolverMuJoCo.CtrlSource.CTRL_DIRECT, SolverMuJoCo.CtrlSource.CTRL_DIRECT],
         )
 
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
@@ -726,7 +726,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         model = builder.finalize()
 
         with self.assertRaisesRegex(ValueError, "identical high-level DC-motor parameters"):
-            SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+            SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
         dc_type = SolverMuJoCo.CtrlType.DCMOTOR
         for worlds, types in (
@@ -737,7 +737,7 @@ class TestMuJoCoActuators(unittest.TestCase):
                 model.mujoco.actuator_world.assign(worlds)
                 model.mujoco.ctrl_type.assign(types)
                 with self.assertRaisesRegex(ValueError, "matching .*actuator layouts"):
-                    SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+                    SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
         # Template-only fields must match even on compiled GENERAL rows.
         model.mujoco.actuator_world.assign([0, 1])
@@ -749,7 +749,7 @@ class TestMuJoCoActuators(unittest.TestCase):
             changed[1] += 1
             attribute.assign(changed)
             with self.subTest(attribute=name), self.assertRaisesRegex(ValueError, f"identical.*mujoco:{name}"):
-                SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+                SolverMuJoCo(model, iterations=1, disable_contacts=True)
             attribute.assign(original)
 
         # Polynomial-only damping also folds the construction-time gear.
@@ -758,7 +758,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         gears[1, 0] *= 2.0
         model.mujoco.actuator_gear.assign(gears)
         with self.assertRaisesRegex(ValueError, "actuator_gear"):
-            SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+            SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
     def test_mjcf_dcmotor_runtime_updates_noncompiled_properties(self):
         """Update independent DC-motor properties without replacing compiled parameters."""
@@ -1127,7 +1127,7 @@ class TestMuJoCoActuators(unittest.TestCase):
             self.assertEqual(ctrl_source[offset + 6], SolverMuJoCo.CtrlSource.CTRL_DIRECT)
             self.assertEqual(ctrl_source[offset + 7], SolverMuJoCo.CtrlSource.CTRL_DIRECT)  # tendon
 
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         mj_model = solver.mj_model
 
         self.assertEqual(mj_model.nu, 8)
@@ -1170,7 +1170,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         newton_gainprm = model.mujoco.actuator_gainprm.numpy()
         newton_biasprm = model.mujoco.actuator_biasprm.numpy()
 
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         mj_model = solver.mj_model
 
         self.assertEqual(mj_model.nu, 8)
@@ -1249,7 +1249,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         main_builder.add_world(robot_builder)
         model = main_builder.finalize()
 
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
         initial_gainprm = solver.mjw_model.actuator_gainprm.numpy().copy()
 
@@ -1311,7 +1311,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         main_builder.add_world(robot_builder)
         model = main_builder.finalize()
 
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
         initial_gainprm = solver.mjw_model.actuator_gainprm.numpy().copy()
         initial_biasprm = solver.mjw_model.actuator_biasprm.numpy().copy()
@@ -1435,7 +1435,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         builder.add_usd(get_asset("cartpole_mjc.usda"))
 
         model = builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=False)
+        solver = SolverMuJoCo(model)
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "actuator_gear"))
         np.testing.assert_array_equal(model.mujoco.actuator_ctrllimited.numpy(), [True])
@@ -2028,7 +2028,7 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
         site_indices = [i for i in range(len(trntype)) if trntype[i] == site_trntype]
         self.assertEqual(len(site_indices), 1, "Expected exactly one SITE actuator parsed from USD")
 
-        solver = SolverMuJoCo(model, separate_worlds=False)
+        solver = SolverMuJoCo(model)
         mj_model = solver.mj_model
 
         import mujoco
@@ -2093,7 +2093,7 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
         np.testing.assert_allclose(qfrc_newton, qfrc_native, atol=1e-4)
 
     def test_site_actuator_multiworld_separate(self):
-        """With separate_worlds=True, site actuators in each world are dispatched correctly."""
+        """Site actuators in each world are dispatched correctly."""
         robot_builder = ModelBuilder()
         robot_builder.add_mjcf(MJCF_SITE_ACTUATOR, ctrl_direct=True)
 
@@ -2113,7 +2113,7 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
 
         # Construction must not raise -- exercises the per-world shape filter
         # for SITE trntype in _init_mjc_model_for_world.
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
         import mujoco
 
@@ -2124,7 +2124,7 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
         self.assertEqual(
             len(site_acts_per_world),
             1,
-            "Each separate_worlds=True MuJoCo model should export exactly one site actuator",
+            "The template MuJoCo model should export exactly one site actuator",
         )
 
     def test_site_actuator_required_shape_preserved_with_include_sites_false(self):

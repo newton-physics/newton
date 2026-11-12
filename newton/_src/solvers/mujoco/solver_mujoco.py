@@ -548,6 +548,13 @@ _UPDATE_DATA_INTERVAL_DEPRECATION_MSG = (
     "Remove its use to adopt that behavior now."
 )
 
+_SEPARATE_WORLDS_DEPRECATION_MSG = (
+    "SolverMuJoCo separate_worlds is deprecated in Newton 1.9 and will be removed; "
+    "multi-world models always map each world to its own MuJoCo world. Remove its use. "
+    "Stepping only the first world of a multi-world model with use_mujoco_cpu=True "
+    "has no replacement; build a single-world model instead."
+)
+
 
 class SolverMuJoCo(SolverBase, CouplingInterface):
     """
@@ -4509,11 +4516,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Direct actuators keep their ``dampratio`` (a positive ``biasprm[2]``), which is resolved
         from each world's current physical inertia and position gain whenever model changes
         refresh MuJoCo's constants.
-        With ``use_mujoco_cpu=True``, only the template world is simulated when ``separate_worlds=True``.
+        ``use_mujoco_cpu=True`` supports single-world models only.
 
         Args:
             model: The model to be simulated.
-            separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
+            separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world; with
+                ``use_mujoco_cpu=True``, only the first world is simulated. If None, each world of a
+                multi-world model is mapped to its own MuJoCo world.
+
+                .. deprecated:: 1.9
+                    Passing any value is deprecated; the mapping will always follow the model's world count.
             njmax: Maximum number of constraints per world. If None, a default
                 value is estimated automatically. An explicit value is preserved
                 unless it cannot hold the initial MuJoCo constraints; in that case,
@@ -4596,6 +4608,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """
         if update_data_interval is not None:
             warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        if separate_worlds is not None:
+            warnings.warn(_SEPARATE_WORLDS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         super().__init__(model)
         self._kinematic_switchable_roots = kinematic_switchable_roots
         if use_speculative_contacts and use_mujoco_contacts:
@@ -4896,7 +4910,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         stacklevel=2,
                     )
         if separate_worlds is None:
-            separate_worlds = not use_mujoco_cpu and model.world_count > 1
+            separate_worlds = model.world_count > 1
+            if separate_worlds and use_mujoco_cpu:
+                raise ValueError(
+                    f"SolverMuJoCo with use_mujoco_cpu=True supports only single-world models; got "
+                    f"world_count={model.world_count}. Use use_mujoco_cpu=False to simulate multiple worlds."
+                )
         # Buffers for the fast-path contact conversion optimisation.
         # See _convert_contacts_to_mjwarp / convert_newton_contacts_to_mjwarp_kernel.
         # Initialised before _convert_to_mjc because notify_model_changed (called
@@ -7030,7 +7049,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Args:
             model: The Newton model to convert.
             state: The Newton state to convert (optional).
-            separate_worlds: If True, each world is a separate MuJoCo simulation. If None, defaults to True for GPU mode (not use_mujoco_cpu).
+            separate_worlds: If True, each world is a separate MuJoCo simulation. If None, defaults to True.
             iterations: Maximum solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Maximum line search iterations. If None, uses model custom attribute or MuJoCo's default (50).
             njmax: Maximum number of constraints per world.
@@ -7072,7 +7091,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if not separate_worlds and model.world_count > 1:
             raise ValueError(
                 f"separate_worlds=False is only supported for single-world models. "
-                f"Got world_count={model.world_count}. Use separate_worlds=True for multi-world models."
+                f"Got world_count={model.world_count}. Remove the deprecated separate_worlds argument."
             )
 
         self._option_world = self._resolve_option_world(model, separate_worlds)
@@ -11715,7 +11734,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             rows = np.flatnonzero((actuator_world >= 0) & (actuator_world < world_count))
             row_counts = np.bincount(actuator_world[rows], minlength=world_count)
             if np.any(row_counts != row_counts[0]):
-                raise ValueError("SolverMuJoCo with separate_worlds=True requires matching actuator layouts.")
+                raise ValueError("SolverMuJoCo requires matching actuator layouts across worlds.")
             rows = rows[np.argsort(actuator_world[rows], kind="stable")].reshape(world_count, row_counts[0])
             for name in ("actuator_damping", "actuator_dampingpoly", "actuator_armature", "actuator_ctrlspec"):
                 attribute = getattr(model.mujoco, name, None)
@@ -11723,8 +11742,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     values = attribute.numpy()[rows]
                     if np.any(values != values[0]):
                         raise ValueError(
-                            "SolverMuJoCo with separate_worlds=True requires "
-                            f"identical actuator template parameters (mujoco:{name}) across worlds."
+                            "SolverMuJoCo requires identical actuator template parameters "
+                            f"(mujoco:{name}) across worlds."
                         )
             dcmotor.validate_worlds(model, rows, dcmotor_type=SolverMuJoCo.CtrlType.DCMOTOR)
 
@@ -11892,9 +11911,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         .. note::
 
-            The MuJoCo viewer only supports rendering Newton models with a single world,
-            unless ``use_mujoco_cpu`` is ``True`` or the solver was initialized with
-            ``separate_worlds`` set to ``False``.
+            The MuJoCo viewer shows only the first world of a multi-world model.
 
             The MuJoCo viewer is only meant as a debugging tool. It shows the geoms compiled at
             construction, so it rejects models with body variants.

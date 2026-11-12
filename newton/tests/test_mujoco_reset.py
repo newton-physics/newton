@@ -106,7 +106,9 @@ class TestMuJoCoReset(unittest.TestCase):
     def test_native_cpu_reset_honors_template_world_mask(self):
         """Reset native MuJoCo buffers only when local world 0 is selected."""
         self.model = _build_two_world_model(world_count=2)
-        solver = SolverMuJoCo(self.model, separate_worlds=True, use_mujoco_cpu=True)
+        # TODO: remove with separate_worlds.
+        with self.assertWarns(NewtonDeprecationWarning):
+            solver = SolverMuJoCo(self.model, separate_worlds=True, use_mujoco_cpu=True)
         data = solver.mj_data
         buffers = tuple(
             buffer
@@ -138,7 +140,7 @@ class TestMuJoCoReset(unittest.TestCase):
     def test_native_cpu_masked_joint_reset_preserves_template_state(self):
         """Preserve native MuJoCo coordinates when local world 0 is unselected."""
         self.model = _build_two_world_model(world_count=2)
-        # TODO: remove with update_data_interval.
+        # TODO: remove with separate_worlds and update_data_interval.
         with self.assertWarns(NewtonDeprecationWarning):
             solver = SolverMuJoCo(
                 self.model,
