@@ -30,9 +30,11 @@ class UI:
             self.imgui = imgui
             self.giz = imguizmo.im_guizmo
             self.is_available = True
-        except ImportError:
+        except ImportError as e:
             self.is_available = False
-            logger.warning("imgui_bundle not found. Install with: pip install imgui-bundle")
+            logger.warning(
+                'ViewerGL GUI is unavailable: %s. Install its dependencies with `pip install "newton[examples]"`.', e
+            )
             return
 
         self.window = window

@@ -43,6 +43,16 @@ class TestViewerUI(unittest.TestCase):
         self.ui.is_available = True
         self.ui._frame_time = None
 
+    def test_missing_dependency_is_named(self) -> None:
+        """Report the import that failed instead of blaming imgui_bundle."""
+        with (
+            patch_sys_module("imgui_bundle.python_backends", SimpleNamespace()),
+            self.assertLogs("newton._src.viewer.gl.gui", level="WARNING") as logs,
+        ):
+            ui = UI(window=None)
+        self.assertFalse(ui.is_available)
+        self.assertIn("pyglet_backend", logs.output[0])
+
     def test_frame_delta(self) -> None:
         """Advance ImGui time by elapsed frame durations, including a repeated timestamp."""
         elapsed = 0.0
