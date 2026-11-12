@@ -19,8 +19,8 @@ import warp as wp
 
 from ...core.math import FLOAT32_EPS
 from ...core.types import mat66f, vec6f
-from ...linalg.factorize.llt_blocked_rcm import _sync_threads, get_float32_array_offset_ptr
-from .coupling import PackedCoupling, read_packed_coupling
+from ...linalg.factorize.llt_blocked_rcm import _sync_threads
+from .coupling import PackedCoupling, _count_bits
 from .kernels import BILATERAL_DIAGONAL_FLOOR, _compact_schur_fits
 from .sparse_kernels import _shuffle_lane_32, _unilateral_nzb_offsets
 
@@ -210,20 +210,6 @@ def _build_body_masks(path: SparseDVIPath, metadata: dict) -> tuple[wp.array, wp
             if masks[body] & (1 << int(col)):
                 masks[body] |= 1 << int(row)
     return seeds, wp.array(np.asarray(masks, dtype=np.uint64), dtype=wp.uint64, device=path.device)
-
-
-@wp.func_native("""
-#if defined(__CUDA_ARCH__)
-unsigned long long bits = (unsigned long long)value;
-for (int delta = 16; delta > 0; delta >>= 1) {
-    bits |= __shfl_xor_sync(0xffffffff, bits, delta);
-}
-return bits;
-#else
-return value;
-#endif
-""")
-def _warp_or_mask(value: wp.uint64) -> wp.uint64: ...
 
 
 @wp.kernel
@@ -721,80 +707,76 @@ def make_response_kernel(use_packed: bool):
         limit_offsets: wp.array[wp.int32],
         contact_offsets: wp.array[wp.int32],
     ):
-        w, group, lane = wp.tid()
+        # One thread forward-solves one unilateral column; a warp covers 32
+        # columns of a world, so factor loads are broadcast across the warp.
+        w, col = wp.tid()
         nu = dim[w] - njc[w]
-        if group * 16 >= nu:
+        if col >= nu:
             return
-        ll = wp.array(ptr=get_float32_array_offset_ptr(factors, w * nb * 36), shape=(nb * 6, 6), dtype=wp.float32)
+        base = w * nb * 36
         reach = wp.uint64(0)
         if body_reach:
-            unilateral = group * 16 + lane % 16
-            if unilateral < nu:
-                blocks = _unilateral_nzb_offsets(
-                    unilateral,
-                    njc[w],
-                    nbc[w],
-                    nbc[w] + nl[w],
-                    bcio[w],
-                    lio[w],
-                    cio[w],
-                    bsm_nzb_start[w] + bsm_num_nzb[w],
-                    bsm_nzb_coords,
-                    limit_indices,
-                    contact_indices,
-                    bounded_offsets,
-                    limit_offsets,
-                    contact_offsets,
-                )
-                for side in range(2):
-                    if blocks[side] >= 0:
-                        reach = reach | body_reach[bsm_nzb_coords[blocks[side], 1] // 6]
-            reach = _warp_or_mask(reach)
-        for row in range(ng):
-            value = wp.tile_zeros(shape=(6, 16), dtype=wp.float32, storage="shared")
-            if body_reach and (reach & (wp.uint64(1) << wp.uint64(row))) == wp.uint64(0):
-                # Contacts can move to another branch: overwrite formerly active
-                # response rows instead of retaining values from the previous solve.
-                target = wp.array(
-                    ptr=get_float32_array_offset_ptr(response, rio[w] + offsets[row] * nu),
-                    shape=(lengths[row], nu),
-                    dtype=wp.float32,
-                )
-                wp.tile_store(target, value, offset=(0, group * 16))
-                continue
-            for entry in range(lane, 96, 32):
-                local = entry // 16
-                col = group * 16 + entry % 16
-                original = order[row * 6 + local]
-                v = wp.float32(0)
-                if original >= 0 and col < nu:
-                    if wp.static(use_packed):
-                        v = scale[vio[w] + original] * read_packed_coupling(
-                            packed_values, packed_masks, w, col, row, local, packed_width, packed_slots
-                        )
-                    else:
-                        v = scale[vio[w] + original] * coupling[rio[w] + original * nu + col]
-                value[local, entry % 16] = v
-            _sync_threads()
-            for entry in range(starts[row], starts[row + 1]):
-                block = previous[entry]
-                left = wp.tile_load(ll, shape=(6, 6), offset=(block * 6, 0))
-                previous_row = cols[block]
-                source = wp.array(
-                    ptr=get_float32_array_offset_ptr(response, rio[w] + offsets[previous_row] * nu),
-                    shape=(lengths[previous_row], nu),
-                    dtype=wp.float32,
-                )
-                right = wp.tile_load(source, shape=(6, 16), offset=(0, group * 16))
-                wp.tile_matmul(left, right, value, alpha=-1.0)
-            d = wp.tile_load(ll, shape=(6, 6), offset=(diagonal[row] * 6, 0))
-            wp.tile_lower_solve_inplace(d, value)
-            target = wp.array(
-                ptr=get_float32_array_offset_ptr(response, rio[w] + offsets[row] * nu),
-                shape=(lengths[row], nu),
-                dtype=wp.float32,
+            blocks = _unilateral_nzb_offsets(
+                col,
+                njc[w],
+                nbc[w],
+                nbc[w] + nl[w],
+                bcio[w],
+                lio[w],
+                cio[w],
+                bsm_nzb_start[w] + bsm_num_nzb[w],
+                bsm_nzb_coords,
+                limit_indices,
+                contact_indices,
+                bounded_offsets,
+                limit_offsets,
+                contact_offsets,
             )
-            wp.tile_store(target, value, offset=(0, group * 16))
+            for side in range(2):
+                if blocks[side] >= 0:
+                    reach = reach | body_reach[bsm_nzb_coords[blocks[side], 1] // 6]
+        packed_mask = wp.uint64(0)
+        if wp.static(use_packed):
+            packed_mask = packed_masks[w * packed_width + col]
+        for row in range(ng):
+            target = rio[w] + offsets[row] * nu + col
+            value = vec6f()
+            # Unreached rows are exactly zero; overwrite them, since contacts can
+            # move to another branch and leave stale responses behind.
+            if not body_reach or (reach & (wp.uint64(1) << wp.uint64(row))) != wp.uint64(0):
+                if wp.static(use_packed):
+                    bit = wp.uint64(1) << wp.uint64(row)
+                    if (packed_mask & bit) != wp.uint64(0):
+                        slot = _count_bits(packed_mask & (bit - wp.uint64(1)))
+                        for local in range(6):
+                            original = order[row * 6 + local]
+                            if original >= 0:
+                                coefficient = packed_values[
+                                    ((w * packed_slots + slot) * 6 + local) * packed_width + col
+                                ]
+                                value[local] = scale[vio[w] + original] * coefficient
+                else:
+                    for local in range(6):
+                        original = order[row * 6 + local]
+                        if original >= 0:
+                            value[local] = scale[vio[w] + original] * coupling[rio[w] + original * nu + col]
+                for entry in range(starts[row], starts[row + 1]):
+                    block = previous[entry]
+                    previous_row = cols[block]
+                    source = rio[w] + offsets[previous_row] * nu + col
+                    offset = base + block * 36
+                    for j in range(lengths[previous_row]):
+                        y = response[source + j * nu]
+                        for i in range(6):
+                            value[i] -= factors[offset + i * 6 + j] * y
+                offset = base + diagonal[row] * 36
+                for i in range(6):
+                    total = value[i]
+                    for j in range(i):
+                        total -= factors[offset + i * 6 + j] * value[j]
+                    value[i] = total / factors[offset + i * 7]
+            for i in range(lengths[row]):
+                response[target + i * nu] = value[i]
 
     return response
 
@@ -1159,9 +1141,9 @@ class JointBlockSolver:
                 path.jacobians.limit_constraint_nzb_offsets,
                 path.jacobians.contact_constraint_nzb_offsets,
             ]
-        wp.launch_tiled(
+        wp.launch(
             make_response_kernel(coupling is not None),
-            dim=(self._worlds, (self._n + 15) // 16),
+            dim=(self._worlds, (self._n + 31) // 32 * 32),
             inputs=[
                 coupling.masks if coupling is not None else None,
                 coupling.values if coupling is not None else None,
