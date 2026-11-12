@@ -713,13 +713,21 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
         xml = """<mujoco><default><default class="explicit"><geom friction="1"/></default></default>
             <worldbody><geom size=".1" friction="1"/><geom size=".1" class="explicit"/>
             <geom size=".1" friction="0"/><geom size=".1"/></worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.default_shape_cfg.mu = 0.5
-        builder.default_shape_cfg.mu_static = 0.8
-        builder.add_mjcf_native(xml)
-        model = builder.finalize()
-        np.testing.assert_allclose(model.shape_material_mu.numpy(), [1, 1, 0, 0.5])
-        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [1, 1, 0, 0.8])
+        for discard in (False, True):
+            with self.subTest(discardvisual=discard):
+                source = xml
+                if discard:
+                    source = source.replace(
+                        "<worldbody>",
+                        '<compiler discardvisual="true"/><worldbody><geom size=".1" contype="0" conaffinity="0"/>',
+                    )
+                builder = newton.ModelBuilder()
+                builder.default_shape_cfg.mu = 0.5
+                builder.default_shape_cfg.mu_static = 0.8
+                builder.add_mjcf_native(source)
+                model = builder.finalize()
+                np.testing.assert_allclose(model.shape_material_mu.numpy(), [1, 1, 0, 0.5])
+                np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [1, 1, 0, 0.8])
 
     def test_native_builder_defaults_per_import(self):
         for gap in (None, 0.0, 0.2):

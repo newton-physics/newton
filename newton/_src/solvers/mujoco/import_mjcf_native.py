@@ -739,7 +739,9 @@ def _validate(spec: mujoco.MjSpec) -> None:
             dcmotor.parse_input(int(actuator.ctrlspec) or 8)
 
 
-def _parse_spec(builder: ModelBuilder, source: str, scale: float) -> tuple[mujoco.MjSpec, list[bool], list[bool]]:
+def _parse_spec(
+    builder: ModelBuilder, source: str, scale: float
+) -> tuple[mujoco.MjSpec, set[mujoco.MjsJoint], set[mujoco.MjsGeom]]:
     import mujoco
 
     is_xml = source.lstrip().startswith("<")
@@ -785,18 +787,19 @@ def _parse_spec(builder: ModelBuilder, source: str, scale: float) -> tuple[mujoc
     joint_defaults.set("springref", "1")
     geom_defaults.set("friction", "2")
     probe = parse()
-    default_limits = [
-        not np.array_equal(joint.solref_limit, other.solref_limit, equal_nan=True)
+    default_limits = {
+        joint
         for joint, other in zip(spec.joints, probe.joints, strict=True)
-    ]
-    default_friction = [
-        not np.array_equal(geom.friction[:1], other.friction[:1], equal_nan=True)
+        if not np.array_equal(joint.solref_limit, other.solref_limit, equal_nan=True)
+    }
+    default_friction = {
+        geom
         for geom, other in zip(spec.geoms, probe.geoms, strict=True)
-    ]
-    for geom, omitted in zip(spec.geoms, default_friction, strict=True):
-        if omitted:
-            cfg = builder.default_shape_cfg
-            geom.friction[:] = (cfg.mu, cfg.mu_torsional, cfg.mu_rolling)
+        if not np.array_equal(geom.friction[:1], other.friction[:1], equal_nan=True)
+    }
+    for geom in default_friction:
+        cfg = builder.default_shape_cfg
+        geom.friction[:] = (cfg.mu, cfg.mu_torsional, cfg.mu_rolling)
     for joint, other in zip(spec.joints, probe.joints, strict=True):
         if (
             builder.default_joint_cfg.rest_q is not None
@@ -1075,9 +1078,9 @@ def parse_mjcf(
                     native_joint_dampingpoly=source_joint.damping[1:],
                     native_joint_stiffnesspoly=source_joint.stiffness[1:],
                     limit_margin=model.jnt_margin[native_joint],
-                    solreflimit=(0.0, 0.0) if default_limits[native_joint] else model.jnt_solref[native_joint],
+                    solreflimit=(0.0, 0.0) if source_joint in default_limits else model.jnt_solref[native_joint],
                     solimplimit=model.jnt_solimp[native_joint],
-                    solreflimit_mode=default_limit_mode if default_limits[native_joint] else SOLREF_MODE_RAW,
+                    solreflimit_mode=default_limit_mode if source_joint in default_limits else SOLREF_MODE_RAW,
                     solreflimit_gain_baseline=gains,
                     solreffriction=model.dof_solref[source_dof],
                     solimpfriction=model.dof_solimp[source_dof],
@@ -1142,7 +1145,7 @@ def parse_mjcf(
         if kd is not None:
             cfg.kd = kd
         cfg.mu, cfg.mu_torsional, cfg.mu_rolling = map(float, model.geom_friction[i])
-        if not default_friction[i]:
+        if spec.geoms[i] not in default_friction:
             cfg.mu_static = None
         cfg.margin, cfg.gap = float(model.geom_margin[i]), float(model.geom_gap[i])
         if legacy_margin_gap:
