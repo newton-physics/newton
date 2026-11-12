@@ -14714,11 +14714,16 @@ class TestActuatorTypes(unittest.TestCase):
                 <joint name="j3" type="hinge" axis="0 1 0"/>
                 <geom type="sphere" size="0.1" mass="1"/>
             </body>
+            <body name="d" pos="3 0 1">
+                <joint name="j4" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+            </body>
         </worldbody>
         <actuator>
             <position joint="j1" kp="100" kv="2" gear="3"/>
             <velocity joint="j2" kv="7" gear="2"/>
             <position joint="j3" kp="50" kv="1"/>
+            <position joint="j4" kp="100" kv="2" gear="-2" forcerange="-10 40"/>
         </actuator>
     </mujoco>
     """
@@ -14771,20 +14776,36 @@ class TestActuatorTypes(unittest.TestCase):
                 SolverMuJoCo.CtrlSource.CTRL_DIRECT,
                 SolverMuJoCo.CtrlSource.CTRL_DIRECT,
                 SolverMuJoCo.CtrlSource.JOINT_TARGET,
+                SolverMuJoCo.CtrlSource.CTRL_DIRECT,
             ],
         )
+
+        # Non-zero positions and velocities so the stiffness (gear**2 * kp) and damping (gear**2 * kv) terms
+        # contribute, not just gear * gain * ctrl.
+        q0 = np.array([0.3, 0.2, -0.4, 0.25])
+        qd0 = np.array([0.2, 0.4, 0.1, 0.1])
 
         solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
         native = solver._mujoco.MjModel.from_xml_string(self.GEARED_MJCF)
         native_data = solver._mujoco.MjData(native)
+        native_data.qpos[:] = q0
+        native_data.qvel[:] = qd0
         native_data.ctrl[:] = 0.5
         solver._mujoco.mj_forward(native, native_data)
         self.assertTrue(np.all(np.abs(native_data.qfrc_actuator) > 1.0))
+        # j4 saturates its authored asymmetric force range (upper bound 40) and the negative gear flips the
+        # joint torque; j1..j3 stay unclipped so their feedback terms are compared as they are.
+        self.assertAlmostEqual(native_data.actuator_force[3], 40.0)
+        self.assertAlmostEqual(native_data.qfrc_actuator[3], -80.0)
+        np.testing.assert_array_equal(native.actuator_forcelimited, [0, 0, 0, 1])
 
+        state = model.state()
+        state.joint_q.assign(q0)
+        state.joint_qd.assign(qd0)
         control = model.control()
         control.mujoco.ctrl.fill_(0.5)
         control.joint_target_q.fill_(0.5)
-        solver.step(model.state(), model.state(), control, None, 0.002)
+        solver.step(state, model.state(), control, None, 0.002)
         np.testing.assert_allclose(solver.mj_data.qfrc_actuator, native_data.qfrc_actuator, rtol=1e-5)
 
     def test_unsupported_type_warns(self):
