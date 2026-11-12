@@ -350,6 +350,8 @@ class SolverStyle3D(SolverBase):
         self._A_diag_base = wp.zeros(self._dof_block_count, dtype=float, device=self.device)
         # Inverse full diagonal blocks for Jacobi preconditioning.
         self._inv_A_diag = wp.zeros(self._dof_block_count, dtype=wp.mat33, device=self.device)
+        # Matrix-free contribution to A x beyond the assembled base matrix.
+        self._matrix_free_Ax = wp.zeros(self._dof_block_count, dtype=wp.vec3, device=self.device)
 
         # Drag info
         self._drag_pos = wp.zeros(1, dtype=wp.vec3, device=self.device)
@@ -538,7 +540,7 @@ class SolverStyle3D(SolverBase):
                 self._inv_A_diag,
                 self._dx,
                 self.config.linear_iterations,
-                None if self.collision is None else self.collision.hessian_multiply,
+                None if self.collision is None else self._matrix_free_multiply,
             )
 
             if self.collision is not None:
@@ -564,6 +566,11 @@ class SolverStyle3D(SolverBase):
             self.collision.frame_end(particle_q, particle_qd, dt)
 
         self._from_internal_state(state_out)
+
+    def _matrix_free_multiply(self, x: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
+        """Return the matrix-free contribution to A x, excluding the assembled base matrix."""
+        self.collision.hessian_multiply(x[: self._particle_count], self._matrix_free_Ax[: self._particle_count])
+        return self._matrix_free_Ax
 
     def rebuild_bvh(self, state: State):
         if self.collision is not None:

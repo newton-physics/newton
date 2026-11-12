@@ -44,7 +44,6 @@ class Collision:
         self.broad_phase_ef = wp.array(shape=(32, model.edge_count), dtype=int, device=self.model.device)
         self.broad_phase_vf = wp.array(shape=(32, model.particle_count), dtype=int, device=self.model.device)
 
-        self.Hx = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.model.device)
         self.contact_hessian_diags = wp.zeros(model.particle_count, dtype=wp.mat33, device=self.model.device)
 
         self.edge_bvh.build(model.particle_q, self.model.edge_indices, self.radius)
@@ -239,16 +238,15 @@ class Collision:
         """
         return self.contact_hessian_diags
 
-    def hessian_multiply(self, x: wp.array[wp.vec3]):
-        """Computes the Hessian-vector product for implicit integration."""
+    def hessian_multiply(self, x: wp.array[wp.vec3], Hx: wp.array[wp.vec3]) -> None:
+        """Write the particle contact Hessian-vector product into caller-owned storage."""
         wp.launch(
             hessian_multiply_kernel,
             dim=self.model.particle_count,
             inputs=[self.contact_hessian_diags, x],
-            outputs=[self.Hx],
+            outputs=[Hx],
             device=self.model.device,
         )
-        return self.Hx
 
     def linear_iteration_end(self, dx: wp.array[wp.vec3]):
         """Displacement constraints"""
