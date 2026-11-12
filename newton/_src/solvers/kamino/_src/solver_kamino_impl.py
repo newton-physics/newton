@@ -101,7 +101,7 @@ class SolverKaminoImpl(SolverBase):
     options for the linear solver and preconditioning.
     """
 
-    ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino, "wp.array[wp.bool] | None"], None]
+    ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino, wp.array[wp.bool] | None], None]
     """Defines the type signature for reset callback functions."""
 
     StepCallbackType = Callable[["SolverKaminoImpl", StateKamino, StateKamino, ControlKamino, ContactsKamino], None]
@@ -288,7 +288,17 @@ class SolverKaminoImpl(SolverBase):
                 solver=None if uses_lox else linear_solver_type,
                 solver_kwargs=None if uses_lox else linear_solver_kwargs,
                 sparse=self._config.sparse_dynamics,
+                decouple_joint_dynamics=self._config.dynamics_solver == "padmm",
             )
+
+        # Allocate the impulses that act on the bodies, and the impulses of the original rows,
+        # when joint friction and effort rows are decoupled from the joint dynamics (see `_update_constraints`)
+        self._body_lambdas = None
+        self._joint_lambdas = None
+        if self._problem_fd is not None and self._problem_fd.joint_decoupling is not None:
+            num_cts = self._model.size.sum_of_max_total_cts
+            self._body_lambdas = wp.zeros(num_cts, dtype=wp.float32, device=self._model.device)
+            self._joint_lambdas = wp.zeros(num_cts, dtype=wp.float32, device=self._model.device)
 
         # Allocate the forward dynamics solver on the device
         if self._config.dynamics_solver == "lox":
@@ -1115,6 +1125,19 @@ class SolverKaminoImpl(SolverBase):
         # Solve the dual problem to compute the constraint reactions
         self._solver_fd.solve(problem=self._problem_fd)
 
+        # The solution is in the variables of the dual problem, which may decouple joint friction
+        # and effort rows from the joint dynamics (see `DynamicJointDecoupling`). Compute body
+        # wrenches from the decoupled impulses to avoid summing nearly cancelling impulses, and
+        # report the impulses of the original rows.
+        solution = self._solver_fd.data.solution
+        body_lambdas = solution.lambdas
+        joint_lambdas = solution.lambdas
+        decoupling = self._problem_fd.joint_decoupling
+        if decoupling is not None:
+            decoupling.recouple_impulses(solution.lambdas, self._body_lambdas, self._joint_lambdas)
+            body_lambdas = self._body_lambdas
+            joint_lambdas = self._joint_lambdas
+
         # Compute the effective body wrenches applied by the set of
         # active constraints from the respective reaction multipliers
         compute_constraint_body_wrenches(
@@ -1124,14 +1147,14 @@ class SolverKaminoImpl(SolverBase):
             contacts=contacts,
             jacobians=self._jacobians,
             lambdas_offsets=self._problem_fd.data.vio,
-            lambdas_data=self._solver_fd.data.solution.lambdas,
+            lambdas_data=body_lambdas,
         )
 
         # Unpack the computed constraint multipliers to the respective joint-limit
         # and contact data for post-processing and optional solver warm-starting
         unpack_constraint_solutions(
-            lambdas=self._solver_fd.data.solution.lambdas,
-            v_plus=self._solver_fd.data.solution.v_plus,
+            lambdas=joint_lambdas,
+            v_plus=solution.v_plus,
             model=self._model,
             data=self._data,
             limits=self._limits,

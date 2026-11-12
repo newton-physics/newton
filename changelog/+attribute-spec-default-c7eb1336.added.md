@@ -1,1 +1,0 @@
-Add experimental `Model.AttributeSpec.default`, which `ModelBuilder.finalize()` sets from `ModelBuilder.CustomAttribute.default` so coupled-solver views fill synthesized rows with each attribute's registered default.

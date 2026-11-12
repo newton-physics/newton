@@ -152,7 +152,8 @@ class TestMuJoCoSleeping(unittest.TestCase):
 
     def test_per_world_sleep_tolerance(self):
         model = _build_sleep_model(world_count=2, register_custom_attributes=True)
-        model.mujoco.sleep_tolerance.assign(np.array([0.01, 0.02], dtype=np.float32))
+        # Two local worlds followed by the global world, which MuJoCo ignores.
+        model.mujoco.sleep_tolerance.assign(np.array([0.01, 0.02, 0.5], dtype=np.float32))
 
         solver = SolverMuJoCo(model, enable_sleeping=True, nvmax=1, iterations=2, disable_contacts=True)
 
@@ -195,10 +196,14 @@ class TestMuJoCoSleeping(unittest.TestCase):
 
     def test_invalid_per_world_sleep_tolerance_fails_early(self):
         model = _build_sleep_model(world_count=2, register_custom_attributes=True)
-        model.mujoco.sleep_tolerance.assign(np.array([0.01, -1.0], dtype=np.float32))
+        model.mujoco.sleep_tolerance.assign(np.array([0.01, -1.0, 1.0e-3], dtype=np.float32))
 
         with self.assertRaisesRegex(ValueError, "got -1.0 at world 1"):
             SolverMuJoCo(model, enable_sleeping=True, nvmax=1)
+
+        # MuJoCo ignores the final global-world entry, so it is not validated.
+        model.mujoco.sleep_tolerance.assign(np.array([0.01, 0.02, -1.0], dtype=np.float32))
+        SolverMuJoCo(model, enable_sleeping=True, nvmax=1)
 
     def test_parallel_world_sleeping_requires_matching_default_velocities(self):
         model = _build_sleep_model(world_count=2)
@@ -214,7 +219,8 @@ class TestMuJoCoSleeping(unittest.TestCase):
         sleep_policy = SolverMuJoCo.SleepPolicy
 
         self.assertTrue(bool(model.mujoco.enable_sleeping.numpy()[0]))
-        self.assertAlmostEqual(float(model.mujoco.sleep_tolerance.numpy()[0]), 0.123)
+        # Options imported outside a world context belong to global world -1.
+        self.assertAlmostEqual(float(model.mujoco.sleep_tolerance.numpy()[-1]), 0.123)
         np.testing.assert_array_equal(
             model.mujoco.sleep_policy.numpy(),
             [sleep_policy.AUTO, sleep_policy.NEVER, sleep_policy.ALLOWED, sleep_policy.INIT],

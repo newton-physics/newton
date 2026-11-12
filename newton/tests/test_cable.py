@@ -4035,8 +4035,8 @@ def _rod_notify_reference_pose_refreshes_structural_rest_impl(test: unittest.Tes
             )
         solver.notify_model_changed(flags)
 
-        bend_after = solver.joint_rod_rest_kb_local.numpy()
-        twist_after = solver.joint_rod_rest_twist.numpy()
+        bend_after = solver.joint_rod_rest_kb_local.numpy().copy()
+        twist_after = solver.joint_rod_rest_twist.numpy().copy()
         test.assertGreater(float(np.linalg.norm(bend_after - bend_before)), 1.0e-5)
         test.assertGreater(float(np.linalg.norm(twist_after - twist_before)), 1.0e-5)
 

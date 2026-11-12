@@ -198,13 +198,14 @@ class TestImportMjcfBasic(unittest.TestCase):
         solver = SolverMuJoCo(model)
         self.assertEqual(solver.mj_model.opt.disableflags, native.opt.disableflags)
         self.assertEqual(solver.mj_model.opt.enableflags, native.opt.enableflags)
-        np.testing.assert_allclose(model.gravity.numpy(), [[0, 0, -9.81]])
+        # World 0 and global world -1 keep separate gravity entries.
+        np.testing.assert_allclose(model.gravity.numpy(), [[0, 0, -9.81], [0, 0, -9.81]])
 
         builder = newton.ModelBuilder()
         builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         builder.add_mjcf(mjcf.replace('gravity="enable"', 'gravity="disable"'))
         builder.add_mjcf('<mujoco><option><flag gravity="enable"/></option><worldbody/></mujoco>')
-        np.testing.assert_array_equal(builder.finalize().gravity.numpy(), [[0, 0, 0]])
+        np.testing.assert_array_equal(builder.finalize().gravity.numpy(), [[0, 0, 0], [0, 0, 0]])
 
         builder = newton.ModelBuilder(gravity=(0, 0, -3))
         for enabled in ("disable", "enable"):
@@ -5913,8 +5914,9 @@ class TestImportMjcfSolverParams(unittest.TestCase):
                 self.assertTrue(hasattr(model, "mujoco"))
                 self.assertTrue(hasattr(model.mujoco, option_name))
                 value = getattr(model.mujoco, option_name).numpy()
-                self.assertEqual(len(value), 1)
-                self.assertAlmostEqual(value[0], expected, places=places)
+                self.assertEqual(len(value), model.world_count + 1)  # Local worlds and the global world
+                # Options imported outside a world context belong to global world -1.
+                self.assertAlmostEqual(value[-1], expected, places=places)
 
     def test_option_scalar_per_world(self):
         """Test that scalar options are correctly remapped per world when merging builders."""
@@ -5933,8 +5935,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
 """)
 
         # Robot B
-        robot_b = newton.ModelBuilder()
-        robot_b.add_mjcf("""
+        robot_b_mjcf = """
 <mujoco>
     <option impratio="2.0" tolerance="1e-7" ls_tolerance="0.002"/>
     <worldbody>
@@ -5944,7 +5945,9 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         </body>
     </worldbody>
 </mujoco>
-""")
+"""
+        robot_b = newton.ModelBuilder()
+        robot_b.add_mjcf(robot_b_mjcf)
 
         # Merge into main builder
         main = newton.ModelBuilder()
@@ -5961,16 +5964,32 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         tolerance = model.mujoco.tolerance.numpy()
         ls_tolerance = model.mujoco.ls_tolerance.numpy()
 
-        # Should have 2 worlds with different values
-        self.assertEqual(len(impratio), 2)
-        self.assertEqual(len(tolerance), 2)
-        self.assertEqual(len(ls_tolerance), 2)
+        # Two worlds with different values, followed by the global world with the defaults
+        self.assertEqual(len(impratio), 3)
+        self.assertEqual(len(tolerance), 3)
+        self.assertEqual(len(ls_tolerance), 3)
+        self.assertAlmostEqual(impratio[2], 1.0, places=4, msg="Global world should keep the default impratio")
         self.assertAlmostEqual(impratio[0], 1.5, places=4, msg="World 0 should have impratio=1.5")
         self.assertAlmostEqual(impratio[1], 2.0, places=4, msg="World 1 should have impratio=2.0")
         self.assertAlmostEqual(tolerance[0], 1e-6, places=10, msg="World 0 should have tolerance=1e-6")
         self.assertAlmostEqual(tolerance[1], 1e-7, places=10, msg="World 1 should have tolerance=1e-7")
         self.assertAlmostEqual(ls_tolerance[0], 0.001, places=6, msg="World 0 should have ls_tolerance=0.001")
         self.assertAlmostEqual(ls_tolerance[1], 0.002, places=6, msg="World 1 should have ls_tolerance=0.002")
+
+        # Inside a world context, imported options belong to that world, not to global world -1.
+        direct = newton.ModelBuilder()
+        direct.begin_world()
+        direct.add_mjcf(robot_b_mjcf)
+        direct.end_world()
+        np.testing.assert_allclose(direct.finalize().mujoco.impratio.numpy(), [2.0, 1.0], atol=1e-6)
+
+        # Options imported outside a world context also apply to local worlds without their own.
+        scene = newton.ModelBuilder()
+        scene.add_mjcf(robot_b_mjcf)
+        robot = newton.ModelBuilder()
+        robot.add_body()
+        scene.replicate(robot, 2)
+        np.testing.assert_allclose(scene.finalize().mujoco.impratio.numpy(), [2.0, 2.0, 2.0], atol=1e-6)
 
     def test_option_vector_world_parsing(self):
         """Test parsing of WORLD frequency vector options from MJCF (2 options)."""
@@ -5989,8 +6008,9 @@ class TestImportMjcfSolverParams(unittest.TestCase):
                 self.assertTrue(hasattr(model, "mujoco"))
                 self.assertTrue(hasattr(model.mujoco, option_name))
                 value = getattr(model.mujoco, option_name).numpy()
-                self.assertEqual(len(value), 1)
-                self.assertTrue(np.allclose(value[0], expected))
+                self.assertEqual(len(value), model.world_count + 1)  # Local worlds and the global world
+                # Options imported outside a world context belong to global world -1.
+                self.assertTrue(np.allclose(value[-1], expected))
 
     def test_option_numeric_once_parsing(self):
         """Test parsing of ONCE frequency numeric options from MJCF (5 options)."""
@@ -6064,8 +6084,9 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         self.assertTrue(hasattr(model.mujoco, "integrator"))
 
         # Verify values are parsed correctly
-        self.assertAlmostEqual(model.mujoco.impratio.numpy()[0], 2.5, places=4)
-        self.assertAlmostEqual(model.mujoco.tolerance.numpy()[0], 1e-7, places=10)
+        # Options imported outside a world context belong to global world -1.
+        self.assertAlmostEqual(model.mujoco.impratio.numpy()[-1], 2.5, places=4)
+        self.assertAlmostEqual(model.mujoco.tolerance.numpy()[-1], 1e-7, places=10)
         self.assertEqual(model.mujoco.integrator.numpy()[0], 1)  # RK4
 
     def test_geom_solmix_parsing(self):
@@ -10133,6 +10154,34 @@ class TestMjcfJointLimited(unittest.TestCase):
             with self.subTest(attrs=attrs):
                 with self.assertRaisesRegex(ValueError, "autolimits"):
                     newton.ModelBuilder().add_mjcf(self._xml(f'type="hinge" {attrs}', compiler='autolimits="false"'))
+
+    def test_joint_effort_limit_sentinels(self):
+        """Match MuJoCo's scalar joint force-limit flags, defaults, and range sentinels."""
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        for joint_type in ("hinge", "slide"):
+            for autolimits in ("true", "false"):
+                for limited in ("auto", "true", "false", "invalid"):
+                    for bounds in (None, "", "0 0", "2 2", "2 -1", "-2 5"):
+                        with self.subTest(joint_type=joint_type, autolimits=autolimits, limited=limited, bounds=bounds):
+                            range_attr = "" if bounds is None else f'actuatorfrcrange="{bounds}"'
+                            xml = f'''<mujoco><compiler autolimits="{autolimits}"/>
+                                <default><joint actuatorfrclimited="{limited}" {range_attr}/></default>
+                                <worldbody><body><joint type="{joint_type}"/><geom size=".1"/></body></worldbody>
+                                </mujoco>'''
+                            builder = newton.ModelBuilder()
+                            try:
+                                reference = mujoco.MjModel.from_xml_string(xml)
+                            except ValueError:
+                                with self.assertRaises(ValueError):
+                                    builder.add_mjcf(xml, parse_mujoco_options=False)
+                                continue
+                            builder.add_mjcf(xml, parse_mujoco_options=False)
+                            expected = (
+                                max(abs(reference.jnt_actfrcrange[0]))
+                                if reference.jnt_actfrclimited[0]
+                                else builder.default_joint_cfg.effort_limit
+                            )
+                            self.assertEqual(builder.joint_effort_limit, [expected])
 
 
 class TestMjcfDefaultCustomAttributes(unittest.TestCase):

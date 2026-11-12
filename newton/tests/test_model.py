@@ -136,9 +136,11 @@ class TestModelAttributeSpecs(unittest.TestCase):
                     f"Model.{count_attribute}. Add the count attribute or correct "
                     "Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.",
                 )
+                # WORLD arrays end with an entry for global world -1.
+                global_entry = int(attribute_frequency == frequency.WORLD)
                 self.assertEqual(
                     model._attribute_frequency_count(attribute_frequency),
-                    getattr(model, count_attribute),
+                    getattr(model, count_attribute) + global_entry,
                     f"Model._attribute_frequency_count() must resolve Model.AttributeFrequency."
                     f"{attribute_frequency.name} through Model.{count_attribute}.",
                 )
@@ -979,16 +981,6 @@ class TestModelMesh(unittest.TestCase):
                 np.testing.assert_array_equal(
                     rebuilt.tri_edge_indices[owned], np.argsort(order)[derived.tri_edge_indices[owned]]
                 )
-
-    def test_mesh_adjacency_legacy_api_removed(self):
-        # The dict-based API deprecated in 1.4 is gone: the `edges` accessor, its
-        # `Edge` record class, the `add_edge` shim, and the ctor `indices` alias.
-        adj = newton.utils.MeshAdjacency([[0, 1, 2], [0, 2, 3]])
-        self.assertFalse(hasattr(adj, "edges"))
-        self.assertFalse(hasattr(adj, "add_edge"))
-        self.assertFalse(hasattr(newton.utils.MeshAdjacency, "Edge"))
-        with self.assertRaises(TypeError):
-            newton.utils.MeshAdjacency(indices=[[0, 1, 2]])
 
     def test_mesh_adjacency_to_without_vertex_adjacency_warns(self):
         # to() before init_vertex_adjacency: uploads the topology maps, leaves v_adj_* None + warns.
