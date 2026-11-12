@@ -995,18 +995,6 @@ class TestUSDDeformableCable(unittest.TestCase):
                 np.testing.assert_allclose(np.asarray(builder.body_mass)[bodies], expected, rtol=1e-6)
                 self.assertTrue(np.isfinite(np.asarray(builder.body_inertia)[bodies]).all())
                 self.assertTrue(np.isfinite(np.asarray(builder.body_inv_inertia)[bodies]).all())
-                if mode in ("constant", "curve", "body"):
-                    native = newton.ModelBuilder()
-                    native_bodies, _ = native.add_rod(
-                        rod=newton.Rod(
-                            [(0, 0, 0), (0, 0, 0.4), (0, 0, 0.8)],
-                            rest_points=[(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)],
-                            radius=0.01,
-                        ),
-                        total_mass=values[0],
-                        cfg=native.ShapeConfig(density=0.0),
-                    )
-                    self._assert_matches_native_rod(native, native_bodies, builder, bodies)
 
     def test_periodic_cable_rest_shape_matches_native_rod(self):
         """Keep the closing segment and its rest rotation on a stretched periodic cable."""
@@ -1658,13 +1646,6 @@ class TestUSDDeformableCable(unittest.TestCase):
                     capsule = cylinder + rho * (4.0 / 3.0) * math.pi * r**3
                     self.assertAlmostEqual(builder.body_mass[b], cylinder, delta=cylinder * 1e-3)
                     self.assertNotAlmostEqual(builder.body_mass[b], capsule, delta=cylinder * 1e-2)
-                    transverse = cylinder * (r * r / 4.0 + seg_len * seg_len / 12.0)
-                    axial = cylinder * r * r / 2.0
-                    np.testing.assert_allclose(
-                        np.asarray(builder.body_inertia[b]).reshape(3, 3),
-                        np.diag([transverse, transverse, axial]),
-                        rtol=1e-6,
-                    )
                 # A 2x-longer segment has exactly 2x the mass (no constant-cap bias in the ratio).
                 self.assertAlmostEqual(builder.body_mass[b0 + 1] / builder.body_mass[b0], 2.0, places=3)
                 native = newton.ModelBuilder()

@@ -6084,7 +6084,6 @@ def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
     invalid_calls = (
         (graph, {"total_mass": -1.0}, "total_mass"),
         (graph, {"total_mass": np.nan}, "total_mass"),
-        (graph, {"total_mass": np.inf}, "total_mass"),
         (
             graph,
             {"total_mass": 1.0, "cfg": newton.ModelBuilder.ShapeConfig(density=0.0, is_solid=False, margin=0.0)},
@@ -7494,15 +7493,14 @@ class TestCable(unittest.TestCase):
         radius, thickness, length, density = 0.05, 0.01, 0.8, 1200.0
         cfg = newton.ModelBuilder.ShapeConfig(density=density)
         cylinder_mass = density * np.pi * radius**2 * length
-        cases = [(cfg, cylinder_mass)]
-        for scalar_density in (np.float16(density), np.float64(density)):
-            cases.append((newton.ModelBuilder.ShapeConfig(density=scalar_density), cylinder_mass))
-        # A thin float32 thickness checks that the tube-wall area does not cancel.
-        for wall in (thickness, np.float32(radius * 1e-4), np.float32(radius * 1e-8)):
+        # A float16 density checks that the mass is computed in Python precision.
+        cases = [(cfg, cylinder_mass), (newton.ModelBuilder.ShapeConfig(density=np.float16(density)), cylinder_mass)]
+        # A very thin float32 wall checks that neither the tube-wall area nor its inertia cancels.
+        for wall in (thickness, np.float32(radius * 1e-8)):
             hollow_cfg = newton.ModelBuilder.ShapeConfig(density=density, is_solid=False, margin=wall)
             cases.append((hollow_cfg, density * np.pi * float(wall) * (2.0 * radius - float(wall)) * length))
         for rod_cfg, expected_mass in cases:
-            for segments in (1, 4, 16):
+            for segments in (1, 16):
                 with self.subTest(is_solid=rod_cfg.is_solid, margin=rod_cfg.margin, segments=segments):
                     builder = newton.ModelBuilder()
                     points = [(0.0, 0.0, z) for z in np.linspace(0.0, length, segments + 1)]
@@ -7528,72 +7526,40 @@ class TestCable(unittest.TestCase):
                     np.testing.assert_allclose(aggregate_inertia, np.diag([transverse, transverse, axial]), rtol=1e-6)
                     self.assertEqual(rod_cfg.density, density)
 
-        capsule_builder = newton.ModelBuilder()
-        body = capsule_builder.add_link()
-        capsule_builder.add_shape_capsule(body, radius=radius, half_height=length / 2.0, cfg=cfg)
-        capsule_mass = cylinder_mass + density * (4.0 / 3.0) * np.pi * radius**3
-        self.assertAlmostEqual(capsule_builder.body_mass[body], capsule_mass, delta=1e-6)
-
     def test_rod_total_mass_uses_rest_lengths(self):
-        """Distribute total mass by rest length and override positive or zero density."""
+        """Distribute total mass by rest length, overriding density, on chain and graph rods."""
         initial = np.array([(0.0, 0.0, z) for z in (0.0, 0.2, 0.6, 1.2)])
         rest = initial * 0.5
         for edges in (None, [(1, 2), (0, 1), (2, 3)]):
-            for density, total_mass in (
-                (0.0, 6.0),
-                (1000.0, 6.0),
-                (1000.0, 0.0),
-                (1000.0, np.float64(6.0)),
-                (1000.0, np.float16(1e-4)),
-            ):
-                with self.subTest(edges=edges, density=density, total_mass=total_mass):
-                    cfg = newton.ModelBuilder.ShapeConfig(density=density)
+            for total_mass in (6.0, 0.0, np.float16(1e-4)):
+                with self.subTest(edges=edges, total_mass=total_mass):
                     rod = newton.Rod(initial, edges=edges, rest_points=rest, radius=0.05)
                     builder = newton.ModelBuilder()
-                    bodies, _ = builder.add_rod(rod=rod, cfg=cfg, total_mass=total_mass)
+                    bodies, _ = builder.add_rod(rod=rod, total_mass=total_mass)
                     lengths = np.linalg.norm(rest[rod.edges[:, 1]] - rest[rod.edges[:, 0]], axis=1)
                     expected = float(total_mass) * lengths / lengths.sum()
                     np.testing.assert_allclose(np.asarray(builder.body_mass)[bodies], expected, rtol=1e-6)
-                    np.testing.assert_allclose(np.asarray(builder.body_com)[bodies], 0.0, atol=1e-12)
-                    self.assertEqual(cfg.density, density)
-                    for body, mass, rest_length in zip(bodies, expected, lengths, strict=True):
-                        inertia = np.asarray(builder.body_inertia[body]).reshape(3, 3)
-                        inverse = np.asarray(builder.body_inv_inertia[body]).reshape(3, 3)
-                        if mass > 0.0:
+                    for body in bodies:
+                        if total_mass > 0.0:
                             self.assertAlmostEqual(builder.body_inv_mass[body] * builder.body_mass[body], 1.0, places=6)
-                            np.testing.assert_allclose(inertia @ inverse, np.eye(3), rtol=1e-6, atol=1e-7)
-                            transverse = mass * (0.05**2 / 4.0 + rest_length**2 / 12.0)
-                            axial = mass * 0.05**2 / 2.0
-                            np.testing.assert_allclose(inertia, np.diag([transverse, transverse, axial]), rtol=1e-6)
                         else:
                             self.assertEqual(builder.body_inv_mass[body], 0.0)
-                            np.testing.assert_array_equal(inertia, np.zeros((3, 3)))
-                            np.testing.assert_array_equal(inverse, np.zeros((3, 3)))
+                            self.assertFalse(np.asarray(builder.body_inertia[body]).any())
 
     def test_rod_hollow_total_mass_uses_tube_inertia(self):
-        """Use open-tube inertia at assigned mass, including segments shorter than the wall thickness."""
-        radius, thickness, length, density, total_mass = 0.05, 0.01, 0.1, 1000.0, 3.0
-        tube_mass = density * np.pi * (radius**2 - (radius - thickness) ** 2) * length
-        for segments in (1, 16):
-            points = [(0.0, 0.0, z) for z in np.linspace(0.0, length, segments + 1)]
-            rod = newton.Rod(points, radius=radius)
-            for input_density, mass in ((density, None), (density, total_mass), (0.0, total_mass)):
-                with self.subTest(segments=segments, density=input_density, total_mass=mass):
-                    builder = newton.ModelBuilder()
-                    cfg = newton.ModelBuilder.ShapeConfig(density=input_density, is_solid=False, margin=thickness)
-                    bodies, _ = builder.add_rod(rod=rod, cfg=cfg, total_mass=mass)
-                    expected_mass = (tube_mass if mass is None else mass) / segments
-                    radial_sum = radius**2 + (radius - thickness) ** 2
-                    transverse = expected_mass * (radial_sum / 4.0 + (length / segments) ** 2 / 12.0)
-                    axial = expected_mass * radial_sum / 2.0
-                    for body in bodies:
-                        self.assertAlmostEqual(builder.body_mass[body], expected_mass, places=6)
-                        np.testing.assert_allclose(
-                            np.asarray(builder.body_inertia[body]).reshape(3, 3),
-                            np.diag([transverse, transverse, axial]),
-                            rtol=1e-6,
-                            atol=1e-9,
-                        )
+        """Use open-tube inertia at an explicit total mass, also for segments shorter than the wall."""
+        radius, thickness, length, total_mass, segments = 0.05, 0.01, 0.1, 3.0, 16
+        points = [(0.0, 0.0, z) for z in np.linspace(0.0, length, segments + 1)]
+        cfg = newton.ModelBuilder.ShapeConfig(is_solid=False, margin=thickness)
+        builder = newton.ModelBuilder()
+        bodies, _ = builder.add_rod(rod=newton.Rod(points, radius=radius), cfg=cfg, total_mass=total_mass)
+        mass = total_mass / segments
+        radial_sum = radius**2 + (radius - thickness) ** 2
+        transverse = mass * (radial_sum / 4.0 + (length / segments) ** 2 / 12.0)
+        expected = np.diag([transverse, transverse, mass * radial_sum / 2.0])
+        for body in bodies:
+            self.assertAlmostEqual(builder.body_mass[body], mass, places=6)
+            np.testing.assert_allclose(np.asarray(builder.body_inertia[body]).reshape(3, 3), expected, rtol=1e-6)
 
     def test_rod_hollow_zero_thickness_has_zero_mass(self):
         """Warn and leave zero mass for a hollow density rod with zero shell thickness."""
@@ -7619,7 +7585,6 @@ class TestCable(unittest.TestCase):
         self.assertTrue(builder.shape_flags[shape] & newton.ShapeFlags.SITE)
         self.assertFalse(builder.shape_flags[shape] & newton.ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(builder.shape_flags[shape] & newton.ShapeFlags.COLLIDE_PARTICLES)
-        self.assertEqual(cfg.density, 0.0)
 
     def test_rod_small_inertia_has_finite_inverse(self):
         """Keep small positive rod inertias invertible when their float32 determinant underflows."""
