@@ -3918,7 +3918,7 @@ def _cable_rod_origin_matches_start_impl(test: unittest.TestCase, device):
     segment_length = 0.2
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
 
-    with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, 'body_frame_origin="start"') as warning:
+    with test.assertWarnsRegex(newton.NewtonDeprecationWarning, 'body_frame_origin="start"') as warning:
         rod_bodies, rod_joints = _add_prepared_rod(
             builder,
             points,
@@ -4020,7 +4020,7 @@ def _cable_rod_graph_body_frame_origin_impl(test: unittest.TestCase, device):
         with test.subTest(body_frame_origin=origin):
             builder = newton.ModelBuilder()
             with (
-                test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, 'body_frame_origin="start"')
+                test.assertWarnsRegex(newton.NewtonDeprecationWarning, 'body_frame_origin="start"')
                 if origin == "start"
                 else nullcontext()
             ):
@@ -4115,8 +4115,8 @@ def _rod_notify_reference_pose_refreshes_structural_rest_impl(test: unittest.Tes
             )
         solver.notify_model_changed(flags)
 
-        bend_after = solver.joint_rod_rest_kb_local.numpy()
-        twist_after = solver.joint_rod_rest_twist.numpy()
+        bend_after = solver.joint_rod_rest_kb_local.numpy().copy()
+        twist_after = solver.joint_rod_rest_twist.numpy().copy()
         test.assertGreater(float(np.linalg.norm(bend_after - bend_before)), 1.0e-5)
         test.assertGreater(float(np.linalg.norm(twist_after - twist_before)), 1.0e-5)
 
@@ -4250,7 +4250,7 @@ def _cable_rod_separate_rest_and_initial_pose_impl(test: unittest.TestCase, devi
     )
 
     start_builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
-    with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, 'body_frame_origin="start"'):
+    with test.assertWarnsRegex(newton.NewtonDeprecationWarning, 'body_frame_origin="start"'):
         start_bodies, start_joints = _add_prepared_rod(
             start_builder,
             points=initial_points,
@@ -6139,7 +6139,7 @@ def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
         warnings.simplefilter("error", DeprecationWarning)
         with test.assertRaisesRegex(ValueError, "quaternion at segment index 0"):
             builder.add_rod(rod=misaligned, body_frame_origin="start")
-        with test.assertRaisesRegex(newton.exceptions.NewtonDeprecationWarning, 'body_frame_origin="start"'):
+        with test.assertRaisesRegex(newton.NewtonDeprecationWarning, 'body_frame_origin="start"'):
             builder.add_rod(rod=graph, body_frame_origin="start")
     test.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), before)
 

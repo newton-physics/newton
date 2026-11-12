@@ -336,7 +336,9 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                 results = []
                 for candidate in (solver, self._solver(model, contact_spatial_friction=spatial)):
                     candidate.step(state_in, state_out, control, contacts, dt=0.01)
-                    results.append((state_out.body_qd.numpy()[0], int(candidate.status.numpy()["iterations"][0])))
+                    results.append(
+                        (state_out.body_qd.numpy()[0].copy(), int(candidate.status.numpy()["iterations"][0]))
+                    )
                 np.testing.assert_allclose(results[0][0], results[1][0], rtol=0.0, atol=1.0e-6)
                 self.assertEqual(results[0][1], results[1][1])
 
@@ -354,7 +356,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
         pipeline.collide(state_in, contacts)
         self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 2)
         solver.step(state_in, state_out, control, contacts, dt=0.01)
-        expected = state_out.body_qd.numpy()
+        expected = state_out.body_qd.numpy().copy()
         for name in (
             "point_id",
             "shape0",

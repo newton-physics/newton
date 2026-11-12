@@ -11,8 +11,7 @@ import warnings
 import numpy as np
 import warp as wp
 
-from newton import JointTargetMode, ModelBuilder, ModelFlags
-from newton.exceptions import NewtonWarning
+from newton import JointTargetMode, ModelBuilder, ModelFlags, NewtonWarning
 from newton.solvers import SolverMuJoCo
 from newton.solvers import mujoco as mujoco_helpers
 from newton.tests import get_asset

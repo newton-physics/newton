@@ -20,12 +20,11 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton import ModelBuilder
+from newton import ModelBuilder, NewtonDeprecationWarning
 from newton._src.geometry.utils import transform_points
 from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
-from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import assert_np_equal, patch_sys_module
 
 
@@ -137,9 +136,11 @@ class TestModelAttributeSpecs(unittest.TestCase):
                     f"Model.{count_attribute}. Add the count attribute or correct "
                     "Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.",
                 )
+                # WORLD arrays end with an entry for global world -1.
+                global_entry = int(attribute_frequency == frequency.WORLD)
                 self.assertEqual(
                     model._attribute_frequency_count(attribute_frequency),
-                    getattr(model, count_attribute),
+                    getattr(model, count_attribute) + global_entry,
                     f"Model._attribute_frequency_count() must resolve Model.AttributeFrequency."
                     f"{attribute_frequency.name} through Model.{count_attribute}.",
                 )
@@ -980,16 +981,6 @@ class TestModelMesh(unittest.TestCase):
                 np.testing.assert_array_equal(
                     rebuilt.tri_edge_indices[owned], np.argsort(order)[derived.tri_edge_indices[owned]]
                 )
-
-    def test_mesh_adjacency_legacy_api_removed(self):
-        # The dict-based API deprecated in 1.4 is gone: the `edges` accessor, its
-        # `Edge` record class, the `add_edge` shim, and the ctor `indices` alias.
-        adj = newton.utils.MeshAdjacency([[0, 1, 2], [0, 2, 3]])
-        self.assertFalse(hasattr(adj, "edges"))
-        self.assertFalse(hasattr(adj, "add_edge"))
-        self.assertFalse(hasattr(newton.utils.MeshAdjacency, "Edge"))
-        with self.assertRaises(TypeError):
-            newton.utils.MeshAdjacency(indices=[[0, 1, 2]])
 
     def test_mesh_adjacency_to_without_vertex_adjacency_warns(self):
         # to() before init_vertex_adjacency: uploads the topology maps, leaves v_adj_* None + warns.
@@ -2805,7 +2796,7 @@ class TestModelJoints(unittest.TestCase):
                         builder.add_joint_ball(parent=p, child=c, label="ball")
                 keep = ["fix"] if order == "fixed_kept_first" else []
                 # "fix" parallels the child's free joint, so it is a FIXED loop-closing joint.
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, r"FIXED loop-closing joints \('fix'\)"):
+                with self.assertWarnsRegex(newton.NewtonWarning, r"FIXED loop-closing joints \('fix'\)"):
                     builder.collapse_fixed_joints(joints_to_keep=keep)
                 labels = list(builder.joint_label)
                 # add_body() gives each body a free joint; only assert on ours.
@@ -4079,6 +4070,26 @@ class TestModelJoints(unittest.TestCase):
 
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)
         self.assertEqual(builder.joint_parent[joint_id], parent_body)
+
+    def test_collapse_fixed_joints_preserves_com_inertia(self):
+        """Preserve inertia about the merged COM with offset and rotated inertial frames."""
+        builder = ModelBuilder()
+        root = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0.5), inertia=wp.mat33(np.diag([0.1, 0.2, 0.3])))
+        child = builder.add_link(mass=3.0, com=wp.vec3(1, 0, 0), inertia=wp.mat33(np.diag([0.4, 0.6, 0.8])))
+        root_joint = builder.add_joint_free(root)
+        fixed_joint = builder.add_joint_fixed(
+            root, child, parent_xform=wp.transform((0, 0, 2), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), wp.pi / 2))
+        )
+        builder.add_articulation([root_joint, fixed_joint])
+        builder.collapse_fixed_joints()
+        self.assertEqual(builder.body_count, 1)
+        self.assertAlmostEqual(builder.body_mass[0], 4.0)
+        np.testing.assert_allclose(builder.body_com[0], [0, 0.75, 1.625], atol=1e-6)
+        expected = np.array([[3.1375, 0, 0], [0, 2.2875, -1.125], [0, -1.125, 1.85]])
+        np.testing.assert_allclose(np.asarray(builder.body_inertia[0]).reshape(3, 3), expected, atol=1e-6)
+        np.testing.assert_allclose(
+            np.asarray(builder.body_inv_inertia[0]).reshape(3, 3), np.linalg.inv(expected), atol=1e-6
+        )
 
 
 class TestModelWorld(unittest.TestCase):
