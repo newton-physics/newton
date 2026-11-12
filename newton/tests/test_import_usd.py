@@ -5183,8 +5183,9 @@ def Xform "World"
                 self.assertTrue(hasattr(model, "mujoco"))
                 self.assertTrue(hasattr(model.mujoco, option_name))
                 value = getattr(model.mujoco, option_name).numpy()
-                self.assertEqual(len(value), 1)
-                self.assertAlmostEqual(value[0], expected, places=places)
+                self.assertEqual(len(value), model.world_count + 1)  # Local worlds and the global world
+                # Options imported outside a world context belong to global world -1.
+                self.assertAlmostEqual(value[-1], expected, places=places)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_option_vector_world_parsing(self):
@@ -5254,8 +5255,9 @@ def Xform "World"
                 self.assertTrue(hasattr(model, "mujoco"))
                 self.assertTrue(hasattr(model.mujoco, option_name))
                 value = getattr(model.mujoco, option_name).numpy()
-                self.assertEqual(len(value), 1)
-                self.assertTrue(np.allclose(value[0], expected))
+                self.assertEqual(len(value), model.world_count + 1)  # Local worlds and the global world
+                # Options imported outside a world context belong to global world -1.
+                self.assertTrue(np.allclose(value[-1], expected))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_option_numeric_once_parsing(self):
