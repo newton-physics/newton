@@ -45,14 +45,15 @@ Kamino provides three forward-dynamics backends:
 * ``"padmm"`` (default): proximal ADMM, dense Jacobians/dynamics, and the Euler
   integrator. It is the slower, more robust option because it solves equality
   and inequality constraints together.
-* ``"dvi"`` (opt-in): projected dual iterations, sparse Jacobians, dense dynamics
+* ``"scc"`` (opt-in): Split Constraint Coupling (SCC), with projected dual
+  iterations, sparse Jacobians, dense dynamics
   with the RCM-reordered blocked LLT solver, and the Euler integrator. It is
   generally faster, but approximates the coupled problem by alternating between
   a direct solve for equality constraints and projected iterations for
-  inequality constraints. As a rule of thumb, DVI solves inequality constraints
+  inequality constraints. As a rule of thumb, SCC solves inequality constraints
   less accurately than PADMM, particularly as the number of active inequalities
   grows. Dual preconditioning is not supported.
-* ``"lox"`` (opt-in, experimental): a primal splitting method. Like DVI, it
+* ``"lox"`` (opt-in, experimental): a primal splitting method. Like SCC, it
   alternates between solving for equality constraints (and smooth dynamics in
   general) and solving for inequality constraints; however, in LOX the split is
   performed at the velocity level, and ADMM is used to reach a consensus.
@@ -62,12 +63,12 @@ initialize consistently:
 
 .. code-block:: python
 
-   config = newton.solvers.SolverKamino.Config(dynamics_solver="dvi")
+   config = newton.solvers.SolverKamino.Config(dynamics_solver="scc")
    solver = newton.solvers.SolverKamino(model, config=config)
 
-DVI is best suited to performance-sensitive rigid mechanisms with relatively
+SCC is best suited to performance-sensitive rigid mechanisms with relatively
 few active contacts; PADMM remains the safer and more broadly validated choice.
-Set ``sparse_jacobian=False`` for fully dense DVI, or set
+Set ``sparse_jacobian=False`` for fully dense SCC, or set
 ``sparse_dynamics=True`` to use sparse dynamics with the Conjugate Residual
 solver.
 
@@ -75,8 +76,8 @@ For large bilateral systems, opt into RCM-reordered factorization explicitly:
 
 .. code-block:: python
 
-   config.dvi.bilateral_solver_type = "LLTBRCM"
-   config.dvi.bilateral_solver_kwargs = {
+   config.scc.bilateral_solver_type = "LLTBRCM"
+   config.scc.bilateral_solver_kwargs = {
        "block_size": 32,
        "reuse_permutation": True,
        "parallel_factorization": True,
@@ -86,10 +87,10 @@ The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
 changes. Keep the default ``"LLTB"`` solver for small systems.
 
-DVI unilateral subsolvers
+SCC unilateral subsolvers
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-DVI offers two subsolvers for bounded joint rows, limits, and contacts:
+SCC offers two subsolvers for bounded joint rows, limits, and contacts:
 
 * **PGS** (default) uses projected Gauss-Seidel updates with less work per
   iteration, making it a simple choice for modest contact problems.
@@ -105,14 +106,14 @@ subsolver selection and iteration controls.
 Constraint recovery and material compliance
 -------------------------------------------
 
-PADMM and DVI share the constraint settings in ``config.constraints``. Each
+PADMM and SCC share the constraint settings in ``config.constraints``. Each
 constraint group has a global recovery time and speed cap. Bilateral joints
 remain rigid; contacts and joint limits can opt into an implicit spring-damper
 law using model stiffness and damping.
 
 .. code-block:: python
 
-   config = newton.solvers.SolverKamino.Config(dynamics_solver="dvi")
+   config = newton.solvers.SolverKamino.Config(dynamics_solver="scc")
    config.constraints.joint_recovery_time = 0.01
    config.constraints.joint_recovery_speed = 0.05
 
@@ -173,7 +174,7 @@ are the arithmetic means of :attr:`~newton.Model.shape_material_ke` and
 works with Kamino's internal collision pipeline. Only the contact normal
 receives compliance; tangential rows retain the Coulomb friction law.
 The normal spring impulse contributes fully to the friction load, including in
-DVI's PGS solver. Its hard-contact stabilization exclusion does not apply to
+SCC's PGS solver. Its hard-contact stabilization exclusion does not apply to
 physical spring forces.
 Compliant contacts obtain bounce from their spring-damper and ignore the
 material restitution coefficient.
@@ -210,11 +211,11 @@ motion rather than reproduce rigid-contact trajectories exactly.
 The new settings are configured through Python. USD schema and importer
 extensions for these settings are deferred to a separate change.
 
-The shared recovery/compliance settings currently support PADMM and DVI.
+The shared recovery/compliance settings currently support PADMM and SCC.
 LOX rejects non-default values for these new settings and retains its existing
 ``config.lox.contact_compliance`` option and recovery controls.
 LOX's option uses only positive per-contact stiffness; it does not fall back to
-shape materials, and its internal-pipeline contacts remain hard. PADMM and DVI
+shape materials, and its internal-pipeline contacts remain hard. PADMM and SCC
 reject ``config.lox.contact_compliance=True`` with guidance to use the shared
 option. Switching between these options can therefore change which contacts
 are compliant even when the model materials are unchanged.
@@ -225,7 +226,7 @@ LOX prescribed bodies and shared settings
 LOX advances bodies flagged :attr:`~newton.BodyFlags.KINEMATIC`, and massless
 bodies whose only joints are free joints to the world, with their velocity in
 ``state_in.body_qd``. To animate such a body, write the velocity that reaches its
-target pose within the step. PADMM and DVI keep the pose of these bodies and only
+target pose within the step. PADMM and SCC keep the pose of these bodies and only
 read their velocity.
 
 Bodies welded to a kinematic body by fixed joints of its articulation move
@@ -242,7 +243,7 @@ close its gap within the step. It ignores
 LOX bounds joint drift with ``config.lox.joint_max_correction``,
 ``config.lox.position_tolerance`` and ``config.lox.rotation_tolerance``, so it
 ignores ``config.constraints.alpha``. ``config.collect_solver_info`` collects the
-PADMM and DVI iteration logs; LOX reports its iterations and residuals through
+PADMM and SCC iteration logs; LOX reports its iterations and residuals through
 :attr:`~newton.solvers.SolverKamino.status`.
 
 LOX solves its own primal problem, so ``sparse_dynamics``,
@@ -299,7 +300,7 @@ Inspecting terminal status
 --------------------------
 
 After each step, :attr:`~newton.solvers.SolverKamino.status` provides one
-device-resident terminal status record per world. PADMM and DVI both provide
+device-resident terminal status record per world. PADMM and SCC both provide
 ``converged``, ``iterations``, ``r_p``, ``r_d``, and ``r_c`` fields. Their
 residual definitions are backend-specific:
 
@@ -313,7 +314,7 @@ residual definitions are backend-specific:
   inner product over inequality blocks [J]. The ``P`` factors
   convert the first two residuals from solver scaling to physical constraint
   units.
-* **DVI:** With physical impulse ``lambda`` and augmented constraint velocity
+* **SCC:** With physical impulse ``lambda`` and augmented constraint velocity
   ``v``, ``r_p`` is the maximum infinity-norm projection distance of unilateral
   impulses from the nonnegative limit cone or Coulomb contact cone
   [N·s or N·m·s]. ``r_d`` is the maximum of the corresponding velocity distance

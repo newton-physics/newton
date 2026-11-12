@@ -134,7 +134,7 @@ class DualProblemData:
     """Physical impulse-space compliance in unscaled row coordinates; absent for hard constraints."""
 
     v_b_friction: wp.array[wp.float32] | None = None
-    """Contact bias excluded from DVI friction loads; zero for physical spring forces.
+    """Contact bias excluded from SCC friction loads; zero for physical spring forces.
 
     Aliases ``v_b`` unless contact compliance is enabled. Only contact-normal
     entries are used, in the same unscaled row coordinates as ``v_b``.

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regressions for batching independent sparse DVI worlds."""
+"""Regressions for batching independent sparse SCC worlds."""
 
 import unittest
 from types import SimpleNamespace
@@ -14,14 +14,14 @@ import newton
 import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
-from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
-from newton._src.solvers.kamino._src.solvers.dvi import sparse as sparse_dvi
-from newton.tests.kamino.test_kamino_solvers_dvi import _make_sparse_dual_problem
+from newton._src.solvers.kamino._src.solvers.scc import SCCSolver
+from newton._src.solvers.kamino._src.solvers.scc import sparse as sparse_scc
+from newton.tests.kamino.test_kamino_solvers_scc import _make_sparse_dual_problem
 from newton.tests.kamino.utils.make import make_containers, update_containers
 from newton.tests.utils import basics
 
 
-class TestKaminoDVIWorldBatches(unittest.TestCase):
+class TestKaminoSCCWorldBatches(unittest.TestCase):
     def test_batch_budget_and_eligibility(self):
         """Keep unsupported paths global and bound the inverse working set."""
         path = SimpleNamespace(
@@ -38,13 +38,13 @@ class TestKaminoDVIWorldBatches(unittest.TestCase):
         for rows, expected in ((1, 2048), (84, 2048), (128, 1024), (256, 256)):
             with self.subTest(rows=rows):
                 path.size.max_of_num_bilateral_joint_cts = rows
-                self.assertEqual(sparse_dvi._sparse_alternating_world_batch_size(path), expected)
+                self.assertEqual(sparse_scc._sparse_alternating_world_batch_size(path), expected)
 
         path.size.max_of_num_bilateral_joint_cts = 84
         for worlds in (0, 1, 2048):
             with self.subTest(worlds=worlds):
                 path.size.num_worlds = worlds
-                self.assertEqual(sparse_dvi._sparse_alternating_world_batch_size(path), max(1, worlds))
+                self.assertEqual(sparse_scc._sparse_alternating_world_batch_size(path), max(1, worlds))
         path.size.num_worlds = 8192
         for target, attribute, value in (
             (path, "bilateral_inverse", None),
@@ -54,7 +54,7 @@ class TestKaminoDVIWorldBatches(unittest.TestCase):
             (path.size, "max_of_max_contacts", 2048),
         ):
             with self.subTest(attribute=attribute), mock.patch.object(target, attribute, value):
-                self.assertEqual(sparse_dvi._sparse_alternating_world_batch_size(path), 8192)
+                self.assertEqual(sparse_scc._sparse_alternating_world_batch_size(path), 8192)
 
     def test_partial_batch_preserves_world_schedules(self):
         """Keep heterogeneous iterations and intervals intact across graph replays."""
@@ -71,7 +71,7 @@ class TestKaminoDVIWorldBatches(unittest.TestCase):
         self.assertTrue(np.all(detector.contacts.world_active_contacts.numpy() > 0))
         problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
         configs = [
-            kamino_config.DVISolverConfig(
+            kamino_config.SCCSolverConfig(
                 tolerance=0.0,
                 regularization=1.0e-5,
                 max_alternating_iterations=iterations,
@@ -80,9 +80,9 @@ class TestKaminoDVIWorldBatches(unittest.TestCase):
             )
             for iterations, sweeps, interval in ((1, 1, 1), (4, 1, 2), (3, 2, 99))
         ]
-        with mock.patch("newton._src.solvers.kamino._src.solvers.dvi.solver._MAX_CACHED_BILATERAL_COUPLING_ENTRIES", 0):
+        with mock.patch("newton._src.solvers.kamino._src.solvers.scc.solver._MAX_CACHED_BILATERAL_COUPLING_ENTRIES", 0):
             solvers = [
-                DVISolver(
+                SCCSolver(
                     model=model,
                     data=data,
                     limits=limits,
@@ -95,11 +95,11 @@ class TestKaminoDVIWorldBatches(unittest.TestCase):
                 for _ in range(2)
             ]
             for solver in solvers:
-                self.assertTrue(sparse_dvi._can_use_fused_bilateral_inverse(solver._sparse_path))
+                self.assertTrue(sparse_scc._can_use_fused_bilateral_inverse(solver._sparse_path))
 
             def solve(solver, batch_size):
                 with mock.patch.object(
-                    sparse_dvi, "_sparse_alternating_world_batch_size", return_value=batch_size
+                    sparse_scc, "_sparse_alternating_world_batch_size", return_value=batch_size
                 ) as select_batch:
                     solver.coldstart()
                     solver.solve(problem)

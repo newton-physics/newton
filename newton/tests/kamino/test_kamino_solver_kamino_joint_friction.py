@@ -13,7 +13,7 @@ import warp as wp
 import newton
 import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import make_llt_blocked_rcm_solve_kernel
-from newton._src.solvers.kamino._src.solvers.dvi.response import make_response_kernel
+from newton._src.solvers.kamino._src.solvers.scc.response import make_response_kernel
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.solver_configs import (
@@ -273,7 +273,7 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         self.assertEqual(solver._model_kamino.size.sum_of_num_bounded_joint_cts, 0)
 
     @mock.patch(
-        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_response_kernel",
+        "newton._src.solvers.kamino._src.solvers.scc.sparse.make_response_kernel",
         wraps=make_response_kernel,
     )
     def test_compact_schur_friction_spin_down(self, response_kernel):
@@ -281,7 +281,7 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         self._check_compact_schur_friction(response_kernel, omega=1.0, max_iterations=8)
 
     @mock.patch(
-        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_response_kernel",
+        "newton._src.solvers.kamino._src.solvers.scc.sparse.make_response_kernel",
         wraps=make_response_kernel,
     )
     def test_compact_schur_friction_stationarity(self, response_kernel):
@@ -289,11 +289,11 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         self._check_compact_schur_friction(response_kernel, omega=0.5, max_iterations=32)
 
     @mock.patch(
-        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_llt_blocked_rcm_solve_kernel",
+        "newton._src.solvers.kamino._src.solvers.scc.sparse.make_llt_blocked_rcm_solve_kernel",
         wraps=make_llt_blocked_rcm_solve_kernel,
     )
     @mock.patch(
-        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_response_kernel",
+        "newton._src.solvers.kamino._src.solvers.scc.sparse.make_response_kernel",
         wraps=make_response_kernel,
     )
     def test_compact_schur_reuse_forward(self, response_kernel, solve_kernel):
@@ -328,12 +328,12 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
             model.rigid_contact_max = 1
         model.set_gravity((0.0, 0.0, 0.0))
         config = SolverKamino.Config(
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
             sparse_dynamics=True,
             sparse_jacobian=True,
             use_collision_detector=False,
             use_fk_solver=False,
-            dvi=kamino_config.DVISolverConfig(
+            scc=kamino_config.SCCSolverConfig(
                 tolerance=1.0e-6 if omega < 1.0 else 1.0e-5,
                 use_schur_complement=True,
                 bilateral_solver_type="LLTBRCM",

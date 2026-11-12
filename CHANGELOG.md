@@ -55,7 +55,7 @@
 - Add opt-in `SolverVBD(rigid_soft_enable_dat=True)` Divide-and-Truncate (DAT) truncation of rigid pose and cloth updates against the division planes of the collision pipeline's rigid-soft contacts, keeping a scale-adaptive empty band on both sides. Rigid rotation is handled along curved trajectories with sampling and bisection, with an optional experimental interval-arithmetic path (`rigid_soft_dat_use_interval_arithmetic=True`). Tuned with the shared `dat_conservative_bound_relaxation`; requires a solver-owned `collision_pipeline` with a positive minimum rigid-soft query radius. Adds the `newton.examples vbd_dat_rigid_soft` example. ([PR #4180](https://github.com/newton-physics/newton/pull/4180))
 - Add optional `use_motion_wrench_projection` to operational-space controllers to reapply motion selection after inertia decoupling, reducing motion-induced stationary force bias with complementary motion and force masks. ([PR #4518](https://github.com/newton-physics/newton/pull/4518))
 - Apply the tangential component of opted-in per-vertex mesh surface velocities to rigid-body contact friction in Featherstone, SemiImplicit, XPBD, and VBD, including mesh-SDF contacts. ([PR #4266](https://github.com/newton-physics/newton/pull/4266))
-- Improve Kamino DVI convergence, stability, and sparse-contact scheduling; add an experimental opt-in Schur-complement path through `use_schur_complement=True`; and enable the tuned path in the G1 example. The alternating path remains the default with its historical relaxation and warm-start settings. ([PR #4125](https://github.com/newton-physics/newton/pull/4125))
+- Improve Kamino SCC convergence, stability, and sparse-contact scheduling; add an experimental opt-in Schur-complement path through `use_schur_complement=True`; and enable the tuned path in the G1 example. The alternating path remains the default with its historical relaxation and warm-start settings. ([PR #4125](https://github.com/newton-physics/newton/pull/4125))
 - Make the Kamino solver available in core pendulum, URDF, cartpole, and sensor examples. ([PR #4209](https://github.com/newton-physics/newton/pull/4209))
 - Add `Contacts.rigid_contact_match_generation`, the contact generation of the buffer that `rigid_contact_match_index` refers to, or -1 when the pipeline's previous collision pass wrote a different buffer, so code that carries per-contact state across frames can check that the match indices refer to the contact set it saved. ([PR #4483](https://github.com/newton-physics/newton/pull/4483))
 - Add an explicit URDF damping interpretation and temporary USD migration options for assets tuned with Newton 1.6:
@@ -73,8 +73,8 @@
 - Require the published `warp-nn` 0.4 release series (previously 0.3.1) for the `onnx` extra. Upgrade existing installations with `pip install --upgrade "newton[onnx]"`. ONNX LSTM inference is slower with Warp-NN 0.4.0; re-benchmark latency-sensitive policies when upgrading to Newton 1.7. ([PR #4569](https://github.com/newton-physics/newton/pull/4569))
 - Import MJCF `damper` actuator shortcuts. ([#3749](https://github.com/newton-physics/newton/issues/3749))
 - Resolve USD visual meshes to triangle geometry and per-vertex normals, which may duplicate vertices for sharp shading even on untextured meshes. Use `newton.usd.get_mesh(..., load_normals=False)` for geometry-only loading without normal-driven vertex splitting, or select `face_varying_normal_conversion="vertex_averaging"` or `"angle_weighted"` when smoothing authored face normals is desired. USD/RTX viewers now render final polygonal meshes with explicit normals rather than reconstructing source subdivision surfaces. ([#4052](https://github.com/newton-physics/newton/issues/4052))
-- Accelerate `SolverKamino` sparse DVI Schur-complement solves with compact constraint-space updates, tiled symmetric matrix products, and reduced response-workspace traffic, while retaining the joint-friction law and configured iteration budget. No configuration changes are required. ([PR #4216](https://github.com/newton-physics/newton/pull/4216))
-- Accelerate experimental sparse Kamino DVI joint-friction and large batched
+- Accelerate `SolverKamino` sparse SCC Schur-complement solves with compact constraint-space updates, tiled symmetric matrix products, and reduced response-workspace traffic, while retaining the joint-friction law and configured iteration budget. No configuration changes are required. ([PR #4216](https://github.com/newton-physics/newton/pull/4216))
+- Accelerate experimental sparse Kamino SCC joint-friction and large batched
   articulation solves by reusing sparse factorization structure and compact
   Schur responses. Contact-free compact sweeps can stop early at exact fixed
   points or bounded-row stationarity within the configured tolerance. Solver
@@ -202,7 +202,7 @@
 - Keep near-touching ground contacts in the Kamino H1 example to prevent intermittent velocity spikes after settling. ([#4508](https://github.com/newton-physics/newton/issues/4508))
 - Fix GJK distance queries reporting positive convex gaps below the convergence tolerance as overlap with a zero normal; they now return the gap and an oriented unit normal. ([PR #4477](https://github.com/newton-physics/newton/pull/4477))
 - Fix GJK triangle degeneracy checks discarding small, well-shaped simplex faces and returning incorrect distances and normals. ([PR #4411](https://github.com/newton-physics/newton/pull/4411))
-- Fix Kamino DVI factor reuse when sparsity shrinks, preserve small-bound sliding
+- Fix Kamino SCC factor reuse when sparsity shrinks, preserve small-bound sliding
   friction at stationarity, and avoid offset overflow for solver buffers larger
   than 2 GiB. ([PR #4282](https://github.com/newton-physics/newton/pull/4282))
 - Fix MJCF import assigning per-DOF MuJoCo attributes (such as `ref`, `margin`, and `stiffness`) and actuator targets to the wrong DOF when a body combines hinge and slide joints with a slide declared after a hinge. ([PR #4391](https://github.com/newton-physics/newton/pull/4391))
@@ -221,7 +221,7 @@
 - Fix contact matching reading past its previous-frame buffers on the frame after a rigid contact buffer overflow. ([PR #4471](https://github.com/newton-physics/newton/pull/4471))
 - Fix heightfield collisions dropping contacts near the contact gap and contacts with planes larger than their cached bounds. Cells are now rejected only when the query lies above every corner by a padding for roundoff and the narrow-phase contact shell, and plane queries skip the height test. ([PR #4475](https://github.com/newton-physics/newton/pull/4475))
 - Fix importing USD subtrees whose colliders bind shared physics materials outside the selected root. ([PR #4426](https://github.com/newton-physics/newton/pull/4426))
-- Fix intermittent instability in sparse Kamino DVI simulations, including the conveyor example, when grouped contacts mix static and kinematic supports. ([PR #4489](https://github.com/newton-physics/newton/pull/4489))
+- Fix intermittent instability in sparse Kamino SCC simulations, including the conveyor example, when grouped contacts mix static and kinematic supports. ([PR #4489](https://github.com/newton-physics/newton/pull/4489))
 - Fix loop-closing joints replacing articulation tree ancestors, keeping ancestry within each articulation and terminating at external roots to prevent cycles in Jacobian and Featherstone traversal regardless of joint creation order. ([PR #4402](https://github.com/newton-physics/newton/pull/4402))
 - Fix missing hands in the Allegro Hand example by excluding static USD scenery from replicated worlds, keeping automatic viewer spacing compact. ([PR #4274](https://github.com/newton-physics/newton/pull/4274))
 - Fix muscle actuators on the MuJoCo Warp backend of `SolverMuJoCo`. Solver construction and runtime model updates overwrote MuJoCo's compiled `actuator_lengthrange` with joint or tendon limits scaled by gear, or with zeros for unlimited tendons, which produced incorrect or non-finite muscle forces. Compiled length ranges are now preserved. ([PR #4415](https://github.com/newton-physics/newton/pull/4415))
@@ -285,7 +285,7 @@
 - Add `newton.Rod` as the public input type for prepared discrete-rod geometry, topology, frames, and optional constitutive data expressed as either isotropic elastic material properties or a complete set of section rigidities. `ModelBuilder.add_rod(rod=...)` assembles ordered chains and explicit graphs. For supported non-branching topologies, it converts constitutive data to per-joint stiffness using local dual rest lengths; direct stiffness and damping remain builder-level controls. ([#3800](https://github.com/newton-physics/newton/issues/3800))
 - Add `JointType.ROD` as the preferred rod-joint spelling and `ModelBuilder.add_joint_rod()` as the canonical builder method. For compatibility, value 7 retains `"CABLE"` as its canonical enum name during 1.6. ([#3800](https://github.com/newton-physics/newton/issues/3800))
 - Add an experimental implicit effort mode to `newton.actuators.Actuator`. `actuator.set_effort_mode_implicit(response=response)` switches on an implicit scheme for solving actuator impulses. The response comes from the new `newton.actuators.JointSpaceResponse`; tune the solve with `newton.actuators.Actuator.ImplicitOptions`. ([#3855](https://github.com/newton-physics/newton/issues/3855))
-- Expose device-resident per-world terminal solver status through `SolverKamino.status` for PADMM and DVI. ([#3933](https://github.com/newton-physics/newton/issues/3933))
+- Expose device-resident per-world terminal solver status through `SolverKamino.status` for PADMM and SCC. ([#3933](https://github.com/newton-physics/newton/issues/3933))
 - Add an asRoBallet example with selectable policy and LQR controllers. ([#3955](https://github.com/newton-physics/newton/issues/3955))
 - Import per-mode curve damping from `NewtonCurvesDeformableMaterialAPI` and discretize each value using the rod joint's dual rest length. ([#3980](https://github.com/newton-physics/newton/issues/3980))
 - Add articulation ownership and labels to custom frequencies so `ArticulationView` automatically supports solver-defined rows, including MuJoCo tendons and actuators. ([#4016](https://github.com/newton-physics/newton/issues/4016))
@@ -407,7 +407,7 @@
 - Honor `skip_validation_shapes` and `skip_all_validations` when finalizing models with insufficient hydroelastic SDF padding.
 - Import USD spheres whose scale is uniform within floating-point tolerance without a false non-uniform-scaling warning, and include the affected prim path in genuine warnings.
 - Import authored `uniform` mesh normals instead of dropping them.
-- Improve `SolverKamino` DVI contact convergence, warm-starting, and performance for dense contact manifolds.
+- Improve `SolverKamino` SCC contact convergence, warm-starting, and performance for dense contact manifolds.
 - Keep the Panda hydroelastic example's cup placement stable by enabling deterministic contact generation by default and using compliant finger actuator gains.
 - Preserve contacts that are already separating during the XPBD rigid restitution pass, including when the material restitution is zero.
 - Preserve standard UsdTransform2d mappings in Newton viewers.
@@ -473,7 +473,7 @@
 - Add `Heightfield.create_from_mesh()` and `newton.utils.rasterize_mesh_to_heightfield()` to build a heightfield collider by ray-casting a `wp.Mesh`, replacing a large static terrain mesh with an equivalent heightfield.
 - Add read-only `Contacts.contact_matching_mode` metadata reporting whether the `CollisionPipeline` that produced or last filled the buffer used `"disabled"`, `"latest"`, or `"sticky"` contact matching.
 - Add a "Show Ground" visualization toggle (`ViewerBase.show_ground`, default on) to hide or show ground-plane shapes in the viewer.
-- Add opt-in DVI forward dynamics to `SolverKamino` through `SolverKamino.Config(dynamics_solver="dvi")`, with sparse and dense execution, DVI-specific convergence diagnostics, warm-starting, bounded contact-recovery controls, and RCM-reordered bilateral factorization with reusable ordering and panel-parallel numeric factorization for large systems. PADMM remains the default. (#3570, #3613)
+- Add opt-in SCC forward dynamics to `SolverKamino` through `SolverKamino.Config(dynamics_solver="scc")`, with sparse and dense execution, SCC-specific convergence diagnostics, warm-starting, bounded contact-recovery controls, and RCM-reordered bilateral factorization with reusable ordering and panel-parallel numeric factorization for large systems. PADMM remains the default. (#3570, #3613)
 - Add `fk_actuation_flags` to `SolverKamino.register_custom_attributes()` for selecting joint actuation types in forward-kinematics workflows. (#3338)
 - Add D6 gimbal/Euler joint support to `SolverKamino`, including conversion, limits, Jacobians, reset, and forward-kinematics handling. (#3717)
 - Return the selected `physics_scene_path` from `ModelBuilder.add_usd()` and add `newton.usd.get_physics_scenes()` to retrieve every physics scene in parser order.
@@ -549,7 +549,7 @@
 - Fix `SolverMuJoCo` overflowing MuJoCo's signed 32-bit collision masks when graph coloring requires the highest supported color; all 32 mask bits are now used before falling back to default collision masks for additional colors.
 - Convert `newton:mimicCoef0` from degrees to radians when the mimic follower joint is angular. Assets authored against the old behavior need the value rescaled to degrees.
 - Complete Kamino RCM traversal for large and disconnected systems and reuse the resulting permutation by default; set `reuse_permutation=False` to recompute it for changing matrix topology.
-- Bound Kamino DVI contact allocation with a per-world geometry heuristic instead of sizing every contact pair simultaneously; set `collision_detector.max_contacts_per_world` to override the inferred capacity.
+- Bound Kamino SCC contact allocation with a per-world geometry heuristic instead of sizing every contact pair simultaneously; set `collision_detector.max_contacts_per_world` to override the inferred capacity.
 - Fix panel-parallel RCM-blocked LLT factorization hanging when a matrix ends in a partial tile.
 - Fix USD capsule, cylinder, and cone visual and site scaling to follow the authored primitive axis.
 - Fix MJCF contact pairs ignoring properties inherited from pair default classes.

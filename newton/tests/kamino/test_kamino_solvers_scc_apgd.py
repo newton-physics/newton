@@ -18,18 +18,18 @@ from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.geometry.aggregation import ContactAggregation
 from newton._src.solvers.kamino._src.linalg import LLTBlockedSolver
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
-from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
-from newton._src.solvers.kamino._src.solvers.dvi.apgd import UnilateralAPGD
-from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, DVIStatus, convert_config_to_struct
-from newton._src.solvers.kamino.config import ConstrainedDynamicsConfig, DVIAPGDConfig, DVISolverConfig
+from newton._src.solvers.kamino._src.solvers.scc import SCCSolver
+from newton._src.solvers.kamino._src.solvers.scc.apgd import UnilateralAPGD
+from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCStatus, convert_config_to_struct
+from newton._src.solvers.kamino.config import ConstrainedDynamicsConfig, SCCAPGDConfig, SCCSolverConfig
 from newton.solvers import SolverKamino
 from newton.tests.kamino.test_kamino_solver_kamino_joint_friction import (
     _run_hold_and_breakaway_test,
     _run_spin_down_test,
 )
-from newton.tests.kamino.test_kamino_solvers_dvi import _build_five_box_stack
+from newton.tests.kamino.test_kamino_solvers_scc import _build_five_box_stack
 from newton.tests.kamino.utils.make import make_containers, update_containers
-from newton.tests.kamino.utils.solver_configs import make_dvi_dense_config, make_dvi_sparse_config
+from newton.tests.kamino.utils.solver_configs import make_scc_dense_config, make_scc_sparse_config
 from newton.tests.utils import basics
 from newton.viewer import ViewerNull
 
@@ -78,7 +78,7 @@ def _problem(matrices, biases, families, friction, device, *, options=None, lowe
         bound_upper=floats(upper if upper is not None else []),
     )
     if configs is None:
-        configs = [DVISolverConfig(unilateral_solver="apgd", apgd=options or DVIAPGDConfig()) for _ in sizes]
+        configs = [SCCSolverConfig(unilateral_solver="apgd", apgd=options or SCCAPGDConfig()) for _ in sizes]
     size = SimpleNamespace(
         num_worlds=len(sizes),
         max_of_max_total_cts=max(1, *sizes),
@@ -93,8 +93,8 @@ def _problem(matrices, biases, families, friction, device, *, options=None, lowe
         _use_schur_complement=False,
         _bilateral_solver=None,
         data=SimpleNamespace(
-            status=wp.zeros(len(sizes), dtype=DVIStatus, device=device),
-            config=wp.array([convert_config_to_struct(c) for c in configs], dtype=DVIConfigStruct, device=device),
+            status=wp.zeros(len(sizes), dtype=SCCStatus, device=device),
+            config=wp.array([convert_config_to_struct(c) for c in configs], dtype=SCCConfigStruct, device=device),
             solution=SimpleNamespace(lambdas=wp.zeros(int(offsets[-1]), device=device)),
         ),
     )
@@ -122,40 +122,40 @@ def _model_problem(builder, device, sparse, *, schur=False, max_contacts=64, ite
         config=DualProblem.Config(dynamics=ConstrainedDynamicsConfig(preconditioning=False)),
     )
     problem.build(model, data, jacobians, limits, detector.contacts)
-    solver = DVISolver(
+    solver = SCCSolver(
         model=model,
         data=data,
         limits=limits,
         contacts=detector.contacts,
         jacobians=jacobians,
         problem=problem,
-        config=DVISolverConfig(
+        config=SCCSolverConfig(
             unilateral_solver="apgd",
             use_schur_complement=schur,
             max_alternating_iterations=iterations,
             tolerance=1e-4,
-            apgd=DVIAPGDConfig(max_iterations=128, max_nonlinear_corrections=30, tolerance=1e-6),
+            apgd=SCCAPGDConfig(max_iterations=128, max_nonlinear_corrections=30, tolerance=1e-6),
         ),
         warmstart=WarmStartMode.NONE,
     )
     return solver, problem
 
 
-class TestDVIAPGD(unittest.TestCase):
+class TestSCCAPGD(unittest.TestCase):
     """Check Coulomb impulses rather than only the inner cone-QP residual."""
 
     def test_configuration_is_opt_in(self):
         """Retain PGS defaults and accept the APGD backend."""
-        self.assertEqual(DVISolverConfig().unilateral_solver, "pgs")
-        self.assertEqual(DVISolverConfig(unilateral_solver="apgd").unilateral_solver, "apgd")
-        self.assertEqual(DVIAPGDConfig().max_nonlinear_corrections, 1)
+        self.assertEqual(SCCSolverConfig().unilateral_solver, "pgs")
+        self.assertEqual(SCCSolverConfig(unilateral_solver="apgd").unilateral_solver, "apgd")
+        self.assertEqual(SCCAPGDConfig().max_nonlinear_corrections, 1)
 
     def test_configuration_rejects_invalid_controls(self):
         """Reject unusable budgets, damping, and tolerances before launching kernels."""
         for field in ("max_iterations", "max_backtracks", "max_nonlinear_corrections"):
             for value in (0, -1, True, 1.5):
                 with self.subTest(field=field, value=value), self.assertRaises(ValueError):
-                    DVIAPGDConfig(**{field: value})
+                    SCCAPGDConfig(**{field: value})
         for options in (
             {"tolerance": float("nan")},
             {"tolerance": -1.0},
@@ -164,9 +164,9 @@ class TestDVIAPGD(unittest.TestCase):
             {"relaxation": float("inf")},
         ):
             with self.subTest(options=options), self.assertRaises(ValueError):
-                DVIAPGDConfig(**options)
+                SCCAPGDConfig(**options)
         with self.assertRaises(ValueError):
-            DVISolverConfig(unilateral_solver="unknown")
+            SCCSolverConfig(unilateral_solver="unknown")
 
     def test_de_saxce_sliding(self):
         """Recover Coulomb normal impulse instead of the associated cone-QP solution."""
@@ -178,7 +178,7 @@ class TestDVIAPGD(unittest.TestCase):
                     [(0, 0, 1)],
                     [0.5],
                     device,
-                    options=DVIAPGDConfig(max_nonlinear_corrections=8),
+                    options=SCCAPGDConfig(max_nonlinear_corrections=8),
                 )
                 solver.solve(problem)
                 impulses = solver.owner.data.solution.lambdas.numpy()
@@ -271,9 +271,9 @@ class TestDVIAPGD(unittest.TestCase):
         scales = [1e-8, 1.0, 1e8]
         expected = np.array([1.0, 2.0])
         configs = [
-            DVISolverConfig(
+            SCCSolverConfig(
                 unilateral_solver="apgd",
-                apgd=DVIAPGDConfig(
+                apgd=SCCAPGDConfig(
                     max_iterations=128,
                     tolerance=1e-6 * min(1.0, 1.0 / scale),
                 ),
@@ -306,9 +306,9 @@ class TestDVIAPGD(unittest.TestCase):
         """Satisfy Coulomb sliding across operator scales without false early exits."""
         scales = [1e-8, 1.0, 1e8]
         configs = [
-            DVISolverConfig(
+            SCCSolverConfig(
                 unilateral_solver="apgd",
-                apgd=DVIAPGDConfig(
+                apgd=SCCAPGDConfig(
                     max_nonlinear_corrections=20,
                     tolerance=1e-5 * min(1.0, 1.0 / scale),
                 ),
@@ -390,7 +390,7 @@ class TestDVIAPGD(unittest.TestCase):
                 [(0, 1, 0)],
                 [],
                 "cuda:0",
-                options=DVIAPGDConfig(max_iterations=budget, max_backtracks=budget, max_nonlinear_corrections=budget),
+                options=SCCAPGDConfig(max_iterations=budget, max_backtracks=budget, max_nonlinear_corrections=budget),
             )
             with wp.ScopedCapture(device="cuda:0") as capture:
                 solver.solve(problem)
@@ -417,7 +417,7 @@ class TestDVIAPGD(unittest.TestCase):
                     [(0, 0, 1)] * 4 + [(0, 0, 0)],
                     [0.5, 0.5, 0.5, 0.0],
                     device,
-                    options=DVIAPGDConfig(max_nonlinear_corrections=8),
+                    options=SCCAPGDConfig(max_nonlinear_corrections=8),
                 )
                 solver.solve(problem)
                 np.testing.assert_allclose(
@@ -439,7 +439,7 @@ class TestDVIAPGD(unittest.TestCase):
                     device,
                     lower=[-0.25],
                     upper=[0.25],
-                    options=DVIAPGDConfig(max_nonlinear_corrections=8),
+                    options=SCCAPGDConfig(max_nonlinear_corrections=8),
                 )
                 solver.solve(problem)
                 np.testing.assert_allclose(
@@ -464,7 +464,7 @@ class TestDVIAPGD(unittest.TestCase):
                     [(0, 0, 2)],
                     [0.5, 0.5],
                     device,
-                    options=DVIAPGDConfig(max_iterations=100, max_nonlinear_corrections=40, tolerance=2e-6),
+                    options=SCCAPGDConfig(max_iterations=100, max_nonlinear_corrections=40, tolerance=2e-6),
                 )
                 solver.solve(problem)
                 np.testing.assert_allclose(solver.owner.data.solution.lambdas.numpy(), expected, atol=2e-5)
@@ -479,7 +479,7 @@ class TestDVIAPGD(unittest.TestCase):
                     [(0, 0, 1)],
                     [0.5],
                     device,
-                    options=DVIAPGDConfig(max_backtracks=1),
+                    options=SCCAPGDConfig(max_backtracks=1),
                 )
                 solver.solve(problem)
                 np.testing.assert_array_equal(solver.owner.data.solution.lambdas.numpy(), [0.0, 0.0, 0.0])
@@ -529,7 +529,7 @@ class TestDVIAPGD(unittest.TestCase):
                     [(0, 0, 1)],
                     [0.0],
                     device,
-                    options=DVIAPGDConfig(
+                    options=SCCAPGDConfig(
                         max_iterations=2,
                         max_backtracks=3,
                         max_nonlinear_corrections=2,
@@ -558,7 +558,7 @@ class TestDVIAPGD(unittest.TestCase):
 
     def test_early_termination_at_every_level(self):
         """Exit all three loops before their budgets, including in a captured CUDA graph."""
-        options = DVIAPGDConfig(max_iterations=12, max_backtracks=4, max_nonlinear_corrections=12)
+        options = SCCAPGDConfig(max_iterations=12, max_backtracks=4, max_nonlinear_corrections=12)
         for device in _devices():
             with self.subTest(device=device), wp.ScopedDevice(device):
                 if wp.get_device(device).is_cuda and not wp.is_conditional_graph_supported():
@@ -665,9 +665,9 @@ class TestDVIAPGD(unittest.TestCase):
         for device in _devices():
             with self.subTest(device=device):
                 configs = [
-                    DVISolverConfig(
+                    SCCSolverConfig(
                         unilateral_solver="apgd",
-                        apgd=DVIAPGDConfig(
+                        apgd=SCCAPGDConfig(
                             **{
                                 "max_iterations": 12,
                                 "max_backtracks": 3,
@@ -734,10 +734,10 @@ class TestDVIAPGD(unittest.TestCase):
         """Project stale warmstarts and preserve worlds outside their alternating budget."""
         for device in _devices():
             configs = [
-                DVISolverConfig(
+                SCCSolverConfig(
                     unilateral_solver="apgd",
                     max_alternating_iterations=n,
-                    apgd=DVIAPGDConfig(max_nonlinear_corrections=20),
+                    apgd=SCCAPGDConfig(max_nonlinear_corrections=20),
                 )
                 for n in (1, 2)
             ]
@@ -896,7 +896,7 @@ class TestDVIAPGD(unittest.TestCase):
             [(0, 0, 1)],
             [0.5],
             "cuda:0",
-            options=DVIAPGDConfig(max_nonlinear_corrections=8),
+            options=SCCAPGDConfig(max_nonlinear_corrections=8),
         )
         solver.solve(problem)
         with wp.ScopedCapture(device="cuda:0") as capture:
@@ -911,25 +911,25 @@ class TestDVIAPGD(unittest.TestCase):
             np.testing.assert_allclose(solver.owner.data.solution.lambdas.numpy(), expected, atol=2e-5)
 
 
-class TestDVIAPGDDynamics(unittest.TestCase):
+class TestSCCAPGDDynamics(unittest.TestCase):
     """Exercise the actual integration, warmstart, and captured sparse solver paths."""
 
     def test_joint_friction_spin_down(self):
         """Reuse analytical joint-friction deceleration and stopped-pose checks for APGD."""
         for device in _devices():
-            for factory in (make_dvi_dense_config, make_dvi_sparse_config):
+            for factory in (make_scc_dense_config, make_scc_sparse_config):
                 with self.subTest(device=device, config=factory.__name__), wp.ScopedDevice(device):
                     config = factory()
-                    config.dvi.unilateral_solver = "apgd"
+                    config.scc.unilateral_solver = "apgd"
                     _run_spin_down_test(self, factory.__name__, config)
 
     def test_joint_friction_hold_and_breakaway(self):
         """Reuse static holding and saturated friction-torque checks for APGD."""
         for device in _devices():
-            for factory in (make_dvi_dense_config, make_dvi_sparse_config):
+            for factory in (make_scc_dense_config, make_scc_sparse_config):
                 with self.subTest(device=device, config=factory.__name__), wp.ScopedDevice(device):
                     config = factory()
-                    config.dvi.unilateral_solver = "apgd"
+                    config.scc.unilateral_solver = "apgd"
                     _run_hold_and_breakaway_test(self, factory.__name__, config)
 
     def test_contact_stack_rollout(self):
@@ -939,13 +939,13 @@ class TestDVIAPGDDynamics(unittest.TestCase):
                 with self.subTest(device=device, sparse=sparse), wp.ScopedDevice(device):
                     model = _build_five_box_stack().finalize(device=device)
                     config = SolverKamino.Config(
-                        dynamics_solver="dvi",
+                        dynamics_solver="scc",
                         use_collision_detector=True,
                         sparse_jacobian=sparse,
                         sparse_dynamics=sparse,
                     )
-                    config.dvi.unilateral_solver = "apgd"
-                    config.dvi.apgd.tolerance = 1e-6
+                    config.scc.unilateral_solver = "apgd"
+                    config.scc.apgd.tolerance = 1e-6
                     solver = SolverKamino(model, config=config)
                     state_0, state_1 = model.state(), model.state()
                     initial = state_0.body_q.numpy()[:, :3].copy()
@@ -989,7 +989,7 @@ class TestDVIAPGDDynamics(unittest.TestCase):
             args = SimpleNamespace(
                 world_count=1,
                 use_kamino_contacts=True,
-                dynamics_solver="dvi",
+                dynamics_solver="scc",
                 unilateral_solver="apgd",
                 use_schur_complement=True,
                 # Match the upstream support test; bounded rows have separate tests.
@@ -1000,7 +1000,7 @@ class TestDVIAPGDDynamics(unittest.TestCase):
             def make_accuracy_config(*args, **kwargs):
                 """Set the DR Legs residual budget before solver allocation and capture."""
                 config = config_from_model(*args, **kwargs)
-                config.dvi.apgd.max_nonlinear_corrections = 20
+                config.scc.apgd.max_nonlinear_corrections = 20
                 return config
 
             with patch.object(SolverKamino.Config, "from_model", side_effect=make_accuracy_config):

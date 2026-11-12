@@ -1,0 +1,1 @@
+Rename Kamino's split constraint backend to SCC (Split Constraint Coupling). Select it with `SolverKamino.Config(dynamics_solver="scc")` and configure it through `config.scc`, `SCCSolverConfig`, and `SCCAPGDConfig`. Update backend selectors, configuration field names, imports, and benchmark filters to the SCC spelling; previous names are no longer accepted.

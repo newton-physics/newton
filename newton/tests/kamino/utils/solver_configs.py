@@ -11,10 +11,10 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 __all__ = [
     "KAMINO_CONFIGS",
     "PADMM_CONFIG_NAMES",
-    "make_dvi_dense_config",
-    "make_dvi_sparse_config",
     "make_padmm_dense_config",
     "make_padmm_sparse_config",
+    "make_scc_dense_config",
+    "make_scc_sparse_config",
     "make_single_iteration_config",
 ]
 
@@ -37,7 +37,7 @@ def make_single_iteration_config(
             warmstart_mode=warmstart_mode,
         )
     else:
-        config.dvi = kamino_config.DVISolverConfig(
+        config.scc = kamino_config.SCCSolverConfig(
             max_alternating_iterations=1,
             inequality_sweeps_per_iteration=1,
             tolerance=0.0,
@@ -71,10 +71,10 @@ def make_padmm_sparse_config(**kwargs: Any) -> SolverKamino.Config:
     )
 
 
-def make_dvi_dense_config(**kwargs: Any) -> SolverKamino.Config:
-    """Create a dense DVI configuration without collision detection."""
+def make_scc_dense_config(**kwargs: Any) -> SolverKamino.Config:
+    """Create a dense SCC configuration without collision detection."""
     return SolverKamino.Config(
-        dynamics_solver="dvi",
+        dynamics_solver="scc",
         use_fk_solver=False,
         sparse_jacobian=False,
         sparse_dynamics=False,
@@ -83,10 +83,10 @@ def make_dvi_dense_config(**kwargs: Any) -> SolverKamino.Config:
     )
 
 
-def make_dvi_sparse_config(**kwargs: Any) -> SolverKamino.Config:
-    """Create a sparse DVI configuration without collision detection."""
+def make_scc_sparse_config(**kwargs: Any) -> SolverKamino.Config:
+    """Create a sparse SCC configuration without collision detection."""
     return SolverKamino.Config(
-        dynamics_solver="dvi",
+        dynamics_solver="scc",
         use_fk_solver=False,
         sparse_jacobian=True,
         sparse_dynamics=True,
@@ -98,9 +98,9 @@ def make_dvi_sparse_config(**kwargs: Any) -> SolverKamino.Config:
 KAMINO_CONFIGS = (
     ("dense", make_padmm_dense_config),
     ("sparse", make_padmm_sparse_config),
-    ("dvi_dense", make_dvi_dense_config),
-    ("dvi_sparse", make_dvi_sparse_config),
+    ("scc_dense", make_scc_dense_config),
+    ("scc_sparse", make_scc_sparse_config),
 )
 
-# DVI has no ``use_acceleration`` knob, so only PADMM configs vary over it.
+# SCC has no ``use_acceleration`` knob, so only PADMM configs vary over it.
 PADMM_CONFIG_NAMES = ("dense", "sparse")
