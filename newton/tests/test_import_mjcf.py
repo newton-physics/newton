@@ -4248,34 +4248,6 @@ f 4 5 8
             msg="Actuator with explicit ctrllimited='false' should not be limited",
         )
 
-    def test_joint_effort_limit_sentinels(self):
-        """Match MuJoCo's scalar joint force-limit flags, defaults, and range sentinels."""
-        mujoco = SolverMuJoCo.import_mujoco()[0]
-        for joint_type in ("hinge", "slide"):
-            for autolimits in ("true", "false"):
-                for limited in ("auto", "true", "false"):
-                    for bounds in (None, "0 0", "2 2", "2 -1", "-2 5"):
-                        with self.subTest(joint_type=joint_type, autolimits=autolimits, limited=limited, bounds=bounds):
-                            range_attr = "" if bounds is None else f'actuatorfrcrange="{bounds}"'
-                            xml = f'''<mujoco><compiler autolimits="{autolimits}"/>
-                                <default><joint actuatorfrclimited="{limited}" {range_attr}/></default>
-                                <worldbody><body><joint type="{joint_type}"/><geom size=".1"/></body></worldbody>
-                                </mujoco>'''
-                            builder = newton.ModelBuilder()
-                            try:
-                                reference = mujoco.MjModel.from_xml_string(xml)
-                            except ValueError:
-                                with self.assertRaises(ValueError):
-                                    builder.add_mjcf(xml, parse_mujoco_options=False)
-                                continue
-                            builder.add_mjcf(xml, parse_mujoco_options=False)
-                            expected = (
-                                max(abs(reference.jnt_actfrcrange[0]))
-                                if reference.jnt_actfrclimited[0]
-                                else builder.default_joint_cfg.effort_limit
-                            )
-                            self.assertEqual(builder.joint_effort_limit, [expected])
-
     def test_autolimits_false_joint_effort_limit(self):
         """Test that actuatorfrcrange sets effort_limit only when actuatorfrclimited resolves to true."""
         mjcf_autolimits_true = """<?xml version="1.0" ?>

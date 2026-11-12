@@ -54,7 +54,8 @@ The existing method has no new dependency. The native method requires MuJoCo
 (``uv sync --extra sim``) and accepts the same keyword arguments. It copies
 native model data into the builder and retains no ``MjSpec`` or ``MjModel``.
 Each source must pass MuJoCo compilation independently. Imported assets can
-then be composed in Newton; composition-dependent parameters are resolved again
+then be composed in Newton. Builder finalization resolves parameters supported
+by Newton's core representation; remaining MuJoCo-specific parameters resolve
 when ``SolverMuJoCo`` compiles the assembled model, as described below.
 Native defaults, includes, frames, replication, mesh processing, and inertia
 inference run in MuJoCo. A custom ``path_resolver`` uses the existing include
@@ -119,7 +120,8 @@ Native compiler optimizations such as ``fusestatic`` and ``alignfree`` run
 before conversion. Filtering runs after compilation, so retained bodies keep
 their compiled inertia even when some shapes are excluded. Placement,
 attachment, and joint collapsing remain available. Gravity and timestep remain
-controlled by Newton and the solver. Imported solver options are shared;
+controlled by Newton and the solver. Model-wide options are shared, while
+per-world options belong to the current builder world;
 use ``parse_mujoco_options=False`` when attaching an asset that should not
 replace the assembled model's settings.
 
@@ -366,9 +368,10 @@ filtering and root-joint replacement are excluded from these checks.
 
 Coverage tests compare compiled parameters, kinematics, and actuator forces
 with native MuJoCo, including attachment followed by fixed-joint collapsing
-and identical replication. Batched worlds must agree on inputs that determine
-joint ``springdamper``, automatic tendon rest lengths, and automatic muscle
-length ranges; these are currently compiled from the first world. Runtime
+and replication. Joint ``springdamper`` and fixed-tendon spring lengths resolve
+independently per world. Automatic spatial-tendon spring lengths and muscle
+length ranges still depend on the compiled template, so batched worlds must
+agree on the inputs that determine them. Runtime
 notification tests cover native joint and tendon bounds, inherited actuator
 ranges, and body/site/tendon equalities. Default and sentinel tests compare
 explicit zero, automatic, disabled, inherited, and invalid values with MuJoCo.

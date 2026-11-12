@@ -1,1 +1,0 @@
-Keep representable native MJCF servos with control history on Newton joint targets, preserving delayed and interpolated commands through MuJoCo's existing history buffers. Preserve the imported timestep when initializing those buffers.

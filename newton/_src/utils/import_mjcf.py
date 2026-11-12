@@ -2713,26 +2713,11 @@ def parse_mjcf(
                 warn_invalid_joint_solreflimit(joint_attrib)
 
                 effort_limit = default_joint_effort_limit
-                actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
-                if "actuatorfrcrange" in joint_attrib or actuatorfrclimited == "true":
-                    actuatorfrcrange = [float(value) for value in joint_attrib.get("actuatorfrcrange", "0 0").split()]
-                    if len(actuatorfrcrange) != 2:
-                        raise ValueError("Joint actuatorfrcrange must contain exactly two values.")
-                    lower, upper = actuatorfrcrange
-                    if (
-                        actuatorfrclimited == "auto"
-                        and compiler_attribs.get("autolimits", "true").lower() == "false"
-                        and (lower != 0.0 or upper != 0.0)
-                    ):
-                        raise ValueError(
-                            f"Joint {joint_name[-1]!r} has actuatorfrcrange but requires explicit "
-                            'actuatorfrclimited="true" or "false" when autolimits="false".'
-                        )
-                    force_limited = actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and lower < upper)
-                    if force_limited:
-                        if lower >= upper:
-                            raise ValueError("Joint actuatorfrcrange lower bound must be smaller than upper bound.")
-                        effort_limit = max(abs(lower), abs(upper))
+                if "actuatorfrcrange" in joint_attrib and is_limited(
+                    joint_attrib, "actuatorfrclimited", "actuatorfrcrange"
+                ):
+                    actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
+                    effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
 
                 rest_q = builder.default_joint_cfg.rest_q
                 if "springref" in joint_attrib or "ref" in joint_attrib:
