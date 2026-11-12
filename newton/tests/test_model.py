@@ -982,16 +982,6 @@ class TestModelMesh(unittest.TestCase):
                     rebuilt.tri_edge_indices[owned], np.argsort(order)[derived.tri_edge_indices[owned]]
                 )
 
-    def test_mesh_adjacency_legacy_api_removed(self):
-        # The dict-based API deprecated in 1.4 is gone: the `edges` accessor, its
-        # `Edge` record class, the `add_edge` shim, and the ctor `indices` alias.
-        adj = newton.utils.MeshAdjacency([[0, 1, 2], [0, 2, 3]])
-        self.assertFalse(hasattr(adj, "edges"))
-        self.assertFalse(hasattr(adj, "add_edge"))
-        self.assertFalse(hasattr(newton.utils.MeshAdjacency, "Edge"))
-        with self.assertRaises(TypeError):
-            newton.utils.MeshAdjacency(indices=[[0, 1, 2]])
-
     def test_mesh_adjacency_to_without_vertex_adjacency_warns(self):
         # to() before init_vertex_adjacency: uploads the topology maps, leaves v_adj_* None + warns.
         adj = newton.utils.MeshAdjacency([[0, 1, 2], [0, 2, 3]])

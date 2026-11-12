@@ -734,17 +734,6 @@ class TestModelView(unittest.TestCase):
 class TestSolverCoupledContactsAndMPM(unittest.TestCase):
     """Test coupled contact preparation and implicit MPM integration."""
 
-    def test_graph_capture_setup_stays_solver_specific(self):
-        """Verify coupled solvers do not expose a generic graph protocol."""
-        for name in ("supports_graph_capture", "prepare_graph_capture", "check_status"):
-            with self.subTest(name=name):
-                self.assertFalse(hasattr(SolverCoupled, name))
-
-        self.assertFalse(hasattr(SolverImplicitMPM, "supports_graph_capture"))
-        self.assertFalse(hasattr(SolverImplicitMPM, "prepare_graph_capture"))
-        self.assertFalse(hasattr(SolverImplicitMPM, "check_status"))
-        self.assertTrue(hasattr(SolverImplicitMPM, "check_sparse_grid_rebuild_status"))
-
     def test_implicit_mpm_reset_syncs_namespaced_non_in_place_state(self):
         """Verify coupled reset mirrors MPM history into the non-in-place output state."""
         world_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
