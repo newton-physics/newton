@@ -2213,6 +2213,7 @@ def solve_body_joints(
         joint_impulse,
     )
 
+
 @wp.func
 def _joint_mimic_effective_mass(
     body: int,
