@@ -557,6 +557,13 @@ def parse_usd(
     ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
     physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
+    # MuJoCo angle units (``mjc:compiler:angle``) are a scene-level compiler setting of the stage.
+    # A subtree import (``root_path``, e.g. one clone source of a larger scene) contains no
+    # PhysicsScene of its own, and a referenced asset's own scene lies outside its default prim,
+    # so resolve units from the stage's first active PhysicsScene instead of the schema default.
+    units_scene_prim = physics_scene_prim
+    if units_scene_prim is None and root_path != "/":
+        units_scene_prim = next((prim for prim in stage.Traverse() if prim.IsA(UsdPhysics.Scene)), None)
 
     legacy_rigid_object_types = (
         UsdPhysics.ObjectType.RigidBody,
@@ -1216,7 +1223,7 @@ def parse_usd(
             path_body_map=path_body_map,
             path_joint_map=path_joint_map,
             builder_custom_attr_joint=builder_custom_attr_joint,
-            physics_scene_prim=physics_scene_prim,
+            physics_scene_prim=units_scene_prim,
             usd_axis_to_axis=usd_axis_to_axis,
             DegreesToRadian=DegreesToRadian,
             default_joint_armature=default_joint_armature,
@@ -1253,7 +1260,7 @@ def parse_usd(
             path_joint_map=path_joint_map,
             merged_dof_offset=merged_dof_offset,
             builder_custom_attr_joint=builder_custom_attr_joint,
-            physics_scene_prim=physics_scene_prim,
+            physics_scene_prim=units_scene_prim,
             usd_axis_to_axis=usd_axis_to_axis,
             default_joint_velocity_limit=default_joint_velocity_limit,
             joint_drive_gains_scaling=joint_drive_gains_scaling,

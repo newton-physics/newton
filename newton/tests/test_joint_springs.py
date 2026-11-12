@@ -180,6 +180,60 @@ class TestJointSprings(unittest.TestCase):
                     np.testing.assert_allclose(model.joint_limit_lower.numpy()[-1], -np.pi / 6 - offset, atol=1e-6)
                     np.testing.assert_allclose(model.joint_limit_upper.numpy()[-1], np.pi / 6 - offset, atol=1e-6)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_subtree_import_uses_stage_scene_angle_units(self):
+        """Resolve MuJoCo angle units from the stage scene when the imported subtree has none.
+
+        Clone sources are imported with ``root_path`` below the stage's PhysicsScene, and a
+        referenced asset's own scene lies outside its default prim; the scene-level compiler
+        unit still applies to the subtree's ``mjc:springref`` and ``mjc:ref``.
+        """
+        from pxr import Usd
+
+        for angle, ref, springref, rest in (
+            ("degree", 30, 45, np.pi / 12),
+            ("radian", 0.4, 0.7, 0.3),
+            (None, 30, 45, np.pi / 12),
+        ):
+            for register in (False, True):
+                with self.subTest(angle=angle, register=register):
+                    stage = Usd.Stage.CreateInMemory()
+                    scene_units = f'uniform token mjc:compiler:angle = "{angle}"' if angle is not None else ""
+                    stage.GetRootLayer().ImportFromString(f"""#usda 1.0
+                    def PhysicsScene "physicsScene" (prepend apiSchemas = ["MjcSceneAPI"]) {{
+                        {scene_units}
+                    }}
+                    def Xform "World" {{
+                        def Xform "root" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {{
+                            def Cube "body" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]) {{
+                                float physics:mass = 1
+                                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                                double size = 0.1
+                            }}
+                            def PhysicsRevoluteJoint "hinge" (prepend apiSchemas = ["MjcJointAPI"]) {{
+                                rel physics:body1 = </World/root/body>
+                                token physics:axis = "Z"
+                                float physics:lowerLimit = -30
+                                float physics:upperLimit = 30
+                                float mjc:ref = {ref}
+                                float mjc:springref = {springref}
+                                double mjc:stiffness = 3
+                            }}
+                        }}
+                    }}""")
+                    builder = newton.ModelBuilder()
+                    if register:
+                        SolverMuJoCo.register_custom_attributes(builder)
+                    result = builder.add_usd(
+                        stage, root_path="/World/root", schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()]
+                    )
+                    # Only the units resolve from the stage scene; the subtree import still selects no scene.
+                    self.assertIsNone(result["physics_scene_path"])
+                    model = builder.finalize(device="cpu")
+                    np.testing.assert_allclose(model.joint_rest_q.numpy(), [rest], atol=1e-6)
+                    offset = ref if angle == "radian" else np.deg2rad(ref)
+                    np.testing.assert_allclose(model.joint_limit_lower.numpy(), [-np.pi / 6 - offset], atol=1e-6)
+
     def test_legacy_spring_runtime_compatibility(self):
         """Keep stiffness edits live through the warning alias and reject removed rest-reference access."""
         model = _slider_builder(register=True).finalize(device="cpu")
