@@ -9590,13 +9590,14 @@ class ModelBuilder:
             # compute position and rotation from plane equation
             # For plane equation ax + by + cz + d = 0, the closest point to the origin is
             # -(d/||n||) * (n/||n||), so the signed offset along the normalized normal is -d/||n||.
-            normal = np.array(plane[:3])
+            normal = np.array(plane[:3], dtype=np.float64)
             norm = np.linalg.norm(normal)
             normal /= norm
             d_normalized = plane[3] / norm
             pos = -d_normalized * normal
-            # compute rotation from local +Z axis to plane normal
-            rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(*normal))
+            # compute rotation from local +Z axis to plane normal; eps=0 special-cases only an exactly
+            # anti-parallel (-Z) normal, for which wp.quat_between_vectors returns the identity
+            rot = quat_between_vectors_robust(wp.vec3(0.0, 0.0, 1.0), wp.vec3(*normal), 0.0)
             xform = wp.transform(pos, rot)
         if cfg is None:
             cfg = self.default_shape_cfg
