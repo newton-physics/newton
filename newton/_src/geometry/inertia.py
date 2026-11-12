@@ -550,20 +550,15 @@ def compute_inertia_mesh(
     indices = np.array(indices).flatten()
     num_tris = len(indices) // 3
 
-    # The tetrahedra are summed in single precision about a reference point. If the
-    # vertices sit far from the mesh origin, summing about the origin loses the volume and
-    # inertia to cancellation, so meshes whose bounding box does not contain the origin
-    # are integrated about the bounding box center instead. Mass and inertia about the
-    # center of mass do not depend on this reference point. The bounds only cover the
-    # vertices the triangles reference, so unused vertices cannot move the reference.
+    # Float32 tetrahedron sums about a distant origin cancel, so sum about the bounding-box
+    # center of the referenced vertices.
     vertices = np.asarray(vertices, dtype=np.float64).reshape(-1, 3)
     reference = np.zeros(3)
     if num_tris > 0:
-        used = vertices[indices[: num_tris * 3]]
-        lower = used.min(axis=0)
-        upper = used.max(axis=0)
-        if np.any(lower > 0.0) or np.any(upper < 0.0):
-            reference = 0.5 * (lower + upper)
+        referenced = np.zeros(len(vertices), dtype=bool)
+        referenced[indices[: num_tris * 3]] = True
+        used = vertices[referenced]
+        reference = 0.5 * (used.min(axis=0) + used.max(axis=0))
 
     # Allocating for mass and inertia
     com_warp = wp.zeros(1, dtype=wp.vec3)

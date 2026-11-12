@@ -53,13 +53,14 @@ class TestInertia(unittest.TestCase):
             density=1000, vertices=vertices, indices=indices, is_solid=True
         )
 
-        self.assertAlmostEqual(mass_0, 1000.0, delta=1e-6)
+        # The tetrahedra are summed in float32, so mass is exact only to float32 resolution.
+        self.assertAlmostEqual(mass_0, 1000.0, delta=1e-3)
         self.assertAlmostEqual(volume_0, 1.0, delta=1e-6)
         assert_np_equal(np.array(com_0), np.array([0.5, 0.5, 0.5]), tol=1e-6)
 
         # Check against analytical inertia (unit cube has half-extents 0.5)
         mass_box, com_box, I_box = compute_inertia_box(1000.0, 0.5, 0.5, 0.5)
-        self.assertAlmostEqual(mass_box, mass_0, delta=1e-6)
+        self.assertAlmostEqual(mass_box, mass_0, delta=1e-3)
         assert_np_equal(np.array(com_box), np.zeros(3), tol=1e-6)
         assert_np_equal(np.array(I_0), np.array(I_box), tol=1e-4)
 
@@ -85,7 +86,7 @@ class TestInertia(unittest.TestCase):
         )
 
         # Inertia values should be the same as before
-        self.assertAlmostEqual(mass_1, mass_0, delta=1e-6)
+        self.assertAlmostEqual(mass_1, mass_0, delta=1e-3)
         self.assertAlmostEqual(volume_1, volume_0, delta=1e-6)
         assert_np_equal(np.array(com_1), np.array([0.5, 0.5, 0.5]), tol=1e-6)
         assert_np_equal(np.array(I_1), np.array(I_0), tol=1e-4)
@@ -720,6 +721,18 @@ class TestInertia(unittest.TestCase):
         assert_np_equal(np.array(com), offset, tol=1.0e-5 * np.linalg.norm(offset))
         assert_np_equal(np.array(inertia).reshape(3, 3), I_hollow_ref, tol=1.0e-3 * np.max(I_hollow_ref))
 
+
+        # A non-watertight mesh has no well-defined volume, but its result must still not
+        # depend on where it sits, including across the point where its bounds reach the origin.
+        open_indices = indices.reshape(-1, 3)[:-2].flatten()
+        corner = -vertices.min(axis=0)
+        m_open, _, I_open, _ = compute_inertia_mesh(density, vertices + corner, open_indices, is_solid=True)
+        I_open = np.array(I_open).reshape(3, 3)
+        for offset in (corner + [0.0, 0.0, 1.0e-6], corner + [3.0, 0.0, 0.0], np.zeros(3)):
+            with self.subTest(open_offset=offset):
+                mass, _, inertia, _ = compute_inertia_mesh(density, vertices + offset, open_indices, is_solid=True)
+                self.assertAlmostEqual(mass, m_open, delta=1.0e-4 * abs(m_open))
+                assert_np_equal(np.array(inertia).reshape(3, 3), I_open, tol=1.0e-3 * np.max(np.abs(I_open)))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
