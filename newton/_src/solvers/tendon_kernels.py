@@ -1261,7 +1261,6 @@ def _initialize_tendon_material(
                             seg_attachment_r[seg],
                         )
 
-
     return material_added
 
 

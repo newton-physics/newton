@@ -307,7 +307,7 @@ def solve_tendon_material_direct(
     segment_end = guide_end - tendon_id - 1
     for seg in range(segment_start, segment_end):
         workspace.previous_rest[seg] = seg_rest_length[seg]
-    _initialize_tendon_material(
+    material_added = _initialize_tendon_material(
         tendon_id,
         body_q,
         body_qd,
@@ -341,34 +341,38 @@ def solve_tendon_material_direct(
         dt,
         apply_rolling_transfer,
         apply_pinhole_slip,
-        0,
+        1,
         guide_material_transfer,
     )
-    valid = _project_tendon_material(
-        workspace,
-        tendon_id,
-        guide_start,
-        guide_end,
-        segment_start,
-        segment_end,
-        tendon_guide_type,
-        tendon_guide_active,
-        tendon_guide_cone_seg_l,
-        tendon_guide_cone_seg_r,
-        tendon_guide_cap_ratio,
-        seg_active,
-        raw_compliance,
-        seg_active_compliance,
-        seg_damping_tension,
-        seg_length,
-        seg_rolling_delta_l,
-        seg_rolling_delta_r,
-        apply_rolling_transfer,
-        apply_pinhole_slip,
-        1.0e-6,
-        seg_stretch,
-        guide_material_transfer,
-    )
+    # An activation split must not create material before the return map sees it.
+    if material_added > 0.0:
+        valid = _reject_material(workspace, tendon_id, segment_start, int(TendonMaterialStatus.BOUND_INCOMPATIBLE))
+    else:
+        valid = _project_tendon_material(
+            workspace,
+            tendon_id,
+            guide_start,
+            guide_end,
+            segment_start,
+            segment_end,
+            tendon_guide_type,
+            tendon_guide_active,
+            tendon_guide_cone_seg_l,
+            tendon_guide_cone_seg_r,
+            tendon_guide_cap_ratio,
+            seg_active,
+            raw_compliance,
+            seg_active_compliance,
+            seg_damping_tension,
+            seg_length,
+            seg_rolling_delta_l,
+            seg_rolling_delta_r,
+            apply_rolling_transfer,
+            apply_pinhole_slip,
+            1.0e-6,
+            seg_stretch,
+            guide_material_transfer,
+        )
     if not valid:
         # Provisional iterates may be infeasible. Preserve the previous material
         # allocation and retry after the body update; never fall back to sweeps.

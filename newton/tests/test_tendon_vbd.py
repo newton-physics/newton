@@ -183,7 +183,7 @@ def test_vbd_spin_reaction_matches_capstan_projection(test, device):
             inputs = [
                 wp.array(poses, dtype=wp.transform, device=device),
                 wp.array(previous_poses, dtype=wp.transform, device=device),
-                wp.zeros(1, dtype=wp.vec3, device=device),
+                wp.zeros(len(poses), dtype=wp.vec3, device=device),
                 adjacency,
                 wp.array(guide_bodies, dtype=int, device=device),
                 wp.array(

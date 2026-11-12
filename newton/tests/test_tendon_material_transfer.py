@@ -17,7 +17,11 @@ from newton._src.solvers.tendon_material_state import (
     _project_tendon_material,
     _TendonMaterialWorkspace,
 )
-from newton.tests.test_tendon_capstan import _loaded_route_arc_length, build_stiff_pinhole_capstan
+from newton.tests.test_tendon_capstan import (
+    _loaded_route_arc_length,
+    build_explicit_inactive_dynamic_route,
+    build_stiff_pinhole_capstan,
+)
 from newton.tests.test_tendon_material_direct import _reference_taut
 from newton.tests.unittest_utils import NewtonTestCase, add_function_test, get_test_devices
 
@@ -799,6 +803,44 @@ def test_direct_dynamic_route_reactivation(test, device):
                 test.assertAlmostEqual(material, baseline, delta=1e-6)
 
 
+def test_direct_activation_rejects_material_deficit(test, device):
+    """Reject an activated arc that consumes more material than its bypass contains."""
+    test.allowOutputRegex(r"^Error: direct tendon material solve rejected accepted pose .*", stream="stdout")
+    model, candidate = build_explicit_inactive_dynamic_route(device)
+    model.body_color_groups = [wp.array([i], dtype=int, device=device) for i in range(model.body_count)]
+    model.tendon_segment_compliance.fill_(0.1)
+    model.tendon_guide_mu.fill_(0.2)
+    moved_body = int(model.tendon_guide_body.numpy()[candidate])
+    for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+        solver = solver_type(model, iterations=4, tendon_material_direct=True)
+        state, output, baseline = (model.state() for _ in range(3))
+        control = model.control()
+        solver.reset(state)
+        solver.step(state, output, control, None, 1.0 / 60.0)
+        baseline.assign(output)
+        graph = None
+        if wp.get_device(device).is_cuda:
+            with wp.ScopedCapture(device=device) as capture:
+                solver.step(state, output, control, None, 1.0 / 60.0)
+            graph = capture.graph
+        for use_graph in (False, True) if graph is not None else (False,):
+            with test.subTest(solver=solver_type.__name__, graph=use_graph):
+                state.assign(baseline)
+                output._tendon_material_failure.fill_(wp.vec2i(0, -1))
+                output.tendon_guide_active.fill_(False)
+                state.tendon_segment_rest_length.assign([0.001, 0.0])
+                poses = state.body_q.numpy()
+                poses[moved_body, :3] = 0.0
+                state.body_q.assign(poses)
+                if use_graph:
+                    wp.capture_launch(graph)
+                else:
+                    solver.step(state, output, control, None, 1.0 / 60.0)
+                test.assertTrue(bool(output.tendon_guide_active.numpy()[candidate]))
+                with test.assertRaisesRegex(RuntimeError, "BOUND_INCOMPATIBLE"):
+                    solver.check_tendon_material(output)
+
+
 def test_direct_input_contract(test, device):
     """Reject unsupported material edits, gradient states, and mutable solver selection."""
     model = _world_material_model(device)
@@ -928,6 +970,7 @@ for function in (
     test_provisional_material_failure_can_retry,
     test_direct_dynamics_match_converged_sweeps,
     test_direct_dynamic_route_reactivation,
+    test_direct_activation_rejects_material_deficit,
     test_direct_input_contract,
     test_stiff_pinhole_projection_matches_reference,
     test_stiff_pinhole_body_force_balance,
