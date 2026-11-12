@@ -10,9 +10,11 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 
 __all__ = [
     "KAMINO_CONFIGS",
+    "PADMM_CONFIGS",
     "PADMM_CONFIG_NAMES",
     "make_padmm_dense_config",
     "make_padmm_sparse_config",
+    "make_padmm_sparse_fused_config",
     "make_scc_dense_config",
     "make_scc_sparse_config",
     "make_single_iteration_config",
@@ -71,6 +73,19 @@ def make_padmm_sparse_config(**kwargs: Any) -> SolverKamino.Config:
     )
 
 
+def make_padmm_sparse_fused_config(**kwargs: Any) -> SolverKamino.Config:
+    """Create a sparse PADMM configuration with the fused conjugate residual solver (CUDA only)."""
+    return SolverKamino.Config(
+        dynamics_solver="padmm",
+        use_fk_solver=False,
+        sparse_jacobian=True,
+        sparse_dynamics=True,
+        use_collision_detector=False,
+        dynamics=kamino_config.ConstrainedDynamicsConfig(linear_solver_type="CRF"),
+        **kwargs,
+    )
+
+
 def make_scc_dense_config(**kwargs: Any) -> SolverKamino.Config:
     """Create a dense SCC configuration without collision detection."""
     return SolverKamino.Config(
@@ -104,3 +119,6 @@ KAMINO_CONFIGS = (
 
 # SCC has no ``use_acceleration`` knob, so only PADMM configs vary over it.
 PADMM_CONFIG_NAMES = ("dense", "sparse")
+
+# The PADMM entries of KAMINO_CONFIGS
+PADMM_CONFIGS = tuple(entry for entry in KAMINO_CONFIGS if entry[0] in PADMM_CONFIG_NAMES)

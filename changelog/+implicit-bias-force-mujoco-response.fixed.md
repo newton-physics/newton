@@ -1,1 +1,0 @@
-Fix `JointSpaceResponse.refresh_from_solve()` with `SolverMuJoCo` returning a wrong response for articulations with free or ball joints. Pass the new `state` argument to convert MuJoCo's joint coordinates to Newton's.

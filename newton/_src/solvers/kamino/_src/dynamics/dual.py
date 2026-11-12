@@ -66,6 +66,7 @@ from ..core.model import ModelKamino
 from ..core.size import SizeKamino
 from ..core.types import vec6f
 from ..dynamics.delassus import BlockSparseMatrixFreeDelassusOperator, DelassusOperator
+from ..dynamics.joint_decoupling import DynamicJointDecoupling
 from ..geometry.contacts import ContactsKamino
 from ..kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from ..kinematics.limits import LimitsKamino
@@ -1336,6 +1337,7 @@ class DualProblem:
         config: list[DualProblem.Config] | DualProblem.Config | None = None,
         compute_h: bool = False,
         sparse: bool = True,
+        decouple_joint_dynamics: bool = False,
     ):
         """
         Constructs a dual problem interface container.
@@ -1357,6 +1359,11 @@ class DualProblem:
                 Defaults to `None`, indicating that default config will be used for all worlds.
             compute_h: Set to `True` to enable the computation of the nonlinear
                 generalized forces vectors in construction of the dual problem.
+                Defaults to `False`.
+            sparse: Set to `True` to use the matrix-free sparse Delassus operator.
+            decouple_joint_dynamics: Set to `True` to decouple the Coulomb friction and effort-limit
+                rows of each joint DoF that also has a joint dynamics row (armature, damping, or
+                implicit PD) from that row by a change of variables, see :class:`DynamicJointDecoupling`.
                 Defaults to `False`.
         """
         # Ensure Jacobians are given if model is provided.
@@ -1380,6 +1387,12 @@ class DualProblem:
 
         self._sparse: bool = sparse
         """Flag to indicate whether the dual uses a sparse data representation."""
+
+        self._decouple_joint_dynamics: bool = decouple_joint_dynamics
+        """Flag to indicate whether joint friction and effort rows are decoupled from joint dynamics rows."""
+
+        self._joint_decoupling: DynamicJointDecoupling | None = None
+        """Helper for the decoupling of joint friction and effort rows from joint dynamics rows, if any."""
 
         # Finalize the dual problem data if a model is provided
         if model is not None:
@@ -1453,6 +1466,14 @@ class DualProblem:
         Returns whether the dual problem is using sparse operators.
         """
         return self._sparse
+
+    @property
+    def joint_decoupling(self) -> DynamicJointDecoupling | None:
+        """
+        Returns the decoupling of joint friction and effort rows from joint dynamics rows,
+        or ``None`` if the problem solves the original rows.
+        """
+        return self._joint_decoupling
 
     ###
     # Operations
@@ -1639,6 +1660,16 @@ class DualProblem:
         if any(c.constraints.contact_compliance for c in self._config):
             self._data.v_b_friction = wp.zeros_like(self._data.v_b)
 
+        # Pair the joint friction and effort rows with the joint dynamics rows of the same DoFs,
+        # dropping any decoupling of a previously finalized model
+        self._joint_decoupling = None
+        if self._decouple_joint_dynamics:
+            decoupling = DynamicJointDecoupling(model, device=self._device)
+            if decoupling.num_dofs > 0:
+                self._joint_decoupling = decoupling
+                if self._sparse:
+                    self._delassus.set_joint_decoupling(decoupling)
+
     def zero(self):
         if self._compute_h:
             self._data.h.zero_()
@@ -1749,6 +1780,10 @@ class DualProblem:
                 device=self.device,
             )
 
+        # Decouple joint friction and effort rows from the joint dynamics rows of the same DoFs
+        if self._joint_decoupling is not None:
+            self._build_joint_decoupling(data)
+
         # Optionally build and apply the Delassus diagonal preconditioner
         if any(s.dynamics.preconditioning for s in self._config):
             self._build_dual_preconditioner()
@@ -1802,6 +1837,25 @@ class DualProblem:
             return config
         else:
             raise TypeError(f"Expected List[DualProblem.Config] or DualProblem.Config, got {type(config)}")
+
+    def _build_joint_decoupling(self, data: DataKamino):
+        """
+        Applies the change of variables of :class:`DynamicJointDecoupling` to the Delassus operator
+        and the free velocity. The sparse Delassus operator applies it to its products itself.
+        """
+        decoupling = self._joint_decoupling
+        if self._sparse:
+            self._delassus.update_joint_decoupling()
+        else:
+            problem = self._data
+            decoupling.compute_body_share_dense(data.joints.inv_m_j, problem.dim, problem.mio, problem.vio, problem.D)
+            decoupling.scale_rows_dense(
+                problem.dim, problem.mio, problem.vio, self._size.max_of_max_total_cts, problem.D
+            )
+            decoupling.add_joint_terms_dense(
+                data.joints.inv_m_j, data.joints.inv_m_a, problem.dim, problem.mio, problem.vio, problem.D
+            )
+        decoupling.decouple_free_velocity(self._data.v_f)
 
     def _build_nonlinear_generalized_force(model: ModelKamino, data: DataKamino, problem: DualProblemData):
         """

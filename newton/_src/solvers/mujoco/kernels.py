@@ -1638,6 +1638,7 @@ def apply_mjc_body_f_kernel(
     body_world: wp.array[wp.int32],
     gravity: wp.array[wp.vec3],
     body_gravcomp: wp.array2d[float],
+    option_world: int,
     # outputs
     xfrc_applied: wp.array2d[wp.spatial_vector],
 ):
@@ -1660,7 +1661,9 @@ def apply_mjc_body_f_kernel(
     gravity_world = body_world[newton_body]
     if gravity_world >= -1 and gravity_world < gravity.shape[0]:
         gravcomp = body_gravcomp[world, mjc_body]
-        v += body_mass[newton_body] * (1.0 - gravcomp) * (gravity[gravity_world] - gravity[world])
+        # MuJoCo applies the gravity of the Newton world it simulates; see update_model_properties_kernel.
+        mjc_gravity = gravity[wp.where(option_world < 0, option_world, world)]
+        v += body_mass[newton_body] * (1.0 - gravcomp) * (gravity[gravity_world] - mjc_gravity)
 
     xfrc_applied[world, mjc_body] = wp.spatial_vector(v, w)
 
@@ -2418,11 +2421,13 @@ def update_joint_transforms_kernel(
 def update_model_properties_kernel(
     # Newton model properties
     gravity_src: wp.array[wp.vec3],
+    option_world: int,
     # MuJoCo model properties
     gravity_dst: wp.array[wp.vec3f],
 ):
     world_idx = wp.tid()
-    gravity_dst[world_idx] = gravity_src[world_idx]
+    # A single MuJoCo world that simulates global world -1 (option_world < 0) uses its gravity.
+    gravity_dst[world_idx] = gravity_src[wp.where(option_world < 0, option_world, world_idx)]
 
 
 @wp.kernel

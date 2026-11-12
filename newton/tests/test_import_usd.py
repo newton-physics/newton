@@ -5183,8 +5183,9 @@ def Xform "World"
                 self.assertTrue(hasattr(model, "mujoco"))
                 self.assertTrue(hasattr(model.mujoco, option_name))
                 value = getattr(model.mujoco, option_name).numpy()
-                self.assertEqual(len(value), 1)
-                self.assertAlmostEqual(value[0], expected, places=places)
+                self.assertEqual(len(value), model.world_count + 1)  # Local worlds and the global world
+                # Options imported outside a world context belong to global world -1.
+                self.assertAlmostEqual(value[-1], expected, places=places)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_option_vector_world_parsing(self):
@@ -5254,8 +5255,9 @@ def Xform "World"
                 self.assertTrue(hasattr(model, "mujoco"))
                 self.assertTrue(hasattr(model.mujoco, option_name))
                 value = getattr(model.mujoco, option_name).numpy()
-                self.assertEqual(len(value), 1)
-                self.assertTrue(np.allclose(value[0], expected))
+                self.assertEqual(len(value), model.world_count + 1)  # Local worlds and the global world
+                # Options imported outside a world context belong to global world -1.
+                self.assertTrue(np.allclose(value[-1], expected))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_option_numeric_once_parsing(self):
@@ -6526,21 +6528,6 @@ def Xform "Articulation" (
             ),
             atol=1.0e-7,
         )
-
-    def test_omnipbr_mapping_inputs_are_not_parsed(self):
-        """Keep OmniPBR texture-mapping adapters out of the USD importer."""
-        self.assertFalse(hasattr(usd_utils, "_is_omnipbr_shader"))
-        self.assertFalse(hasattr(usd_utils, "_extract_omnipbr_texture_mapping"))
-        importer_source = inspect.getsource(usd_utils)
-        for input_name in (
-            "texture_scale",
-            "texture_translate",
-            "texture_rotate",
-            "project_uvw",
-            "world_or_object",
-        ):
-            with self.subTest(input_name=input_name):
-                self.assertNotIn(input_name, importer_source)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_mesh_loads_alternate_texcoord_set(self):

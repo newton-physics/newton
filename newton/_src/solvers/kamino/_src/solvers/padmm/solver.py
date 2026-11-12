@@ -429,6 +429,11 @@ class PADMMSolver:
         # Update the final solution from the terminal PADMM state
         self._update_solution(problem)
 
+        # The solution is in the variables of the current joint decoupling, which an internal
+        # warm-start must know to rebase it, whichever way this solve was started
+        if problem.joint_decoupling is not None:
+            problem.joint_decoupling.record_solution_body_share()
+
     ###
     # Internals - High-Level Operations
     ###
@@ -679,6 +684,9 @@ class PADMMSolver:
         """
         Warm-starts the bilateral joint constraint variables from the model data container.
 
+        The data container holds the impulses of the original rows, so this also applies the change
+        of variables of the problem's joint decoupling, if any.
+
         Args:
             model: The model associated with the problem.
             data: The model data associated with the problem.
@@ -725,6 +733,9 @@ class PADMMSolver:
             ],
             device=self.device,
         )
+
+        if problem.joint_decoupling is not None:
+            problem.joint_decoupling.decouple_warmstart(problem.data.P, x_0, y_0, z_0)
 
     def _warmstart_limit_constraints(
         self,
@@ -825,6 +836,11 @@ class PADMMSolver:
             problem: The dual forward dynamics problem to be solved.
                 This is needed during warm-starts in order to access the problem preconditioning.
         """
+        # The stored solution is in the variables of the joint decoupling of its own step, whose
+        # body share may differ from the current one, so express it in the current variables
+        if problem.joint_decoupling is not None:
+            problem.joint_decoupling.rebase_solution(self._data.solution.lambdas, self._data.solution.v_plus)
+
         # Apply the dual-problem preconditioner to the stored solution
         # in order to project to solution space of the PADMM variables
         wp.launch(

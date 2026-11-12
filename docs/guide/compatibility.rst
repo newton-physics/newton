@@ -74,7 +74,8 @@ CUDA Compatibility
        wheel, such as the standard Warp 1.17 wheel. See
        :ref:`system-requirements` for driver and GPU limits.
    * - 13.4+ (recommended)
-     - The standard Warp 1.18 wheel uses CUDA 13.4. Check the installed
+     - Since Warp 1.18, standard PyPI and nightly wheels require an NVIDIA
+       R580-series or newer driver for CUDA acceleration. Check the installed
        wheel's driver and GPU requirements on the `Warp compatibility page
        <https://nvidia.github.io/warp/stable/user_guide/compatibility.html>`__.
 

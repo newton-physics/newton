@@ -1,1 +1,0 @@
-Add an APGD unilateral subsolver for Kamino SCC with De Saxce contact correction, operator-based step sizes, dense and sparse operators, and Schur-complement support. CUDA execution requires conditional graph support (CUDA 12.4+).
