@@ -11181,7 +11181,7 @@ class ModelBuilder:
             - Density-based mass is ``cfg.density * area * rest_length`` per segment, excluding the
               overlapping caps. ``area`` is the circular cross section ``pi * radius**2``, as in USD
               cable import, or for hollow rods the tube wall of thickness ``cfg.margin``.
-            - Inertia uses the solid-cylinder or hollow-tube tensor at each segment's assigned mass
+            - Inertia uses the solid-cylinder or open-tube tensor at each segment's assigned mass
               and rest length, as in USD cable import for solid sections. Collision geometry and
               the caller's ``cfg`` are unchanged.
             - With ``body_frame_origin="start"``, the body origin is at the local start of the rest-sized

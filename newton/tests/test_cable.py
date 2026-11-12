@@ -7562,12 +7562,13 @@ class TestCable(unittest.TestCase):
             np.testing.assert_allclose(np.asarray(builder.body_inertia[body]).reshape(3, 3), expected, rtol=1e-6)
 
     def test_rod_hollow_zero_thickness_has_zero_mass(self):
-        """Warn and leave zero mass for a hollow density rod with zero shell thickness."""
+        """Warn at the call site and leave zero mass for a hollow density rod with zero shell thickness."""
         builder = newton.ModelBuilder()
         cfg = newton.ModelBuilder.ShapeConfig(is_solid=False)
         rod = newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 0.1), (0.0, 0.0, 0.2)], radius=0.05)
-        with self.assertWarnsRegex(newton.NewtonWarning, "zero thickness"):
+        with self.assertWarnsRegex(newton.NewtonWarning, "zero thickness") as caught:
             bodies, _ = builder.add_rod(rod=rod, cfg=cfg)
+        self.assertEqual(caught.filename, __file__)
         self.assertEqual([builder.body_mass[body] for body in bodies], [0.0, 0.0])
 
     def test_rod_total_mass_with_site_shapes(self):
