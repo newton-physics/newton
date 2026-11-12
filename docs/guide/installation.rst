@@ -25,8 +25,8 @@ Minimum Requirements
      - Minimum
      - Notes
    * - Python
-     - 3.10
-     - 3.10 support is deprecated; removal planned for Newton 1.9. Use 3.11+.
+     - 3.11
+     -
    * - OS
      - Linux (x86-64, aarch64), Windows (x86-64, ARM64), or macOS (CPU only)
      - macOS has no GPU acceleration; Windows ARM64 support is experimental
@@ -81,7 +81,7 @@ toolkit; see `Warp's CUDA 12.9 ARM64 limitation
 
 **Windows ARM64 (experimental)**
 
-Windows on ARM64 requires Warp 1.19 or newer and Python 3.11 or newer. Several
+Windows on ARM64 requires Warp 1.19 or newer. Several
 optional dependencies do not publish Windows ARM64 packages, so the extras skip
 them on this platform. Most notably, :class:`~newton.solvers.SolverMuJoCo` and
 USD import and export are unavailable because ``mujoco`` and ``usd-core`` cannot
@@ -141,12 +141,6 @@ with other packages:
             python -m venv .venv
             .venv\Scripts\Activate.ps1
             pip install "newton[examples]"
-
-.. note::
-
-    Users on Python 3.10 may experience issues when installing ``imgui_bundle`` (a dependency of the
-    ``examples`` extra). If you encounter installation errors, we recommend upgrading to
-    Python 3.11 or newer, or follow the :doc:`development` guide to install Newton using ``uv``.
 
 .. _running-examples:
 
