@@ -448,8 +448,8 @@ class TestGimbal(unittest.TestCase):
         state = model.state()
         q_start = model.joint_q_start.numpy()[d6]
         qd_start = model.joint_qd_start.numpy()[d6]
-        q = state.joint_q.numpy()
-        qd = state.joint_qd.numpy()
+        q = state.joint_q.numpy().copy()
+        qd = state.joint_qd.numpy().copy()
         q[q_start : q_start + 3] = [0.2, -0.3, 0.4]
         qd[qd_start : qd_start + 3] = [-0.1, 0.15, -0.2]
         state.joint_q.assign(q)

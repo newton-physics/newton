@@ -236,6 +236,9 @@ objects with :meth:`Actuator.state` and swap them after each step:
        model.actuators[0].step(state, control, state_0, state_1, dt=0.01)
        state_0, state_1 = state_1, state_0
 
+For gradients over several steps, use one state per step instead; see
+:ref:`Differentiability and Graph Capture <actuator-taped-rollouts>`.
+
 The swap rebinds Python names, while a CUDA graph records fixed buffer
 addresses. A captured region with an odd number of actuator steps therefore
 cannot carry its final state into the next replay through the ordinary swap. A
@@ -702,10 +705,34 @@ Whether an actuator supports differentiability and CUDA graph capture depends on
 its components.  All built-in input processors, clamps, motors and drives are
 graphable, except neural-network drives with a Torch checkpoint, due to
 framework interop overhead; with an ONNX checkpoint they are graphable.
-Implicit mode is not differentiable.  Gradients are correct for one actuator
-step per tape; several steps on one tape reuse internal buffers and give wrong
-gradients.  :meth:`Actuator.is_graphable` returns
+Implicit mode is not differentiable.  :meth:`Actuator.is_graphable` returns
 ``True`` when all components can be captured in a CUDA graph.
+
+.. _actuator-taped-rollouts:
+
+To differentiate several steps on one :class:`warp.Tape`, finalize the model
+with ``requires_grad=True`` and, as the differentiable-simulation examples do
+for ``State``, give each step its own ``Control`` and actuator state instead of
+swapping two.  Actuators write ``joint_f`` into ``Control`` on every step, so
+reusing one would overwrite values that earlier steps need in the backward
+pass.  Neural-network drives support one step per tape.
+
+.. code-block:: python
+
+   states = [model.state() for _ in range(num_steps + 1)]
+   controls = [model.control() for _ in range(num_steps + 1)]
+   act_states = [[actuator.state() for actuator in model.actuators] for _ in range(num_steps + 1)]
+   with wp.Tape() as tape:
+       for k in range(num_steps):
+           for i, actuator in enumerate(model.actuators):
+               actuator.step(states[k], controls[k], act_states[k][i], act_states[k + 1][i], dt=dt)
+           for battery in model.batteries:
+               battery.step(controls[k], controls[k + 1])
+           solver.step(states[k], states[k + 1], controls[k], None, dt)
+
+Each step then allocates fresh intermediate buffers, so capturing such steps in
+a CUDA graph needs Warp's memory pool; :meth:`Actuator.is_graphable` returns
+``False`` otherwise.
 
 :meth:`Actuator.is_graphable` describes the components, not the captured region.
 A stateful actuator also needs the region's state exchange to be graph-safe.  See
@@ -806,7 +833,8 @@ entry per actuator of the model
 * input ``control.actuator_supply_current``: the current each motor draws
   from its battery, written by the motor in :meth:`Actuator.step`;
 * output ``control.actuator_supply_voltage``: the supply voltage of each
-  motor, read by the motor in the next :meth:`Actuator.step`.
+  motor, read by the motor in the next :meth:`Actuator.step`.  With one
+  ``Control`` per step, :meth:`BatteryBase.step` writes it to the next one.
 
 To set up and run batteries:
 
