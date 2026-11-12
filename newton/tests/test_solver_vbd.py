@@ -3011,6 +3011,74 @@ def _spring_damping_is_axial(test, device):
         )
 
 
+@wp.kernel
+def _eval_bending_hinge_kernel(
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angle: wp.array[float],
+    edge_rest_length: wp.array[float],
+    forces: wp.array[wp.vec3],
+    hessians: wp.array[wp.mat33],
+):
+    hinge, v_order = wp.tid()
+    force, hessian = evaluate_dihedral_angle_based_bending_force_hessian(
+        hinge, v_order, pos, pos_anchor, edge_indices, edge_rest_angle, edge_rest_length, 1.0, 1.0e-3, 1.0e-3
+    )
+    forces[4 * hinge + v_order] = force
+    hessians[4 * hinge + v_order] = hessian
+
+
+def _bending_force_is_scale_free(test, device):
+    """A folded hinge gets the same bending force at every mesh scale (the energy is stiffness * rest length *
+    theta^2 / 2 and d(theta)/dx scales with 1/L), including hinges with sub-millimetre triangles, while a hinge with a
+    collapsed triangle, or with a triangle whose height is below 1e-2 times the edge, still gets none (and one just
+    above that threshold does)."""
+    angle = np.radians(30.0)
+    scales = [1.0, 1.0e-2, 1.0e-3, 5.0e-4, 1.0e-4]
+    hinges = [
+        [[0.0, L * np.cos(angle), L * np.sin(angle)], [0.0, -L, 0.0], [0.0, 0.0, 0.0], [L, 0.0, 0.0]] for L in scales
+    ]
+    # triangle height 2e-2 times the edge, folded onto the side of the other apex: just above 1e-2 * |e|^2
+    hinges.append([[0.5e-3, -2.0e-5, 0.0], [0.0, -1.0e-3, 0.0], [0.0, 0.0, 0.0], [1.0e-3, 0.0, 0.0]])
+    hinges.append([[0.5e-3, 0.0, 0.0], [0.0, -1.0e-3, 0.0], [0.0, 0.0, 0.0], [1.0e-3, 0.0, 0.0]])  # collinear
+    # triangle height 1e-3 times the edge: a nonzero normal below 1e-2 * |e|^2
+    hinges.append([[0.5e-3, 1.0e-6, 0.0], [0.0, -1.0e-3, 0.0], [0.0, 0.0, 0.0], [1.0e-3, 0.0, 0.0]])
+    count = len(hinges)
+    pos_np = np.array(hinges, dtype=np.float32).reshape(-1, 3)
+    with wp.ScopedDevice(device):
+        pos = wp.array(pos_np, dtype=wp.vec3)
+        forces = wp.zeros(4 * count, dtype=wp.vec3)
+        hessians = wp.zeros(4 * count, dtype=wp.mat33)
+        wp.launch(
+            _eval_bending_hinge_kernel,
+            dim=(count, 4),
+            inputs=[
+                pos,
+                pos,
+                wp.array(np.arange(4 * count, dtype=np.int32).reshape(-1, 4), dtype=wp.int32),
+                wp.zeros(count, dtype=float),
+                wp.array([*scales, 1.0e-3, 1.0e-3, 1.0e-3], dtype=float),
+            ],
+            outputs=[forces, hessians],
+        )
+        forces_np = forces.numpy().reshape(count, 4, 3).astype(np.float64)
+        hessians_np = hessians.numpy().reshape(count, 4, 3, 3).astype(np.float64)
+
+    reference = forces_np[0]
+    test.assertGreater(np.linalg.norm(reference[0]), 0.1)
+    for i, L in enumerate(scales):
+        with test.subTest(scale=L):
+            np.testing.assert_allclose(forces_np[i], reference, rtol=0.0, atol=1.0e-3 * np.abs(reference).max())
+            np.testing.assert_allclose(
+                hessians_np[i] * L, hessians_np[0], rtol=0.0, atol=1.0e-3 * np.abs(hessians_np[0]).max()
+            )
+    test.assertGreater(np.abs(forces_np[len(scales)]).max(), 0.0)
+    test.assertGreater(np.abs(hessians_np[len(scales)]).max(), 0.0)
+    np.testing.assert_array_equal(forces_np[-2:], 0.0)
+    np.testing.assert_array_equal(hessians_np[-2:], 0.0)
+
+
 def _bending_damping_handles_degenerate_anchor(test, device):
     """Bending damping skips collapsed previous-step geometry."""
     with wp.ScopedDevice(device):
@@ -6652,6 +6720,12 @@ add_function_test(
     TestSolverVBD,
     "test_bending_damping_handles_degenerate_anchor",
     _bending_damping_handles_degenerate_anchor,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_bending_force_is_scale_free",
+    _bending_force_is_scale_free,
     devices=devices,
 )
 add_function_test(
