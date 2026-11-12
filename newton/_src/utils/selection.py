@@ -2490,7 +2490,7 @@ class ArticulationView:
         during CUDA graph capture when the device's memory pool is enabled.
 
         Note:
-            Assumes one DOF per actuator.
+            Maps each actuator to its first DOF, ``actuator.indices[0]``.
 
         Returns array of shape (world_count * dofs_per_world,) where each element is:
         - actuator parameter index if that DOF is actuated
@@ -2562,12 +2562,12 @@ class ArticulationView:
         """Read an actuator-component parameter for every DOF in this view.
 
         The returned array covers all DOFs selected by the view (one column
-        per DOF, one row per world).  DOFs that are not driven by
-        *actuator* are left at zero; driven DOFs contain the
-        corresponding value gathered from ``component.<name>``.
-
-        Each actuator maps to its first joint (``actuator.indices[0]``);
-        further joints of an actuator with a transmission are not included.
+        per DOF, one row per world).  Each actuator maps to the first DOF of
+        its joints (``actuator.indices[0]``), which contains the
+        corresponding value gathered from ``component.<name>``; all other
+        DOFs, including further joints of an actuator with a transmission,
+        are left at zero.  If several actuators of *actuator* share that
+        first DOF, the one with the highest index wins.
 
         The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
         an actuator builds the view's DOF mapping for it with device kernels and caches it. A call
@@ -2622,8 +2622,9 @@ class ArticulationView:
         *values* must cover all DOFs in the view (one column per DOF, one row
         per world).  Only entries whose DOFs are actually driven by *actuator*
         are written back to ``component.<name>``; the rest are ignored.
-        As in :meth:`get_actuator_parameter`, each actuator maps to its
-        first joint, ``actuator.indices[0]``.
+        As in :meth:`get_actuator_parameter`, each actuator maps to the first
+        DOF of its joints, ``actuator.indices[0]``, and the actuator with the
+        highest index wins if several share it.
 
         The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
         an actuator builds the view's DOF mapping for it with device kernels and caches it. A call

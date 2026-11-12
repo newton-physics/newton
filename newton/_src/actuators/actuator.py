@@ -379,12 +379,13 @@ class Actuator:
 
         Args:
             indices: DOF indices of the joints each actuator drives into
-                velocity-shaped arrays, shape ``(joints, N)``: row ``j`` names
-                the ``j``-th joint of actuator ``i``. The *transmission* reads
-                their velocities and writes the effort to them. A 1-D array,
-                the single-joint case ``(1, N)``, is deprecated in Newton 1.9.
-                With more than one row, a *transmission* must map them onto
-                one actuator coordinate.
+                velocity-shaped arrays, shape ``(joints, N)``: entry
+                ``[j, i]`` is the DOF of the ``j``-th joint of actuator ``i``.
+                The *transmission* reads the joint velocities through them.
+                A 1-D array, the single-joint case ``(1, N)``, is deprecated
+                in Newton 1.9. With more than one row, a *transmission* other
+                than :class:`~newton.actuators.TransmissionDirect` must map
+                them onto one actuator coordinate.
             drive: Drive that computes effort without a motor, or duty with a motor.
             delay: Deprecated in Newton 1.9; pass the delay in
                 ``input_processors`` instead.
@@ -394,14 +395,17 @@ class Actuator:
                 arrays (positions = ``state.joint_q``), same shape as *indices*.
                 Defaults to *indices*. Differs from *indices* when position
                 and velocity arrays have different layouts (e.g.
-                floating-base or ball-joint articulations).
+                floating-base or ball-joint articulations). A 1-D array, the
+                single-joint case, is deprecated in Newton 1.9.
             target_pos_indices: Indices into ``control.joint_target_q``, shape
                 ``(N,)``. Defaults to row 0 of *pos_indices*, or to
-                *actuator_indices* in actuator space. Override for custom
-                target buffers with a different index mapping.
+                *actuator_indices* with a *transmission* other than
+                :class:`~newton.actuators.TransmissionDirect`. Override for
+                custom target buffers with a different index mapping.
             effort_indices: DOF indices into effort output arrays, same shape
-                as *indices*; a 1-D array, the single-joint case, is
-                deprecated in Newton 1.9. Defaults to *indices*.
+                as *indices*; the *transmission* writes the effort through
+                them. A 1-D array, the single-joint case, is deprecated in
+                Newton 1.9. Defaults to *indices*.
             state_pos_attr: Attribute on sim_state for positions.
             state_vel_attr: Attribute on sim_state for velocities.
             control_target_pos_attr: Attribute on sim_control for target positions.
@@ -409,11 +413,14 @@ class Actuator:
             control_target_vel_attr: Attribute on sim_control for target velocities.
                 ``None`` selects the default ``"joint_target_qd"``.
             control_feedforward_attr: Attribute on sim_control for feedforward effort. None to skip.
-                With a *transmission*, the targets and feedforward are per
-                actuator, read
-                through *actuator_indices*, and the defaults become
-                ``"actuator_target_pos"``, ``"actuator_target_vel"`` and
-                ``"actuator_feedforward"``.
+
+                With a *transmission* other than
+                :class:`~newton.actuators.TransmissionDirect`, the targets and
+                feedforward are per actuator, in actuator units, and read
+                through *actuator_indices*: ``"joint_target_q"``,
+                ``"joint_target_qd"`` and ``"joint_act"``, whether default or
+                given, are replaced by ``"actuator_target_pos"``,
+                ``"actuator_target_vel"`` and ``"actuator_feedforward"``.
             control_output_attr: Attribute on sim_control for clamped output effort.
             control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
                 effort. With a motor, this is achieved motor effort after duty
@@ -429,15 +436,16 @@ class Actuator:
                 voltage using the actual supply voltage.
             transmission: Optional transmission that maps the joints in
                 *indices* onto one actuator position and velocity, which the
-                drive, clamps and motor read, and maps the actuator effort
-                back onto them (e.g.
+                input processors, drive, clamps and motor read, and maps the
+                actuator effort onto the DOFs in *effort_indices* (e.g.
                 :class:`~newton.actuators.TransmissionFixed`). ``None`` uses
                 :class:`~newton.actuators.TransmissionDirect`: the actuator is
                 its single joint.
             actuator_indices: Index of each actuator into per-actuator arrays,
                 i.e. arrays with one entry per actuator of the model rather
                 than per DOF. Required when the motor draws from a battery or
-                the actuator has a *transmission*.
+                the actuator has a *transmission* other than
+                :class:`~newton.actuators.TransmissionDirect`.
             control_supply_voltage_attr: Attribute on sim_control for the
                 per-actuator supply voltage the motor reads from its battery.
             control_supply_current_attr: Attribute on sim_control for the
@@ -457,14 +465,14 @@ class Actuator:
         """Indices of the driven joints into coordinate-shaped arrays, shape ``(joints, N)``."""
         self.transmission = transmission if transmission is not None else TransmissionDirect()
         """Transmission mapping the joints in :attr:`indices` onto the actuator coordinate."""
-        # With a transmission, the drive compares an actuator coordinate (e.g.
-        # a gripper opening 0.5 qL + 0.5 qR, or a motor angle behind a gear),
-        # so its target and feedforward are per actuator too, read through
-        # actuator_indices.
+        # With a transmission other than TransmissionDirect, the drive compares
+        # an actuator coordinate (e.g. the mean finger position 0.5 qL + 0.5 qR
+        # of a gripper, or a motor angle behind a gear), so its target and
+        # feedforward are per actuator too, read through actuator_indices.
         self._actuator_space_targets = not isinstance(self.transmission, TransmissionDirect)
         if self._actuator_space_targets and actuator_indices is None:
             raise ValueError(
-                "an actuator with a transmission reads per-actuator targets, which requires actuator_indices"
+                f"{type(self.transmission).__name__} reads per-actuator targets, which requires actuator_indices"
             )
         if target_pos_indices is None:
             target_pos_indices = actuator_indices if self._actuator_space_targets else self.pos_indices[0]
@@ -487,9 +495,9 @@ class Actuator:
             raise ValueError(
                 f"effort_indices shape {self.effort_indices.shape} must match indices shape {self.indices.shape}"
             )
-        if self.indices.shape[0] > 1 and transmission is None:
+        if self.indices.shape[0] > 1 and not self._actuator_space_targets:
             raise ValueError(
-                f"indices names {self.indices.shape[0]} joints per actuator; add a transmission that maps them "
+                f"indices has {self.indices.shape[0]} joints per actuator; add a transmission that maps them "
                 "onto one actuator coordinate, e.g. TransmissionFixed"
             )
         if self._actuator_space_targets and drive.custom_inputs:
@@ -593,8 +601,9 @@ class Actuator:
         """Return an empty container with the fields this actuator reads from ``sim_control``.
 
         Target arrays must be long enough for :attr:`target_pos_indices` and
-        :attr:`indices`, and output arrays for :attr:`effort_indices`; their
-        lengths are not checked.
+        row 0 of :attr:`indices` (or :attr:`actuator_indices` with a
+        transmission other than :class:`TransmissionDirect`), and output
+        arrays for :attr:`effort_indices`; their lengths are not checked.
 
         Returns:
             Container whose slots are the required ``sim_control`` attributes,
@@ -608,12 +617,14 @@ class Actuator:
         return _input_container_class("sim_control", tuple(frequencies.items()))()
 
     def register_custom_attributes(self, builder: ModelBuilder) -> None:
-        """Register drive inputs and battery arrays as custom Newton Control attributes.
+        """Register drive inputs, per-actuator targets and battery arrays as custom Newton Control attributes.
 
         :class:`~newton.ModelBuilder` calls this method automatically while
         finalizing its actuators. Every input declared by the drive is
         registered as a ``wp.float32`` joint-DOF array on
-        :class:`~newton.Control`. When the motor draws from a battery,
+        :class:`~newton.Control`. With a transmission other than
+        :class:`TransmissionDirect`, the target and feedforward attributes
+        are registered as per-actuator arrays. When the motor draws from a battery,
         :attr:`control_supply_voltage_attr` and
         :attr:`control_supply_current_attr` are registered as per-actuator
         arrays (:attr:`~newton.Model.AttributeFrequency.ACTUATOR` frequency).
@@ -833,8 +844,9 @@ class Actuator:
            solve.
         5. **Motor** — convert duty to motor voltage, then compute effort. A motor that
            draws from a battery writes the current it draws.
-        6. **Transmission** — *accumulate* applied (and optionally computed)
-           effort of the output DOFs into the output array.  The caller must zero the output
+        6. **Transmission** — map the applied (and optionally computed)
+           actuator effort onto the DOFs in :attr:`effort_indices` and
+           *accumulate* it into the output arrays.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
         7. **Drive state update** — write the drive's ``next_state``.
 

@@ -3033,10 +3033,11 @@ class TestInputProcessors(unittest.TestCase):
     """Input processors composed through ModelBuilder.add_actuator."""
 
     def test_add_actuator_rejects_invalid_targets(self):
-        """The actuated DOF and a backlash joint must belong to the current world or be global.
+        """Reject actuator DOFs and joints of another world, mismatched joint types and untransmitted joints.
 
-        The backlash joint must also have the type of the actuated joint, and
-        several driven joints need a transmission.
+        The actuated DOF and a backlash joint must belong to the current world
+        or be global, the backlash joint must have the type of the actuated
+        joint, and several driven joints need a transmission.
         """
         template = newton.ModelBuilder()
         link = template.add_link()
@@ -3059,7 +3060,7 @@ class TestInputProcessors(unittest.TestCase):
                 DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorEncoder, {"output_joint": slider})]
             )
         with self.assertRaisesRegex(ValueError, "add a transmission"):
-            builder.add_actuator(DrivePD, index=[1, 1], kp=1.0)
+            builder.add_actuator(DrivePD, index=[1, builder.joint_qd_start[slider]], kp=1.0)
 
     def test_processor_must_keep_vel_indices(self):
         """Actuator.step rejects a processor that replaces ``vel_indices``."""
@@ -3128,7 +3129,7 @@ class TestTransmission(unittest.TestCase):
     """Transmissions mapping actuator effort onto several DOFs."""
 
     def test_fixed_transmission_fans_effort_out(self):
-        """Applied and raw effort reach every DOF scaled by its gear; implicit mode is refused."""
+        """Fan applied and raw effort out to every driven DOF by its gear, and refuse implicit mode."""
         actuator = Actuator(
             indices=wp.array([[0], [2]], dtype=wp.uint32),
             drive=DrivePD(kp=wp.full(1, 2.0, dtype=float), kd=wp.zeros(1, dtype=float)),
@@ -3153,14 +3154,13 @@ class TestTransmission(unittest.TestCase):
             actuator.set_effort_mode_implicit(None)
 
     def test_differential_actuators_share_joints(self):
-        """Two actuators drive two wheels as a differential.
+        """Drive two joints as a differential with two actuators.
 
-        As in a differential mobile base, actuator "forward" reads and drives
-        ``0.5 (q_L + q_R)`` and actuator "turn" ``0.5 (q_R - q_L)``, each with
-        its own target in ``actuator_target_pos``. With ``kp = 4``, ``q = 0``
-        and targets 2 and 1, the efforts 8 and 4 add up to
-        0.5 * 8 - 0.5 * 4 = 2 on the left wheel and 0.5 * 8 + 0.5 * 4 = 6 on
-        the right one.
+        Actuator "sum" reads and drives ``0.5 (q_L + q_R)`` and actuator
+        "difference" ``0.5 (q_R - q_L)``, each with its own target in
+        ``actuator_target_pos``. With ``kp = 4``, ``q = 0`` and targets 2 and
+        1, the efforts 8 and 4 add up to 0.5 * 8 - 0.5 * 4 = 2 on the left
+        joint and 0.5 * 8 + 0.5 * 4 = 6 on the right one.
         """
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         base = builder.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
@@ -3188,7 +3188,7 @@ class TestTransmission(unittest.TestCase):
         np.testing.assert_allclose(control.joint_f.numpy()[dofs], [2.0, 6.0], rtol=1e-6)
 
     def test_add_actuator_builds_transmission_in_every_world(self):
-        """DOFs are offset per world, and actuators with and without a transmission form separate groups."""
+        """Offset transmission DOFs per world, and group actuators with and without a transmission separately."""
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         joints = []
         for _ in range(3):

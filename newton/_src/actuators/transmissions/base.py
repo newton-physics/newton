@@ -14,12 +14,14 @@ class TransmissionBase:
     A transmission starts and concludes :meth:`Actuator.step()
     <newton.actuators.Actuator.step>`. First, :meth:`compute_state` maps the
     joint positions and velocities of the actuator
-    (:attr:`Actuator.indices <newton.actuators.Actuator.indices>`) onto one
+    (:attr:`Actuator.pos_indices <newton.actuators.Actuator.pos_indices>` and
+    :attr:`Actuator.indices <newton.actuators.Actuator.indices>`) onto one
     actuator position and velocity, e.g. the motor angle behind a gearbox or
-    the opening of a gripper. The drive, clamps and motor all work with these
-    actuator coordinates. Last, :meth:`compute` maps the actuator effort back
-    onto the same joints
-    (:attr:`Actuator.effort_indices <newton.actuators.Actuator.effort_indices>`).
+    the mean finger position of a gripper. The input processors, drive,
+    clamps and motor all work with these actuator coordinates. Last,
+    :meth:`compute` maps the actuator effort onto the joints in
+    :attr:`Actuator.effort_indices <newton.actuators.Actuator.effort_indices>`,
+    by default the same DOFs.
 
     Both maps must be consistent, so that the actuator effort times the
     actuator velocity equals the summed joint effort times joint velocity.

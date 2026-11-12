@@ -30,7 +30,8 @@ class TransmissionDirect(TransmissionBase):
 
     The actuator position and velocity are the joint's, and the effort goes
     unscaled to it. This is the default transmission of
-    :class:`~newton.actuators.Actuator`.
+    :class:`~newton.actuators.Actuator`; :meth:`finalize` raises
+    :class:`ValueError` for an actuator with more than one joint.
     """
 
     @classmethod

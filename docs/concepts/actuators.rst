@@ -29,7 +29,8 @@ customize and extend for specific actuator models.
 Architecture
 ------------
 
-An actuator is composed of five building blocks, applied in this order:
+An actuator is composed of five building blocks.  The transmission starts
+and concludes each step; the others are applied in this order:
 
 .. code-block:: text
 
@@ -52,10 +53,11 @@ An actuator is composed of five building blocks, applied in this order:
 **Transmission**
    Starts and concludes each step.  It maps the joints of the actuator
    (:attr:`Actuator.indices`) onto one **actuator coordinate**, e.g. the motor
-   angle behind a gearbox or the opening of a gripper, and maps the actuator
-   effort back onto the same joints with the same ratios, so that power is
-   conserved.  The default, :class:`TransmissionDirect`, makes the actuator its
-   single joint.
+   angle behind a gearbox or the mean finger position of a gripper, and maps
+   the actuator effort onto the joints in :attr:`Actuator.effort_indices`, by
+   default the same DOFs, with the same ratios, so that power is conserved.
+   The default, :class:`TransmissionDirect`, makes the actuator its single
+   joint.
 
 **Input processor**
    Transforms the inputs to the drive: the simulation state (positions,
@@ -86,7 +88,8 @@ An actuator is composed of five building blocks, applied in this order:
 
 **Motor**
    Provides the supply voltage, and turns the motor voltage into the effort a
-   motor produces at the joint velocity, e.g. with back-EMF.  A motor may draw
+   motor produces at the actuator velocity (e.g. the motor speed behind a
+   gear), e.g. with back-EMF.  A motor may draw
    from a battery (see :ref:`actuator-battery`).  At most one motor per
    actuator.
 
@@ -99,32 +102,39 @@ actuator.  With :class:`TransmissionFixed`, ``s = Σ gear·q`` and joint ``j``
 receives ``gear_j · τ``.  The drive, its targets and gains, the clamps and the
 motor all work in actuator units, as in MuJoCo.  For example, with
 ``gear=3``, a joint at 0.1 rad is an actuator at 0.3; a PD drive with
-``kp=10`` and target 0.6 computes ``10 · (0.6 - 0.3) = 3`` and the joint
+``kp=10`` and target 0.6 computes ``10 · (0.6 - 0.3) = 3`` at rest and the joint
 receives 9 N·m; a ``ClampingMaxEffort`` limit of 2 N·m allows 6 N·m at the
 joint.  With the default :class:`TransmissionDirect`, actuator units are joint
 units.
 
-The input processors, drive, clamps and motor read the actuator position and
-velocity, e.g. the motor velocity for back-EMF.  With a transmission, the
-targets and feedforward are per actuator: :class:`~newton.ModelBuilder`
-registers ``control.actuator_target_pos``, ``actuator_target_vel`` and
-``actuator_feedforward``, one entry per actuator of the model.  Without them,
-the actuator reads ``joint_target_q``, ``joint_target_qd`` and ``joint_act``
-at its joint.  Drives with custom inputs require the default transmission.
+The input processors and the drive read the actuator position and velocity.
+The clamps read the position after the input processors, and the clamps and
+the motor read the actuator velocity from the transmission, unchanged by the
+input processors, e.g. the motor velocity for back-EMF.  With a transmission
+other than :class:`TransmissionDirect`, the targets and feedforward are per
+actuator: :class:`~newton.ModelBuilder` registers
+``control.actuator_target_pos``, ``actuator_target_vel`` and
+``actuator_feedforward``, one entry per actuator of the model.  With the
+default :class:`TransmissionDirect`, the actuator reads ``joint_target_q``,
+``joint_target_qd`` and ``joint_act`` at its joint.  Drives with custom inputs
+require :class:`TransmissionDirect`.
 
-Typical cases:
+Typical transmissions:
 
 * Gearbox or belt: one joint with a gear ratio; the drive works with the
   motor angle.
 * Gripper: ``gear=[0.5, 0.5]`` over both fingers; the drive works with the
-  opening ``0.5 qL + 0.5 qR``, e.g. a target of 0.04, and each finger
-  receives half the effort.
-* Differential (e.g. two motors driving the wheels of a mobile base): two
-  actuators share the two joints, each with its own row of ratios, and their
-  efforts add up at the joints.
-* Backlash: the actuator drives the actuated joint, and an
-  :class:`InputProcessorEncoder` adds the passive backlash joint, so the drive
-  reads ``q_motor + q_backlash``.
+  mean finger position ``0.5 qL + 0.5 qR``, half the opening, e.g. a target
+  of 0.02, and each finger receives half the effort.
+* Differential (e.g. a differential wrist, where two motors drive pitch and
+  roll): two actuators share the two joints, e.g. with ``gear=[1, 1]`` and
+  ``gear=[1, -1]``, and their efforts add up at the joints.
+
+Backlash is not a transmission: with the default :class:`TransmissionDirect`,
+the actuator drives the actuated joint, and an :class:`InputProcessorEncoder`
+adds the passive backlash joint to the position the drive reads,
+``q_motor + q_backlash``.  The encoder adds the backlash joint position
+unscaled, so with a gear the drive would read ``gear · q_motor + q_backlash``.
 
 The per-step pipeline is:
 
@@ -132,9 +142,10 @@ The per-step pipeline is:
 
    Transmission state → Input processors → Supply voltage → Drive → Clamping → Motor (optional) → Transmission effort → Drive state update
 
-Drives, clamping objects, and input processors are pluggable: implement the
-:class:`DriveBase`, :class:`ClampingBase` or :class:`InputProcessorBase` class
-to add new models.
+Drives, clamping objects, input processors and transmissions are pluggable:
+implement the :class:`DriveBase`, :class:`ClampingBase`,
+:class:`InputProcessorBase` or :class:`TransmissionBase` class to add new
+models.
 
 .. deprecated:: 1.9
 
@@ -147,6 +158,9 @@ to add new models.
    vel_indices, current_state, next_state)`` form of the delay are
    deprecated.  Pass the delay in ``input_processors`` and read its state
    from :attr:`Actuator.State.input_processor_states`.
+
+   Passing 1-D ``indices``, ``pos_indices`` or ``effort_indices`` to
+   :class:`Actuator` is deprecated; pass 2-D arrays of shape ``(1, N)``.
 
 .. note::
 
@@ -726,6 +740,10 @@ Limitations of the implicit mode.  In the cases marked *error*,
 * **Differentiable actuators** (error): an actuator built with
   ``requires_grad=True`` cannot be solved implicitly, because the solve has no
   adjoint.
+* **Transmissions** (error): any transmission other than
+  :class:`~newton.actuators.TransmissionDirect`, e.g.
+  :class:`~newton.actuators.TransmissionFixed`; the solve works per DOF and
+  does not model the gear.
 * **Custom inputs without** :meth:`~newton.actuators.DriveBase.prepare_implicit`
   (error): a drive that declares
   :attr:`~newton.actuators.DriveBase.custom_inputs` must pass them to the
@@ -743,8 +761,8 @@ Differentiability and Graph Capture
 -----------------------------------
 
 Whether an actuator supports differentiability and CUDA graph capture depends on
-its components.  All built-in input processors, clamps, motors and drives are
-graphable, except neural-network drives with a Torch checkpoint, due to
+its components.  All built-in input processors, clamps, motors, transmissions
+and drives are graphable, except neural-network drives with a Torch checkpoint, due to
 framework interop overhead; with an ONNX checkpoint they are graphable.
 Implicit mode is not differentiable.  Gradients are correct for one actuator
 step per tape; several steps on one tape reuse internal buffers and give wrong
@@ -968,9 +986,10 @@ Customization
 -------------
 
 Any actuator can be assembled from the existing building blocks — mix and
-match drives, clamping stages, input processors and motors to fit a specific use case.
-When the built-in components are not sufficient, implement new ones by
-subclassing :class:`DriveBase`, :class:`ClampingBase` or :class:`InputProcessorBase`.
+match drives, clamping stages, input processors, motors and transmissions to
+fit a specific use case.  When the built-in components are not sufficient,
+implement new ones by subclassing :class:`DriveBase`, :class:`ClampingBase`,
+:class:`InputProcessorBase` or :class:`TransmissionBase`.
 
 For example, a custom drive needs to implement
 :meth:`~DriveBase.compute`, :meth:`~DriveBase.resolve_arguments`,

@@ -1013,8 +1013,8 @@ class ModelBuilder:
             clamping_classes: tuple,
             clamping_shared_kwargs: tuple,
             drive_shared_kwargs: dict,
-            indices: list[int],
-            pos_indices: list[int],
+            indices: list[int | tuple[int, ...]],
+            pos_indices: list[int | tuple[int, ...]],
             drive_args: list[dict[str, Any]],
             delay_args: list[dict[str, Any]] | object = _ACTUATOR_ENTRY_DELAY_ARGS_UNSET,
             clamping_args: list[list[dict[str, Any]]] | None = None,
@@ -1042,6 +1042,11 @@ class ModelBuilder:
                     arrays, as returned by :meth:`ModelBuilder.add_actuator`.
                     Entries built by hand without it get no per-actuator
                     arrays.
+                indices: One DOF index, or a tuple of one per driven joint,
+                    per actuator; *pos_indices* and *effort_indices* likewise.
+                transmission_args: Per-actuator dicts of per-joint
+                    transmission params, one list of values per param.
+                effort_indices: Defaults to *indices*.
             """
             self.drive_class = drive_class
             self.clamping_classes = clamping_classes
@@ -3521,52 +3526,66 @@ class ModelBuilder:
 
         Args:
             drive_class: Drive class (e.g. :class:`~newton.actuators.DrivePD`).
-            index: DOF index into ``joint_qd``-shaped arrays (velocities,
-                velocity targets, feedforward, forces), or a sequence with one
-                DOF per driven joint. With more than one, a *transmission*
-                must map them onto one actuator coordinate.
+            index: DOF index of the driven joint into ``joint_qd``-shaped
+                arrays (velocities; also velocity targets and feedforward with
+                the default transmission, and forces unless *effort_index* is
+                given), or a sequence with one DOF per driven joint. With more
+                than one, a *transmission* other than
+                :class:`~newton.actuators.TransmissionDirect` must map them
+                onto one actuator coordinate.
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
                 post-drive. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
                 Clamps must accept the drive output space. DUTY clamps run
                 before the motor; EFFORT clamps require an actuator without a motor.
             delay_steps: Deprecated in Newton 1.9; use
                 ``input_processors=[(InputProcessorDelay, {"delay_steps": ...})]`` instead.
-            pos_index: DOF index into ``joint_q``-shaped arrays (positions,
-                position targets). Defaults to *index*. Differs from
+            pos_index: DOF index into ``joint_q``-shaped arrays (positions;
+                also position targets with the default transmission). Defaults
+                to *index*. Differs from
                 *index* for floating-base or ball-joint articulations
                 where ``joint_q`` and ``joint_qd`` have different layouts. Takes
                 one index per driven joint, like *index*.
-            effort_index: DOF index the effort is applied to, one per driven
-                joint. Defaults to *index*.
+            effort_index: DOF index into ``joint_qd``-shaped effort arrays
+                (the applied and raw effort outputs), one per driven joint.
+                Defaults to *index*.
             input_processors: Optional list of ``(InputProcessorClass, kwargs)``
                 tuples applied in order before the drive. E.g.
                 ``[(InputProcessorDelay, {"delay_steps": 3})]``. Parameters listed in the
                 class's :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`
                 take a joint index or a joint label; ``None`` selects the
-                actuated joint.
+                first joint of *index*.
             motor: Optional ``(MotorClass, kwargs)`` tuple applied after DUTY
                 clamping and duty-to-voltage conversion. E.g. ``(MotorDC, {"kt": 1.0, "resistance": 2.0, "vin": 12.0})``.
             transmission: Optional ``(TransmissionClass, kwargs)`` tuple that
                 maps the joints of *index* onto one actuator coordinate, and
-                the actuator effort back onto them. Its parameters take one
-                value per driven joint or one for all of them. E.g.
+                the actuator effort onto the DOFs of *effort_index*. Its
+                parameters, except its ``SHARED_PARAMS``, take one value per
+                driven joint or one for all of them. E.g.
                 ``(TransmissionFixed, {"gear": [0.5, 0.5]})`` for a gripper.
-                With a transmission, the targets and feedforward are per
-                actuator, in ``Control.actuator_target_pos``,
-                ``actuator_target_vel`` and ``actuator_feedforward``.
-            **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
+                With a transmission other than
+                :class:`~newton.actuators.TransmissionDirect`, the targets and
+                feedforward are per actuator, in
+                ``Control.actuator_target_pos``, ``actuator_target_vel`` and
+                ``actuator_feedforward``, which :meth:`finalize` registers;
+                drive gains, targets and clamp limits are then in actuator
+                units.
+            **kwargs: Per-actuator drive parameters (e.g. ``kp``, ``kd``).
 
         Returns:
             The index of the actuator in per-actuator arrays, e.g. for
             :meth:`add_battery`.
 
         Raises:
-            ValueError: A DOF of *index* or *effort_index* belongs to another
-                world than the current one, *index* names several joints
-                without a transmission, *pos_index*, *effort_index* or a
-                per-joint parameter does not have one value per joint, or the
-                drive and clamps do not match the modeling path: DUTY with
-                a motor, EFFORT without one.
+            ValueError: *index* is empty; a DOF of *index* or *effort_index*
+                belongs to another world than the current one; *index* names
+                several joints without a transmission other than
+                :class:`~newton.actuators.TransmissionDirect`; *pos_index*,
+                *effort_index* or a transmission parameter does not have one
+                value per driven joint; a joint parameter of an input
+                processor does not name a single-DOF joint of the current
+                world or a global joint, of the type of the first joint of
+                *index*; or the drive and clamps do not match the modeling
+                path: DUTY with a motor, EFFORT without one.
         """
         if drive_class is None:
             raise TypeError("add_actuator() requires 'drive_class'")
@@ -3574,6 +3593,8 @@ class ModelBuilder:
         if index is None:
             raise TypeError("add_actuator() missing required argument: 'index'")
         input_dofs = (int(index),) if np.ndim(index) == 0 else tuple(int(i) for i in index)
+        if not input_dofs:
+            raise ValueError("add_actuator: index needs at least one DOF")
         output_dofs = (
             input_dofs
             if effort_index is None
@@ -3586,11 +3607,13 @@ class ModelBuilder:
         else:
             input_pos = (int(pos_index),) if np.ndim(pos_index) == 0 else tuple(int(i) for i in pos_index)
             if len(input_pos) != len(input_dofs):
-                raise ValueError(f"add_actuator: pos_index has {len(input_pos)} entries; index has {len(input_dofs)}")
-        if not input_dofs:
-            raise ValueError("add_actuator: index needs at least one DOF")
+                raise ValueError(
+                    f"add_actuator: pos_index has {len(input_pos)} indices for {len(input_dofs)} joint(s) of index"
+                )
         if len(output_dofs) != len(input_dofs):
-            raise ValueError(f"add_actuator: effort_index has {len(output_dofs)} entries; index has {len(input_dofs)}")
+            raise ValueError(
+                f"add_actuator: effort_index has {len(output_dofs)} indices for {len(input_dofs)} joint(s) of index"
+            )
         for dof in (*input_dofs, *output_dofs):
             if 0 <= dof < self.joint_dof_count:
                 dof_world = self.joint_world[bisect_right(self.joint_qd_start, dof) - 1]
@@ -3599,9 +3622,11 @@ class ModelBuilder:
                         f"add_actuator: DOF index {dof} belongs to world {dof_world}, "
                         f"but the actuator is added to world {self.current_world}"
                     )
-        if len(input_dofs) > 1 and transmission is None:
+        from ..actuators.transmissions.transmission_direct import TransmissionDirect  # noqa: PLC0415
+
+        if len(input_dofs) > 1 and (transmission is None or issubclass(transmission[0], TransmissionDirect)):
             raise ValueError(
-                f"add_actuator: index names {len(input_dofs)} joints; add a transmission that maps them onto one "
+                f"add_actuator: index has {len(input_dofs)} joints; add a transmission that maps them onto one "
                 "actuator coordinate, e.g. TransmissionFixed"
             )
 
@@ -3733,8 +3758,9 @@ class ModelBuilder:
 
         # --- Build entry key: identifies a group of compatible actuators ---
         # Groups differ when drive class, input processor types/shared-params,
-        # clamping types/shared-params, drive shared params, or motor
-        # type/shared-params differ.
+        # clamping types/shared-params, drive shared params, motor
+        # type/shared-params, transmission type/shared-params or the number of
+        # driven joints differ.
         def _make_hashable(v: Any) -> Any:
             if isinstance(v, list):
                 return tuple(v)

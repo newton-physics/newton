@@ -55,13 +55,13 @@ class TransmissionFixed(TransmissionBase):
 
     .. math::
 
-        s_i = \\sum_j g_{j, i} \\, q_{\\text{index}[j, i]}, \\qquad
-        \\dot s_i = \\sum_j g_{j, i} \\, \\dot q_{\\text{index}[j, i]}
+        s_i = \\sum_j g_{j, i} \\, q_{\\text{pos\\_indices}[j, i]}, \\qquad
+        \\dot s_i = \\sum_j g_{j, i} \\, \\dot q_{\\text{indices}[j, i]}
 
-    and joint ``j`` receives :math:`g_{j, i} \\, \\tau_i`, where
-    :math:`\\tau_i` is the actuator effort. For example, a gripper with
-    ``gear=[0.5, 0.5]`` reads its opening ``0.5 qL + 0.5 qR`` and gives
-    each finger half the effort.
+    and DOF ``effort_indices[j, i]`` receives :math:`g_{j, i} \\, \\tau_i`,
+    where :math:`\\tau_i` is the actuator effort. For example, a gripper with
+    ``gear=[0.5, 0.5]`` reads the mean finger position ``0.5 qL + 0.5 qR``,
+    half its opening, and gives each finger half the effort.
 
     Covers gearboxes, belt and cable reductions, differentials and MuJoCo's ``gear`` and fixed tendons.
 
@@ -79,12 +79,16 @@ class TransmissionFixed(TransmissionBase):
         Args:
             gear: Ratio of actuator position to joint position, and of
                 joint effort to actuator effort, shape ``(joints, N)``,
-                matching the actuator's indices.
+                matching the actuator's indices. Dimensionless when the
+                actuator and joints are both rotational or both linear.
+
+        Raises:
+            ValueError: *gear* is not 2-D.
         """
         if gear.ndim != 2:
             raise ValueError(f"gear must be a 2-D array of shape (joints, N), got {gear.ndim} dimensions")
         self.gear = gear
-        """Ratio of actuator position to joint position, shape ``(joints, N)``."""
+        """Ratio of actuator position to joint position, and of joint effort to actuator effort, shape ``(joints, N)``."""
 
     def finalize(self, device: wp.Device, num_actuators: int, num_joints: int, requires_grad: bool = False) -> None:
         if tuple(self.gear.shape) != (num_joints, num_actuators):

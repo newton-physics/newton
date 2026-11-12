@@ -13,9 +13,10 @@ class InputProcessorBase:
     """Base class for actuator input processors.
 
     An input processor transforms the inputs of an actuator before they
-    reach the drive. The inputs are the simulation state the drive reads
-    (positions, velocities) and the commands (target positions, target
-    velocities, feedforward). An :class:`~newton.actuators.Actuator` runs its
+    reach the drive. The inputs are the actuator position and velocity from
+    the transmission, which equal the joint state with the default
+    :class:`~newton.actuators.TransmissionDirect`, and the commands (target
+    positions, target velocities, feedforward). An :class:`~newton.actuators.Actuator` runs its
     processors in list order; each processor receives the inputs returned by
     the previous one.
 
@@ -82,8 +83,9 @@ class InputProcessorBase:
     """Names of parameters that reference a joint.
 
     :meth:`~newton.ModelBuilder.add_actuator` accepts a joint index or a joint
-    label for each of these parameters, or ``None`` for the actuated joint.
-    The joint must be a single-DOF joint of the same type as the actuated joint.
+    label for each of these parameters, or ``None`` for the first joint of
+    *index*. The joint must be a single-DOF joint of the same type as that
+    first joint.
     It passes the joint to the constructor as two index arrays:
     ``<name>_indices`` into ``joint_qd``-shaped arrays and
     ``<name>_pos_indices`` into ``joint_q``-shaped arrays.
@@ -109,7 +111,7 @@ class InputProcessorBase:
 
         Args:
             device: Warp device to use.
-            num_actuators: Number of actuators (DOFs).
+            num_actuators: Number of actuators.
             requires_grad: Allocate output arrays with gradient support.
         """
 
