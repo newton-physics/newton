@@ -2626,6 +2626,11 @@ def _register_group_contact(
         # Match the position-key quantum before tie-breaking coincident contacts.
         pos_2d = wp.vec2(wp.round(pos_2d[0] * 16384.0), wp.round(pos_2d[1] * 16384.0)) / 16384.0
         gap = gap / extent
+        # Keep near-contact and speculative layers independent, as the SDF
+        # reducer does for its support and clearance representatives. Otherwise
+        # a remote speculative layer forces a flat touching patch to pass through.
+        if gap > wp.static(GROUP_DEPTH_TOLERANCE):
+            cy = cy + 4
     key = make_group_contact_key(ga, gb, bin_id, cx, cy)
     entry_idx = _group_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
     group_data.contact_entry[contact_id] = entry_idx
@@ -2643,7 +2648,7 @@ def _register_group_contact(
     pos_key = _group_pos_key(pos_2d, key_scale)
     normalized = group_data.cell_size == 0.0
     _group_update_slot(entry_idx, wp.static(GROUP_DEEPEST_SLOT), _group_value(-gap, pos_key, normalized), values)
-    if group_data.cell_size == 0.0 and gap <= 0.0:
+    if group_data.cell_size == 0.0:
         _group_update_slot(entry_idx, wp.static(GROUP_SHALLOWEST_SLOT), _group_value(gap, pos_key, normalized), values)
     for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
         value = _group_value(wp.dot(pos_2d, get_spatial_direction_2d(dir_i)), pos_key, normalized)

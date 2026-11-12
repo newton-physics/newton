@@ -15,9 +15,9 @@ The tests here assert both halves of the contract:
 
 * the registered count drops on multi-shape pairs (and why: interior points of
   a single flat patch are the ones discarded), and
-* the allocation stamp and solver gate keep reduced rows away from solvers
-  that do not declare support. SolverSteel's settling conformance lives in
-  ``newton/tests/steel/test_contact_reduction.py``.
+* ordinary reduced rows work across Newton-contact consumers, solver-owned
+  pipelines, and coupled streams. SolverSteel's settling conformance lives
+  in ``newton/tests/steel/test_contact_reduction.py``.
 """
 
 import unittest
@@ -912,31 +912,33 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         sorted_pipe.collide(state, sorted_contacts)
         self.assertEqual(kept_set(sorted_contacts), first)
 
-    def test_unvalidated_solver_rejected_at_step(self):
-        """A solver without body-pair reduction support refuses a reduced buffer.
-
-        Reduced buffers are stamped; every in-repo solver that has not been
-        conformance-tested calls ``_require_unreduced_contacts`` at the top of
-        ``step`` and must raise rather than consume contacts whose depth
-        convention it might disagree with.
-        """
-        model = self._foot_model()
-        state_0, state_1 = model.state(), model.state()
+    def test_builtin_solvers_consume_reduced_contacts(self):
+        """Resolve a penetrating compound patch with the shared collision buffer across rigid solvers."""
+        builder = newton.ModelBuilder()
+        _sphere_grid_body(builder, (0.0, 0.0, 0.0095))
+        builder.add_ground_plane()
+        builder.color()
+        model = builder.finalize(device=wp.get_device())
         pipeline = _make_pipeline(model, True)
         contacts = pipeline.contacts()
-        pipeline.collide(state_0, contacts)
         for solver in (
             newton.solvers.SolverSemiImplicit(model),
-            # XPBD decides whether a contact is active after predicting body
-            # poses.  Pre-prediction spatial winners are therefore not a sound
-            # class-wide contract, even if selected settling examples match.
             newton.solvers.SolverXPBD(model),
+            newton.solvers.SolverFeatherstone(model),
+            newton.solvers.SolverVBD(model, iterations=4),
         ):
             with self.subTest(solver=type(solver).__name__):
-                with self.assertRaisesRegex(ValueError, "supports_body_pair_reduced_contacts"):
-                    solver.step(state_0, state_1, model.control(), contacts, DT)
-        self.assertFalse(newton.solvers.SolverXPBD.supports_body_pair_reduced_contacts)
-        self.assertTrue(newton.solvers.SolverSteel.supports_body_pair_reduced_contacts)
+                state_0, state_1 = model.state(), model.state()
+                pipeline.collide(state_0, contacts)
+                n = int(contacts.rigid_contact_count.numpy()[0])
+                self.assertGreater(n, 0)
+                self.assertLess(n, 25)
+                initial_z = float(state_0.body_q.numpy()[0, 2])
+                state_0.clear_forces()
+                solver.step(state_0, state_1, model.control(), contacts, DT)
+                pose = state_1.body_q.numpy()[0]
+                self.assertTrue(np.isfinite(pose).all())
+                self.assertGreater(float(pose[2]), initial_z - 0.9 * 9.81 * DT * DT)
 
     def test_coupled_entry_contacts_keep_the_stamp(self):
         """Carry the reduction stamp into a coupled entry's filtered contacts, refreshed per source."""
@@ -957,8 +959,51 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         plain = plain_pipeline.contacts()
         plain_pipeline.collide(state, plain)
         self.assertTrue(coupled.entry_contacts("all", reduced).rigid_contact_body_pair_reduced)
+        out = model.state()
+        coupled.step(state, out, model.control(), reduced, DT)
+        self.assertTrue(np.isfinite(out.body_q.numpy()).all())
         self.assertFalse(coupled.entry_contacts("all", plain).rigid_contact_body_pair_reduced)
         self.assertTrue(coupled.entry_contacts("all", reduced).rigid_contact_body_pair_reduced)
+
+    def test_mujoco_consumes_reduced_newton_contacts(self):
+        """Resolve a penetrating compound patch through MuJoCo Warp's Newton contact adapter."""
+        if not wp.get_device().is_cuda:
+            self.skipTest("MuJoCo Warp requires CUDA")
+        try:
+            newton.solvers.SolverMuJoCo.import_mujoco()
+        except ImportError as error:
+            self.skipTest(str(error))
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        _sphere_grid_body(builder, (0.0, 0.0, 0.0095))
+        builder.add_ground_plane()
+        model = builder.finalize(device=wp.get_device())
+        pipeline = _make_pipeline(model, True)
+        contacts = pipeline.contacts()
+        state, out = model.state(), model.state()
+        pipeline.collide(state, contacts)
+        solver = newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=64, njmax=256)
+        solver.step(state, out, model.control(), contacts, DT)
+        self.assertTrue(np.isfinite(out.body_q.numpy()).all())
+        self.assertGreater(float(out.body_q.numpy()[0, 2]), 0.0095 - 0.9 * 9.81 * DT * DT)
+
+    def test_kamino_consumes_reduced_newton_contacts(self):
+        """Resolve a penetrating compound patch through Kamino's Newton contact adapter."""
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverKamino.register_custom_attributes(builder)
+        _sphere_grid_body(builder, (0.0, 0.0, 0.0095))
+        builder.add_ground_plane()
+        model = builder.finalize(device=wp.get_device())
+        pipeline = _make_pipeline(model, True)
+        contacts = pipeline.contacts()
+        state, out = model.state(), model.state()
+        pipeline.collide(state, contacts)
+        solver = newton.solvers.SolverKamino(
+            model, config=newton.solvers.SolverKamino.Config(use_collision_detector=False)
+        )
+        solver.step(state, out, model.control(), contacts, DT)
+        self.assertTrue(np.isfinite(out.body_q.numpy()).all())
+        self.assertGreater(float(out.body_q.numpy()[0, 2]), 0.0095 - 0.9 * 9.81 * DT * DT)
 
     def test_config_is_fixed_at_construction(self):
         """Reject reassigning the pipeline's body-pair configuration after construction."""
@@ -966,15 +1011,19 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         with self.assertRaises(AttributeError):
             pipeline.body_pair_reduction = None
 
-    def test_unsupported_solver_cannot_own_a_reducing_pipeline(self):
-        """Reject an owned reducing pipeline at construction, before the first step detects into it."""
+    def test_vbd_owns_a_reducing_pipeline(self):
+        """Drive body-pair reduction from a solver-owned pipeline during a real VBD step."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         _cylinder_foot(builder, (0.0, 0.0, 0.020))
         builder.add_ground_plane()
         builder.color()
         model = builder.finalize(device=wp.get_device())
-        with self.assertRaisesRegex(ValueError, "body-pair contact reduction"):
-            newton.solvers.SolverVBD(model, collision_pipeline=_make_pipeline(model, True))
+        pipeline = _make_pipeline(model, True)
+        solver = newton.solvers.SolverVBD(model, collision_pipeline=pipeline, iterations=4)
+        state, out = model.state(), model.state()
+        solver.step(state, out, model.control(), None, DT)
+        self.assertGreater(pipeline._body_pair_reducer.stats()["total_frames"], 0)
+        self.assertTrue(np.isfinite(out.body_q.numpy()).all())
 
 
 class TestBodyPairReductionMultiPatch(unittest.TestCase):
@@ -1883,8 +1932,8 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
         self.assertEqual(_full_contact_rows(contacts_b), expected)
         self.assertTrue(contacts_a.rigid_contact_body_pair_reduced)
 
-    def test_unsupported_solver_rejects_stamped_buffer_in_capture(self):
-        """Reject a stamped buffer when an unsupported solver step is captured, as when it runs eagerly."""
+    def test_semi_implicit_consumes_reduced_contacts_in_capture(self):
+        """Replay collision and a semi-implicit step using the same reduced contact buffer."""
         device = wp.get_device()
         if not device.is_cuda:
             self.skipTest("CUDA graph capture requires a CUDA device")
@@ -1893,14 +1942,15 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
         pipeline = _make_pipeline(model, True)
         contacts = pipeline.contacts()
         solver = newton.solvers.SolverSemiImplicit(model)
-        capture = wp.ScopedCapture(device)
-        capture.__enter__()
-        try:
+        control = model.control()
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, DT)
+        with wp.ScopedCapture(device) as capture:
+            state_0.clear_forces()
             pipeline.collide(state_0, contacts)
-            with self.assertRaisesRegex(ValueError, "supports_body_pair_reduced_contacts"):
-                solver.step(state_0, state_1, model.control(), contacts, DT)
-        finally:
-            capture.__exit__(None, None, None)
+            solver.step(state_0, state_1, control, contacts, DT)
+        wp.capture_launch(capture.graph)
+        self.assertTrue(np.isfinite(state_1.body_q.numpy()).all())
 
     def test_reducer_launches_stay_off_the_tape(self):
         """Record no reducer bookkeeping launches on an active autodiff tape.

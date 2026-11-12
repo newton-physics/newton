@@ -1320,7 +1320,9 @@ approximation: support is sampled, not exact, and keeping
 rim points can strengthen torsional friction. Selection is memoryless, so on
 curved or mesh supports the kept set can change between steps.
 
-The automatic mode conservatively keeps all contacts in cells whose touching
+Near-contact and speculative layers have independent coverage cells, so a distant
+speculative layer does not prevent reduction of a flat touching patch.
+The automatic mode conservatively keeps all contacts in cells whose
 separations vary by more than ``1e-5`` of the reference group's largest extent.
 This protects shallow touching regions from competing with deeper regions in
 the same cell. Contacts without a finite reference grid, or outside its fixed
@@ -1340,11 +1342,15 @@ fixed coverage bounds.
 Buffers from the pipeline's :meth:`~CollisionPipeline.contacts` are stamped
 :attr:`~Contacts.rigid_contact_body_pair_reduced` when the scene has primitive
 or convex contact pairs; a scene of only meshes and heightfields reduces nothing
-by body pair and keeps unstamped buffers. Only a pipeline that stamps its buffers
-collides into a stamped buffer, and a solver accepts one only
-if it declares :attr:`~solvers.SolverBase.supports_body_pair_reduced_contacts`;
-the others raise in ``step()``, also during CUDA graph capture.
-:class:`~solvers.SolverSteel` supports it, except with ``contact_compliance``.
+by body pair and keeps unstamped buffers. A stamped buffer must be filled by
+its reducing pipeline. The rows use the ordinary Newton contact contract.
+Built-in consumers accept
+these rows just as they accept mesh/SDF-reduced contacts, including through
+solver-owned pipelines and coupled contact streams. Backends using their own
+collision detection must be configured to consume Newton contacts to use this
+reduction. As with mesh/SDF reduction, fewer points can change aggregate
+stiffness, load distribution, and friction torque; reduction does not rescale
+material stiffness or promise identical compliance to the unreduced point set.
 Body-pair reduction doesn't support ``contact_matching="sticky"`` or
 hydroelastic contacts. Keep it off when it doesn't reduce the end-to-end step time.
 To check, compare the step time and :attr:`~Contacts.rigid_contact_count` with it

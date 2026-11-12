@@ -59,7 +59,7 @@ def _staged_contacts_kept(reducer, entries, pos):
 
 
 class TestSteelBodyPairReductionGate(unittest.TestCase):
-    """Steel configurations validated only on unreduced contacts reject reduced buffers."""
+    """Steel consumes the collision pipeline's reduced buffer in supported contact modes."""
 
     def _foot_model(self):
         return _foot_model()
@@ -67,19 +67,25 @@ class TestSteelBodyPairReductionGate(unittest.TestCase):
     def _foot_scene(self):
         return _foot_model((5.13, 5.07, 0.0149))
 
-    def test_steel_compliance_rejects_reduced_contacts(self):
-        """Reject reduced contacts when Steel's compliant contact law is on."""
+    def test_steel_compliance_consumes_reduced_contacts(self):
+        """Use reduced contacts with a compliant law when its required material arrays are supplied."""
         if not wp.get_device().is_cuda:
             self.skipTest("Steel contact compliance requires CUDA")
         model = self._foot_model()
         state_0, state_1 = model.state(), model.state()
         pipeline = _make_pipeline(model, True)
         contacts = pipeline.contacts()
+        for name in ("stiffness", "damping", "friction"):
+            setattr(
+                contacts,
+                f"rigid_contact_{name}",
+                wp.zeros(contacts.rigid_contact_max, dtype=float, device=model.device),
+            )
         pipeline.collide(state_0, contacts)
         self.assertTrue(contacts.rigid_contact_body_pair_reduced)
         solver = newton.solvers.SolverSteel(model, contact_compliance=True, friction_anchor_beta=0.0)
-        with self.assertRaisesRegex(ValueError, "contact_compliance=True"):
-            solver.step(state_0, state_1, model.control(), contacts, DT)
+        solver.step(state_0, state_1, model.control(), contacts, DT)
+        self.assertTrue(np.isfinite(state_1.body_q.numpy()).all())
 
     def test_captured_warmstart_step_keeps_accepting_reduced_contacts(self):
         """Capture collide and a warm-started Steel step before any eager step, then step eagerly after replay.

@@ -1701,7 +1701,8 @@ class CollisionPipeline:
         ``reduce_contacts`` selects.
 
         Automatic coverage uses fixed body-local collider-group bounds and
-        shares the SDF reducer's normalized voxel grid. Cells with touching separation
+        shares the SDF reducer's normalized voxel grid. Near-contact and speculative
+        layers have independent cells. Cells with separation
         variation above ``1e-5`` of the reference group's largest extent keep
         all their contacts. Contacts outside the bounds, or without a finite
         reference group, also pass through. An explicit ``cell_size`` retains
@@ -1709,10 +1710,9 @@ class CollisionPipeline:
 
         It is an approximation with scene-dependent support error and possible
         upward torsional-friction bias; validate tipping- and yaw-sensitive
-        tasks.  Only solvers with
-        :attr:`~newton.solvers.SolverBase.supports_body_pair_reduced_contacts`
-        accept the reduced buffers.  Sticky contact matching and hydroelastic
-        contacts are rejected at construction.
+        tasks. The output uses the ordinary contact-row contract consumed by
+        Newton solvers, like mesh/SDF reduction. Sticky contact matching and
+        hydroelastic contacts are rejected at construction.
 
         .. experimental::
         """

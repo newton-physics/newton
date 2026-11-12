@@ -58,7 +58,8 @@ Depth is ranked with the canonical signed effective-surface separation
 representative and its sign gates the touching slot family; it never biases
 the ordering inside a spatial slot. Automatic coverage shares the SDF reducer's
 normalized voxel mapping and grid sizing on fixed body-local group bounds.
-Cells whose touching separation varies by more than ``1e-5`` of the reference extent
+Near-contact and speculative layers have independent cells. Cells whose
+separation varies by more than ``1e-5`` of the reference extent
 keep all their contacts. An explicit ``cell_size`` retains the legacy
 projected grid and its length scale.
 
@@ -74,14 +75,11 @@ geometry only.  On curved or mesh support (flat analytic planes are immune) the
 score differences between a patch's near-symmetric contacts are curvature-sized,
 so the winners can hand off between steps.
 
-**XPBD is not a supported consumer.** XPBD predicts body poses before deciding
-which speculative candidates are active, while the reduction selects footprint
-representatives from the pre-prediction contact geometry. A spatial winner can
-therefore remain speculative after prediction while a discarded interior
-candidate becomes penetrating. Increasing XPBD iterations reduced a curved-foot
-rocking residual in one characterization scene but did not establish a
-class-wide selection invariant, so XPBD rejects reduced buffers. Steel is
-the supported solver.
+**Solver-independent contact rows.** Like mesh/SDF reduction, this selects
+ordinary contact rows before solving; every built-in Newton-contact consumer
+accepts them. Automatic coverage guards both touching and speculative depth
+variation, since position-based solvers may activate candidates after predicting
+motion. Explicit legacy grids retain their original selection approximation.
 
 **Known characteristic -- torsional patch friction.** During twist, friction at
 every contact is saturated at ``mu*N_i``, so the resisting torque is
