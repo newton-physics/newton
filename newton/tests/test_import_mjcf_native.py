@@ -712,7 +712,7 @@ class TestImportMjcfNative(unittest.TestCase):
         np.testing.assert_allclose(builder.shape_scale[0], [0.2, 0.4, 0.6])
         self.assertAlmostEqual(builder.body_mass[0], 3)
         self.assertEqual(builder.custom_attributes["mujoco:iterations"].values[0], 17)
-        self.assertAlmostEqual(builder.custom_attributes["mujoco:tolerance"].values[0], 0.0002)
+        self.assertAlmostEqual(builder.custom_attributes["mujoco:tolerance"].values[-1], 0.0002)
 
     def test_scaled_scalar_equalities(self):
         """Scale joint and tendon polynomials and preserve one-ended equality rows."""

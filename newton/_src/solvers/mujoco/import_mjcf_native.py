@@ -348,8 +348,7 @@ def _import_options(builder, spec, attributes):
                 if isinstance(value, (str, bool, int, float, np.ndarray)) or hasattr(value, "__int__"):
                     if hasattr(value, "__int__") and not isinstance(value, (float, np.ndarray)):
                         value = int(value)
-                    index = max(builder.current_world, 0) if attr.frequency == Model.AttributeFrequency.WORLD else 0
-                    attr.values[index] = attributes(**{attr.name: value})[attr.key]
+                    attr.values[builder._model_value_key(attr)] = attributes(**{attr.name: value})[attr.key]
 
 
 def _scalar_servo_mode(gain, bias):
@@ -952,7 +951,7 @@ def parse_mjcf(
 
     if parse_mujoco_options:
         _import_options(builder, spec, attributes)
-        for freq, row in ((frequency.ONCE, 0), (frequency.WORLD, max(builder.current_world, 0))):
+        for freq, row in ((frequency.ONCE, 0), (frequency.WORLD, builder.current_world)):
             builder._process_custom_attributes(row, custom(freq, spec), freq)
     disableflags = builder.custom_attributes["mujoco:native_option_disableflags"]
     filter_parent = not bool(

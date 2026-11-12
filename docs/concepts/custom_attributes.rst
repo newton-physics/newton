@@ -42,7 +42,7 @@ Declaring Custom Attributes
 Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method. Each declaration specifies:
 
 * **name**: Attribute name
-* **frequency**: Determines array size and indexing—either a :class:`~newton.Model.AttributeFrequency` enum value (e.g., ``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, ``ARTICULATION``, ``ONCE``) or a string for custom frequencies
+* **frequency**: Determines array size and indexing—either a :class:`~newton.Model.AttributeFrequency` enum value (e.g., ``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, ``ARTICULATION``, ``WORLD``, ``ONCE``) or a string for custom frequencies. ``WORLD`` attributes have ``world_count + 1`` entries; the final entry belongs to global world ``-1`` (see :ref:`Per-world attributes`)
 * **dtype**: Warp data type (``wp.float32``, ``wp.vec3``, ``wp.quat``, etc.) or ``str`` for string attributes stored as Python lists
 * **assignment**: Which simulation object owns the attribute (``MODEL``, ``STATE``, ``CONTROL``, ``CONTACT``)
 * **default** (optional): Default value for unspecified entities. When omitted, a sensible zero-value is derived from the dtype (``0`` for scalars, identity for quaternions, ``False`` for booleans, ``""`` for strings)
@@ -130,6 +130,18 @@ When **no namespace** is specified, attributes are added directly to their assig
        )
    )
    # → Accessible as: model.gravity_scale (array of length 1)
+
+   # WORLD frequency attributes - one value per world plus the global world
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(
+           name="friction_scale",
+           frequency=Model.AttributeFrequency.WORLD,
+           dtype=wp.float32,
+           default=1.0,
+           assignment=Model.AttributeAssignment.MODEL
+       )
+   )
+   # → Accessible as: model.friction_scale (array of length world_count + 1)
 
    # String dtype attributes - stored as Python lists, not Warp arrays
    builder.add_custom_attribute(
@@ -971,8 +983,12 @@ like explicit values. The source builder and its declared default stay unchanged
 
 ``ONCE`` attributes have one value for the whole model. A source default does
 not replace an existing destination value; an explicit source value does.
-``WORLD`` reference defaults are copied into the destination world. Adding
-global entities with ``add_builder()`` does not create a world row.
+``WORLD`` values and reference defaults are copied into the destination world.
+A merge places all source entities in one world, so the source's explicit values,
+including its global value (key ``-1``), must agree; different values raise
+:class:`ValueError` before any entity is copied. Adding global entities with
+``add_builder()`` writes the global-world entry instead, never world ``0``; as for
+``ONCE``, a source reference default does not replace an existing global value.
 
 For scalar and integer-vector references, copying offsets each nonnegative
 index and preserves negative ones. Vector values may be lists, tuples, NumPy

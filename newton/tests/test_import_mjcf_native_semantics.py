@@ -404,6 +404,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 <pair name="ab" geom1="a" geom2="b"/></contact>
             <equality><joint name="equality" joint1="j" joint2="k"/></equality></mujoco>"""
         builder.add_mjcf_native(xml)
+        self.assertEqual(builder.custom_attributes["source_angle"].values, {-1: "True"})
         builder.add_mjcf_native(
             xml.replace('model="custom"', 'model="later"').replace(
                 "<worldbody>", '<compiler angle="radian"/><worldbody>'
@@ -421,7 +422,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
             self.assertEqual(getattr(model, f"source_{kind}"), [expected] * 4)
         self.assertEqual(model.source_pair, ["ab", "bc"] * 4)
         self.assertEqual(model.source_model, ["custom"])
-        self.assertEqual(model.source_angle, ["True", "True"])
+        self.assertEqual(model.source_angle, ["True", "True", ""])
 
     def test_native_custom_attribute_compiler_fusion(self):
         """Keep source values with surviving elements when MuJoCo fuses static bodies."""
@@ -1094,13 +1095,45 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
     def test_world_option_defaults(self):
         """Assign per-world options to the world being imported."""
         builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.custom_attributes["mujoco:impratio"].values[-1] = 7
         for impratio in (2, 3):
             builder.begin_world()
             builder.add_mjcf_native(
                 f'<mujoco><option impratio="{impratio}"/><worldbody><body><joint/><geom size=".1"/></body></worldbody></mujoco>'
             )
             builder.end_world()
-        np.testing.assert_array_equal(builder.finalize().mujoco.impratio.numpy(), [2, 3])
+        model = builder.finalize()
+        np.testing.assert_array_equal(model.mujoco.impratio.numpy(), [2, 3, 7])
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        np.testing.assert_allclose(solver.mjw_model.opt.impratio_invsqrt.numpy(), 1 / np.sqrt([2, 3]), rtol=1e-6)
+
+    def test_global_options_after_composition(self):
+        """Keep global import options through attachment, copying, and per-world replication."""
+        xml = """<mujoco><option impratio="2" wind="1 2 3"/><worldbody>
+            <body><joint/><geom size=".1"/></body></worldbody></mujoco>"""
+        asset = newton.ModelBuilder()
+        asset.add_mjcf_native(xml)
+        self.assertEqual(asset.custom_attributes["mujoco:impratio"].values, {-1: 2})
+        asset.add_mjcf_native(xml.replace('impratio="2"', 'impratio="9"'), parent_body=0, parse_mujoco_options=False)
+        copied = newton.ModelBuilder()
+        copied.add_builder(asset)
+        copied.custom_attributes["mujoco:impratio"].values[0] = 9
+        model = copied.finalize()
+        np.testing.assert_array_equal(model.mujoco.impratio.numpy(), [9, 2])
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        self.assertEqual(solver.mj_model.opt.impratio, 2)
+        np.testing.assert_allclose(solver.mjw_model.opt.impratio_invsqrt.numpy(), 1 / np.sqrt([2]), rtol=1e-6)
+        np.testing.assert_array_equal(solver.mjw_model.opt.wind.numpy(), [[1, 2, 3]])
+
+        replicated = newton.ModelBuilder()
+        replicated.replicate(asset, 2)
+        replicated.custom_attributes["mujoco:impratio"].values[1] = 5
+        model = replicated.finalize()
+        np.testing.assert_array_equal(model.mujoco.impratio.numpy(), [2, 5, 1])
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        np.testing.assert_allclose(solver.mjw_model.opt.impratio_invsqrt.numpy(), 1 / np.sqrt([2, 5]), rtol=1e-6)
+        np.testing.assert_array_equal(solver.mjw_model.opt.wind.numpy(), [[1, 2, 3], [1, 2, 3]])
 
     def test_fixed_tendon_springlength_finalization(self):
         import mujoco

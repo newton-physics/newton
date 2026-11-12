@@ -423,6 +423,9 @@ Supported frequencies are:
   ``mujoco:equality_constraint``: the corresponding native elements. Register
   these frequencies first with ``SolverMuJoCo.register_custom_attributes(builder)``.
 
+``WORLD`` values belong to the current builder world, including global world
+``-1`` outside a world context. ``ONCE`` values remain model-wide.
+
 Callbacks run on parsed elements before filtering. Values are attached only
 to elements retained by compilation and conversion. Synthetic fixed/base joints
 keep attribute defaults, and replaced root joints do not transfer source joint
@@ -1462,6 +1465,14 @@ MuJoCo solver parameters follow a three-level resolution priority:
    used, with one Newton-opinionated exception: ``integrator`` defaults
    to ``implicitfast`` (MuJoCo's default is ``euler``) for better
    stability on stiff systems.
+
+Per-world options use the ``WORLD`` layout, shape ``(world_count + 1,)``,
+whose final entry belongs to global world ``-1`` (see :ref:`Per-world attributes`).
+Separate MuJoCo worlds read the entry of their Newton world. A single MuJoCo world
+reads world ``0`` when that world owns bodies and the global entry otherwise, as in
+models built without :meth:`~newton.ModelBuilder.begin_world`, where importers store
+options in the global entry. :attr:`~newton.Model.gravity` follows the same rule;
+bodies of another Newton world receive their own gravity as a correction force.
 
 These values are read once during :class:`~newton.solvers.SolverMuJoCo`
 construction. Editing ``model.mujoco.<option>`` afterwards has no
