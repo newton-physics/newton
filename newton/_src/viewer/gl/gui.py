@@ -33,7 +33,7 @@ class UI:
         except ImportError as e:
             self.is_available = False
             logger.warning(
-                'ViewerGL GUI is unavailable: %s. Install its dependencies with `pip install "newton[examples]"`.', e
+                'Viewer GUI is unavailable: %s. Install its dependencies with `pip install "newton[examples]"`.', e
             )
             return
 
