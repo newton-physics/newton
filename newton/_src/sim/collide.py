@@ -1700,6 +1700,13 @@ class CollisionPipeline:
         and heightfield contacts keep the per-shape-pair reduction that
         ``reduce_contacts`` selects.
 
+        Automatic coverage uses fixed body-local collider-group bounds and
+        shares the SDF reducer's normalized voxel grid. Cells with touching separation
+        variation above ``1e-5`` of the reference group's largest extent keep
+        all their contacts. Contacts outside the bounds, or without a finite
+        reference group, also pass through. An explicit ``cell_size`` retains
+        the legacy projected grid without this depth-variation safeguard.
+
         It is an approximation with scene-dependent support error and possible
         upward torsional-friction bias; validate tipping- and yaw-sensitive
         tasks.  Only solvers with
@@ -1710,9 +1717,11 @@ class CollisionPipeline:
         .. experimental::
         """
 
-        cell_size: float = 0.25
-        """Spatial cell edge [m] that keeps separated same-normal patches of one body pair
-        independently represented."""
+        cell_size: float | None = None
+        """Use automatic body-local voxel coverage by default, with no length parameter.
+
+        An explicit spatial cell edge [m] selects the legacy projected grid.
+        """
         hashtable_size_factor: float = 1.0
         """Multiplier on the group-table capacity, which is derived from the model's contact-pair topology
         rather than from ``max_triangle_pairs``.  If the table is too small, the affected frames keep every
@@ -1725,13 +1734,13 @@ class CollisionPipeline:
         def __post_init__(self):
             """Validate configuration before any device allocation."""
             try:
-                cell_size = float(self.cell_size)
+                cell_size = None if self.cell_size is None else float(self.cell_size)
                 hashtable_size_factor = float(self.hashtable_size_factor)
             except (TypeError, ValueError) as error:
                 raise TypeError("BodyPairReductionConfig numeric fields must be real numbers") from error
             with np.errstate(over="ignore", under="ignore", invalid="ignore"):
-                cell_size_f32 = float(np.float32(cell_size))
-            if not np.isfinite(cell_size_f32) or cell_size_f32 <= 0.0:
+                cell_size_f32 = None if cell_size is None else float(np.float32(cell_size))
+            if cell_size_f32 is not None and (not np.isfinite(cell_size_f32) or cell_size_f32 <= 0.0):
                 raise ValueError("BodyPairReductionConfig.cell_size must be finite and > 0 at float32 precision")
             if not np.isfinite(hashtable_size_factor) or hashtable_size_factor <= 0.0:
                 raise ValueError("BodyPairReductionConfig.hashtable_size_factor must be finite and > 0")
@@ -2697,10 +2706,11 @@ class CollisionPipeline:
         return self._body_pair_reduction
 
     def refresh_body_pair_reduction_groups(self):
-        """Rebuild body-pair reduction groups from the model's current shape materials.
+        """Rebuild body-pair material groups and fixed local coverage bounds.
 
         Groups are built at construction.  Call this outside CUDA graph capture
-        after changing ``shape_material_*`` or a grouped per-shape attribute.
+        after changing ``shape_material_*``, a grouped per-shape attribute, or
+        local collider transforms. Automatic coverage bounds refresh in place.
         No-op when body-pair reduction is disabled.
 
         .. experimental::
@@ -2712,7 +2722,7 @@ class CollisionPipeline:
         shape_group, group_count = build_reduction_groups(self.model, self.body_pair_reduction.material_attributes)
         if group_count > MAX_GROUP_ID + 1:
             raise ValueError(f"body_pair_reduction supports at most {MAX_GROUP_ID + 1} groups, got {group_count}")
-        self._body_pair_reducer.refresh_groups(shape_group)
+        self._body_pair_reducer.refresh_groups(shape_group, self.model)
 
     @property
     def rigid_contact_max(self) -> int:

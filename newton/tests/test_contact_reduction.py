@@ -23,6 +23,8 @@ from newton._src.geometry.contact_reduction import (
     NUM_SPATIAL_DIRECTIONS,
     NUM_VOXEL_DEPTH_SLOTS,
     compute_num_reduction_slots,
+    compute_voxel_index,
+    compute_voxel_resolution_from_aabb,
     get_face_normal,
     get_slot,
 )
@@ -49,7 +51,29 @@ def _get_face_normal_kernel(normals: wp.array[wp.vec3]):
 class TestContactReduction(unittest.TestCase):
     """Tests for contact reduction functionality."""
 
-    pass
+    def test_voxel_resolution_is_scale_independent(self):
+        """Fit identical grids for tiny, large, planar, and slender copies of the same bounds."""
+        for extent in ((1.0, 2.0, 3.0), (1.0, 2.0, 0.0), (1.0, 1e-20, 1e-20), (0.0, 0.0, 0.0)):
+            expected = compute_voxel_resolution_from_aabb(np.zeros(3), np.array(extent))
+            self.assertLessEqual(np.prod(expected), NUM_VOXEL_DEPTH_SLOTS)
+            self.assertGreaterEqual(min(expected), 1)
+            for scale in (1e-12, 1e12):
+                actual = compute_voxel_resolution_from_aabb(np.zeros(3), np.array(extent) * scale)
+                self.assertEqual(actual, expected)
+
+
+@wp.kernel
+def _voxel_scale_kernel(indices: wp.array[int]):
+    i = wp.tid()
+    scale = wp.pow(10.0, float(i * 6 - 12))
+    indices[i] = compute_voxel_index(wp.vec3(0.75, 0.25, 0.5) * scale, wp.vec3(0.0), wp.vec3(scale), wp.vec3i(4, 4, 4))
+
+
+def test_voxel_index_is_scale_independent(test, device):
+    """Map equivalent normalized positions to the same voxel even below one micrometer."""
+    indices = wp.empty(5, dtype=int, device=device)
+    wp.launch(_voxel_scale_kernel, dim=5, inputs=[indices], device=device)
+    np.testing.assert_array_equal(indices.numpy(), [39] * 5)
 
 
 # =============================================================================
@@ -203,6 +227,12 @@ def test_get_slot_matches_best_face_normal(test, device):
 devices = get_test_devices()
 
 for device in devices:
+    add_function_test(
+        TestContactReduction,
+        "test_voxel_index_is_scale_independent",
+        test_voxel_index_is_scale_independent,
+        devices=[device],
+    )
     add_function_test(
         TestContactReduction, "test_face_normals_are_unit_vectors", test_face_normals_are_unit_vectors, devices=[device]
     )

@@ -151,7 +151,11 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
                 w_tail.append(float(np.abs(state_0.body_qd.numpy()[body][3:6]).max()))
         z_end = float(state_0.body_q.numpy()[body][2])
         watermarks = solver.constraint_row_watermarks() if hasattr(solver, "constraint_row_watermarks") else {}
-        return z_end, z_end < z0 - 0.005, peak_contacts, float(np.mean(w_tail)), watermarks
+        compacted = False
+        if reduce_on:
+            stats = pipeline._body_pair_reducer.stats()
+            compacted = stats["sum_contacts_kept"] < stats["sum_contacts_in"]
+        return z_end, z_end < z0 - 0.005, peak_contacts, float(np.mean(w_tail)), watermarks, compacted
 
     def _compare(
         self,
@@ -163,13 +167,13 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
         *,
         deterministic=True,
     ):
-        z_off, fell_off, contacts_off, w_off, rows_off = self._settle(
+        z_off, fell_off, contacts_off, w_off, rows_off, _ = self._settle(
             build_fn,
             make_solver,
             False,
             deterministic=deterministic,
         )
-        z_on, fell_on, contacts_on, w_on, rows_on = self._settle(
+        z_on, fell_on, contacts_on, w_on, rows_on, compacted = self._settle(
             build_fn,
             make_solver,
             True,
@@ -178,7 +182,10 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
         self.assertTrue(fell_off and fell_on, "body did not fall: the solver is not simulating it")
         self.assertGreater(contacts_off, 0)
         self.assertGreater(contacts_on, 0)
-        self.assertLess(contacts_on, contacts_off, "the reduced run never actually compacted a contact manifold")
+        # A conservative fallback may retain every row on some steps. Prove
+        # compaction against the reducer's own same-frame inputs, rather than
+        # comparing peak counts from two trajectories.
+        self.assertTrue(compacted, "the reduced run never actually compacted a contact manifold")
         if expected_row_path is not None:
             key = f"{expected_row_path}_high_water"
             self.assertGreater(rows_off[key], 0, f"unreduced run never exercised {expected_row_path} rows")
@@ -386,7 +393,10 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
         probe_model = probe_builder.finalize(device=wp.get_device())
         ps0, ps1 = probe_model.state(), probe_model.state()
         probe_control = probe_model.control()
-        probe_pipe = _make_pipeline(probe_model, True)
+        # This characterizes competition in a single legacy projected cell.
+        # Automatic coverage uses normalized cached coordinates and is exercised
+        # by the dynamic comparison below and the other default-mode scenes.
+        probe_pipe = _make_pipeline(probe_model, True, body_pair_cell_size=10.0)
         probe_contacts = probe_pipe.contacts()
         probe_solver = newton.solvers.SolverXPBD(probe_model, iterations=8)
         reducer = probe_pipe.narrow_phase.group_contact_reducer

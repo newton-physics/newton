@@ -1298,11 +1298,18 @@ of the global contact reducer, before they are written. Enable it with
 
     pipeline = newton.CollisionPipeline(
         model,
-        body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(cell_size=0.25),
+        body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
     )
     contacts = pipeline.contacts()
 
 Contacts are grouped by body pair, material class, normal bin and spatial cell.
+By default, spatial coverage uses the same normalized voxel mapping and
+aspect-ratio-based grid sizing as SDF reduction, applied to fixed body-local
+collider-group bounds. Uniformly scaling the geometry does not require changing
+a cell size. The smaller finite dynamic group supplies the reference grid;
+an infinite ground plane never sets its scale. This is a runtime collision
+pipeline setting and does not add an authorable USD attribute.
+
 Each group keeps one depth representative, up to six sampled footprint extremes
 over all its contacts and up to six more over its touching contacts only, so
 speculative contacts cannot displace the support polygon. Mesh and
@@ -1313,12 +1320,22 @@ approximation: support is sampled, not exact, and keeping
 rim points can strengthen torsional friction. Selection is memoryless, so on
 curved or mesh supports the kept set can change between steps.
 
+The automatic mode conservatively keeps all contacts in cells whose touching
+separations vary by more than ``1e-5`` of the reference group's largest extent.
+This protects shallow touching regions from competing with deeper regions in
+the same cell. Contacts without a finite reference grid, or outside its fixed
+bounds, also pass through. These safeguards can reduce the savings on curved
+or tilted patches; they do not guarantee exact pressure or friction-torque
+distribution. An explicit ``cell_size`` selects the previous projected grid
+without the automatic depth-variation safeguard.
+
 Shapes on one body share a group only when their ``shape_material_*`` values
 and their per-shape custom attributes match;
 ``BodyPairReductionConfig.material_attributes`` narrows
 the attributes that count. Call
 :meth:`~CollisionPipeline.refresh_body_pair_reduction_groups` after changing
-them at runtime.
+them or the local collider transforms at runtime; this also refreshes the
+fixed coverage bounds.
 
 Buffers from the pipeline's :meth:`~CollisionPipeline.contacts` are stamped
 :attr:`~Contacts.rigid_contact_body_pair_reduced` when the scene has primitive

@@ -395,6 +395,78 @@ def _undamped(solver):
 class TestBodyPairReductionCounts(unittest.TestCase):
     """Registered contacts drop to patch-descriptive sets on multi-shape pairs."""
 
+    def test_default_reduction_is_scale_independent(self):
+        """Reduce uniformly scaled compound boxes without a length parameter or cell clamping."""
+        counts = []
+        for scale in (0.01, 1.0, 100.0):
+            builder = newton.ModelBuilder()
+            cfg = builder.default_shape_cfg.copy()
+            cfg.gap = 0.0
+            cfg.margin = 0.0
+            body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.52 * scale), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.5 * scale, hy=0.5 * scale, hz=0.5 * scale, cfg=cfg)
+            for i in range(12):
+                for j in range(12):
+                    builder.add_shape_box(
+                        body,
+                        xform=wp.transform(
+                            ((i - 5.5) * scale / 12, (j - 5.5) * scale / 12, -0.5 * scale),
+                            wp.quat_identity(),
+                        ),
+                        hx=scale / 24,
+                        hy=scale / 24,
+                        hz=0.0201 * scale,
+                        cfg=cfg,
+                    )
+            builder.add_ground_plane(cfg=cfg)
+            model = builder.finalize(device=wp.get_device())
+            pipeline = _make_pipeline(model, True)
+            contacts = pipeline.contacts()
+            state = model.state()
+            pipeline.collide(state, contacts)
+            counts.append(int(contacts.rigid_contact_count.numpy()[0]))
+            self.assertLess(counts[-1], 12 * 12 * 4)
+            self.assertEqual(pipeline._body_pair_reducer.stats()["cell_clamp_events"], 0)
+            points = _world_points0(model, state, contacts) / scale
+            np.testing.assert_allclose(points[:, :2].min(axis=0), (-0.5, -0.5), atol=1e-5)
+            np.testing.assert_allclose(points[:, :2].max(axis=0), (0.5, 0.5), atol=1e-5)
+        self.assertEqual(counts, [counts[0]] * len(counts))
+
+    def test_default_preserves_shallower_interior_patch(self):
+        """Keep a separate shallow touching pad when it shares a reduction cell with a deeper patch."""
+        builder = newton.ModelBuilder()
+        cfg = builder.default_shape_cfg.copy()
+        cfg.gap = 0.0
+        cfg.margin = 0.0
+        body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.5199), wp.quat_identity()))
+        builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5, cfg=cfg)
+        for x, y in ((-0.04, -0.04), (-0.04, 0.04), (0.04, -0.04), (0.04, 0.04)):
+            builder.add_shape_box(
+                body,
+                xform=wp.transform((x, y, -0.5), wp.quat_identity()),
+                hx=0.005,
+                hy=0.005,
+                hz=0.02,
+                cfg=cfg,
+            )
+        pad = builder.add_shape_box(
+            body,
+            xform=wp.transform((0.02, 0.02, -0.49995), wp.quat_identity()),
+            hx=0.001,
+            hy=0.001,
+            hz=0.02,
+            cfg=cfg,
+        )
+        builder.add_ground_plane(cfg=cfg)
+        model = builder.finalize(device=wp.get_device())
+        pipeline = _make_pipeline(model, True)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+        n, s0, s1, *_ = _contact_snapshot(contacts)
+        self.assertGreater(n, 0)
+        self.assertTrue(np.any((s0 == pad) | (s1 == pad)), "shallower touching pad lost every contact")
+        self.assertGreater(pipeline._body_pair_reducer.stats()["coverage_fallback_contacts"], 0)
+
     def test_stats_doc_tracks_packed_cell_range(self):
         """Keep the public clamp telemetry contract aligned with its bit layout."""
         self.assertIn(f"+/-{GROUP_CELL_COORD_MAX} range", BodyPairReduction.stats.__doc__)
@@ -1097,6 +1169,46 @@ class TestBodyPairReductionTableSizing(unittest.TestCase):
 class TestBodyPairReductionGrouping(unittest.TestCase):
     """Contacts may only compete when merging them cannot change the physics."""
 
+    def test_automatic_grid_refreshes_materials_and_local_bounds(self):
+        """Refresh split materials and moved colliders without replacing captured grid arrays."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.0199), wp.quat_identity()))
+        for x in (-0.1, 0.1):
+            builder.add_shape_box(
+                body, xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()), hx=0.02, hy=0.02, hz=0.02
+            )
+        builder.add_ground_plane()
+        model = builder.finalize(device=wp.get_device())
+        pipeline = _make_pipeline(model, True)
+        state = model.state()
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        reducer = pipeline.narrow_phase.group_contact_reducer
+        pointer = reducer.group_lower.ptr
+        graph = None
+        if model.device.is_cuda:
+            with wp.ScopedCapture(device=model.device) as capture:
+                pipeline.collide(state, contacts)
+            graph = capture.graph
+        mu = model.shape_material_mu.numpy()
+        mu[1] = 0.9
+        model.shape_material_mu.assign(mu)
+        transforms = model.shape_transform.numpy()
+        transforms[1, 0] = 0.5
+        model.shape_transform.assign(transforms)
+        pipeline.refresh_body_pair_reduction_groups()
+        self.assertEqual(reducer.group_lower.ptr, pointer)
+        groups = reducer.shape_group.numpy()
+        self.assertNotEqual(groups[0], groups[1])
+        np.testing.assert_allclose(reducer.group_lower.numpy()[groups[1]], (0.48, -0.02, -0.02), atol=1e-7)
+        if graph is not None:
+            wp.capture_launch(graph)
+        else:
+            pipeline.collide(state, contacts)
+        _n, s0, s1, *_ = _contact_snapshot(contacts)
+        self.assertTrue(np.any((s0 == 0) | (s1 == 0)))
+        self.assertTrue(np.any((s0 == 1) | (s1 == 1)))
+
     def _pad_body(self, mu_pad, mu_ring):
         """One body: a 5x5 low-mu sphere grid with one center pad sphere of mu_pad.
 
@@ -1362,7 +1474,9 @@ class TestBodyPairReductionSafety(unittest.TestCase):
                 broad_phase="nxn",
                 deterministic=True,
                 rigid_contact_max=8,
-                body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
+                # Keep all eight admitted candidates in one cell so this tests
+                # overflow reporting and actual reduction of the partial stage.
+                body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(cell_size=10.0),
             )
         contacts = reduced.contacts()
         reduced.collide(state, contacts)

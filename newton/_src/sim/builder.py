@@ -15836,41 +15836,16 @@ class ModelBuilder:
             local_aabb_upper = []
             local_interior_point = []
             voxel_resolution = []
-            from ..geometry.contact_reduction import NUM_VOXEL_DEPTH_SLOTS  # noqa: PLC0415
+            from ..geometry.contact_reduction import (  # noqa: PLC0415
+                NUM_VOXEL_DEPTH_SLOTS,
+                compute_voxel_resolution_from_aabb,
+            )
 
             voxel_budget = NUM_VOXEL_DEPTH_SLOTS
 
             # Cache per unique (shape_type, shape_params, margin) to avoid redundant AABB computation
             # for instanced shapes (e.g., 256 robots sharing the same shape parameters)
             shape_aabb_cache = {}
-
-            def compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget):
-                """Compute voxel resolution from AABB with given budget."""
-                size = aabb_upper - aabb_lower
-                size = np.maximum(size, 1e-6)  # Avoid division by zero
-
-                # Target voxel size for approximately cubic voxels
-                volume = size[0] * size[1] * size[2]
-                v = (volume / voxel_budget) ** (1.0 / 3.0)
-                v = max(v, 1e-6)
-
-                # Initial resolution
-                nx = max(1, round(size[0] / v))
-                ny = max(1, round(size[1] / v))
-                nz = max(1, round(size[2] / v))
-
-                # Reduce until under budget (reduce largest axis first for more cubic voxels)
-                while nx * ny * nz > voxel_budget:
-                    if nx >= ny and nx >= nz and nx > 1:
-                        nx -= 1
-                    elif ny >= nz and ny > 1:
-                        ny -= 1
-                    elif nz > 1:
-                        nz -= 1
-                    else:
-                        break
-
-                return nx, ny, nz
 
             for shape_type, shape_src, shape_scale in zip(
                 self.shape_type, self.shape_source, shape_scale_list, strict=True

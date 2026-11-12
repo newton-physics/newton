@@ -1,0 +1,1 @@
+Use automatic body-local voxel coverage for experimental body-pair contact reduction, sharing scale-independent grid sizing and indexing with SDF reduction. Keep varying-depth cells conservatively; pass an explicit `BodyPairReductionConfig.cell_size` to retain the previous projected-grid behavior.
