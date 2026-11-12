@@ -62,7 +62,7 @@ importers = [
     "open3d>=0.20.0; (sys_platform != 'darwin' or platform_machine == 'arm64') and (sys_platform != 'win32' or platform_machine != 'ARM64')",  # no Intel macOS or Windows ARM64 wheels
 
     # USD core libraries
-    "usd-core>=25.5,<26.9 ; platform_machine != 'aarch64' and python_version < '3.15' and (sys_platform != 'win32' or platform_machine != 'ARM64')",
+    "usd-core>=25.5,<26.12 ; platform_machine != 'aarch64' and python_version < '3.15' and (sys_platform != 'win32' or platform_machine != 'ARM64')",
     "usd-exchange>=2.3.0,<4 ; platform_machine == 'aarch64' and python_version < '3.14'",
 
     # Newton USD Schemas
