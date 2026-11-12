@@ -6251,11 +6251,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     self.mjc_body_to_newton,
                     model.body_flags,
                     state.body_f,
-                    model.body_mass,
-                    model.body_world,
-                    model.gravity,
-                    self.mjw_model.body_gravcomp,
-                    self._option_world,
                 ],
                 outputs=[
                     xfrc,
@@ -7076,6 +7071,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
 
         self._option_world = self._resolve_option_world(model, separate_worlds)
+
+        if not separate_worlds and self._option_world == 0:
+            # The single MuJoCo world uses world 0's gravity, which kinematic bodies ignore.
+            kinematic = (model.body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0
+            gravity = model.gravity.numpy()
+            if np.any((model.body_world.numpy() == -1) & ~kinematic) and not np.array_equal(gravity[0], gravity[-1]):
+                raise ValueError(
+                    "SolverMuJoCo simulates the bodies of global world -1 and world 0 in one MuJoCo world, which "
+                    f"has one gravity, but got {gravity[-1]} for global world -1 and {gravity[0]} for world 0. "
+                    "Set both to the same value, or move the dynamic global bodies into world 0."
+                )
 
         # Validate model compatibility with separate_worlds mode
         if separate_worlds:

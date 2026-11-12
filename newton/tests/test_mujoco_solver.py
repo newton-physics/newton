@@ -6544,6 +6544,27 @@ class TestMuJoCoValidation(unittest.TestCase):
             SolverMuJoCo(model, separate_worlds=True)
         self.assertIn("global world (-1) cannot contain bodies", str(ctx.exception).lower())
 
+    def test_global_body_gravity_mismatch_fails(self):
+        """Reject different gravity for dynamic global bodies and world 0 in one MuJoCo world."""
+
+        def make_model(world_gravity, global_body=True, is_kinematic=False):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, -2.0))
+            if global_body:
+                builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), is_kinematic=is_kinematic)
+            else:
+                builder.add_ground_plane()
+            builder.begin_world(gravity=world_gravity)
+            builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            builder.end_world()
+            return builder.finalize(device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "one gravity"):
+            SolverMuJoCo(make_model((0.0, 0.0, -5.0)), use_mujoco_cpu=True)
+        # Equal gravity, and a global world without dynamic bodies, stay supported.
+        SolverMuJoCo(make_model((0.0, 0.0, -2.0)), use_mujoco_cpu=True)
+        SolverMuJoCo(make_model((0.0, 0.0, -5.0), is_kinematic=True), use_mujoco_cpu=True)
+        SolverMuJoCo(make_model((0.0, 0.0, -5.0), global_body=False), use_mujoco_cpu=True)
+
     def test_global_joint_fails(self):
         """Test that a joint in global world (-1) raises ValueError."""
         builder = newton.ModelBuilder()
