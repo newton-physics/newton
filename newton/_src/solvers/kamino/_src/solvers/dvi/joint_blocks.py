@@ -22,7 +22,7 @@ from ...core.types import mat66f, vec6f
 from ...linalg.factorize.llt_blocked_rcm import _sync_threads
 from .coupling import PackedCoupling, _count_bits
 from .kernels import BILATERAL_DIAGONAL_FLOOR, _compact_schur_fits
-from .sparse_kernels import _shuffle_lane_32, _unilateral_nzb_offsets
+from .sparse_kernels import _shuffle_lane_32, _sync_warp_32, _unilateral_nzb_offsets
 
 if TYPE_CHECKING:
     from ...dynamics.dual import DualProblem
@@ -585,6 +585,10 @@ def _pack_rhs(
     scratch[w * padded + row] = value
 
 
+_SOLVE_LANES = 8
+"""Lanes per world in the batched joint-block solve; lanes 0-5 own the six block rows."""
+
+
 @wp.kernel
 def _solve(
     factors: wp.array[wp.float32],
@@ -600,55 +604,60 @@ def _solve(
     nb: int,
     ng: int,
     padded: int,
+    num_worlds: int,
 ):
-    """Solve one world per thread; worlds share the block topology, so a warp runs in lockstep."""
-    w = wp.tid()
-    if active[w] == 0:
-        return
+    """Solve each world with a group of lanes, one per block row.
+
+    Off-diagonal products are row independent; the triangular solves
+    broadcast each finished entry within the group. No lane returns early,
+    since the group shuffles span the whole warp.
+    """
+    tid = wp.tid()
+    w = wp.min(tid / _SOLVE_LANES, num_worlds - 1)
+    lane = tid % _SOLVE_LANES
+    i = wp.min(lane, 5)
+    group = tid % 32 - lane
+    store = tid / _SOLVE_LANES < num_worlds and lane < 6 and active[w] != 0
     base = w * nb * 36
     y0 = w * padded
     for row in range(ng):
-        value = vec6f()
-        for i in range(6):
-            value[i] = scratch[y0 + row * 6 + i]
+        value = scratch[y0 + row * 6 + i]
         for entry in range(previous_start[row], previous_start[row + 1]):
             block = previous[entry]
             source = y0 + cols[block] * 6
-            offset = base + block * 36
+            offset = base + block * 36 + i * 6
             for j in range(6):
-                y = scratch[source + j]
-                for i in range(6):
-                    value[i] -= factors[offset + i * 6 + j] * y
+                value -= factors[offset + j] * scratch[source + j]
         offset = base + diagonal[row] * 36
-        for i in range(6):
-            total = value[i]
-            for j in range(i):
-                total -= factors[offset + i * 6 + j] * value[j]
-            value[i] = total / factors[offset + i * 7]
-        for i in range(6):
-            scratch[y0 + row * 6 + i] = value[i]
+        for j in range(6):
+            if i == j:
+                value /= factors[offset + j * 7]
+            solved = _shuffle_lane_32(value, group + j)
+            if i > j:
+                value -= factors[offset + i * 6 + j] * solved
+        if store:
+            scratch[y0 + row * 6 + i] = value
+        _sync_warp_32()
     for reverse in range(ng):
         row = ng - 1 - reverse
-        value = vec6f()
-        for i in range(6):
-            value[i] = scratch[y0 + row * 6 + i]
+        value = scratch[y0 + row * 6 + i]
         for entry in range(following_start[row], following_start[row + 1]):
             block = following[entry]
             source = y0 + rows[block] * 6
-            offset = base + block * 36
+            offset = base + block * 36 + i
             for j in range(6):
-                y = scratch[source + j]
-                for i in range(6):
-                    value[i] -= factors[offset + j * 6 + i] * y
+                value -= factors[offset + j * 6] * scratch[source + j]
         offset = base + diagonal[row] * 36
         for k in range(6):
-            i = 5 - k
-            total = value[i]
-            for j in range(i + 1, 6):
-                total -= factors[offset + j * 6 + i] * value[j]
-            value[i] = total / factors[offset + i * 7]
-        for i in range(6):
-            scratch[y0 + row * 6 + i] = value[i]
+            j = 5 - k
+            if i == j:
+                value /= factors[offset + j * 7]
+            solved = _shuffle_lane_32(value, group + j)
+            if i < j:
+                value -= factors[offset + j * 6 + i] * solved
+        if store:
+            scratch[y0 + row * 6 + i] = value
+        _sync_warp_32()
 
 
 @wp.kernel
@@ -1093,7 +1102,7 @@ class JointBlockSolver:
         else:
             wp.launch(
                 _solve,
-                dim=self._worlds,
+                dim=(self._worlds * _SOLVE_LANES + 31) // 32 * 32,
                 inputs=[
                     self._factor,
                     self._vector,
@@ -1108,6 +1117,7 @@ class JointBlockSolver:
                     self._blocks,
                     self._groups,
                     self._padded,
+                    self._worlds,
                 ],
                 block_dim=32,
                 device=self._device,
