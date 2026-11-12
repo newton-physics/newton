@@ -1401,13 +1401,16 @@ class TestDVISolver(NewtonTestCase):
         )
         problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
         configs = [
+            # The fused small-inverse path that owns these re-solves is specific to LLTB.
             kamino_config.DVISolverConfig(
                 max_alternating_iterations=3,
                 bilateral_solve_interval=1,
+                bilateral_solver_type="LLTB",
             ),
             kamino_config.DVISolverConfig(
                 max_alternating_iterations=3,
                 bilateral_solve_interval=99,
+                bilateral_solver_type="LLTB",
             ),
         ]
         solver = DVISolver(
