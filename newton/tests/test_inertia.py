@@ -676,6 +676,36 @@ class TestInertia(unittest.TestCase):
         for i in range(3):
             self.assertAlmostEqual(I_an_np[i, i], I_ref[i, i], delta=tol * abs(I_ref[i, i]))
 
+    def test_mesh_inertia_far_from_origin(self):
+        """Mesh mass properties must not depend on where the vertices sit relative to the mesh origin."""
+        density = 1000.0
+        hx, hy, hz = 0.05, 0.03, 0.02
+        box = newton.Mesh.create_box(hx, hy, hz, compute_inertia=False)
+        vertices = np.array(box.vertices)
+        indices = np.array(box.indices)
+
+        m_ref, _, I_ref = compute_inertia_box(density, hx, hy, hz)
+        I_ref = np.array(I_ref).reshape(3, 3)
+        _, _, I_hollow_ref, vol_hollow_ref = compute_inertia_mesh(
+            density, vertices, indices, is_solid=False, thickness=0.002
+        )
+        I_hollow_ref = np.array(I_hollow_ref).reshape(3, 3)
+
+        offsets = np.array([[1.0, 0.0, 0.0], [5.0, -3.0, 2.0], [20.0, 20.0, 20.0], [-100.0, 50.0, 30.0]])
+        for offset in offsets:
+            with self.subTest(offset=offset):
+                mass, com, inertia, _ = compute_inertia_mesh(density, vertices + offset, indices, is_solid=True)
+                self.assertAlmostEqual(mass, m_ref, delta=1.0e-4 * m_ref)
+                assert_np_equal(np.array(com), offset, tol=1.0e-5 * np.linalg.norm(offset))
+                assert_np_equal(np.array(inertia).reshape(3, 3), I_ref, tol=1.0e-3 * np.max(I_ref))
+
+                _, com, inertia, vol = compute_inertia_mesh(
+                    density, vertices + offset, indices, is_solid=False, thickness=0.002
+                )
+                self.assertAlmostEqual(vol, vol_hollow_ref, delta=1.0e-4 * vol_hollow_ref)
+                assert_np_equal(np.array(com), offset, tol=1.0e-5 * np.linalg.norm(offset))
+                assert_np_equal(np.array(inertia).reshape(3, 3), I_hollow_ref, tol=1.0e-3 * np.max(I_hollow_ref))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -550,12 +550,25 @@ def compute_inertia_mesh(
     indices = np.array(indices).flatten()
     num_tris = len(indices) // 3
 
+    # The tetrahedra are summed in single precision about a reference point. If the
+    # vertices sit far from the mesh origin, summing about the origin loses the volume and
+    # inertia to cancellation, so meshes whose bounding box does not contain the origin
+    # are integrated about the bounding box center instead. Mass and inertia about the
+    # center of mass do not depend on this reference point.
+    vertices = np.asarray(vertices, dtype=np.float64).reshape(-1, 3)
+    reference = np.zeros(3)
+    if len(vertices) > 0:
+        lower = vertices.min(axis=0)
+        upper = vertices.max(axis=0)
+        if np.any(lower > 0.0) or np.any(upper < 0.0):
+            reference = 0.5 * (lower + upper)
+
     # Allocating for mass and inertia
     com_warp = wp.zeros(1, dtype=wp.vec3)
     I_warp = wp.zeros(1, dtype=wp.mat33)
     vol_warp = wp.zeros(1, dtype=float)
 
-    wp_vertices = wp.array(vertices, dtype=wp.vec3)
+    wp_vertices = wp.array(vertices - reference, dtype=wp.vec3)
     wp_indices = wp.array(indices, dtype=int)
 
     if is_solid:
@@ -595,8 +608,8 @@ def compute_inertia_mesh(
         )
 
     V_tot = float(vol_warp.numpy()[0])  # signed volume
-    F_tot = com_warp.numpy()[0]  # first moment
-    S_tot = I_warp.numpy()[0]  # second moment
+    F_tot = com_warp.numpy()[0].astype(np.float64)  # first moment about the reference point
+    S_tot = I_warp.numpy()[0].astype(np.float64)  # second moment about the reference point
 
     # If the winding is inward, flip signs
     if V_tot < 0:
@@ -611,11 +624,11 @@ def compute_inertia_mesh(
         com = F_tot
 
     S_tot *= density  # include density
-    I_origin = np.trace(S_tot) * np.eye(3) - S_tot  # inertia about origin
+    I_reference = np.trace(S_tot) * np.eye(3) - S_tot  # inertia about the reference point
     r = com
-    I_com = I_origin - mass * ((r @ r) * np.eye(3) - np.outer(r, r))
+    I_com = I_reference - mass * ((r @ r) * np.eye(3) - np.outer(r, r))
 
-    return mass, wp.vec3(*com), wp.mat33(*I_com), V_tot
+    return mass, wp.vec3(*(com + reference)), wp.mat33(*I_com), V_tot
 
 
 @wp.func
