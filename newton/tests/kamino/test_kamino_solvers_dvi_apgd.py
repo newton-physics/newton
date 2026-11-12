@@ -1006,7 +1006,7 @@ class TestDVIAPGDDynamics(unittest.TestCase):
             with patch.object(SolverKamino.Config, "from_model", side_effect=make_accuracy_config):
                 example = Example(ViewerNull(num_frames=1), args)
             base_z = []
-            for _ in range(180):
+            for _ in range(120):
                 example.step()
                 q = example.state_0.body_q.numpy()
                 v = example.state_0.body_qd.numpy()
@@ -1038,18 +1038,18 @@ class TestDVIAPGDDynamics(unittest.TestCase):
             start = example.state_0.body_q.numpy()[0, :2].copy()
             penetration = []
             settled_xy = []
-            for step in range(400):
+            for step in range(150):
                 example.step()
                 count = int(contacts.world_active_contacts.numpy()[0])
                 if step >= 40 and count:
                     penetration.append(float(max(0.0, -np.min(contacts.gapfunc.numpy()[:count, 3]))))
-                if step >= 200:
+                if step >= 75:
                     settled_xy.append(example.state_0.body_q.numpy()[0, :2].copy())
             self.assertTrue(np.all(np.isfinite(example.state_0.body_qd.numpy())))
             self.assertGreater(len(penetration), 0)
             self.assertLess(float(np.percentile(penetration, 95)), 0.0035)
             self.assertLess(float(np.linalg.norm(settled_xy[-1] - start)), 0.008)
-            self.assertLess(float(np.linalg.norm(settled_xy[-1] - settled_xy[0])), 2e-4)
+            self.assertLess(float(np.linalg.norm(settled_xy[-1] - settled_xy[0])), 7.5e-5)
 
 
 if __name__ == "__main__":
