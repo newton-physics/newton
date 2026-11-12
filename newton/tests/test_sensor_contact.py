@@ -509,7 +509,7 @@ class TestSensorContact(unittest.TestCase):
         col_b = sensor.counterpart_indices[row_a].index(shape_b)
         col_ground_a = sensor.counterpart_indices[row_a].index(ground)
         col_ground_b = sensor.counterpart_indices[row_b].index(ground)
-        positions = sensor.position_matrix.numpy()
+        positions = sensor.position_matrix.numpy().copy()
         # surface points are the offset-shifted contact points in world space
         # A-B: weights 2 and 5 over surface midpoints (6, 12, 0) and (4, 13.5, 0)
         expected_ab = [32.0 / 7.0, 91.5 / 7.0, 0.0]

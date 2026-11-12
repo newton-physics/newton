@@ -2612,7 +2612,9 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 for _ in range(100):
                     solver.step(state_0, state_1, control, None, 0.002)
                     state_0, state_1 = state_1, state_0
-                    qvel.append(solver.mj_data.qvel.copy() if use_mujoco_cpu else solver.mjw_data.qvel.numpy()[0])
+                    qvel.append(
+                        solver.mj_data.qvel.copy() if use_mujoco_cpu else solver.mjw_data.qvel.numpy()[0].copy()
+                    )
                 np.testing.assert_allclose(qvel[-1], qvel[0], atol=1.0e-2)
 
     def test_moving_massless_kinematic_root_wakes_sleeping_payload(self):
@@ -9204,7 +9206,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         np.testing.assert_array_equal(solver.mjc_eq_to_newton_eq.numpy(), np.array([[0, 1], [2, 3]]))
         np.testing.assert_array_equal(solver.mjc_eq_to_newton_jnt.numpy(), np.full((2, 2), -1, dtype=np.int32))
 
-        eq_data = solver.mjw_model.eq_data.numpy()
+        eq_data = solver.mjw_model.eq_data.numpy().copy()
         np.testing.assert_allclose(eq_data[:, 0, :3], connect_anchor, rtol=1e-5)
         np.testing.assert_allclose(eq_data[:, 1, :3], weld_anchor, rtol=1e-5)
         np.testing.assert_allclose(eq_data[:, 1, 3:6], weld_relpose_pos, rtol=1e-5)
@@ -11634,7 +11636,7 @@ class TestActuatorDampratio(unittest.TestCase):
     def test_runtime_dampratio_update(self):
         """Re-resolve a dampratio written at runtime and keep the placeholder in the model."""
         damping = float(self.solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2])
-        original = self.model.mujoco.actuator_biasprm.numpy()
+        original = self.model.mujoco.actuator_biasprm.numpy().copy()
         biasprm = original.copy()
         biasprm[0, 2] = 0.5
         self.model.mujoco.actuator_biasprm.assign(biasprm)
@@ -15075,8 +15077,8 @@ class TestMuJoCoPerWorldMeshLayout(unittest.TestCase):
         builder.add_world(_build_hull_world(5, offset=-0.21))
         model = builder.finalize()
         solver = SolverMuJoCo(model, use_mujoco_contacts=False)
-        expected_geoms = solver.mjw_model.geom_pos.numpy()
-        expected_sites = solver.mjw_model.site_pos.numpy()
+        expected_geoms = solver.mjw_model.geom_pos.numpy().copy()
+        expected_sites = solver.mjw_model.site_pos.numpy().copy()
         mapping = solver.mjc_geom_to_newton_shape.numpy()
         shapes = np.flatnonzero(model.shape_world.numpy() == 1)
         geom = int(np.flatnonzero(mapping[1] == shapes[0])[0])

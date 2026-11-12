@@ -3858,7 +3858,7 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
                 two_steps()
         # Each round prescribes new inputs, so a copy that ran once or out of order would publish stale values.
         for round_index in range(2):
-            body_q, body_qd = states[0].body_q.numpy(), states[0].body_qd.numpy()
+            body_q, body_qd = states[0].body_q.numpy().copy(), states[0].body_qd.numpy().copy()
             body_q[[floor, side], 0] += 0.1
             body_qd[floor] = np.array(self.PRESCRIBED_QD) * (round_index + 1)
             body_qd[side] = -np.array(self.PRESCRIBED_QD) * (round_index + 1)
