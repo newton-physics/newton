@@ -365,7 +365,7 @@ current viewer session, or a persistent artifact:
     * - :class:`~newton.viewer.ViewerGL`
       - Interactive development and live debugging
       - Real-time display; frame capture
-      - pyglet, imgui_bundle
+      - pyglet, imgui_bundle, PyOpenGL
     * - :class:`~newton.viewer.ViewerRTX`
       - Path-traced visualization on NVIDIA GPUs
       - Real-time display; frame capture
@@ -639,7 +639,7 @@ OpenGL Viewer
 ~~~~~~~~~~~~~
 
 Newton provides :class:`~newton.viewer.ViewerGL`, a simple OpenGL viewer for interactive real-time visualization of simulations.
-The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed, and a graphics driver that supports OpenGL 3.3 or newer.
+The viewer requires pyglet (version >= 2.1.6), imgui_bundle (version >= 1.92.0), and PyOpenGL (version >= 3.1.7) to be installed, and a graphics driver that supports OpenGL 3.3 or newer.
 
 .. code-block:: python
 
