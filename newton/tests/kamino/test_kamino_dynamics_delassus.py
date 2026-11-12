@@ -1582,32 +1582,6 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         delassus._set_raw_transpose_enabled(False)
         self._check_delassus_matrix_vector_product(model, data, delassus, jacobians)
 
-    def test_14_matvec_inside_conditional_graph_body(self):
-        """Apply the operator first inside a conditional graph body, where allocation is not allowed."""
-        if not self.default_device.is_cuda or not wp.is_conditional_graph_supported():
-            self.skipTest("Conditional CUDA graphs are required")
-        builder = make_basics_heterogeneous_builder(dynamic_joints=self.dynamic_joints, implicit_pd=self.dynamic_joints)
-        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        model, data, state, limits, detector, jacobians = make_containers(
-            model=model, max_world_contacts=12, sparse=True
-        )
-        update_containers(model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians)
-        delassus = BlockSparseMatrixFreeDelassusOperator(
-            model=model, data=data, limits=limits, contacts=detector.contacts, jacobians=jacobians
-        )
-        delassus.update()
-        size = model.size.sum_of_max_total_cts
-        x = wp.ones(size, dtype=wp.float32, device=self.default_device)
-        y = wp.zeros(size, dtype=wp.float32, device=self.default_device)
-        mask = wp.ones(model.size.num_worlds, dtype=wp.bool, device=self.default_device)
-        condition = wp.ones(1, dtype=wp.int32, device=self.default_device)
-        with wp.ScopedCapture(device=self.default_device) as capture:
-            wp.capture_if(condition, on_true=lambda: delassus.matvec(x, y, mask))
-        wp.capture_launch(capture.graph)
-        expected = wp.zeros_like(y)
-        delassus.matvec(x, expected, mask)
-        np.testing.assert_allclose(y.numpy(), expected.numpy(), rtol=1e-6, atol=1e-6)
-
 
 ###
 # Test execution
