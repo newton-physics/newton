@@ -3309,6 +3309,7 @@ class TestSCCSolver(NewtonTestCase):
         self.assertTrue(color_checked)
 
     def test_10_dr_legs_scc_tipped_contact_does_not_creep(self):
+        """Keep tipped contacts stable and release the reset example's graph safely."""
         if not self.device.is_cuda:
             self.skipTest("Dr Legs SCC tipped-contact regression uses the CUDA graph path")
 
@@ -3329,7 +3330,7 @@ class TestSCCSolver(NewtonTestCase):
         reset_config = SolverKamino.ResetConfig(base_pose=SolverKamino.ResetConfig.FromBaseQ(example.base_q))
         example.solver.reset(state=example.state_0, config=reset_config)
         example.solver.reset(state=example.state_1, config=reset_config)
-        example.capture()
+        # Reset updates the captured buffers in place; keep their owning graph alive.
 
         base_start = example.state_0.body_q.numpy()[0, :3].copy()
         contact_seen = False
@@ -3357,6 +3358,14 @@ class TestSCCSolver(NewtonTestCase):
         self.assertGreater(len(post_settle_penetration), 0)
         self.assertLess(float(np.percentile(post_settle_penetration, 95)), 0.0035)
         self.assertLess(float(np.linalg.norm(post_settle_xy[-1] - post_settle_xy[0])), 2.0e-4)
+
+        # Force graph teardown here so deferred CUDA errors cannot poison later tests.
+        import gc  # noqa: PLC0415
+
+        del example
+        gc.collect()
+        values = wp.array([[1.0, 2.0], [3.0, 4.0]], dtype=wp.float32, device=self.device)
+        np.testing.assert_array_equal(wp.clone(values[:, 0]).numpy(), [1.0, 3.0])
 
     def test_11_dr_legs_scc_contact_force_balances_weight(self):
         if not self.device.is_cuda:
