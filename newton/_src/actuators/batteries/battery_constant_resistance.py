@@ -142,24 +142,34 @@ class BatteryConstantResistance(BatteryBase):
         self.min_voltage = min_voltage
         """Lowest voltage under load [V], shape (B,)."""
         self._current = wp.zeros(
-            self.num_batteries, dtype=float, device=self.device, requires_grad=nominal_voltage.requires_grad
+            self.num_batteries,
+            dtype=float,
+            device=self.device,
+            requires_grad=nominal_voltage.requires_grad or resistance.requires_grad or min_voltage.requires_grad,
         )
         for name in ("nominal_voltage", "resistance", "min_voltage"):
             shape = getattr(self, name).shape
             if shape != (self.num_batteries,):
                 raise ValueError(f"{name} shape {shape} must be ({self.num_batteries},)")
 
-    def step(self, sim_control: Any) -> None:
+    def step(self, sim_control: Any, next_control: Any | None = None) -> None:
         """Drop each battery's voltage with the current of its actuators.
 
         Raises:
-            AttributeError: *sim_control* has no ``actuator_supply_current``
-                or ``actuator_supply_voltage``.
+            AttributeError: *sim_control* has no ``actuator_supply_current``,
+                or the written control no ``actuator_supply_voltage``.
             ValueError: One of these arrays is ``None``.
 
         See :meth:`BatteryBase.step` for the arguments.
         """
-        self._current.zero_()
+        actuator_current = _require_array(sim_control, "actuator_supply_current")
+        if self._current.requires_grad or actuator_current.requires_grad:
+            current = wp.zeros_like(self._current, requires_grad=True)
+        else:
+            current = self._current
+            current.zero_()
+        if next_control is None:
+            next_control = sim_control
         wp.launch(
             _battery_update_kernel,
             dim=self.num_batteries,
@@ -169,9 +179,9 @@ class BatteryConstantResistance(BatteryBase):
                 self.nominal_voltage,
                 self.resistance,
                 self.min_voltage,
-                _require_array(sim_control, "actuator_supply_current"),
+                actuator_current,
             ],
-            outputs=[self._current, _require_array(sim_control, "actuator_supply_voltage")],
+            outputs=[current, _require_array(next_control, "actuator_supply_voltage")],
             device=self.device,
         )
 
