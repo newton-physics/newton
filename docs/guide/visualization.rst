@@ -9,6 +9,8 @@ Viewers and Debugging
 Newton provides multiple viewer backends for live visualization, debugging,
 historical inspection, persistent recording, and external integrations.
 
+.. _deformable-visual-meshes:
+
 Deformable visual meshes
 ------------------------
 
@@ -17,8 +19,11 @@ Deformable visual meshes
 A deformable visual mesh is a triangle mesh that follows simulation elements
 without adding mass or collision geometry
 (:class:`~newton.geometry.DeformableVisualMesh`). It is separate from the
-deformable object records in :doc:`/concepts/deformable_objects`. Attach one
-to simulation particles with explicit particle indices:
+deformable object records in :doc:`/concepts/deformable_objects`. This guide
+shortens the name to *visual mesh*. Evaluating a mesh's current shape is
+*skinning*, so the viewer GUI calls these *skinned meshes*, and USD import
+calls the authored source a *graphics mesh*. Attach one to simulation
+particles with explicit particle indices:
 
 .. code-block:: python
 
@@ -136,13 +141,33 @@ spacing and layer placement also apply to skinned meshes.
 
 Update shared output before logging. Hidden meshes stop uploading geometry;
 showing them restores the latest evaluated points. Backend differences are
-listed below. :meth:`ModelBuilder.add_usd` does not import deformable visual
-bindings yet.
+listed below. :meth:`ModelBuilder.add_usd` can bind graphics meshes to imported
+deformables; see :ref:`usd-deformable-visual-import`.
 
 Pass per-vertex ``uvs`` and an image array or path as ``texture`` when adding a
-visual mesh. Replace the texture value to change it; editing pixels in place
-is not supported for these cached assets. Ordinary ``log_mesh()`` image updates
-keep their existing behavior. Skinned meshes keep their topology fixed.
+visual mesh. GL, USD, RTX, and Rerun viewers pick up a new ``mesh.texture``
+array or path when the mesh is next logged; set it to ``None`` to remove the
+texture. Editing an image in place or changing a file at the same path is not
+supported for these cached assets. :class:`~newton.viewer.ViewerFile` records
+the texture it sees when the model is recorded, and
+:class:`~newton.sensors.SensorCamera` loads textures once at construction. For
+ordinary ``log_mesh()`` meshes, GL, USD, and RTX remove a previously bound
+texture when a later call omits ``texture`` or ``uvs``. Skinned meshes keep
+their topology fixed.
+
+USD exports replacement image arrays to separate files. Unchanged arrays reuse
+their existing file. Material bindings are not time-sampled: the export uses
+the last assigned texture, not a texture animation. RTX updates the material
+binding after any in-flight render finishes, without replacing mesh geometry.
+RTX applies UVs supplied with a replacement image, including to its instances.
+Changing only UVs while reusing the same image object or file path is not
+supported.
+These updates are intended for occasional appearance changes, not video textures.
+Distinct image contents create separate PNG files. USD keeps those files next
+to the exported stage. RTX keeps them in its private temporary directory until
+the viewer closes, so many unique replacements can use substantial disk space
+during a session. Reuse a fixed set of image arrays or file paths for bounded
+texture variation.
 
 :class:`~newton.viewer.ViewerFile` records deformable visual meshes and
 simulation state without evaluating them. JSON and binary recordings rebuild
@@ -165,7 +190,8 @@ recordings still load into a compatible model with meshes.
        Each mesh copy uploads its own texture.
    * - USD
      - Exports
-     - Writes time-sampled meshes and one texture per mesh.
+     - Writes time-sampled geometry. Texture replacement updates the material
+       for the whole recording.
    * - RTX
      - Draws
      - Uses USD meshes and textures. When borrowing a stage, overlays start
@@ -192,6 +218,7 @@ For example, bind a triangle to a small cloth and evaluate its current points:
 
    import newton
    import newton.geometry
+   import numpy as np
    import warp as wp
 
    builder = newton.ModelBuilder()
@@ -205,8 +232,120 @@ For example, bind a triangle to a small cloth and evaluate its current points:
    )
    model = builder.finalize()
    visuals = newton.geometry.DeformableVisuals(model)
-   visuals.update(model.state())
+   state = model.state()
+   visuals.update(state)
    assert visuals.get_points(mesh_index).shape == (3,)
+
+.. _deformable-visual-camera-output:
+
+Camera sensor output
+~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   The camera's ``deformable_surface_mode`` option and its ``deformable_visuals=``
+   argument may change without a formal deprecation cycle.
+
+:class:`~newton.sensors.SensorCamera` evaluates visual meshes automatically during
+``update()``. It uses the current mesh for RGB, depth, normals, and albedo output.
+In ``shape_index_image`` a visual mesh reports the same triangle-mesh value as a
+simulation cloth; per-mesh ids are not available yet. Visual meshes follow
+``RenderConfig.enable_backface_culling`` like the simulation surface, so their back
+faces are hidden by default, whereas the viewers draw them from both sides. Both
+surfaces share one ray-traced mesh that keeps only the closest hit, so a culled
+back face also hides the deformable surfaces behind it, as for a folded cloth. All
+native binding types are supported: particles, triangles, tetrahedra, and rigid
+segments. Physics and collision geometry remain unchanged.
+
+Visual meshes can overlap the simulation surface or lie inside it. Drawing both
+may hide parts of the visual mesh. With culling on, a skin wound opposite to its
+cloth can leave a hole where its back face is the closest hit. The camera
+renders both by default, as the viewers do, and does not guess which simulation
+triangles a visual mesh covers. ``deformable_surface_mode`` selects the surfaces at
+construction: ``SensorCamera.DeformableSurfaceMode.VISUAL_ONLY`` leaves every
+simulation triangle out and ``SIMULATION_ONLY`` leaves the visual meshes out.
+Both surfaces share one ray-traced mesh, so this is a constructor argument
+rather than a render setting; construct a second camera for another view. Rigid
+shapes and standalone particles are unaffected, particles belonging to a
+left-out surface do not reappear as spheres, and
+``RenderConfig.enable_particles=False`` hides standalone particles too.
+
+The viewer switches ``show_triangles=True, show_deformable_visual_meshes=True``
+correspond to ``BOTH``; ``True, False`` corresponds to ``SIMULATION_ONLY``;
+and ``False, True`` corresponds to ``VISUAL_ONLY``. Unlike a viewer, the camera
+does not offer a mode that hides both surfaces.
+
+Texture files are loaded when the camera is constructed, including textures on
+visual meshes. A missing file can therefore fail construction even for depth-only
+output or when ``RenderConfig.enable_textures=False``. Pass
+``SensorCamera(model, load_textures=False)`` to skip loading all textures, for
+example when replaying a recording without its image files.
+
+By default, the camera skins visual points directly into its own buffer, in at
+most four launches however many worlds were replicated. It does not compute
+unused vertex normals. Create the camera once:
+
+.. testcode:: deformable-visual-mesh
+
+    from newton.sensors import SensorCamera
+
+    camera = SensorCamera(
+        model,
+        default_render_config=SensorCamera.RenderConfig(enable_textures=True),
+        deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
+    )
+
+Allocate the camera inputs once as well. Then render each frame from the current
+state:
+
+.. testcode:: deformable-visual-mesh
+
+    rays = camera.compute_camera_rays_pinhole(32, 32, camera_fov=np.deg2rad(45), device=model.device)
+    poses = wp.array([wp.transform(wp.vec3(0.5, 0.5, 3.0), wp.quat_identity())], dtype=wp.transform, device=model.device)
+    color = camera.allocate_image_color(1, 32, 32)
+    depth = camera.allocate_image_depth(1, 32, 32)
+
+    camera.update(state, poses, rays, color_image=color, depth_image=depth)
+
+If a viewer already needs evaluated visuals, both can reuse the result
+(:class:`~newton.viewer.ViewerNull` only stands in for a rendering viewer here):
+
+.. testcode:: deformable-visual-mesh
+
+    from newton.viewer import ViewerNull
+    viewer = ViewerNull()
+    viewer.set_model(model)
+
+    visuals = newton.geometry.DeformableVisuals(model)  # Allocate once.
+    viewer.set_deformable_visuals(visuals)
+
+    visuals.update(state)  # After each simulation step.
+    viewer.begin_frame(0.0)
+    viewer.log_state(state)
+    viewer.end_frame()
+    camera.update(state, poses, rays, color_image=color, depth_image=depth, deformable_visuals=visuals)
+
+Supplied output is consumed as-is. Update or replay it before rendering; the
+camera does not check its source state or freshness. It waits for the submitted
+visual update, then copies the points into its own buffer on the model device.
+On CUDA this is a GPU-to-GPU copy, not a CPU transfer. The camera does not repeat
+skinning. Finish consumption before overwriting shared output.
+
+The camera uploads topology, UVs, and textures during setup. After that it skins
+or copies visual points into its vertex buffer on the model device and
+refits the triangle BVH. CUDA models do not copy those vertices through the CPU.
+Warm up skinning and rendering before capturing them in a CUDA graph. Each mesh
+keeps its model world; viewer-only world offsets do not affect camera images.
+
+When no visual meshes are selected, simulation triangles keep using the
+supplied State's particle buffer. Switching to a different buffer rebuilds
+that mesh's BVH.
+
+UV textures can come from a file or an in-memory image. Configure them before
+creating the sensor; later texture changes require a new sensor, and
+``load_textures=False`` leaves visual meshes untextured like shape meshes. Texture alpha
+does not make the surface transparent. Untextured skins are white before
+lighting. The camera uses triangle normals, not the smooth normals used by some
+viewers. Cubic and triplanar texture projection are not supported for skinned meshes.
 
 .. _choosing-a-viewer:
 
@@ -500,7 +639,7 @@ OpenGL Viewer
 ~~~~~~~~~~~~~
 
 Newton provides :class:`~newton.viewer.ViewerGL`, a simple OpenGL viewer for interactive real-time visualization of simulations.
-The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed.
+The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed, and a graphics driver that supports OpenGL 3.3 or newer.
 
 .. code-block:: python
 
@@ -526,6 +665,15 @@ Call it each frame before stepping the solver:
 
     viewer.apply_forces(state)
     solver.step(model, state, ...)
+
+The picking behind right-click dragging is a :class:`~newton.viewer.Picking` controller, exposed as
+``viewer.picking``. Applications with their own input handling or renderer can create one directly,
+call :meth:`~newton.viewer.Picking.pick`, :meth:`~newton.viewer.Picking.update`, and
+:meth:`~newton.viewer.Picking.release` from their cursor events, and call
+:meth:`~newton.viewer.Picking.apply_force` before each solver step. To drive the target from a 3D input
+such as a gizmo, assign :attr:`~newton.viewer.Picking.pick_target` instead of calling ``update()``.
+Tune the spring through :attr:`~newton.viewer.Picking.pick_stiffness` and
+:attr:`~newton.viewer.Picking.pick_damping`, for example ``viewer.picking.pick_stiffness = 200.0``.
 
 :meth:`~newton.viewer.ViewerGL.is_key_down` queries whether a key is currently pressed.
 Keys can be specified as single-character strings (``'w'``), special key names (``'space'``, ``'escape'``), or pyglet key constants:
@@ -634,12 +782,13 @@ and cone heads; their ``width`` specifies the shaft radius in meters.
 This installs ``ovrtx`` 0.5.1.385782 or newer (the NVIDIA OVRTX renderer), ``ovstage`` 0.2.1.385922 or newer
 for runtime scene management, and ``usd-core``, in addition to ``pyglet`` for the window.
 
-ViewerRTX has been validated with the following renderer configuration:
+ViewerRTX has been validated with the following renderer configurations:
 
-- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency and GPU CI; Isaac Lab 3.0)
+- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency CI; Isaac Lab 3.0)
+- ``ovrtx==0.6.0.1791947691`` with ``ovstage==0.3.0.1791986420`` (locked GPU CI configuration)
 
-Only the exact configuration above is part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
-together; OVRTX 0.5.1 fails to start with OVStage 0.2.0.
+Only the exact pairs above are part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
+together to one of these pairs. Mixed release pairs are unvalidated; OVRTX 0.5.1 fails to start with OVStage 0.2.0.
 
 .. code-block:: python
 

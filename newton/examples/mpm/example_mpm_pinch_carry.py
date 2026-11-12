@@ -12,6 +12,18 @@ Run ``--viewer null --num-frames 480 --test`` for the full eight-second
 sequence at the default 60 frames per second. ``--travel-scale`` shortens the
 lift, carry, and lowering at unchanged speeds; at 0.25 the sequence lasts five
 seconds (300 frames).
+
+Success criteria:
+- Two pads close around the soft object, lift it, carry it sideways, and lower it to the ground.
+- The object remains gripped during lifting and carrying rather than falling out of the pads.
+- After the pads open, the object is released on the ground and remains finite without exploding.
+- Observe the complete eight-second sequence at the default settings.
+
+Runs:
+- `python -m newton.examples mpm_pinch_carry --num-frames 480`
+  - The grasped object is a soft cube.
+- `python -m newton.examples mpm_pinch_carry --shape sphere --num-frames 480`
+  - The grasped object is a soft sphere.
 """
 
 from __future__ import annotations

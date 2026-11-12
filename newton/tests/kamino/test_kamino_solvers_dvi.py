@@ -70,9 +70,8 @@ from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
-from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector
+from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector, get_matrix_block
 from newton.tests.kamino.utils.make import (
-    force_row_storage,
     make_containers,
     make_row_storage,
     make_test_problem_fourbar,
@@ -756,116 +755,6 @@ class TestDVISolver(NewtonTestCase):
             jacobians=jacobians,
         )
         self.assertIsNotNone(solver.data)
-
-    def test_01b_dvi_row_storage_matches_flat_storage(self):
-        """Match flat storage with per-world rows and mixed matrix layouts."""
-
-        def fixture(sparse: bool):
-            builder = basics.make_basics_heterogeneous_builder(ground=True)
-            model = ModelKamino.from_newton(builder.finalize(device=self.device, skip_validation_joints=True))
-            model, data, state, limits, detector, jacobians = make_containers(
-                model=model, max_world_contacts=16, sparse=sparse
-            )
-            update_containers(
-                model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians
-            )
-            return model, data, limits, detector.contacts, jacobians
-
-        def build(shared, sparse: bool):
-            model, data, limits, contacts, jacobians = shared
-            problem = DualProblem(
-                model=model,
-                data=data,
-                limits=limits,
-                contacts=contacts,
-                jacobians=jacobians,
-                solver=None if sparse else LLTBlockedSolver,
-                sparse=sparse,
-            )
-            problem.build(model=model, data=data, limits=limits, contacts=contacts, jacobians=jacobians)
-            return *shared, problem
-
-        def solve(setup, config: kamino_config.DVISolverConfig) -> DVISolver:
-            model, data, limits, contacts, jacobians, problem = setup
-            solver = DVISolver(
-                model=model,
-                data=data,
-                limits=limits,
-                contacts=contacts,
-                jacobians=jacobians,
-                problem=problem,
-                config=config,
-            )
-            solver.reset()
-            solver.coldstart()
-            solver.solve(problem)
-            return solver
-
-        cases = (
-            (False, "LLTB", "pgs", False),
-            (False, "LLTBRCM", "pgs", True),
-            (False, "LLTB", "apgd", True),
-            (True, "LLTB", "pgs", False),
-            (True, "LLTBRCM", "pgs", True),
-        )
-        exact = not self.device.is_cuda
-        # The 6144-element case keeps bilateral blocks flat and stores D and projected_D in rows.
-        for sparse, min_total in ((False, -1), (False, 6144), (True, -1)):
-            shared = fixture(sparse)
-            flat_setup = build(shared, sparse)
-            with force_row_storage(min_total):
-                row_setup = build(shared, sparse)
-            flat_problem, row_problem = flat_setup[-1], row_setup[-1]
-            for name, value in vars(flat_problem.data).items():
-                if isinstance(value, wp.array) and name not in ("D", "mio"):
-                    wp.copy(getattr(row_problem.data, name), value)
-            if not sparse:
-                matrices = make_row_storage(
-                    flat_problem.data.D.numpy(),
-                    flat_problem.data.mio.numpy(),
-                    np.square(flat_problem.data.maxdim.numpy()),
-                )
-                row_problem.data.D.assign(matrices)
-            for case_sparse, bilateral, unilateral, schur in cases:
-                if case_sparse != sparse:
-                    continue
-                if unilateral == "apgd" and self.device.is_cuda and not wp.is_conditional_graph_supported():
-                    continue
-                with self.subTest(
-                    sparse=sparse, min_total=min_total, bilateral=bilateral, unilateral=unilateral, schur=schur
-                ):
-                    config = kamino_config.DVISolverConfig(
-                        max_alternating_iterations=6,
-                        inequality_sweeps_per_iteration=2,
-                        tolerance=1e-6,
-                        regularization=1e-5,
-                        use_schur_complement=schur,
-                        unilateral_solver=unilateral,
-                        bilateral_solver_type=bilateral,
-                    )
-                    flat = solve(flat_setup, config)
-                    with force_row_storage(min_total):
-                        rows = solve(row_setup, config)
-                    bilateral_ndim = 2 if min_total < 0 else 1
-                    self.assertEqual(rows.data.bilateral_operator.mat.ndim, bilateral_ndim)
-                    self.assertEqual(rows._bilateral_solver.L.ndim, bilateral_ndim)
-                    if not sparse:
-                        self.assertEqual(row_setup[-1].data.D.ndim, 2)
-                        if schur and unilateral == "pgs":
-                            self.assertEqual(rows.data.state.projected_D.ndim, 2)
-                    for name in ("lambdas", "v_plus"):
-                        expected = getattr(flat.data.solution, name).numpy()
-                        actual = getattr(rows.data.solution, name).numpy()
-                        if exact:
-                            np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
-                        else:
-                            # CUDA PGS accumulates atomically in a scheduling-dependent order.
-                            np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=3e-6)
-                    flat_status, row_status = flat.data.status.numpy(), rows.data.status.numpy()
-                    if exact:
-                        self.assertEqual(row_status.tobytes(), flat_status.tobytes())
-                    else:
-                        np.testing.assert_array_equal(row_status["converged"], flat_status["converged"])
 
     def test_02_public_solver_step_with_dvi(self):
         builder = newton.ModelBuilder()
@@ -1667,8 +1556,8 @@ class TestDVISolver(NewtonTestCase):
         self.assertLess(float(status["r_b"]), 1e-6)
 
         ncts = int(problem.data.dim.numpy()[0])
-        original = problem.data.D.numpy()[: ncts * ncts].reshape(ncts, ncts)
-        projected = solver.data.state.projected_D.numpy()[: ncts * ncts].reshape(ncts, ncts)
+        original = get_matrix_block(0, problem.data.D.numpy(), [ncts])
+        projected = get_matrix_block(0, solver.data.state.projected_D.numpy(), [ncts])
         self.assertGreater(float(np.max(np.abs(projected[njc:, njc:] - original[njc:, njc:]))), 1e-6)
 
     @unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")
@@ -3792,7 +3681,7 @@ class TestDVISolver(NewtonTestCase):
                 i32([2]),
                 i32([0]),
                 wp.array(scaling, dtype=wp.float32, device=self.device),
-                wp.array(factor.ravel(), dtype=wp.float32, device=self.device),
+                wp.array(factor.reshape(1, -1), dtype=wp.float32, device=self.device),
                 i32(permutation),
                 True,
                 i32([0]),
@@ -4309,7 +4198,9 @@ class TestDVISolver(NewtonTestCase):
             sparse_jacobian=True,
             use_collision_detector=True,
             integrator="moreau",
-            constraints=kamino_config.ConstraintStabilizationConfig(gamma=0.01, delta=0.0),
+            constraints=kamino_config.ConstraintStabilizationConfig(
+                contact_recovery_time=time_step * (1.0 / 0.01 - 1.0), delta=0.0
+            ),
             dvi=kamino_config.DVISolverConfig(
                 max_alternating_iterations=8,
                 bilateral_solve_interval=1,
@@ -4516,10 +4407,19 @@ class TestDVISolver(NewtonTestCase):
         workspace = wp.zeros(len(couplings), dtype=wp.float32, device=self.device)
         response = wp.zeros_like(workspace)
         row_start = wp.zeros(len(scaling), dtype=wp.int32, device=self.device)
+        factor_rows = f32(make_row_storage(np.asarray(factors), matrix_offsets, np.square(joint_counts)))
+        factor_offsets = i32(np.zeros(len(joint_counts)))
         wp.launch(
             _find_bilateral_factor_row_start,
             dim=(5, max(joint_counts)),
-            inputs=[joints, i32(matrix_offsets), joints, i32(vector_offsets), f32(factors), row_start],
+            inputs=[
+                joints,
+                factor_offsets,
+                joints,
+                i32(vector_offsets),
+                factor_rows,
+                row_start,
+            ],
             device=self.device,
         )
         expected_starts = []
@@ -4533,11 +4433,11 @@ class TestDVISolver(NewtonTestCase):
             inputs=[
                 dims,
                 joints,
-                i32(matrix_offsets),
+                factor_offsets,
                 joints,
                 i32(vector_offsets),
                 f32(scaling),
-                f32(factors),
+                factor_rows,
                 i32(permutations),
                 True,
                 offsets,

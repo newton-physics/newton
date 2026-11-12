@@ -31,8 +31,13 @@ from .kernels import (
     _FUSED_BILATERAL_BLOCK,
     _FUSED_INEQUALITY_BLOCK,
     BILATERAL_FAILED_PIVOT_SHIFT,
+    _assemble_bilateral_contact_response,
+    _build_bilateral_rhs,
     _compute_dvi_desaxce_corrections,
+    _compute_dvi_solution_vectors,
     _compute_dvi_status_residuals,
+    _compute_dvi_unilateral_velocities,
+    _copy_bilateral_block,
     _initialize_dvi_status,
     _reset_dvi_solver_data,
     _reset_dvi_status,
@@ -40,14 +45,9 @@ from .kernels import (
     _scatter_bilateral_solution,
     _set_dvi_bilateral_active_dim,
     _set_dvi_direct_status_iterations,
+    _solve_bilateral_contact_response,
+    _solve_dvi_inequalities_colored_pgs,
     _unprecondition_dvi_solution,
-    make_assemble_bilateral_contact_response_kernel,
-    make_build_bilateral_rhs_kernel,
-    make_compute_dvi_solution_vectors_kernel,
-    make_compute_dvi_unilateral_velocities_kernel,
-    make_copy_bilateral_block_kernel,
-    make_solve_bilateral_contact_response_kernel,
-    make_solve_dvi_inequalities_colored_pgs_kernel,
 )
 from .sparse import (
     SparseDVIPath,
@@ -586,7 +586,7 @@ class DVISolver:
 
             # Evaluate the physical post-event velocity v_plus = D * lambda + v_f.
             wp.launch(
-                kernel=make_compute_dvi_solution_vectors_kernel(problem.data.D.ndim),
+                kernel=_compute_dvi_solution_vectors,
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     problem.data.dim,
@@ -804,7 +804,7 @@ class DVISolver:
         )
         self._prepare_inequality_coloring(problem)
         wp.launch(
-            kernel=make_compute_dvi_unilateral_velocities_kernel(problem.data.D.ndim),
+            kernel=_compute_dvi_unilateral_velocities,
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[
                 problem.data.dim,
@@ -825,7 +825,7 @@ class DVISolver:
         # Inequality-only solves need no host work between PGS blocks.
         for block_iteration in (_FUSED_INEQUALITY_BLOCK,):
             wp.launch(
-                kernel=make_solve_dvi_inequalities_colored_pgs_kernel(problem.data.D.ndim),
+                kernel=_solve_dvi_inequalities_colored_pgs,
                 dim=self._size.num_worlds * threads_per_world,
                 inputs=[
                     problem.data.dim,
@@ -845,7 +845,7 @@ class DVISolver:
                     problem.data.bound_upper,
                     problem.data.D,
                     problem.data.P,
-                    problem.data.v_b,
+                    problem.data.v_b_friction,
                     block_iteration,
                     state.inequality_num_colors,
                     state.inequality_ids_by_color,
@@ -872,7 +872,7 @@ class DVISolver:
         operator = self._data.bilateral_operator
         state = self._data.state
         wp.launch(
-            kernel=make_build_bilateral_rhs_kernel(problem.data.D.ndim),
+            kernel=_build_bilateral_rhs,
             dim=(self._size.num_worlds, self._size.max_of_num_bilateral_joint_cts),
             inputs=[
                 problem.data.dim,
@@ -914,7 +914,7 @@ class DVISolver:
         operator = self._data.bilateral_operator
         operator.info.dim = self._data.bilateral_dim
         wp.launch(
-            kernel=make_copy_bilateral_block_kernel(problem.data.D.ndim, operator.mat.ndim),
+            kernel=_copy_bilateral_block,
             dim=(
                 self._size.num_worlds,
                 self._size.max_of_num_bilateral_joint_cts * self._size.max_of_num_bilateral_joint_cts,
@@ -959,7 +959,7 @@ class DVISolver:
         threads_per_world = 64 if self.device.is_cuda else 1
         for block_iteration in range(self._max_alternating_iterations):
             wp.launch(
-                kernel=make_compute_dvi_unilateral_velocities_kernel(problem.data.D.ndim),
+                kernel=_compute_dvi_unilateral_velocities,
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     problem.data.dim,
@@ -977,7 +977,7 @@ class DVISolver:
                 device=self.device,
             )
             wp.launch(
-                kernel=make_solve_dvi_inequalities_colored_pgs_kernel(problem.data.D.ndim),
+                kernel=_solve_dvi_inequalities_colored_pgs,
                 dim=self._size.num_worlds * threads_per_world,
                 inputs=[
                     problem.data.dim,
@@ -997,7 +997,7 @@ class DVISolver:
                     problem.data.bound_upper,
                     problem.data.D,
                     problem.data.P,
-                    problem.data.v_b,
+                    problem.data.v_b_friction,
                     block_iteration,
                     self._data.state.inequality_num_colors,
                     self._data.state.inequality_ids_by_color,
@@ -1046,9 +1046,7 @@ class DVISolver:
         unilateral_begin = 0
         unilateral_count = self._max_unilateral_rows
         wp.launch(
-            kernel=make_solve_bilateral_contact_response_kernel(
-                problem.data.D.ndim, self._bilateral_solver.L.ndim, self._data.state.projected_D.ndim
-            ),
+            kernel=_solve_bilateral_contact_response,
             dim=(self._size.num_worlds, unilateral_count),
             inputs=[
                 problem.data.dim,
@@ -1069,9 +1067,7 @@ class DVISolver:
             device=self.device,
         )
         wp.launch(
-            kernel=make_assemble_bilateral_contact_response_kernel(
-                problem.data.D.ndim, self._data.state.projected_D.ndim
-            ),
+            kernel=_assemble_bilateral_contact_response,
             dim=(
                 self._size.num_worlds,
                 self._max_unilateral_rows,
@@ -1105,7 +1101,7 @@ class DVISolver:
         self._prepare_inequality_coloring(problem)
         threads_per_world = 64 if self.device.is_cuda else 1
         wp.launch(
-            kernel=make_compute_dvi_unilateral_velocities_kernel(problem.data.D.ndim),
+            kernel=_compute_dvi_unilateral_velocities,
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[
                 problem.data.dim,
@@ -1123,7 +1119,7 @@ class DVISolver:
             device=self.device,
         )
         wp.launch(
-            kernel=make_solve_dvi_inequalities_colored_pgs_kernel(self._data.state.projected_D.ndim),
+            kernel=_solve_dvi_inequalities_colored_pgs,
             dim=self._size.num_worlds * threads_per_world,
             inputs=[
                 problem.data.dim,
@@ -1143,7 +1139,7 @@ class DVISolver:
                 problem.data.bound_upper,
                 self._data.state.projected_D,
                 problem.data.P,
-                problem.data.v_b,
+                problem.data.v_b_friction,
                 _FUSED_BILATERAL_BLOCK,
                 self._data.state.inequality_num_colors,
                 self._data.state.inequality_ids_by_color,

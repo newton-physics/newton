@@ -22,6 +22,7 @@ import warp as wp
 
 from .....core.types import override
 from . import conjugate, factorize
+from .blas import zero_dense_blocks
 from .conjugate_fused import MAX_BLOCKS_PER_ROW, build_row_index, build_transpose_index, make_fused_cr_kernel
 from .core import DenseLinearOperatorData, DenseSquareMultiLinearInfo, make_dtype_tolerance, validate_dense_matrix_shape
 from .sparse_matrix import (
@@ -475,8 +476,8 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
         **kwargs: dict[str, Any],
     ):
         # Declare LLT-specific internal data
-        self._L: wp.array[ScalarType] | None = None
-        """A flat array containing the Cholesky factorization of each matrix block."""
+        self._L: wp.array2d[ScalarType] | None = None
+        """One row containing the Cholesky factor of each matrix block."""
         self._y: wp.array[ScalarType] | None = None
         """A flat array containing the intermediate results for the solve operation."""
 
@@ -496,7 +497,7 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
     ###
 
     @property
-    def L(self) -> wp.array[ScalarType]:
+    def L(self) -> wp.array2d[ScalarType]:
         if self._L is None:
             raise ValueError("The factorization array has not been allocated!")
         return self._L
@@ -523,8 +524,7 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
 
         # Allocate the Cholesky factorization matrix and the
         # intermediate result buffer on the specified device
-        matrix_shape = A.info.matrix_shape if A.info.matrix_shape != (0,) else (A.info.total_mat_size,)
-        matrix_shape = A.mat.shape if A.mat is not None else matrix_shape
+        matrix_shape = A.mat.shape if A.mat is not None else A.info.matrix_shape
         matrix_dtype = A.mat.dtype if A.mat is not None else self._dtype
         with wp.ScopedDevice(self._device):
             validate_dense_matrix_shape(matrix_shape, matrix_dtype)
@@ -533,12 +533,13 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
 
     @override
     def _reset_impl(self) -> None:
-        self._L.zero_()
+        info = self._operator.info
+        zero_dense_blocks(self._L, info.dim, info.dim, info.mio, info.max_dimension**2)
         self._y.zero_()
         self._has_factors = False
 
     @override
-    def _factorize_impl(self, A: wp.array[ScalarType]) -> None:
+    def _factorize_impl(self, A: wp.array2d[ScalarType]) -> None:
         factorize.llt_sequential_factorize(
             num_blocks=self._operator.info.num_blocks,
             dim=self._operator.info.dim,
@@ -548,7 +549,7 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
         )
 
     @override
-    def _reconstruct_impl(self, A: wp.array[ScalarType]) -> None:
+    def _reconstruct_impl(self, A: wp.array2d[ScalarType]) -> None:
         raise NotImplementedError("LLT matrix reconstruction is not yet implemented.")
 
     @override
@@ -630,8 +631,8 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             **kwargs: Additional arguments forwarded to :class:`DirectSolver`.
         """
         # Declare LLT-specific internal data
-        self._L: wp.array[ScalarType] | None = None
-        """A flat array containing the Cholesky factorization of each matrix block."""
+        self._L: wp.array2d[ScalarType] | None = None
+        """One row containing the Cholesky factor of each matrix block."""
         self._y: wp.array[ScalarType] | None = None
         """A flat array containing the intermediate results for the solve operation."""
         self._retry_dim: wp.array[wp.int32] | None = None
@@ -666,7 +667,7 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
     ###
 
     @property
-    def L(self) -> wp.array[ScalarType]:
+    def L(self) -> wp.array2d[ScalarType]:
         if self._L is None:
             raise ValueError("The factorization array has not been allocated!")
         return self._L
@@ -693,15 +694,8 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
 
         # Allocate the Cholesky factorization matrix and the
         # intermediate result buffer on the specified device
-        matrix_shape = A.info.matrix_shape if A.info.matrix_shape != (0,) else (A.info.total_mat_size,)
-        matrix_shape = A.mat.shape if A.mat is not None else matrix_shape
+        matrix_shape = A.mat.shape if A.mat is not None else A.info.matrix_shape
         matrix_dtype = A.mat.dtype if A.mat is not None else self._dtype
-        array_ndim = len(matrix_shape)
-        self._factorize_kernel = factorize.make_llt_blocked_factorize_kernel(self._factorize_block_size, array_ndim)
-        self._solve_kernel = factorize.make_llt_blocked_solve_kernel(self._solve_block_size, array_ndim)
-        self._solve_inplace_kernel = factorize.make_llt_blocked_solve_inplace_kernel(self._solve_block_size, array_ndim)
-        self._flag_failed_kernel = factorize.make_flag_failed_llt_factors_kernel(array_ndim)
-        self._shift_failed_kernel = factorize.make_shift_failed_llt_factors_kernel(array_ndim)
         with wp.ScopedDevice(self._device):
             validate_dense_matrix_shape(matrix_shape, matrix_dtype)
             self._L = wp.zeros_like(A.mat) if A.mat is not None else wp.zeros(matrix_shape, dtype=matrix_dtype)
@@ -710,12 +704,13 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
 
     @override
     def _reset_impl(self) -> None:
-        self._L.zero_()
+        info = self._operator.info
+        zero_dense_blocks(self._L, info.dim, info.dim, info.mio, info.max_dimension**2)
         self._y.zero_()
         self._has_factors = False
 
     @override
-    def _factorize_impl(self, A: wp.array[ScalarType]) -> None:
+    def _factorize_impl(self, A: wp.array2d[ScalarType]) -> None:
         factorize.llt_blocked_factorize(
             kernel=self._factorize_kernel,
             num_blocks=self._operator.info.num_blocks,
@@ -732,13 +727,13 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             self._retry_dim.zero_()
             retry_shape = (info.num_blocks, int(info.max_dimension))
             wp.launch(
-                self._flag_failed_kernel,
+                factorize.flag_failed_llt_factors,
                 dim=retry_shape,
                 inputs=[info.dim, info.dim, info.mio, self._L, self._retry_dim],
                 device=self._device,
             )
             wp.launch(
-                self._shift_failed_kernel,
+                factorize.shift_failed_llt_factors,
                 dim=retry_shape,
                 inputs=[info.dim, info.mio, self._retry_dim, self._failed_pivot_shift, A],
                 device=self._device,
@@ -754,14 +749,14 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             )
             # Unlike the permuted copy that LLTBRCM factorizes, A belongs to the caller.
             wp.launch(
-                self._shift_failed_kernel,
+                factorize.shift_failed_llt_factors,
                 dim=retry_shape,
                 inputs=[info.dim, info.mio, self._retry_dim, -self._failed_pivot_shift, A],
                 device=self._device,
             )
 
     @override
-    def _reconstruct_impl(self, A: wp.array[ScalarType]) -> None:
+    def _reconstruct_impl(self, A: wp.array2d[ScalarType]) -> None:
         raise NotImplementedError("LLT matrix reconstruction is not yet implemented.")
 
     @override
@@ -900,7 +895,7 @@ class ConjugateGradientSolver(IterativeSolver[ScalarType, IndexType]):
         if self._operator is None:
             raise ValueError("Jacobi preconditioner requires a DenseLinearOperatorData operator.")
         wp.launch(
-            conjugate.make_jacobi_preconditioner_kernel(self._operator.mat.ndim, self._dtype),
+            conjugate.make_jacobi_preconditioner,
             dim=(self._num_worlds, self._max_dim),
             inputs=[
                 self._operator.mat,
@@ -1012,7 +1007,7 @@ class ConjugateResidualSolver(IterativeSolver[ScalarType, IndexType]):
         if self._operator is None:
             raise ValueError("Jacobi preconditioner requires a DenseLinearOperatorData operator.")
         wp.launch(
-            conjugate.make_jacobi_preconditioner_kernel(self._operator.mat.ndim, self._dtype),
+            conjugate.make_jacobi_preconditioner,
             dim=(self._num_worlds, self._max_dim),
             inputs=[
                 self._operator.mat,
@@ -1156,90 +1151,8 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
     def _solve_inplace_impl(self, x: wp.array[wp.float32], **kwargs: dict[str, Any]) -> None:
         self._solve_impl(x, x, **kwargs)
 
-    def _refresh_combined_regularization(self, op) -> wp.array[wp.float32]:
-        # Mirror BlockSparseMatrixFreeDelassusOperator.update()'s regularization step (eta plus
-        # armature inv_m_j and effort inv_m_a) without assembling any Jacobian copy. Uses the raw
-        # Jacobian's row_start.
-        if op._combined_regularization is None:
-            return op._eta
-
-        from ..dynamics.delassus import (  # noqa: PLC0415
-            _add_armature_regularization_preconditioned_sparse,
-            _add_armature_regularization_sparse,
-            _add_effort_regularization_preconditioned_sparse,
-            _add_effort_regularization_sparse,
-        )
-
-        model = op._model
-        data = op._data
-        device = op.device
-        row_start = op.constraint_jacobian.row_start
-        if op._eta is not None:
-            wp.copy(op._combined_regularization, op._eta)
-        else:
-            op._combined_regularization.zero_()
-
-        if op._preconditioner is None:
-            if model.size.sum_of_num_dynamic_joint_cts > 0:
-                wp.launch(
-                    _add_armature_regularization_sparse,
-                    dim=(op.num_matrices, model.size.max_of_num_dynamic_joint_cts),
-                    inputs=[
-                        model.info.num_joint_dynamic_cts,
-                        model.info.joint_dynamic_cts_offset,
-                        row_start,
-                        data.joints.inv_m_j,
-                        op._combined_regularization,
-                    ],
-                    device=device,
-                )
-            if model.size.sum_of_num_effort_joint_cts > 0:
-                wp.launch(
-                    _add_effort_regularization_sparse,
-                    dim=(op.num_matrices, model.size.max_of_num_effort_joint_cts),
-                    inputs=[
-                        model.info.num_joint_effort_cts,
-                        model.info.joint_effort_cts_offset,
-                        model.info.joint_bounded_cts_group_offset,
-                        model.info.num_joint_friction_cts,
-                        row_start,
-                        data.joints.inv_m_a,
-                        op._combined_regularization,
-                    ],
-                    device=device,
-                )
-        else:
-            if model.size.sum_of_num_dynamic_joint_cts > 0:
-                wp.launch(
-                    _add_armature_regularization_preconditioned_sparse,
-                    dim=(op.num_matrices, model.size.max_of_num_dynamic_joint_cts),
-                    inputs=[
-                        model.info.num_joint_dynamic_cts,
-                        model.info.joint_dynamic_cts_offset,
-                        data.joints.inv_m_j,
-                        row_start,
-                        op._preconditioner,
-                        op._combined_regularization,
-                    ],
-                    device=device,
-                )
-            if model.size.sum_of_num_effort_joint_cts > 0:
-                wp.launch(
-                    _add_effort_regularization_preconditioned_sparse,
-                    dim=(op.num_matrices, model.size.max_of_num_effort_joint_cts),
-                    inputs=[
-                        model.info.num_joint_effort_cts,
-                        model.info.joint_effort_cts_offset,
-                        model.info.joint_bounded_cts_group_offset,
-                        model.info.num_joint_friction_cts,
-                        data.joints.inv_m_a,
-                        row_start,
-                        op._preconditioner,
-                        op._combined_regularization,
-                    ],
-                    device=device,
-                )
-        return op._combined_regularization
+    def _refresh_combined_regularization(self, op) -> wp.array[wp.float32] | None:
+        return op._refresh_combined_regularization()
 
     def prepare_solve(self) -> None:
         """Rebuild the per-step index structures and combined regularization, if the operator was

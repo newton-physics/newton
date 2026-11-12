@@ -129,7 +129,7 @@ class DVIState:
         self.inequality_group_starts: wp.array[int32] | None = None
         self.inequality_tangent_cross: wp.array[float32] | None = None
         self.inequality_projected_diagonal: wp.array[float32] | None = None
-        self.projected_D: wp.array[float32] | wp.array2d[float32] | None = None
+        self.projected_D: wp.array2d[float32] | None = None
         self.projected_mio: wp.array[int32] | None = None
         self.bilateral_coupling: wp.array[float32] | None = None
         self.bilateral_response_mio: wp.array[int32] | None = None
@@ -165,12 +165,11 @@ class DVIState:
         self.projected_mio = wp.zeros(max(1, size.num_worlds), dtype=int32)
 
     def allocate_dense_projection(self, size: SizeKamino) -> None:
-        """Allocate packed projected Delassus matrices once."""
+        """Allocate one projected Delassus matrix row per world."""
         if self.projected_D is None:
             projected_stride = max(1, size.max_of_max_total_cts * size.max_of_max_total_cts)
-            shape, offsets = dense_matrix_layout([projected_stride] * size.num_worlds)
+            shape, _ = dense_matrix_layout([projected_stride] * size.num_worlds)
             validate_dense_matrix_shape(shape, float32)
-            self.projected_mio = wp.array(offsets, dtype=int32)
             self.projected_D = wp.zeros(shape, dtype=float32)
 
     def allocate_sparse_projection(

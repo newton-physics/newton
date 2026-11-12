@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import functools
-from functools import cache
 from typing import Any
 
 import warp as wp
@@ -25,6 +24,7 @@ __all__ = [
     "block_sparse_transpose_matvec",
     "dense_gemv",
     "diag_gemv",
+    "zero_dense_blocks",
 ]
 
 ###
@@ -39,60 +39,51 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ##
 
 
-@cache
-def make_mult_left_right_diag_matrix_with_matrix_kernel(array_ndim: int = 1):
-    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
+@wp.kernel
+def _mult_left_right_diag_matrix_with_matrix(
+    # Inputs:
+    dim: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    D: wp.array[wp.float32],
+    X_storage: wp.array2d[wp.float32],
+    # Outputs:
+    Y_storage: wp.array2d[wp.float32],
+):
+    # Retrieve the thread indices
+    wid, tid = wp.tid()
+    X = X_storage[wid]
+    Y = Y_storage[wid]
 
-    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
-    def _mult_left_right_diag_matrix_with_matrix(
-        # Inputs:
-        dim: wp.array[wp.int32],
-        mio: wp.array[wp.int32],
-        vio: wp.array[wp.int32],
-        D: wp.array[wp.float32],
-        X_storage: MatrixType0,
-        # Outputs:
-        Y_storage: MatrixType0,
-    ):
-        # Retrieve the thread indices
-        wid, tid = wp.tid()
-        X = X_storage[wid] if wp.static(MatrixType0.ndim == 2) else X_storage
-        Y = Y_storage[wid] if wp.static(MatrixType0.ndim == 2) else Y_storage
+    # Retrieve the number of active dimensions in the world
+    n = dim[wid]
 
-        # Retrieve the number of active dimensions in the world
-        n = dim[wid]
+    # Compute i (row) and j (col) indices from the tid
+    i = tid // n
+    j = tid % n
 
-        # Compute i (row) and j (col) indices from the tid
-        i = tid // n
-        j = tid % n
+    # Skip if indices exceed the problem size
+    if i >= n or j >= n:
+        return
 
-        # Skip if indices exceed the problem size
-        if i >= n or j >= n:
-            return
+    # Retrieve the matrix index offset of the world
+    m_0 = mio[wid]
 
-        # Retrieve the matrix index offset of the world
-        m_0 = mio[wid]
+    # Retrieve the vector index offset of the world
+    v_0 = vio[wid]
 
-        # Retrieve the vector index offset of the world
-        v_0 = vio[wid]
+    # Compute the global index of the matrix entry
+    m_ij = m_0 + n * i + j
 
-        # Compute the global index of the matrix entry
-        m_ij = m_0 + n * i + j
+    # Retrieve the ij entry of the input matrix
+    X_ij = X[m_ij]
 
-        # Retrieve the ij entry of the input matrix
-        X_ij = X[m_ij]
+    # Retrieve the i,j entries of the diagonal matrix
+    D_i = D[v_0 + i]
+    D_j = D[v_0 + j]
 
-        # Retrieve the i,j entries of the diagonal matrix
-        D_i = D[v_0 + i]
-        D_j = D[v_0 + j]
-
-        # Compute the i,j entry of the output matrix
-        Y[m_ij] = D_i * D_j * X_ij
-
-    return _mult_left_right_diag_matrix_with_matrix
-
-
-_mult_left_right_diag_matrix_with_matrix = make_mult_left_right_diag_matrix_with_matrix_kernel()
+    # Compute the i,j entry of the output matrix
+    Y[m_ij] = D_i * D_j * X_ij
 
 
 @wp.kernel
@@ -172,6 +163,19 @@ def _make_masked_zero_kernel_2d(dtype: Any):
         x[row_id, coeff_id] = dtype(0.0)
 
     return masked_zero_kernel_2d
+
+
+@wp.kernel
+def _zero_dense_blocks(
+    rows: wp.array[wp.int32],
+    cols: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    stride: wp.int32,
+    X: wp.array2d[wp.float32],
+):
+    bid, tid = wp.tid()
+    for i in range(tid, rows[bid] * cols[bid], stride):
+        X[bid, mio[bid] + i] = 0.0
 
 
 @functools.cache
@@ -797,48 +801,39 @@ def _diag_gemv_kernel(
     y[idx] = s
 
 
-@cache
-def make_dense_gemv_kernel(array_ndim: int = 1):
-    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
+@wp.kernel
+def _dense_gemv_kernel(
+    x: wp.array[wp.float32],
+    y: wp.array[wp.float32],
+    A_storage: wp.array2d[wp.float32],
+    active_dims: wp.array[wp.int32],
+    world_active: wp.array[wp.bool],
+    alpha: wp.float32,
+    beta: wp.float32,
+    mio: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    tile_size: int,
+):
+    """Computes y[w] = alpha * (A[w] @ x[w]) + beta * y[w] in-place for each world w."""
+    world, row, lane = wp.tid()
+    A = A_storage[world]
+    assert world < len(active_dims)
+    dim = active_dims[world]
+    if not world_active[world] or row >= dim:
+        return
 
-    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
-    def _dense_gemv_kernel(
-        x: wp.array[wp.float32],
-        y: wp.array[wp.float32],
-        A_storage: MatrixType0,
-        active_dims: wp.array[wp.int32],
-        world_active: wp.array[wp.bool],
-        alpha: wp.float32,
-        beta: wp.float32,
-        mio: wp.array[wp.int32],
-        vio: wp.array[wp.int32],
-        tile_size: int,
-    ):
-        """Computes y[w] = alpha * (A[w] @ x[w]) + beta * y[w] in-place for each world w."""
-        world, row, lane = wp.tid()
-        A = A_storage[world] if wp.static(MatrixType0.ndim == 2) else A_storage
-        assert world < len(active_dims)
-        dim = active_dims[world]
-        if not world_active[world] or row >= dim:
-            return
-
-        row_stride = active_dims[world]
-        a_offset = mio[world]
-        v_offset = vio[world]
-        zero = type(alpha)(0)
-        s = zero
-        if alpha != zero:
-            for col in range(lane, dim, tile_size):
-                s += A[a_offset + row * row_stride + col] * x[v_offset + col]
-        row_tile = wp.tile_sum(wp.tile(s * alpha))
-        if beta != zero:
-            row_tile += beta * wp.tile_load(y, shape=1, offset=v_offset + row)
-        wp.tile_store(y, row_tile, offset=v_offset + row)
-
-    return _dense_gemv_kernel
-
-
-_dense_gemv_kernel = make_dense_gemv_kernel()
+    row_stride = active_dims[world]
+    a_offset = mio[world]
+    v_offset = vio[world]
+    zero = type(alpha)(0)
+    s = zero
+    if alpha != zero:
+        for col in range(lane, dim, tile_size):
+            s += A[a_offset + row * row_stride + col] * x[v_offset + col]
+    row_tile = wp.tile_sum(wp.tile(s * alpha))
+    if beta != zero:
+        row_tile += beta * wp.tile_load(y, shape=1, offset=v_offset + row)
+    wp.tile_store(y, row_tile, offset=v_offset + row)
 
 
 @functools.cache
@@ -1094,7 +1089,7 @@ def diag_gemv(
 
 
 def dense_gemv(
-    A: wp.array[wp.float32],
+    A: wp.array2d[wp.float32],
     x: wp.array[wp.float32],
     y: wp.array[wp.float32],
     active_dims: wp.array[wp.int32],
@@ -1110,7 +1105,7 @@ def dense_gemv(
     Launch kernel for dense matrix gemv: y = alpha * A @ x + beta * y
 
     Args:
-        A: Dense matrices stored as flat 1D array.
+        A: Dense matrix blocks stored one per row.
         x: Input vectors, flat 1D.
         y: Output vectors, flat 1D, modified in-place.
         active_dims: Active dimension per world.
@@ -1127,11 +1122,33 @@ def dense_gemv(
     if not x.device.is_cuda:
         block_dim = 1
     wp.launch(
-        make_dense_gemv_kernel(A.ndim),
+        _dense_gemv_kernel,
         dim=(n_worlds, max_dim, block_dim),
         inputs=[x, y, A, active_dims, world_active, dtype(alpha), dtype(beta), mio, vio, block_dim],
         device=x.device,
         block_dim=block_dim,
+    )
+
+
+def zero_dense_blocks(
+    X: wp.array2d[wp.float32],
+    rows: wp.array[wp.int32],
+    cols: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    max_block_size: int,
+):
+    """Clear active matrix entries without touching unused capacity or row padding."""
+    num_blocks = rows.shape[0]
+    if num_blocks == 0 or max_block_size <= 0:
+        return
+    # Spread a fixed thread budget across blocks in whole warps.
+    threads = min(-(-(1 << 22) // num_blocks), max_block_size)
+    threads = max(32, -(-threads // 32) * 32)
+    wp.launch(
+        _zero_dense_blocks,
+        dim=(num_blocks, threads),
+        inputs=[rows, cols, mio, threads, X],
+        device=X.device,
     )
 
 

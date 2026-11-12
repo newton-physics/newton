@@ -14,7 +14,14 @@ import warp as wp
 import newton
 from newton._src.geometry.collision_core import post_process_minkowski_only
 from newton._src.geometry.contact_data import ContactData
-from newton._src.geometry.multicontact import create_build_manifold
+from newton._src.geometry.multicontact import (
+    EPS,
+    IncrementalPlaneTracker,
+    _SamplePoints,
+    add_contact_feature_point,
+    create_build_manifold,
+    update_incremental_plane_tracker,
+)
 from newton._src.geometry.support_function import GenericShapeData, SupportMapDataProvider, support_map
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -24,48 +31,63 @@ def test_box_contact_nearby_face(test, device, *, split=False):
     half = (0.0126257, 0.0126257, 0.0252514)
     mesh = newton.Mesh.create_box(*half, duplicate_vertices=False, compute_inertia=False)
     rotations = (wp.quat_identity(), wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7))
-    cases = product((0.03, 1.0), (False, True), (False, True), rotations, (0.0, 0.17), (0.2326, 0.22, 0.216, 0.2552494))
-    for thickness, use_mesh, swap, rotation, tilt, height in cases:
+    builder = newton.ModelBuilder()
+    cases = []
+    # One world per case keeps the pairs independent while sharing a single collide call.
+    for thickness, use_mesh, swap, rotation, tilt, height in product(
+        (0.03, 1.0), (False, True), (False, True), rotations, (0.0, 0.17), (0.2326, 0.22, 0.216, 0.2552494)
+    ):
+        builder.begin_world()
+        frame = wp.transform(wp.vec3(0.0), rotation)
+        table_pose = frame * wp.transform(wp.vec3(0.585, 0.0, 0.23 - thickness / 2), wp.quat_identity())
+        object_pose = frame * wp.transform(
+            wp.vec3(0.735, -0.35, height), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), tilt)
+        )
+        body = builder.add_body(xform=object_pose)
+        table_shape = object_shape = -1
+        for is_table in (False, True) if swap else (True, False):
+            if is_table:
+                table_shape = builder.add_shape_box(
+                    body=-1,
+                    xform=table_pose,
+                    hx=0.3675,
+                    hy=0.61,
+                    hz=thickness / 2,
+                    cfg=builder.ShapeConfig(gap=0.01),
+                )
+            elif use_mesh:
+                object_shape = builder.add_shape_convex_hull(body=body, mesh=mesh, cfg=builder.ShapeConfig(gap=0.001))
+            else:
+                object_shape = builder.add_shape_box(
+                    body=body, hx=half[0], hy=half[1], hz=half[2], cfg=builder.ShapeConfig(gap=0.001)
+                )
+        builder.end_world()
+        cases.append(
+            (table_shape, object_shape, table_pose, object_pose, thickness, use_mesh, swap, rotation, tilt, height)
+        )
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    test.assertEqual(pipeline.narrow_phase.split_gjk_mpr, split)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    points = [contacts.rigid_contact_point0.numpy()[:count], contacts.rigid_contact_point1.numpy()[:count]]
+    matched = 0
+    for table_shape, object_shape, table_pose, object_pose, thickness, use_mesh, swap, rotation, tilt, height in cases:
         with test.subTest(thickness=thickness, mesh=use_mesh, swap=swap, rotation=rotation, tilt=tilt, height=height):
-            frame = wp.transform(wp.vec3(0.0), rotation)
-            table_pose = frame * wp.transform(wp.vec3(0.585, 0.0, 0.23 - thickness / 2), wp.quat_identity())
-            object_pose = frame * wp.transform(
-                wp.vec3(0.735, -0.35, height), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), tilt)
-            )
-            builder = newton.ModelBuilder()
-            body = builder.add_body(xform=object_pose)
-            table_shape = -1
-            for is_table in (False, True) if swap else (True, False):
-                if is_table:
-                    table_shape = builder.add_shape_box(
-                        body=-1,
-                        xform=table_pose,
-                        hx=0.3675,
-                        hy=0.61,
-                        hz=thickness / 2,
-                        cfg=builder.ShapeConfig(gap=0.01),
-                    )
-                elif use_mesh:
-                    builder.add_shape_convex_hull(body=body, mesh=mesh, cfg=builder.ShapeConfig(gap=0.001))
-                else:
-                    builder.add_shape_box(
-                        body=body, hx=half[0], hy=half[1], hz=half[2], cfg=builder.ShapeConfig(gap=0.001)
-                    )
-            model = builder.finalize(device)
-            pipeline = newton.CollisionPipeline(model)
-            test.assertEqual(pipeline.narrow_phase.split_gjk_mpr, split)
-            contacts = pipeline.contacts()
-            pipeline.collide(model.state(), contacts)
-            count = int(contacts.rigid_contact_count.numpy()[0])
-            test.assertGreater(count, 0)
-            normals = contacts.rigid_contact_normal.numpy()[:count]
-            shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+            pair = np.minimum(shape0, shape1) == min(table_shape, object_shape)
+            pair &= np.maximum(shape0, shape1) == max(table_shape, object_shape)
+            indices = np.flatnonzero(pair)
+            matched += len(indices)
+            test.assertGreater(len(indices), 0)
             upward = np.asarray(wp.quat_rotate(rotation, wp.vec3(0.0, 0.0, 1.0)))
-            signs = np.where(shape0 == table_shape, 1.0, -1.0)
-            np.testing.assert_allclose(normals, signs[:, None] * upward, atol=1.0e-4)
-            points = [contacts.rigid_contact_point0.numpy()[:count], contacts.rigid_contact_point1.numpy()[:count]]
+            signs = np.where(shape0[indices] == table_shape, 1.0, -1.0)
+            np.testing.assert_allclose(normals[indices], signs[:, None] * upward, atol=1.0e-4)
             depths = []
-            for i in range(count):
+            for i in indices:
                 table_side = 0 if shape0[i] == table_shape else 1
                 table_point = points[table_side][i]
                 object_local = points[1 - table_side][i]
@@ -76,6 +98,8 @@ def test_box_contact_nearby_face(test, device, *, split=False):
                 depths.append(float(np.dot(table_point - object_point, upward)))
             expected_depth = 0.23 - height + half[2] * np.cos(tilt) + half[0] * np.sin(tilt)
             test.assertAlmostEqual(max(depths), expected_depth, delta=1.0e-5)
+    # Contacts between worlds would belong to no case.
+    test.assertEqual(matched, count)
 
 
 class TestBoxContactNormal(unittest.TestCase):
@@ -449,6 +473,61 @@ add_function_test(
 )
 
 
+def test_capsule_box_edge_contact(test, device, *, split=False):
+    """Keep one capsule endpoint contact and preserve an overlapping segment."""
+    # Regression for #4756, resolved by the GJK convergence changes in #4771.
+    for center_x, expected_x in ((-0.075, [-0.05]), (-0.025, [-0.05, 0.0])):
+        with test.subTest(center_x=center_x):
+            builder = newton.ModelBuilder()
+            rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.5 * wp.pi)
+            builder.add_shape_capsule(
+                -1,
+                xform=wp.transform((center_x, 0.0, 0.012), rotation),
+                radius=0.012,
+                half_height=0.025,
+            )
+            box = builder.add_body(xform=wp.transform((0.0, 0.0, 0.074 - 1.0e-5), wp.quat_identity()))
+            box_shape = builder.add_shape_box(box, hx=0.05, hy=0.08, hz=0.05)
+            model = builder.finalize(device)
+            pipeline = newton.CollisionPipeline(model)
+            test.assertEqual(pipeline.narrow_phase.split_gjk_mpr, split)
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertEqual(count, len(expected_x))
+            shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+            point0 = contacts.rigid_contact_point0.numpy()[:count]
+            point1 = contacts.rigid_contact_point1.numpy()[:count]
+            box_points = np.where((shape0 == box_shape)[:, None], point0, point1)
+            np.testing.assert_allclose(np.sort(box_points[:, 0]), expected_x, atol=1.0e-5, rtol=0.0)
+            np.testing.assert_allclose(box_points[:, 1], 0.0, atol=1.0e-5, rtol=0.0)
+            np.testing.assert_allclose(box_points[:, 2], -0.05, atol=1.0e-5, rtol=0.0)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_capsule_box_edge_contact",
+    test_capsule_box_edge_contact,
+    devices=get_test_devices(),
+)
+
+
+def test_capsule_box_edge_contact_split(test, device):
+    """Check capsule endpoint and segment contacts through the split CUDA kernels."""
+    if not device.is_cuda:
+        test.skipTest("Split collision kernels run only on CUDA")
+    with patch("newton._src.sim.collide._SPLIT_GJK_MPR_FULL_PAIR_COUNT_THRESHOLD", 0):
+        test_capsule_box_edge_contact(test, device, split=True)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_capsule_box_edge_contact_split",
+    test_capsule_box_edge_contact_split,
+    devices=get_test_devices(),
+)
+
+
 def test_capsule_cylinder_tangent_contact(test, device, *, split=False):
     """Use a single contact where a capsule is tangent to a straight cylinder's side."""
     rotations = (wp.quat_identity(), wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7))
@@ -759,6 +838,51 @@ add_function_test(
     "test_crossed_plank_sliver_contact_split",
     test_crossed_plank_sliver_contact_split,
     devices=get_test_devices(),
+)
+
+
+@wp.kernel(enable_backward=False)
+def _contact_feature_duplicates_kernel(counts: wp.array[int], segment: wp.array[wp.vec3]):
+    projected = wp.zeros(shape=(5,), dtype=wp.vec2)
+    points = _SamplePoints()
+    count = int(0)
+    for i in range(3):
+        point = wp.vec3(float(i), float(i % 2), 0.0)
+        count, added = add_contact_feature_point(projected, points, count, wp.vec2(point[0], point[1]), point, EPS)
+        if added:
+            points[count - 1] = point
+    # Revisit both the reference and a non-reference vertex with the captured projection-rounding error.
+    for i in range(2):
+        point = points[i]
+        count, added = add_contact_feature_point(
+            projected, points, count, wp.vec2(point[0], point[1] + 1.52587890625e-5), point, EPS
+        )
+        if added:
+            points[count - 1] = point
+        counts[i] = count
+    # A different 3D point with the same projection must still be merged.
+    count, _ = add_contact_feature_point(projected, points, count, wp.vec2(0.0), wp.vec3(0.0, 0.0, 1.0), EPS)
+    counts[2] = count
+    tracker = IncrementalPlaneTracker()
+    tracker = update_incremental_plane_tracker(tracker, wp.vec3(-20.0, 0.0, 0.0), 0)
+    tracker = update_incremental_plane_tracker(tracker, wp.vec3(0.0, 160.0, 0.0), 1)
+    tracker = update_incremental_plane_tracker(tracker, wp.vec3(-20.0, 0.0, 0.0), 2)
+    segment[0] = tracker.previous_point - tracker.reference_point
+
+
+def test_contact_feature_duplicates(test, device):
+    """Merge repeated support vertices without losing the existing line segment."""
+    counts = wp.zeros(3, dtype=int, device=device)
+    segment = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(_contact_feature_duplicates_kernel, 1, outputs=[counts, segment], device=device)
+    with test.subTest(feature="support identity"):
+        np.testing.assert_array_equal(counts.numpy(), [3, 3, 3])
+    with test.subTest(feature="line segment"):
+        np.testing.assert_array_equal(segment.numpy(), [[20.0, 160.0, 0.0]])
+
+
+add_function_test(
+    TestBoxContactNormal, "test_contact_feature_duplicates", test_contact_feature_duplicates, devices=get_test_devices()
 )
 
 

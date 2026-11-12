@@ -256,6 +256,15 @@ class ViewerGL(ViewerBase):
         super().__init__()
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
+        try:
+            self._setup_viewer(headless, paused, num_frames)
+        except BaseException:
+            # Close the renderer's window, as RendererGL does when its own setup fails.
+            self.renderer.close()
+            raise
+
+    def _setup_viewer(self, headless: bool, paused: bool, num_frames: int | None):
+        """Set up the camera, input handling, and UI around the new renderer."""
         self.renderer.set_title("Newton Viewer")
         self._image_logger = ImageLogger(device=self.device)
 
@@ -546,7 +555,6 @@ class ViewerGL(ViewerBase):
         self.wind = None
 
         # State caching for selection panel
-        self._last_state = None
         self._last_control = None
 
         # Packed GPU arrays for batched shape transform computation
@@ -639,15 +647,16 @@ class ViewerGL(ViewerBase):
                 )
                 batch.scales = out_scales
 
-        self.picking = Picking(model, world_offsets=self.world_offsets)
-        self.picking.visible_worlds_mask = self._visible_worlds_mask
-        self.wind = Wind(model)
-
+        self.picking = None
         if model is not None:
+            self.picking = Picking(
+                model, world_offsets=self.world_offsets, visible_worlds_mask=self._visible_worlds_mask
+            )
             try:
                 self.picking._load_kernels()
             except Exception:
                 pass
+        self.wind = Wind(model)
 
         # Build packed arrays for batched GPU rendering of shape instances
         self._build_packed_vbo_arrays()
@@ -691,7 +700,7 @@ class ViewerGL(ViewerBase):
 
         for key, shapes in self._shape_instances.items():
             n = shapes.xforms.shape[0] if isinstance(shapes.xforms, wp.array) else len(shapes.xforms)
-            if n == 0:
+            if n == 0 and shapes.name not in self.objects:
                 continue
             if shapes.geo_type == nt.GeoType.CAPSULE:
                 capsule_keys.add(key)
@@ -722,9 +731,13 @@ class ViewerGL(ViewerBase):
                 mesh = self.objects.get(shapes.mesh)
                 instancer = self.objects.get(shapes.name)
                 # Visibility changes can reuse a batch name for a different geometry.
-                if isinstance(mesh, MeshGL) and (instancer is None or instancer.mesh is not mesh):
+                if isinstance(mesh, MeshGL) and (
+                    instancer is None or instancer.mesh is not mesh or instancer.num_instances < n
+                ):
+                    # Variant rows change batch sizes on selection; grow geometrically.
+                    grown = 2 * instancer.num_instances if instancer is not None and instancer.mesh is mesh else 0
                     instancer = MeshInstancerGL(
-                        max(n, 1),
+                        max(n, grown, 1),
                         mesh,
                         enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
                     )
@@ -810,7 +823,8 @@ class ViewerGL(ViewerBase):
         current_mask = np.zeros_like(self._shape_transparent_mask, dtype=bool)
         rendered_shapes = self._shape_to_slot >= 0
         current_mask[rendered_shapes] = opacities[rendered_shapes] < OPAQUE_OPACITY_THRESHOLD
-        return bool(np.any(current_mask != self._shape_transparent_mask))
+        # Inactive body-variant shapes are not rendered and must not count as changed.
+        return bool(np.any(current_mask[rendered_shapes] != self._shape_transparent_mask[rendered_shapes]))
 
     def _rebuild_shape_batches_for_opacity_groups(self):
         """Rebuild shape batches after opacity changes move shapes between render passes."""
@@ -841,6 +855,12 @@ class ViewerGL(ViewerBase):
         self._populate_shapes()
         self._rebuild_gl_shape_caches()
         self.model_changed = True
+
+    @override
+    def notify_model_changed(self, flags: nt.ModelFlags | int) -> None:
+        super().notify_model_changed(flags)
+        if self.model is not None and flags & nt.ModelFlags.SHAPE_TYPE_AND_SOURCE:
+            self._rebuild_gl_shape_caches()
 
     @override
     def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
@@ -1858,7 +1878,11 @@ class ViewerGL(ViewerBase):
 
             layer_hidden = self._layer_force_hidden()
             for key, shapes, offset, count in self._packed_groups:
-                visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
+                visible = (
+                    self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type)
+                    and not layer_hidden
+                    and count > 0
+                )
                 colors = shapes.colors if self.model_changed or shapes.colors_changed else None
                 opacities = (
                     shapes.opacities
@@ -1915,24 +1939,17 @@ class ViewerGL(ViewerBase):
             self.log_lines("picking_line", None, None, None)
             return
 
-        # Get the picked body index
-        pick_body_idx = self.picking.pick_body.numpy()[0]
-        if pick_body_idx < 0:
-            self.log_lines("picking_line", None, None, None)
-            return
-
+        pick_body_idx = self.picking.pick_body
         # Get the pick target and current picked point on geometry (in physics space)
-        pick_state = self.picking.pick_state.numpy()
-
-        pick_target = pick_state[0]["picking_target_world"]
-        picked_point = pick_state[0]["picked_point_world"]
+        pick_target = self.picking.pick_target
+        picked_point = self.picking.pick_point
 
         # Apply world offset to convert from physics space to visual space
         if self.world_offsets is not None and self.world_offsets.shape[0] > 0:
             if self.model.body_world is not None:
                 body_world_idx = self.model.body_world.numpy()[pick_body_idx]
                 if body_world_idx >= 0 and body_world_idx < self.world_offsets.shape[0]:
-                    world_offset = self.world_offsets.numpy()[body_world_idx]
+                    world_offset = wp.vec3(*self.world_offsets.numpy()[body_world_idx])
                     pick_target = pick_target + world_offset
                     picked_point = picked_point + world_offset
 
@@ -1981,7 +1998,7 @@ class ViewerGL(ViewerBase):
             state: The current simulation state.
         """
         if self.picking_enabled and self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
         if self.wind is not None:
             self.wind._apply_wind_force(state)

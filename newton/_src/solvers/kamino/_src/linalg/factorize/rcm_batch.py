@@ -21,8 +21,8 @@ kernel per matrix block. Other devices use a staged fallback with a fixed
 Layout assumptions
 ------------------
 
-- ``A_flat``: packed matrices in a flat array or one row per block.
-  Block ``b`` starts at ``mio[b]`` within its flat buffer or world row.
+- ``A_flat``: one flattened matrix per row.
+  Block ``b`` starts at ``mio[b]`` within its row.
 - ``perm_flat``: flat wp.int32 permutation output. Block ``b``'s output starts
   at offset ``vio[b]`` with size ``dims[b]``.
 - ``dims``, ``mio``, ``vio``: ``wp.array[wp.int32]`` of length
@@ -114,12 +114,11 @@ def allocate_rcm_batch_scratch(total_vec: int, num_blocks: int, device) -> dict:
 
 
 @cache
-def _make_rcm_batch_kernels(dtype, array_ndim: int = 1):
-    """Kernels are parameterized by `dtype` and array rank. `max_dim` / `num_blocks`
+def _make_rcm_batch_kernels(dtype):
+    """Kernels are parameterized by `dtype` only. `max_dim` / `num_blocks`
     are passed as runtime ints so the same module can serve any shape.
     """
-    MatrixType = wp.array[dtype] if array_ndim == 1 else wp.array2d[dtype]
-    module_name = f"rcm_batch_kernels_{getattr(dtype, '__name__', str(dtype))}_{array_ndim}d"
+    module_name = f"rcm_batch_kernels_{getattr(dtype, '__name__', str(dtype))}"
     module = wp.get_module(module_name)
     module.options.update({"enable_backward": False, "default_grid_stride": False})
 
@@ -140,7 +139,7 @@ def _make_rcm_batch_kernels(dtype, array_ndim: int = 1):
     def init_and_degree_kernel(
         num_blocks: int,
         tol: dtype,  # type: ignore[valid-type]
-        A: MatrixType,  # type: ignore[valid-type]
+        A: wp.array2d[dtype],  # type: ignore[valid-type]
         dims: wp.array[wp.int32],  # type: ignore[valid-type]
         mio: wp.array[wp.int32],  # type: ignore[valid-type]
         ld: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -169,7 +168,7 @@ def _make_rcm_batch_kernels(dtype, array_ndim: int = 1):
 
         vb = vio[b]
         mb = mio[b]
-        A_world = A[b] if wp.static(MatrixType.ndim == 2) else A
+        A_world = A[b]
 
         # Per-vertex init.
         level[vb + i] = int(-1)
@@ -228,7 +227,7 @@ def _make_rcm_batch_kernels(dtype, array_ndim: int = 1):
     def bfs_step_kernel(
         num_blocks: int,
         tol: dtype,  # type: ignore[valid-type]
-        A: MatrixType,  # type: ignore[valid-type]
+        A: wp.array2d[dtype],  # type: ignore[valid-type]
         dims: wp.array[wp.int32],  # type: ignore[valid-type]
         mio: wp.array[wp.int32],  # type: ignore[valid-type]
         ld: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -256,7 +255,7 @@ def _make_rcm_batch_kernels(dtype, array_ndim: int = 1):
 
         vb = vio[b]
         mb = mio[b]
-        A_world = A[b] if wp.static(MatrixType.ndim == 2) else A
+        A_world = A[b]
         cur = current_level[b]
 
         if level[vb + i] != cur:
@@ -323,7 +322,7 @@ def _make_rcm_batch_kernels(dtype, array_ndim: int = 1):
     def complete_cuda_kernel(
         num_blocks: int,
         tol: dtype,  # type: ignore[valid-type]
-        A: MatrixType,  # type: ignore[valid-type]
+        A: wp.array2d[dtype],  # type: ignore[valid-type]
         dims: wp.array[wp.int32],
         mio: wp.array[wp.int32],
         ld: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -345,7 +344,7 @@ def _make_rcm_batch_kernels(dtype, array_ndim: int = 1):
         n_b = dims[b]
         vb = vio[b]
         mb = mio[b]
-        A_world = A[b] if wp.static(MatrixType.ndim == 2) else A
+        A_world = A[b]
 
         if lane == int(0):
             best_deg = int(2147483647)
@@ -485,7 +484,7 @@ def _persistent_block_dim(max_dim: int) -> int:
 
 
 def create_rcm_batch_launch(
-    A_flat: wp.array[wp.float32],
+    A_flat: wp.array2d[wp.float32],
     perm_flat: wp.array[wp.int32],
     dims: wp.array[wp.int32],
     mio: wp.array[wp.int32],
@@ -505,10 +504,12 @@ def create_rcm_batch_launch(
 
     Parameters
     ----------
-    A_flat, perm_flat:
-        Flat buffers for the concatenated block matrices and output permutations.
+    A_flat:
+        Matrix blocks stored one per row.
+    perm_flat:
+        Flat buffer of concatenated output permutations.
     dims, mio, vio:
-        ``wp.int32`` arrays describing the per-block sizes and flat offsets.
+        Per-block sizes, matrix offsets within rows, and packed vector offsets.
     ld:
         Optional per-block matrix row strides; defaults to ``dims``.
     scratch:
@@ -536,7 +537,7 @@ def create_rcm_batch_launch(
     if max_bfs_iters is not None:
         max_bfs_iters = min(max(0, max_bfs_iters), max_dim)
 
-    K = _make_rcm_batch_kernels(dtype, A_flat.ndim)
+    K = _make_rcm_batch_kernels(dtype)
     if ld is None:
         ld = dims
 

@@ -32,10 +32,11 @@ import warp as wp
 
 from ......core.types import override
 from ...core.types import FloatType, to_warp_int32_array
+from ..blas import zero_dense_blocks
 from ..core import DenseLinearOperatorData, DenseSquareMultiLinearInfo, validate_dense_matrix_shape
 from ..linear import DirectSolver
 from . import rcm_batch as _rcm_batch
-from .llt_blocked import make_flag_failed_llt_factors_kernel, make_shift_failed_llt_factors_kernel
+from .llt_blocked import flag_failed_llt_factors, shift_failed_llt_factors
 from .llt_blocked_rcm import (
     llt_blocked_rcm_factorize,
     llt_blocked_rcm_factorize_parallel,
@@ -177,10 +178,10 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             raise NotImplementedError("LLTBlockedRCMSolver currently supports only wp.float32.")
 
         # LLT-specific internal data
-        self._L: wp.array[dtype] | None = None
+        self._L: wp.array2d[dtype] | None = None
         self._y: wp.array[dtype] | None = None
         # Reordering + semi-sparse state
-        self._A_hat: wp.array[dtype] | None = None
+        self._A_hat: wp.array2d[dtype] | None = None
         self._x_hat: wp.array[dtype] | None = None
         self._P: wp.array[wp.int32] | None = None
         self._inv_P: wp.array[wp.int32] | None = None
@@ -196,7 +197,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         # set over all blocks. Rebound whenever the caller-owned ``A`` buffer
         # pointer changes.
         self._reorder_callback = None
-        self._reorder_attached_to: wp.array[dtype] | None = None
+        self._reorder_attached_to: wp.array2d[dtype] | None = None
         self._permutation_initialized = False
         self._permutation_initialized_during_capture = False
         self._permutation_capture_id: int | None = None
@@ -397,19 +398,13 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._structural_pattern = None
         self._structural_ready = None
 
-        matrix_shape = info.matrix_shape if info.matrix_shape != (0,) else (info.total_mat_size,)
-        matrix_shape = A.mat.shape if A.mat is not None else matrix_shape
+        matrix_shape = A.mat.shape if A.mat is not None else info.matrix_shape
         matrix_dtype = A.mat.dtype if A.mat is not None else self._dtype
-        array_ndim = len(matrix_shape)
-        self._factorize_kernel = make_llt_blocked_rcm_factorize_kernel(self._block_size, array_ndim)
-        self._parallel_factorize_kernels = make_llt_blocked_rcm_parallel_factorize_kernels(self._block_size, array_ndim)
-        self._solve_kernel = make_llt_blocked_rcm_solve_kernel(self._block_size, array_ndim=array_ndim)
-        self._solve_inplace_kernel = make_llt_blocked_rcm_solve_inplace_kernel(self._block_size, array_ndim)
 
         # Resolve auxiliary kernels now that max_dim is known.
         self._permute_vector_kernel = make_llt_blocked_rcm_permute_vector_kernel(self._max_dim)
         self._fused_permute_and_tp_kernel = make_llt_blocked_rcm_fused_permute_and_tp_kernel(
-            self._block_size, self._max_dim, array_ndim
+            self._block_size, self._max_dim
         )
         max_n_tiles = (self._max_dim + self._block_size - 1) // self._block_size
         self._symbolic_fill_in_kernel = make_llt_blocked_rcm_symbolic_fill_in_kernel(max_n_tiles)
@@ -427,11 +422,11 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         with wp.ScopedDevice(self._device):
             # Factorization + intermediate buffers.
             validate_dense_matrix_shape(matrix_shape, matrix_dtype)
-            self._L = wp.zeros_like(A.mat) if A.mat is not None else wp.zeros(matrix_shape, dtype=matrix_dtype)
+            self._L = wp.zeros((info.num_blocks, matrix_shape[1]), dtype=matrix_dtype)
             self._y = wp.zeros(shape=(info.total_vec_size,), dtype=self._dtype)
 
             # Reordering scratch.
-            self._A_hat = wp.zeros_like(self._L)
+            self._A_hat = wp.zeros(matrix_shape, dtype=matrix_dtype)
             self._x_hat = wp.zeros(shape=(info.total_vec_size,), dtype=self._dtype)
 
             # Permutations (indexed by vio, length dim per block).
@@ -463,9 +458,11 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
     def _reset_impl(self) -> None:
         if self._structural_ready is not None:
             self._structural_ready.zero_()
-        self._L.zero_()
+        info = self._operator.info
+        dim = self._stride()
+        zero_dense_blocks(self._L, dim, dim, info.mio, info.max_dimension**2)
         self._y.zero_()
-        self._A_hat.zero_()
+        zero_dense_blocks(self._A_hat, dim, dim, info.mio, info.max_dimension**2)
         self._x_hat.zero_()
         self._P.zero_()
         self._rcm_scratch["permutation_valid"].zero_()
@@ -477,7 +474,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._tile_pattern.zero_()
         self._has_factors = False
 
-    def _ensure_reorder_launches_bound(self, A: wp.array[Any]) -> None:
+    def _ensure_reorder_launches_bound(self, A: wp.array2d[Any]) -> None:
         """(Re)build the batched-RCM launch callback bound to the current A buffer.
 
         The callback captures ``wp.array`` views of ``A`` that must stay
@@ -508,7 +505,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._reorder_attached_to = A
 
     @override
-    def _factorize_impl(self, A: wp.array[Any]) -> None:
+    def _factorize_impl(self, A: wp.array2d[Any]) -> None:
         # Ordinary compute may change the numerical permutation or matrix
         # dimensions, so the next sparse capture must rebuild its ordered mask.
         if self._structural_ready is not None:
@@ -636,13 +633,13 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             self._retry_dim.zero_()
             retry_shape = (num_blocks, self._max_dim)
             wp.launch(
-                make_flag_failed_llt_factors_kernel(self._L.ndim),
+                flag_failed_llt_factors,
                 dim=retry_shape,
                 inputs=[info.dim, self._stride(), info.mio, self._L, self._retry_dim],
                 device=self._device,
             )
             wp.launch(
-                make_shift_failed_llt_factors_kernel(self._A_hat.ndim),
+                shift_failed_llt_factors,
                 dim=retry_shape,
                 inputs=[self._stride(), info.mio, self._retry_dim, self._failed_pivot_shift, self._A_hat],
                 device=self._device,
@@ -662,7 +659,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             )
 
     @override
-    def _reconstruct_impl(self, A: wp.array[Any]) -> None:
+    def _reconstruct_impl(self, A: wp.array2d[Any]) -> None:
         raise NotImplementedError("LLT matrix reconstruction is not yet implemented.")
 
     @override

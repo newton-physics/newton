@@ -130,9 +130,9 @@ class TestKaminoBilateralRHS(unittest.TestCase):
                             nan_row = np.full(n * n, np.nan, dtype=np.float32)
                             storage = floats(np.stack((nan_row, inverse.ravel())))
                         else:
-                            storage = floats(inverse_storage)
+                            storage = floats(inverse_storage.reshape(1, -1))
                         wp.launch(
-                            make_sparse_bilateral_inverse_kernel(32, storage.ndim),
+                            make_sparse_bilateral_inverse_kernel(32),
                             dim=(1, 128),
                             inputs=[
                                 per_world(pvio),

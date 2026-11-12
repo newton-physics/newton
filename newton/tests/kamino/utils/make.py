@@ -5,10 +5,9 @@
 Utilities for constructing test problem containers and data.
 """
 
-import contextlib
+import logging
 import math
-import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 
 import numpy as np
 import warp as wp
@@ -32,21 +31,23 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import (
 )
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.linalg import core as linalg_core
+from newton._src.solvers.kamino._src.linalg.core import DenseSquareMultiLinearInfo
 from newton.tests.utils.basics import build_boxes_fourbar, make_basics_heterogeneous_builder
 
 from .print import (
-    print_data_info,
-    print_model_constraint_info,
+    debug_print_data_info,
+    debug_print_model_constraint_info,
 )
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
 ###
 
 __all__ = [
-    "force_row_storage",
     "make_containers",
+    "make_dense_matrix_storage",
     "make_generalized_mass_matrices",
     "make_inverse_generalized_mass_matrices",
     "make_row_storage",
@@ -66,6 +67,16 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 # Dense storage layouts.
 
 
+def make_dense_matrix_storage(
+    info: DenseSquareMultiLinearInfo, matrices: list[np.ndarray], fill_value: float = 0.0
+) -> np.ndarray:
+    """Pack each active matrix into its padded storage row."""
+    storage = np.full(info.matrix_shape, fill_value, dtype=np.float32)
+    for block, matrix in enumerate(matrices):
+        storage[block, : matrix.size] = matrix.ravel()
+    return storage
+
+
 def make_row_storage(flat: np.ndarray, offsets: list[int] | np.ndarray, sizes: list[int] | np.ndarray) -> np.ndarray:
     """Copy flat per-block matrix data into one zero-padded row per block."""
     sizes = np.asarray(sizes, dtype=np.int64)
@@ -73,30 +84,6 @@ def make_row_storage(flat: np.ndarray, offsets: list[int] | np.ndarray, sizes: l
     for block, (offset, size) in enumerate(zip(offsets, sizes, strict=True)):
         rows[block, :size] = flat[offset : offset + size]
     return rows
-
-
-@contextlib.contextmanager
-def force_row_storage(min_total: int = -1) -> Iterator[None]:
-    """Allocate dense multi-block matrices larger than ``min_total`` elements with one row per block."""
-    original = linalg_core.dense_matrix_layout
-
-    def rows(block_sizes: list[int]) -> tuple[tuple[int, ...], list[int]]:
-        if sum(block_sizes) <= min_total:
-            return original(block_sizes)
-        return (len(block_sizes), max(block_sizes, default=0)), [0] * len(block_sizes)
-
-    modules = [
-        module
-        for name, module in list(sys.modules.items())
-        if name.startswith("newton._src.solvers.kamino") and getattr(module, "dense_matrix_layout", None) is original
-    ]
-    for module in modules:
-        module.dense_matrix_layout = rows
-    try:
-        yield
-    finally:
-        for module in modules:
-            module.dense_matrix_layout = original
 
 
 ###
@@ -238,7 +225,6 @@ def make_test_problem(
     with_limits: bool = False,
     with_contacts: bool = False,
     dt: float = 0.001,
-    verbose: bool = False,
 ) -> tuple[ModelKamino, DataKamino, StateKamino, LimitsKamino | None, ContactsKamino | None]:
     # Configure model time-steps
     model.time.dt.fill_(wp.float32(dt))
@@ -267,54 +253,51 @@ def make_test_problem(
         limits=limits,
         contacts=contacts,
     )
-    if verbose:
-        print("")  # Add a newline for better readability
-        print_model_constraint_info(model)
-        print_data_info(data)
-        print("\n")  # Add a newline for better readability
+    logger.debug("")  # Add a newline for better readability
+    debug_print_model_constraint_info(model)
+    debug_print_data_info(data)
+    logger.debug("\n")  # Add a newline for better readability
 
-    # If a set-state callback is provided, perturb the system
-    # NOTE: This is done to potentially trigger
-    # joint limits and contacts to become active
+    # If a set-state callback is provided, perturb the system to potentially trigger
+    # joint limits and contacts to become active.
     if set_state_fn is not None:
         set_state_fn(model=model, data=data)
+    if logger.isEnabledFor(logging.DEBUG):
         wp.synchronize()
-    if verbose:
-        print("data.bodies.q_i:\n", data.bodies.q_i)
-        print("data.bodies.u_i:\n\n", data.bodies.u_i)
+        logger.debug("data.bodies.q_i:\n %s", data.bodies.q_i)
+        logger.debug("data.bodies.u_i:\n\n %s", data.bodies.u_i)
 
     # Compute the joints state
     compute_joints_data(model=model, data=data, q_j_p=wp.zeros_like(data.joints.q_j))
-    wp.synchronize()
-    if verbose:
-        print("data.joints.p_j:\n", data.joints.p_j)
-        print("data.joints.r_j:\n", data.joints.r_j)
-        print("data.joints.dr_j:\n", data.joints.dr_j)
-        print("data.joints.q_j:\n", data.joints.q_j)
-        print("data.joints.dq_j:\n\n", data.joints.dq_j)
+    if logger.isEnabledFor(logging.DEBUG):
+        wp.synchronize()
+        logger.debug("data.joints.p_j:\n %s", data.joints.p_j)
+        logger.debug("data.joints.r_j:\n %s", data.joints.r_j)
+        logger.debug("data.joints.dr_j:\n %s", data.joints.dr_j)
+        logger.debug("data.joints.q_j:\n %s", data.joints.q_j)
+        logger.debug("data.joints.dq_j:\n\n %s", data.joints.dq_j)
 
     # Run limit detection to generate active limits
     if with_limits:
         limits.detect(q_j=data.joints.q_j)
-        wp.synchronize()
-        if verbose:
-            print(f"limits.world_active_limits: {limits.world_active_limits}")
-            print(f"data.info.num_limits: {data.info.num_limits}\n\n")
+        if logger.isEnabledFor(logging.DEBUG):
+            wp.synchronize()
+            logger.debug("limits.world_active_limits: %s", limits.world_active_limits)
+            logger.debug("data.info.num_limits: %s\n\n", data.info.num_limits)
 
     # Run collision detection to generate active contacts
     if with_contacts:
         detector.collide(data)
-        wp.synchronize()
-        if verbose:
-            print(f"contacts.world_active_contacts: {detector.contacts.world_active_contacts}")
-            print(f"data.info.num_contacts: {data.info.num_contacts}\n\n")
+        if logger.isEnabledFor(logging.DEBUG):
+            wp.synchronize()
+            logger.debug("contacts.world_active_contacts: %s", detector.contacts.world_active_contacts)
+            logger.debug("data.info.num_contacts: %s\n\n", data.info.num_contacts)
 
     # Update the constraints info
     update_constraints_info(model=model, data=data)
-    if verbose:
-        print("")  # Add a newline for better readability
-        print_data_info(data)
-        print("\n")  # Add a newline for better readability
+    logger.debug("")  # Add a newline for better readability
+    debug_print_data_info(data)
+    logger.debug("\n")  # Add a newline for better readability
     wp.synchronize()
 
     # Return the problem data containers
@@ -440,7 +423,6 @@ def make_test_problem_fourbar(
     with_limits: bool = False,
     with_contacts: bool = False,
     with_implicit_joints: bool = True,
-    verbose: bool = False,
 ) -> tuple[ModelKamino, DataKamino, StateKamino, LimitsKamino | None, ContactsKamino | None]:
     # Define the problem using the public ModelBuilder, then convert to a ModelKamino
     builder = ModelBuilder()
@@ -457,7 +439,6 @@ def make_test_problem_fourbar(
         max_world_contacts=max_world_contacts,
         with_limits=with_limits,
         with_contacts=with_contacts,
-        verbose=verbose,
     )
 
 
@@ -467,7 +448,6 @@ def make_test_problem_heterogeneous(
     with_limits: bool = False,
     with_contacts: bool = False,
     with_implicit_joints: bool = True,
-    verbose: bool = False,
 ) -> tuple[ModelKamino, DataKamino, StateKamino, LimitsKamino | None, ContactsKamino | None]:
     # Define the problem using the public ModelBuilder, then convert to a ModelKamino
     builder = make_basics_heterogeneous_builder(
@@ -482,5 +462,4 @@ def make_test_problem_heterogeneous(
         max_world_contacts=max_world_contacts,
         with_limits=with_limits,
         with_contacts=with_contacts,
-        verbose=verbose,
     )

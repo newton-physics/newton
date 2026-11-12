@@ -4,6 +4,7 @@
 """Focused tests for Coulomb joint friction in SolverKamino."""
 
 import unittest
+from itertools import product
 from unittest import mock
 
 import numpy as np
@@ -15,7 +16,6 @@ from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import mak
 from newton._src.solvers.kamino._src.solvers.dvi.response import make_response_kernel
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
-from newton.tests.kamino.utils.make import force_row_storage
 from newton.tests.kamino.utils.solver_configs import (
     KAMINO_CONFIGS,
     PADMM_CONFIG_NAMES,
@@ -300,19 +300,8 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         """Preserve analytical friction when reusing a forward-solved RHS."""
         self._check_compact_schur_friction(response_kernel, omega=1.0, max_iterations=8, joint_counts=(137,))
         if wp.get_device(test_context.device).is_cuda:
-            self.assertIn(mock.call(32, False, array_ndim=1), solve_kernel.call_args_list)
-            self.assertIn(mock.call(32, True, False, array_ndim=1), solve_kernel.call_args_list)
-
-    @mock.patch(
-        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_response_kernel",
-        wraps=make_response_kernel,
-    )
-    def test_compact_schur_friction_row_storage(self, response_kernel):
-        """Preserve analytical friction when every dense matrix uses one row per world."""
-        with force_row_storage():
-            self._check_compact_schur_friction(response_kernel, omega=1.0, max_iterations=8)
-        if wp.get_device(test_context.device).is_cuda:
-            self.assertTrue(all(call.args[1] == 2 for call in response_kernel.call_args_list))
+            self.assertIn(mock.call(32, False), solve_kernel.call_args_list)
+            self.assertIn(mock.call(32, True, False), solve_kernel.call_args_list)
 
     def _check_compact_schur_friction(self, response_kernel, omega, max_iterations, joint_counts=(137, 9)):
         """Preserve spin-down, sticking, and reversals across ragged friction strengths."""
@@ -553,16 +542,21 @@ class TestSolverKaminoJointFrictionLimitStopsMotion(unittest.TestCase):
 
         Drive the joint into a limit with initial velocity and feedforward
         torque, and verify that friction remains within its bounds. Runs
-        against every Kamino dynamics-solver configuration. Uses a higher
-        limit Baumgarte ``beta`` so penetration corrects within the short rollout.
+        against every Kamino dynamics-solver configuration, with rigid and
+        compliant limits. The recovery time matches legacy ``beta=0.1`` at
+        the rollout timestep. The compliant case checks the spring-damper
+        trajectory, including rebound, against scalar backward Euler.
         """
         limit = 0.1
         friction = 0.5
         feedforward_torque = 1.0
         initial_velocity = 2.0
-        limit_constraints = kamino_config.ConstraintStabilizationConfig(beta=0.1)
-        for config_name, config_factory in KAMINO_CONFIGS:
-            with self.subTest(config=config_name):
+        dt = 0.001
+        for (config_name, config_factory), compliant in product(KAMINO_CONFIGS, (False, True)):
+            with self.subTest(config=config_name, compliant=compliant):
+                limit_constraints = kamino_config.ConstraintStabilizationConfig(
+                    limit_recovery_time=dt * (1.0 / 0.1 - 1.0), limit_compliance=compliant
+                )
                 model = _build_revolute(friction, limit=(-limit, limit))
                 model.set_gravity((0.0, 0.0, 0.0))
                 solver = SolverKamino(
@@ -575,12 +569,41 @@ class TestSolverKaminoJointFrictionLimitStopsMotion(unittest.TestCase):
                     model,
                     state,
                     steps=300,
-                    dt=0.001,
+                    dt=dt,
                     joint_force=feedforward_torque,
                 )
-                self.assertLessEqual(np.max(coordinates), limit + 1e-2)
-                self.assertAlmostEqual(coordinates[-1, 0], limit, delta=1.0e-4)
-                self.assertAlmostEqual(velocities[-1, 0], 0.0, delta=1e-4)
+                if compliant:
+                    # Solve I*v_next + h*f_friction + h*f_limit = I*v + h*torque.
+                    # The implicit spring uses q_next=q+h*v_next and c=k*tau;
+                    # unilateral limits cannot pull the joint toward the stop.
+                    stiffness = float(model.joint_limit_ke.numpy()[0])
+                    time = limit_constraints.limit_recovery_time
+                    q, v = 0.0, initial_velocity
+                    reference = []
+                    for _ in range(coordinates.shape[0]):
+                        momentum = _EFFECTIVE_JOINT_INERTIA * v + dt * feedforward_torque
+                        next_v = np.sign(momentum) * max(abs(momentum) - dt * friction, 0.0) / _EFFECTIVE_JOINT_INERTIA
+                        if abs(q) > limit:
+                            side = np.sign(q)
+                            violation = q - side * limit
+                            candidate = momentum - dt * stiffness * violation
+                            candidate = (
+                                np.sign(candidate)
+                                * max(abs(candidate) - dt * friction, 0.0)
+                                / (_EFFECTIVE_JOINT_INERTIA + dt * stiffness * (dt + time))
+                            )
+                            if side * (violation + (dt + time) * candidate) >= 0.0:
+                                next_v = candidate
+                        v = next_v
+                        q += dt * v
+                        reference.append((q, v))
+                    reference = np.asarray(reference)
+                    np.testing.assert_allclose(coordinates[:, 0], reference[:, 0], atol=5.0e-5, rtol=0.0)
+                    np.testing.assert_allclose(velocities[:, 0], reference[:, 1], atol=5.0e-4, rtol=0.0)
+                else:
+                    self.assertLessEqual(np.max(coordinates), limit + 1e-2)
+                    self.assertAlmostEqual(coordinates[-1, 0], limit, delta=1.0e-4)
+                    self.assertAlmostEqual(velocities[-1, 0], 0.0, delta=1e-4)
                 np.testing.assert_array_less(
                     np.abs(friction_torques),
                     friction + 1.0e-4,

@@ -3,6 +3,7 @@
 
 """Unit tests for the CGSolver class from linalg/conjugate.py"""
 
+import logging
 import unittest
 
 import numpy as np
@@ -23,10 +24,14 @@ from newton._src.solvers.kamino._src.linalg.sparse_matrix import (
     dense_to_block_sparse_copy_values,
 )
 from newton._src.solvers.kamino._src.linalg.utils.rand import random_spd_matrix
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import get_vector_block
-from newton.tests.kamino.utils.print import print_error_stats
+from newton.tests.kamino.utils.make import make_dense_matrix_storage
+from newton.tests.kamino.utils.print import debug_print_error_stats
 from newton.tests.kamino.utils.rand import RandomProblemLLT
+
+logger = logging.getLogger(__name__)
 
 
 class TestLinalgConjugate(unittest.TestCase):
@@ -36,8 +41,16 @@ class TestLinalgConjugate(unittest.TestCase):
         self.verbose = test_context.verbose  # Set to True for verbose output
         self.seed = 42
 
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
+        else:
+            reset_log_level()
+
     def tearDown(self):
-        pass
+        if self.verbose:
+            reset_log_level()
 
     def _test_solve(self, solver_cls, problem_params, device):
         problem = RandomProblemLLT(
@@ -80,23 +93,18 @@ class TestLinalgConjugate(unittest.TestCase):
         cur_iter, r_norm_sq, atol_sq = solver.solve(b_wp, x_wp)
 
         x_wp_np = x_wp.numpy()
-
-        if self.verbose:
-            pass
         for block_idx, block_act in enumerate(problem.dims):
             x_found = get_vector_block(block_idx, x_wp_np, problem.dims, problem.maxdims)[:block_act]
-            is_x_close = np.allclose(x_found, problem.x_np[block_idx][:block_act], rtol=1e-5, atol=1e-4)
-            if self.verbose:
-                print(f"Cur iter: {cur_iter}")
-                print(f"R norm sq {r_norm_sq}")
-                print(f"Atol sq: {atol_sq}")
-                if sum(problem.dims) < 20:
-                    print("x:")
-                    print(x_found)
-                    print("x_goal:")
-                    print(problem.x_np[block_idx])
-                print_error_stats("x", x_found, problem.x_np[block_idx], problem.dims[block_idx])
-            self.assertTrue(is_x_close)
+            logger.debug("Cur iter: %s", cur_iter)
+            logger.debug("R norm sq %s", r_norm_sq)
+            logger.debug("Atol sq: %s", atol_sq)
+            if sum(problem.dims) < 20:
+                logger.debug("x:")
+                logger.debug(x_found)
+                logger.debug("x_goal:")
+                logger.debug(problem.x_np[block_idx])
+            debug_print_error_stats("x", x_found, problem.x_np[block_idx], problem.dims[block_idx])
+            np.testing.assert_allclose(x_found, problem.x_np[block_idx][:block_act], rtol=1e-5, atol=1e-4, err_msg="x")
 
     @classmethod
     def _problem_params(cls):
@@ -283,13 +291,11 @@ class TestLinalgConjugate(unittest.TestCase):
         bsm.nzb_coords.assign(all_coords)
         bsm.assign(A_padded_list)
 
-        # Build dense operator for comparison (flat 1D matrix storage)
-        A_flat = np.concatenate([A.flatten() for A in A_padded_list]).astype(np.float32)
-        A_wp = wp.array(A_flat, dtype=wp.float32, device=device)
-        active_dims = wp.array(dims, dtype=wp.int32, device=device)
-
+        # Build dense operator for comparison
         info = DenseSquareMultiLinearInfo()
         info.finalize(dimensions=padded_dims, dtype=wp.float32, device=device)
+        A_wp = wp.array(make_dense_matrix_storage(info, A_padded_list), dtype=wp.float32, device=device)
+        active_dims = wp.array(dims, dtype=wp.int32, device=device)
         info.dim = active_dims
         dense_op = BatchedLinearOperator.from_dense(DenseLinearOperatorData(info=info, mat=A_wp))
         sparse_op = BatchedLinearOperator.from_block_sparse(bsm, active_dims)
@@ -342,12 +348,10 @@ class TestLinalgConjugate(unittest.TestCase):
             x_d = x_dense_np[offset : offset + dim]
             x_s = x_sparse_np[offset : offset + dim]
             x_ref = x_ref_list[m]
-
-            if self.verbose:
-                print(f"World {m}:")
-                print_error_stats("x_dense vs ref", x_d, x_ref, dim)
-                print_error_stats("x_sparse vs ref", x_s, x_ref, dim)
-                print_error_stats("x_dense vs x_sparse", x_d, x_s, dim)
+            logger.debug("World %s:", m)
+            debug_print_error_stats("x_dense vs ref", x_d, x_ref, dim)
+            debug_print_error_stats("x_sparse vs ref", x_s, x_ref, dim)
+            debug_print_error_stats("x_dense vs x_sparse", x_d, x_s, dim)
 
             self.assertTrue(np.allclose(x_d, x_ref, rtol=1e-3, atol=1e-4), "Dense solution differs from reference")
             self.assertTrue(np.allclose(x_s, x_ref, rtol=1e-3, atol=1e-4), "Sparse solution differs from reference")
@@ -477,15 +481,10 @@ class TestLinalgConjugate(unittest.TestCase):
         max_dim = max(dims)
 
         # Allocate with maxdim^2 per world, but only store dim*dim elements compactly
-        A_flat = np.full(n_worlds * max_dim * max_dim, np.inf, dtype=np.float32)
-        for w, (dim, matrix) in enumerate(zip(dims, original_matrices, strict=False)):
-            offset = w * max_dim * max_dim
-            # Store compactly with dim as stride (canonical format)
-            A_flat[offset : offset + dim * dim] = matrix.flatten()
-        A_wp = wp.array(A_flat, dtype=wp.float32, device=device)
-
         info = DenseSquareMultiLinearInfo()
         info.finalize(dimensions=[max_dim] * n_worlds, dtype=wp.float32, device=device)
+        A_storage = make_dense_matrix_storage(info, original_matrices, fill_value=np.inf)
+        A_wp = wp.array(A_storage, dtype=wp.float32, device=device)
         info.dim = wp.array(dims, dtype=wp.int32, device=device)
         dense_op = DenseLinearOperatorData(info=info, mat=A_wp)
 
@@ -513,12 +512,12 @@ class TestLinalgConjugate(unittest.TestCase):
             orig_trimmed = orig[:dim, :dim].astype(np.float32)
             recovered_trimmed = recovered[:dim, :dim].astype(np.float32)
 
-            if self.verbose:
-                print(f"World {w} (dim={dim}):")
-                print(f"  Original non-zeros: {np.count_nonzero(orig_trimmed)}")
-                print(f"  Recovered non-zeros: {np.count_nonzero(recovered_trimmed)}")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("World %s (dim=%s):", w, dim)
+                logger.debug("  Original non-zeros: %s", np.count_nonzero(orig_trimmed))
+                logger.debug("  Recovered non-zeros: %s", np.count_nonzero(recovered_trimmed))
                 max_diff = np.abs(orig_trimmed - recovered_trimmed).max()
-                print(f"  Max abs diff: {max_diff:.2e}")
+                logger.debug("  Max abs diff: %.2e", max_diff)
 
             self.assertTrue(
                 np.allclose(orig_trimmed, recovered_trimmed, rtol=1e-5, atol=1e-6),
@@ -577,11 +576,9 @@ class TestLinalgConjugate(unittest.TestCase):
 
         for block_idx, block_act in enumerate(problem.dims):
             x_found = get_vector_block(block_idx, x_wp_np, problem.dims, problem.maxdims)[:block_act]
-            is_x_close = np.allclose(x_found, problem.x_np[block_idx][:block_act], rtol=1e-5, atol=1e-4)
-            if self.verbose:
-                print(f"Block {block_idx}:")
-                print_error_stats("x", x_found, problem.x_np[block_idx], problem.dims[block_idx])
-            self.assertTrue(is_x_close)
+            logger.debug("Block %s:", block_idx)
+            debug_print_error_stats("x", x_found, problem.x_np[block_idx], problem.dims[block_idx])
+            np.testing.assert_allclose(x_found, problem.x_np[block_idx][:block_act], rtol=1e-5, atol=1e-4, err_msg="x")
 
     def test_solve_cg_heterogeneous_cpu(self):
         device = "cpu"
@@ -670,11 +667,9 @@ class TestLinalgConjugate(unittest.TestCase):
 
         for block_idx, block_act in enumerate(problem.dims):
             x_found = get_vector_block(block_idx, x_wp_np, problem.dims, problem.maxdims)[:block_act]
-            is_x_close = np.allclose(x_found, problem.x_np[block_idx][:block_act], rtol=1e-5, atol=1e-4)
-            if self.verbose:
-                print(f"Block {block_idx}:")
-                print_error_stats("x", x_found, problem.x_np[block_idx], problem.dims[block_idx])
-            self.assertTrue(is_x_close)
+            logger.debug("Block %s:", block_idx)
+            debug_print_error_stats("x", x_found, problem.x_np[block_idx], problem.dims[block_idx])
+            np.testing.assert_allclose(x_found, problem.x_np[block_idx][:block_act], rtol=1e-5, atol=1e-4, err_msg="x")
 
     def test_solve_cg_jacobi_heterogeneous_cpu(self):
         device = "cpu"
@@ -710,15 +705,10 @@ class TestLinalgConjugate(unittest.TestCase):
         # Create DenseSquareMultiLinearInfo with heterogeneous dimensions
         info = DenseSquareMultiLinearInfo()
         info.finalize(dimensions=dims_list, dtype=wp.float32, device=device)
-        mio_np = info.mio.numpy()
         vio_np = info.vio.numpy()
 
-        # Pack matrices into flat storage at mio offsets
-        A_flat = np.zeros(info.total_mat_size, dtype=np.float32)
-        for w, (A, dim) in enumerate(zip(A_list, dims_list, strict=True)):
-            offset = mio_np[w]
-            A_flat[offset : offset + dim * dim] = A.flatten()
-        A_wp = wp.array(A_flat, dtype=wp.float32, device=device)
+        # Pack matrices into dense storage at mio offsets
+        A_wp = wp.array(make_dense_matrix_storage(info, A_list), dtype=wp.float32, device=device)
 
         dense_op = DenseLinearOperatorData(info=info, mat=A_wp)
 
@@ -743,8 +733,7 @@ class TestLinalgConjugate(unittest.TestCase):
         for w, dim in enumerate(dims_list):
             x_found = x_np[vio_np[w] : vio_np[w] + dim]
             x_ref = x_ref_list[w]
-            if self.verbose:
-                print(f"World {w} (dim={dim}): max error = {np.abs(x_found - x_ref).max():.2e}")
+            logger.debug("World %s (dim=%s): max error = %.2e", w, dim, np.abs(x_found - x_ref).max())
             self.assertTrue(
                 np.allclose(x_found, x_ref, rtol=1e-3, atol=1e-4),
                 f"World {w}: solve failed, max error={np.abs(x_found - x_ref).max():.2e}",
@@ -760,8 +749,7 @@ class TestLinalgConjugate(unittest.TestCase):
 
             x_sparse = x_wp.numpy()
             x_dense = x_dense_wp.numpy()
-            if self.verbose:
-                print(f"Sparse vs dense max diff: {np.abs(x_sparse - x_dense).max():.2e}")
+            logger.debug("Sparse vs dense max diff: %.2e", np.abs(x_sparse - x_dense).max())
             self.assertTrue(
                 np.allclose(x_sparse, x_dense, rtol=1e-5, atol=1e-6),
                 f"Sparse and dense solutions differ: max diff={np.abs(x_sparse - x_dense).max():.2e}",

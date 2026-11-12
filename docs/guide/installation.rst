@@ -28,8 +28,8 @@ Minimum Requirements
      - 3.10
      - 3.10 support is deprecated; removal planned for Newton 1.9. Use 3.11+.
    * - OS
-     - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
-     - macOS has no GPU acceleration
+     - Linux (x86-64, aarch64), Windows (x86-64, ARM64), or macOS (CPU only)
+     - macOS has no GPU acceleration; Windows ARM64 support is experimental
 
 GPU requirements depend on the installed `Warp
 <https://nvidia.github.io/warp/stable/user_guide/compatibility.html>`__ wheel:
@@ -79,14 +79,17 @@ enable these GPUs. They need a Warp wheel built with an earlier CUDA 12
 toolkit; see `Warp's CUDA 12.9 ARM64 limitation
 <https://nvidia.github.io/warp/v1.17/user_guide/installation.html#cuda-12-9-limitation-on-linux-arm-platforms>`__.
 
-Installing the ``examples`` extra on ARM64 Linux systems such as NVIDIA Jetson
-Thor and DGX Spark also requires X11 development libraries to build
-``imgui_bundle`` from source:
+**Windows ARM64 (experimental)**
 
-.. code-block:: console
-
-    sudo apt-get update
-    sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
+Windows on ARM64 requires Warp 1.19 or newer and Python 3.11 or newer. Several
+optional dependencies do not publish Windows ARM64 packages, so the extras skip
+them on this platform. Most notably, :class:`~newton.solvers.SolverMuJoCo` and
+USD import and export are unavailable because ``mujoco`` and ``usd-core`` cannot
+be installed. The platform markers in ``pyproject.toml`` list all skipped
+packages. The ``torch-cu12``, ``torch-cu13``, ``rtx``, ``docs``, and
+``notebook`` extras cannot be installed because PyTorch provides no CUDA
+builds and OVRTX, ``pypandoc-binary``, and ``rerun-sdk`` provide no packages
+for Windows ARM64.
 
 For tested configurations and CUDA version-specific notes, see
 :doc:`compatibility`.
@@ -266,12 +269,12 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
      - Dependencies for running examples, including visualization and ONNX policy inference (includes ``sim`` + ``importers`` + ``onnx``)
    * - ``torch-cu12``
      - PyTorch (CUDA 12.8+) for workflows that explicitly need PyTorch, such as
-       training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes
-       ``examples``). On an R545–R579 driver, install with
+       training or running deprecated Torch ``.pt2`` / ``.pt`` / ``.pth`` policies
+       (includes ``examples``). On an R545–R579 driver, install with
        ``python -m pip install "newton[torch-cu12]" "warp-lang==1.17.0"``; the extra
        does not select Warp 1.17 by itself.
    * - ``torch-cu13``
-     - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
+     - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running deprecated Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
    * - ``notebook``
      - Jupyter notebook support with Rerun visualization (includes ``examples``)
    * - ``dev``

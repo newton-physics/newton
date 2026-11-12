@@ -14,7 +14,12 @@ import warp as wp
 
 from ......core.types import override
 from ...core.types import mat36f, mat66f, to_warp_int32_array, vec6f
-from ...linalg.core import DenseSquareMultiLinearInfo
+from ...linalg.core import (
+    DenseSquareMultiLinearInfo,
+    prefix_offsets,
+    segment_local_indices,
+    validate_dense_matrix_shape,
+)
 from .contact import mat55f, vec5f
 from .spatial_warmstart import WarmstarterAngularContacts
 
@@ -33,7 +38,6 @@ __all__ = [
     "ColoredRowsData",
     "ColoringData",
     "ContactRows",
-    "DenseBlockInfo",
     "DynamicRows",
     "EffortRows",
     "LOXData",
@@ -47,9 +51,7 @@ __all__ = [
     "SpatialContactRows",
     "SplittingState",
     "StructuralRows",
-    "capacity_offsets",
     "make_status",
-    "segment_local_indices",
 ]
 
 
@@ -130,22 +132,6 @@ def make_status(converged: wp.bool, iterations: wp.int32, failed: wp.bool) -> LO
     return status
 
 
-def capacity_offsets(capacities: Sequence[int] | np.ndarray) -> np.ndarray:
-    """Return exclusive prefix sums of ``capacities`` with the total appended."""
-    capacities_np = np.asarray(capacities, dtype=np.int32)
-    offsets = np.empty(capacities_np.size + 1, dtype=np.int32)
-    offsets[0] = 0
-    np.cumsum(capacities_np, out=offsets[1:])
-    return offsets
-
-
-def segment_local_indices(counts: np.ndarray, offsets: np.ndarray | None = None) -> np.ndarray:
-    """Return packed indices relative to the start of each variable-length segment."""
-    if offsets is None:
-        offsets = capacity_offsets(counts)
-    return np.arange(int(offsets[-1]), dtype=np.int32) - np.repeat(offsets[:-1], counts)
-
-
 ###
 # Containers
 ###
@@ -178,7 +164,7 @@ class BoxRows:
     ):
         world_count = len(world_friction_count)
         world_capacity = world_friction_count + world_limit_capacity
-        offsets = capacity_offsets(world_capacity)
+        offsets = prefix_offsets(world_capacity)
         self.capacity = int(offsets[-1])
         """Total number of rows."""
         self.friction_capacity = int(world_friction_count.sum())
@@ -264,7 +250,7 @@ class ContactRows:
         twist_response: bool = True,
     ):
         world_count = len(world_capacity)
-        offsets = capacity_offsets(world_capacity)
+        offsets = prefix_offsets(world_capacity)
         self.capacity = int(offsets[-1])
         """Total number of rows."""
         self.world_capacity = to_warp_int32_array(world_capacity, device)
@@ -901,47 +887,10 @@ class ProjectionData:
         """APGD acceleration state, if selected."""
 
 
-class DenseBlockInfo(DenseSquareMultiLinearInfo):
-    """Kamino's square multi-linear system info, with offsets from prefix sums.
-
-    Kamino computes the block offsets with a loop that is quadratic in the
-    number of blocks, which dominates setup when LOX has many factor blocks.
-    """
-
-    def finalize(
-        self,
-        dimensions: list[int],
-        dtype: type = wp.float32,
-        itype: type = wp.int32,
-        device: wp.DeviceLike = None,
-    ) -> None:
-        """Allocate the block dimensions and offsets on the specified device."""
-        self.dimensions = self._check_dimensions(dimensions)
-        self.dtype = dtype
-        self.itype = itype
-        if device is not None:
-            self.device = device
-
-        dimensions_np = np.asarray(self.dimensions, dtype=np.int64)
-        mat_offsets = np.concatenate(([0], np.cumsum(dimensions_np * dimensions_np)))
-        vec_offsets = np.concatenate(([0], np.cumsum(dimensions_np)))
-        self.num_blocks = len(self.dimensions)
-        self.max_dimension = max(self.dimensions)
-        self.total_mat_size = int(mat_offsets[-1])
-        self.matrix_shape = (self.total_mat_size,)
-        self.total_vec_size = int(vec_offsets[-1])
-        with wp.ScopedDevice(self.device):
-            self.maxdim = wp.array(self.dimensions, dtype=self.itype)
-            self.dim = wp.array(self.dimensions, dtype=self.itype)
-            self.mio = wp.array(mat_offsets[:-1], dtype=self.itype)
-            self.vio = wp.array(vec_offsets[:-1], dtype=self.itype)
-
-
 class LOXSystemData:
     """Arrays of the batched smooth body system.
 
-    Bodies stay in model order, while the dense matrices and vectors are packed by
-    factor block.
+    Matrices use one row per factor block; vectors are packed by factor block.
 
     Args:
         body_block: Factor block of each body, or ``-1`` for a prescribed body.
@@ -956,7 +905,7 @@ class LOXSystemData:
         body_block: np.ndarray,
         body_local: np.ndarray,
         body_vector_index: np.ndarray,
-        info: DenseBlockInfo,
+        info: DenseSquareMultiLinearInfo,
         device: wp.DeviceLike,
     ):
         num_bodies = len(body_block)
@@ -968,7 +917,8 @@ class LOXSystemData:
         """First entry of each body in the packed system vectors, or ``-1``."""
         self.info = info
         """Dense layout of the factor blocks."""
-        self.matrix = wp.zeros(info.total_mat_size, dtype=wp.float32, device=device)
+        validate_dense_matrix_shape(info.matrix_shape, wp.float32)
+        self.matrix = wp.zeros(info.matrix_shape, dtype=wp.float32, device=device)
         """Dense matrix of each factor block: the smooth matrix ``A`` once assembled, then ``A + alpha W``
         once the consensus fraction ``alpha`` of the splitting weights is added. Captured steps assemble
         into the matrix of the factorization, in its row order."""

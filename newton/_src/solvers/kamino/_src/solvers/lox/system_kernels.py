@@ -399,7 +399,7 @@ def _assemble_body_inertial_systems(
     model_time_dt: wp.array[wp.float32],
     inverse_permutation: wp.array[wp.int32],
     # Outputs:
-    matrix: wp.array[wp.float32],
+    matrix: wp.array2d[wp.float32],
     right_hand_side: wp.array[wp.float32],
 ):
     """Write the inertial terms of each body and clear the off-diagonal blocks of its body edges.
@@ -438,14 +438,14 @@ def _assemble_body_inertial_systems(
     col = _body_matrix_row(vector_offset, inverse_permutation, local_body, axis, dimension)
     for row in range(6):
         value = _select_axis(contribution.matrix[row], axis)
-        matrix[_matrix_index(matrix_offset, dimension, rows[row], col)] = value
+        matrix[block, _matrix_index(matrix_offset, dimension, rows[row], col)] = value
     for edge in range(body_edge_offset[bid], body_edge_offset[bid + 1]):
         neighbor = body_local[body_edge_neighbor[edge]]
         neighbor_rows = _body_matrix_rows(vector_offset, inverse_permutation, neighbor, dimension)
         neighbor_col = _body_matrix_row(vector_offset, inverse_permutation, neighbor, axis, dimension)
         for row in range(6):
-            matrix[_matrix_index(matrix_offset, dimension, rows[row], neighbor_col)] = 0.0
-            matrix[_matrix_index(matrix_offset, dimension, neighbor_rows[row], col)] = 0.0
+            matrix[block, _matrix_index(matrix_offset, dimension, rows[row], neighbor_col)] = 0.0
+            matrix[block, _matrix_index(matrix_offset, dimension, neighbor_rows[row], col)] = 0.0
 
 
 @wp.kernel
@@ -482,7 +482,7 @@ def _assemble_joint_rows(
     # Outputs:
     structural_penalty: wp.array[wp.float32],
     structural_body_impulse: wp.array[vec6f],
-    matrix: wp.array[wp.float32],
+    matrix: wp.array2d[wp.float32],
     right_hand_side: wp.array[wp.float32],
 ):
     """Assemble the dynamic rows and the frozen penalty terms of the structural rows of each joint.
@@ -611,11 +611,11 @@ def _assemble_joint_rows(
     col = _body_matrix_row(vector_offset, inverse_permutation, bid_local, axis, dimension)
     rows = _body_matrix_rows(vector_offset, inverse_permutation, bid_local, dimension)
     for row in range(6):
-        wp.atomic_add(matrix, _matrix_index(matrix_offset, dimension, rows[row], col), body_row[row])
+        wp.atomic_add(matrix, block, _matrix_index(matrix_offset, dimension, rows[row], col), body_row[row])
     if other_local >= 0:
         other_rows = _body_matrix_rows(vector_offset, inverse_permutation, other_local, dimension)
         for row in range(6):
-            wp.atomic_add(matrix, _matrix_index(matrix_offset, dimension, other_rows[row], col), cross_row[row])
+            wp.atomic_add(matrix, block, _matrix_index(matrix_offset, dimension, other_rows[row], col), cross_row[row])
 
 
 @wp.func
@@ -745,7 +745,7 @@ def _compute_free_body_blocks(
     matrix_offsets: wp.array[wp.int32],
     vector_offsets: wp.array[wp.int32],
     inverse_permutation: wp.array[wp.int32],
-    matrix: wp.array[wp.float32],
+    matrix: wp.array2d[wp.float32],
     incidence_offset: wp.array[wp.int32],
     incidence_kind: wp.array[wp.int32],
     incidence_row: wp.array[wp.int32],
@@ -777,7 +777,7 @@ def _compute_free_body_blocks(
     if block < 0:
         return
     rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, body_local[bid], dimensions[block])
-    result = _read_body_block(matrix, matrix_offsets[block], dimensions[block], rows, rows)
+    result = _read_body_block(matrix[block], matrix_offsets[block], dimensions[block], rows, rows)
     diagonal = 0.5 * (result + wp.transpose(result))
     _store_lower_mat66(diagonal_block, bid, diagonal)
     lower, valid = _cholesky_mat66(diagonal)
@@ -1060,7 +1060,7 @@ def make_patch_schur_kernel(woodbury: bool):
         matrix_offsets: wp.array[wp.int32],
         vector_offsets: wp.array[wp.int32],
         inverse_permutation: wp.array[wp.int32],
-        matrix: wp.array[wp.float32],
+        matrix: wp.array2d[wp.float32],
         body_weight_enabled: wp.array[wp.int32],
         diagonal_block: wp.array2d[wp.float32],
         diagonal_lower: wp.array2d[wp.float32],
@@ -1140,7 +1140,7 @@ def make_patch_schur_kernel(woodbury: bool):
             neighbor_lower = _load_lower_mat66(diagonal_lower, neighbor)
             neighbor_rows = _body_matrix_rows(vector_offset, inverse_permutation, body_local[neighbor], dimension)
             # Y = L_j^-1 A_ji, then A_ij A_jj^-1 A_ji = Y^T Y
-            coupling = _read_body_block(matrix, offset, dimension, neighbor_rows, rows)
+            coupling = _read_body_block(matrix[block], offset, dimension, neighbor_rows, rows)
             solved = _solve_lower_mat66(neighbor_lower, coupling)
             pinned -= wp.transpose(solved) @ solved
         _store_lower_mat66(pinned_schur, bid, 0.5 * (pinned + wp.transpose(pinned)))
@@ -1165,7 +1165,7 @@ def _compute_patch_weights(
     sigma: wp.float32,
     matrix_weight_scale: wp.float32,
     # Outputs:
-    matrix: wp.array[wp.float32],
+    matrix: wp.array2d[wp.float32],
     weight: wp.array[mat66f],
     inverse_weight: wp.array[mat66f],
     single_body_inverse: wp.array[mat66f],
@@ -1206,7 +1206,7 @@ def _compute_patch_weights(
             rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, body_local[bid], dimension)
             for row in range(6):
                 for col in range(6):
-                    matrix[_matrix_index(offset, dimension, rows[row], rows[col])] = weighted[row, col]
+                    matrix[block, _matrix_index(offset, dimension, rows[row], rows[col])] = weighted[row, col]
         if dimension == 6:
             inverse_block, _valid = _invert_spd_mat66(weighted)
             single_body_inverse[bid] = inverse_block
@@ -1315,7 +1315,7 @@ def _invert_single_body_blocks(
     body_local: wp.array[wp.int32],
     dimensions: wp.array[wp.int32],
     matrix_offsets: wp.array[wp.int32],
-    matrix: wp.array[wp.float32],
+    matrix: wp.array2d[wp.float32],
     # Outputs:
     single_body_inverse: wp.array[mat66f],
 ):
@@ -1327,7 +1327,7 @@ def _invert_single_body_blocks(
     rows = vec6i()
     for axis in range(6):
         rows[axis] = 6 * body_local[bid] + axis
-    block_matrix = _read_body_block(matrix, matrix_offsets[block], 6, rows, rows)
+    block_matrix = _read_body_block(matrix[block], matrix_offsets[block], 6, rows, rows)
     inverse_block, _valid = _invert_spd_mat66(0.5 * (block_matrix + wp.transpose(block_matrix)))
     single_body_inverse[bid] = inverse_block
 

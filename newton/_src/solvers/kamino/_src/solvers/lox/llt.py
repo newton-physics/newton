@@ -86,14 +86,13 @@ def _build_tile_traversal(
 
 
 @cache
-def make_llt_blocked_rcm_traversal_solve_kernel(block_size: int, array_ndim: int = 1):
+def make_llt_blocked_rcm_traversal_solve_kernel(block_size: int):
     """Build the RCM solve over the nonzero tile lists, with fused gather and scatter.
 
     The solve gathers the right-hand side into RCM order, writes ``x_hat`` in RCM order for the
     backward-substitution dependencies, and scatters each solved tile to the output ``x`` in the
     original order. The tile operations match Kamino's ``make_llt_blocked_rcm_solve_kernel``.
     """
-    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def llt_blocked_rcm_traversal_solve_kernel(
@@ -104,7 +103,7 @@ def make_llt_blocked_rcm_traversal_solve_kernel(block_size: int, array_ndim: int
         vio: wp.array[wp.int32],
         tpo: wp.array[wp.int32],
         P: wp.array[wp.int32],
-        L_storage: MatrixType0,
+        L_storage: wp.array2d[wp.float32],
         tile_traversal: wp.array[wp.int32],
         b: wp.array[wp.float32],
         # Outputs:
@@ -113,7 +112,7 @@ def make_llt_blocked_rcm_traversal_solve_kernel(block_size: int, array_ndim: int
         x: wp.array[wp.float32],
     ):
         tid, tid_block = wp.tid()
-        L = L_storage[tid] if wp.static(MatrixType0.ndim == 2) else L_storage
+        L = L_storage[tid]
         num_threads_per_block = wp.block_dim()
 
         n_i = dim[tid]
@@ -229,7 +228,7 @@ class LLTBlockedRCMTraversalSolver(LLTBlockedRCMSolver):
     @override
     def _allocate_impl(self, A: Any, **kwargs: Any) -> None:
         super()._allocate_impl(A, **kwargs)
-        self._traversal_solve_kernel = make_llt_blocked_rcm_traversal_solve_kernel(self._block_size, self._L.ndim)
+        self._traversal_solve_kernel = make_llt_blocked_rcm_traversal_solve_kernel(self._block_size)
         # Each block holds two lists of n_tiles slots per tile row: twice its n_tiles x n_tiles tile pattern.
         self._tile_traversal = wp.zeros(2 * self._tile_pattern.size, dtype=wp.int32, device=self._device)
 

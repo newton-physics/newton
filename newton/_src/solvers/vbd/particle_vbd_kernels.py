@@ -18,12 +18,13 @@ import warp as wp
 
 from newton._src.math import orthonormal_basis
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
+    _attachment_auto_rho,
     _eval_body_particle_contact,
+    _eval_body_particle_contact_mixed_mu,
     _eval_soft_ef_contact,
     _reset_world_selected,
     dat_separation_epsilon,
     evaluate_body_particle_attachment_particle_force_hessian,
-    evaluate_body_particle_contact,
     find_edge_edge_separator,
     find_vertex_triangle_separator,
     place_dat_division_plane,
@@ -42,13 +43,16 @@ from ...utils.mesh import (
     MeshAdjacencyData,
     get_vertex_adjacent_edge_id_order,
     get_vertex_adjacent_face_id_order,
+    get_vertex_adjacent_spring_id,
     get_vertex_adjacent_tet_id_order,
     get_vertex_num_adjacent_edges,
     get_vertex_num_adjacent_faces,
+    get_vertex_num_adjacent_springs,
     get_vertex_num_adjacent_tets,
 )
 
 # TODO: Grab changes from Warp that has fixed the backward pass
+# SolverVBD(enable_fast_math=True) also approximates sin/cos/tan/exp/log/pow; keep those out of this module
 wp.set_module_options({"enable_backward": False})
 
 VBD_DEBUG_PRINTING_OPTIONS = {
@@ -887,9 +891,21 @@ def damp_collision(
     collision_normal: wp.vec3,
     collision_damping: float,
     dt: float,
+    contact_damping_bidirectional: bool,
 ):
-    """Damp collision with the contact gap rate, not absolute vertex motion."""
-    if gap_rate < -1.0e-6:
+    """Damp collision with the contact gap rate, not absolute vertex motion.
+
+    ``gap_rate`` is the change of the contact distance over the substep divided by
+    ``dt``; the distance at the anchor positions comes from its own closest point, so
+    a rigid motion of the contact pair gives zero. The force acts along the current
+    contact normal, the gradient of that distance.
+
+    By default only a closing gap (``gap_rate < 0``) is damped. With
+    ``contact_damping_bidirectional`` the same linear damper and its Hessian also
+    act while the gap opens, so the force resists the relative normal motion in
+    both directions.
+    """
+    if gap_rate < -1.0e-6 or (contact_damping_bidirectional and gap_rate > 1.0e-6):
         n_outer = wp.outer(collision_normal, collision_normal)
         damping_force = -collision_damping * gap_rate * b_i * collision_normal
         damping_hessian = (collision_damping / dt) * b_i * b_i * n_outer
@@ -914,6 +930,7 @@ def evaluate_edge_edge_contact(
     friction_epsilon: float,
     dt: float,
     edge_edge_parallel_epsilon: float,
+    contact_damping_bidirectional: bool,
 ):
     r"""
     Returns the edge-edge contact force and hessian, including the friction force.
@@ -1004,9 +1021,16 @@ def evaluate_edge_edge_contact(
         #     )
         # # fmt: on
 
-        gap_rate = wp.dot(collision_normal, dx) / dt
+        # Damping rate: change of the edge-edge distance over the substep. The distance at the anchor
+        # positions comes from its own closest-point pair, so a rigid motion of both edges gives zero.
+        st_anchor = wp.closest_point_edge_edge(
+            pos_anchor[e1_v1], pos_anchor[e1_v2], pos_anchor[e2_v1], pos_anchor[e2_v2], edge_edge_parallel_epsilon
+        )
+        gap_rate = (dis - st_anchor[2]) / dt
 
-        damping_force, damping_hessian = damp_collision(gap_rate, v_bary, collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, v_bary, collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
         collision_force = collision_force + damping_force
         collision_hessian = collision_hessian + damping_hessian
 
@@ -1033,6 +1057,7 @@ def evaluate_edge_edge_contact_2_vertices(
     friction_epsilon: float,
     dt: float,
     edge_edge_parallel_epsilon: float,
+    contact_damping_bidirectional: bool,
 ):
     r"""
     Returns the edge-edge contact force and hessian, including the friction force.
@@ -1118,7 +1143,12 @@ def evaluate_edge_edge_contact_2_vertices(
         #     )
         # # fmt: on
 
-        gap_rate = wp.dot(collision_normal, dx) / dt
+        # Damping rate: change of the edge-edge distance over the substep. The distance at the anchor
+        # positions comes from its own closest-point pair, so a rigid motion of both edges gives zero.
+        st_anchor = wp.closest_point_edge_edge(
+            pos_anchor[e1_v1], pos_anchor[e1_v2], pos_anchor[e2_v1], pos_anchor[e2_v2], edge_edge_parallel_epsilon
+        )
+        gap_rate = (dis - st_anchor[2]) / dt
 
         collision_force_0 = collision_force * bs[0]
         collision_force_1 = collision_force * bs[1]
@@ -1126,12 +1156,16 @@ def evaluate_edge_edge_contact_2_vertices(
         collision_hessian_0 = collision_hessian * bs[0] * bs[0]
         collision_hessian_1 = collision_hessian * bs[1] * bs[1]
 
-        damping_force, damping_hessian = damp_collision(gap_rate, bs[0], collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, bs[0], collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
 
         collision_force_0 += damping_force + bs[0] * friction_force
         collision_hessian_0 += damping_hessian + bs[0] * bs[0] * friction_hessian
 
-        damping_force, damping_hessian = damp_collision(gap_rate, bs[1], collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, bs[1], collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
         collision_force_1 += damping_force + bs[1] * friction_force
         collision_hessian_1 += damping_hessian + bs[1] * bs[1] * friction_hessian
 
@@ -1157,6 +1191,7 @@ def evaluate_vertex_triangle_collision_force_hessian(
     friction_coefficient: float,
     friction_epsilon: float,
     dt: float,
+    contact_damping_bidirectional: bool,
 ):
     a = pos[tri_indices[tri, 0]]
     b = pos[tri_indices[tri, 1]]
@@ -1209,9 +1244,19 @@ def evaluate_vertex_triangle_collision_force_hessian(
             )
         # fmt: on
 
-        gap_rate = wp.dot(collision_normal, dx) / dt
+        # Damping rate: change of the vertex-triangle distance over the substep. The distance at the
+        # anchor positions comes from its own closest point, so a rigid motion of the pair gives zero.
+        closest_p_anchor, _bary_anchor, _feature_type_anchor = triangle_closest_point(
+            pos_anchor[tri_indices[tri, 0]],
+            pos_anchor[tri_indices[tri, 1]],
+            pos_anchor[tri_indices[tri, 2]],
+            pos_anchor[v],
+        )
+        gap_rate = (dis - wp.length(pos_anchor[v] - closest_p_anchor)) / dt
 
-        damping_force, damping_hessian = damp_collision(gap_rate, v_bary, collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, v_bary, collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
         collision_force = collision_force + damping_force
         collision_hessian = collision_hessian + damping_hessian
 
@@ -1237,6 +1282,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
     friction_coefficient: float,
     friction_epsilon: float,
     dt: float,
+    contact_damping_bidirectional: bool,
 ):
     a = pos[tri_indices[tri, 0]]
     b = pos[tri_indices[tri, 1]]
@@ -1289,7 +1335,15 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
             )
         # fmt: on
 
-        gap_rate = wp.dot(collision_normal, dx) / dt
+        # Damping rate: change of the vertex-triangle distance over the substep. The distance at the
+        # anchor positions comes from its own closest point, so a rigid motion of the pair gives zero.
+        closest_p_anchor, _bary_anchor, _feature_type_anchor = triangle_closest_point(
+            pos_anchor[tri_indices[tri, 0]],
+            pos_anchor[tri_indices[tri, 1]],
+            pos_anchor[tri_indices[tri, 2]],
+            pos_anchor[v],
+        )
+        gap_rate = (dis - wp.length(pos_anchor[v] - closest_p_anchor)) / dt
 
         collision_force_0 = collision_force * bs[0]
         collision_force_1 = collision_force * bs[1]
@@ -1301,20 +1355,28 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
         collision_hessian_2 = collision_hessian * bs[2] * bs[2]
         collision_hessian_3 = collision_hessian * bs[3] * bs[3]
 
-        damping_force, damping_hessian = damp_collision(gap_rate, bs[0], collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, bs[0], collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
 
         collision_force_0 += damping_force + bs[0] * friction_force
         collision_hessian_0 += damping_hessian + bs[0] * bs[0] * friction_hessian
 
-        damping_force, damping_hessian = damp_collision(gap_rate, bs[1], collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, bs[1], collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
         collision_force_1 += damping_force + bs[1] * friction_force
         collision_hessian_1 += damping_hessian + bs[1] * bs[1] * friction_hessian
 
-        damping_force, damping_hessian = damp_collision(gap_rate, bs[2], collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, bs[2], collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
         collision_force_2 += damping_force + bs[2] * friction_force
         collision_hessian_2 += damping_hessian + bs[2] * bs[2] * friction_hessian
 
-        damping_force, damping_hessian = damp_collision(gap_rate, bs[3], collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, bs[3], collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
         collision_force_3 += damping_force + bs[3] * friction_force
         collision_hessian_3 += damping_hessian + bs[3] * bs[3] * friction_hessian
         return (
@@ -1574,6 +1636,7 @@ def accumulate_self_contact_force_and_hessian(
     soft_contact_kd: float,
     friction_mu: float,
     friction_epsilon: float,
+    contact_damping_bidirectional: bool,
     edge_edge_parallel_epsilon: float,
     # outputs: particle force and hessian
     particle_forces: wp.array[wp.vec3],
@@ -1614,6 +1677,7 @@ def accumulate_self_contact_force_and_hessian(
                             friction_epsilon,
                             dt,
                             edge_edge_parallel_epsilon,
+                            contact_damping_bidirectional,
                         )
                     )
 
@@ -1676,6 +1740,7 @@ def accumulate_self_contact_force_and_hessian(
                         friction_mu,
                         friction_epsilon,
                         dt,
+                        contact_damping_bidirectional,
                     )
 
                     if has_contact:
@@ -1845,6 +1910,223 @@ def accumulate_spring_force_and_hessian(
                 wp.atomic_add(particle_hessians, v1, hessian)
 
 
+@wp.func
+def accumulate_elasticity_force_and_hessian(
+    particle_index: int,
+    dt: float,
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    tri_poses: wp.array[wp.mat22],
+    tri_materials: wp.array2d[float],
+    tri_areas: wp.array[float],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angles: wp.array[float],
+    edge_rest_length: wp.array[float],
+    edge_bending_properties: wp.array2d[float],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
+    particle_adjacency: MeshAdjacencyData,
+    f: wp.vec3,
+    h: wp.mat33,
+):
+    """Add the membrane, bending, and tet elasticity force and Hessian incident to a particle."""
+    if tri_indices.shape[0] > 0:
+        # elastic force and hessian
+        for i_adj_tri in range(get_vertex_num_adjacent_faces(particle_adjacency, particle_index)):
+            tri_index, vertex_order = get_vertex_adjacent_face_id_order(particle_adjacency, particle_index, i_adj_tri)
+
+            # fmt: off
+            if wp.static("connectivity" in VBD_DEBUG_PRINTING_OPTIONS):
+                wp.printf(
+                    "particle: %d | num_adj_faces: %d | ",
+                    particle_index,
+                    get_vertex_num_adjacent_faces(particle_adjacency, particle_index),
+                )
+                wp.printf("i_face: %d | face id: %d | v_order: %d | ", i_adj_tri, tri_index, vertex_order)
+                wp.printf(
+                    "face: %d %d %d\n",
+                    tri_indices[tri_index, 0],
+                    tri_indices[tri_index, 1],
+                    tri_indices[tri_index, 2],
+                )
+            # fmt: on
+
+            if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
+                f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
+                    tri_index,
+                    vertex_order,
+                    pos,
+                    pos_prev,
+                    tri_indices,
+                    tri_poses[tri_index],
+                    tri_areas[tri_index],
+                    tri_materials[tri_index, 0],
+                    tri_materials[tri_index, 1],
+                    tri_materials[tri_index, 2],
+                    dt,
+                )
+
+                f = f + f_tri
+                h = h + h_tri
+
+    if edge_indices.shape[0] > 0:
+        for i_adj_edge in range(get_vertex_num_adjacent_edges(particle_adjacency, particle_index)):
+            nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(
+                particle_adjacency, particle_index, i_adj_edge
+            )
+            # vertex is on the edge; otherwise it only effects the bending energy n
+            if edge_bending_properties[nei_edge_index, 0] > 0.0:
+                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                    nei_edge_index,
+                    vertex_order_on_edge,
+                    pos,
+                    pos_prev,
+                    edge_indices,
+                    edge_rest_angles,
+                    edge_rest_length,
+                    edge_bending_properties[nei_edge_index, 0],
+                    edge_bending_properties[nei_edge_index, 1],
+                    dt,
+                )
+
+                f = f + f_edge
+                h = h + h_edge
+
+    if tet_indices.shape[0] > 0:
+        # solve tet elasticity
+        num_adj_tets = get_vertex_num_adjacent_tets(particle_adjacency, particle_index)
+        for adj_tet_counter in range(num_adj_tets):
+            nei_tet_index, vertex_order_on_tet = get_vertex_adjacent_tet_id_order(
+                particle_adjacency, particle_index, adj_tet_counter
+            )
+            if tet_materials[nei_tet_index, 0] > 0.0 or tet_materials[nei_tet_index, 1] > 0.0:
+                f_tet, h_tet = evaluate_volumetric_neo_hookean_force_and_hessian(
+                    nei_tet_index,
+                    vertex_order_on_tet,
+                    pos_prev,
+                    pos,
+                    tet_indices,
+                    tet_poses[nei_tet_index],
+                    tet_materials[nei_tet_index, 0],
+                    tet_materials[nei_tet_index, 1],
+                    tet_materials[nei_tet_index, 2],
+                    dt,
+                )
+
+                f += f_tet
+                h += h_tet
+
+    return f, h
+
+
+@wp.kernel
+def step_particle_body_attachment_lambda_rho(
+    dt: float,
+    lambda_retention: float,
+    attachment_body: wp.array[int],
+    attachment_particle: wp.array[int],
+    attachment_stiffness: wp.array[float],
+    attachment_enabled: wp.array[bool],
+    pos: wp.array[wp.vec3],
+    pos_prev: wp.array[wp.vec3],
+    particle_inv_mass: wp.array[float],
+    particle_flags: wp.array[int],
+    body_inv_mass: wp.array[float],
+    adjacency: MeshAdjacencyData,
+    tri_indices: wp.array2d[int],
+    tri_poses: wp.array[wp.mat22],
+    tri_areas: wp.array[float],
+    tri_materials: wp.array2d[float],
+    edge_indices: wp.array2d[int],
+    edge_rest_angles: wp.array[float],
+    edge_rest_lengths: wp.array[float],
+    edge_materials: wp.array2d[float],
+    tet_indices: wp.array2d[int],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
+    spring_indices: wp.array[int],
+    spring_rest_length: wp.array[float],
+    spring_stiffness: wp.array[float],
+    spring_damping: wp.array[float],
+    rho: wp.array[float],
+    attachment_lambda: wp.array[wp.vec3],
+):
+    """Once-per-step attachment setup: auto-``rho`` refresh and multiplier retention.
+
+    The support is the endpoints' reduced inverse mass over ``dt^2``, excluding
+    anchor-arm mobility. The particle block also carries its incident material Hessian,
+    so a particle held by stiff material supports a larger ``rho``. Like limit rows, the
+    support is used directly as ``rho`` for finite and infinite stiffness, so a stiff
+    attachment does not dominate its endpoints' local solves.
+    """
+    i = wp.tid()
+    stiffness = attachment_stiffness[i]
+    if not attachment_enabled[i] or stiffness <= 0.0:
+        rho[i] = 0.0
+        attachment_lambda[i] = wp.vec3(0.0)
+        return
+    attachment_lambda[i] = lambda_retention * attachment_lambda[i]
+    p = attachment_particle[i]
+    w_p = particle_inv_mass[p]
+    if not particle_flags[p] & ParticleFlags.ACTIVE:
+        w_p = 0.0
+    material_h = wp.mat33(0.0)
+    if w_p > 0.0:
+        _f, material_h = accumulate_elasticity_force_and_hessian(
+            p,
+            dt,
+            pos_prev,
+            pos,
+            tri_indices,
+            tri_poses,
+            tri_materials,
+            tri_areas,
+            edge_indices,
+            edge_rest_angles,
+            edge_rest_lengths,
+            edge_materials,
+            tet_indices,
+            tet_poses,
+            tet_materials,
+            adjacency,
+            wp.vec3(0.0),
+            material_h,
+        )
+        spring_count = int(0)
+        if spring_indices.shape[0] > 0:
+            spring_count = get_vertex_num_adjacent_springs(adjacency, p)
+        for j in range(spring_count):
+            spring = get_vertex_adjacent_spring_id(adjacency, p, j)
+            _f, h = evaluate_spring_force_and_hessian(
+                p,
+                spring,
+                dt,
+                pos,
+                pos_prev,
+                spring_indices,
+                spring_rest_length,
+                spring_stiffness,
+                spring_damping,
+            )
+            material_h += h
+        # Row-sum norm: an upper bound on the material block's stiffness [N/m].
+        material_support = wp.max(
+            wp.abs(material_h[0, 0]) + wp.abs(material_h[0, 1]) + wp.abs(material_h[0, 2]),
+            wp.max(
+                wp.abs(material_h[1, 0]) + wp.abs(material_h[1, 1]) + wp.abs(material_h[1, 2]),
+                wp.abs(material_h[2, 0]) + wp.abs(material_h[2, 1]) + wp.abs(material_h[2, 2]),
+            ),
+        )
+        w_p = w_p / (1.0 + dt * dt * w_p * material_support)
+    inv_m_eff = w_p + body_inv_mass[attachment_body[i]]
+    support = float(0.0)
+    if inv_m_eff > 0.0:
+        support = 1.0 / (dt * dt * inv_m_eff)
+    rho[i] = _attachment_auto_rho(support, stiffness)
+
+
 @wp.kernel
 def accumulate_body_particle_attachment_force_and_hessian(
     dt: float,
@@ -1860,6 +2142,8 @@ def accumulate_body_particle_attachment_force_and_hessian(
     attachment_stiffness: wp.array[float],
     attachment_damping: wp.array[float],
     attachment_enabled: wp.array[bool],
+    attachment_rho: wp.array[float],
+    attachment_lambda: wp.array[wp.vec3],
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
 ):
@@ -1879,8 +2163,10 @@ def accumulate_body_particle_attachment_force_and_hessian(
         body_q[body],
         body_q_prev[body],
         attachment_body_point[attachment],
+        attachment_rho[attachment],
         attachment_stiffness[attachment],
         attachment_damping[attachment],
+        attachment_lambda[attachment],
         dt,
     )
     wp.atomic_add(particle_forces, particle, force)
@@ -1897,6 +2183,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     particle_colors: wp.array[int],
     # body-particle contact
     friction_epsilon: float,
+    contact_damping_bidirectional: bool,
     particle_radius: wp.array[float],
     body_particle_contact_particle: wp.array[int],
     body_particle_contact_count: wp.array[int],
@@ -1956,6 +2243,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
                 shape_margin,
                 dt,
                 False,
+                contact_damping_bidirectional,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
@@ -2248,6 +2536,7 @@ def gather_particle_body_contact_force_and_hessian(
     # body-particle contact
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
     particle_radius: wp.array[float],
     body_particle_contact_indices: wp.array[wp.vec3i],
     particle_contact_head: wp.array[int],
@@ -2329,6 +2618,7 @@ def gather_particle_body_contact_force_and_hessian(
                 shape_margin,
                 dt,
                 rigid_body_particle_contact_use_log_barrier,
+                contact_damping_bidirectional,
             )
             force += contact_force
             hessian += contact_hessian
@@ -2357,14 +2647,17 @@ def gather_particle_body_contact_force_and_hessian(
                 shape_margin,
                 dt,
                 rigid_body_particle_contact_use_log_barrier,
+                contact_damping_bidirectional,
             )
             weight = bary[corner]
             force += weight * contact_force
             hessian += (weight * weight) * contact_hessian
 
-    # Plain write, no atomics: later spring/self-contact kernels accumulate on top.
-    particle_forces[particle_index] = force
-    particle_hessians[particle_index] = hessian
+    # Accumulate rather than overwrite: particle-body attachments of this color were already added before the
+    # contact pass. One thread owns each particle of the color, so a plain read-modify-write is enough (``+=`` on
+    # an array would compile to an atomic).
+    particle_forces[particle_index] = particle_forces[particle_index] + force
+    particle_hessians[particle_index] = particle_hessians[particle_index] + hessian
 
 
 @wp.kernel
@@ -2378,6 +2671,7 @@ def scatter_particle_body_contact_force_and_hessian(
     # body-particle contact
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
     particle_radius: wp.array[float],
     body_particle_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_count: wp.array[int],
@@ -2450,6 +2744,7 @@ def scatter_particle_body_contact_force_and_hessian(
                     shape_margin,
                     dt,
                     rigid_body_particle_contact_use_log_barrier,
+                    contact_damping_bidirectional,
                 )
                 wp.atomic_add(particle_forces, particle_index, contact_force)
                 wp.atomic_add(particle_hessians, particle_index, contact_hessian)
@@ -2486,6 +2781,7 @@ def scatter_particle_body_contact_force_and_hessian(
                     shape_margin,
                     dt,
                     rigid_body_particle_contact_use_log_barrier,
+                    contact_damping_bidirectional,
                 )
                 for i in range(3):
                     corner_index = corners[i]
@@ -2513,7 +2809,7 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
     # _warp_half_reduce_sum hardcodes a width-16 shuffle ladder.
     assert TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE == 16
 
-    @wp.kernel(module="unique")
+    @wp.kernel(module="unique", enable_backward=False)
     def solve_elasticity_tile_kernel(
         dt: float,
         particle_ids_in_color: wp.array[wp.int32],
@@ -2714,8 +3010,6 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
                 )
                 particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f_total
 
-    # module="unique" kernels do not inherit this file's module options.
-    wp.set_module_options({"enable_backward": False}, module=solve_elasticity_tile_kernel.module)
     return solve_elasticity_tile_kernel
 
 
@@ -2767,81 +3061,26 @@ def solve_elasticity(
             f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
         )
 
-    if tri_indices.shape[0] > 0:
-        # elastic force and hessian
-        for i_adj_tri in range(get_vertex_num_adjacent_faces(particle_adjacency, particle_index)):
-            tri_index, vertex_order = get_vertex_adjacent_face_id_order(particle_adjacency, particle_index, i_adj_tri)
-
-            # fmt: off
-            if wp.static("connectivity" in VBD_DEBUG_PRINTING_OPTIONS):
-                wp.printf(
-                    "particle: %d | num_adj_faces: %d | ",
-                    particle_index,
-                    get_vertex_num_adjacent_faces(particle_adjacency, particle_index),
-                )
-                wp.printf("i_face: %d | face id: %d | v_order: %d | ", i_adj_tri, tri_index, vertex_order)
-                wp.printf(
-                    "face: %d %d %d\n",
-                    tri_indices[tri_index, 0],
-                    tri_indices[tri_index, 1],
-                    tri_indices[tri_index, 2],
-                )
-            # fmt: on
-
-            if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
-                f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
-                    tri_index,
-                    vertex_order,
-                    pos,
-                    pos_prev,
-                    tri_indices,
-                    tri_poses[tri_index],
-                    tri_areas[tri_index],
-                    tri_materials[tri_index, 0],
-                    tri_materials[tri_index, 1],
-                    tri_materials[tri_index, 2],
-                    dt,
-                )
-
-                f = f + f_tri
-                h = h + h_tri
-
-    if edge_indices.shape[0] > 0:
-        for i_adj_edge in range(get_vertex_num_adjacent_edges(particle_adjacency, particle_index)):
-            nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(particle_adjacency, particle_index, i_adj_edge)
-            # vertex is on the edge; otherwise it only effects the bending energy n
-            if edge_bending_properties[nei_edge_index, 0] > 0.0:
-                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
-                    nei_edge_index, vertex_order_on_edge, pos, pos_prev, edge_indices, edge_rest_angles, edge_rest_length,
-                    edge_bending_properties[nei_edge_index, 0], edge_bending_properties[nei_edge_index, 1], dt
-                )
-
-                f = f + f_edge
-                h = h + h_edge
-
-    if tet_indices.shape[0] > 0:
-        # solve tet elasticity
-        num_adj_tets = get_vertex_num_adjacent_tets(particle_adjacency, particle_index)
-        for adj_tet_counter in range(num_adj_tets):
-            nei_tet_index, vertex_order_on_tet = get_vertex_adjacent_tet_id_order(
-                particle_adjacency, particle_index, adj_tet_counter
-            )
-            if tet_materials[nei_tet_index, 0] > 0.0 or tet_materials[nei_tet_index, 1] > 0.0:
-                f_tet, h_tet = evaluate_volumetric_neo_hookean_force_and_hessian(
-                    nei_tet_index,
-                    vertex_order_on_tet,
-                    pos_prev,
-                    pos,
-                    tet_indices,
-                    tet_poses[nei_tet_index],
-                    tet_materials[nei_tet_index, 0],
-                    tet_materials[nei_tet_index, 1],
-                    tet_materials[nei_tet_index, 2],
-                    dt,
-                )
-
-                f += f_tet
-                h += h_tet
+    f, h = accumulate_elasticity_force_and_hessian(
+        particle_index,
+        dt,
+        pos_prev,
+        pos,
+        tri_indices,
+        tri_poses,
+        tri_materials,
+        tri_areas,
+        edge_indices,
+        edge_rest_angles,
+        edge_rest_length,
+        edge_bending_properties,
+        tet_indices,
+        tet_poses,
+        tet_materials,
+        particle_adjacency,
+        f,
+        h,
+    )
 
     # fmt: off
     if wp.static("overall_force_hessian" in VBD_DEBUG_PRINTING_OPTIONS):
@@ -2877,6 +3116,7 @@ def accumulate_contact_force_and_hessian(
     soft_contact_kd: float,
     friction_mu: float,
     friction_epsilon: float,
+    contact_damping_bidirectional: bool,
     edge_edge_parallel_epsilon: float,
     # body-particle contact
     particle_radius: wp.array[float],
@@ -2933,6 +3173,7 @@ def accumulate_contact_force_and_hessian(
                             friction_epsilon,
                             dt,
                             edge_edge_parallel_epsilon,
+                            contact_damping_bidirectional,
                         )
                     )
 
@@ -2995,6 +3236,7 @@ def accumulate_contact_force_and_hessian(
                         friction_mu,
                         friction_epsilon,
                         dt,
+                        contact_damping_bidirectional,
                     )
 
                     if has_contact:
@@ -3025,7 +3267,7 @@ def accumulate_contact_force_and_hessian(
         particle_idx = soft_contact_particle[t_id]
 
         if particle_colors[particle_idx] == current_color:
-            body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
+            body_contact_force, body_contact_hessian = _eval_body_particle_contact_mixed_mu(
                 particle_idx,
                 pos[particle_idx],
                 pos_prev[particle_idx],
@@ -3047,6 +3289,7 @@ def accumulate_contact_force_and_hessian(
                 contact_normal,
                 shape_margin,
                 dt,
+                contact_damping_bidirectional,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)

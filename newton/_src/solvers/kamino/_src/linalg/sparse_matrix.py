@@ -593,19 +593,18 @@ def _copy_square_dims_kernel(
 
 
 @functools.cache
-def _make_dense_to_bsm_detect_kernel(block_size: int, array_ndim: int = 1):
+def _make_dense_to_bsm_detect_kernel(block_size: int):
     """Creates a kernel that detects non-zero blocks in dense matrices and populates BSM coordinates.
 
     Note: Dense matrices use canonical compact storage where stride = active dim (not maxdim).
     """
-    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def kernel(
         # Dense matrix info
         dense_dim: wp.array[wp.int32],
         dense_mio: wp.array[wp.int32],
-        dense_mat_storage: MatrixType0,
+        dense_mat_storage: wp.array2d[wp.float32],
         # BSM info
         max_nzb: wp.array[wp.int32],
         nzb_start: wp.array[wp.int32],
@@ -614,7 +613,7 @@ def _make_dense_to_bsm_detect_kernel(block_size: int, array_ndim: int = 1):
         nzb_coords: wp.array2d[wp.int32],
     ):
         wid, bi, bj = wp.tid()
-        dense_mat = dense_mat_storage[wid] if wp.static(MatrixType0.ndim == 2) else dense_mat_storage
+        dense_mat = dense_mat_storage[wid]
 
         dim = dense_dim[wid]
         bs = wp.static(block_size)
@@ -652,12 +651,11 @@ def _make_dense_to_bsm_detect_kernel(block_size: int, array_ndim: int = 1):
 
 
 @functools.cache
-def _make_dense_to_bsm_copy_kernel(block_size: int, array_ndim: int = 1):
+def _make_dense_to_bsm_copy_kernel(block_size: int):
     """Creates a kernel that copies block values from dense matrices to BSM storage.
 
     Note: Dense matrices use canonical compact storage where stride = active dim (not maxdim).
     """
-    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
     mat_type = wp.types.matrix(shape=(block_size, block_size), dtype=wp.float32)
 
@@ -666,7 +664,7 @@ def _make_dense_to_bsm_copy_kernel(block_size: int, array_ndim: int = 1):
         # Dense matrix info
         dense_dim: wp.array[wp.int32],
         dense_mio: wp.array[wp.int32],
-        dense_mat_storage: MatrixType0,
+        dense_mat_storage: wp.array2d[wp.float32],
         # BSM info
         nzb_start: wp.array[wp.int32],
         num_nzb: wp.array[wp.int32],
@@ -675,7 +673,7 @@ def _make_dense_to_bsm_copy_kernel(block_size: int, array_ndim: int = 1):
         nzb_values: wp.array[mat_type],
     ):
         wid, block_idx = wp.tid()
-        dense_mat = dense_mat_storage[wid] if wp.static(MatrixType0.ndim == 2) else dense_mat_storage
+        dense_mat = dense_mat_storage[wid]
 
         if block_idx >= num_nzb[wid]:
             return
@@ -803,8 +801,8 @@ def dense_to_block_sparse_copy_values(
     max_blocks_per_dim = (max_dim + block_size - 1) // block_size
 
     # Get cached kernels
-    detect_kernel = _make_dense_to_bsm_detect_kernel(block_size, dense_op.mat.ndim)
-    copy_kernel = _make_dense_to_bsm_copy_kernel(block_size, dense_op.mat.ndim)
+    detect_kernel = _make_dense_to_bsm_detect_kernel(block_size)
+    copy_kernel = _make_dense_to_bsm_copy_kernel(block_size)
 
     # Launch detection kernel
     wp.launch(

@@ -68,6 +68,18 @@ def _point_friction_patches(device):
     return patches
 
 
+def _anchored_friction_patches(device, rng, count):
+    """Return an enabled friction-patch view whose anchors sit away from the witness points."""
+    patches = FrictionPatches()
+    patches.enabled = 1
+    patches.weight = wp.ones(count, dtype=float, device=device)
+    patches.next_contact = wp.full(count, -1, dtype=int, device=device)
+    patches.point_a = wp.array(rng.normal(size=(count, 3)), dtype=wp.vec3, device=device)
+    patches.point_b = wp.array(rng.normal(size=(count, 3)), dtype=wp.vec3, device=device)
+    patches.phi = wp.zeros(count, dtype=wp.vec2, device=device)
+    return patches
+
+
 def _contact_directions(normal):
     """Return the normal and the two friction directions of a contact row triple."""
     tangent0 = np.cross(normal, (1.0, 0.0, 0.0))
@@ -130,6 +142,7 @@ def _fixture(device="cpu", joint_dof_count=(3, 2, 1, 0)):
         "shape_body": array([1, 2, 3, -1], int),
         "body_q": array([wp.transform(wp.vec3(*p), wp.quat_identity()) for p in rng.normal(size=(4, 3))], wp.transform),
         "velocity": array(rng.normal(size=dofs)),
+        "patches": _anchored_friction_patches(device, rng, 3),
     }
 
 
@@ -222,6 +235,7 @@ class TestSparseContacts(unittest.TestCase):
                 array(art_a, int),
                 array(art_b, int),
                 full(contact_count, 0, int),
+                full(contact_count, 3, int),
                 array(group, int),
                 array(np.where(articulated, dofs, 6), int),
                 array(~articulated, int),
@@ -234,6 +248,7 @@ class TestSparseContacts(unittest.TestCase):
                 array(transforms, wp.transform),
                 0,
                 0,
+                _point_friction_patches(device),
                 indices.permutation,
                 indices.row_offsets,
                 array(articulated_inverse[:, p.entry_rows, p.columns]),
@@ -337,6 +352,8 @@ class TestSparseContacts(unittest.TestCase):
         for anchors in ((0, 0), (1, 0), (0, 1)):
             with self.subTest(anchors=anchors):
                 self._check_contact_response("cpu", 1, anchors=anchors)
+        with self.subTest(patch=True):
+            self._check_contact_response("cpu", 1, patch=True)
 
     @unittest.skipUnless(wp.is_cuda_available(), "cooperative contact construction requires CUDA")
     def test_contact_response_cuda(self):
@@ -347,9 +364,14 @@ class TestSparseContacts(unittest.TestCase):
                     self._check_contact_response("cuda:0", workers, lanes=lanes)
         with self.subTest(anchors=(1, 1)):
             self._check_contact_response("cuda:0", 2, anchors=(1, 1))
+        with self.subTest(patch=True):
+            self._check_contact_response("cuda:0", 2, patch=True)
 
-    def _check_contact_response(self, device, workers, *, lanes=8, anchors=(0, 0)):
-        """Match dense contact rows for static, same-articulation, and fixed endpoints."""
+    def _check_contact_response(self, device, workers, *, lanes=8, anchors=(0, 0), patch=False):
+        """Match dense contact rows for static, same-articulation, and fixed endpoints.
+
+        With ``patch`` the friction rows of both kernels act at the patch anchors.
+        """
 
         def array(value, dtype=float):
             return wp.array(value, dtype=dtype, device=device)
@@ -361,6 +383,7 @@ class TestSparseContacts(unittest.TestCase):
         p = f["plan"]
         indices = f["indices"]
         geometry = [f[name] for name in ("point0", "point1", "normal", "shape0", "shape1", "thickness0", "thickness1")]
+        patches = f["patches"] if patch else _point_friction_patches(device)
         dense = full((1, 9, 6), 0.0)
         row_dof = full((1, 9, 6), -9, int)
         row_factor = full((1, 9, 6), -9.0)
@@ -387,7 +410,7 @@ class TestSparseContacts(unittest.TestCase):
                 f["motion"],
                 f["shape_body"],
                 f["body_q"],
-                _point_friction_patches(device),
+                patches,
                 *anchors,
             ],
             outputs=[dense],
@@ -405,6 +428,7 @@ class TestSparseContacts(unittest.TestCase):
                 f["art_a"],
                 f["art_b"],
                 f["path"],
+                array([3, 3, 3], int),
                 f["group"],
                 array([6], int),
                 array([0], int),
@@ -416,6 +440,7 @@ class TestSparseContacts(unittest.TestCase):
                 f["shape_body"],
                 f["body_q"],
                 *anchors,
+                patches,
                 indices.permutation,
                 indices.row_offsets,
                 f["packed"],
@@ -640,7 +665,6 @@ class TestSparseContacts(unittest.TestCase):
 
 
 _PAIR_SOLVER = {
-    "solve_mode": "matrix_free",
     "articulation_constraint_max": 64,
     "free_body_constraint_max": 32,
     "iterations": 8,
@@ -806,6 +830,7 @@ def test_sparse_diagonal_gs_matches_scalar_reference(test, device):
             wp.zeros((1, world_dofs), dtype=wp.float32, device=device),
             wp.array(inverse_mass, device=device),
             cfm,
+            wp.zeros((1, 1), dtype=float, device=device),
             iterations,
             omega,
             0,
@@ -906,6 +931,7 @@ def test_speculative_sparse_contact_batches_match_serial_reference(test, device)
             wp.zeros((1, world_dofs), dtype=wp.float32, device=device),
             wp.array(inverse_mass, device=device),
             cfm,
+            wp.zeros((1, 1), dtype=float, device=device),
             iterations,
             omega,
             0,
@@ -1129,7 +1155,6 @@ def test_sparse_diagonal_is_selected_only_where_supported(test, device):
     if not wp.get_device(device).is_cuda:
         solver = SolverSteel(
             model,
-            solve_mode="split",
             enable_joint_limits=True,
             articulation_constraint_max=64,
             use_parallel_streams=True,
@@ -1726,6 +1751,71 @@ class TestSteelSparsePGS(unittest.TestCase):
         expected[0, 0] = 1.0
         np.testing.assert_array_equal(delta.numpy(), expected)
 
+    @unittest.skipUnless(wp.is_cuda_available(), "sparse PGS requires CUDA")
+    def test_cuda_free_patch_friction_pools_the_linked_normal_load(self):
+        """Bound a free-body friction row by the pooled load of its region's linked normal rows."""
+        device = "cuda:0"
+
+        def array(value, dtype=float):
+            return wp.array(value, dtype=dtype, device=device)
+
+        # World 0: normal A (row 0, no load) linked to normal B (row 3, load 2); friction rows 1 and 2 belong to A.
+        rows_per_world = 4
+        meta = np.zeros((2 * rows_per_world, 4), dtype=np.int32)
+        meta[:, 0] = 0xFFFF  # Active endpoint at offset zero; static endpoint -1.
+        # The normal rows keep their impulses (no inverse diagonal); the friction rows get one.
+        meta[1, 1] = meta[2, 1] = np.float32(1.0).view(np.int32)
+        meta[0, 3] = PGS_CONSTRAINT_TYPE_CONTACT | (3 << 16)
+        meta[3, 3] = PGS_CONSTRAINT_TYPE_CONTACT | (0 << 16)
+        meta[1, 3] = meta[2, 3] = PGS_CONSTRAINT_TYPE_FRICTION | (0 << 16)
+        rows = np.zeros((2, rows_per_world, 6), dtype=np.float32)
+        rows[0, 0, 2] = rows[0, 3, 2] = 1.0  # normals along z
+        rows[0, 1, 0] = 1.0  # friction along x
+        rows[0, 2, 1] = 1.0  # friction along y
+        velocity = np.zeros((2, 6), dtype=np.float32)
+        velocity[0, 0] = 5.0  # sliding along x, so the friction row wants a large opposing impulse
+        impulses = array([[0.0, 0.0, 0.0, 2.0], [0.0, 0.0, 0.0, 0.0]])
+        delta = wp.zeros((2, 6), device=device)
+        wp.launch_tiled(
+            _get_pgs_solve_sparse_kernel(1, 6, 6, free_body_constraint_max=rows_per_world),
+            dim=[1],
+            inputs=[
+                2,
+                array([0, 0], int),
+                array([[0.0], [0.0]]),
+                array([[1.0], [1.0]]),
+                array([[0.0], [0.0]]),
+                array(np.full((2, 1, 6), -1), int),
+                array(np.zeros((2, 1, 6))),
+                array(np.zeros((2, 1, 12))),
+                array([[0.0], [0.0]]),
+                array([[0], [0]], int),
+                array([[-1], [-1]], int),
+                array([[0.0], [0.0]]),
+                array(np.ones((2, 6)), int),
+                array(np.arange(12).reshape(2, 6), int),
+                array(velocity.reshape(-1)),
+                array([rows_per_world, 0], int),
+                array(meta, int),
+                impulses,
+                array(rows),
+                array(np.zeros_like(rows)),
+                array(rows),
+                array(np.zeros_like(rows)),
+                array([[0.0, 0.5, 0.5, 0.0], [0.0, 0.0, 0.0, 0.0]]),
+                1,
+                1.0,
+            ],
+            outputs=[delta],
+            block_dim=64,
+            device=device,
+        )
+        # Pooled over the region the Coulomb radius is 0.5 * (0 + 2) = 1; A's own load alone would allow no friction.
+        np.testing.assert_allclose(impulses.numpy()[0], [0.0, -1.0, 0.0, 2.0], atol=1.0e-6)
+        expected = np.zeros((2, 6))
+        expected[0, 0] = -1.0
+        np.testing.assert_allclose(delta.numpy(), expected, atol=1.0e-6)
+
     def test_mixed_factor_sweeps_preserve_supplied_response(self):
         """Preserve dense-then-MF row order and distinct free-body responses."""
         factor, z, r, jacobian, response, initial, bias, types, parents, mu, diagonal = _mixed_problem()
@@ -2004,8 +2094,12 @@ def _build_chain(device, *, links=6):
     return builder.finalize(device=device)
 
 
-def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False):
-    """Replicate a contacting tripod, optionally surrounded by separate free bodies."""
+def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False, boxes=False):
+    """Replicate a contacting tripod, optionally surrounded by separate free bodies.
+
+    With ``boxes`` the feet and the free bodies are boxes, whose resting contacts form patch regions of
+    several contacts each (spheres touch the ground at one point).
+    """
     env = newton.ModelBuilder()
     if prescribed:
         support = env.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -0.02), wp.quat_identity()), is_kinematic=True)
@@ -2025,7 +2119,10 @@ def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=Fa
             )
             cfg = env.default_shape_cfg.copy()
             cfg.density, cfg.mu = 0.0, 0.6
-            env.add_shape_sphere(body, radius=0.05, cfg=cfg)
+            if boxes:
+                env.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
+            else:
+                env.add_shape_sphere(body, radius=0.05, cfg=cfg)
             env.add_articulation([env.add_joint_free(body)])
 
     if free_first:
@@ -2042,14 +2139,17 @@ def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=Fa
             child = env.add_link(mass=0.5, inertia=wp.mat33(np.eye(3) * 0.002))
             cfg = env.default_shape_cfg.copy()
             cfg.density, cfg.mu = 0.0, 0.6
-            env.add_shape_sphere(child, radius=0.055, cfg=cfg)
+            if boxes:
+                env.add_shape_box(child, hx=0.055, hy=0.055, hz=0.055, cfg=cfg)
+            else:
+                env.add_shape_sphere(child, radius=0.055, cfg=cfg)
             joints.append(
                 env.add_joint_revolute(
                     root,
                     child,
                     axis=newton.Axis.Y,
                     parent_xform=wp.transform(wp.vec3(x, y, -0.11), wp.quat_identity()),
-                    target_pos=0.05,
+                    target_q=0.05,
                     target_ke=15.0,
                     target_kd=1.0,
                     armature=0.05,
@@ -2084,15 +2184,25 @@ def _make_solver(model, sparse, **overrides):
         "enable_joint_velocity_limits": False,
         "articulation_constraint_max": 32,
         "update_mass_matrix_interval": 4,
-        # Sparse factors solve point friction; persistent friction patches keep dense factors.
+        # Point friction by default; the patch tests pass friction_anchor_beta explicitly.
         "friction_anchor_beta": 0.0,
     }
     options.update(overrides)
     with kernel_overrides({"sparse_mass_matrix": sparse}):
-        return SolverSteel(model, solve_mode="matrix_free", **options)
+        return SolverSteel(model, **options)
 
 
-def _case(sparse, *, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False):
+def _case(
+    sparse,
+    *,
+    free_count=0,
+    free_first=False,
+    robot_count=1,
+    prescribed=False,
+    heterogeneous=False,
+    boxes=False,
+    **overrides,
+):
     """Allocate a stable input state for eager and captured cache reuse."""
     model = _build_model(
         free_count=free_count,
@@ -2100,6 +2210,7 @@ def _case(sparse, *, free_count=0, free_first=False, robot_count=1, prescribed=F
         robot_count=robot_count,
         prescribed=prescribed,
         heterogeneous=heterogeneous,
+        boxes=boxes,
     )
     solver = _make_solver(
         model,
@@ -2109,6 +2220,7 @@ def _case(sparse, *, free_count=0, free_first=False, robot_count=1, prescribed=F
             if free_count or robot_count > 1
             else {}
         ),
+        **overrides,
     )
     state, out = model.state(), model.state()
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -2138,6 +2250,48 @@ class TestSteelSparseSolver(unittest.TestCase):
             for case in (dense, sparse):
                 _step(case)
             self.assert_states_close(dense[2], sparse[2])
+        self.assert_sparse_state(sparse)
+
+    def test_patch_friction_matches_dense_factors(self):
+        """Pool the patch normal load and place the tangent rows at the patch anchors as the dense sweep does.
+
+        Box feet and a box object rest on several contacts each, so their patch regions link normal
+        rows on the articulated and the free-body rows; the free body slides so its friction carries load.
+        """
+        dense = _case(False, free_count=1, boxes=True, friction_anchor_beta=0.2)
+        sparse = _case(True, free_count=1, boxes=True, friction_anchor_beta=0.2)
+        self.assertIsNone(dense[1]._sparse_mass_matrix_size)
+        self.assertEqual(sparse[1]._sparse_mass_matrix_size, 9)
+        self.assertTrue(sparse[1]._friction_anchors_enabled)
+        # The one-joint articulation is the free body.
+        model = dense[0]
+        starts = model.articulation_start.numpy()
+        free_joint = int(starts[np.flatnonzero(np.diff(starts) == 1)[-1]])
+        qd_start = int(model.joint_qd_start.numpy()[free_joint])
+        for case in (dense, sparse):
+            joint_qd = case[2].joint_qd.numpy()
+            joint_qd[qd_start] = 0.3
+            case[2].joint_qd.assign(joint_qd)
+        linked = {"articulated": False, "free": False}
+        for _ in range(32):
+            _step(dense)
+            _step(sparse)
+            solver = sparse[1]
+            for family, counts, parents, types in (
+                ("articulated", solver._constraint_count, solver._row_parent, solver._row_type),
+                ("free", solver._mf_constraint_count, solver._mf_row_parent, solver._mf_row_type),
+            ):
+                if linked[family]:
+                    continue
+                counts_np, parents_np, types_np = counts.numpy(), parents.numpy(), types.numpy()
+                for world in range(counts_np.size):
+                    normals = np.flatnonzero(types_np[world, : counts_np[world]] == PGS_CONSTRAINT_TYPE_CONTACT)
+                    # A normal row linked to another one (a region of several contacts) pools the load.
+                    if any(0 <= parents_np[world, row] != row for row in normals):
+                        linked[family] = True
+            self.assert_states_close(dense[2], sparse[2])
+        self.assertTrue(linked["articulated"], "the box feet built no linked patch regions")
+        self.assertTrue(linked["free"], "the free box built no linked patch regions")
         self.assert_sparse_state(sparse)
 
     def test_moving_prescribed_support_and_reset(self):
@@ -2477,16 +2631,12 @@ class TestSteelSparseSolver(unittest.TestCase):
 
     def test_default_selects_sparse_factors_for_branched_articulations(self):
         """Select sparse factors for branched trees with point friction and keep dense factors for chains."""
-        point = {"solve_mode": "matrix_free", "friction_anchor_beta": 0.0}
+        point = {"friction_anchor_beta": 0.0}
         self.assertEqual(SolverSteel(_build_model(), **point)._sparse_mass_matrix_size, 9)
         self.assertEqual(SolverSteel(_build_model(free_count=1), **point)._sparse_mass_matrix_size, 9)
         self.assertIsNone(SolverSteel(_build_chain("cuda:0"), **point)._sparse_mass_matrix_size)
-        # The sparse kernels do not implement friction patches, the default friction.
-        self.assertIsNone(SolverSteel(_build_model(), solve_mode="matrix_free")._sparse_mass_matrix_size)
-        # The split solve uses dense factors.
-        self.assertIsNone(
-            SolverSteel(_build_model(), solve_mode="split", friction_anchor_beta=0.0)._sparse_mass_matrix_size
-        )
+        # Persistent friction patches, the default friction, take the sparse factors too.
+        self.assertEqual(SolverSteel(_build_model())._sparse_mass_matrix_size, 9)
 
     def test_unsupported_configurations_keep_existing_path(self):
         """Keep dense factors for full-support chains, velocity-limit rows, no iterations and large row capacities."""
@@ -2498,7 +2648,6 @@ class TestSteelSparseSolver(unittest.TestCase):
             {"enable_joint_velocity_limits": True},
             {"iterations": 0},
             {"articulation_constraint_max": 2048},
-            {"friction_anchor_beta": 0.2},
             {"contact_warmstart": True},
             {"contact_regularization": 0.01},
             {"velocity_iterations": 1},
@@ -2509,6 +2658,11 @@ class TestSteelSparseSolver(unittest.TestCase):
                 solver = _make_solver(model, True, **options)
                 self.assertIsNone(solver._sparse_mass_matrix_size)
                 self.assertGreater(solver._J_by_size[9].size, 1)
+        # The kernel override keeps the dense factors with persistent friction patches on, as with point friction.
+        solver = _make_solver(model, False, friction_anchor_beta=0.2)
+        self.assertTrue(solver._friction_anchors_enabled)
+        self.assertIsNone(solver._sparse_mass_matrix_size)
+        self.assertGreater(solver._J_by_size[9].size, 1)
 
 
 def _build_y_tree(device, *, mimic=False, legacy_mimic=False, closure=False, closure_enabled=True):
@@ -2586,9 +2740,7 @@ class TestSteelSparseSelectionGuard(unittest.TestCase):
     def test_y_tree_selects_sparse_factors(self):
         """Select sparse factors for the uncoupled Y tree used by the bilateral guard."""
         self.assertEqual(
-            SolverSteel(
-                _build_y_tree("cuda:0"), solve_mode="matrix_free", friction_anchor_beta=0.0
-            )._sparse_mass_matrix_size,
+            SolverSteel(_build_y_tree("cuda:0"), friction_anchor_beta=0.0)._sparse_mass_matrix_size,
             3,
         )
 
@@ -2601,7 +2753,7 @@ class TestSteelSparseSelectionGuard(unittest.TestCase):
             ("disabled closure", {"closure": True, "closure_enabled": False}),
         ):
             with self.subTest(label):
-                solver = SolverSteel(_build_y_tree("cuda:0", **kwargs), solve_mode="matrix_free")
+                solver = SolverSteel(_build_y_tree("cuda:0", **kwargs))
                 self.assertIsNone(solver._sparse_mass_matrix_size)
                 self.assertGreater(solver._J_by_size[3].size, 1)
 
@@ -2645,8 +2797,6 @@ class TestSteelLocalInternalSolve(unittest.TestCase):
         pair = wp.array([-1, 10, 11, 12, 13, -1, 14, 15], dtype=wp.int32, device=device)
         residual_pair = wp.array([-1, 10, 11, 12, 13, -1, 14, 15], dtype=wp.int32, device=device)
         owner = wp.empty(8, dtype=wp.int32, device=device)
-        general_count = wp.zeros(1, dtype=wp.int32, device=device)
-        general_worlds = wp.empty(8, dtype=wp.int32, device=device)
 
         wp.launch(
             classify_local_solve_worlds,
@@ -2667,7 +2817,7 @@ class TestSteelLocalInternalSolve(unittest.TestCase):
                 40,
                 12,
             ],
-            outputs=[owner, general_count, general_worlds],
+            outputs=[owner],
             device=device,
         )
 
@@ -2684,8 +2834,6 @@ class TestSteelLocalInternalSolve(unittest.TestCase):
                 PGS_LOCAL_SOLVE_OWNER_GENERAL,
             ],
         )
-        self.assertEqual(int(general_count.numpy()[0]), 3)
-        np.testing.assert_array_equal(general_worlds.numpy()[:3], [4, 5, 7])
 
         active_count = wp.zeros(1, dtype=wp.int32, device=device)
         active_primary = wp.empty(6, dtype=wp.int32, device=device)
@@ -3186,7 +3334,6 @@ def _run_mixed_response(
     with kernel_overrides({"hinv_jt_kernel": kernel}):
         solver = SolverSteel(
             model,
-            solve_mode="matrix_free",
             contact_warmstart=warmstart,
             enable_bilateral_preelimination=preelimination,
             enable_joint_limits=inactive_joint_limit_capacity,
@@ -3269,6 +3416,96 @@ def _assert_owner_parity(test, general, local):
 
 
 class TestSteelLocalOwners(unittest.TestCase):
+    @unittest.skipUnless(wp.is_cuda_available(), "articulation-local batch selection requires CUDA")
+    def test_large_contact_batches_keep_single_owner_and_match_general(self):
+        """Keep contact-free worlds local and replay contact-bearing worlds through the general owner.
+
+        Exercise both paired and residual contacts above the local contact batch limit, with
+        and without persistent friction patches. Compare the trajectory against a solver that
+        always uses the general owner, including transitions into and out of contact in a graph.
+        """
+        device = wp.get_cuda_device()
+        world_count = device.sm_count + 1
+        for static_support, anchor_beta in product((False, True), (0.0, 0.1)):
+            with self.subTest(static_support=static_support, anchor_beta=anchor_beta):
+                model = _build_mixed_response_model(
+                    device, world_count=world_count, friction=0.7, static_support=static_support
+                )
+                cases = []
+                for kernel in ("tiled", "par_row"):
+                    with kernel_overrides({"hinv_jt_kernel": kernel}):
+                        solver = SolverSteel(
+                            model,
+                            enable_joint_limits=True,
+                            joint_limit_activation_gap=0.0,
+                            friction_anchor_beta=anchor_beta,
+                            iterations=8,
+                            articulation_constraint_max=64,
+                            free_body_constraint_max=32,
+                        )
+                    state_in, state_out = model.state(), model.state()
+                    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+                    pipeline = newton.CollisionPipeline(
+                        model, broad_phase="nxn", reduce_contacts=False, contact_matching="latest"
+                    )
+                    cases.append([solver, state_in, state_out, pipeline, pipeline.contacts(), model.control()])
+                general, selected = cases
+                self.assertFalse(general[0]._local_internal_fast_path)
+                self.assertTrue(selected[0]._local_internal_fast_path)
+
+                def step(case, with_contacts):
+                    solver, state_in, state_out, pipeline, contacts, control = case
+                    state_in.clear_forces()
+                    pipeline.collide(state_in, contacts)
+                    if not with_contacts:
+                        contacts.rigid_contact_count.zero_()
+                    solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+                    case[1], case[2] = state_out, state_in
+
+                def assert_state_parity(selected, general):
+                    for field in ("joint_q", "joint_qd"):
+                        np.testing.assert_allclose(
+                            getattr(selected[1], field).numpy(),
+                            getattr(general[1], field).numpy(),
+                            rtol=5.0e-4,
+                            atol=2.0e-6,
+                        )
+
+                for case in cases:
+                    step(case, False)
+                np.testing.assert_array_equal(selected[0]._local_solve_owner.numpy(), PGS_LOCAL_SOLVE_OWNER_SINGLE)
+                assert_state_parity(selected, general)
+                for case in cases:
+                    step(case, True)
+                self.assertTrue((selected[0]._constraint_count.numpy() > 0).all())
+                if static_support:
+                    self.assertTrue((selected[0]._mf_constraint_count.numpy() > 0).all())
+                np.testing.assert_array_equal(selected[0]._local_solve_owner.numpy(), PGS_LOCAL_SOLVE_OWNER_GENERAL)
+                assert_state_parity(selected, general)
+
+                with wp.ScopedCapture(device) as capture:
+                    step(selected, False)
+                    step(selected, True)
+                for _ in range(3):
+                    wp.capture_launch(capture.graph)
+                    step(general, False)
+                    step(general, True)
+                    assert_state_parity(selected, general)
+                for case in cases:
+                    step(case, False)
+                np.testing.assert_array_equal(selected[0]._local_solve_owner.numpy(), PGS_LOCAL_SOLVE_OWNER_SINGLE)
+                assert_state_parity(selected, general)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "articulation-local batch selection requires CUDA")
+    def test_contact_owners_remain_available_at_sm_count(self):
+        """Preserve paired and residual owners at the small-batch boundary."""
+        device = wp.get_cuda_device()
+        model = _build_mixed_response_model(device, world_count=device.sm_count)
+        with kernel_overrides({"hinv_jt_kernel": "par_row"}):
+            solver = SolverSteel(model, friction_anchor_beta=0.0)
+        self.assertTrue((solver._local_pair_articulation.numpy() >= 0).all())
+        self.assertTrue((solver._local_residual_pair_articulation.numpy() >= 0).all())
+
     @unittest.skipUnless(wp.is_cuda_available(), "articulation-local mixed-world parity requires CUDA")
     def test_local_internal_mixed_world_matches_general_response(self):
         """Match the general response when an articulation contacts a free body."""
@@ -3486,7 +3723,6 @@ class TestSteelLocalOwners(unittest.TestCase):
                 set_torsion_radius(model, radius)
                 solvers[radius] = SolverSteel(
                     model,
-                    solve_mode="matrix_free",
                     enable_joint_limits=True,
                     joint_limit_activation_gap=0.0,
                     iterations=8,

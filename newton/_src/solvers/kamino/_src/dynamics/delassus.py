@@ -64,7 +64,6 @@ from __future__ import annotations
 
 import copy
 import functools
-from functools import cache
 from typing import Any
 
 import numpy as np
@@ -79,7 +78,7 @@ from ..kinematics.constraints import get_max_constraints_per_world
 from ..kinematics.jacobians import ColMajorSparseConstraintJacobians, DenseSystemJacobians, SparseSystemJacobians
 from ..kinematics.limits import LimitsKamino
 from ..linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo, LinearSolverType
-from ..linalg.blas import _make_masked_zero_kernel_1d
+from ..linalg.blas import _make_masked_zero_kernel_1d, zero_dense_blocks
 from ..linalg.core import dense_matrix_layout, validate_dense_matrix_shape
 from ..linalg.linear import IterativeSolver
 from ..linalg.sparse_matrix import BlockDType, BlockSparseMatrices
@@ -154,307 +153,276 @@ def upper_triangular_indices_from_index(index: int, mat_size: int):
 ###
 
 
-@cache
-def make_build_delassus_elementwise_dense_kernel(array_ndim: int = 1, jacobian_ndim: int = 1):
-    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
-    MatrixType1 = wp.array[wp.float32] if jacobian_ndim == 1 else wp.array2d[wp.float32]
+@wp.kernel
+def _build_delassus_elementwise_dense(
+    # Inputs:
+    model_info_bodies_offset: wp.array[wp.int32],
+    model_bodies_inv_m_i: wp.array[wp.float32],
+    data_bodies_inv_I_i: wp.array[wp.mat33f],
+    jacobians_cts_offset: wp.array[wp.int32],
+    jacobians_cts_data_storage: wp.array2d[wp.float32],
+    delassus_dim: wp.array[wp.int32],
+    delassus_mio: wp.array[wp.int32],
+    # Outputs:
+    delassus_D_storage: wp.array2d[wp.float32],
+):
+    # Retrieve the thread index as the world index and upper-triangle element index
+    wid, tid = wp.tid()
+    delassus_D = delassus_D_storage[wid]
+    jacobians_cts_data = jacobians_cts_data_storage[wid]
 
-    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
-    def _build_delassus_elementwise_dense(
-        # Inputs:
-        model_info_bodies_offset: wp.array[wp.int32],
-        model_bodies_inv_m_i: wp.array[wp.float32],
-        data_bodies_inv_I_i: wp.array[wp.mat33f],
-        jacobians_cts_offset: wp.array[wp.int32],
-        jacobians_cts_data_storage: MatrixType1,
-        delassus_dim: wp.array[wp.int32],
-        delassus_mio: wp.array[wp.int32],
-        # Outputs:
-        delassus_D_storage: MatrixType0,
-    ):
-        # Retrieve the thread index as the world index and upper-triangle element index
-        wid, tid = wp.tid()
-        delassus_D = delassus_D_storage[wid] if wp.static(MatrixType0.ndim == 2) else delassus_D_storage
-        jacobians_cts_data = (
-            jacobians_cts_data_storage[wid] if wp.static(MatrixType1.ndim == 2) else jacobians_cts_data_storage
-        )
+    # Retrieve the world dimensions
+    bio = model_info_bodies_offset[wid]
+    nb = model_info_bodies_offset[wid + 1] - bio
 
-        # Retrieve the world dimensions
-        bio = model_info_bodies_offset[wid]
-        nb = model_info_bodies_offset[wid + 1] - bio
+    # Retrieve the problem dimensions
+    ncts = delassus_dim[wid]
 
-        # Retrieve the problem dimensions
-        ncts = delassus_dim[wid]
+    # Skip if world has no constraints
+    if ncts == 0:
+        return
 
-        # Skip if world has no constraints
-        if ncts == 0:
-            return
+    # The Delassus matrix is symmetric, so we only compute the upper triangle (i <= j).
+    # Recover matrix indices from tid.
+    i, j = upper_triangular_indices_from_index(tid, ncts)
+    if i < 0 or i >= ncts or j < i or j >= ncts:
+        return
 
-        # The Delassus matrix is symmetric, so we only compute the upper triangle (i <= j).
-        # Recover matrix indices from tid.
-        i, j = upper_triangular_indices_from_index(tid, ncts)
-        if i < 0 or i >= ncts or j < i or j >= ncts:
-            return
+    # Retrieve the world's matrix offsets
+    dmio = delassus_mio[wid]
+    cjmio = jacobians_cts_offset[wid]
 
-        # Retrieve the world's matrix offsets
-        dmio = delassus_mio[wid]
-        cjmio = jacobians_cts_offset[wid]
+    # Compute the number of body DoFs of the world
+    nbd = 6 * nb
 
-        # Compute the number of body DoFs of the world
-        nbd = 6 * nb
+    # Buffers
+    Jv_i = wp.vec3f(0.0)
+    Jv_j = wp.vec3f(0.0)
+    Jw_i = wp.vec3f(0.0)
+    Jw_j = wp.vec3f(0.0)
+    D_ij = wp.float32(0.0)
 
-        # Buffers
-        Jv_i = wp.vec3f(0.0)
-        Jv_j = wp.vec3f(0.0)
-        Jw_i = wp.vec3f(0.0)
-        Jw_j = wp.vec3f(0.0)
-        D_ij = wp.float32(0.0)
+    # Loop over rigid body blocks
+    # NOTE: k is the body index w.r.t the world
+    for k in range(nb):
+        # Body index (bid) of body k w.r.t the model
+        bid_k = bio + k
+        # DoF index offset (dio) of body k in the flattened Jacobian matrix
+        # NOTE: Equivalent to the column index in the matrix-form of the Jacobian matrix
+        dio_k = 6 * k
+        # Jacobian index offsets
+        jio_ik = cjmio + nbd * i + dio_k
+        jio_jk = cjmio + nbd * j + dio_k
 
-        # Loop over rigid body blocks
-        # NOTE: k is the body index w.r.t the world
-        for k in range(nb):
-            # Body index (bid) of body k w.r.t the model
-            bid_k = bio + k
-            # DoF index offset (dio) of body k in the flattened Jacobian matrix
-            # NOTE: Equivalent to the column index in the matrix-form of the Jacobian matrix
-            dio_k = 6 * k
-            # Jacobian index offsets
-            jio_ik = cjmio + nbd * i + dio_k
-            jio_jk = cjmio + nbd * j + dio_k
-
-            # Load the Jacobian blocks of body k
-            for d in range(3):
-                # Load the i-th row block
-                Jv_i[d] = jacobians_cts_data[jio_ik + d]
-                Jw_i[d] = jacobians_cts_data[jio_ik + d + 3]
-                # Load the j-th row block
-                Jv_j[d] = jacobians_cts_data[jio_jk + d]
-                Jw_j[d] = jacobians_cts_data[jio_jk + d + 3]
-
-            # Linear term: inv_m_k * dot(Jv_i, Jv_j)
-            # Angular term: dot(Jw_i, inv_I_k @ Jw_j)
-            inv_m_k = model_bodies_inv_m_i[bid_k]
-            inv_I_k = data_bodies_inv_I_i[bid_k]
-            D_ij += inv_m_k * wp.dot(Jv_i, Jv_j) + wp.dot(Jw_i, inv_I_k @ Jw_j)
-
-        # Write upper triangle and mirror to lower
-        delassus_D[dmio + ncts * i + j] = D_ij
-        if i != j:
-            delassus_D[dmio + ncts * j + i] = D_ij
-
-    return _build_delassus_elementwise_dense
-
-
-_build_delassus_elementwise_dense = make_build_delassus_elementwise_dense_kernel()
-
-
-@cache
-def make_build_delassus_elementwise_sparse_kernel(array_ndim: int = 1):
-    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
-
-    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
-    def _build_delassus_elementwise_sparse(
-        # Inputs:
-        model_info_bodies_offset: wp.array[wp.int32],
-        model_bodies_inv_m_i: wp.array[wp.float32],
-        data_bodies_inv_I_i: wp.array[wp.mat33f],
-        jacobian_cts_num_nzb: wp.array[wp.int32],
-        jacobian_cts_nzb_start: wp.array[wp.int32],
-        jacobian_cts_nzb_coords: wp.array2d[wp.int32],
-        jacobian_cts_nzb_values: wp.array[vec6f],
-        delassus_dim: wp.array[wp.int32],
-        delassus_mio: wp.array[wp.int32],
-        # Outputs:
-        delassus_D_storage: MatrixType0,
-    ):
-        # Retrieve the thread index as the world index and Jacobian block index pair
-        wid, tid = wp.tid()
-        delassus_D = delassus_D_storage[wid] if wp.static(MatrixType0.ndim == 2) else delassus_D_storage
-
-        # Retrieve the problem dimensions
-        ncts = delassus_dim[wid]
-
-        # Skip if world has no constraints
-        if ncts == 0:
-            return
-
-        # Retrieve the world dimensions
-        bio = model_info_bodies_offset[wid]
-
-        # Retrieve the number of non-zero blocks
-        num_nzb = jacobian_cts_num_nzb[wid]
-
-        # Process each unordered block pair once; the result is mirrored below.
-        block_id_i, block_id_j = upper_triangular_indices_from_index(tid, num_nzb)
-
-        # Skip if index exceeds problem size
-        if block_id_i < 0 or block_id_i >= num_nzb or block_id_j >= num_nzb:
-            return
-
-        nzb_start = jacobian_cts_nzb_start[wid]
-        global_block_id_i = nzb_start + block_id_i
-        global_block_id_j = nzb_start + block_id_j
-
-        # Get block coordinates
-        block_coords_i = jacobian_cts_nzb_coords[global_block_id_i]
-        block_coords_j = jacobian_cts_nzb_coords[global_block_id_j]
-
-        # Skip if blocks don't affect the same body
-        if block_coords_i[1] != block_coords_j[1]:
-            return
-
-        ct_i = block_coords_i[0]
-        ct_j = block_coords_j[0]
-
-        # Body index (bid) of body k w.r.t the model, from Jacobian block coords
-        bid_k = bio + block_coords_i[1] // 6
-
-        # Get block values
-        block_i = jacobian_cts_nzb_values[global_block_id_i]
-        block_j = jacobian_cts_nzb_values[global_block_id_j]
-
-        # Retrieve the world's matrix offsets
-        dmio = delassus_mio[wid]
-
-        # Load the Jacobian blocks components for body
-        Jv_i = wp.vec3f(block_i[0], block_i[1], block_i[2])
-        Jv_j = wp.vec3f(block_j[0], block_j[1], block_j[2])
-        Jw_i = wp.vec3f(block_i[3], block_i[4], block_i[5])
-        Jw_j = wp.vec3f(block_j[3], block_j[4], block_j[5])
+        # Load the Jacobian blocks of body k
+        for d in range(3):
+            # Load the i-th row block
+            Jv_i[d] = jacobians_cts_data[jio_ik + d]
+            Jw_i[d] = jacobians_cts_data[jio_ik + d + 3]
+            # Load the j-th row block
+            Jv_j[d] = jacobians_cts_data[jio_jk + d]
+            Jw_j[d] = jacobians_cts_data[jio_jk + d + 3]
 
         # Linear term: inv_m_k * dot(Jv_i, Jv_j)
         # Angular term: dot(Jw_i, inv_I_k @ Jw_j)
         inv_m_k = model_bodies_inv_m_i[bid_k]
         inv_I_k = data_bodies_inv_I_i[bid_k]
-        D_ij = inv_m_k * wp.dot(Jv_i, Jv_j) + wp.dot(Jw_i, inv_I_k @ Jw_j)
+        D_ij += inv_m_k * wp.dot(Jv_i, Jv_j) + wp.dot(Jw_i, inv_I_k @ Jw_j)
 
-        # Write upper triangle and mirror to lower
-        wp.atomic_add(delassus_D, dmio + ncts * ct_i + ct_j, D_ij)
-        if ct_i != ct_j:
-            wp.atomic_add(delassus_D, dmio + ncts * ct_j + ct_i, D_ij)
-
-    return _build_delassus_elementwise_sparse
+    # Write upper triangle and mirror to lower
+    delassus_D[dmio + ncts * i + j] = D_ij
+    if i != j:
+        delassus_D[dmio + ncts * j + i] = D_ij
 
 
-_build_delassus_elementwise_sparse = make_build_delassus_elementwise_sparse_kernel()
+@wp.kernel
+def _build_delassus_elementwise_sparse(
+    # Inputs:
+    model_info_bodies_offset: wp.array[wp.int32],
+    model_bodies_inv_m_i: wp.array[wp.float32],
+    data_bodies_inv_I_i: wp.array[wp.mat33f],
+    jacobian_cts_num_nzb: wp.array[wp.int32],
+    jacobian_cts_nzb_start: wp.array[wp.int32],
+    jacobian_cts_nzb_coords: wp.array2d[wp.int32],
+    jacobian_cts_nzb_values: wp.array[vec6f],
+    delassus_dim: wp.array[wp.int32],
+    delassus_mio: wp.array[wp.int32],
+    # Outputs:
+    delassus_D_storage: wp.array2d[wp.float32],
+):
+    # Retrieve the thread index as the world index and Jacobian block index pair
+    wid, tid = wp.tid()
+    delassus_D = delassus_D_storage[wid]
+
+    # Retrieve the problem dimensions
+    ncts = delassus_dim[wid]
+
+    # Skip if world has no constraints
+    if ncts == 0:
+        return
+
+    # Retrieve the world dimensions
+    bio = model_info_bodies_offset[wid]
+
+    # Retrieve the number of non-zero blocks
+    num_nzb = jacobian_cts_num_nzb[wid]
+
+    # Process each unordered block pair once; the result is mirrored below.
+    block_id_i, block_id_j = upper_triangular_indices_from_index(tid, num_nzb)
+
+    # Skip if index exceeds problem size
+    if block_id_i < 0 or block_id_i >= num_nzb or block_id_j >= num_nzb:
+        return
+
+    nzb_start = jacobian_cts_nzb_start[wid]
+    global_block_id_i = nzb_start + block_id_i
+    global_block_id_j = nzb_start + block_id_j
+
+    # Get block coordinates
+    block_coords_i = jacobian_cts_nzb_coords[global_block_id_i]
+    block_coords_j = jacobian_cts_nzb_coords[global_block_id_j]
+
+    # Skip if blocks don't affect the same body
+    if block_coords_i[1] != block_coords_j[1]:
+        return
+
+    ct_i = block_coords_i[0]
+    ct_j = block_coords_j[0]
+
+    # Body index (bid) of body k w.r.t the model, from Jacobian block coords
+    bid_k = bio + block_coords_i[1] // 6
+
+    # Get block values
+    block_i = jacobian_cts_nzb_values[global_block_id_i]
+    block_j = jacobian_cts_nzb_values[global_block_id_j]
+
+    # Retrieve the world's matrix offsets
+    dmio = delassus_mio[wid]
+
+    # Load the Jacobian blocks components for body
+    Jv_i = wp.vec3f(block_i[0], block_i[1], block_i[2])
+    Jv_j = wp.vec3f(block_j[0], block_j[1], block_j[2])
+    Jw_i = wp.vec3f(block_i[3], block_i[4], block_i[5])
+    Jw_j = wp.vec3f(block_j[3], block_j[4], block_j[5])
+
+    # Linear term: inv_m_k * dot(Jv_i, Jv_j)
+    # Angular term: dot(Jw_i, inv_I_k @ Jw_j)
+    inv_m_k = model_bodies_inv_m_i[bid_k]
+    inv_I_k = data_bodies_inv_I_i[bid_k]
+    D_ij = inv_m_k * wp.dot(Jv_i, Jv_j) + wp.dot(Jw_i, inv_I_k @ Jw_j)
+
+    # Write upper triangle and mirror to lower
+    wp.atomic_add(delassus_D, dmio + ncts * ct_i + ct_j, D_ij)
+    if ct_i != ct_j:
+        wp.atomic_add(delassus_D, dmio + ncts * ct_j + ct_i, D_ij)
 
 
-@cache
-def make_add_joint_armature_diagonal_regularization_dense_kernel(array_ndim: int = 1):
-    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
+@wp.kernel
+def _add_joint_armature_diagonal_regularization_dense(
+    # Inputs:
+    model_info_num_joint_dynamic_cts: wp.array[wp.int32],
+    model_info_joint_dynamic_cts_offset: wp.array[wp.int32],
+    model_joint_inv_m_j: wp.array[wp.float32],
+    delassus_dim: wp.array[wp.int32],
+    delassus_mio: wp.array[wp.int32],
+    # Outputs:
+    delassus_D_storage: wp.array2d[wp.float32],
+):
+    # Retrieve the thread index as the world index and Delassus element index
+    wid, tid = wp.tid()
+    delassus_D = delassus_D_storage[wid]
 
-    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
-    def _add_joint_armature_diagonal_regularization_dense(
-        # Inputs:
-        model_info_num_joint_dynamic_cts: wp.array[wp.int32],
-        model_info_joint_dynamic_cts_offset: wp.array[wp.int32],
-        model_joint_inv_m_j: wp.array[wp.float32],
-        delassus_dim: wp.array[wp.int32],
-        delassus_mio: wp.array[wp.int32],
-        # Outputs:
-        delassus_D_storage: MatrixType0,
-    ):
-        # Retrieve the thread index as the world index and Delassus element index
-        wid, tid = wp.tid()
-        delassus_D = delassus_D_storage[wid] if wp.static(MatrixType0.ndim == 2) else delassus_D_storage
+    # Retrieve the world dimensions
+    num_joint_dyn_cts = model_info_num_joint_dynamic_cts[wid]
 
-        # Retrieve the world dimensions
-        num_joint_dyn_cts = model_info_num_joint_dynamic_cts[wid]
+    # Skip if world has no dynamic joint constraints or indices exceed the problem size
+    if num_joint_dyn_cts == 0 or tid >= num_joint_dyn_cts:
+        return
 
-        # Skip if world has no dynamic joint constraints or indices exceed the problem size
-        if num_joint_dyn_cts == 0 or tid >= num_joint_dyn_cts:
-            return
+    # Retrieve the world's Delassus matrix dimension and offset
+    ncts = delassus_dim[wid]
+    dmio = delassus_mio[wid]
 
-        # Retrieve the world's Delassus matrix dimension and offset
-        ncts = delassus_dim[wid]
-        dmio = delassus_mio[wid]
+    # Retrieve the dynamic constraint index offset of the world
+    world_joint_dynamic_cts_offset = model_info_joint_dynamic_cts_offset[wid]
 
-        # Retrieve the dynamic constraint index offset of the world
-        world_joint_dynamic_cts_offset = model_info_joint_dynamic_cts_offset[wid]
+    # Retrieve the joint's inverse mass for armature regularization
+    inv_m_j = model_joint_inv_m_j[world_joint_dynamic_cts_offset + tid]
 
-        # Retrieve the joint's inverse mass for armature regularization
-        inv_m_j = model_joint_inv_m_j[world_joint_dynamic_cts_offset + tid]
-
-        # Add the armature regularization to the diagonal element of the Delassus matrix
-        delassus_D[dmio + ncts * tid + tid] += inv_m_j
-
-    return _add_joint_armature_diagonal_regularization_dense
+    # Add the armature regularization to the diagonal element of the Delassus matrix
+    delassus_D[dmio + ncts * tid + tid] += inv_m_j
 
 
-_add_joint_armature_diagonal_regularization_dense = make_add_joint_armature_diagonal_regularization_dense_kernel()
+@wp.kernel
+def _add_joint_effort_diagonal_regularization_dense(
+    # Inputs:
+    model_info_num_effort_cts: wp.array[wp.int32],
+    model_info_joint_effort_cts_offset: wp.array[wp.int32],
+    model_info_bounded_cts_group_offset: wp.array[wp.int32],
+    model_info_num_friction_cts: wp.array[wp.int32],
+    model_joint_inv_m_a: wp.array[wp.float32],
+    delassus_dim: wp.array[wp.int32],
+    delassus_mio: wp.array[wp.int32],
+    # Outputs:
+    delassus_D_storage: wp.array2d[wp.float32],
+):
+    wid, tid = wp.tid()
+    delassus_D = delassus_D_storage[wid]
+
+    num_effort_cts = model_info_num_effort_cts[wid]
+    if num_effort_cts == 0 or tid >= num_effort_cts:
+        return
+
+    ncts = delassus_dim[wid]
+    dmio = delassus_mio[wid]
+    world_effort_cts_offset = model_info_joint_effort_cts_offset[wid]
+    row = model_info_bounded_cts_group_offset[wid] + model_info_num_friction_cts[wid] + tid
+    inv_m_a = model_joint_inv_m_a[world_effort_cts_offset + tid]
+    delassus_D[dmio + ncts * row + row] += inv_m_a
 
 
-@cache
-def make_add_joint_effort_diagonal_regularization_dense_kernel(array_ndim: int = 1):
-    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
+@wp.kernel
+def _regularize_delassus_diagonal_dense(
+    # Inputs:
+    delassus_dim: wp.array[wp.int32],
+    delassus_vio: wp.array[wp.int32],
+    delassus_mio: wp.array[wp.int32],
+    eta: wp.array[wp.float32],
+    # Outputs:
+    delassus_D_storage: wp.array2d[wp.float32],
+):
+    # Retrieve the thread index
+    wid, tid = wp.tid()
+    delassus_D = delassus_D_storage[wid]
 
-    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
-    def _add_joint_effort_diagonal_regularization_dense(
-        # Inputs:
-        model_info_num_effort_cts: wp.array[wp.int32],
-        model_info_joint_effort_cts_offset: wp.array[wp.int32],
-        model_info_bounded_cts_group_offset: wp.array[wp.int32],
-        model_info_num_friction_cts: wp.array[wp.int32],
-        model_joint_inv_m_a: wp.array[wp.float32],
-        delassus_dim: wp.array[wp.int32],
-        delassus_mio: wp.array[wp.int32],
-        # Outputs:
-        delassus_D_storage: MatrixType0,
-    ):
-        wid, tid = wp.tid()
-        delassus_D = delassus_D_storage[wid] if wp.static(MatrixType0.ndim == 2) else delassus_D_storage
+    # Retrieve the problem dimensions and matrix block index offset
+    dim = delassus_dim[wid]
+    vio = delassus_vio[wid]
+    mio = delassus_mio[wid]
 
-        num_effort_cts = model_info_num_effort_cts[wid]
-        if num_effort_cts == 0 or tid >= num_effort_cts:
-            return
+    # Skip if row index exceed the problem size
+    if tid >= dim:
+        return
 
-        ncts = delassus_dim[wid]
-        dmio = delassus_mio[wid]
-        world_effort_cts_offset = model_info_joint_effort_cts_offset[wid]
-        row = model_info_bounded_cts_group_offset[wid] + model_info_num_friction_cts[wid] + tid
-        inv_m_a = model_joint_inv_m_a[world_effort_cts_offset + tid]
-        delassus_D[dmio + ncts * row + row] += inv_m_a
-
-    return _add_joint_effort_diagonal_regularization_dense
+    # Regularize the diagonal element
+    delassus_D[mio + dim * tid + tid] += eta[vio + tid]
 
 
-_add_joint_effort_diagonal_regularization_dense = make_add_joint_effort_diagonal_regularization_dense_kernel()
-
-
-@cache
-def make_regularize_delassus_diagonal_dense_kernel(array_ndim: int = 1):
-    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
-
-    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
-    def _regularize_delassus_diagonal_dense(
-        # Inputs:
-        delassus_dim: wp.array[wp.int32],
-        delassus_vio: wp.array[wp.int32],
-        delassus_mio: wp.array[wp.int32],
-        eta: wp.array[wp.float32],
-        # Outputs:
-        delassus_D_storage: MatrixType0,
-    ):
-        # Retrieve the thread index
-        wid, tid = wp.tid()
-        delassus_D = delassus_D_storage[wid] if wp.static(MatrixType0.ndim == 2) else delassus_D_storage
-
-        # Retrieve the problem dimensions and matrix block index offset
-        dim = delassus_dim[wid]
-        vio = delassus_vio[wid]
-        mio = delassus_mio[wid]
-
-        # Skip if row index exceed the problem size
-        if tid >= dim:
-            return
-
-        # Regularize the diagonal element
-        delassus_D[mio + dim * tid + tid] += eta[vio + tid]
-
-    return _regularize_delassus_diagonal_dense
-
-
-_regularize_delassus_diagonal_dense = make_regularize_delassus_diagonal_dense_kernel()
+@wp.kernel
+def _add_physical_compliance(
+    dimensions: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    compliance: wp.array[wp.float32],
+    preconditioner: wp.array[wp.float32],
+    diagonal: wp.array[wp.float32],
+):
+    world, row = wp.tid()
+    if row < dimensions[world]:
+        index = offsets[world] + row
+        scale = wp.float32(1.0)
+        if preconditioner:
+            scale = preconditioner[index]
+        diagonal[index] += scale * scale * compliance[index]
 
 
 @wp.kernel
@@ -936,7 +904,7 @@ class DelassusOperator:
     def num_worlds(self) -> int:
         """
         Returns the number of worlds represented by the Delassus operator.
-        This is equal to the number of matrix blocks contained in the flat array.
+        This is equal to the number of matrix rows in the allocation.
         """
         return self._num_worlds
 
@@ -951,15 +919,14 @@ class DelassusOperator:
     @property
     def num_maxsize(self) -> int:
         """
-        Returns the maximum size of the Delassus matrix across all worlds.
-        This is the sum over the sizes of all matrix blocks.
+        Returns the reserved matrix elements before per-world row padding.
         """
         return self._model_maxsize
 
     @property
     def operator(self) -> DenseLinearOperatorData[wp.float32, wp.int32]:
         """
-        Returns a reference to the flat Delassus matrix array.
+        Returns the Delassus operator and its per-world matrix storage.
         """
         return self._operator
 
@@ -974,14 +941,14 @@ class DelassusOperator:
     @property
     def info(self) -> DenseSquareMultiLinearInfo[wp.float32, wp.int32]:
         """
-        Returns a reference to the flat Delassus matrix array.
+        Returns the dimensions and offsets of the Delassus matrix blocks.
         """
         return self._operator.info
 
     @property
-    def D(self) -> wp.array[wp.float32]:
+    def D(self) -> wp.array2d[wp.float32]:
         """
-        Returns a reference to the flat Delassus matrix array.
+        Returns the Delassus matrix blocks in per-world rows.
         """
         return self._operator.mat
 
@@ -1096,7 +1063,7 @@ class DelassusOperator:
             model: The model for which the Delassus operator is built.
             data: The current data of the model.
             jacobians: The current Jacobians of the model.
-            reset_to_zero: If True (default), resets the Delassus matrix to zero before building.
+            reset_to_zero: Clear active entries before sparse assembly; dense assembly overwrites them.
 
         Raises:
             ValueError: If the model, data, or Jacobians are not valid.
@@ -1123,9 +1090,10 @@ class DelassusOperator:
         if self._operator.mat is None:
             raise ValueError("Delassus matrix is not allocated. Call finalize() first.")
 
-        # Initialize the Delassus matrix to zero
-        if reset_to_zero:
-            self.zero()
+        # Dense assembly overwrites every active entry; sparse assembly accumulates.
+        if reset_to_zero and not isinstance(jacobians, DenseSystemJacobians):
+            info = self._operator.info
+            zero_dense_blocks(self._operator.mat, info.dim, info.dim, info.mio, self._max_of_max_total_D_size)
 
         # Build the Delassus matrix parallelized over the upper triangle. Warp's
         # CUDA kernels use 32-thread warps, so pad the work count to keep the
@@ -1137,9 +1105,7 @@ class DelassusOperator:
             warp_size = 32
             upper_tri_size = ((upper_tri_size + warp_size - 1) // warp_size) * warp_size
             wp.launch(
-                kernel=make_build_delassus_elementwise_dense_kernel(
-                    self._operator.mat.ndim, jacobians.data.J_cts_data.ndim
-                ),
+                kernel=_build_delassus_elementwise_dense,
                 dim=(self._size.num_worlds, upper_tri_size),
                 inputs=[
                     # Inputs:
@@ -1161,7 +1127,7 @@ class DelassusOperator:
             warp_size = 32
             upper_tri_size = ((upper_tri_size + warp_size - 1) // warp_size) * warp_size
             wp.launch(
-                kernel=make_build_delassus_elementwise_sparse_kernel(self._operator.mat.ndim),
+                kernel=_build_delassus_elementwise_sparse,
                 dim=(self._size.num_worlds, upper_tri_size),
                 inputs=[
                     # Inputs:
@@ -1183,7 +1149,7 @@ class DelassusOperator:
         # Add armature regularization to the upper diagonal if dynamic joint constraints are present
         if model.size.sum_of_num_dynamic_joints > 0:
             wp.launch(
-                kernel=make_add_joint_armature_diagonal_regularization_dense_kernel(self._operator.mat.ndim),
+                kernel=_add_joint_armature_diagonal_regularization_dense,
                 dim=(self._size.num_worlds, model.size.max_of_num_dynamic_joint_cts),
                 inputs=[
                     # Inputs:
@@ -1199,7 +1165,7 @@ class DelassusOperator:
             )
         if model.size.sum_of_num_effort_joint_cts > 0:
             wp.launch(
-                kernel=make_add_joint_effort_diagonal_regularization_dense_kernel(self._operator.mat.ndim),
+                kernel=_add_joint_effort_diagonal_regularization_dense,
                 dim=(self._size.num_worlds, model.size.max_of_num_effort_joint_cts),
                 inputs=[
                     model.info.num_joint_effort_cts,
@@ -1224,7 +1190,7 @@ class DelassusOperator:
             Shape of ``(sum_of_max_total_cts,)``.
         """
         wp.launch(
-            kernel=make_regularize_delassus_diagonal_dense_kernel(self._operator.mat.ndim),
+            kernel=_regularize_delassus_diagonal_dense,
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[self._operator.info.dim, self._operator.info.vio, self._operator.info.mio, eta, self._operator.mat],
             device=self._device,
@@ -1410,8 +1376,9 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
     Jacobian and M is the mass matrix. It supports diagonal regularization and diagonal
     preconditioning.
 
-    For a given diagonal regularization matrix R and a diagonal preconditioning matrix P, the
-    final operator is defined by the matrix P @ D @ P + R.
+    With physical diagonal compliance E, numerical regularization R, and diagonal
+    preconditioning P, the final operator is P @ (D + E) @ P + R. Physical
+    compliance persists when numerical regularization is removed.
 
     Typical usage example:
 
@@ -1492,6 +1459,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         self._contacts: ContactsKamino | None = None
         self._preconditioner: wp.array[wp.float32] | None = None
         self._eta: wp.array[wp.float32] | None = None
+        self._compliance: wp.array[wp.float32] | None = None
 
         self._jacobians: SparseSystemJacobians | None = None
 
@@ -1703,6 +1671,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
 
         # When assembly is disabled (raw-Jacobian solver), there are no derived copies to refresh.
         if not self._assemble_preconditioned_jacobians:
+            self._refresh_combined_regularization()
             self._needs_update = False
             return
 
@@ -1753,6 +1722,12 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                     device=self._transpose_op_matrix.device,
                 )
 
+        self._refresh_combined_regularization()
+
+        self._needs_update = False
+
+    def _refresh_combined_regularization(self) -> wp.array[wp.float32] | None:
+        """Combine physical diagonal terms and solver penalties for every sparse execution path."""
         # Update combined regularization term, which includes the regular regularization (eta) as
         # well as the terms of the armature regularization. Since the armature regularization is
         # applied to the original Delassus matrix, preconditioning has to be applied to it if
@@ -1776,7 +1751,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                             # Inputs:
                             self._model.info.num_joint_dynamic_cts,
                             self._model.info.joint_dynamic_cts_offset,
-                            self.bsm.row_start,
+                            self.constraint_jacobian.row_start,
                             self._data.joints.inv_m_j,
                             # Outputs:
                             self._combined_regularization,
@@ -1792,7 +1767,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                             self._model.info.joint_effort_cts_offset,
                             self._model.info.joint_bounded_cts_group_offset,
                             self._model.info.num_joint_friction_cts,
-                            self.bsm.row_start,
+                            self.constraint_jacobian.row_start,
                             self._data.joints.inv_m_a,
                             self._combined_regularization,
                         ],
@@ -1811,7 +1786,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                             self._model.info.num_joint_dynamic_cts,
                             self._model.info.joint_dynamic_cts_offset,
                             self._data.joints.inv_m_j,
-                            self.bsm.row_start,
+                            self.constraint_jacobian.row_start,
                             self._preconditioner,
                             # Outputs:
                             self._combined_regularization,
@@ -1828,21 +1803,42 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                             self._model.info.joint_bounded_cts_group_offset,
                             self._model.info.num_joint_friction_cts,
                             self._data.joints.inv_m_a,
-                            self.bsm.row_start,
+                            self.constraint_jacobian.row_start,
                             self._preconditioner,
                             self._combined_regularization,
                         ],
                         device=self._device,
                     )
 
-        self._needs_update = False
+        if self._compliance is not None:
+            wp.launch(
+                _add_physical_compliance,
+                dim=(self.num_matrices, self._model.size.max_of_max_total_cts),
+                inputs=[
+                    self.info.dim,
+                    self.info.vio,
+                    self._compliance,
+                    self._preconditioner,
+                    self._combined_regularization,
+                ],
+                device=self._device,
+            )
+        return self._combined_regularization if self._combined_regularization is not None else self._eta
+
+    def set_compliance(self, compliance: wp.array[wp.float32]):
+        """Attach physical row compliance before preconditioning, independently of proximal penalties."""
+        self._compliance = compliance
+        if self._combined_regularization is None:
+            self._combined_regularization = wp.empty_like(compliance)
+        self.set_regularization_needs_update()
 
     def set_regularization(self, eta: wp.array[wp.float32] | None):
         """
         Adds diagonal regularization to each matrix block of the Delassus operator, replacing any
         previously set regularization.
 
-        The regularized Delassus matrix is defined as D = J @ M^-1 @ J^T + diag(eta)
+        The effective matrix is P @ (J @ M^-1 @ J^T + E) @ P + diag(eta),
+        where E includes physical diagonal terms. Passing None removes only eta.
 
         Args:
             eta: The regularization values to add to the diagonal of each matrix block,
@@ -1876,8 +1872,8 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         """Stores the diagonal of the Delassus matrix in the given array.
 
         Note:
-            Returns the diagonal of the pure Delassus matrix. Armature and
-            effort-compliance diagonal terms are included; proximal
+            Returns the diagonal of the physical Delassus matrix. Armature,
+            effort and material compliance terms are included; proximal
             regularization (``eta``) and preconditioning are not.
 
         Args:
@@ -1910,7 +1906,14 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
             device=self._device,
         )
 
-        # Add armature and effort regularization
+        # Add physical material, armature, and effort diagonal terms.
+        if self._compliance is not None:
+            wp.launch(
+                _add_physical_compliance,
+                dim=(self.num_matrices, self._model.size.max_of_max_total_cts),
+                inputs=[self.info.dim, self.info.vio, self._compliance, None, diag],
+                device=self._device,
+            )
         if self._model.size.sum_of_num_dynamic_joint_cts > 0:
             wp.launch(
                 kernel=_add_armature_regularization_sparse,

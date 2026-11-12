@@ -17,7 +17,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import vec6f
-from ...linalg import DenseLinearOperatorData
+from ...linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo, prefix_offsets, segment_local_indices
 from .llt import LLTBlockedRCMTraversalSolver
 from .system_kernels import (
     _assemble_body_inertial_systems,
@@ -27,13 +27,10 @@ from .system_kernels import (
     _solve_single_body_blocks,
 )
 from .types import (
-    DenseBlockInfo,
     DynamicRows,
     EffortRows,
     LOXSystemData,
     StructuralRows,
-    capacity_offsets,
-    segment_local_indices,
 )
 
 ###
@@ -62,9 +59,9 @@ _WIDE_TILE_MAX_BLOCKS_PER_SM = 4
 class LOXSystem:
     """Batched dense smooth body systems over independent body components.
 
-    World-level bookkeeping remains in model body order. The dense matrices and
-    vectors are packed by ``body_components`` so disconnected articulations can
-    be factorized independently. Once the factorization has ordered the rows of
+    World-level bookkeeping remains in model body order. Each body component has
+    one matrix storage row and a packed vector block, so disconnected articulations
+    can be factorized independently. Once the factorization has ordered the rows of
     each block, the matrices are assembled directly in that order. When every
     body is prescribed, the system holds one empty placeholder block.
     The arrays live in :class:`LOXSystemData`, exposed as :attr:`data`.
@@ -91,7 +88,7 @@ class LOXSystem:
         components.sort(key=lambda component: component.size == 1)
         if components:
             block_body_counts = np.asarray([component.size for component in components], dtype=np.int32)
-            block_offsets = capacity_offsets(block_body_counts)
+            block_offsets = prefix_offsets(block_body_counts)
             packed_bodies = np.concatenate(components)
             self.block_world_host = tuple(body_world_host[packed_bodies[block_offsets[:-1]]].tolist())
             storage_dimensions = (6 * block_body_counts).tolist()
@@ -128,7 +125,7 @@ class LOXSystem:
         self.body_local_host = tuple(body_local.tolist())
         self.body_vector_index_host = tuple(body_vector_index.tolist())
 
-        info = DenseBlockInfo()
+        info = DenseSquareMultiLinearInfo()
         info.finalize(dimensions=storage_dimensions, dtype=wp.float32, itype=wp.int32, device=self.device)
         if active_dimensions != storage_dimensions:
             info.dim = wp.array(active_dimensions, dtype=wp.int32, device=self.device)
@@ -137,7 +134,7 @@ class LOXSystem:
         # The first body of each edge between two dynamic bodies clears the off-diagonal blocks of the edge
         # before an assembly, see :func:`.system_kernels._assemble_body_inertial_systems`
         dynamic_edges = edges[np.all(body_block[edges] >= 0, axis=1) & (edges[:, 0] != edges[:, 1])]
-        body_edge_offset = capacity_offsets(np.bincount(dynamic_edges[:, 0], minlength=self.num_bodies))
+        body_edge_offset = prefix_offsets(np.bincount(dynamic_edges[:, 0], minlength=self.num_bodies))
         self._body_edge_offset = wp.array(body_edge_offset, dtype=wp.int32, device=self.device)
         self._body_edge_neighbor = wp.array(
             dynamic_edges[:, 1] if dynamic_edges.size else [0], dtype=wp.int32, device=self.device
@@ -147,7 +144,7 @@ class LOXSystem:
         if self.num_sparse_blocks > 0:
             # The totals of the sparse prefix cover the single-body blocks, so that captured steps
             # assemble every block into the matrix of the factorization.
-            sparse_info = DenseBlockInfo()
+            sparse_info = DenseSquareMultiLinearInfo()
             sparse_info.finalize(
                 dimensions=storage_dimensions[: self.num_sparse_blocks],
                 dtype=wp.float32,
@@ -157,7 +154,6 @@ class LOXSystem:
             if active_dimensions != storage_dimensions:
                 sparse_info.dim = wp.array(active_dimensions, dtype=wp.int32, device=self.device)
             sparse_info.total_mat_size = info.total_mat_size
-            sparse_info.matrix_shape = info.matrix_shape
             sparse_info.total_vec_size = info.total_vec_size
             # Batches that fill the device take small tiles, which skip most of the zero
             # blocks of a tree-like body graph, and one warp per world, which matches the
@@ -196,7 +192,7 @@ class LOXSystem:
         return self._data
 
     @property
-    def matrix(self) -> wp.array[wp.float32]:
+    def matrix(self) -> wp.array2d[wp.float32]:
         """Matrix that the assembly writes: :attr:`LOXSystemData.matrix`, or the matrix of the factorization
         during :meth:`assemble_and_factorize`."""
         return self._matrix
@@ -245,7 +241,7 @@ class LOXSystem:
         """Assemble body inertia and explicit-force terms, and clear the other matrix entries of the assembly.
 
         The body terms write the whole diagonal block of each body and clear the off-diagonal blocks of the
-        body edges, which hold every matrix entry that :meth:`add_joint_rows` adds to. The packed matrix holds
+        body edges, which hold every matrix entry that :meth:`add_joint_rows` adds to. The matrix holds
         zeros elsewhere from its allocation, and the factorization copies them into its ordered matrix with
         each new row order.
         """
@@ -388,7 +384,7 @@ class LOXSystem:
             assemble()
             return
 
-        def assemble_into(matrix: wp.array[wp.float32], inverse_permutation: wp.array[wp.int32] | None) -> None:
+        def assemble_into(matrix: wp.array2d[wp.float32], inverse_permutation: wp.array[wp.int32] | None) -> None:
             self._matrix = matrix
             self._inverse_permutation = inverse_permutation
             try:
