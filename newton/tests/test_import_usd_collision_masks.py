@@ -6,6 +6,7 @@
 import unittest
 
 import numpy as np
+import warp as wp
 
 import newton
 from newton.solvers import SolverMuJoCo
@@ -104,16 +105,46 @@ class TestUsdCollisionMasks(unittest.TestCase):
         """Keep repeated USD imports independent when compiling collision masks."""
         builder = self._builder()
         stage = self._stage([[(0, 1)], [(1, 0)], [(1, 0)]])
-        builder.add_usd(stage, load_visual_shapes=False)
-        builder.add_usd(stage, load_visual_shapes=False)
+        imports = [builder.add_usd(stage, load_visual_shapes=False)["path_shape_map"] for _ in range(2)]
         model = builder.finalize(device="cpu")
         domains = model.mujoco.collision_mask_domain.numpy()
         self.assertEqual(len(np.unique(domains)), 2)
+        shapes = [[shapes[f"/body{i}/shape0"] for i in range(3)] for shapes in imports]
+        # Masks relate shapes of one import only; separate assets keep colliding with each other.
+        expected = {tuple(sorted((s[0], s[1]))) for s in shapes} | {tuple(sorted((s[0], s[2]))) for s in shapes}
+        expected |= {tuple(sorted((a, b))) for a in shapes[0] for b in shapes[1]}
+        self.assertEqual(set(map(tuple, model.shape_contact_pairs.numpy())), expected)
         solver = self._solver(model)
-        expected = set(map(tuple, model.shape_contact_pairs.numpy()))
         for a in range(model.shape_count):
             for b in range(a + 1, model.shape_count):
                 self.assertEqual(self._masks_allow(solver, a, b), (a, b) in expected)
+
+    def test_masks_do_not_widen_builder_groups(self):
+        """Authored masks only narrow the collision groups the builder assigns to imported shapes."""
+        for default_group in (0, -1, 2):
+            with self.subTest(default_group=default_group):
+                builder = self._builder()
+                existing_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), label="existing")
+                existing = builder.add_shape_sphere(existing_body, radius=0.1)
+                builder.default_shape_cfg.collision_group = default_group
+                stage = self._stage([[(1, 1)], [(1, 0)], [(1, 0)]])
+                result = builder.add_usd(stage, load_visual_shapes=False)
+                model = builder.finalize(device="cpu")
+                imported = [result["path_shape_map"][f"/body{i}/shape0"] for i in range(3)]
+                pairs = set(map(tuple, model.shape_contact_pairs.numpy()))
+                if default_group == 0:
+                    expected = set()
+                elif default_group < 0:
+                    # One shared negative group: imported shapes only collide with the existing shape.
+                    expected = {(existing, shape) for shape in imported}
+                else:
+                    # Group 2 never collides with the existing group-1 shape; masks reject (1, 0)/(1, 0).
+                    expected = {tuple(sorted((imported[0], imported[1]))), tuple(sorted((imported[0], imported[2])))}
+                self.assertEqual(pairs, expected)
+                solver = self._solver(model)
+                for a in range(model.shape_count):
+                    for b in range(a + 1, model.shape_count):
+                        self.assertEqual(self._masks_allow(solver, a, b), (a, b) in expected, (a, b))
 
     def test_unauthored_masks_have_no_domain(self):
         """Leave unauthored shapes outside preserved collision mask domains."""
