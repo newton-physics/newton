@@ -5572,9 +5572,17 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_compiler_angle_units(self):
-        """Convert revolute springrefs using compiler units, including merged D6 joints."""
+        """Convert revolute springrefs using compiler units, including merged D6 joints, and keep stiffness per radian."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
+        # path, body, axis, angular, ref, springref, stiffness
+        joints = (
+            ("Revolute", "Hinge", "X", True, 15.0, 30.0, 3.0),
+            ("Prismatic", "Slider", "X", False, 0.1, 0.25, 4.0),
+            ("MergedHinge", "Merged", "X", True, 15.0, 30.0, 5.0),
+            ("MergedTwist", "Merged", "Y", True, 20.0, 50.0, 6.0),
+            ("MergedSlide", "Merged", "X", False, 0.1, 0.25, 7.0),
+        )
         for angle_units in (None, "degree", "radian", "no_scene"):
             stage = Usd.Stage.CreateInMemory()
             UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -5590,18 +5598,15 @@ def Xform "Articulation" (
                 mass.CreateMassAttr(1.0)
                 mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1))
 
-            for path, body, angular in (
-                ("Revolute", "Hinge", True),
-                ("Prismatic", "Slider", False),
-                ("MergedHinge", "Merged", True),
-                ("MergedSlide", "Merged", False),
-            ):
+            for path, body, axis, angular, ref, springref, stiffness in joints:
                 joint_schema = UsdPhysics.RevoluteJoint if angular else UsdPhysics.PrismaticJoint
                 joint = joint_schema.Define(stage, f"/World/{path}")
                 joint.CreateBody1Rel().SetTargets([f"/World/{body}"])
+                joint.CreateAxisAttr().Set(axis)
                 prim = joint.GetPrim()
-                prim.CreateAttribute("mjc:ref", Sdf.ValueTypeNames.Float).Set(15.0 if angular else 0.1)
-                prim.CreateAttribute("mjc:springref", Sdf.ValueTypeNames.Float).Set(30.0 if angular else 0.25)
+                prim.CreateAttribute("mjc:ref", Sdf.ValueTypeNames.Float).Set(ref)
+                prim.CreateAttribute("mjc:springref", Sdf.ValueTypeNames.Float).Set(springref)
+                prim.CreateAttribute("mjc:stiffness", Sdf.ValueTypeNames.Double).Set(stiffness)
 
             builder = newton.ModelBuilder()
             SolverMuJoCo.register_custom_attributes(builder)
@@ -5610,20 +5615,18 @@ def Xform "Articulation" (
                 model = builder.finalize(device="cpu")
                 rest_q = model.joint_rest_q.numpy()
                 reference = model.mujoco.dof_ref.numpy()
+                joint_stiffness = model.joint_stiffness.numpy()
                 angular_factor = 1.0 if angle_units == "radian" else np.pi / 180.0
-                expected_springref = 30.0 * angular_factor
+                offsets = {"MergedSlide": 0, "MergedHinge": 1, "MergedTwist": 2}
 
-                for path, offset, expected_spring, expected_ref in (
-                    ("Revolute", 0, expected_springref, 15.0 * angular_factor),
-                    ("Prismatic", 0, 0.25, 0.1),
-                    ("MergedHinge", 1, expected_springref, 15.0 * angular_factor),
-                    ("MergedSlide", 0, 0.25, 0.1),
-                ):
+                for path, _body, _axis, angular, ref, springref, stiffness in joints:
+                    factor = angular_factor if angular else 1.0
                     joint = result["path_joint_map"][f"/World/{path}"]
-                    dof = builder.joint_qd_start[joint] + offset
-                    coord = builder.joint_q_start[joint] + offset
-                    self.assertAlmostEqual(rest_q[coord], expected_spring - expected_ref, places=5)
-                    self.assertAlmostEqual(reference[dof], expected_ref, places=5)
+                    dof = builder.joint_qd_start[joint] + offsets.get(path, 0)
+                    coord = builder.joint_q_start[joint] + offsets.get(path, 0)
+                    self.assertAlmostEqual(rest_q[coord], (springref - ref) * factor, places=5)
+                    self.assertAlmostEqual(reference[dof], ref * factor, places=5)
+                    self.assertAlmostEqual(joint_stiffness[dof], stiffness, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):
@@ -7253,7 +7256,7 @@ def Xform "Articulation" (
             result = builder.add_usd(stage)
 
         self.assertEqual(len(caught), 1)
-        self.assertEqual(caught[0].category, newton.exceptions.NewtonWarning)
+        self.assertEqual(caught[0].category, newton.NewtonWarning)
         self.assertRegex(str(caught[0].message), _MIRRORED_BODY_WARNING)
 
         for case_name, _scale, _angle, _com, include_partial in cases:
@@ -9286,7 +9289,7 @@ def Xform "Articulation" (
 
                 builder = newton.ModelBuilder()
                 SolverMuJoCo.register_custom_attributes(builder)
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "another joint already connects"):
+                with self.assertWarnsRegex(newton.NewtonWarning, "another joint already connects"):
                     builder.add_usd(stage, xform=xform, schema_resolvers=[usd.SchemaResolverMjc()])
                 j = builder.joint_label.index("/World/Weld")
                 self.assertEqual(builder.joint_parent[j], -1)
@@ -15200,7 +15203,7 @@ def test_converted_mjc_equality_weld_closes_its_loop_in_steel(test, device):
             stage, frame0, frame1 = TestImportSampleAssetsParsing._authored_weld_stage(target, closed_loop=True)
             builder = newton.ModelBuilder()
             SolverMuJoCo.register_custom_attributes(builder)
-            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "another joint already connects"):
+            with test.assertWarnsRegex(newton.NewtonWarning, "another joint already connects"):
                 builder.add_usd(stage, load_sites=False, schema_resolvers=[usd.SchemaResolverMjc()])
             model = builder.finalize(device=device)
             solver = newton.solvers.SolverSteel(model)
