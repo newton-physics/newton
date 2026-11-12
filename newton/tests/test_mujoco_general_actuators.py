@@ -1558,6 +1558,45 @@ MJCF_SITE_ACTUATOR_WITH_REFSITE = """<?xml version="1.0" encoding="utf-8"?>
 </mujoco>
 """
 
+USD_SITE_ACTUATOR_WITH_REFSITE = """#usda 1.0
+def Xform "World"
+{
+    def Xform "base" (
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsArticulationRootAPI"]
+    )
+    {
+        def Sphere "geom" (
+            apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.05
+        }
+        def Sphere "target_site" (
+            apiSchemas = ["MjcSiteAPI"]
+        )
+        {
+            double radius = 0.005
+            double3 xformOp:translate = (0.1, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+        def Sphere "reference_site" (
+            apiSchemas = ["MjcSiteAPI"]
+        )
+        {
+            double radius = 0.005
+            double3 xformOp:translate = (0, 0.1, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+    def MjcActuator "relative_site_motor"
+    {
+        uniform double[] mjc:gear = [1, 0, 0, 0, 0, 0]
+        rel mjc:target = </World/base/target_site>
+        rel mjc:refSite = </World/base/reference_site>
+    }
+}
+"""
+
 
 class TestMuJoCoDamperActuators(unittest.TestCase):
     """Tests for controllable damper actuator shortcuts."""
@@ -1991,6 +2030,68 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, include_sites=False)
         np.testing.assert_array_equal(solver.mj_model.actuator_trnid[0], native_model.actuator_trnid[0])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_site_actuator_refsite_from_usd_matches_mjcf(self):
+        """USD and MJCF site transmissions compile with the same reference site."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(USD_SITE_ACTUATOR_WITH_REFSITE)
+        builder = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+        reference_shape = model.shape_label.index("/World/base/reference_site")
+        self.assertEqual(model.mujoco.actuator_trnid.numpy()[0, 1], reference_shape)
+
+        mjcf_builder = ModelBuilder()
+        mjcf_builder.add_mjcf(MJCF_SITE_ACTUATOR_WITH_REFSITE, ctrl_direct=True)
+        mjcf_model = mjcf_builder.finalize()
+        native_model = SolverMuJoCo.import_mujoco()[0].MjModel.from_xml_string(MJCF_SITE_ACTUATOR_WITH_REFSITE)
+        for include_sites in (True, False):
+            with self.subTest(include_sites=include_sites):
+                usd_solver = SolverMuJoCo(model, disable_contacts=True, include_sites=include_sites)
+                mjcf_solver = SolverMuJoCo(mjcf_model, disable_contacts=True, include_sites=include_sites)
+                self.assertEqual(usd_solver.mj_model.nu, 1)
+                np.testing.assert_array_equal(usd_solver.mj_model.actuator_trntype, native_model.actuator_trntype)
+                np.testing.assert_array_equal(usd_solver.mj_model.actuator_trnid, native_model.actuator_trnid)
+                np.testing.assert_array_equal(usd_solver.mj_model.actuator_trnid, mjcf_solver.mj_model.actuator_trnid)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_site_actuator_refsite_from_usd_import_context(self):
+        """Resolve USD reference sites in the importing builder and tolerate imports without sites."""
+        from pxr import Gf, Sdf, Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(USD_SITE_ACTUATOR_WITH_REFSITE)
+
+        # Attributes registered on another builder reach the scene through add_builder().
+        robot = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(robot)
+        robot.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), label="robot_body")
+        scene = ModelBuilder()
+        scene.add_builder(robot)
+        result = scene.add_usd(stage)
+        model = scene.finalize()
+        reference_shape = result["path_shape_map"]["/World/base/reference_site"]
+        self.assertEqual(model.mujoco.actuator_trnid.numpy()[0, 1], reference_shape)
+
+        # Sites intentionally skipped by the import leave the reference unset instead of failing.
+        builder = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        with self.assertWarnsRegex(NewtonWarning, "ignoring mjc:refSite"):
+            builder.add_usd(stage, load_sites=False)
+        self.assertEqual(builder.finalize().mujoco.actuator_trnid.numpy()[0, 1], -1)
+
+        # A namespaced transmission ID authored without mjc:refSite is still imported.
+        actuator = stage.GetPrimAtPath("/World/relative_site_motor")
+        actuator.GetRelationship("mjc:refSite").ClearTargets(True)
+        actuator.CreateAttribute("newton:mujoco:actuator_trnid", Sdf.ValueTypeNames.Int2).Set(Gf.Vec2i(-1, 2))
+        builder = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        self.assertEqual(builder.finalize().mujoco.actuator_trnid.numpy()[0, 1], 2)
 
     def test_site_actuator_with_include_sites_false(self):
         """Site actuator is resolved even when include_sites=False."""
