@@ -2691,22 +2691,33 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             """Resolve target path label for a USD actuator prim."""
             return resolve_actuator_target_path(context["prim"])
 
-        def resolve_actuator_transmission_ids(_: str, context: dict[str, Any]) -> wp.vec2i:
-            """Preserve the optional reference site of a USD site transmission."""
+        def resolve_actuator_transmission_ids(_: str, context: dict[str, Any]) -> wp.vec2i | None:
+            """Resolve the optional reference site of a USD site transmission."""
             prim = context["prim"]
+            authored_attr = prim.GetAttribute("newton:mujoco:actuator_trnid")
+            authored = authored_attr.Get() if authored_attr and authored_attr.HasAuthoredValue() else None
             rel = prim.GetRelationship("mjc:refSite")
             reference_paths = rel.GetTargets() if rel else []
             if not reference_paths:
-                return wp.vec2i(-1, -1)
+                return None if authored is None else wp.vec2i(int(authored[0]), int(authored[1]))
             if len(reference_paths) != 1:
                 raise ValueError(
                     f"MjcActuator {prim.GetPath()} has unsupported number of reference sites: {len(reference_paths)}"
                 )
             reference_path = str(reference_paths[0])
-            for i, label in enumerate(builder.shape_label):
-                if label == reference_path and (builder.shape_flags[i] & ShapeFlags.SITE):
-                    return wp.vec2i(-1, i)
-            raise ValueError(f"MjcActuator {prim.GetPath()} references unknown site '{reference_path}'")
+            # Resolve against the importing builder and this import's prims; the
+            # transformer may have been copied from another builder by add_builder().
+            importing_builder = context["builder"]
+            shape = context["result"]["path_shape_map"].get(reference_path)
+            if shape is None or not importing_builder.shape_flags[shape] & ShapeFlags.SITE:
+                warnings.warn(
+                    f"MjcActuator {prim.GetPath()} references site '{reference_path}', which was not imported as a "
+                    "site; ignoring mjc:refSite.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+                return None if authored is None else wp.vec2i(int(authored[0]), int(authored[1]))
+            return wp.vec2i(-1 if authored is None else int(authored[0]), shape)
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
