@@ -1495,6 +1495,51 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_array_equal(fallback.data.state.bilateral_active_dim.numpy(), joint_dims)
         np.testing.assert_allclose(fallback.data.solution.lambdas.numpy(), expected, atol=2e-5, rtol=2e-5)
 
+    def test_03d1b_sparse_dvi_rcm_honors_per_world_bilateral_intervals(self):
+        """Restrict bilateral re-solves to each world's interval with the default RCM solver."""
+        builder = newton.ModelBuilder()
+        builder.replicate(builder=basics.build_boxes_hinged(), copy_count=2)
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
+        model, data, state, limits, detector, jacobians = make_containers(
+            model=model,
+            max_world_contacts=8,
+            sparse=True,
+        )
+        update_containers(model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians)
+        problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
+        configs = [
+            kamino_config.DVISolverConfig(max_alternating_iterations=3, bilateral_solve_interval=1),
+            kamino_config.DVISolverConfig(max_alternating_iterations=3, bilateral_solve_interval=99),
+        ]
+        self.assertEqual(configs[0].bilateral_solver_type, "LLTBRCM")
+        solver = DVISolver(
+            model=model,
+            data=data,
+            limits=limits,
+            contacts=detector.contacts,
+            jacobians=jacobians,
+            problem=problem,
+            config=configs,
+            warmstart=WarmStartMode.NONE,
+        )
+        self.assertIsInstance(solver._bilateral_solver, LLTBlockedRCMSolver)
+        active_dim_updates = []
+        set_bilateral_active_dim = solver._sparse_path.set_bilateral_active_dim
+
+        def record_bilateral_active_dim(problem: DualProblem, block_iteration: int) -> None:
+            set_bilateral_active_dim(problem, block_iteration)
+            active_dim_updates.append((block_iteration, solver.data.state.bilateral_active_dim.numpy().copy()))
+
+        solver._sparse_path.set_bilateral_active_dim = record_bilateral_active_dim
+        solver.coldstart()
+        solver.solve(problem)
+        joint_dims = problem.data.njc.numpy()
+        self.assertEqual([block_iteration for block_iteration, _ in active_dim_updates], [0, 1, -1])
+        np.testing.assert_array_equal(active_dim_updates[0][1], np.array([joint_dims[0], 0], dtype=np.int32))
+        np.testing.assert_array_equal(active_dim_updates[1][1], active_dim_updates[0][1])
+        np.testing.assert_array_equal(active_dim_updates[2][1], joint_dims)
+        self.assertTrue(np.all(np.isfinite(solver.data.solution.lambdas.numpy())))
+
     def test_03d2_dvi_direct_block_finishes_with_bilateral_solve(self):
         """Recover a consistent bilateral solution after fused inequality iterations."""
         builder = basics.build_boxes_hinged()
