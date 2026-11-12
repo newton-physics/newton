@@ -730,47 +730,11 @@ def _launch_sparse_inequality_pgs(
             state.bilateral_coupling,
             state.bilateral_response,
             state.bilateral_delta,
-            wp.bool(path.use_schur_complement),
         ]
         if cooperative_articulation:
-            kernel_inputs = [
-                *common_inputs,
-                jacobians.bounded_constraint_nzb_offsets,
-                jacobians.limit_constraint_nzb_offsets,
-                jacobians.contact_constraint_nzb_offsets,
-                state.limit_indices,
-                state.contact_indices,
-                problem.data.nbc,
-                problem.data.nl,
-                problem.data.nc,
-                problem.data.bcio,
-                problem.data.lio,
-                problem.data.cio,
-                problem.data.iio,
-                problem.data.bcgo,
-                problem.data.lcgo,
-                problem.data.ccgo,
-                problem.data.vio,
-                problem.data.mu,
-                problem.data.bound_lower,
-                problem.data.bound_upper,
-                problem.data.P,
-                problem.data.v_f,
-                problem.data.v_b_friction,
-                state.scratch,
-                state.inequality_projected_diagonal,
-                delassus.regularization,
-                problem.data.njc,
-                bilateral_vio,
-                state.bilateral_response_mio,
-                state.bilateral_response_stride,
-                state.bilateral_coupling,
-                state.bilateral_response,
-                state.bilateral_delta,
-                state.bilateral_response_factor,
-                state.s,
-                wp.bool(enable_compact_schur),
-            ]
+            kernel_inputs += [state.bilateral_response_factor, state.s, wp.bool(enable_compact_schur)]
+        else:
+            kernel_inputs.append(wp.bool(path.use_schur_complement))
         kernel_inputs.extend(
             [
                 state.inequality_num_colors,
