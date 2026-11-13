@@ -15,7 +15,6 @@ from .types import (
     AntiAliasing,
     ClearData,
     MeshData,
-    RayGenerationMode,
     RenderConfig,
     RenderOrder,
     TextureData,
@@ -116,11 +115,9 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         view_ray_bundle: wp.array[wp.int32],
         view_pinhole: wp.array[wp.vec4f],
     ):
-        if wp.static(state.ray_mode == int(RayGenerationMode.BUNDLE)):
+        if wp.static(not state.per_view_rays):
+            # One bundle shared by every view.
             return camera_rays[py, px, sample_index, 0], camera_rays[py, px, sample_index, 1]
-        elif wp.static(state.ray_mode == int(RayGenerationMode.BUNDLE_INDEXED)):
-            row = view_ray_bundle[view_index] * img_height + py
-            return camera_rays[row, px, sample_index, 0], camera_rays[row, px, sample_index, 1]
         else:
             # A view with its own bundle (a CUSTOM camera, a site, or a pinhole camera given rays)
             # uses it; the others generate pinhole rays from

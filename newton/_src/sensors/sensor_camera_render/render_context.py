@@ -21,7 +21,6 @@ from .types import (
     DeformableSurfaceMode,
     LightType,
     MeshData,
-    RayGenerationMode,
     RenderConfig,
     RenderOrder,
     TextureData,
@@ -79,7 +78,7 @@ class RenderContext:
         render_albedo: bool = False
         render_hdr_color: bool = False
         has_view_clip: bool = False
-        ray_mode: int = 0
+        per_view_rays: bool = False
 
     DEFAULT_CLEAR_DATA = ClearData()
     DEFAULT_RENDER_CONFIG = RenderConfig()
@@ -521,14 +520,11 @@ class RenderContext:
             anti_aliasing = AntiAliasing(config.anti_aliasing)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid anti_aliasing mode: {config.anti_aliasing!r}") from exc
-        if view_pinhole is not None:
-            if view_ray_bundle is None:
-                raise ValueError("view_pinhole requires view_ray_bundle")
-            ray_mode = RayGenerationMode.PINHOLE
-        elif view_ray_bundle is not None:
-            ray_mode = RayGenerationMode.BUNDLE_INDEXED
-        else:
-            ray_mode = RayGenerationMode.BUNDLE
+        # Per-view rays: each view reads its stacked bundle from ``view_ray_bundle``, or generates
+        # pinhole rays from ``view_pinhole`` when its bundle index is negative.
+        per_view_rays = view_ray_bundle is not None
+        if per_view_rays != (view_pinhole is not None):
+            raise ValueError("view_ray_bundle and view_pinhole must be given together")
         if sample_count is None:
             if camera_rays is None:
                 raise ValueError("sample_count is required when camera_rays is not given")
@@ -578,7 +574,7 @@ class RenderContext:
             self._render_state.render_albedo = albedo_image is not None
             self._render_state.render_hdr_color = hdr_color_image is not None
             self._render_state.has_view_clip = view_clip is not None
-            self._render_state.ray_mode = int(ray_mode)
+            self._render_state.per_view_rays = per_view_rays
 
             # One view per camera transform; independent of the model world count.
             view_count = camera_transforms.shape[0]
@@ -593,7 +589,7 @@ class RenderContext:
                 if image is not None and image.shape != expected:
                     raise ValueError(f"{name} shape must be {expected}, got {tuple(image.shape)}")
 
-            if ray_mode == RayGenerationMode.BUNDLE:
+            if not per_view_rays:
                 if camera_rays.ndim != 4 or camera_rays.shape[2] <= 0 or camera_rays.shape[3] != 2:
                     raise ValueError(
                         f"camera_rays shape must be ({height}, {width}, sample_count, 2), got {tuple(camera_rays.shape)}"
