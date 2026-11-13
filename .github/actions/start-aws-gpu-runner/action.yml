@@ -79,6 +79,8 @@ runs:
       uses: machulav/ec2-github-runner@343a1b2ae682e681c3cec9a235d882da17ff04ef  # v2.6.1
       with:
         mode: start
+        # Do not expose a reusable repository registration token to PR code.
+        use-jit: true
         github-token: ${{ inputs.github-token }}
         ec2-instance-type: ${{ inputs.instance-type }}
         ec2-volume-size: ${{ inputs.volume-size }}
@@ -125,6 +127,8 @@ runs:
       uses: machulav/ec2-github-runner@343a1b2ae682e681c3cec9a235d882da17ff04ef  # v2.6.1
       with:
         mode: start
+        # Do not expose a reusable repository registration token to PR code.
+        use-jit: true
         github-token: ${{ inputs.github-token }}
         ec2-instance-type: ${{ inputs.fallback-instance-type }}
         ec2-volume-size: ${{ inputs.volume-size }}
