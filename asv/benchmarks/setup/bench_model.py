@@ -23,12 +23,12 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 sys.path.append(os.path.join(parent_dir, "simulation"))
 
-from bench_sensor_tiled_camera import SCENES as TILED_CAMERA_SCENES
+from bench_sensor_camera import SCENES
 from benchmark_metrics import collect_startup_metrics
 from benchmark_mujoco import Example, _startup_phase
 
 import newton
-from newton.sensors import SensorTiledCamera
+from newton.sensors import SensorCamera
 from newton.solvers import SolverXPBD
 from newton.viewer import ViewerGL
 
@@ -245,8 +245,8 @@ class KpiInitializeViewerGL:
         del self._model
 
 
-class _InitializeModelTiledCamera:
-    """Build models and tiled cameras from scene presets with collision handling enabled."""
+class _InitializeModelSensorCamera:
+    """Build models and camera sensors from scene presets with collision handling enabled."""
 
     param_names = ["scene", "world_count"]
     rounds = 1
@@ -255,7 +255,7 @@ class _InitializeModelTiledCamera:
     min_run_count = 1
 
     def setup(self, scene, world_count):
-        self.world = TILED_CAMERA_SCENES[scene].build()
+        self.world = SCENES[scene].build()
         warmup = self._replicate(1)
         _model, _sensor = self._initialize_model_and_sensor(warmup)
         self.replicated_builder = self._replicate(world_count)
@@ -269,7 +269,7 @@ class _InitializeModelTiledCamera:
 
     def _initialize_model_and_sensor(self, builder):
         model = builder.finalize()
-        sensor = SensorTiledCamera(model)
+        sensor = SensorCamera(model)
         return model, sensor
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
@@ -287,7 +287,7 @@ class _InitializeModelTiledCamera:
         del self.world
 
 
-class KpiInitializeModelTiledCamera(_InitializeModelTiledCamera):
+class KpiInitializeModelSensorCamera(_InitializeModelSensorCamera):
     params = (["franka_cabinet", "quadruped"], [4096])
     timeout = 3600
 
@@ -389,7 +389,7 @@ class FastInitializeViewerGL:
         del self._model
 
 
-class FastInitializeModelTiledCamera(_InitializeModelTiledCamera):
+class FastInitializeModelSensorCamera(_InitializeModelSensorCamera):
     params = (["franka_cabinet", "quadruped"], [256])
 
 
@@ -460,8 +460,8 @@ if __name__ == "__main__":
         "FastInitializeSolver": FastInitializeSolver,
         "KpiInitializeViewerGL": KpiInitializeViewerGL,
         "FastInitializeViewerGL": FastInitializeViewerGL,
-        "KpiInitializeModelTiledCamera": KpiInitializeModelTiledCamera,
-        "FastInitializeModelTiledCamera": FastInitializeModelTiledCamera,
+        "KpiInitializeModelSensorCamera": KpiInitializeModelSensorCamera,
+        "FastInitializeModelSensorCamera": FastInitializeModelSensorCamera,
         "FastInitializeModelStackedBoxes": FastInitializeModelStackedBoxes,
     }
 
