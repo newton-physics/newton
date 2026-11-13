@@ -40,8 +40,8 @@ size. The Fit gates below add depth for large proposals.
    Question each new parameter, mode, alias, public symbol, and file, and
    prefer an existing mechanism. Check whether ``main`` or another open pull
    request already covers the change, and whether unrelated parts should be
-   split out. Unjustified public surface, new modes or options, or machinery
-   that must be maintained is at least P1.
+   split out. Unjustified public surface and new modes or options are at
+   least P1.
 #. **Principled:** Does it fix the cause at the right layer rather than a
    symptom, proxy, or workaround? Prefer designs that are correct by
    construction over detecting and reporting bad states, and upstream fixes
