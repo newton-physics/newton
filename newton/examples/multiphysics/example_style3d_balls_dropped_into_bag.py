@@ -119,7 +119,7 @@ class Example:
         self.model.soft_contact_mu = 0.3
         self.solver = SolverStyle3D(
             self.model,
-            config=SolverStyle3D.Config(iterations=30),
+            config=SolverStyle3D.Config(iterations=15),
             dynamics=SolverStyle3D.Dynamics.ALL,
         )
         self.state_0, self.state_1 = self.model.state(), self.model.state()
