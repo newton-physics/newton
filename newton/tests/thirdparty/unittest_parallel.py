@@ -52,6 +52,7 @@ if _USD_VERSION < (26, 8):
     os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
 
 from newton.tests.unittest_utils import (  # NVIDIA modification
+    CTYPES_DEPRECATION_FILTERS,
     AllocationCleanupTestResultMixin,
     ParallelJunitTestResult,
     write_junit_results,
@@ -117,6 +118,13 @@ def _enable_strict_warnings(allowed_deprecation_warnings=()):
     warnings.filterwarnings("error", category=DeprecationWarning)
     warnings.filterwarnings("error", module=r"newton(\.|$)")
     warnings.filterwarnings("error", module=_STRICT_WARNING_TEST_MODULE)
+    for message, module in CTYPES_DEPRECATION_FILTERS:
+        warnings.filterwarnings(
+            "default",
+            message=re.escape(message),
+            category=DeprecationWarning,
+            module=rf"{re.escape(module)}$",
+        )
     for warning_filter in _KNOWN_WARNING_DEBT:
         warnings.filterwarnings("default", **warning_filter)
     for message in allowed_deprecation_warnings:

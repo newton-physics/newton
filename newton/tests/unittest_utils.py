@@ -75,12 +75,30 @@ strict_warnings = False
 allowed_deprecation_warnings: tuple[str, ...] = ()
 
 
+# Python 3.14 deprecates implicit packed layouts on POSIX and the pointer
+# cache used by pyglet's Windows COM types. Keep these upstream warnings visible
+# without failing strict tests. Remove each entry once supported dependency
+# versions use explicit layouts / the supported pointer-type API.
+CTYPES_DEPRECATION_FILTERS = (
+    *(
+        (
+            f"Due to '_pack_', the '{name}' Structure will use memory layout compatible with MSVC (Windows).",
+            "warp._src.apic.types",
+        )
+        for name in ("APICCudaCompileRecipe", "APICLaunchParamRecord", "APICLaunchPtrLocation")
+    ),
+    ("'ctypes._pointer_type_cache' is deprecated", "pyglet.libs.win32.com"),
+)
+
+
 def get_strict_warning_args() -> list[str]:
     """Return Python interpreter arguments for the active warning policy."""
     if not strict_warnings:
         return []
 
     arguments = ["-W", "error::DeprecationWarning"]
+    for message, module in CTYPES_DEPRECATION_FILTERS:
+        arguments.extend(("-W", f"default:{message}:DeprecationWarning:{module}"))
     for message in allowed_deprecation_warnings:
         arguments.extend(("-W", f"default:{message}:DeprecationWarning"))
     return arguments
@@ -550,7 +568,10 @@ class _OutputCapture:
         if strict_warnings:
             regexes = {
                 regex
-                for message_prefix in allowed_deprecation_warnings
+                for message_prefix in (
+                    *(message for message, _ in CTYPES_DEPRECATION_FILTERS),
+                    *allowed_deprecation_warnings,
+                )
                 for regex in _deprecation_warning_output_regexes(output_by_stream["stderr"], message_prefix)
             }
             automatic_patterns = [
