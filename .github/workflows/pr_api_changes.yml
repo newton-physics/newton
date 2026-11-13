@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - "release-*"
+      - "!release-1.7"
 
 concurrency:
   group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}

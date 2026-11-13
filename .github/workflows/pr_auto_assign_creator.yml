@@ -2,6 +2,8 @@ name: Auto-assign PR creator
 
 on:
   pull_request_target:
+    branches-ignore:
+      - release-1.7
     types:
       - opened
       - reopened

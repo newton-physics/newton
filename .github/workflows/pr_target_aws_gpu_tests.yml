@@ -2,6 +2,8 @@ name: Pull Request - AWS GPU Tests
 
 on:
   pull_request_target:
+    branches-ignore:
+      - release-1.7
 
 concurrency:
   group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}
