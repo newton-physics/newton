@@ -1584,12 +1584,22 @@ observed shape speed:
     )
     schedule.step()
 
-Any change in a collidable shape's linear or angular velocity triggers a
-refresh at the next substep. Slowing, stopping, or turning can increase the
-closing speed between shapes and require contacts that the earlier pass did
-not create. Shapes with rigid collision disabled do not affect the schedule
-or overflow reporting. The scheduler checks the final substep's output when
-reporting ``interval_overflow``.
+During the collision callback, the scheduler's pipeline retains candidates
+within a pairwise distance reserve of at least ``speculative_contact_gap_max``,
+regardless of approach velocity. Authored gaps and physical margins are preserved.
+The callback must use the pipeline passed to the scheduler. Calls outside the
+callback retain velocity-adapted admission.
+
+Gravity, slowing, and turning consume this reserve without unconditionally
+forcing a refresh. Refreshes occur when the travel estimate approaches the
+reserve or the previous horizon expires. The next-step estimate includes the
+speed increase observed over the preceding substep. This is not a bound on
+unobserved forces or impulses. Shapes with rigid collision disabled do not affect
+the schedule or overflow reporting. The final substep is checked for overflow.
+
+The reserve may retain more contacts than velocity-adapted admission. Measure
+both total runtime and refresh counts, and size contact buffers accordingly.
+Fast motion can still require a refresh every substep.
 
 The same ``step()`` call works directly or inside CUDA graph capture; callbacks
 must therefore be capture-safe and preallocate their storage. The scheduler
@@ -2751,6 +2761,11 @@ records that it wrote itself, so a buffer last filled by another pipeline starts
 from fresh points.  A reset that selects the world of the particle or of the
 shape restarts the record in every buffer.
 
+Buffers returned by the sticky pipeline's :meth:`CollisionPipeline.contacts`
+allocate their history at construction.  For an externally constructed buffer,
+including one from another pipeline, call :meth:`CollisionPipeline.collide` once
+outside CUDA graph capture to allocate its sticky history before capturing.
+
 :class:`~newton.solvers.SolverVBD` measures body-particle friction slip as the
 drift between the kept points, so soft bodies hold static tangential loads that
 the regularized friction law would otherwise let them creep under.  After each
@@ -2778,9 +2793,11 @@ contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
 ``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
 ``contact_report=True`` adds 4.  With particles, ``"sticky"`` also keeps 64 bytes
 per ``soft_contact_max`` slot (76 with full-surface mesh records) and 16 bytes per
-particle for rigid-soft records.  Every :class:`~newton.Contacts` buffer carries
-20 bytes per ``soft_contact_max`` slot for the reset stamp, body-frame normal, and
-kept normal load of its records.
+particle for rigid-soft records.  A :class:`~newton.Contacts` buffer used for sticky
+rigid-soft matching also carries 20 bytes per ``soft_contact_max`` slot for the
+reset stamp, body-frame normal, and kept normal load of its records.  Coupled-solver
+filtered copies allocate only the 4-byte normal load per slot when soft points
+persist.  Buffers never used for sticky rigid-soft matching allocate neither.
 ``"disabled"`` allocates no matching history.
 
 The deterministic pipeline's sorter omits the unused simple-layout scratch,
@@ -2990,7 +3007,7 @@ and ownership requires internal data without a stable public accessor. Use
    The ``Model.mesh_edge_indices``, ``Model.mesh_edge_centers``,
    ``Model.mesh_edge_halves``, and ``Model.shape_edge_range`` aliases expose
    internal collision acceleration data. They remain readable and writable with
-   :class:`~newton.exceptions.NewtonDeprecationWarning` through Newton 1.8 and
+   :class:`~newton.NewtonDeprecationWarning` through Newton 1.8 and
    will be removed in 1.9. Use :class:`~newton.CollisionPipeline` instead.
 
 .. code-block:: python

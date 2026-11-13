@@ -1652,9 +1652,6 @@ def test_deterministic_identical_across_runs(test, device):
     fingerprint) rather than buffer contact IDs, since IDs are assigned by
     atomic_add and vary between runs.
     """
-    if str(device) == "cpu":
-        return  # Deterministic mode is primarily for GPU
-
     num_runs = 5
     all_contact_sets = []
 
@@ -1856,7 +1853,7 @@ add_function_test(
     TestDeterministicEndToEnd,
     "test_deterministic_identical_across_runs",
     test_deterministic_identical_across_runs,
-    devices=devices,
+    devices=[device for device in devices if device.is_cuda],  # deterministic mode targets CUDA
 )
 
 

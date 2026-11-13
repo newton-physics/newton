@@ -1366,6 +1366,19 @@ def test_sticky_disabled_no_sticky_buffers(test, device):
         test.assertIsNotNone(p_sticky._contact_matcher._prev_offset0)
         test.assertIsNotNone(p_sticky._contact_matcher._prev_offset1)
 
+        model, state = _build_soft_particle_scene(device)
+        for mode in ("disabled", "latest"):
+            pipeline = newton.CollisionPipeline(model, contact_matching=mode)
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
+            test.assertGreater(contacts.soft_contact_max, 0)
+            for array in (
+                contacts._soft_contact_reset_stamp,
+                contacts._soft_contact_normal_body,
+                contacts._soft_contact_normal_force,
+            ):
+                test.assertEqual(array.size, 0, f"{mode} must not allocate sticky soft history")
+
 
 def _build_soft_particle_scene(device, world_count=1):
     """Build one particle pressing into a static box per world, the particle at ``x = 0``."""
@@ -1672,7 +1685,7 @@ def test_sticky_soft_contact_reset_reaches_handed_over_buffer(test, device):
 
 
 def test_sticky_soft_contact_external_buffer_cuda_graph(test, device):
-    """A sticky pass over a buffer from another pipeline can be captured without a memory pool."""
+    """Capture sticky replay on a prepared external buffer without a memory pool."""
     mempool_enabled = wp.is_mempool_enabled(device)
     wp.set_mempool_enabled(device, False)
     try:
@@ -1682,10 +1695,19 @@ def test_sticky_soft_contact_external_buffer_cuda_graph(test, device):
             pipeline.collide(state, pipeline.contacts())
             latest = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="latest")
             contacts = latest.contacts()
+            with test.assertRaisesRegex(RuntimeError, "initialized before CUDA graph capture"):
+                with wp.ScopedCapture(device=device):
+                    pipeline.collide(state, contacts)
+            pipeline.collide(state, contacts)
+            state.particle_q.assign([[0.0002, 0.0, 0.009]])
             with wp.ScopedCapture(device=device) as capture:
                 pipeline.collide(state, contacts)
             wp.capture_launch(capture.graph)
             np.testing.assert_allclose(_soft_body_points(contacts, 1)[0], [0.0, 0.0, 0.0], atol=1.0e-7)
+            latest.collide(state, contacts)
+            state.particle_q.assign([[0.0004, 0.0, 0.009]])
+            wp.capture_launch(capture.graph)
+            np.testing.assert_allclose(_soft_body_points(contacts, 1)[0], [0.0004, 0.0, 0.0], atol=1.0e-7)
     finally:
         wp.set_mempool_enabled(device, mempool_enabled)
 
@@ -1766,6 +1788,12 @@ add_function_test(
     TestContactMatching, "test_contact_report_broken_indices", test_contact_report_broken_indices, devices=devices
 )
 add_function_test(TestContactMatching, "test_deterministic_implied", test_deterministic_implied, devices=devices)
+add_function_test(
+    TestContactMatching,
+    "test_matching_sort_width_follows_contact_family",
+    test_matching_sort_width_follows_contact_family,
+    devices=devices,
+)
 add_function_test(
     TestContactMatching, "test_contacts_exposes_matching_mode", test_contacts_exposes_matching_mode, devices=devices
 )

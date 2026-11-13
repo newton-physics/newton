@@ -1552,7 +1552,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.TETRAHEDRON: list(range(model.tet_count)) if keep_deformables else [],
             model.AttributeFrequency.SPRING: list(range(model.spring_count)) if keep_deformables else [],
             model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY: attachment_order,
-            model.AttributeFrequency.WORLD: list(range(model.world_count)),
+            # WORLD rows include the global world -1 after the local worlds.
+            model.AttributeFrequency.WORLD: list(range(model.world_count + 1)),
         }
         built_in_frequency_orders.update(self._compact_deformable_orders(built_in_frequency_orders))
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
@@ -1926,7 +1927,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         world_frequency = model.AttributeFrequency.WORLD
         projections.setdefault(
             world_frequency,
-            _compact_index_projection(range(model.world_count), model.world_count),
+            _compact_index_projection(range(model.world_count + 1), model.world_count + 1),
         )
         projections[attachment_frequency] = _compact_index_projection(
             rows,
@@ -3822,7 +3823,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 device=contacts.device,
             )
         filtered._contact_matching_mode = contacts.contact_matching_mode
-        filtered._soft_contact_points_persist = contacts._soft_contact_points_persist
+        filtered._soft_contact_points_persist = contacts._soft_contact_points_persist and has_particles
+        if filtered._soft_contact_points_persist and filtered._soft_contact_normal_force.size == 0:
+            # Filtered records consume the load but do not run the collision matcher's replay.
+            filtered._soft_contact_normal_force = wp.full(
+                contacts.soft_contact_max, -1.0, dtype=float, device=contacts.device
+            )
         # Entry solvers check this stamp; the filtered rows are as reduced as their source.
         filtered._rigid_contact_body_pair_reduced = contacts.rigid_contact_body_pair_reduced
         filtered._enable_rigid_soft_full_surface_contact = bool(
@@ -4784,7 +4790,8 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_pos[dst_id] = src_body_pos[contact_id]
     dst_body_vel[dst_id] = src_body_vel[contact_id]
     dst_normal[dst_id] = src_normal[contact_id]
-    dst_normal_force[dst_id] = src_normal_force[contact_id]
+    if src_normal_force.shape[0] > 0 and dst_normal_force.shape[0] > 0:
+        dst_normal_force[dst_id] = src_normal_force[contact_id]
     # soft_contact_tids is indexed by candidate thread, not by contact, and full-surface mesh
     # contacts are appended past the candidate range, so the source array can be shorter than
     # soft_contact_count.

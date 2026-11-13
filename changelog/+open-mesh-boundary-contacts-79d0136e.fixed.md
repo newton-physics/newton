@@ -1,1 +1,0 @@
-Fix spurious deep mesh-mesh contacts beyond finite open mesh boundaries independently of the mesh authoring frame while preserving one-sided face contacts, shared concave features, and open-container interiors.

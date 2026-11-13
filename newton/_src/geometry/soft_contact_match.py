@@ -244,8 +244,8 @@ class SoftContactMatcher:
     """Sticky replay of rigid-soft contact points across collision passes.
 
     Internal helper owned by :class:`~newton.CollisionPipeline` in ``contact_matching="sticky"``
-    mode. It owns the saved records; all buffers are allocated at construction, so :meth:`save` and
-    :meth:`replay` can be captured in a CUDA graph.
+    mode. It owns the saved records; its buffers are allocated at construction. Contact-buffer
+    history must also be allocated before capture (automatically for the pipeline's own buffers).
 
     Args:
         capacity: Maximum number of soft contacts (``soft_contact_max``).

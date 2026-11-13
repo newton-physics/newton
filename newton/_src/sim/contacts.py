@@ -464,12 +464,12 @@ class Contacts:
             # Sticky soft matching replays only history that the replaying pipeline wrote (owner) since
             # the last reset of the record's worlds (stamp).
             self._soft_contact_history_owner = wp.full(1, -1, dtype=wp.int32)
-            self._soft_contact_reset_stamp = wp.zeros(soft_contact_max, dtype=wp.int32)
+            self._soft_contact_reset_stamp = wp.empty(0, dtype=wp.int32)
             # Keep normals in the body frame so replay can distinguish opposing faces even after rotation.
-            self._soft_contact_normal_body = wp.zeros(soft_contact_max, dtype=wp.vec3)
+            self._soft_contact_normal_body = wp.empty(0, dtype=wp.vec3)
             # Normal load each kept record carried at the end of the previous step (-1 without one); VBD
             # bounds its friction by it.
-            self._soft_contact_normal_force = wp.full(soft_contact_max, -1.0, dtype=float)
+            self._soft_contact_normal_force = wp.empty(0, dtype=float)
             # Replay index array for differentiable backward: recorded per launch *thread*, not per
             # contact, so it must span the full particle+edge+face candidate-pair space -- which can
             # exceed soft_contact_max when the caller overrides that capacity. Sized independently so a
@@ -541,6 +541,21 @@ class Contacts:
         self.rigid_contact_max = rigid_contact_max
         self.soft_contact_max = soft_contact_max
         self._rigid_contact_body_pair_reduced = False
+
+    def _allocate_soft_contact_history(self) -> None:
+        """Allocate sticky history on first use, before capture for external buffers."""
+        if self._soft_contact_reset_stamp.size == self.soft_contact_max:
+            return
+        if wp.get_device(self.device).is_capturing:
+            raise RuntimeError(
+                "Sticky soft-contact history must be initialized before CUDA graph capture. "
+                "Call pipeline.collide() once outside capture with this buffer, "
+                "or create it with pipeline.contacts()."
+            )
+        with wp.ScopedDevice(self.device):
+            self._soft_contact_reset_stamp = wp.zeros(self.soft_contact_max, dtype=wp.int32)
+            self._soft_contact_normal_body = wp.zeros(self.soft_contact_max, dtype=wp.vec3)
+            self._soft_contact_normal_force = wp.full(self.soft_contact_max, -1.0, dtype=float)
 
     def clear(self, bump_generation: bool = True):
         """
