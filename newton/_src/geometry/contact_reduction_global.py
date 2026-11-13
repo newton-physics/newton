@@ -98,10 +98,9 @@ from .types import GeoType
 BETA_THRESHOLD = 0.0001  # 0.1mm
 
 VALUES_PER_KEY = NUM_SPATIAL_DIRECTIONS + 1
-# Normal bins occupy 0..19 and 15 voxel groups occupy 20..34. Reserve
-# bin 35 for a pair-level predictive manifold without changing the regular
-# seven-slot value layout: six fingerprint-sharded clearance contacts and one
-# earliest time-of-impact guard.
+# Place the predictive manifold after the normal bins and voxel groups,
+# retaining the regular value layout: fingerprint-sharded clearance contacts
+# and one earliest time-of-impact guard.
 PREDICTIVE_BIN_ID = NUM_NORMAL_BINS + (NUM_VOXEL_DEPTH_SLOTS + VALUES_PER_KEY - 1) // VALUES_PER_KEY
 _GLOBAL_TOTAL_SLOTS = NUM_NORMAL_BINS * VALUES_PER_KEY + NUM_VOXEL_DEPTH_SLOTS + VALUES_PER_KEY
 assert _GLOBAL_TOTAL_SLOTS <= MAX_CONTACTS_PER_PAIR

@@ -264,38 +264,43 @@ average or a per-pair limit.
      - Estimated typical count
      - Notes
    * - Triangle mesh--infinite plane
-     - 240
+     - 184
      - ``V_mesh``
      - About 40
      - At most one candidate per mesh vertex.
    * - Mesh/heightfield--sphere or ellipsoid
-     - 240
+     - 184
      - ``T_overlap``
      - About 40
      - At most one contact per overlapping triangle.
    * - Mesh/heightfield--other primitive or convex hull
-     - 240
+     - 184
      - ``5 * T_overlap``
      - About 40
      - Each overlapping triangle uses the convex manifold path.
    * - Mesh--mesh
-     - 240
+     - 184
      - ``E_A + E_B``
      - About 40
      - Uses edge-vs-SDF queries, with BVH distance fallback when needed.
    * - Heightfield--mesh
-     - 240
+     - 184
      - ``E_heightfield + E_mesh``
      - About 40
      - Uses the mesh/SDF route with on-the-fly heightfield evaluation.
    * - Hydroelastic SDF--SDF
-     - 240 by default
+     - 184 penetrating + 100 speculative
      - Geometry and buffer dependent
      - No fixed estimate
      - ``anchor_contact=True`` can add contacts beyond the reduced set.
 
-The reduced maximum follows the current 240-slot contact-reduction layout.
-Disabling reduction exposes the geometry-dependent candidate bounds shown above.
+The default contact-reduction layout uses twelve dodecahedral normal bins with
+six footprint slots and one depth slot each, plus 100 spatial depth slots:
+``12 * 7 + 100 = 184``. Mesh, heightfield, and SDF routes can retain seven
+additional predictive contacts when speculative contacts are enabled.
+Hydroelastic reduction keeps speculative faces in a separate spatial depth
+budget. Disabling reduction exposes the geometry-dependent candidate bounds
+shown above.
 
 **Common pair guidance**
 
