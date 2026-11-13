@@ -9590,9 +9590,9 @@ class ModelBuilder:
             # compute position and rotation from plane equation
             # For plane equation ax + by + cz + d = 0, the closest point to the origin is
             # -(d/||n||) * (n/||n||), so the signed offset along the normalized normal is -d/||n||.
-            normal = np.array(plane[:3], dtype=np.float64)
+            normal = np.array(plane[:3])
             norm = np.linalg.norm(normal)
-            normal /= norm
+            normal = normal / norm
             d_normalized = plane[3] / norm
             pos = -d_normalized * normal
             # compute rotation from local +Z axis to plane normal; eps=0 special-cases only an exactly
