@@ -61,19 +61,21 @@ _WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
     r"\(in function init_cuda_driver, [^\n]*cuda_util\.cpp:\d+\)"
     r")\n?"
 )
+# Optional rich console prefix of an INFO log record
+_INFO_LOG_PREFIX_RE = r"(?:\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}\]\[[\w.-]+\.py:\d+\]\[INFO\]: )?"
 _ASSET_CACHE_REFRESH_OUTPUT_RE = (
-    r"(?:New version of [^\n]+ found "
+    rf"(?:{_INFO_LOG_PREFIX_RE}New version of [^\n]+ found "
     r"\(cached: [0-9a-f]{8}, latest: [0-9a-f]{8}\)\. Refreshing\.\.\.\n)?"
 )
 _NEWTON_ASSET_DOWNLOAD_OUTPUT_RE = (
-    _ASSET_CACHE_REFRESH_OUTPUT_RE + r"Cloning https://github\.com/newton-physics/newton-assets\.git "
-    r"\(ref: [0-9a-f]{40}\)\.\.\.\n"
-    r"Successfully downloaded folder to: [^\n]+\n?"
+    _ASSET_CACHE_REFRESH_OUTPUT_RE
+    + _INFO_LOG_PREFIX_RE
+    + r"Cloning https://github\.com/newton-physics/newton-assets\.git "
+    r"\(ref: [0-9a-f]{40}\)\.\.\.\n" + _INFO_LOG_PREFIX_RE + r"Successfully downloaded folder to: [^\n]+\n?"
 )
 _ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE = (
-    _ASSET_CACHE_REFRESH_OUTPUT_RE + r"Cloning https://github\.com/isaac-sim/IsaacGymEnvs\.git "
-    r"\(ref: main\)\.\.\.\n"
-    r"Successfully downloaded folder to: [^\n]+\n?"
+    _ASSET_CACHE_REFRESH_OUTPUT_RE + _INFO_LOG_PREFIX_RE + r"Cloning https://github\.com/isaac-sim/IsaacGymEnvs\.git "
+    r"\(ref: main\)\.\.\.\n" + _INFO_LOG_PREFIX_RE + r"Successfully downloaded folder to: [^\n]+\n?"
 )
 _NUT_BOLT_DOWNLOAD_START_OUTPUT_RE = r"Downloading nut/bolt assets\.\.\.\n?"
 _NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE = r"Assets downloaded to: [^\n]+\n?"
@@ -493,6 +495,25 @@ class TestExampleOutputRegexes(unittest.TestCase):
         unmatched_output = re.sub(_BASIC_PLOTTING_OUTPUT_RE, "", output, flags=re.MULTILINE)
 
         self.assertEqual(unmatched_output, unexpected_output)
+
+    def test_asset_download_output_is_allowed_in_both_console_formats(self):
+        """Allow asset download log records in the plain and rich console formats."""
+        lines = (
+            "New version of newton-assets found (cached: 0123abcd, latest: 4567cdef). Refreshing...",
+            f"Cloning https://github.com/newton-physics/newton-assets.git (ref: {'a' * 40})...",
+            "Successfully downloaded folder to: /cache/newton-assets",
+        )
+        rich_prefix = "[2026-11-02 10:15:42,108][download_assets.py:423][INFO]: "
+
+        for prefix in ("", rich_prefix):
+            with self.subTest(prefix=prefix):
+                output = "".join(prefix + line + "\n" for line in lines)
+                unmatched_output = re.sub(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "", output, flags=re.MULTILINE)
+                self.assertEqual(unmatched_output, "")
+
+        output = "".join("[unexpected][fields][INFO]: " + line + "\n" for line in lines)
+        unmatched_output = re.sub(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "", output, flags=re.MULTILINE)
+        self.assertNotEqual(unmatched_output, "")
 
 
 cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test on multiple GPUs to save time

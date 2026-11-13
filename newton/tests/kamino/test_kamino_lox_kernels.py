@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 from warp.fem.linalg import symmetric_eigenvalues_qr
 
+import newton
 from newton._src.solvers.kamino._src.core.types import mat36f, mat66f, vec6f
 from newton._src.solvers.kamino._src.solvers.lox.contact import (
     SpatialContactStatus,
@@ -611,6 +612,7 @@ class TestLOXSymmetricEigenvalues(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

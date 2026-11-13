@@ -198,6 +198,7 @@ class Example:
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

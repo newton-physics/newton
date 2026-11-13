@@ -7,6 +7,7 @@ import unittest
 
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.utils.world_equivalence import DiscreteSignature, compute_equivalence_classes
 from newton.tests.kamino import setup_tests, test_context
 
@@ -105,6 +106,7 @@ class TestEquivalenceClasses(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

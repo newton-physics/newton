@@ -11,6 +11,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import DataKamino, ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMode, compute_joints_data
@@ -692,6 +693,7 @@ class TestJointBodyStateConversions(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

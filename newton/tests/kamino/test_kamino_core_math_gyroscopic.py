@@ -8,6 +8,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.math import compute_body_twist_update_with_eom
 
 
@@ -52,4 +53,5 @@ class TestKaminoGyroscopicUpdate(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     unittest.main()
