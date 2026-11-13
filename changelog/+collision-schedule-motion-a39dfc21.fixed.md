@@ -1,0 +1,1 @@
+Refresh directional speculative contacts every substep for rotating shapes, and use the authoritative explicit pair list when scheduling collisions, including listed shapes with rigid collision disabled.

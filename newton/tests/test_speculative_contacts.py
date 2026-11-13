@@ -1048,7 +1048,7 @@ def test_adaptive_collision_schedule_reacts_to_acceleration(test, device):
     builder.add_shape_sphere(body, radius=0.1)
     model = builder.finalize(device=device)
     states = (model.state(), model.state())
-    pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=travel_budget)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_contact_gap_max=travel_budget)
     solver = newton.solvers.SolverXPBD(model, iterations=1)
     collision_calls = wp.zeros(1, dtype=wp.int32, device=device)
 
@@ -1398,7 +1398,10 @@ def test_speculative_mesh_sdf_retains_rotating_leading_feature(test, device, sch
             pipeline.collide(state, contacts, dt=horizon)
             if not first_points:
                 count = int(contacts.rigid_contact_count.numpy()[0])
-                first_points.append(contacts.rigid_contact_point0.numpy()[:count])
+                # A one-substep horizon may initially admit no contacts while
+                # the rod is separated. Inspect the first admitted manifold.
+                if count > 0:
+                    first_points.append(contacts.rigid_contact_point0.numpy()[:count])
 
         def step(state_in, state_out, dt):
             solver.step(state_in, state_out, None, contacts, dt)
@@ -1412,6 +1415,7 @@ def test_speculative_mesh_sdf_retains_rotating_leading_feature(test, device, sch
         # Millimeter-scale SDF error is acceptable; losing the leading end
         # allows centimeter-scale penetration even with 1 ms substeps.
         test.assertGreater(float(minimum.numpy()[0]), -0.002)
+        test.assertTrue(first_points, "The rotating rod must generate contacts")
         rod_points = first_points[0]
     else:
         pipeline.collide(states[0], contacts, dt=0.03)
@@ -1419,7 +1423,11 @@ def test_speculative_mesh_sdf_retains_rotating_leading_feature(test, device, sch
         rod_points = contacts.rigid_contact_point0.numpy()[:count]
 
     test.assertGreater(len(rod_points), 1)
-    test.assertLess(float(rod_points[:, 0].min()), -0.3)
+    if not scheduled:
+        # This fixture starts with the negative end penetrating the board.
+        # In the scheduled fixture that end is separated by about 5 mm and
+        # receding, so velocity-guided admission may correctly omit it.
+        test.assertLess(float(rod_points[:, 0].min()), -0.3)
     test.assertGreater(float(rod_points[:, 0].max()), 0.3)
 
 

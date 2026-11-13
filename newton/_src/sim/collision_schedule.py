@@ -19,6 +19,15 @@ __all__ = ["CollisionSubstepScheduler"]
 
 
 @wp.kernel(enable_backward=False)
+def _mark_explicit_motion_shapes(pairs: wp.array[wp.vec2i], shape_flags: wp.array[wp.int32]):
+    pair = pairs[wp.tid()]
+    for side in range(2):
+        shape = pair[side]
+        if shape >= 0 and shape < shape_flags.shape[0]:
+            wp.atomic_max(shape_flags, shape, int(ShapeFlags.COLLIDE_SHAPES))
+
+
+@wp.kernel(enable_backward=False)
 def _find_max_point_speed(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -30,6 +39,8 @@ def _find_max_point_speed(
     shape_collision_aabb_upper: wp.array[wp.vec3],
     shape_collision_radius: wp.array[wp.float32],
     max_point_speed: wp.array[wp.float32],
+    previous_shape_velocity: wp.array[wp.spatial_vector],
+    motion_changed: wp.array[wp.int32],
 ):
     """Find a conservative instantaneous speed over all moving shape points."""
     shape_id = wp.tid()
@@ -49,15 +60,31 @@ def _find_max_point_speed(
     angular_radius = wp.max(wp.length(furthest), shape_collision_radius[shape_id])
     point_speed_bound = wp.length(shape_origin_velocity) + wp.length(angular_velocity) * angular_radius
     wp.atomic_max(max_point_speed, 0, point_speed_bound)
+    velocity = wp.spatial_vector(shape_origin_velocity, angular_velocity)
+    # Slowing or turning can increase pairwise closing speed without increasing
+    # either shape's speed bound, invalidating previously omitted contacts.
+    changed = int(0)
+    for axis in range(6):
+        if velocity[axis] != previous_shape_velocity[shape_id][axis]:
+            changed = 1
+    # Constant angular velocity still changes witness approach directions.
+    # Mark rotation separately so even the first horizon is one substep.
+    if wp.length_sq(angular_velocity) > 0.0:
+        changed = 2
+    if changed > 0:
+        wp.atomic_max(motion_changed, 0, changed)
+    previous_shape_velocity[shape_id] = velocity
 
 
 @wp.kernel(enable_backward=False)
 def _update_collision_schedule(
     max_point_speed: wp.array[wp.float32],
+    motion_changed: wp.array[wp.int32],
     previous_max_point_speed: wp.array[wp.float32],
     substep_dt: float,
     travel_budget: float,
     substep_index: int,
+    substeps: int,
     collision_intervals: wp.array[wp.int32],
     interval_conditions: wp.array[wp.int32],
     collision_due: wp.array[wp.int32],
@@ -69,6 +96,8 @@ def _update_collision_schedule(
     speed = max_point_speed[0]
     # Clear the reduction output for the next substep in the consuming kernel.
     max_point_speed[0] = 0.0
+    changed = motion_changed[0]
+    motion_changed[0] = 0
     previous_speed = previous_max_point_speed[0]
     relative_travel_per_substep = 2.0 * speed * substep_dt
 
@@ -81,11 +110,12 @@ def _update_collision_schedule(
         # its starting speed. This bounds that step by its two endpoint speeds.
         accumulated_travel += 2.0 * (speed - previous_speed) * substep_dt
 
-    # Allow for the speed increase observed over the preceding substep.
-    next_travel = relative_travel_per_substep + 2.0 * wp.max(speed - previous_speed, 0.0) * substep_dt
     accumulated_overflow = accumulated_travel > travel_budget
     due = (
-        substep_index == 0 or substep_index >= collision_deadline[0] or accumulated_travel + next_travel > travel_budget
+        substep_index == 0
+        or substep_index >= collision_deadline[0]
+        or changed > 0
+        or accumulated_travel + relative_travel_per_substep > travel_budget
     )
     collision_due[0] = int(due)
     if due:
@@ -98,12 +128,17 @@ def _update_collision_schedule(
     for interval_index in range(interval_count):
         if float(collision_intervals[interval_index]) * relative_travel_per_substep <= travel_budget:
             selected_interval_index = interval_index
+    # Impacts and acceleration invalidate a long constant-velocity forecast.
+    if (substep_index > 0 and changed > 0) or changed > 1:
+        selected_interval_index = 0
     for interval_index in range(interval_count):
         interval_conditions[interval_index] = int(interval_index == selected_interval_index)
     if due:
         # The travel budget can outlast the rounded prediction horizon. Never
         # extend an existing horizon merely because the observed speed falls.
-        collision_deadline[0] = substep_index + collision_intervals[selected_interval_index]
+        collision_deadline[0] = substep_index + wp.min(
+            collision_intervals[selected_interval_index], substeps - substep_index
+        )
     if relative_travel_per_substep > travel_budget or accumulated_overflow:
         interval_overflow[0] = 1
 
@@ -116,10 +151,12 @@ def _check_final_substep(
     interval_overflow: wp.array[wp.int32],
     substep_dt: float,
     travel_budget: float,
+    motion_changed: wp.array[wp.int32],
 ):
     """Check motion observed after the final solver substep."""
     speed = max_point_speed[0]
     max_point_speed[0] = 0.0
+    motion_changed[0] = 0
     previous_speed = previous_max_point_speed[0]
     accumulated_travel = travel_estimate[0]
     if speed > previous_speed:
@@ -134,26 +171,30 @@ class CollisionSubstepScheduler:
     The scheduler always invokes ``substep_callback`` exactly ``substeps``
     times per frame. It invokes ``collision_callback`` before substep zero and
     thereafter whenever the accumulated global relative-travel estimate would
-    exhaust the configured budget or the previous collision horizon expires.
+    exhaust the configured budget, a routed shape's velocity changes or it rotates,
+    or the previous collision horizon expires.
     The speed bound is reevaluated after every substep, including the final
     substep for overflow reporting.
     Selection stays on the device and uses :func:`warp.capture_if`, so it is
     compatible with CUDA graph capture.
 
-    During the collision callback, the supplied pipeline reserves at least
-    ``speculative_contact_gap_max`` of pairwise detection distance, independently
-    of velocity. Authored gaps and physical margins are preserved. The callback
-    must call this pipeline; calls outside the callback keep their usual
-    velocity-adapted behavior. The reserve can increase contact counts.
+    Collision detection keeps the pipeline's velocity-guided speculative
+    extension. The global speed bound only selects refresh times; it does not
+    expand contact gaps in every direction. After observing any change in a
+    routed shape's linear or angular velocity, refresh with a one-substep
+    prediction horizon. Rotating shapes always use one-substep horizons,
+    since constant angular velocity still changes witness approach directions.
+    Without rotation, the first substep may use a longer horizon. Gravity
+    and impacts can also require a collision pass every substep.
 
-    Velocity changes alone do not invalidate reserved candidates. Scheduling is
-    based on instantaneous rigid-shape velocities and observed speed increases.
-    It reacts to acceleration and impulses after a completed substep; it does
-    not bound unobserved forces or impulses within the next substep. This is
-    an optimization for speculative rigid contacts, not continuous collision
-    detection, and sufficiently abrupt motion can still tunnel through thin
-    geometry. Use enough solver substeps for the expected acceleration and
-    impulses.
+    An explicit collision pair list determines which shapes affect the schedule,
+    including listed shapes with shape collision disabled. Other broad phases
+    use the model's shape collision flags.
+
+    Scheduling reacts to acceleration and impulses after a completed substep;
+    it does not bound unobserved forces or impulses within the next substep.
+    This is an optimization for speculative rigid contacts, not continuous
+    collision detection. Use enough solver substeps for the expected motion.
 
     :meth:`step` works both directly and during CUDA graph capture. When an
     outer capture is active, the complete fixed schedule is recorded inline.
@@ -174,7 +215,7 @@ class CollisionSubstepScheduler:
         collision_callback: Called as ``callback(state, collision_dt)`` before
             each scheduled collision refresh. ``collision_dt`` is the planned
             horizon until the next refresh [s], capped at the frame boundary;
-            faster observed travel may trigger an earlier refresh.
+            changed shape velocities or faster travel may trigger an earlier refresh.
         substep_callback: Called as ``callback(state_in, state_out, dt)`` exactly
             ``substeps`` times per frame.
         frame_dt: Fixed frame duration [s].
@@ -183,7 +224,7 @@ class CollisionSubstepScheduler:
             actual interval is rounded down to a whole number of solver
             substeps and capped at one frame, even if the limit exceeds
             ``frame_dt``. Intervals need not divide ``substeps``. If ``None``,
-            refresh frequency is limited only by the relative-travel estimate.
+            refresh frequency follows travel estimates and observed velocity changes.
 
     Raises:
         TypeError: If collision_pipeline is not a CollisionPipeline, either
@@ -242,9 +283,6 @@ class CollisionSubstepScheduler:
             if state.body_q.shape[0] < model.body_count or state.body_qd.shape[0] < model.body_count:
                 raise ValueError(f"states[{index}] must contain all bodies in the collision pipeline model")
 
-        self._pipeline = collision_pipeline
-        if collision_pipeline._scheduled_shape_gap is None:
-            collision_pipeline._scheduled_shape_gap = wp.empty(model.shape_count, dtype=float, device=model.device)
         self._model = model
         self._states = state_tuple
         self._collision_callback = collision_callback
@@ -281,18 +319,21 @@ class CollisionSubstepScheduler:
         self._max_point_speed = wp.zeros(1, dtype=wp.float32, device=device)
         self._previous_max_point_speed = wp.zeros(1, dtype=wp.float32, device=device)
         self._travel_estimate = wp.zeros(1, dtype=wp.float32, device=device)
+        self._previous_shape_velocity = wp.zeros(model.shape_count, dtype=wp.spatial_vector, device=device)
+        self._motion_changed = wp.zeros(1, dtype=wp.int32, device=device)
+        self._motion_shape_flags = model.shape_flags
+        if collision_pipeline.broad_phase_mode == "explicit":
+            # Pair lists are fixed for the pipeline's lifetime, like its routing.
+            pairs = collision_pipeline.shape_pairs_filtered
+            self._motion_shape_flags = wp.zeros(model.shape_count, dtype=wp.int32, device=device)
+            wp.launch(
+                _mark_explicit_motion_shapes,
+                dim=len(pairs),
+                inputs=[pairs, self._motion_shape_flags],
+                device=device,
+            )
         self.interval_overflow = wp.zeros(1, dtype=wp.int32, device=device)
         """Device scalar set when observed per-substep or accumulated travel exceeds the budget."""
-
-    def _run_collision(self, state: State, horizon: float) -> None:
-        # Reserve candidates in every direction, including motion that starts
-        # after this pass. Scope the reserve to this callback, including capture.
-        previous = self._pipeline._scheduled_gap_active
-        self._pipeline._scheduled_gap_active = True
-        try:
-            self._collision_callback(state, horizon)
-        finally:
-            self._pipeline._scheduled_gap_active = previous
 
     def _dispatch_collision(self, substep_index: int, interval_index: int | None = None) -> None:
         if interval_index is None:
@@ -301,7 +342,7 @@ class CollisionSubstepScheduler:
                 # horizons so fast motion does not pay for the slow-path shortcut.
                 wp.capture_if(
                     self._interval_condition_views[-1],
-                    on_true=lambda: self._run_collision(
+                    on_true=lambda: self._collision_callback(
                         self._states[0], self._collision_intervals[-1] * self._substep_dt
                     ),
                     on_false=lambda: self._dispatch_collision(substep_index, 0),
@@ -311,7 +352,7 @@ class CollisionSubstepScheduler:
         interval = min(self._collision_intervals[interval_index], self._substeps - substep_index)
 
         def run_collision():
-            self._run_collision(self._states[substep_index % 2], interval * self._substep_dt)
+            self._collision_callback(self._states[substep_index % 2], interval * self._substep_dt)
 
         # Larger intervals produce the same horizon at the frame boundary;
         # omit their conditional branches when recording the CUDA graph.
@@ -338,12 +379,14 @@ class CollisionSubstepScheduler:
                     state.body_qd,
                     model.body_com,
                     model.shape_body,
-                    model.shape_flags,
+                    self._motion_shape_flags,
                     model.shape_transform,
                     model.shape_collision_aabb_lower,
                     model.shape_collision_aabb_upper,
                     model.shape_collision_radius,
                     self._max_point_speed,
+                    self._previous_shape_velocity,
+                    self._motion_changed,
                 ],
                 device=model.device,
             )
@@ -352,10 +395,12 @@ class CollisionSubstepScheduler:
                 dim=1,
                 inputs=[
                     self._max_point_speed,
+                    self._motion_changed,
                     self._previous_max_point_speed,
                     self._substep_dt,
                     self._travel_budget,
                     substep_index,
+                    self._substeps,
                     self._interval_values,
                     self._interval_conditions,
                     self._collision_due,
@@ -381,12 +426,14 @@ class CollisionSubstepScheduler:
                 self._states[0].body_qd,
                 model.body_com,
                 model.shape_body,
-                model.shape_flags,
+                self._motion_shape_flags,
                 model.shape_transform,
                 model.shape_collision_aabb_lower,
                 model.shape_collision_aabb_upper,
                 model.shape_collision_radius,
                 self._max_point_speed,
+                self._previous_shape_velocity,
+                self._motion_changed,
             ],
             device=model.device,
         )
@@ -400,6 +447,7 @@ class CollisionSubstepScheduler:
                 self.interval_overflow,
                 self._substep_dt,
                 self._travel_budget,
+                self._motion_changed,
             ],
             device=model.device,
         )

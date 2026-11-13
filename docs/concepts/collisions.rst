@@ -1584,31 +1584,33 @@ observed shape speed:
     )
     schedule.step()
 
-During the collision callback, the scheduler's pipeline retains candidates
-within a pairwise distance reserve of at least ``speculative_contact_gap_max``,
-regardless of approach velocity. Authored gaps and physical margins are preserved.
-The callback must use the pipeline passed to the scheduler. Calls outside the
-callback retain velocity-adapted admission.
+Collision detection keeps the pipeline's velocity-guided speculative extension
+for the selected time horizon. Scheduling does not add an all-direction contact
+reserve or change authored gaps and physical margins. The global point-speed
+bound determines refresh timing, not per-shape detection distances.
 
-Gravity, slowing, and turning consume this reserve without unconditionally
-forcing a refresh. Refreshes occur when the travel estimate approaches the
-reserve or the previous horizon expires. The next-step estimate includes the
-speed increase observed over the preceding substep. This is not a bound on
-unobserved forces or impulses. Shapes with rigid collision disabled do not affect
-the schedule or overflow reporting. The final substep is checked for overflow.
+Refreshes occur when the travel estimate approaches the configured distance
+cap, the previous horizon expires, or a routed shape's linear or angular
+velocity changes. After an observed velocity change, the next prediction
+horizon is one solver substep. Rotating shapes always use one-substep horizons:
+even constant angular velocity changes witness approach directions. Without
+rotation, the first substep may use a longer horizon. Gravity, braking, turning,
+and impacts can also require a refresh every substep.
 
-The reserve may retain more contacts than velocity-adapted admission. Measure
-both total runtime and refresh counts, and size contact buffers accordingly.
-Fast motion can still require a refresh every substep.
+For explicit broad phase, the pair list determines which shapes affect the
+schedule, including listed shapes with rigid collision disabled; unlisted
+shapes do not affect it. Other broad phases use the rigid collision flags.
 
 The same ``step()`` call works directly or inside CUDA graph capture; callbacks
 must therefore be capture-safe and preallocate their storage. The scheduler
 always executes every configured solver substep. Its two states are ping-pong
 buffers, so the substep count must be even. ``schedule.interval_overflow`` is
-set when observed per-substep or accumulated travel exceeds the budget; in
-that case, increase the substep count or the speculative extension limit.
-Collision prediction horizons are capped at the next frame boundary, where
-contacts are always refreshed.
+set when observed per-substep or accumulated travel exceeds the configured
+distance cap, including motion observed after the final substep. This flag is
+not a continuous collision detection guarantee: unseen forces or impulses
+can invalidate a velocity forecast within a substep. Increase solver substeps
+when the expected motion requires it. Horizons are capped at the frame boundary,
+where contacts are always refreshed.
 
 Set ``collision_dt_max`` to cap the time between collision passes independently
 of the travel estimate. For example, ``1.0 / 120.0`` requests collision
