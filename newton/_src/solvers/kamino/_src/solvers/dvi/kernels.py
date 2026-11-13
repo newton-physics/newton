@@ -8,6 +8,7 @@ from __future__ import annotations
 import warp as wp
 
 from ...core.math import FLOAT32_EPS
+from ..common import tolerance_scaled_residual
 from ..padmm.math import (
     compute_box_complementarity_residual,
     project_to_coulomb_cone,
@@ -1227,3 +1228,26 @@ def _unprecondition_dvi_solution(
     solution_v_plus[v_i] = solution_v_plus[v_i] / P_i
     state_v_aug[v_i] = state_v_aug[v_i] / P_i
     state_s[v_i] = state_s[v_i] / P_i
+
+
+@wp.kernel
+def _write_dvi_world_residual(
+    # Inputs:
+    solver_config: wp.array[DVIConfigStruct],
+    solver_status: wp.array[DVIStatus],
+    # Outputs:
+    world_residual: wp.array[wp.float32],
+):
+    """Write the largest terminal residual of each world relative to the DVI tolerance.
+
+    A failed APGD line search reports infinity because it prevents convergence
+    regardless of the residuals.
+    """
+    wid = wp.tid()
+    status = solver_status[wid]
+    if status.apgd_line_search_failed != 0:
+        world_residual[wid] = wp.inf
+        return
+    # r_d already includes the bilateral residual r_b.
+    residual = wp.max(wp.max(status.r_p, status.r_d), status.r_c)
+    world_residual[wid] = tolerance_scaled_residual(residual, solver_config[wid].tolerance)

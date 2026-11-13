@@ -961,6 +961,8 @@ class LOXResiduals:
         bodies are unweighted unless incident to a unilateral row, so ``p = v`` there and the check
         would only tighten the structural solve to velocity level.
         """
+        self.r_total = wp.zeros(num_worlds, dtype=wp.float32, device=device)
+        """Largest scaled residual of each world at its last convergence check; at most one when converged."""
         self.r_primal = wp.zeros(num_worlds, dtype=wp.float32, device=device)
         """Largest consensus gap ``|W (v - p)|`` [N·s or N·m·s] of each world at its last iteration."""
         self.r_dual = wp.zeros(num_worlds, dtype=wp.float32, device=device)

@@ -31,6 +31,7 @@ from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMod
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.solvers import PADMMSolver
+from newton._src.solvers.kamino._src.solvers.common import tolerance_scaled_residual
 from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.examples import print_progress_bar
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
@@ -794,6 +795,24 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         solver.step(state_in, state_out, None, None, dt=1.0 / 60.0)
 
 
+def _tolerance_scaled(residual: np.ndarray, tolerance: np.ndarray) -> np.ndarray:
+    """Divide by tolerance; a zero tolerance maps zero residuals to zero and others to infinity.
+
+    Non-finite residuals map to infinity.
+    """
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scaled = np.where(tolerance > 0.0, residual / tolerance, np.where(residual > 0.0, np.inf, 0.0))
+    return np.where(np.isfinite(residual), scaled, np.inf)
+
+
+@wp.kernel
+def _eval_tolerance_scaled_residual(
+    residual: wp.array[wp.float32], tolerance: wp.array[wp.float32], out: wp.array[wp.float32]
+):
+    i = wp.tid()
+    out[i] = tolerance_scaled_residual(residual[i], tolerance[i])
+
+
 class TestSolverKaminoStatus(unittest.TestCase):
     def setUp(self):
         """Configure the default Warp device for status tests."""
@@ -817,8 +836,10 @@ class TestSolverKaminoStatus(unittest.TestCase):
         solver: newton.solvers.SolverKamino,
         model: newton.Model,
     ) -> None:
-        """Advance one step and verify the public terminal-status contract."""
-        solver.step(model.state(), model.state(), control=None, contacts=None, dt=SIM_DT)
+        """Advance one step and verify the public terminal-status and residual contracts."""
+        observables = solver.observables({solver.ObservableKind.SOLVER_RESIDUAL})
+        solver.step(model.state(), model.state(), control=None, contacts=None, dt=SIM_DT, observables=observables)
+        self._assert_residual_matches_status(solver, observables)
         status = solver.status
         common_fields = ("converged", "iterations", "r_p", "r_d", "r_c")
 
@@ -837,17 +858,114 @@ class TestSolverKaminoStatus(unittest.TestCase):
             self.assertTrue(np.all(np.isfinite(status_host[field])))
             self.assertTrue(np.all(status_host[field] >= 0.0))
 
+    def _assert_residual_matches_status(
+        self,
+        solver: newton.solvers.SolverKamino,
+        observables: newton.solvers.SolverBase.Observables,
+    ) -> None:
+        """Check the residual observable against the terminal status and stopping tolerances."""
+        solver_fd = solver._solver_kamino.solver_fd
+        status = solver.status.numpy()
+        world_count = solver.model.world_count
+        residual = observables.solver_residual.numpy()
+        self.assertEqual(residual.shape, (world_count + 1,))
+        # Kamino does not simulate global world -1.
+        self.assertEqual(residual[world_count], 0.0)
+        residual = residual[:world_count]
+        self.assertTrue(np.all(residual >= 0.0))
+        if isinstance(solver_fd, PADMMSolver):
+            config = solver_fd.data.config.numpy()
+            expected = np.maximum.reduce(
+                [
+                    _tolerance_scaled(status["r_p"], config["primal_tolerance"]),
+                    _tolerance_scaled(status["r_d"], config["dual_tolerance"]),
+                    _tolerance_scaled(status["r_c"], config["compl_tolerance"]),
+                ]
+            )
+            np.testing.assert_allclose(residual, expected, rtol=1e-6)
+            # PADMM additionally requires more than one iteration before it converges.
+            self.assertTrue(np.all(residual[status["converged"] == 1] <= 1.0))
+            return
+        if "failed" in status.dtype.names:
+            self.assertTrue(np.all(np.isinf(residual[status["failed"] == 1])))
+        else:
+            config = solver_fd.data.config.numpy()
+            expected = _tolerance_scaled(
+                np.maximum.reduce([status["r_p"], status["r_d"], status["r_c"]]), config["tolerance"]
+            )
+            expected[status["apgd_line_search_failed"] != 0] = np.inf
+            np.testing.assert_allclose(residual, expected, rtol=1e-6)
+        np.testing.assert_array_equal(residual <= 1.0, status["converged"] == 1)
+
+    def test_tolerance_scaled_residual_edge_cases(self):
+        """Scale residuals by tolerance, keep zero tolerances finite, and never return NaN."""
+        residual = np.array([0.5, 0.0, 2.0, np.nan, np.nan, np.inf], dtype=np.float32)
+        tolerance = np.array([1.0, 0.0, 0.0, 1.0, 0.0, 1.0], dtype=np.float32)
+        out = wp.zeros(residual.shape[0], dtype=wp.float32, device=self.default_device)
+        wp.launch(
+            _eval_tolerance_scaled_residual,
+            dim=residual.shape[0],
+            inputs=[
+                wp.array(residual, dtype=wp.float32, device=self.default_device),
+                wp.array(tolerance, dtype=wp.float32, device=self.default_device),
+            ],
+            outputs=[out],
+            device=self.default_device,
+        )
+        np.testing.assert_array_equal(out.numpy(), [0.5, 0.0, np.inf, np.inf, np.inf, np.inf])
+
+    def test_solver_residual_reports_unconverged_worlds(self):
+        """Report residuals above one for worlds that exhaust their iteration budget.
+
+        The contact-free status fixture converges trivially, so this uses a jointed
+        four-bar that starts in ground contact with Kamino's collision detector.
+        """
+        source_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverKamino.register_custom_attributes(source_builder)
+        build_boxes_fourbar(builder=source_builder)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverKamino.register_custom_attributes(builder)
+        builder.replicate(source_builder, copy_count=2)
+        model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+
+        budgets = {
+            "padmm": {"padmm": kamino_config.PADMMSolverConfig(max_iterations=3)},
+            "dvi": {"dvi": kamino_config.DVISolverConfig(max_alternating_iterations=1)},
+            "lox": {"lox": kamino_config.LOXSolverConfig(max_iterations=2)},
+        }
+        for dynamics_solver, budget in budgets.items():
+            with self.subTest(dynamics_solver=dynamics_solver):
+                solver = newton.solvers.SolverKamino(
+                    model,
+                    config=newton.solvers.SolverKamino.Config(
+                        dynamics_solver=dynamics_solver, use_collision_detector=True, **budget
+                    ),
+                )
+                observables = solver.observables({solver.ObservableKind.SOLVER_RESIDUAL})
+                solver.step(model.state(), model.state(), None, None, SIM_DT, observables=observables)
+                self._assert_residual_matches_status(solver, observables)
+                residual = observables.solver_residual.numpy()[: model.world_count]
+                self.assertTrue(np.all(np.isfinite(residual)))
+                self.assertTrue(np.all(residual > 1.0))
+
     def test_padmm_status_is_always_available(self):
         """Verify PADMM terminal status is available regardless of detailed collection."""
         model = self._make_three_world_model()
 
         for collect_solver_info in (False, True):
+            # Zero tolerances with the exactly converged contact-free worlds also check that 0/0 reports zero.
+            padmm = (
+                kamino_config.PADMMSolverConfig(primal_tolerance=0.0, dual_tolerance=0.0, compl_tolerance=0.0)
+                if collect_solver_info
+                else None
+            )
             with self.subTest(collect_solver_info=collect_solver_info):
                 solver = newton.solvers.SolverKamino(
                     model,
                     config=newton.solvers.SolverKamino.Config(
                         dynamics_solver="padmm",
                         collect_solver_info=collect_solver_info,
+                        padmm=padmm,
                     ),
                 )
                 self._step_and_assert_status_contract(solver, model)
@@ -857,12 +975,15 @@ class TestSolverKaminoStatus(unittest.TestCase):
         model = self._make_three_world_model()
 
         for collect_solver_info in (False, True):
+            # A zero tolerance with the exactly converged contact-free worlds also checks that 0/0 reports zero.
+            dvi = kamino_config.DVISolverConfig(tolerance=0.0) if collect_solver_info else None
             with self.subTest(collect_solver_info=collect_solver_info):
                 solver = newton.solvers.SolverKamino(
                     model,
                     config=newton.solvers.SolverKamino.Config(
                         dynamics_solver="dvi",
                         collect_solver_info=collect_solver_info,
+                        dvi=dvi,
                     ),
                 )
                 self._step_and_assert_status_contract(solver, model)

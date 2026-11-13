@@ -197,7 +197,13 @@ class SolverKamino(SolverBase, CouplingInterface):
                 state_in, state_out = state_out, state_in
     """
 
-    SUPPORTED_OBSERVABLES = frozenset({SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.CONTACT_F})
+    SUPPORTED_OBSERVABLES = frozenset(
+        {
+            SolverBase.ObservableKind.BODY_QDD,
+            SolverBase.ObservableKind.CONTACT_F,
+            SolverBase.ObservableKind.SOLVER_RESIDUAL,
+        }
+    )
 
     @dataclass
     class Config:
@@ -938,6 +944,18 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._control_kamino = self._kamino.ControlKamino()
 
     @property
+    def supported_observables(self) -> frozenset[str]:
+        """Return the observables available for this configuration.
+
+        ``SOLVER_RESIDUAL`` requires adaptive iterations; LOX with
+        ``fixed_iterations=True`` skips its convergence check and does not support it.
+        """
+        kinds = super().supported_observables
+        if self._config.dynamics_solver == "lox" and self._config.lox.fixed_iterations:
+            return kinds - {SolverBase.ObservableKind.SOLVER_RESIDUAL}
+        return kinds
+
+    @property
     def status(self) -> wp.array[Any]:
         """Per-world terminal solver status on the simulation device.
 
@@ -1267,6 +1285,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             detector=self._detector,
             dt=dt,
         )
+
+        if observables is not None and observables.is_requested(SolverBase.ObservableKind.SOLVER_RESIDUAL):
+            self._solver_kamino.solver_fd.write_world_residual(observables.solver_residual)
 
         if body_qdd is not None:
             self._kamino.compute_body_acceleration(

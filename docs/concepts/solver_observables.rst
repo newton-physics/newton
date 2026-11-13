@@ -139,6 +139,9 @@ Standard observables
      - :class:`~newton.solvers.SolverMuJoCo`,
        :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`,
        :class:`~newton.solvers.SolverKamino`, and :class:`~newton.solvers.SolverSteel`
+   * - ``SOLVER_RESIDUAL`` / ``observables.solver_residual``
+     - Per-world convergence residual of the step; see :ref:`solver_residual_observable`
+     - :class:`~newton.solvers.SolverKamino` and :class:`~newton.solvers.SolverVBD`
 
 :class:`~newton.solvers.SolverKamino` computes acceleration as the discrete
 step-average ``(body_qd_out - body_qd_in) / dt``. Across an impact, this includes
@@ -177,6 +180,76 @@ observable when every entry that owns bodies supports that kind. It allocates an
 entry-local container for each sub-solver and gathers owned rows into parent
 model order. Contact observables are not exposed by the coupled wrapper because
 filtered entry contacts require an explicit contact-index remapping contract.
+
+.. _solver_residual_observable:
+
+Solver residuals
+^^^^^^^^^^^^^^^^
+
+``SOLVER_RESIDUAL`` exposes one ``float32`` value per world through
+``observables.solver_residual``, shape ``(model.world_count + 1,)``. As in
+:ref:`per-world reset masks <Per-world reset masks>`, entries
+``[0, world_count)`` are local worlds and the final entry is global world
+``-1``. It is a nonnegative measure of how far the most recent step's solve is from
+convergence; smaller is better. Iterative solvers measure convergence
+differently, so each solver defines the value below. Compare values within one
+solver configuration, for example to monitor convergence across steps, flag
+worlds for reset, or tune iteration budgets, but not across solvers.
+
+.. code-block:: python
+
+   solver = newton.solvers.SolverKamino(model)
+   observables = solver.observables({solver.ObservableKind.SOLVER_RESIDUAL})
+   solver.step(state_in, state_out, control, contacts, dt, observables=observables)
+   unconverged = observables.solver_residual.numpy() > 1.0
+   worst = observables.solver_residual.numpy().max()
+
+The maximum over all entries is the residual of the whole model. Entries for
+worlds a solver does not simulate stay zero.
+
+A step that receives the container overwrites the array on the device without
+host synchronization, including during graph replay. Other steps and
+:meth:`~newton.solvers.SolverBase.reset` leave it unchanged.
+
+:class:`~newton.solvers.SolverKamino` reports the largest terminal residual of
+each world relative to its stopping tolerance, so the value is dimensionless
+and at most one when the world satisfies every tolerance:
+
+- PADMM: ``max(r_p / primal_tolerance, r_d / dual_tolerance, r_c / compl_tolerance)``.
+  PADMM additionally requires more than one iteration before it reports
+  ``converged``.
+- DVI: ``max(r_p, r_d, r_c) / tolerance``, where ``r_d`` includes the bilateral
+  residual ``r_b``. A failed APGD line search reports infinity.
+- LOX: the largest tolerance-scaled residual of its last convergence check,
+  including terms not reported in :attr:`~newton.solvers.SolverKamino.status`.
+  Failed worlds report infinity. With ``fixed_iterations=True`` LOX skips the
+  convergence check and does not support this observable.
+
+With a zero PADMM or DVI tolerance, a zero residual reports zero and any other
+residual infinity. Non-finite residuals in
+:attr:`~newton.solvers.SolverKamino.status` report infinity. Kamino does not simulate global
+dynamic entities, so the global entry stays zero.
+
+The residual components ``r_p``, ``r_d``, and ``r_c`` and the iteration counts
+remain available through :attr:`~newton.solvers.SolverKamino.status`.
+
+:class:`~newton.solvers.SolverVBD` reports the largest local Newton decrement
+``f · H⁻¹ f`` [J] of each world from its last iteration, where ``f`` is the force
+and ``H`` the Hessian of the step's incremental potential for one particle, or the
+force and torque and 6x6 Hessian of one rigid body. It is twice the energy
+decrease a full local Newton step would predict, so it combines translational and
+rotational residuals in one unit and is zero at equilibrium. VBD has no
+convergence tolerance, so the value is absolute. Because each particle or body is
+sampled just before its own update in the last Gauss-Seidel sweep, the value
+trails the final iterate by part of a sweep. Hard joints and contacts contribute
+their augmented-Lagrangian multiplier terms to ``f``, so the value measures
+stationarity of the current subproblem rather than constraint violation.
+Particles whose Hessian is nearly singular skip their update and do not
+contribute; rigid bodies regularize their angular Hessian and always contribute.
+Non-finite decrements or particle Hessians report infinity. Global particles and bodies, including every entity of a model built
+without :meth:`~newton.ModelBuilder.begin_world`, report in the final entry.
+With ``iterations=0`` the array is zero, and with
+``integrate_with_external_rigid_solver=True`` only particles contribute.
 
 Solver-specific observables
 ---------------------------

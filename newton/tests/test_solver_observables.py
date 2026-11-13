@@ -291,6 +291,7 @@ class TestSolverObservables(unittest.TestCase):
         self.assertEqual(observables.get_attribute_frequency("body_qdd"), frequency.BODY)
         self.assertEqual(observables.get_attribute_frequency("pressure"), frequency.CONTACT_RIGID)
         self.assertEqual(observables.get_attribute_frequency("contact_f"), frequency.CONTACT)
+        self.assertEqual(observables.get_attribute_frequency("solver_residual"), frequency.WORLD)
         self.assertFalse(hasattr(ContactSolver, "CONTACT_OBSERVABLE_FLAGS"))
 
     def test_missing_observable_declaration(self):
@@ -568,6 +569,7 @@ class TestSolverObservables(unittest.TestCase):
         mujoco.mjw_data = SimpleNamespace(naconmax=3)
         kamino = object.__new__(newton.solvers.SolverKamino)
         newton.solvers.SolverBase.__init__(kamino, self.model)
+        kamino._config = newton.solvers.SolverKamino.Config()
         kamino._contact_observable_state = None
         kamino._collision_detector_kamino = object()
         kamino._contacts_kamino = SimpleNamespace(model_max_contacts_host=3)

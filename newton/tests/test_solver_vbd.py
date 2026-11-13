@@ -6090,8 +6090,9 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
             model.soft_mesh_adjacency_device,
             forces_device,
             hessians_device,
+            None,  # particle_world
         ],
-        outputs=[legacy_displacements],
+        outputs=[legacy_displacements, None],
         device=device,
     )
     wp.launch(
@@ -6106,8 +6107,9 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
             model.soft_mesh_adjacency_device,
             forces_device,
             hessians_device,
+            None,  # particle_world
         ],
-        outputs=[packed_displacements],
+        outputs=[packed_displacements, None],
         device=device,
     )
     legacy_bits = legacy_displacements.numpy().view(np.uint32)
@@ -6259,8 +6261,9 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
             model.soft_mesh_adjacency_device,
             forces_device,
             hessians_device,
+            None,  # particle_world
         ],
-        outputs=[legacy_displacements],
+        outputs=[legacy_displacements, None],
         device=device,
     )
     wp.launch(
@@ -6289,8 +6292,9 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
             model.soft_mesh_adjacency_device,
             forces_device,
             hessians_device,
+            None,  # particle_world
         ],
-        outputs=[specialized_displacements],
+        outputs=[specialized_displacements, None],
         device=device,
     )
 
@@ -9510,6 +9514,88 @@ add_function_test(
     devices=cuda_devices,
 )
 
+
+def _vbd_world_residual(model, iterations: int, use_contacts: bool, nan_particle: bool = False) -> np.ndarray:
+    """Step ``model`` a few times and return the final per-world VBD residual."""
+    solver = newton.solvers.SolverVBD(model, iterations=iterations)
+    observables = solver.observables({solver.ObservableKind.SOLVER_RESIDUAL})
+    pipeline = newton.CollisionPipeline(model) if use_contacts else None
+    contacts = pipeline.contacts() if use_contacts else None
+    state_0, state_1 = model.state(), model.state()
+    if nan_particle:
+        particle_q = state_0.particle_q.numpy()
+        particle_q[-1] = np.nan
+        state_0.particle_q.assign(particle_q)
+    control = model.control()
+    for _ in range(5):
+        if use_contacts:
+            pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0, observables=observables)
+        state_0, state_1 = state_1, state_0
+    return observables.solver_residual.numpy()
+
+
+def test_solver_residual_decreases_with_iterations(test, device):
+    """Report per-world Newton decrements that shrink with more VBD iterations.
+
+    A cloth built without worlds is global and reports in the final entry, and a
+    NaN particle reports infinity instead of being dropped by the maximum. A
+    two-world rigid stack on a shared static ground reports in its local entries.
+    """
+    with wp.ScopedDevice(device):
+        cloth_builder = newton.ModelBuilder()
+        cloth_builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 1.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=6,
+            dim_y=6,
+            cell_x=0.05,
+            cell_y=0.05,
+            mass=0.01,
+            fix_left=True,
+            tri_ke=1.0e3,
+            tri_ka=1.0e3,
+        )
+        cloth_builder.color()
+        cloth = cloth_builder.finalize(device=device)
+
+        stack_source = newton.ModelBuilder()
+        for i in range(2):
+            body = stack_source.add_body(xform=wp.transform((0.0, 0.0, 0.1 + 0.21 * i), wp.quat_identity()))
+            stack_source.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        stack_builder = newton.ModelBuilder()
+        stack_builder.add_ground_plane()
+        stack_builder.replicate(stack_source, copy_count=2)
+        stack_builder.color()
+        stack = stack_builder.finalize(device=device)
+
+    few = _vbd_world_residual(cloth, 2, use_contacts=False)
+    many = _vbd_world_residual(cloth, 10, use_contacts=False)
+    test.assertEqual(few.shape, (cloth.world_count + 1,))
+    test.assertEqual(few[0], 0.0)
+    test.assertGreater(few[-1], 0.0)
+    test.assertLess(many[-1], 0.1 * few[-1])
+    test.assertEqual(_vbd_world_residual(cloth, 2, use_contacts=False, nan_particle=True)[-1], np.inf)
+
+    few = _vbd_world_residual(stack, 2, use_contacts=True)
+    many = _vbd_world_residual(stack, 10, use_contacts=True)
+    test.assertEqual(few.shape, (3,))
+    test.assertEqual(few[-1], 0.0)
+    test.assertTrue(np.all(few[:2] > 0.0))
+    test.assertLess(many[:2].max(), 0.1 * few[:2].min())
+
+
+class TestVBDSolverResidual(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestVBDSolverResidual,
+    "test_solver_residual_decreases_with_iterations",
+    test_solver_residual_decreases_with_iterations,
+    devices=devices,
+)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
