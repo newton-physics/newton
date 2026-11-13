@@ -1246,7 +1246,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 divisor = float(divisors[segment])
                 if not math.isfinite(divisor) or divisor <= 0.0:
                     raise ValueError(f"mjc:path:divisors entry for segment {segment} must be finite and positive")
-                if segment > last_segment:
+                if segment > last_segment or (i == 0 and divisor != 1.0):
                     rows.append({"mujoco:tendon_wrap_type": 2, "mujoco:tendon_wrap_prm": divisor})
                 last_segment = segment
 
