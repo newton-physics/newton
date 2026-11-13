@@ -116,40 +116,9 @@ attributes, and usage examples.
 * :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
 * :class:`~newton.sensors.SensorCamera` -- raytraced color, HDR color, depth, forward-depth, normal, albedo, and
   shape-index rendering; one view per camera transform, mapped to worlds via a per-view selector. Deformable
-  visual meshes render too; see :ref:`deformable-visual-camera-output`.
+  visual meshes render too; see :ref:`deformable-visual-camera-output`. Installing ``newton[optix]`` enables
+  experimental OptiX ray tracing, used by default when it supports the model and device.
 * :class:`~newton.sensors.SensorTiledCamera` -- deprecated; superseded by :class:`~newton.sensors.SensorCamera`.
-
-.. _camera-traversal-backends:
-
-Camera Traversal Backends
--------------------------
-
-:class:`~newton.sensors.SensorCamera` and :func:`~newton.intersect_ray` take
-``backend="warp"`` (Warp BVH), ``"optix"`` (OptiX hardware ray tracing), or
-``None``, the default, which uses OptiX when ``newton[optix]`` is installed and
-it supports the model and device. ``"optix"`` raises :class:`RuntimeError` when
-it is unsupported. :attr:`SensorCamera.backend <newton.sensors.SensorCamera.backend>`
-reports the choice.
-
-.. experimental::
-
-   The OptiX backend requires Python 3.12 on x86-64 Linux or Windows and an
-   NVIDIA GPU supported by OptiX.
-
-OptiX packs all worlds into one acceleration structure, one cell per world, so
-results are not bit-identical to Warp. Refit the model's shape BVH after shapes
-move as usual. OptiX raycasts refit their acceleration on each call, and cameras
-on each update unless ``sync_shapes=False``. OptiX does not support:
-
-- CUDA graph capture. Render outside capture or use ``backend="warp"``.
-  Raycasts with the default backend use Warp during capture.
-- Gaussian shapes or shape variants. Cameras of models with particles or
-  deformable surfaces use Warp by default.
-- Changing mesh topology after the first OptiX query.
-
-The optional package declares ``Apache-2.0 AND BSD-3-Clause AND
-LicenseRef-NVIDIA-OptiX``. It is installed separately; Newton does not redistribute
-its binaries or change their license terms.
 
 Camera Rays from USD and Calibration Data
 -----------------------------------------
