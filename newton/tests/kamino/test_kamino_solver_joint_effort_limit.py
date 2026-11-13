@@ -227,7 +227,7 @@ class TestSolverKaminoJointEffortLimitImplicitPd(unittest.TestCase):
                 continue
             for limit, requested, expected in cases:
                 config = config_factory()
-                config.dvi.use_schur_complement = requested
+                config.scc.use_schur_complement = requested
                 model = _build_revolute(limit, target_ke=10.0, target_kd=2.0, armatures=(0.011,) * 2)
                 solver = SolverKamino(model, config)
                 with self.subTest(config=config_name, limit=limit, requested=requested):
@@ -246,7 +246,7 @@ class TestSolverKaminoJointEffortLimitImplicitPd(unittest.TestCase):
         for config_name, config_factory in KAMINO_CONFIGS:
             if config_name not in PADMM_CONFIG_NAMES:
                 config = config_factory()
-                config.dvi.unilateral_solver = "apgd"
+                config.scc.unilateral_solver = "apgd"
                 configs.append((f"{config_name}_apgd", config))
         for config_name, config in configs:
             model = _build_revolute(

@@ -12,7 +12,7 @@ bodies like any other body. This module exercises the resulting behavior end-to-
 - integrator/PADMM stability with kinematic bodies (isolated and connected),
 - ``notify_model_changed`` propagation and rejection of runtime KINEMATIC flips,
 - non-mutation of the underlying Newton model arrays,
-- piles resting on PROXY bodies coupled from MuJoCo, with the DVI and LOX backends.
+- piles resting on PROXY bodies coupled from MuJoCo, with the SCC and LOX backends.
 """
 
 from __future__ import annotations
@@ -186,7 +186,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
                     self.assertTrue(np.all(np.isfinite(body_q)))
                     self.assertTrue(np.all(np.isfinite(body_qd)))
 
-    def test_sparse_dvi_masks_kinematic_inverse_mass(self):
+    def test_sparse_scc_masks_kinematic_inverse_mass(self):
         """Zero the Kamino-side inverse mass of a kinematic body."""
         builder, anchor, _, _ = _build_two_body_articulation(is_kinematic_parent=True, add_fixed_root=False)
         builder.joint_q[-1] = 0.5 * np.pi
@@ -194,7 +194,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
 
         config = SolverKamino.Config.from_model(
             model,
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
             sparse_dynamics=True,
             sparse_jacobian=True,
             use_collision_detector=False,
@@ -517,7 +517,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
         and inertia after Kamino is built, and Kamino reads them from the view.
         """
         configs = {
-            "dvi": SolverKamino.Config(dynamics_solver="dvi"),
+            "scc": SolverKamino.Config(dynamics_solver="scc"),
             "lox": SolverKamino.Config(
                 dynamics_solver="lox",
                 lox=kamino_config.LOXSolverConfig(max_iterations=25, projection_sweeps_per_iteration=5),
