@@ -536,7 +536,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
                 and rigid body contacts). Below it, friction is proportional to slip, so a contact measured
                 only by its motion within each collision pass creeps under any static tangential load. Body-particle
-                contacts from a ``CollisionPipeline(contact_matching="sticky")`` instead measure slip from contact
+                contacts from a ``CollisionPipeline(soft_contact_matching=True)`` instead measure slip from contact
                 points that persist across passes, and hold such a load. Up to the matching position
                 threshold, sliding friction then opposes the drift from those points rather than the
                 current slip direction, and the friction cone is the normal load, elastic and damping together,
@@ -5295,7 +5295,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     def _export_body_particle_contact_forces(
         self, state_in: State, state_out: State, contacts: Contacts, dt: float, contact_f: wp.array[wp.spatial_vector]
     ) -> None:
-        """Evaluate one wrench per body-particle contact record."""
+        """Evaluate one wrench per body-particle contact record.
+
+        With soft contact matching, the wrench uses the private anchors rather than the fresh
+        geometry in Contacts. Its force and torque remain valid on the rigid side; reconstructing
+        per-particle reactions from the fresh barycentric weights is unsupported in this mode.
+        """
         model = self.model
         soft_contact_max = contacts.soft_contact_max
 
