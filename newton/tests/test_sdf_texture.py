@@ -227,6 +227,26 @@ def _sample_texture_sdf_grad_kernel(
     gradients[tid] = grad
 
 
+@wp.kernel
+def _texture_gradient_derivative_kernel(
+    sdf: TextureSDFData,
+    points: wp.array[wp.vec3],
+    h: float,
+    analytical: wp.array[wp.vec3],
+    numerical: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    point = points[i]
+    _distance, grad = texture_sample_sdf_grad(sdf, point)
+    result = wp.vec3(0.0)
+    for axis in range(3):
+        offset = wp.vec3(0.0)
+        offset[axis] = h
+        result[axis] = (texture_sample_sdf(sdf, point + offset) - texture_sample_sdf(sdf, point - offset)) / (2.0 * h)
+    analytical[i] = grad
+    numerical[i] = result
+
+
 @wp.func
 def _texture_sample_sdf_grad_hw_scalar_reference(sdf: TextureSDFData, local_pos: wp.vec3) -> wp.vec3:
     """Evaluate the hardware gradient with six independent scalar samples."""
@@ -733,6 +753,37 @@ def test_texture_sdf_gradient_accuracy(test, device):
     test.assertLess(s["nb_angle_mean"], 3.0, f"Contact-zone mean gradient angle: {s['nb_angle_mean']:.2f} deg")
     test.assertLess(s["nb_angle_median"], 0.5, f"Contact-zone median gradient angle: {s['nb_angle_median']:.2f} deg")
     test.assertLess(s["nb_angle_p95"], 15.0, f"Contact-zone p95 gradient angle: {s['nb_angle_p95']:.2f} deg")
+
+    # Angles alone hide a coarse-grid derivative scaled by the fine-grid
+    # spacing. Check magnitude against the actual interpolated scalar field.
+    slots = tex_sdf.subgrid_start_slots.numpy()
+    lower, upper = np.array(tex_sdf.sdf_box_lower), np.array(tex_sdf.sdf_box_upper)
+    voxel = np.array(tex_sdf.voxel_size)
+    regions = {}
+    for label, mask in (("fine", slots < int(SLOT_LINEAR)), ("coarse", slots >= int(SLOT_LINEAR))):
+        blocks = np.argwhere(mask)[:24]
+        test.assertGreater(len(blocks), 0, f"The fixture needs {label} cells")
+        regions[label] = lower + (blocks * tex_sdf.subgrid_size + np.array([3.271, 4.381, 2.413])) * voxel
+    regions["extrapolated"] = np.array(
+        [
+            [upper[0] + 0.1, upper[1] - 0.02, 0.1],
+            [upper[0] + 0.1, upper[1] + 0.1, upper[2] - 0.02],
+            [lower[0] - 0.1, lower[1] + 0.02, 0.1],
+        ]
+    )
+    for label, points in regions.items():
+        with test.subTest(region=label):
+            queries = wp.array(points.astype(np.float32), dtype=wp.vec3, device=device)
+            analytical = wp.empty(len(points), dtype=wp.vec3, device=device)
+            numerical = wp.empty_like(analytical)
+            wp.launch(
+                _texture_gradient_derivative_kernel,
+                dim=len(points),
+                inputs=[tex_sdf, queries, float(voxel.min() * 0.01)],
+                outputs=[analytical, numerical],
+                device=device,
+            )
+            np.testing.assert_allclose(analytical.numpy(), numerical.numpy(), rtol=3e-3, atol=2e-3)
 
 
 def test_texture_sdf_paired_hw_gradient_matches_scalar(test, device):
