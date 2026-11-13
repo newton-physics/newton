@@ -305,7 +305,7 @@ def test_eval_mimic_selection(test, device):
                 state_out.joint_q.fill_(-17.0)
                 state_out.joint_qd.fill_(-19.0)
                 result = state_in if in_place else state_out
-                expected_q, expected_qd = result.joint_q.numpy(), result.joint_qd.numpy()
+                expected_q, expected_qd = result.joint_q.numpy().copy(), result.joint_qd.numpy().copy()
                 if selected:
                     expected_q[2:] = [2.0, -3.5]
                     expected_qd[2:] = [4.0, -8.0]

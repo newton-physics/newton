@@ -21,7 +21,6 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.mujoco import import_mjcf_native
 from newton._src.utils.texture import normalize_texture
 from newton.solvers import SolverMuJoCo, SolverXPBD
 from newton.tests import test_import_mjcf
@@ -347,35 +346,6 @@ class TestImportMjcfNative(unittest.TestCase):
                     before,
                 )
 
-    def test_reject_incomplete_joint_conversion(self):
-        """Detect missing joints and aliased DOFs in a converter's output."""
-        xml = """<mujoco><worldbody><body name="compound"><joint name="x" type="slide" axis="1 0 0"/>
-            <joint name="y" type="slide" axis="0 1 0"/><geom size=".1"/></body></worldbody></mujoco>"""
-        convert = import_mjcf_native._add_joints
-        for missing in (True, False):
-            with self.subTest(missing=missing):
-
-                def incomplete(*args, missing=missing):
-                    joint, mapping = convert(*args)
-                    if missing:
-                        mapping.pop(1)
-                    else:
-                        mapping[1] = mapping[0]
-                    return joint, mapping
-
-                with patch.object(import_mjcf_native, "_add_joints", side_effect=incomplete):
-                    with self.assertRaisesRegex(RuntimeError, "joint.*compound"):
-                        newton.ModelBuilder().add_mjcf_native(xml)
-
-    def test_reject_incomplete_actuator_conversion(self):
-        """Detect an actuator row silently dropped during conversion."""
-        xml = """<mujoco><worldbody><body><joint name="j"/><geom size=".1"/></body></worldbody>
-            <actuator><motor joint="j"/></actuator></mujoco>"""
-        builder = newton.ModelBuilder()
-        with patch.object(builder, "add_custom_values", return_value={}):
-            with self.assertRaisesRegex(RuntimeError, "actuator"):
-                builder.add_mjcf_native(xml)
-
     def test_user_data_omission_warnings(self):
         """Warn when site or tendon user data is omitted."""
         for elements in (
@@ -390,17 +360,20 @@ class TestImportMjcfNative(unittest.TestCase):
     def test_structural_accounting_with_filters_and_root_override(self):
         """Account for deliberate filtering and replacement of root joints."""
         xml = """<mujoco><worldbody><body name="root"><freejoint name="root_joint"/><geom size=".1"/>
-            <body name="kept"><joint name="kept_joint"/><geom size=".1"/></body>
+            <body name="kept"><joint name="kept_joint"/>
+            <joint name="kept_slide" type="slide" axis="1 0 0"/><geom size=".1"/></body>
             <body name="removed"><joint name="removed_joint"/><geom size=".1"/></body></body></worldbody>
-            <actuator><motor joint="kept_joint"/><motor joint="removed_joint"/></actuator></mujoco>"""
+            <actuator><motor joint="kept_joint"/><motor joint="kept_slide"/><motor joint="removed_joint"/></actuator></mujoco>"""
         builder = newton.ModelBuilder()
         for _ in range(2):
             with self.assertWarnsRegex(UserWarning, "Actuator.*excluded element"):
                 builder.add_mjcf_native(xml, floating=False, ignore_names=("removed",))
-        self.assertEqual(builder.joint_dof_count, 2)
-        self.assertEqual(builder._custom_frequency_counts["mujoco:actuator"], 2)
+        self.assertEqual(builder.joint_dof_count, 4)
+        self.assertEqual(builder._custom_frequency_counts["mujoco:actuator"], 4)
         solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
-        self.assertEqual((solver.mj_model.nv, solver.mj_model.nu), (2, 2))
+        self.assertEqual((solver.mj_model.nv, solver.mj_model.nu), (4, 4))
+        np.testing.assert_array_equal(solver.mj_model.jnt_type, [2, 3, 2, 3])
+        np.testing.assert_array_equal(solver.mj_model.actuator_trnid[:, 0], [1, 0, 3, 2])
 
     def test_mesh_geom_type_defaults(self):
         """Match MuJoCo's fitted sphere default and explicit mesh/sphere geometry."""

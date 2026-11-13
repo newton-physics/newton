@@ -2060,6 +2060,12 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
         )
         template_builder.add_articulation([joint])
 
+        for add_joint in (template_builder.add_joint_free, template_builder.add_joint_ball):
+            body = template_builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            template_builder.add_shape_box(body=body, hx=0.05, hy=0.05, hz=0.05)
+            joint = add_joint(parent=-1, child=body)
+            template_builder.add_articulation([joint])
+
         world_count = 3
         builder = newton.ModelBuilder()
         builder.replicate(template_builder, world_count)
@@ -2084,14 +2090,18 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
 
         # Get mappings
         mjc_dof_to_newton_dof = solver.mjc_dof_to_newton_dof.numpy()
-        mjc_jnt_to_newton_dof = solver.mjc_jnt_to_newton_dof.numpy()
+        joint_dof_starts = model.joint_qd_start.numpy()[solver.mjc_jnt_to_newton_jnt.numpy()]
         nworld_mjc = mjc_dof_to_newton_dof.shape[0]
         nv_mjc = mjc_dof_to_newton_dof.shape[1]
-        njnt_mjc = mjc_jnt_to_newton_dof.shape[1]
+        njnt_mjc = joint_dof_starts.shape[1]
 
         def assert_passive_values(expected_stiffness: np.ndarray, expected_damping: np.ndarray):
             dof_damping = solver.mjw_model.dof_damping.numpy()
             jnt_stiffness = solver.mjw_model.jnt_stiffness.numpy()
+            np.testing.assert_array_equal(
+                solver.mjw_model.jnt_axis.numpy(),
+                np.broadcast_to(solver.mj_model.jnt_axis, (nworld_mjc, njnt_mjc, 3)),
+            )
 
             # Check DOF damping - iterate over MuJoCo DOFs
             for world_idx in range(nworld_mjc):
@@ -2109,7 +2119,7 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
             # Check joint stiffness - iterate over MuJoCo joints
             for world_idx in range(nworld_mjc):
                 for mjc_jnt in range(njnt_mjc):
-                    newton_dof = mjc_jnt_to_newton_dof[world_idx, mjc_jnt]
+                    newton_dof = joint_dof_starts[world_idx, mjc_jnt]
                     if newton_dof < 0:
                         continue
                     self.assertAlmostEqual(
@@ -2126,7 +2136,7 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
 
         model.joint_stiffness.assign(updated_stiffness)
         model.joint_damping.assign(updated_damping)
-        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_PROPERTIES)
 
         assert_passive_values(updated_stiffness, updated_damping)
 
@@ -2612,7 +2622,9 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 for _ in range(100):
                     solver.step(state_0, state_1, control, None, 0.002)
                     state_0, state_1 = state_1, state_0
-                    qvel.append(solver.mj_data.qvel.copy() if use_mujoco_cpu else solver.mjw_data.qvel.numpy()[0])
+                    qvel.append(
+                        solver.mj_data.qvel.copy() if use_mujoco_cpu else solver.mjw_data.qvel.numpy()[0].copy()
+                    )
                 np.testing.assert_allclose(qvel[-1], qvel[0], atol=1.0e-2)
 
     def test_moving_massless_kinematic_root_wakes_sleeping_payload(self):
@@ -6544,6 +6556,27 @@ class TestMuJoCoValidation(unittest.TestCase):
             SolverMuJoCo(model, separate_worlds=True)
         self.assertIn("global world (-1) cannot contain bodies", str(ctx.exception).lower())
 
+    def test_global_body_gravity_mismatch_fails(self):
+        """Reject different gravity for dynamic global bodies and world 0 in one MuJoCo world."""
+
+        def make_model(world_gravity, global_body=True, is_kinematic=False):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, -2.0))
+            if global_body:
+                builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), is_kinematic=is_kinematic)
+            else:
+                builder.add_ground_plane()
+            builder.begin_world(gravity=world_gravity)
+            builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            builder.end_world()
+            return builder.finalize(device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "one gravity"):
+            SolverMuJoCo(make_model((0.0, 0.0, -5.0)), use_mujoco_cpu=True)
+        # Equal gravity, and a global world without dynamic bodies, stay supported.
+        SolverMuJoCo(make_model((0.0, 0.0, -2.0)), use_mujoco_cpu=True)
+        SolverMuJoCo(make_model((0.0, 0.0, -5.0), is_kinematic=True), use_mujoco_cpu=True)
+        SolverMuJoCo(make_model((0.0, 0.0, -5.0), global_body=False), use_mujoco_cpu=True)
+
     def test_global_joint_fails(self):
         """Test that a joint in global world (-1) raises ValueError."""
         builder = newton.ModelBuilder()
@@ -9204,7 +9237,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         np.testing.assert_array_equal(solver.mjc_eq_to_newton_eq.numpy(), np.array([[0, 1], [2, 3]]))
         np.testing.assert_array_equal(solver.mjc_eq_to_newton_jnt.numpy(), np.full((2, 2), -1, dtype=np.int32))
 
-        eq_data = solver.mjw_model.eq_data.numpy()
+        eq_data = solver.mjw_model.eq_data.numpy().copy()
         np.testing.assert_allclose(eq_data[:, 0, :3], connect_anchor, rtol=1e-5)
         np.testing.assert_allclose(eq_data[:, 1, :3], weld_anchor, rtol=1e-5)
         np.testing.assert_allclose(eq_data[:, 1, 3:6], weld_relpose_pos, rtol=1e-5)
@@ -11634,7 +11667,7 @@ class TestActuatorDampratio(unittest.TestCase):
     def test_runtime_dampratio_update(self):
         """Re-resolve a dampratio written at runtime and keep the placeholder in the model."""
         damping = float(self.solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2])
-        original = self.model.mujoco.actuator_biasprm.numpy()
+        original = self.model.mujoco.actuator_biasprm.numpy().copy()
         biasprm = original.copy()
         biasprm[0, 2] = 0.5
         self.model.mujoco.actuator_biasprm.assign(biasprm)
@@ -15088,8 +15121,8 @@ class TestMuJoCoPerWorldMeshLayout(unittest.TestCase):
         builder.add_world(_build_hull_world(5, offset=-0.21))
         model = builder.finalize()
         solver = SolverMuJoCo(model, use_mujoco_contacts=False)
-        expected_geoms = solver.mjw_model.geom_pos.numpy()
-        expected_sites = solver.mjw_model.site_pos.numpy()
+        expected_geoms = solver.mjw_model.geom_pos.numpy().copy()
+        expected_sites = solver.mjw_model.site_pos.numpy().copy()
         mapping = solver.mjc_geom_to_newton_shape.numpy()
         shapes = np.flatnonzero(model.shape_world.numpy() == 1)
         geom = int(np.flatnonzero(mapping[1] == shapes[0])[0])
