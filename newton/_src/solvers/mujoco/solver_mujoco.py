@@ -10786,7 +10786,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if ref_qd is None:
             ref_qd = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
         if ref_body_q is None:
-            ref_body_q = wp.zeros(model.body_count, dtype=wp.transform, device=model.device)
+            ref_body_q = wp.clone(model.body_q)
+        else:
+            # FK does not visit standalone bodies, including on notify calls.
+            wp.copy(ref_body_q, model.body_q)
         if ref_body_qd is None:
             ref_body_qd = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=model.device)
 
