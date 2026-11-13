@@ -5852,8 +5852,189 @@ def Xform "World"
 
 
 # ---------------------------------------------------------------------------
-# 8. Parameter binding and access via ArticulationView
+# 8. Parameter copies and access
 # ---------------------------------------------------------------------------
+
+
+class TestActuatorParameterCopy(unittest.TestCase):
+    """Copy parameter arrays through caller-supplied DOF selections."""
+
+    def make_actuator(self):
+        """Create an actuator that repeats DOF 4 and whose effort indices differ from its input indices."""
+        return Actuator(
+            indices=wp.array([4, 1, 4], dtype=wp.uint32),
+            effort_indices=wp.array([0, 1, 2], dtype=wp.uint32),
+            drive=DrivePD(wp.array([10.0, 20.0, 30.0], dtype=float), wp.zeros(3)),
+        )
+
+    def test_parameter_copies_follow_input_indices(self):
+        """Copy through a padded selection into strided values, addressing the last entry of a repeated DOF."""
+        actuator = self.make_actuator()
+        selection = wp.array([[1, -1, 4, 7]], dtype=int)
+        values = wp.zeros((1, 4))
+        actuator.copy_parameter_to(actuator.drive.kp, values, dof_indices=selection)
+        np.testing.assert_array_equal(values.numpy(), [[20, 0, 30, 0]])
+
+        storage = wp.array([[21.0, -99.0, 999.0, -99.0, 31.0, -99.0, 888.0, -99.0]], dtype=float)
+        strided = storage[:, ::2]
+        actuator.copy_parameter_from(actuator.drive.kp, strided, dof_indices=selection)
+        np.testing.assert_array_equal(actuator.drive.kp.numpy(), [10, 21, 31])
+        storage.fill_(-99.0)
+        actuator.copy_parameter_to(actuator.drive.kp, strided, dof_indices=selection)
+        np.testing.assert_array_equal(storage.numpy(), [[21, -99, -99, -99, 31, -99, -99, -99]])
+
+        state = types.SimpleNamespace(joint_q=wp.zeros(8), joint_qd=wp.zeros(8))
+        control = types.SimpleNamespace(joint_target_q=wp.ones(8), joint_target_qd=wp.zeros(8), joint_f=wp.zeros(3))
+        actuator.step(state, control, dt=0.01)
+        np.testing.assert_array_equal(control.joint_f.numpy(), [10, 21, 31])
+
+        selection.assign([[4, 1, -1, 7]])
+        values.zero_()
+        actuator.copy_parameter_to(actuator.drive.kp, values, dof_indices=selection)
+        np.testing.assert_array_equal(values.numpy(), [[31, 21, 0, 0]])
+
+    def test_parameter_layout_and_element_types(self):
+        """Cover one to three selection axes, vector dtypes, strided storage, row masks and gradients."""
+        actuator = self.make_actuator()
+        storage = wp.array(np.arange(12).reshape(6, 2), dtype=wp.vec2)
+        parameter = storage[::2]
+        # DOFs 1 and 4 sit at different rows and off-diagonal positions, so a swapped or dropped axis is visible.
+        for shape in ((8,), (2, 4), (2, 2, 2)):
+            with self.subTest(shape=shape):
+                selection_storage = wp.array(
+                    np.repeat(np.array([-1, 7, 1, -1, 0, 4, -1, 7]).reshape(shape), 2, axis=-1), dtype=int
+                )
+                selection = selection_storage[(*[slice(None)] * (len(shape) - 1), slice(None, None, 2))]
+                padded = wp.zeros((*shape[:-1], 2 * shape[-1]), dtype=wp.vec2)
+                values = padded[(*[slice(None)] * (len(shape) - 1), slice(None, None, 2))]
+                actuator.copy_parameter_to(parameter, values, dof_indices=selection)
+                expected_values = np.zeros((8, 2))
+                expected_values[[2, 5]] = [[4, 5], [8, 9]]
+                np.testing.assert_array_equal(values.numpy().reshape(8, 2), expected_values)
+                values.assign(100 + np.arange(16).reshape(*shape, 2))
+                actuator.copy_parameter_from(parameter, values, dof_indices=selection)
+                np.testing.assert_array_equal(parameter.numpy(), [[0, 1], [104, 105], [110, 111]])
+                storage.assign(np.arange(12).reshape(6, 2))
+
+                mask = wp.array(np.arange(shape[0]) % 2 == 1, dtype=bool)
+                values.fill_(wp.vec2(-1.0))
+                actuator.copy_parameter_to(parameter, values, dof_indices=selection, mask=mask)
+                expected = np.full((*shape, 2), -1.0)
+                selected_values = np.full((8, 2), -1.0)
+                selected_values[[2, 5]] = [[4, 5], [8, 9]]
+                enabled = mask.numpy()
+                expected[enabled] = selected_values.reshape(*shape, 2)[enabled]
+                np.testing.assert_array_equal(values.numpy(), expected)
+                masked_values = 200 + np.arange(16).reshape(*shape, 2)
+                values.assign(masked_values)
+                actuator.copy_parameter_from(parameter, values, dof_indices=selection, mask=mask)
+                expected_parameter = np.array([[0, 1], [4, 5], [210, 211]])
+                np.testing.assert_array_equal(parameter.numpy(), expected_parameter)
+                mask.fill_(False)
+                actuator.copy_parameter_to(parameter, values, dof_indices=selection, mask=mask)
+                np.testing.assert_array_equal(values.numpy(), masked_values)
+                values.fill_(wp.vec2(11.0))
+                actuator.copy_parameter_from(parameter, values, dof_indices=selection, mask=mask)
+                np.testing.assert_array_equal(parameter.numpy(), expected_parameter)
+                mask.fill_(True)
+                actuator.copy_parameter_from(parameter, values, dof_indices=selection, mask=mask)
+                np.testing.assert_array_equal(parameter.numpy(), [[0, 1], [11, 11], [11, 11]])
+                storage.assign(np.arange(12).reshape(6, 2))
+
+        selection = wp.array([[1, -1, 4, 7]], dtype=int)
+        parameter = wp.array([10.0, 20.0, 30.0], requires_grad=True)
+        values = wp.zeros((1, 4), dtype=parameter.dtype, requires_grad=True)
+        with wp.Tape() as tape:
+            actuator.copy_parameter_to(parameter, values, dof_indices=selection)
+        tape.backward(grads={values: wp.ones_like(values)})
+        np.testing.assert_array_equal(parameter.grad.numpy(), [0, 1, 1])
+
+    def test_parameter_copy_validation(self):
+        """Reject invalid arrays and masks; copy integer parameters through uint32 selections."""
+        actuator = self.make_actuator()
+        parameter = wp.array([1, 2, 3], dtype=int)
+        selection = wp.array([1, 4], dtype=wp.uint32)
+        values = wp.zeros(2, dtype=int)
+        actuator.copy_parameter_to(parameter, values, dof_indices=selection)
+        np.testing.assert_array_equal(values.numpy(), [2, 3])
+        actuator.copy_parameter_from(parameter, values, dof_indices=selection)
+        np.testing.assert_array_equal(parameter.numpy(), [1, 2, 3])
+        repeated = wp.array([1, 1], dtype=int)
+        actuator.copy_parameter_to(parameter, values, dof_indices=repeated)
+        np.testing.assert_array_equal(values.numpy(), [2, 2])
+        wide_indices = wp.array([1, 4, 2**32 - 1], dtype=wp.uint32)
+        wide_values = wp.full(3, -99, dtype=int)
+        actuator.copy_parameter_to(parameter, wide_values, dof_indices=wide_indices)
+        np.testing.assert_array_equal(wide_values.numpy(), [2, 3, -99])
+        actuator.copy_parameter_from(parameter, wide_values, dof_indices=wide_indices)
+        np.testing.assert_array_equal(parameter.numpy(), [1, 2, 3])
+        for indices in (wp.zeros(2), wp.zeros((1, 1, 1, 1), dtype=int)):
+            with self.subTest(indices=indices), self.assertRaisesRegex(ValueError, "one to three axes"):
+                actuator.copy_parameter_to(parameter, values, dof_indices=indices)
+        selection = wp.array([1, 4], dtype=int)
+        with self.assertRaisesRegex(ValueError, "Expected values with shape"):
+            actuator.copy_parameter_from(parameter, wp.zeros(2), dof_indices=selection)
+        with self.assertRaisesRegex(ValueError, "Expected values with shape"):
+            actuator.copy_parameter_to(parameter, wp.zeros(3, dtype=int), dof_indices=selection)
+        with self.assertRaisesRegex(ValueError, "per-actuator array"):
+            actuator.copy_parameter_to(wp.zeros(2), values, dof_indices=selection)
+        for mask in ([True, False], wp.ones(2, dtype=int), wp.ones((1, 2), dtype=bool), wp.ones(1, dtype=bool)):
+            with self.subTest(mask=mask), self.assertRaisesRegex(ValueError, "Expected Boolean mask"):
+                actuator.copy_parameter_to(parameter, values, dof_indices=selection, mask=mask)
+        if wp.is_cuda_available():
+            other_device = "cpu" if actuator.device.is_cuda else "cuda:0"
+            with self.assertRaisesRegex(ValueError, "Expected mask on device"):
+                actuator.copy_parameter_from(
+                    parameter, values, dof_indices=selection, mask=wp.ones(2, dtype=bool, device=other_device)
+                )
+
+    def test_constructor_capture(self):
+        """Construct an actuator and copy its parameters inside CUDA graph capture."""
+        device = wp.get_device()
+        if not device.is_cuda or not wp.is_mempool_enabled(device):
+            self.skipTest("CUDA graph capture of allocations requires the memory pool")
+        indices = wp.array([4, 1, 4], dtype=wp.uint32)
+        kp = wp.array([10.0, 20.0, 30.0], dtype=float)
+        kd = wp.zeros(3)
+        drive = DrivePD(kp, kd)
+        dofs = wp.array([[1, -1], [4, 7]], dtype=int)
+        values = wp.zeros((2, 2))
+        with wp.ScopedCapture(device) as capture:
+            actuator = Actuator(indices, drive=drive)
+            actuator.copy_parameter_to(kp, values, dof_indices=dofs)
+            actuator.copy_parameter_from(kd, values, dof_indices=dofs)
+        for gains in ([10.0, 20.0, 30.0], [11.0, 22.0, 33.0]):
+            kp.assign(gains)
+            wp.capture_launch(capture.graph)
+            np.testing.assert_array_equal(values.numpy(), [[gains[1], 0], [gains[2], 0]])
+            np.testing.assert_array_equal(kd.numpy(), [0, gains[1], gains[2]])
+
+    def test_parameter_copy_capture(self):
+        """Capture first-use copies and replay them with changing DOF indices and masks."""
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("CUDA graph capture requires CUDA")
+        actuator = self.make_actuator()
+        selection = wp.array([[1, -1], [4, 7]], dtype=int)
+        values = wp.zeros((2, 2))
+        mask = wp.array([True, False], dtype=bool)
+        with wp.ScopedCapture(device) as capture:
+            actuator.copy_parameter_to(actuator.drive.kp, values, dof_indices=selection, mask=mask)
+            actuator.copy_parameter_from(actuator.drive.kd, values, dof_indices=selection, mask=mask)
+        actuator.drive.kp.assign([11, 22, 33])
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(values.numpy(), [[22, 0], [0, 0]])
+        np.testing.assert_array_equal(actuator.drive.kd.numpy(), [0, 22, 0])
+        mask.assign([False, True])
+        selection.assign([[4, -1], [1, 7]])
+        actuator.drive.kp.assign([44, 55, 66])
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(values.numpy(), [[22, 0], [55, 0]])
+        np.testing.assert_array_equal(actuator.drive.kd.numpy(), [0, 55, 0])
+        mask.fill_(True)
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(values.numpy(), [[66, 0], [55, 0]])
+        np.testing.assert_array_equal(actuator.drive.kd.numpy(), [0, 55, 66])
 
 
 class TestActuatorSelectionAPI(unittest.TestCase):

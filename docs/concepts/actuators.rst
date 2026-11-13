@@ -212,6 +212,31 @@ simulator or test harness:
    actuator.step(sim_state, sim_control, dt=0.01)
 
 
+Reading and updating parameters
+-------------------------------
+
+Parameter arrays such as ``actuator.drive.kp`` hold one entry per actuator, in the order of
+``actuator.indices``. To access them by DOF, pass ``dof_indices`` listing the DOFs in the layout
+you want, with ``-1`` for padding. :meth:`Actuator.copy_parameter_to` copies parameter values
+into that layout, and :meth:`Actuator.copy_parameter_from` copies them back:
+
+.. testcode:: actuator-usage
+
+   selected_dofs = wp.array([[0, -1]], dtype=int, device=actuator.device)
+   values = wp.zeros(selected_dofs.shape, dtype=float, device=actuator.device)
+   actuator.copy_parameter_to(actuator.drive.kp, values, dof_indices=selected_dofs)
+
+   values.fill_(200.0)
+   actuator.copy_parameter_from(actuator.drive.kp, values, dof_indices=selected_dofs)
+
+An optional ``mask`` selects rows along the first axis of ``dof_indices``; for selections shaped
+``(world_count, ...)``, it selects worlds.
+
+The actuator builds one DOF lookup at construction, so keep ``actuator.indices`` unchanged.
+``dof_indices`` can change between copies or graph replays, and copies need no preparation before
+CUDA graph capture.
+
+
 .. _stateful-actuators:
 
 Stateful Actuators

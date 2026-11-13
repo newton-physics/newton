@@ -16,6 +16,7 @@ import numpy as np
 import warp as wp
 from warp.types import is_array, type_size, type_size_in_bytes
 
+from ..actuators.actuator import _find_parameter_entry
 from ..exceptions import NewtonDeprecationWarning
 from ..sim import (
     Control,
@@ -224,20 +225,9 @@ for _dtype in [float, wp.transform, wp.spatial_vector]:
 
 
 @wp.kernel
-def _build_actuator_dof_lookup_kernel(actuator_dofs: wp.array[wp.uint32], lookup: wp.array[int]):
-    """Scatter ``lookup[actuator_dofs[i]] = i``, skipping DOFs beyond the lookup range.
-
-    ``lookup`` must be filled with -1. If an actuator lists a DOF more than once, the last entry wins.
-    """
-    i = wp.tid()
-    dof = int(actuator_dofs[i])
-    if dof < lookup.shape[0]:
-        wp.atomic_max(lookup, dof, i)
-
-
-@wp.kernel
 def _map_regular_dofs_to_actuator_kernel(
-    lookup: wp.array[int],
+    actuator_dofs: wp.array[wp.uint32],
+    actuator_entries: wp.array[int],
     offset: int,
     stride_between_worlds: int,
     stride_within_worlds: int,
@@ -246,23 +236,26 @@ def _map_regular_dofs_to_actuator_kernel(
     use_local_indices: int,
     mapping: wp.array3d[int],
 ):
-    """Gather ``mapping[world, arti, value] = lookup[dof]`` for the view's regular-layout DOF rows."""
+    """Map the view's regular-layout DOF rows to actuator entries; DOFs without an actuator map to -1."""
     world, arti, value = wp.tid()
     local = slice_start + value
     if use_local_indices != 0:
         local = local_indices[value]
-    mapping[world, arti, value] = lookup[offset + world * stride_between_worlds + arti * stride_within_worlds + local]
+    dof = offset + world * stride_between_worlds + arti * stride_within_worlds + local
+    mapping[world, arti, value] = _find_parameter_entry(actuator_dofs, actuator_entries, wp.int64(dof))
 
 
 @wp.kernel
 def _map_explicit_dofs_to_actuator_kernel(
-    lookup: wp.array[int],
+    actuator_dofs: wp.array[wp.uint32],
+    actuator_entries: wp.array[int],
     model_indices: wp.array3d[int],
     mapping: wp.array3d[int],
 ):
-    """Gather ``mapping[world, arti, value] = lookup[model_indices[world, arti, value]]``."""
+    """Map the view's explicit DOF rows to actuator entries; DOFs without an actuator map to -1."""
     world, arti, value = wp.tid()
-    mapping[world, arti, value] = lookup[model_indices[world, arti, value]]
+    dof = model_indices[world, arti, value]
+    mapping[world, arti, value] = _find_parameter_entry(actuator_dofs, actuator_entries, wp.int64(dof))
 
 
 @wp.kernel
@@ -553,24 +546,6 @@ class FrequencyLayout:
         world_offsets = np.arange(world_count, dtype=np.int64) * self.stride_between_worlds
         articulation_offsets = np.arange(count_per_world, dtype=np.int64) * self.stride_within_worlds
         return self.offset + world_offsets[:, None, None] + articulation_offsets[None, :, None] + selected
-
-    def max_model_index(self, world_count: int, count_per_world: int) -> int:
-        """Return the largest absolute model row the layout selects, or -1 if it selects none.
-
-        Computed from host layout metadata only, without reading device memory.
-        """
-        if not self._selected_indices or world_count == 0 or count_per_world == 0:
-            return -1
-        if self._model_value_indices is not None:
-            return int(self._model_value_indices.max(initial=-1))
-        if self._model_starts is not None:
-            return int(self._model_starts.max()) + max(self._selected_indices)
-        return (
-            self.offset
-            + (world_count - 1) * self.stride_between_worlds
-            + (count_per_world - 1) * self.stride_within_worlds
-            + max(self._selected_indices)
-        )
 
     @property
     def selected_value_count(self):
@@ -2485,9 +2460,9 @@ class ArticulationView:
 
         The mapping matches absolute model DOF indices, so it holds for every layout, including
         sparse world selections, explicit model indices, and actuators whose entries are not
-        ordered as equal per-world blocks. It is built with device kernels only (a lookup from model
-        DOF to actuator entry, then a gather over the view's DOF rows), so a first access may run
-        during CUDA graph capture when the device's memory pool is enabled.
+        ordered as equal per-world blocks. It is built with a device kernel only (a search of the
+        actuator's DOF lookup for each of the view's DOF rows), so a first access may run during CUDA graph
+        capture when the device's memory pool is enabled.
 
         Note:
             Assumes one DOF per actuator.
@@ -2517,25 +2492,13 @@ class ArticulationView:
                 "get_actuator_parameter() allocates its result on every call and always requires the pool."
             )
 
-        lookup = wp.full(
-            dof_layout.max_model_index(self.world_count, self.count_per_world) + 1, -1, dtype=int, device=device
-        )
-        if actuator.indices.shape[0] > 0:
-            wp.launch(
-                _build_actuator_dof_lookup_kernel,
-                dim=actuator.indices.shape[0],
-                inputs=[actuator.indices],
-                outputs=[lookup],
-                device=device,
-            )
-
         mapping = wp.empty(mapping_shape, dtype=int, device=device)
         if dof_layout.uses_explicit_model_indices:
             # prepared at view construction; raises a clear error if a borrowing view did not prepare it
             wp.launch(
                 _map_explicit_dofs_to_actuator_kernel,
                 dim=mapping_shape,
-                inputs=[lookup, dof_layout.get_model_indices()],
+                inputs=[actuator._parameter_dofs, actuator._parameter_entries, dof_layout.get_model_indices()],
                 outputs=[mapping],
                 device=device,
             )
@@ -2545,7 +2508,8 @@ class ArticulationView:
                 _map_regular_dofs_to_actuator_kernel,
                 dim=mapping_shape,
                 inputs=[
-                    lookup,
+                    actuator._parameter_dofs,
+                    actuator._parameter_entries,
                     dof_layout.offset,
                     dof_layout.stride_between_worlds,
                     dof_layout.stride_within_worlds,

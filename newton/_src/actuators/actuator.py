@@ -44,6 +44,85 @@ _DELAY_STATE_DEPRECATION_MSG = (
 
 
 @wp.kernel
+def _prepare_parameter_lookup(indices: wp.array[wp.uint32], keys: wp.array[wp.uint32], entries: wp.array[int]):
+    entry = wp.tid()
+    keys[entry] = indices[entry]
+    entries[entry] = entry
+
+
+@wp.kernel
+def _store_parameter_lookup(
+    keys: wp.array[wp.uint32], entries: wp.array[int], dofs: wp.array[wp.uint32], lookup_entries: wp.array[int]
+):
+    i = wp.tid()
+    key = keys[i]
+    dofs[i] = key
+    # Searches return the first equal DOF; store the last actuator entry at that position.
+    wp.atomic_max(lookup_entries, wp.lower_bound(keys, key), entries[i])
+
+
+@wp.func
+def _find_parameter_entry(dofs: wp.array[wp.uint32], entries: wp.array[int], dof: wp.int64) -> int:
+    """Return the actuator entry for ``dof``, or -1; ``dofs`` is sorted."""
+    if dof < wp.int64(0):
+        return -1
+    key = wp.uint32(dof)
+    i = wp.lower_bound(dofs, key)
+    if i < dofs.shape[0]:
+        if dofs[i] == key:
+            return entries[i]
+    return -1
+
+
+def _make_parameter_transfer_kernel(ndim: int, gather: bool):
+    # A unique module keeps new dtype overloads from rebuilding the actuator module.
+    @wp.kernel(module="unique")
+    def transfer(
+        src: Any,
+        dof_indices: Any,
+        dofs: wp.array[wp.uint32],
+        entries: wp.array[int],
+        mask: wp.array[bool],
+        dst: Any,
+    ):
+        if wp.static(ndim == 1):
+            row = wp.tid()
+            dof = wp.int64(dof_indices[row])
+        elif wp.static(ndim == 2):
+            row, j = wp.tid()
+            dof = wp.int64(dof_indices[row, j])
+        else:
+            row, j, k = wp.tid()
+            dof = wp.int64(dof_indices[row, j, k])
+        if mask:
+            if not mask[row]:
+                return
+        entry = _find_parameter_entry(dofs, entries, dof)
+        if entry >= 0:
+            if wp.static(gather):
+                if wp.static(ndim == 1):
+                    dst[entry] = src[row]
+                elif wp.static(ndim == 2):
+                    dst[entry] = src[row, j]
+                else:
+                    dst[entry] = src[row, j, k]
+            else:
+                if wp.static(ndim == 1):
+                    dst[row] = src[entry]
+                elif wp.static(ndim == 2):
+                    dst[row, j] = src[entry]
+                else:
+                    dst[row, j, k] = src[entry]
+
+    return transfer
+
+
+_PARAMETER_TRANSFER_KERNELS = {
+    (ndim, gather): _make_parameter_transfer_kernel(ndim, gather) for ndim in (1, 2, 3) for gather in (False, True)
+}
+
+
+@wp.kernel
 def _scatter_add_kernel(
     forces: wp.array[float],
     computed_forces: wp.array[float],
@@ -371,6 +450,8 @@ class Actuator:
         Args:
             indices: DOF indices into velocity-shaped arrays (velocities,
                 velocity targets, feedforward, effort output). Shape ``(N,)``.
+                Keep the contents unchanged after construction: :meth:`copy_parameter_to` and
+                :meth:`copy_parameter_from` match DOFs against a lookup built here.
             drive: Drive that computes effort without a motor, or duty with a motor.
             delay: Deprecated in Newton 1.9; pass the delay in
                 ``input_processors`` instead.
@@ -472,6 +553,27 @@ class Actuator:
 
         self.device = indices.device
         self.requires_grad = requires_grad
+        self._parameter_dofs = wp.empty(self.num_actuators, dtype=wp.uint32, device=self.device)
+        self._parameter_entries = wp.full(self.num_actuators, -1, dtype=int, device=self.device)
+        if self.num_actuators:
+            # Radix sort uses the second half of each array as scratch.
+            keys = wp.empty(2 * self.num_actuators, dtype=wp.uint32, device=self.device)
+            entries = wp.empty(2 * self.num_actuators, dtype=int, device=self.device)
+            wp.launch(
+                _prepare_parameter_lookup,
+                dim=self.num_actuators,
+                inputs=[indices],
+                outputs=[keys, entries],
+                device=self.device,
+            )
+            wp.utils.radix_sort_pairs(keys, entries, self.num_actuators)
+            wp.launch(
+                _store_parameter_lookup,
+                dim=self.num_actuators,
+                inputs=[keys[: self.num_actuators], entries],
+                outputs=[self._parameter_dofs, self._parameter_entries],
+                device=self.device,
+            )
         self._computed_forces = wp.zeros(
             self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
         )
@@ -499,6 +601,91 @@ class Actuator:
             motor.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
 
         self.set_effort_mode_explicit()
+
+    def copy_parameter_from(
+        self, parameter: wp.array, values: wp.array, *, dof_indices: wp.array, mask: wp.array[wp.bool] | None = None
+    ) -> None:
+        """Copy ``values`` into ``parameter``, matching ``dof_indices`` against :attr:`indices`.
+
+        Padding and DOFs not in :attr:`indices` are skipped. If :attr:`indices` repeats a DOF, only its last entry is
+        written.
+
+        Args:
+            parameter: Destination array with shape ``(num_actuators,)``.
+            values: Array shaped like ``dof_indices``, with the parameter's dtype.
+            dof_indices: DOF selection, as for :meth:`copy_parameter_to`. Nonnegative DOFs must be unique; this is
+                a caller requirement and is not checked.
+            mask: Boolean array with shape ``(dof_indices.shape[0],)``. Only enabled rows are copied.
+                ``None`` copies all rows.
+
+        Note:
+            Arguments must not alias. Strided arrays are supported. DOFs are matched against :attr:`indices` as
+            passed at construction; later changes to :attr:`indices` are not seen.
+        """
+        self._transfer_parameter(values, parameter, dof_indices, mask, gather=True)
+
+    def copy_parameter_to(
+        self, parameter: wp.array, values: wp.array, *, dof_indices: wp.array, mask: wp.array[wp.bool] | None = None
+    ) -> None:
+        """Copy ``parameter`` into ``values``, matching ``dof_indices`` against :attr:`indices`.
+
+        Slots for padding and DOFs not in :attr:`indices` are left unchanged. If :attr:`indices` repeats a DOF, its
+        last entry is read.
+
+        Args:
+            parameter: Source array with shape ``(num_actuators,)``.
+            values: Destination shaped like ``dof_indices``, with the parameter's dtype.
+            dof_indices: Global DOF indices in the desired order, with one to three axes; an int32 or uint32 array on
+                the actuator's device. Use int32 ``-1`` entries for padding.
+            mask: Boolean array with shape ``(dof_indices.shape[0],)``. Only enabled rows are copied.
+                ``None`` copies all rows.
+
+        Note:
+            Arguments must not alias. Strided arrays are supported. DOFs are matched against :attr:`indices` as
+            passed at construction; later changes to :attr:`indices` are not seen.
+        """
+        self._transfer_parameter(values, parameter, dof_indices, mask, gather=False)
+
+    def _validate_parameter_array(self, parameter: wp.array) -> None:
+        if not isinstance(parameter, wp.array) or parameter.shape != (self.num_actuators,):
+            raise ValueError(f"Expected a per-actuator array with shape ({self.num_actuators},)")
+        if parameter.device != self.device:
+            raise ValueError(f"Expected parameter on device {self.device}, got {parameter.device}")
+
+    def _validate_dof_indices(self, dof_indices: wp.array) -> None:
+        if (
+            not isinstance(dof_indices, wp.array)
+            or dof_indices.dtype not in (wp.int32, wp.uint32)
+            or not 1 <= dof_indices.ndim <= 3
+        ):
+            raise ValueError("Expected int32 or uint32 dof_indices with one to three axes")
+        if dof_indices.device != self.device:
+            raise ValueError(f"Expected dof_indices on device {self.device}, got {dof_indices.device}")
+
+    def _transfer_parameter(
+        self, values: wp.array, parameter: wp.array, dof_indices: wp.array, mask: wp.array | None, *, gather: bool
+    ) -> None:
+        self._validate_parameter_array(parameter)
+        self._validate_dof_indices(dof_indices)
+        if not isinstance(values, wp.array) or values.shape != dof_indices.shape or values.dtype != parameter.dtype:
+            raise ValueError(f"Expected values with shape {dof_indices.shape} and dtype {parameter.dtype}")
+        if values.device != self.device:
+            raise ValueError(f"Expected values on device {self.device}, got {values.device}")
+        if mask is not None:
+            if not isinstance(mask, wp.array) or mask.dtype != wp.bool or mask.shape != (dof_indices.shape[0],):
+                raise ValueError(f"Expected Boolean mask with shape ({dof_indices.shape[0]},)")
+            if mask.device != self.device:
+                raise ValueError(f"Expected mask on device {self.device}, got {mask.device}")
+        if not dof_indices.size:
+            return
+        source, target = (values, parameter) if gather else (parameter, values)
+        wp.launch(
+            _PARAMETER_TRANSFER_KERNELS[values.ndim, gather],
+            dim=dof_indices.shape,
+            inputs=[source, dof_indices, self._parameter_dofs, self._parameter_entries, mask],
+            outputs=[target],
+            device=self.device,
+        )
 
     def sim_state(self) -> Any:
         """Return an empty container with the fields this actuator reads from ``sim_state``.
