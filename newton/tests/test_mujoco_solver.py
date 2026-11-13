@@ -9714,6 +9714,45 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 err = float(np.max(np.abs(tau_newton - expected)))
                 self.assertLess(err, 1e-5, f"got={tau_newton}, expected={expected}, err={err:.2e}")
 
+    @requires(*MUJOCO_MODULES)
+    def test_ball_joint_zero_effort_limit_raises(self):
+        """A zero effort limit on an actuated ball joint cannot be a MuJoCo force range."""
+
+        def make_model(world_count, mode):
+            template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joint = template.add_joint_ball(-1, body, actuator_mode=mode, label="shoulder")
+            template.add_articulation([joint])
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            builder.replicate(template, world_count)
+            return builder.finalize()
+
+        for mode in (
+            newton.JointTargetMode.POSITION,
+            newton.JointTargetMode.VELOCITY,
+            newton.JointTargetMode.POSITION_VELOCITY,
+        ):
+            for use_mujoco_cpu in (False, True):
+                with self.subTest(mode=mode, use_mujoco_cpu=use_mujoco_cpu):
+                    model = make_model(1, mode)
+                    model.joint_effort_limit.assign(np.array([1.0, 0.0, 1.0], dtype=np.float32))
+                    with self.assertRaisesRegex(ValueError, r"Joint '.*shoulder' axis 1 has joint_effort_limit=0"):
+                        SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+
+        with self.subTest("zero in one of two worlds"):
+            model = make_model(2, newton.JointTargetMode.VELOCITY)
+            model.joint_effort_limit.assign(np.array([1.0, 1.0, 1.0, 1.0, 1.0, 0.0], dtype=np.float32))
+            with self.assertRaisesRegex(ValueError, "axis 2 has joint_effort_limit=0"):
+                SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+
+        # NONE and EFFORT create no MuJoCo actuator, so a zero effort limit is allowed.
+        for mode in (newton.JointTargetMode.NONE, newton.JointTargetMode.EFFORT):
+            for use_mujoco_cpu in (False, True):
+                with self.subTest("no actuator", mode=mode, use_mujoco_cpu=use_mujoco_cpu):
+                    model = make_model(1, mode)
+                    model.joint_effort_limit.zero_()
+                    SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+
 
 class TestMuJoCoSolverPairProperties(unittest.TestCase):
     """Test contact pair property conversion and runtime updates across multiple worlds."""
