@@ -157,7 +157,8 @@ class SensorCamera:
                 ``RenderConfig()``.
             backend: ``"warp"``, ``"optix"`` (experimental, requires ``newton[optix]``),
                 or ``None`` to use OptiX when it supports the model and device.
-                ``"optix"`` raises :class:`RuntimeError` when unsupported.
+                ``"optix"`` raises :class:`RuntimeError` when unsupported. With OptiX, shapes must
+                stay within twice their initial distance from the origin.
             load_textures: Load the textures of shape meshes and deformable visual
                 meshes from file paths or in-memory images. A texture that cannot
                 be loaded raises ``ValueError`` here, so pass ``False`` for

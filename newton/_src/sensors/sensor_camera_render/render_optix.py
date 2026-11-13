@@ -1,24 +1,27 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Camera shading adapters for the shared OptiX shape acceleration."""
+"""Camera traversal of the OptiX scene, with the Warp traversal signatures.
+
+``bvh_shapes_id`` is the OptiX instance structure; the Warp BVH arguments are unused.
+"""
 
 import warp as wp
 
 from ...geometry import Gaussian, GeoType, raycast
-from ...geometry.optix import SceneData, ray_interval, world_offset
-from .raytrace import ClosestHit, _mesh_hit_normal
+from ...geometry.optix import ray_interval, wo, world_offset
+from . import raytrace
 from .types import MeshData
 
 
 def create_closest_hit(config, scene):
-    wo = scene.wo
+    grid, extent, world_count = scene.grid, scene.extent, scene.world_count
 
     @wp.func
     def closest_hit_shape(
-        hit: ClosestHit,
+        hit: raytrace.ClosestHit,
         bvh_shapes_size: wp.int32,
-        data: SceneData,
+        bvh_shapes_id: wp.uint64,
         bvh_shapes_group_roots: wp.array[wp.int32],
         world_index: wp.int32,
         shape_enabled: wp.array[wp.uint32],
@@ -32,17 +35,19 @@ def create_closest_hit(config, scene):
         origin: wp.vec3f,
         direction: wp.vec3f,
         camera_forward: wp.vec3f,
-    ) -> ClosestHit:
+    ) -> raytrace.ClosestHit:
         # Unrolled: dynamic traversal loops miscompile with warp-optix 0.3.0.
         for i in range(wp.static(2 if config.enable_global_world else 1)):
-            world = wp.where(i == 1, data.world_count, world_index)
-            interval = ray_interval(origin, direction, data.extent[0], hit.distance)
-            packed_origin = origin + world_offset(world, data.grid, data.extent[0])
-            if data.has_instances[world] and interval[1] >= interval[0]:
+            world = wp.where(i == 1, wp.static(world_count), world_index)
+            interval = ray_interval(origin, direction, wp.static(extent), hit.distance)
+            if wp.static(scene.has_instances) and interval[1] >= interval[0]:
+                packed_origin = origin + world_offset(world, wp.static(grid), wp.static(extent))
                 flags = wp.uint32(0)
                 if wp.static(config.enable_backface_culling):
                     flags = wp.uint32(wp.static(int(wo.RayFlags.CULL_BACK_FACING_TRIANGLES)))
-                query = wo.accel_query_ray(data.handle, packed_origin, direction, interval[1], interval[0], 255, flags)
+                query = wo.accel_query_ray(
+                    bvh_shapes_id, packed_origin, direction, interval[1], interval[0], 255, flags
+                )
                 if query.result:
                     if query.t < hit.distance:
                         si = int(query.instance_id)
@@ -56,7 +61,7 @@ def create_closest_hit(config, scene):
                             normal = wp.normalize(
                                 raycast.safe_div_vec3(wp.mesh_eval_face_normal(mesh, face), shape_sizes[si])
                             )
-                            hit.normal = _mesh_hit_normal(
+                            hit.normal = raytrace._mesh_hit_normal(
                                 shape_transforms[si],
                                 shape_sizes[si],
                                 mesh,
@@ -71,7 +76,7 @@ def create_closest_hit(config, scene):
                             hit.bary_v = v
                             hit.face_idx = face
                         else:
-                            distance, normal = raycast.ray_intersect_shape(
+                            _distance, normal = raycast.ray_intersect_shape(
                                 shape_transforms[si],
                                 shape_sizes[si],
                                 shape_types[si],
@@ -83,35 +88,18 @@ def create_closest_hit(config, scene):
                             hit.bary_u = 0.0
                             hit.bary_v = 0.0
                             hit.face_idx = -1
-            for p in range(data.plane_offsets[world], data.plane_offsets[world + 1]):
-                si = data.planes[p]
-                distance, normal = raycast.ray_intersect_shape(
-                    shape_transforms[si],
-                    shape_sizes[si],
-                    shape_types[si],
-                    origin,
-                    direction,
-                    wp.static(config.enable_backface_culling),
-                )
-                if distance >= 0.0 and distance < hit.distance:
-                    hit.distance = distance
-                    hit.normal = normal
-                    hit.shape_index = wp.uint32(si)
-                    hit.bary_u = 0.0
-                    hit.bary_v = 0.0
-                    hit.face_idx = -1
         return hit
 
     return closest_hit_shape
 
 
 def create_first_hit(config, scene):
-    wo = scene.wo
+    grid, extent, world_count = scene.grid, scene.extent, scene.world_count
 
     @wp.func
     def first_hit_shape(
         bvh_shapes_size: wp.int32,
-        data: SceneData,
+        bvh_shapes_id: wp.uint64,
         bvh_shapes_group_roots: wp.array[wp.int32],
         world_index: wp.int32,
         shape_enabled: wp.array[wp.uint32],
@@ -125,23 +113,11 @@ def create_first_hit(config, scene):
     ) -> wp.bool:
         # Unrolled: dynamic traversal loops miscompile with warp-optix 0.3.0.
         for i in range(wp.static(2 if config.enable_global_world else 1)):
-            world = wp.where(i == 1, data.world_count, world_index)
-            interval = ray_interval(origin, direction, data.extent[0], max_dist)
-            packed_origin = origin + world_offset(world, data.grid, data.extent[0])
-            if data.has_instances[world] and interval[1] >= interval[0]:
-                if wo.accel_query_ray_anyhit(data.handle, packed_origin, direction, interval[1], interval[0], 255):
-                    return True
-            for p in range(data.plane_offsets[world], data.plane_offsets[world + 1]):
-                si = data.planes[p]
-                distance, _normal = raycast.ray_intersect_shape_no_normal(
-                    shape_transforms[si],
-                    shape_sizes[si],
-                    shape_types[si],
-                    origin,
-                    direction,
-                    wp.static(config.enable_backface_culling),
-                )
-                if distance >= 0.0 and distance < max_dist:
+            world = wp.where(i == 1, wp.static(world_count), world_index)
+            interval = ray_interval(origin, direction, wp.static(extent), max_dist)
+            if wp.static(scene.has_instances) and interval[1] >= interval[0]:
+                packed_origin = origin + world_offset(world, wp.static(grid), wp.static(extent))
+                if wo.accel_query_ray_anyhit(bvh_shapes_id, packed_origin, direction, interval[1], interval[0], 255):
                     return True
         return False
 

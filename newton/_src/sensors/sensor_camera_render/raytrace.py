@@ -7,8 +7,7 @@ import warp as wp
 
 from ...geometry import Gaussian, GeoType, raycast
 from ...geometry.bvh import BVH_SHAPE_INACTIVE
-from ...geometry.optix import SceneData
-from . import gaussians
+from . import gaussians, render_optix
 from .types import MeshData, RenderConfig
 
 if TYPE_CHECKING:
@@ -99,14 +98,13 @@ def get_group_roots(group_roots: wp.array[wp.int32], world_index: wp.int32, want
 
 
 def create_closest_hit_function(config: RenderConfig, state: "RenderContext.RenderState", optix=None) -> wp.Function:
-    shape_accel_type = wp.uint64 if optix is None else SceneData
     shade_gaussians = gaussians.create_shade_function(config, state)
 
     @wp.func
     def closest_hit_shape(
         closest_hit: ClosestHit,
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: shape_accel_type,
+        bvh_shapes_id: wp.uint64,
         bvh_shapes_group_roots: wp.array[wp.int32],
         world_index: wp.int32,
         shape_enabled: wp.array[wp.uint32],
@@ -301,14 +299,12 @@ def create_closest_hit_function(config: RenderConfig, state: "RenderContext.Rend
         return closest_hit
 
     if optix is not None:
-        from .render_optix import create_closest_hit  # noqa: PLC0415
-
-        closest_hit_shape = create_closest_hit(config, optix)
+        closest_hit_shape = render_optix.create_closest_hit(config, optix)
 
     @wp.func
     def closest_hit(
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: shape_accel_type,
+        bvh_shapes_id: wp.uint64,
         bvh_shapes_group_roots: wp.array[wp.int32],
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,
@@ -382,14 +378,13 @@ def create_closest_hit_function(config: RenderConfig, state: "RenderContext.Rend
 def create_closest_hit_depth_only_function(
     config: RenderConfig, state: "RenderContext.RenderState", optix=None
 ) -> wp.Function:
-    shape_accel_type = wp.uint64 if optix is None else SceneData
     shade_gaussians = gaussians.create_shade_function(config, state)
 
     @wp.func
     def closest_hit_shape_depth_only(
         closest_hit: ClosestHit,
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: shape_accel_type,
+        bvh_shapes_id: wp.uint64,
         bvh_shapes_group_roots: wp.array[wp.int32],
         world_index: wp.int32,
         shape_enabled: wp.array[wp.uint32],
@@ -549,14 +544,12 @@ def create_closest_hit_depth_only_function(
         return closest_hit
 
     if optix is not None:
-        from .render_optix import create_closest_hit  # noqa: PLC0415
-
-        closest_hit_shape_depth_only = create_closest_hit(config, optix)
+        closest_hit_shape_depth_only = render_optix.create_closest_hit(config, optix)
 
     @wp.func
     def closest_hit_depth_only(
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: shape_accel_type,
+        bvh_shapes_id: wp.uint64,
         bvh_shapes_group_roots: wp.array[wp.int32],
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,
@@ -627,12 +620,11 @@ def create_closest_hit_depth_only_function(
 
 
 def create_first_hit_function(config: RenderConfig, state: "RenderContext.RenderState", optix=None) -> wp.Function:
-    shape_accel_type = wp.uint64 if optix is None else SceneData
 
     @wp.func
     def first_hit_shape(
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: shape_accel_type,
+        bvh_shapes_id: wp.uint64,
         bvh_shapes_group_roots: wp.array[wp.int32],
         world_index: wp.int32,
         shape_enabled: wp.array[wp.uint32],
@@ -752,14 +744,12 @@ def create_first_hit_function(config: RenderConfig, state: "RenderContext.Render
         return False
 
     if optix is not None:
-        from .render_optix import create_first_hit  # noqa: PLC0415
-
-        first_hit_shape = create_first_hit(config, optix)
+        first_hit_shape = render_optix.create_first_hit(config, optix)
 
     @wp.func
     def first_hit(
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: shape_accel_type,
+        bvh_shapes_id: wp.uint64,
         bvh_shapes_group_roots: wp.array[wp.int32],
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,

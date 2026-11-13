@@ -12,6 +12,7 @@ import warp as wp
 from ...core import Axis
 from ...geometry import GeoType, Mesh
 from ...geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals, _DeformableVisualSkinBatches
+from ...geometry.optix import Scene, UnsupportedError, wo
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
@@ -107,6 +108,7 @@ class RenderContext:
                 the visual meshes, or both.
         """
         self.backend = "warp"
+        self.optix: Scene | None = None
         self._optix_synced = False
         self._model = model
         self._deformable_surface_mode = deformable_surface_mode
@@ -219,13 +221,14 @@ class RenderContext:
         if backend not in (None, "warp", "optix"):
             raise ValueError(f"backend must be None, 'warp' or 'optix', got {backend!r}")
         if backend != "warp":
-            from ...geometry.optix import UnsupportedError, model_scene  # noqa: PLC0415
-
-            if self._has_particles or self._has_triangle_mesh:
-                if backend == "optix":
+            try:
+                if self._has_particles or self._has_triangle_mesh:
                     raise UnsupportedError("The OptiX camera backend does not support particles or deformable surfaces")
-            elif model_scene(model, required=backend == "optix") is not None:
+                self.optix = Scene(model)
                 self.backend = "optix"
+            except UnsupportedError:
+                if backend == "optix":
+                    raise
 
     @property
     def model(self) -> Model:
@@ -524,13 +527,10 @@ class RenderContext:
                 default :class:`RenderConfig` settings.
         """
         model = self.model
-        optix = None
-        if self.backend == "optix":
-            from ...geometry.optix import model_scene  # noqa: PLC0415
-
+        optix = self.optix
+        if optix is not None:
             if self.device.stream.is_capturing:
                 raise RuntimeError("The OptiX camera backend does not support CUDA graph capture; use backend='warp'")
-            optix = model_scene(model, required=True)
             # Shapes may have moved since construction.
             if sync_shapes or not self._optix_synced:
                 optix.refit()
@@ -664,7 +664,7 @@ class RenderContext:
                 pixels_per_view = tiles_x * tiles_y * config.tile_width * config.tile_height
 
             self._gather_variant_render_data()
-            launch = wp.launch if optix is None else optix.wo.launch
+            launch = wp.launch if optix is None else wo.launch
             launch_options = {"device": self.device, "block_dim": config.block_dim} if optix is None else {}
             launch(
                 render_kernel,
@@ -682,7 +682,7 @@ class RenderContext:
                     world_indices,
                     # Shape BVH
                     model.bvh_shape_count_enabled,
-                    optix.data if optix is not None else (model.bvh_shapes.id if model.bvh_shapes is not None else 0),
+                    optix.handle if optix is not None else (model.bvh_shapes.id if model.bvh_shapes is not None else 0),
                     model.bvh_shapes_group_roots,
                     # Shapes
                     model._bvh_shape_active_leaves,

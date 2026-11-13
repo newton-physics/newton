@@ -1152,7 +1152,6 @@ class Model:
 
         # Shape and particle BVH structures and related fields
         self._optix_scene: OptixScene | None = None
-        self._bvh_backend: str | None = None
         self.bvh_shapes: wp.Bvh | None = None
         """BVH over selected shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
         self.bvh_shapes_group_roots: wp.array[wp.int32] | None = None
@@ -2280,7 +2279,6 @@ class Model:
         )
 
         self._optix_scene = None
-        self._bvh_backend = None
         if self.shape_count == 0:
             return
 

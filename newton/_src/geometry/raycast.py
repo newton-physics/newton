@@ -735,6 +735,34 @@ def ray_intersect_mesh_anyhit(
     return -1.0
 
 
+@wp.func
+def ray_intersect_shape_local(
+    size: wp.vec3,
+    geomtype: int,
+    ray_origin: wp.vec3,
+    ray_direction: wp.vec3,
+    enable_backface_culling: bool,
+) -> tuple[float, wp.vec3]:
+    """Intersects a ray in the shape's local frame; returns the distance and local normal, or -1.0."""
+    t_hit = -1.0
+    normal = wp.vec3(0.0)
+    if geomtype == GeoType.PLANE:
+        t_hit, normal = ray_intersect_plane(ray_origin, ray_direction, size, enable_backface_culling)
+    elif geomtype == GeoType.SPHERE:
+        t_hit, normal = ray_intersect_sphere(ray_origin, ray_direction, size[0])
+    elif geomtype == GeoType.BOX:
+        t_hit, normal = ray_intersect_box(ray_origin, ray_direction, size)
+    elif geomtype == GeoType.CAPSULE:
+        t_hit, normal = ray_intersect_capsule(ray_origin, ray_direction, size[0], size[1])
+    elif geomtype == GeoType.CYLINDER:
+        t_hit, normal = ray_intersect_cylinder(ray_origin, ray_direction, size[0], size[1], size[2])
+    elif geomtype == GeoType.CONE:
+        t_hit, normal = ray_intersect_cone(ray_origin, ray_direction, size[0], size[1])
+    elif geomtype == GeoType.ELLIPSOID:
+        t_hit, normal = ray_intersect_ellipsoid(ray_origin, ray_direction, size)
+    return t_hit, normal
+
+
 def _make_ray_intersect_shape(compute_normal: bool):
     """Build the primitive-dispatch ``@wp.func``, specialized at compile time on whether the
     surface normal is computed. ``wp.static(compute_normal)`` folds away the normal transform in
@@ -772,27 +800,9 @@ def _make_ray_intersect_shape(compute_normal: bool):
         """
         ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
 
-        t_hit = -1.0
-        normal_local = wp.vec3(0.0)
-
-        if geomtype == GeoType.PLANE:
-            t_hit, normal_local = ray_intersect_plane(
-                ray_origin_local, ray_direction_local, size, enable_backface_culling
-            )
-        elif geomtype == GeoType.SPHERE:
-            t_hit, normal_local = ray_intersect_sphere(ray_origin_local, ray_direction_local, size[0])
-        elif geomtype == GeoType.BOX:
-            t_hit, normal_local = ray_intersect_box(ray_origin_local, ray_direction_local, size)
-        elif geomtype == GeoType.CAPSULE:
-            t_hit, normal_local = ray_intersect_capsule(ray_origin_local, ray_direction_local, size[0], size[1])
-        elif geomtype == GeoType.CYLINDER:
-            t_hit, normal_local = ray_intersect_cylinder(
-                ray_origin_local, ray_direction_local, size[0], size[1], size[2]
-            )
-        elif geomtype == GeoType.CONE:
-            t_hit, normal_local = ray_intersect_cone(ray_origin_local, ray_direction_local, size[0], size[1])
-        elif geomtype == GeoType.ELLIPSOID:
-            t_hit, normal_local = ray_intersect_ellipsoid(ray_origin_local, ray_direction_local, size)
+        t_hit, normal_local = ray_intersect_shape_local(
+            size, geomtype, ray_origin_local, ray_direction_local, enable_backface_culling
+        )
 
         normal = wp.vec3(0.0)
         if wp.static(compute_normal):
@@ -966,7 +976,8 @@ def intersect_ray(
         fast_math: Whether to compile the intersection kernel with fast math enabled.
         backend: ``"warp"``, ``"optix"``, or ``None`` to use OptiX when it supports the
             model and device, outside CUDA graph capture. ``"optix"`` raises
-            :class:`RuntimeError` when unsupported.
+            :class:`RuntimeError` when unsupported. With OptiX, shapes must stay within twice
+            their initial distance from the origin.
     """
 
     if backend not in (None, "warp", "optix"):

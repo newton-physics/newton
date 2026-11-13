@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...geometry import Gaussian, GeoType
-from ...geometry.optix import SceneData
 from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
 from .types import AntiAliasing, ClearData, MeshData, RenderConfig, RenderOrder, TextureData, WorldRenderFlag
@@ -81,7 +80,6 @@ def _unpack_rgba(packed: wp.uint32):
 def create_kernel(
     config: RenderConfig, state: "RenderContext.RenderState", clear_data: ClearData, optix=None
 ) -> wp.kernel:
-    shape_accel_type = wp.uint64 if optix is None else SceneData
     compute_lighting = lighting.create_compute_lighting_function(config, state, optix)
     sample_texture = textures.create_sample_texture_function(config)
 
@@ -143,7 +141,7 @@ def create_kernel(
         camera_ray_origin: wp.vec3f,
         camera_ray_direction: wp.vec3f,
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: shape_accel_type,
+        bvh_shapes_id: wp.uint64,
         bvh_shapes_group_roots: wp.array[wp.int32],
         shape_enabled: wp.array[wp.uint32],
         shape_types: wp.array[wp.int32],
@@ -217,7 +215,7 @@ def create_kernel(
         world_index: wp.int32,
         light_count: wp.int32,
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: shape_accel_type,
+        bvh_shapes_id: wp.uint64,
         bvh_shapes_group_roots: wp.array[wp.int32],
         shape_enabled: wp.array[wp.uint32],
         shape_types: wp.array[wp.int32],
@@ -364,7 +362,7 @@ def create_kernel(
         camera_ray_origin: wp.vec3f,
         camera_ray_direction: wp.vec3f,
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: shape_accel_type,
+        bvh_shapes_id: wp.uint64,
         bvh_shapes_group_roots: wp.array[wp.int32],
         shape_enabled: wp.array[wp.uint32],
         shape_types: wp.array[wp.int32],
@@ -503,7 +501,7 @@ def create_kernel(
         world_indices: wp.array[wp.int32],
         # Shapes BVH
         bvh_shapes_size: wp.int32,
-        bvh_shapes_id: shape_accel_type,
+        bvh_shapes_id: wp.uint64,
         bvh_shapes_group_roots: wp.array[wp.int32],
         # Shapes
         shape_enabled: wp.array[wp.uint32],

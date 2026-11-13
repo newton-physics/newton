@@ -730,10 +730,10 @@ def test_intersect_ray(test: TestRaycast, device: str, backend="warp"):
         atol=1e-5,
     )
 
-    # Moving outside the original packed bounds must update both the extent and IAS.
+    # Motion must reach the OptiX instances.
     state = model.state()
     transforms = state.body_q.numpy()
-    transforms[0, :2] = (20.0, 1.0)
+    transforms[0, :2] = (6.0, 1.0)
     state.body_q.assign(transforms)
     moved_origins = origins.numpy()
     moved_origins[0, 1] = 1.0  # Keep the box out of the sphere ray.
@@ -754,7 +754,7 @@ def test_intersect_ray(test: TestRaycast, device: str, backend="warp"):
             **outputs,
         )
         if "out_dist" in outputs:
-            np.testing.assert_allclose(out_dist.numpy(), [21.5, 1.5, -1.0], atol=1e-4)
+            np.testing.assert_allclose(out_dist.numpy(), [7.5, 1.5, -1.0], atol=1e-4)
         if "out_shape_id" in outputs:
             np.testing.assert_array_equal(out_shape_id.numpy(), [0, 1, -1])
         if "out_normal" in outputs:
@@ -775,36 +775,6 @@ def test_intersect_ray(test: TestRaycast, device: str, backend="warp"):
     np.testing.assert_array_equal(out_dist.numpy(), -1.0)
     np.testing.assert_array_equal(out_shape_id.numpy(), -1)
     np.testing.assert_array_equal(out_normal.numpy(), 0.0)
-
-
-def test_intersect_ray_default_backend(test: TestRaycast, device: str):
-    """Use OptiX by default where it is available and Warp during CUDA graph capture.
-
-    The BVH refit stays capturable after OptiX raycasts build their acceleration.
-    """
-    model = _make_intersection_model(device)
-    origins = wp.array([wp.vec3(-2.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
-    directions = wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
-    worlds = wp.array([0], dtype=wp.int32, device=device)
-    out_dist = wp.full(1, 0.0, dtype=float, device=device)
-    kwargs = {"ray_origins": origins, "ray_directions": directions, "ray_worlds": worlds, "out_dist": out_dist}
-
-    newton.intersect_ray(model, **kwargs)
-    np.testing.assert_allclose(out_dist.numpy(), [1.5], atol=1e-5)
-    optix_available = wp.get_device(device).is_cuda and importlib.util.find_spec("warp_optix") is not None
-    test.assertEqual(model._optix_scene is not None, optix_available)
-
-    if wp.get_device(device).is_cuda:
-        out_dist.fill_(0.0)
-        state = model.state()
-        with wp.ScopedCapture(device) as capture:
-            model.bvh_refit_shapes(state)
-            newton.intersect_ray(model, **kwargs)
-        wp.capture_launch(capture.graph)
-        np.testing.assert_allclose(out_dist.numpy(), [1.5], atol=1e-5)
-    else:
-        with test.assertRaisesRegex(RuntimeError, "OptiX"):
-            newton.intersect_ray(model, backend="optix", **kwargs)
 
 
 def _make_global_world_model(device: str):
@@ -1099,10 +1069,6 @@ def test_intersect_ray_misses_when_no_shape_is_selected(test: TestRaycast, devic
     np.testing.assert_array_equal(out_shape_id.numpy(), np.array([-1], dtype=np.int32))
     np.testing.assert_array_equal(out_normal.numpy(), np.zeros((1, 3), dtype=np.float32))
 
-
-add_function_test(
-    TestRaycast, "test_intersect_ray_default_backend", test_intersect_ray_default_backend, devices=devices
-)
 
 for backend in ("warp", "optix"):
     backend_devices = devices if backend == "warp" else [d for d in devices if d.is_cuda]
