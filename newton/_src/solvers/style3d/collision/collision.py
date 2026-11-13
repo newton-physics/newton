@@ -129,6 +129,8 @@ class Collision:
         particle_forces: wp.array[wp.vec3],
         particle_q_prev: wp.array[wp.vec3],
         particle_stiff: wp.array[wp.vec3] = None,
+        *,
+        include_body_contacts: bool = True,
     ):
         """
         Evaluates contact forces and the diagonal of the Hessian for implicit time integration.
@@ -145,8 +147,11 @@ class Collision:
             particle_forces: Output array for computed contact forces.
             particle_q_prev: Previous positions for velocity-based damping.
             particle_stiff: Optional stiffness array for particles.
+            include_body_contacts: Include the legacy particle-only response when
+                rigid contacts are not assembled by the shared solver.
         """
-        contacts._assert_particle_only_soft_contacts("SolverStyle3D")
+        if contacts is not None:
+            contacts._assert_particle_only_soft_contacts("SolverStyle3D")
         thickness = 2.0 * self.radius
         self.contact_hessian_diags.zero_()
 
@@ -198,6 +203,9 @@ class Collision:
                 outputs=[particle_forces, self.contact_hessian_diags],
                 device=self.model.device,
             )
+
+        if not include_body_contacts or contacts is None:
+            return
 
         wp.launch(
             kernel=eval_body_contact_kernel,

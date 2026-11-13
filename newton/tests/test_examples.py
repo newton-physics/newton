@@ -1646,6 +1646,17 @@ class TestMultiphysicsExamples(NewtonTestCase):
 
 add_example_test(
     TestMultiphysicsExamples,
+    name="multiphysics.example_style3d_balls_dropped_into_bag",
+    devices=test_devices,
+    test_options={"num-frames": 180},
+    test_options_cpu={"num-frames": 60},
+    use_viewer=True,
+    allow_output_regexes=[(r"^SolverStyle3D::precompute\(\) took [\d.]+ ms$", "stdout")],
+)
+
+
+add_example_test(
+    TestMultiphysicsExamples,
     name="multiphysics.example_softbody_gift",
     devices=test_devices,
     test_options={"num-frames": 200},

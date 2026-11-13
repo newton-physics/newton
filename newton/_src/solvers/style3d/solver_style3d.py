@@ -61,12 +61,19 @@ def _warn_legacy_attribute(name: str, config_name: str) -> None:
 class SolverStyle3D(SolverBase):
     r"""Projective dynamics based cloth solver.
 
-    With affine body dynamics enabled, rigid contacts use a normal penalty,
-    closing-only damping, and Coulomb-limited viscous friction. The contact
-    tangent holds the normal load and friction gain fixed to remain symmetric
+    With affine body dynamics enabled, rigid-rigid and particle-rigid contacts
+    use a normal penalty, closing-only damping, and Coulomb-limited viscous friction.
+    The contact tangent holds the normal load and friction gain fixed to remain symmetric
     positive semidefinite and resist slip reversal overshoot. Contact candidates
     and normals come from the supplied :class:`~newton.Contacts` and remain
     fixed during each step.
+
+    :attr:`Dynamics.ALL` couples particles and affine bodies in one linear
+    system. Particle-rigid contacts use :attr:`Model.soft_contact_ke`,
+    :attr:`Model.soft_contact_kd`, and :attr:`Model.soft_contact_kf`; friction
+    mixes :attr:`Model.soft_contact_mu` with the shape coefficient geometrically.
+    Only particle soft contacts are supported, not edge or triangle contacts.
+    Deformable-only solves retain the one-way response to prescribed bodies.
 
     References:
         1. Baraff, D. & Witkin, A. "Large Steps in Cloth Simulation."
@@ -341,7 +348,7 @@ class SolverStyle3D(SolverBase):
         self._dof_block_count = self._particle_count + self._affine_body_count * 4
         self._affine_body = AffineBody(model) if enable_affine_body else None
         self._linear_solver = PcgSolver(self._dof_block_count, self.device)
-        self._contact = Contact(model) if enable_affine_body else None
+        self._contact = Contact(model, self._particle_count) if enable_affine_body else None
 
         # ParticleFlags for every particle and affine block, separate from model flags.
         self._particle_flags = wp.zeros(self._dof_block_count, dtype=int, device=self.device)
@@ -361,7 +368,7 @@ class SolverStyle3D(SolverBase):
 
         # Per-step scalar mass/PD diagonal, excluding nonlinear contributions.
         self._A_diag_base = wp.zeros(self._dof_block_count, dtype=float, device=self.device)
-        # Assembled diagonal blocks, including rigid constraints but excluding cloth contacts.
+        # Assembled diagonal blocks, including shape contacts but excluding cloth self-contacts.
         self._A_diag = wp.zeros(self._dof_block_count, dtype=wp.mat33, device=self.device)
         # Per-body (S_01, S_02, S_12) / dt^2, refreshed alongside the mass diagonal.
         self._affine_mass_off_diag = wp.zeros(self._affine_body_count, dtype=wp.vec3, device=self.device)
@@ -532,8 +539,10 @@ class SolverStyle3D(SolverBase):
                     self._rhs[: self._particle_count],
                     self._x_prev[: self._particle_count],
                     self._A_diag_base[: self._particle_count],
+                    include_body_contacts=self._contact is None,
                 )
 
+            self._A_diag[: self._particle_count].zero_()
             if self._affine_body is not None:
                 self._affine_body.eval_orthogonality(
                     self._x[self._particle_count :],
@@ -546,12 +555,12 @@ class SolverStyle3D(SolverBase):
             if self._contact is not None:
                 self._contact.eval_contacts(
                     contacts,
-                    self._x[self._particle_count :],
-                    self._x_prev[self._particle_count :],
-                    self._x_inertia[self._particle_count :],
-                    self._particle_flags[self._particle_count :],
-                    self._rhs[self._particle_count :],
-                    self._A_diag[self._particle_count :],
+                    self._x,
+                    self._x_prev,
+                    self._x_inertia,
+                    self._particle_flags,
+                    self._rhs,
+                    self._A_diag,
                     dt,
                 )
 
@@ -614,7 +623,7 @@ class SolverStyle3D(SolverBase):
                 x[self._particle_count :], self._affine_mass_off_diag, self._matrix_free_Ax[self._particle_count :]
             )
         if self._contact is not None:
-            self._contact.off_diag_multiply(x[self._particle_count :], self._matrix_free_Ax[self._particle_count :])
+            self._contact.off_diag_multiply(x, self._matrix_free_Ax)
         return self._matrix_free_Ax
 
     def rebuild_bvh(self, state: State):

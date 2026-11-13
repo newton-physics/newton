@@ -323,13 +323,11 @@ def prepare_jacobi_preconditioner_kernel(
 ):
     """Add the base diagonal and invert the full diagonal for active DOFs.
 
-    Affine blocks in A_diag must contain freshly evaluated constraint
-    diagonals; particle blocks are overwritten using the base diagonal.
+    A_diag must contain freshly evaluated constraint diagonals for all DOFs.
+    Cloth self-contact diagonals remain in the matrix-free product.
     """
     tid = wp.tid()
-    diag = wp.identity(3, float) * A_diag_base[tid]
-    if tid >= particle_count:
-        diag += A_diag[tid]
+    diag = wp.identity(3, float) * A_diag_base[tid] + A_diag[tid]
     A_diag[tid] = diag
 
     if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:

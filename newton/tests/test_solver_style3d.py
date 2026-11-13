@@ -983,6 +983,149 @@ def test_rigid_contact_linear_system(test, device):
     np.testing.assert_array_equal(solver._matrix_free_multiply(probe_wp).numpy(), 0.0)
 
 
+def test_soft_contact_linear_system(test, device):
+    """Couple particle and affine contact forces, diagonals, and PCG products."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+    newton.solvers.style3d.add_cloth_grid(
+        builder,
+        pos=(0.2, -0.1, 0.08),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        cell_x=0.5,
+        cell_y=0.5,
+        mass=0.5,
+        particle_radius=0.1,
+        tri_aniso_ke=wp.vec3(0.0),
+        edge_aniso_ke=wp.vec3(0.0),
+    )
+    pose = wp.transform(wp.vec3(0.1, 0.05, -0.1), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4))
+    body = builder.add_link(xform=pose, com=(0.03, -0.02, 0.01), mass=2.0, inertia=wp.mat33(np.eye(3) * 0.4))
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, margin=0.02, mu=0.8)
+    builder.add_shape_box(body, hx=0.3, hy=0.3, hz=0.1, cfg=cfg)
+    builder.add_ground_plane(cfg=cfg)
+    model = builder.finalize(device=device)
+    model.soft_contact_ke = 400.0
+    model.soft_contact_kd = 3.0
+    model.soft_contact_kf = 20.0
+    model.soft_contact_mu = 0.2
+    config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0, affine_alpha=0.0)
+    solver = newton.solvers.SolverStyle3D(model, config=config, dynamics=newton.solvers.SolverStyle3D.Dynamics.ALL)
+    state_in, state_out = model.state(), model.state()
+    contacts = newton.Contacts(0, 2, device=device)
+    contacts.soft_contact_count.fill_(1)
+    contacts.soft_contact_particle.fill_(0)
+    contacts.soft_contact_shape.fill_(0)
+    contacts.soft_contact_normal.fill_(wp.vec3(0.0, 0.0, 1.0))
+    point_world = wp.vec3(0.2, -0.1, 0.0)
+    local_point = np.array(wp.transform_point(wp.transform_inverse(pose), point_world))
+    com = model.body_com.numpy()[0]
+    dt = 0.05
+    mass = np.kron(np.diag(np.r_[model.particle_mass.numpy(), 2.0, 0.2, 0.2, 0.2]), np.eye(3)) / dt**2
+    probe = np.random.default_rng(627).standard_normal((8, 3)).astype(np.float32)
+    probe_wp = wp.array(probe, dtype=wp.vec3, device=device)
+    for mode in ("dynamic", "slip", "separating", "kinematic", "pinned", "static"):
+        with test.subTest(mode=mode):
+            config.linear_iterations = 0
+            model.body_flags.fill_(int(newton.BodyFlags.KINEMATIC if mode == "kinematic" else newton.BodyFlags.DYNAMIC))
+            model.particle_flags.fill_(0 if mode == "pinned" else int(newton.ParticleFlags.ACTIVE))
+            state_in.body_qd.fill_(wp.spatial_vector(0.0, 0.0, 0.2 if mode == "kinematic" else 0.0, 0.0, 0.0, 0.0))
+            state_out.body_q.assign(state_in.body_q)
+            state_out.body_qd.assign(state_in.body_qd)
+            contacts.soft_contact_shape.fill_(1 if mode == "static" else 0)
+            contacts.soft_contact_body_pos.fill_(point_world if mode == "static" else wp.vec3(local_point))
+            surface = wp.vec3(5.0 if mode == "slip" else 0.01, 0.0, -0.03 if mode == "separating" else 0.03)
+            contacts.soft_contact_body_vel.fill_(surface)
+            solver.step(state_in, state_out, None, contacts, dt)
+            initial = solver._x_prev.numpy().astype(float)
+            target = solver._x_inertia.numpy().astype(float)
+            current = initial.copy()
+            weights = np.r_[1.0, local_point - com]
+            w = np.r_[1.0, 0.0, 0.0, 0.0, -weights]
+            if mode == "kinematic":
+                current[4:] = target[4:]
+            if mode == "static":
+                w[1:] = 0.0
+                relative = current[0] - np.array(point_world)
+                surface_world = np.array(surface)
+            else:
+                relative = w @ current
+                surface_world = current[5:].T @ np.array(surface)
+            gap = relative[2] - 0.12
+            velocity = w @ (current - initial) / dt - surface_world
+            gn = 400.0 * gap + 3.0 * min(velocity[2], 0.0)
+            ht = np.diag([1.0, 1.0, 0.0])
+            vt = ht @ velocity
+            gain = min(20.0, 0.4 * -gn / np.linalg.norm(vt))
+            gradient = np.array([0.0, 0.0, gn]) + gain * vt
+            tangent = np.diag([0.0, 0.0, 400.0 + (3.0 / dt if velocity[2] < 0.0 else 0.0)]) + gain / dt * ht
+            contact_rhs = -w[:, None] * gradient
+            expected_rhs = (mass @ (target - initial).reshape(-1)).reshape(8, 3) + contact_rhs
+            matrix = mass + np.kron(np.outer(w, w), tangent)
+            if mode == "pinned":
+                matrix[:12, :12] -= mass[:12, :12]
+            np.testing.assert_allclose(solver._rhs.numpy(), expected_rhs, rtol=3e-6, atol=5e-5)
+            np.testing.assert_array_equal(solver.collision.contact_hessian_diags.numpy(), 0.0)
+            for row in range(8):
+                np.testing.assert_allclose(
+                    solver._A_diag.numpy()[row], matrix[3 * row : 3 * row + 3, 3 * row : 3 * row + 3], atol=5e-5
+                )
+            product = solver._matrix_free_multiply(probe_wp)
+            solver._linear_solver.p.assign(probe_wp)
+            solver._linear_solver.step5_update_Ap(solver._pd_off_diag, solver._A_diag, product)
+            np.testing.assert_allclose(
+                solver._linear_solver.Ap.numpy().reshape(-1), matrix @ probe.reshape(-1), rtol=3e-6, atol=3e-4
+            )
+            if mode != "static":
+                np.testing.assert_allclose(contact_rhs[0] + contact_rhs[4], 0.0, atol=1e-7)
+                lever = current[5:].T @ weights[1:]
+                torque = sum(np.cross(current[5 + i], contact_rhs[5 + i]) for i in range(3))
+                np.testing.assert_allclose(torque, np.cross(lever, -contact_rhs[0]), atol=1e-7)
+            active = np.ones(24, dtype=bool)
+            if mode == "kinematic":
+                active[12:] = False
+            if mode == "pinned":
+                active[:12] = False
+            expected = initial.reshape(-1).copy()
+            expected[active] += np.linalg.solve(matrix[np.ix_(active, active)], expected_rhs.reshape(-1)[active])
+            config.linear_iterations = 32
+            solver.step(state_in, state_out, None, contacts, dt)
+            np.testing.assert_allclose(solver._x.numpy().reshape(-1), expected, atol=3e-6)
+            if mode == "kinematic":
+                np.testing.assert_array_equal(state_out.body_q.numpy(), state_in.body_q.numpy())
+                np.testing.assert_array_equal(state_out.body_qd.numpy(), state_in.body_qd.numpy())
+            if mode == "pinned":
+                np.testing.assert_array_equal(state_out.particle_q.numpy(), state_in.particle_q.numpy())
+
+    contacts.soft_contact_shape.fill_(0)
+    contacts.soft_contact_body_pos.fill_(wp.vec3(local_point))
+    config.linear_iterations = 0
+    graph = None
+    if wp.get_device(device).is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            solver.step(state_in, state_out, None, contacts, dt)
+            solver._matrix_free_multiply(probe_wp)
+        graph = capture.graph
+    for count in (2, 0, 1):
+        contacts.soft_contact_count.fill_(count)
+        if graph is None:
+            solver.step(state_in, state_out, None, contacts, dt)
+            solver._matrix_free_multiply(probe_wp)
+        else:
+            wp.capture_launch(graph)
+        if count:
+            test.assertGreater(np.linalg.norm(solver._matrix_free_Ax.numpy()), 1.0)
+        else:
+            np.testing.assert_array_equal(solver._matrix_free_Ax.numpy(), 0.0)
+    solver.step(state_in, state_out, None, None, dt)
+    np.testing.assert_array_equal(solver._matrix_free_multiply(probe_wp).numpy(), 0.0)
+    np.testing.assert_allclose(
+        solver._A_diag.numpy(), solver._A_diag_base.numpy()[:, None, None] * np.eye(3), atol=1e-5
+    )
+
+
 def test_rigid_contact_stacking(test, device):
     """Support two spheres through generated body-body and body-ground contacts."""
     builder = newton.ModelBuilder()
@@ -1216,6 +1359,15 @@ def test_affine_body_state_conversion(test, device):
 
 
 devices = get_test_devices()
+
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_soft_contact_linear_system",
+    test_soft_contact_linear_system,
+    devices=devices,
+    check_output=False,
+)
 
 
 add_function_test(
