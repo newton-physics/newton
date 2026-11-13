@@ -70,7 +70,6 @@ def _parse_articulations(
     from pxr import Sdf, UsdPhysics
 
     parent_prim = None
-    body_data = {}
     for path, desc in articulation_entries:
         if warn_invalid_desc(path, desc):
             continue
@@ -110,6 +109,20 @@ def _parse_articulations(
             articulation_custom_attrs = usd.get_custom_attribute_values(parent_prim, builder_custom_attr_articulation)
         if verbose and articulation_custom_attrs:
             logger.info("Extracted articulation custom attributes: %s", articulation_custom_attrs)
+        body_data = {}
+        # OpenUSD includes external equality endpoints in articulatedBodies.
+        # Do not consume another articulation's body specs for equality-only
+        # connections; non-equality joints still define structural ownership.
+        equality_body_paths = set()
+        structural_body_paths = set()
+        for joint_path in desc.articulatedJoints:
+            joint_key = str(joint_path)
+            joint_desc = joint_descriptions[joint_key]
+            body_paths = (
+                equality_body_paths if joint_key in mjc_equality_connect_or_weld_paths else structural_body_paths
+            )
+            body_paths.update((str(joint_desc.body0), str(joint_desc.body1)))
+        equality_only_body_paths = equality_body_paths - structural_body_paths
         body_ids = {}
         body_labels = []
         current_body_id = 0
@@ -121,6 +134,12 @@ def _parse_articulations(
                 continue
             key = str(p)
             if key in ignored_body_paths:
+                continue
+            if (
+                key in equality_only_body_paths
+                and key != articulation_path
+                and not key.startswith("/" if articulation_path == "/" else f"{articulation_path}/")
+            ):
                 continue
 
             usd_prim = stage.GetPrimAtPath(p)

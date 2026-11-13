@@ -8880,6 +8880,66 @@ def Xform "Articulation" (
         self.assertFalse(bool(model.constraint_mimic_enabled.numpy()[0]))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mjc_equality_connect_between_articulations(self):
+        """Preserve body ownership when CONNECT endpoints span articulations."""
+        import mujoco
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        bodies = []
+        for name in ("First", "Second"):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.ArticulationRootAPI.Apply(body.GetPrim())
+            mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass.CreateMassAttr(0.00951247)
+            mass.CreateCenterOfMassAttr(Gf.Vec3f(0.0))
+            mass.CreateDiagonalInertiaAttr(Gf.Vec3f(5.0e-6, 5.0e-6, 2.0e-7))
+            helper = UsdGeom.Xform.Define(stage, f"{body.GetPath()}/Frame")
+            UsdPhysics.RigidBodyAPI.Apply(helper.GetPrim())
+            fixed = UsdPhysics.FixedJoint.Define(stage, f"{helper.GetPath()}/Fixed")
+            fixed.CreateBody0Rel().SetTargets([body.GetPath()])
+            fixed.CreateBody1Rel().SetTargets([helper.GetPath()])
+            bodies.append(body)
+
+        connect = UsdPhysics.SphericalJoint.Define(stage, "/World/Connect")
+        connect.CreateBody0Rel().SetTargets([bodies[0].GetPath()])
+        connect.CreateBody1Rel().SetTargets([bodies[1].GetPath()])
+        connect.CreateExcludeFromArticulationAttr(True)
+        connect.GetPrim().SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityConnectAPI"]))
+
+        for ordered in (False, True):
+            for convert in (False, True):
+                with self.subTest(ordered=ordered, convert=convert):
+                    builder = newton.ModelBuilder()
+                    SolverMuJoCo.register_custom_attributes(builder)
+                    result = builder.add_usd(
+                        stage,
+                        bodies_follow_joint_ordering=ordered,
+                        convert_mjc_equality_constraints=convert,
+                        schema_resolvers=[usd.SchemaResolverMjc()],
+                    )
+                    self.assertEqual(builder.body_count, 4)
+                    self.assertEqual(len(set(builder.body_label)), 4)
+                    for body in bodies:
+                        body_id = result["path_body_map"][str(body.GetPath())]
+                        self.assertAlmostEqual(builder.body_mass[body_id], 0.00951247)
+                        np.testing.assert_allclose(
+                            np.diag(np.array(builder.body_inertia[body_id]).reshape(3, 3)),
+                            [5.0e-6, 5.0e-6, 2.0e-7],
+                            rtol=1.0e-6,
+                        )
+                    model = builder.finalize(device="cpu")
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=True, njmax=16, nconmax=0)
+                    self.assertEqual(model.mujoco.equality_constraint_count, 1)
+                    # The solver also adds inactive welds for dynamic roots.
+                    self.assertEqual(np.count_nonzero(solver.mj_model.eq_type == mujoco.mjtEq.mjEQ_CONNECT), 1)
+                    self.assertEqual(solver.mj_model.nv, 12)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_connect_site_parsing(self):
         """Test that MjcEqualityConnectAPI on a spherical joint is parsed as a connect equality constraint."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
