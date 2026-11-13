@@ -4147,8 +4147,9 @@ class ModelBuilder:
                 copies to the current world context (see :attr:`current_world`) instead. Like
                 :meth:`add_builder`, this then also replaces the current world's gravity, or this
                 builder's gravity outside a world context, with the gravity of ``builder``.
-            xforms: Optional sequence of transforms, one per copy.
-                When provided, its length must equal ``copy_count``.
+            xforms: Optional sequence of transforms, one per copy, each applied as
+                ``xform`` in :meth:`add_builder`. When provided, its length must equal
+                ``copy_count``.
             label_prefixes: Optional prefix prepended to all labels from the source builder,
                 one per copy, applied as :meth:`add_builder` applies its
                 ``label_prefix``. Labels are joined with ``/``. A ``None`` entry leaves that
@@ -4268,6 +4269,12 @@ class ModelBuilder:
             t = 2.0 * np.cross(xyz, vectors)
             vectors += np.cross(xyz, t) + w * t
 
+        def rotate_copies(values: np.ndarray) -> None:
+            # Rotate the float32 (..., 3) rows of each rotated copy in place.
+            rows = values.reshape((copy_count, -1, 3))
+            rotated_copies = moved_copies[rotated]
+            rows[rotated_copies] = quat_rotate_rows(moved_xforms[rotated, None, 3:], rows[rotated_copies])
+
         counts = self._builder_merge_counts(builder)
         self._validate_builder_merge(builder, set(counts))
         # Values can change without a schema change, so check them before copying entities.
@@ -4378,11 +4385,28 @@ class ModelBuilder:
         if counts["particle"]:
             self.particle_max_velocity = builder.particle_max_velocity
             particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float32), (copy_count, 1))
+            if not translations_only:
+                rotate_copies(particle_q)
             particle_q += np.repeat(offsets, counts["particle"], axis=0)
             if "particle_q" in array_starts:
                 self.particle_q[array_starts["particle_q"] :] = particle_q
             else:
                 self.particle_q.extend(particle_q.tolist())
+
+        if not translations_only:
+            # tet_poses stores inverse(Dm), which becomes inverse(Dm) R^T: its rows rotate like vectors.
+            for attr, warp_type in (("particle_qd", wp.vec3f), ("tet_poses", wp.mat33f)):
+                source = getattr(builder, attr)
+                if len(source) == 0:
+                    continue
+                attribute_specs.pop(attr)
+                values = np.tile(pack_warp_values(source, warp_type), (copy_count, *(1,) * len(warp_type._shape_)))
+                rotate_copies(values)
+                if attr in array_starts:
+                    getattr(self, attr)[array_starts[attr] :] = values
+                else:
+                    descriptor = _describe_array_backed_list(source[0])
+                    getattr(self, attr).extend(_materialize_array_backed_list(values, descriptor))
 
         shape_starts = starts("shape")
         body_starts = starts("body")
@@ -4440,6 +4464,8 @@ class ModelBuilder:
         attribute_specs.pop("joint_X_p")
         attribute_specs.pop("joint_q")
         attribute_specs.pop("joint_qd")
+        attribute_specs.pop("joint_target_q")
+        attribute_specs.pop("joint_target_qd")
         joint_X_p_start = array_starts.get("joint_X_p", int(bases["joint"]))
         if "joint_X_p" not in array_starts:
             self.joint_X_p.extend(source_list("joint_X_p") * copy_count)
@@ -4449,6 +4475,10 @@ class ModelBuilder:
         # (xform conjugated by joint_X_p). Other joint velocities are unchanged.
         joint_qd_source = np.asarray(builder.joint_qd, dtype=np.float32)
         joint_qd = np.tile(joint_qd_source, copy_count)
+        # float64 keeps the targets of joints that are not moved exact.
+        joint_target_q_source = np.asarray(builder.joint_target_q, dtype=np.float64)
+        joint_target_q = np.tile(joint_target_q_source, copy_count)
+        joint_target_qd = np.tile(np.asarray(builder.joint_target_qd, dtype=np.float64), copy_count)
         if counts["joint"] and len(moved_copies):
             joint_types = np.asarray(builder.joint_type, dtype=np.int64)
             joint_parents = np.asarray(builder.joint_parent, dtype=np.int64)
@@ -4472,20 +4502,26 @@ class ModelBuilder:
                 )
                 coord_base = moved_copies[:, None, None] * counts["joint_coord"]
                 joint_q[coord_base + q_index[None]] = transform_multiply_rows(xform_local, xform_prev[None])
+                # Targets are parent-frame poses and twists, like the state.
+                target_prev = joint_target_q_source[q_index].astype(np.float32)
+                joint_target_q[coord_base + q_index[None]] = transform_multiply_rows(xform_local, target_prev[None])
                 if np.any(rotated):
                     qd_targets = moved_copies[rotated, None, None] * len(joint_qd_source) + qd_index[None]
-                    twist = joint_qd[qd_targets].reshape((*qd_targets.shape[:2], 2, 3))
-                    rotate_vectors(xform_local[rotated, :, None, 3:], twist)
-                    joint_qd[qd_targets] = twist.reshape(qd_targets.shape)
+                    for values in (joint_qd, joint_target_qd):
+                        twist = values[qd_targets].reshape((*qd_targets.shape[:2], 2, 3))
+                        rotate_vectors(xform_local[rotated, :, None, 3:], twist)
+                        values[qd_targets] = twist.reshape(qd_targets.shape)
 
-        if "joint_q" in array_starts:
-            self.joint_q[array_starts["joint_q"] :] = joint_q
-        else:
-            self.joint_q.extend(joint_q.tolist())
-        if "joint_qd" in array_starts:
-            self.joint_qd[array_starts["joint_qd"] :] = joint_qd
-        elif len(joint_qd):
-            self.joint_qd.extend(joint_qd.tolist())
+        for attr, values in (
+            ("joint_q", joint_q),
+            ("joint_qd", joint_qd),
+            ("joint_target_q", joint_target_q),
+            ("joint_target_qd", joint_target_qd),
+        ):
+            if attr in array_starts:
+                getattr(self, attr)[array_starts[attr] :] = values
+            elif len(values):
+                getattr(self, attr).extend(values.tolist())
 
         for copy_index, joint_start in enumerate(joint_starts.tolist()):
             body_start = int(body_starts[copy_index])
@@ -5836,8 +5872,8 @@ class ModelBuilder:
 
         Args:
             builder: The builder containing entities to add as a new world.
-            xform: Optional transform to apply to all root bodies
-                in the builder. Useful for spacing out worlds visually.
+            xform: Optional transform that places the world, applied as in
+                :meth:`add_builder`. Useful for spacing out worlds visually.
             label_prefix: Optional prefix prepended to all entity labels
                 from the source builder. Useful for distinguishing multiple instances
                 of the same model (e.g., ``"left_arm"`` vs ``"right_arm"``).
@@ -6298,7 +6334,10 @@ class ModelBuilder:
 
         Args:
             builder: The model builder to copy data from.
-            xform: Optional offset transform applied to root bodies.
+            xform: Optional transform that places the copy as a whole. It moves everything
+                expressed in the world frame, including root bodies and joint frames, static
+                shapes, particles, tetrahedral rest poses, and free-root joint targets, and
+                rotates world-frame velocities.
             label_prefix: Optional prefix prepended to all entity labels
                 from the source builder. Labels are joined with ``/``
                 (e.g., ``"left/panda/base_link"``).

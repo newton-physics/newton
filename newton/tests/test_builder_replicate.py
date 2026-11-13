@@ -182,6 +182,146 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
                 self.assert_builder_merge_state_equal(expected, actual)
 
+    def test_composition_transforms_particle_state(self):
+        """Transform copied particle positions and velocities without changing the prefix."""
+        source = ModelBuilder()
+        source.add_particle((1.0, 2.0, 3.0), (2.0, -1.0, 0.5), 1.0)
+        rotation = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+        offset = np.array([3.0, -2.0, 1.0])
+        xforms = [
+            wp.transform(),
+            wp.transform(offset),
+            wp.transform(offset, wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2)),
+        ]
+        for method in ("add_builder", "replicate"):
+            with self.subTest(method=method):
+                target = ModelBuilder()
+                target.add_particle((7.0, 8.0, 9.0), (4.0, 5.0, 6.0), 1.0)
+                if method == "replicate":
+                    target.replicate(source, len(xforms), xforms=xforms)
+                else:
+                    for xform in xforms:
+                        target.add_builder(source, xform)
+                for i, (rot, shift) in enumerate(
+                    ((np.eye(3), np.zeros(3)), (np.eye(3), offset), (rotation, offset)), 1
+                ):
+                    with self.subTest(copy=i, field="position"):
+                        np.testing.assert_allclose(
+                            target.particle_q[i], rot @ np.array(source.particle_q[0]) + shift, atol=1e-6, rtol=0
+                        )
+                    with self.subTest(copy=i, field="velocity"):
+                        np.testing.assert_allclose(
+                            target.particle_qd[i], rot @ np.array(source.particle_qd[0]), atol=1e-6, rtol=0
+                        )
+                np.testing.assert_array_equal(target.particle_q[0], [7.0, 8.0, 9.0])
+                np.testing.assert_array_equal(target.particle_qd[0], [4.0, 5.0, 6.0])
+                np.testing.assert_array_equal(source.particle_q, [[1.0, 2.0, 3.0]])
+                np.testing.assert_array_equal(source.particle_qd, [[2.0, -1.0, 0.5]])
+
+    def test_composition_transforms_free_root_targets(self):
+        """Transform free-root pose and velocity targets with the copy, in each joint's parent frame."""
+        anchors = [
+            wp.transform((0.2, 0.3, 0.4), wp.quat(0.5, 0.5, 0.5, 0.5)),
+            wp.transform((-0.4, 0.7, 0.1), wp.quat(0.0, 1.0, 0.0, 0.0)),
+        ]
+        source = ModelBuilder()
+        for i, anchor in enumerate(anchors):
+            root = source.add_link()
+            free = source.add_joint_free(root, parent_xform=anchor)
+            hinge = source.add_joint_revolute(root, source.add_link(), target_q=0.3, target_qd=0.4)
+            source.add_articulation([free, hinge])
+            q, qd = source.joint_q_start[free], source.joint_qd_start[free]
+            source.joint_target_q[q : q + 7] = [i + 1.0, 2.0, 3.0, *wp.quat_rpy(0.2, -0.3, 0.4 + i)]
+            source.joint_target_qd[qd : qd + 6] = [i + 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        offset = (3.0, -2.0, 1.0)
+        xforms = [
+            wp.transform(),
+            wp.transform(offset),
+            wp.transform(offset, wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2)),
+        ]
+        for method in ("add_builder", "replicate"):
+            with self.subTest(method=method):
+                target = ModelBuilder()
+                target.add_body()
+                target.joint_target_q[:3] = [7.0, 8.0, 9.0]
+                if method == "replicate":
+                    target.replicate(source, len(xforms), xforms=xforms)
+                else:
+                    for xform in xforms:
+                        target.add_builder(source, xform)
+                np.testing.assert_array_equal(target.joint_target_q[:7], [7.0, 8.0, 9.0, 0.0, 0.0, 0.0, 1.0])
+                np.testing.assert_array_equal(target.joint_target_q[7:23], source.joint_target_q)
+                np.testing.assert_array_equal(target.joint_target_qd[6:20], source.joint_target_qd)
+                for copy, xform in enumerate(xforms):
+                    for i, anchor in enumerate(anchors):
+                        q, qd = 8 * i, 7 * i
+                        copy_q, copy_qd = 7 + 16 * copy + q, 6 + 14 * copy + qd
+                        with self.subTest(copy=copy, root=i):
+                            # Compare in the world frame, where the copy transform applies directly.
+                            pose = anchor * wp.transform(*target.joint_target_q[copy_q : copy_q + 7])
+                            expected = xform * anchor * wp.transform(*source.joint_target_q[q : q + 7])
+                            np.testing.assert_allclose(pose, expected, atol=1e-5, rtol=0)
+                            for part in (0, 3):
+                                twist = wp.vec3(*target.joint_target_qd[copy_qd + part : copy_qd + part + 3])
+                                source_twist = wp.vec3(*source.joint_target_qd[qd + part : qd + part + 3])
+                                np.testing.assert_allclose(
+                                    wp.quat_rotate(anchor.q, twist),
+                                    wp.quat_rotate(xform.q, wp.quat_rotate(anchor.q, source_twist)),
+                                    atol=1e-5,
+                                    rtol=0,
+                                )
+                            # Hinge targets are joint-local and stay exact.
+                            self.assertEqual(target.joint_target_q[copy_q + 7], 0.3)
+                            self.assertEqual(target.joint_target_qd[copy_qd + 6], 0.4)
+
+    def test_composition_transforms_tetrahedral_reference(self):
+        """Rotate tetrahedral references while retaining deformation and existing data."""
+        rest = np.array([[0.1, 0.2, 0.3], [1.3, 0.2, 0.3], [0.4, 1.6, 0.3], [0.3, 0.5, 1.4]])
+        rotation = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        offset = np.array([1.0, -2.0, 3.0])
+        xforms = [wp.transform(), wp.transform(offset), wp.transform(offset, wp.quat(0.5, 0.5, 0.5, 0.5))]
+        source = ModelBuilder()
+        for point in rest:
+            source.add_particle(point, (0, 0, 0), 1.0)
+        source.add_tetrahedron(0, 1, 2, 3)
+        rest_inverse = np.asarray(source.tet_poses[0]).copy()
+        for deformed in (False, True):
+            points = rest.copy()
+            if deformed:
+                points[1] += [0.15, -0.07, 0.04]
+            source.particle_q = points.tolist()
+            original_gradient = (points[1:] - points[0]).T @ rest_inverse
+            for method in ("add_builder", "replicate"):
+                with self.subTest(deformed=deformed, method=method):
+                    target = ModelBuilder()
+                    for point in rest + 5:
+                        target.add_particle(point, (0, 0, 0), 1.0)
+                    target.add_tetrahedron(0, 1, 2, 3)
+                    prefix_q = np.asarray(target.particle_q).copy()
+                    prefix_pose = np.asarray(target.tet_poses).copy()
+                    if method == "replicate":
+                        target.replicate(source, len(xforms), xforms=xforms)
+                    else:
+                        for xform in xforms:
+                            target.add_builder(source, xform)
+                    for i, (rot, shift) in enumerate(
+                        ((np.eye(3), np.zeros(3)), (np.eye(3), offset), (rotation, offset)), 1
+                    ):
+                        with self.subTest(copy=i):
+                            # Reconstruct the reference from independently transformed rest vertices.
+                            reference = rest @ rot.T + shift
+                            expected_inverse = np.linalg.inv((reference[1:] - reference[0]).T)
+                            actual_inverse = np.asarray(target.tet_poses[i])
+                            np.testing.assert_allclose(actual_inverse, expected_inverse, atol=2e-6, rtol=0)
+                            actual_points = np.asarray(target.particle_q[4 * i : 4 * (i + 1)])
+                            np.testing.assert_allclose(actual_points, points @ rot.T + shift, atol=2e-6, rtol=0)
+                            gradient = (actual_points[1:] - actual_points[0]).T @ actual_inverse
+                            np.testing.assert_allclose(gradient, rot @ original_gradient @ rot.T, atol=2e-6, rtol=0)
+                    np.testing.assert_array_equal(target.particle_q[:4], prefix_q)
+                    np.testing.assert_array_equal(target.tet_poses[:1], prefix_pose)
+                    np.testing.assert_array_equal(source.tet_poses[0], rest_inverse)
+                    np.testing.assert_array_equal(source.particle_q, points)
+
     def test_copy_rotation_rotates_world_velocities(self):
         """Verify that yaw rotates world-frame position and twist and that a pure translation leaves velocity unchanged."""
 
