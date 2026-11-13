@@ -15,6 +15,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
+import newton
 from newton import ModelBuilder, NewtonWarning
 from newton._src.geometry import broad_phase_nxn
 from newton._src.solvers.kamino._src.core.data import DataKamino
@@ -878,6 +879,7 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

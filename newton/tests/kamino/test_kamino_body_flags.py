@@ -643,6 +643,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

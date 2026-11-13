@@ -9,6 +9,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.linear import LLTSequentialSolver
 from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
@@ -553,6 +554,7 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # TODO: How can we get these to work?

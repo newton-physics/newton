@@ -6,6 +6,7 @@
 import logging
 import unittest
 
+import newton
 from newton._src.solvers.kamino._src.utils.logger import LOGGER_NAMES, reset_log_level, set_log_level
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 
@@ -60,6 +61,7 @@ class TestUtilsLogger(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

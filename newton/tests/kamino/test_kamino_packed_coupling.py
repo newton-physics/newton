@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.solvers.scc import sparse
 from newton._src.solvers.kamino._src.solvers.scc.coupling import PackedCoupling
@@ -207,4 +208,5 @@ class TestKaminoPackedCoupling(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     unittest.main()

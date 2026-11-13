@@ -13,6 +13,7 @@ from pathlib import Path
 
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
 from newton.tests.kamino import setup_tests
 from newton.tests.test_viewer_get_frame import _make_box_model, _make_headless_viewer_gl_or_skip
@@ -113,6 +114,7 @@ class TestKaminoViewerRecording(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests
