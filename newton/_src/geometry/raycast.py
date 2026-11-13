@@ -927,13 +927,17 @@ def raycast_kernel(
 class RaycastBackend(enum.Enum):
     """Shape traversal backend for ray queries and :class:`~newton.sensors.SensorCamera`.
 
+    Passing ``None`` instead selects :attr:`OPTIX` when it can be used and
+    :attr:`WARP` otherwise.
+
     .. experimental::
-        The OptiX backend requires ``newton[optix]`` and a CUDA device. Shape
-        variants, Gaussian shapes and CUDA graph capture are not supported.
+        The OptiX backend requires ``newton[optix]`` and a CUDA device that
+        supports OptiX. Shape variants, Gaussian shapes and CUDA graph capture
+        are not supported.
     """
 
     WARP = "warp"
-    """Portable Warp BVH traversal (default)."""
+    """Portable Warp BVH traversal."""
     OPTIX = "optix"
     """Hardware traversal using the optional ``newton[optix]`` dependency."""
 
@@ -949,7 +953,7 @@ def intersect_ray(
     out_shape_id: wp.array[wp.int32] | None = None,
     out_normal: wp.array[wp.vec3] | None = None,
     fast_math: bool = True,
-    backend: RaycastBackend = RaycastBackend.WARP,
+    backend: RaycastBackend | None = None,
 ):
     """Intersect rays with model shapes.
 
@@ -979,16 +983,20 @@ def intersect_ray(
         out_shape_id: Optional output hit shape indices, shape [ray_count]. ``-1`` on miss.
         out_normal: Optional output hit normals, shape [ray_count, 3].
         fast_math: Whether to compile the intersection kernel with fast math enabled.
-        backend: Shape traversal backend. OptiX acceleration is built lazily and
+        backend: Shape traversal backend. ``None`` uses OptiX when it supports the
+            model and device and the call is not being captured into a CUDA graph,
+            and Warp otherwise. Requesting :attr:`RaycastBackend.OPTIX` when it cannot
+            be used raises :class:`RuntimeError`. OptiX acceleration is built lazily and
             updated by :meth:`~newton.Model.bvh_refit_shapes`. Rebuilding the model
             BVH invalidates the cached OptiX acceleration.
     """
 
-    backend = RaycastBackend(backend)
-    if backend == RaycastBackend.OPTIX:
+    if backend is not None:
+        backend = RaycastBackend(backend)
+    if backend != RaycastBackend.WARP:
         from .optix import intersect_rays  # noqa: PLC0415
 
-        intersect_rays(
+        if intersect_rays(
             model,
             ray_origins,
             ray_directions,
@@ -998,8 +1006,9 @@ def intersect_ray(
             out_shape_id=out_shape_id,
             out_normal=out_normal,
             fast_math=fast_math,
-        )
-        return
+            required=backend == RaycastBackend.OPTIX,
+        ):
+            return
 
     if model.bvh_shape_enabled is not None and model.bvh_shape_count_enabled == 0:
         # The shape BVH was built but no shape was selected, so every ray misses.

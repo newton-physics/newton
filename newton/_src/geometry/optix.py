@@ -3,6 +3,7 @@
 
 """Optional packed OptiX acceleration shared by shape queries and camera rendering."""
 
+import functools
 import weakref
 
 import numpy as np
@@ -10,6 +11,26 @@ import warp as wp
 
 from . import raycast
 from .types import GeoType
+
+# Raygen register cap: the occupancy gain outweighs the extra spills.
+_MAX_REGISTERS = 80
+
+
+class UnsupportedError(RuntimeError):
+    """The OptiX backend cannot traverse this model on its device."""
+
+
+@functools.cache
+def import_warp_optix():
+    """Return the optional ``warp_optix`` module, or ``None`` if it is not installed.
+
+    Imported on first use because importing it registers OptiX with Warp.
+    """
+    try:
+        import warp_optix  # noqa: PLC0415
+    except ImportError:
+        return None
+    return warp_optix
 
 
 @wp.struct
@@ -25,14 +46,14 @@ class SceneData:
 
 
 @wp.func
-def _world_offset(world: int, grid: int, extent: float) -> wp.vec3:
+def world_offset(world: int, grid: int, extent: float) -> wp.vec3:
     center = float(grid - 1) * 0.5
     cell = wp.vec3(float(world % grid), float((world // grid) % grid), float(world // (grid * grid)))
     return (cell - wp.vec3(center)) * (3.0 * extent)
 
 
 @wp.func
-def _ray_interval(origin: wp.vec3, direction: wp.vec3, extent: float, max_distance: float) -> wp.vec2:
+def ray_interval(origin: wp.vec3, direction: wp.vec3, extent: float, max_distance: float) -> wp.vec2:
     """Clip traversal to one cell, including rays whose origins lie outside it."""
     near = float(0.0)
     far = max_distance
@@ -74,12 +95,22 @@ class Scene:
     """Own shared geometry and one spatially packed world instance structure."""
 
     def __init__(self, model, shape_types=None):
+        wo = import_warp_optix()
+        if wo is None:
+            raise UnsupportedError("The OptiX backend requires the newton[optix] extra")
         if not model.device.is_cuda:
-            raise ValueError("The OptiX backend requires a CUDA device")
+            raise UnsupportedError("The OptiX backend requires a CUDA device")
         try:
-            import warp_optix as wo  # noqa: PLC0415
-        except ImportError as exc:
-            raise ImportError("The OptiX backend requires the newton[optix] extra") from exc
+            wo.get_context(model.device)
+        except Exception as exc:
+            # OptiX reports unsupported GPUs and drivers with device-specific errors.
+            raise UnsupportedError(f"OptiX is not supported on {model.device}: {exc}") from exc
+        if model.shape_count >= 1 << 24:
+            raise UnsupportedError("OptiX shape instance IDs must fit in 24 bits")
+        if model._variant_shape_source:
+            raise UnsupportedError("The OptiX backend does not support shape variants")
+        if model.shape_count and model.bvh_shape_enabled is None:
+            raise UnsupportedError("Build the model shape BVH before using the OptiX backend")
         self.wo = wo
         # Ray queries cache this scene on the model; do not create an ownership cycle.
         self.model = weakref.proxy(model)
@@ -87,13 +118,9 @@ class Scene:
         self.shape_types = shape_types if shape_types is not None else wp.clone(model.shape_type)
         if shape_types is None:
             wp.launch(_mesh_types, dim=model.shape_count, inputs=[self.shape_types], device=self.device)
-        if model.shape_count >= 1 << 24:
-            raise ValueError("OptiX shape instance IDs must fit in 24 bits")
         types = self.shape_types.numpy() if model.shape_count else np.empty(0, dtype=np.int32)
         if np.any(types == GeoType.GAUSSIAN):
-            raise NotImplementedError("The OptiX backend does not support Gaussian shapes")
-        if model._variant_shape_source:
-            raise NotImplementedError("The OptiX backend does not support shape variants")
+            raise UnsupportedError("The OptiX backend does not support Gaussian shapes")
         enabled = (
             model.bvh_shape_enabled.numpy()[: model.bvh_shape_count_enabled].astype(np.int32)
             if model.shape_count
@@ -175,7 +202,7 @@ class Scene:
                     radius += size[2] - wp.sqrt(wp.max(0.0, size[2] * size[2] - size[1] * size[1]))
                 half = wp.vec3(radius, radius, size[1])
             world = wp.where(shape_world[si] < 0, data.world_count, shape_world[si])
-            offset = _world_offset(world, data.grid, data.extent[0])
+            offset = world_offset(world, data.grid, data.extent[0])
             transform = shape_transforms[si]
             linear = wp.quat_to_matrix(wp.transform_get_rotation(transform)) @ wp.diag(half)
             sbt = wp.where(kind == GeoType.MESH, 0, 1)
@@ -251,7 +278,7 @@ class Scene:
             world = wp.where(
                 bvh_shapes_id.shape_world[si] < 0, bvh_shapes_id.world_count, bvh_shapes_id.shape_world[si]
             )
-            offset = _world_offset(world, bvh_shapes_id.grid, bvh_shapes_id.extent[0])
+            offset = world_offset(world, bvh_shapes_id.grid, bvh_shapes_id.extent[0])
             distance, _normal = raycast.ray_intersect_shape_no_normal(
                 shape_transforms[si],
                 shape_sizes[si],
@@ -269,6 +296,7 @@ class Scene:
             sbt=wo.SbtLayout(
                 hit_groups={"triangles": wo.HitGroup(), "primitives": wo.HitGroup(intersection=intersect)}
             ),
+            max_registers=_MAX_REGISTERS,
             module_options={"fast_math": kernel.module.options["fast_math"]},
             graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
         )
@@ -285,16 +313,26 @@ def intersect_rays(
     out_shape_id,
     out_normal,
     fast_math,
-):
-    """Launch batched shape queries using the model-owned packed acceleration."""
-    if not model.device.is_cuda:
-        raise ValueError("The OptiX backend requires a CUDA device")
-    if model.device.stream.is_capturing:
-        raise RuntimeError("The OptiX backend does not support CUDA graph capture")
-    if model.shape_count and model.bvh_shape_enabled is None:
-        raise RuntimeError("Build the model shape BVH before raycasting")
-    if model._optix_scene is None:
-        model._optix_scene = Scene(model)
+    required,
+) -> bool:
+    """Launch batched shape queries using the model-owned packed acceleration.
+
+    Returns ``False`` without launching when OptiX is not ``required`` and cannot be used,
+    including during CUDA graph capture, so the caller falls back to Warp.
+    """
+    if model.device.is_cuda and model.device.stream.is_capturing:
+        if required:
+            raise RuntimeError("The OptiX backend does not support CUDA graph capture")
+        return False
+    if model._optix_scene is None and model._optix_unsupported is None:
+        try:
+            model._optix_scene = Scene(model)
+        except UnsupportedError as exc:
+            model._optix_unsupported = str(exc)
+    if model._optix_unsupported is not None:
+        if required:
+            raise UnsupportedError(model._optix_unsupported)
+        return False
     scene = model._optix_scene
     key = (enable_global_world, out_dist is not None, out_shape_id is not None, out_normal is not None, fast_math)
     if key not in scene.ray_pipelines:
@@ -314,6 +352,7 @@ def intersect_rays(
         ],
         outputs=[out_dist, out_shape_id, out_normal],
     )
+    return True
 
 
 def _create_ray_pipeline(scene, enable_global_world, write_dist, write_shape_id, write_normal, fast_math):
@@ -343,8 +382,8 @@ def _create_ray_pipeline(scene, enable_global_world, write_dist, write_shape_id,
         # Match the camera's unrolled local/global traversal (OptiX 0.3.0).
         for i in range(wp.static(2 if enable_global_world else 1)):
             world = wp.where(i == 1 or ray_worlds[tid] < 0, data.world_count, ray_worlds[tid])
-            interval = _ray_interval(origin, direction, data.extent[0], distance)
-            packed_origin = origin + _world_offset(world, data.grid, data.extent[0])
+            interval = ray_interval(origin, direction, data.extent[0], distance)
+            packed_origin = origin + world_offset(world, data.grid, data.extent[0])
             if data.has_instances[world] and interval[1] >= interval[0]:
                 query = wo.accel_query_ray(data.handle, packed_origin, direction, interval[1], interval[0])
                 if query.result and query.t < distance:

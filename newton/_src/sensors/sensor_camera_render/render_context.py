@@ -12,6 +12,7 @@ import warp as wp
 from ...core import Axis
 from ...geometry import GeoType, Mesh
 from ...geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals, _DeformableVisualSkinBatches
+from ...geometry.raycast import RaycastBackend
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
@@ -86,7 +87,7 @@ class RenderContext:
         model: Model,
         load_textures: bool = True,
         *,
-        use_optix: bool = False,
+        backend: RaycastBackend | None = None,
         deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Create a render context for a Newton simulation model.
@@ -102,14 +103,14 @@ class RenderContext:
         Args:
             model: Newton simulation model providing shapes and particles.
             load_textures: Load shape and visual mesh textures from file paths or in-memory images.
-            use_optix: Use the optional OptiX shape-traversal backend.
+            backend: Shape-traversal backend. ``None`` selects OptiX when it supports the
+                model and device, and Warp otherwise.
             deformable_surface_mode: Which deformable surfaces to upload: the simulation triangles,
                 the visual meshes, or both.
         """
-        if use_optix and not model.device.is_cuda:
-            raise ValueError("The OptiX camera backend requires a CUDA device")
-        self._use_optix = use_optix
+        self.backend = RaycastBackend.WARP
         self._optix = None
+        self._optix_synced = False
         self._model = model
         self._deformable_surface_mode = deformable_surface_mode
         self._render_state = RenderContext.RenderState()
@@ -217,6 +218,20 @@ class RenderContext:
             self._init_triangle_mesh(model, deformable_visual_meshes, skin_texture_ids)
             if self._skinned_vertex_count:
                 self._skinned_points = self._triangle_points[self._triangle_particle_count :]
+
+        if backend is not None:
+            backend = RaycastBackend(backend)
+        if backend != RaycastBackend.WARP:
+            from ...geometry.optix import Scene, UnsupportedError  # noqa: PLC0415
+
+            try:
+                if self._has_particles or self._has_triangle_mesh:
+                    raise UnsupportedError("The OptiX camera backend does not support particles or deformable surfaces")
+                self._optix = Scene(model, self._get_shape_render_type())
+                self.backend = RaycastBackend.OPTIX
+            except UnsupportedError:
+                if backend == RaycastBackend.OPTIX:
+                    raise
 
     @property
     def model(self) -> Model:
@@ -515,16 +530,15 @@ class RenderContext:
                 default :class:`RenderConfig` settings.
         """
         model = self.model
-        if self._use_optix and self.device.stream.is_capturing:
-            raise RuntimeError("The OptiX camera backend does not support CUDA graph capture")
-        if self._use_optix and self._optix is None:
-            from ...geometry.optix import Scene  # noqa: PLC0415
-
-            if self._has_particles or self._has_triangle_mesh:
-                raise NotImplementedError("The OptiX camera backend does not support particles or deformable surfaces")
-            self._optix = Scene(self.model, self._get_shape_render_type())
-        elif self._optix is not None and sync_shapes:
-            self._optix.refit()
+        if self._optix is not None:
+            if self.device.stream.is_capturing:
+                raise RuntimeError(
+                    "The OptiX camera backend does not support CUDA graph capture; create the camera with backend=WARP"
+                )
+            # The first update always syncs: shapes may have moved since construction.
+            if sync_shapes or not self._optix_synced:
+                self._optix.refit()
+                self._optix_synced = True
 
         if config is None:
             config = RenderContext.DEFAULT_RENDER_CONFIG

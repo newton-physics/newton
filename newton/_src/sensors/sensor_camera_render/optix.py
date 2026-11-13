@@ -6,7 +6,7 @@
 import warp as wp
 
 from ...geometry import GeoType, raycast
-from ...geometry.optix import SceneData, _ray_interval, _world_offset
+from ...geometry.optix import SceneData, ray_interval, world_offset
 
 
 def create_closest_hit(config, scene):
@@ -38,8 +38,8 @@ def create_closest_hit(config, scene):
         # Keep the two traversals unrolled: dynamic traversal loops miscompile with OptiX 0.3.0.
         for i in range(wp.static(2 if config.enable_global_world else 1)):
             world = wp.where(i == 1, data.world_count, world_index)
-            interval = _ray_interval(origin, direction, data.extent[0], hit.distance)
-            packed_origin = origin + _world_offset(world, data.grid, data.extent[0])
+            interval = ray_interval(origin, direction, data.extent[0], hit.distance)
+            packed_origin = origin + world_offset(world, data.grid, data.extent[0])
             if data.has_instances[world] and interval[1] >= interval[0]:
                 flags = wp.uint32(0)
                 if wp.static(config.enable_backface_culling):
@@ -128,8 +128,8 @@ def create_first_hit(config, scene):
         # Keep the two traversals unrolled: dynamic traversal loops miscompile with OptiX 0.3.0.
         for i in range(wp.static(2 if config.enable_global_world else 1)):
             world = wp.where(i == 1, data.world_count, world_index)
-            interval = _ray_interval(origin, direction, data.extent[0], max_dist)
-            packed_origin = origin + _world_offset(world, data.grid, data.extent[0])
+            interval = ray_interval(origin, direction, data.extent[0], max_dist)
+            packed_origin = origin + world_offset(world, data.grid, data.extent[0])
             if data.has_instances[world] and interval[1] >= interval[0]:
                 if wo.accel_query_ray_anyhit(data.handle, packed_origin, direction, interval[1], interval[0], 255):
                     return True

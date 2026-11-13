@@ -65,6 +65,15 @@ class TestSensorCamera(unittest.TestCase):
         """A SensorCamera that renders ``model`` (owns an internal render context)."""
         return SensorCamera(model, backend=self.backend, **camera_kwargs)
 
+    def test_default_backend_selects_optix_when_supported(self) -> None:
+        """Resolve the default backend to OptiX only on configurations that support it."""
+        model, camera = self._build_sphere_scene()
+        self.assertEqual(camera.backend, self.backend)
+        self.assertEqual(SensorCamera(model).backend, self.backend)
+        if self.backend == newton.RaycastBackend.WARP:
+            with self.assertRaisesRegex(RuntimeError, "OptiX"):
+                SensorCamera(model, backend=newton.RaycastBackend.OPTIX)
+
     def test_camera_ray_helpers_live_on_sensor_camera(self) -> None:
         """Verify camera ray helpers live on SensorCamera."""
         sensor_helper_names = (
@@ -1804,7 +1813,7 @@ class TestSensorCamera(unittest.TestCase):
                 self.assertEqual(depths[1].numpy()[0, 0, 2], 0.0)
 
     def test_reject_particles_and_deformable_surface(self):
-        """Reject unsupported geometry before attempting to compile an OptiX pipeline."""
+        """Reject particles and deformable surfaces for OptiX and render them with Warp by default."""
         builder = newton.ModelBuilder()
         builder.add_cloth_mesh(
             pos=wp.vec3(0.0),
@@ -1820,13 +1829,14 @@ class TestSensorCamera(unittest.TestCase):
         state = model.state()
         rays = SensorCamera.compute_camera_rays_pinhole(16, 16, camera_fov=1.0, device=model.device)
         poses = wp.array([wp.transform_identity()], dtype=wp.transform, device=model.device)
-        camera = SensorCamera(model, backend=self.backend)
+        if self.backend == newton.RaycastBackend.OPTIX:
+            with self.assertRaisesRegex(RuntimeError, "particles or deformable surfaces"):
+                SensorCamera(model, backend=self.backend)
+        camera = SensorCamera(model)
+        self.assertEqual(camera.backend, newton.RaycastBackend.WARP)
         depth = camera.allocate_image_depth(1, 16, 16)
-        if self.backend != newton.RaycastBackend.OPTIX:
-            camera.update(state, poses, rays, depth_image=depth)
-            return
-        with self.assertRaisesRegex(NotImplementedError, "particles or deformable surfaces"):
-            camera.update(state, poses, rays, depth_image=depth)
+        camera.update(state, poses, rays, depth_image=depth)
+        self.assertGreater(np.count_nonzero(depth.numpy()), 0)
 
     def test_empty_scene_and_capture(self):
         """Render an empty model and reject CUDA capture before submitting OptiX work."""

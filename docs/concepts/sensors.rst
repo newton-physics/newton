@@ -122,62 +122,55 @@ attributes, and usage examples.
 Camera Traversal Backends
 -------------------------
 
-The default :class:`~newton.sensors.SensorCamera` uses Warp BVHs. To select
-hardware-accelerated shape traversal, install ``newton[optix]`` and construct:
+:class:`~newton.sensors.SensorCamera` and :func:`~newton.intersect_ray` traverse
+shapes with Warp BVHs or, when ``newton[optix]`` is installed, with OptiX
+hardware ray tracing. By default (``backend=None``) they use OptiX when it
+supports the model and device and Warp otherwise, so installing the extra is
+enough to enable it:
 
 .. code-block:: python
 
-   camera = SensorCamera(model, backend=newton.RaycastBackend.OPTIX)
+   camera = SensorCamera(model)
+   print(camera.backend)  # RaycastBackend.OPTIX when available
+
+Pass :attr:`RaycastBackend.WARP <newton.RaycastBackend.WARP>` to always use
+Warp, or :attr:`RaycastBackend.OPTIX <newton.RaycastBackend.OPTIX>` to require
+OptiX; requesting OptiX when it cannot be used raises :class:`RuntimeError`
+with the reason.
 
 .. experimental::
 
    ``newton.RaycastBackend.OPTIX`` is experimental. The ``warp-optix~=0.3.0``
    extra currently installs on Python 3.12, on x86-64 Linux and Windows, and
-   requires an NVIDIA CUDA device supported by OptiX. Other configurations
-   retain the default Warp backend.
+   requires an NVIDIA CUDA device supported by OptiX.
 
 OptiX shares mesh geometry between instances and spatially packs worlds into
 one instance acceleration structure. Rays are offset into the selected world's
 cell and clipped to its bounds so they cannot hit neighboring worlds. The cell
-extent grows on the GPU from the model's shape bounds when geometry moves;
-there is no fixed user-supplied world extent. Global bounded shapes occupy an
-additional cell, while planes are intersected analytically. Both respect
-``RenderConfig.enable_global_world``. Camera rays, image outputs,
-materials, lights, and shading use the same interfaces as the default backend.
-The initial OptiX backend supports rigid shapes, including triangle meshes and
-heightfields.
+extent grows on the GPU from the model's shape bounds when geometry moves.
+Global bounded shapes occupy an additional cell, while planes are intersected
+analytically. Camera rays, image outputs, materials, lights, and shading are the
+same for both backends. Packing uses float32 coordinates, so results are not
+bit-identical to Warp.
 
-Continue to refit the model's shape BVH after changing poses or sizes, as with
-the default camera. OptiX refits its single instance structure from those transforms on every
-camera update. For repeated renders of an unchanged scene, pass ``sync_shapes=False`` to skip instance refits after the first render.
-Mesh topology and the set of enabled shapes must remain fixed for the camera's
-lifetime. Particles, deformable surfaces, Gaussian shapes, shape variants, and
-CUDA graph capture are currently unsupported and raise errors. Rendering updates
-must run outside graph capture; simulation may still use CUDA graphs.
+Continue to refit the model's shape BVH after changing poses or sizes. The
+camera refits its OptiX instances from those transforms on every update; pass
+``sync_shapes=False`` to skip the refit for an unchanged scene. Mesh topology
+and the set of enabled shapes must remain fixed for the camera's lifetime.
 
-The same :class:`~newton.RaycastBackend` selects acceleration for batched shape
-queries:
+The OptiX backend does not support:
 
-.. code-block:: python
+- CUDA graph capture. Render outside graph capture, or create the camera with
+  ``backend=RaycastBackend.WARP``; simulation may still use CUDA graphs.
+  Raycasts with the default backend use Warp while a graph is being captured.
+- Particles, deformable surfaces, Gaussian shapes, and shape variants. Cameras
+  of such models use Warp by default. Raycasts query rigid shapes only.
 
-   newton.intersect_ray(
-       model,
-       backend=newton.RaycastBackend.OPTIX,
-       ray_origins=origins,
-       ray_directions=directions,
-       ray_worlds=worlds,
-       out_dist=distances,
-       out_shape_id=shape_ids,
-       out_normal=normals,
-   )
-
-Raycasts build their acceleration lazily on the model. Subsequent
-:meth:`~newton.Model.bvh_refit_shapes` calls update it automatically;
+Raycasts build their OptiX acceleration lazily on the model.
+:meth:`~newton.Model.bvh_refit_shapes` updates it, and
 :meth:`~newton.Model.bvh_build_shapes` invalidates it, including when the shape
-selection changes. The existing raycast world selection, optional outputs, and
-miss values are unchanged. Raycasts query rigid shapes only, even when a model
-also contains particles or deformable surfaces. Gaussian shapes, shape variants
-and CUDA graph capture remain unsupported in the OptiX query path.
+selection changes. World selection, optional outputs, and miss values are the
+same for both backends.
 
 The optional package declares ``Apache-2.0 AND BSD-3-Clause AND
 LicenseRef-NVIDIA-OptiX``. It is installed separately; Newton does not redistribute
