@@ -71,6 +71,13 @@ On Linux, the ``importers`` and ``remesh`` extras (and extras that include them,
 such as ``examples`` and ``dev``) require GLIBC 2.35 or newer, e.g. Ubuntu
 22.04+. RHEL 9 and Amazon Linux 2023 can install only the base package.
 
+**Python 3.14**
+
+Python 3.14 supports the simulation, importers, examples, and notebook extras
+on Linux x86-64 and ARM64, Windows x86-64, and macOS ARM64. On Linux ARM64,
+Newton uses USD Core 26.11 for Python 3.14; earlier Python versions use USD
+Exchange. Windows ARM64 retains the optional-feature limitations below.
+
 **Linux aarch64 (ARM64)**
 
 The standard Warp 1.17 wheel omits ``sm_52``, ``sm_60``, ``sm_61``, and

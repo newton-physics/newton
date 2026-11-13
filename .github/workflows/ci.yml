@@ -89,6 +89,8 @@ jobs:
         run: uv sync --dry-run --python 3.12 --extra dev
       - name: Test dependency resolution (Python 3.13)
         run: uv sync --dry-run --python 3.13 --extra dev
+      - name: Test dependency resolution (Python 3.14)
+        run: uv sync --locked --dry-run --python 3.14 --extra dev --extra notebook
 
   # Unsharded legs report their required check names directly.
   newton-unittests:
