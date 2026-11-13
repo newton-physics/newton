@@ -6,7 +6,7 @@
 Shows how to simulate Anymal D with multiple worlds using SolverKamino.
 
 Success criteria:
-- ANYmal D robots stand on the ground.
+- ANYmal D robots land on their feet and remain standing.
 - Right-drag the robot and release it; its articulation stays connected and collides with the
   ground.
 
@@ -45,11 +45,18 @@ class Example:
         asset_file = str(asset_path / "usd" / "anymal_d.usda")
         robot_builder.add_usd(
             asset_file,
-            force_position_velocity_actuation=True,
             collapse_fixed_joints=False,
             enable_self_collisions=True,
             hide_collision_shapes=True,
         )
+
+        for joint_id, joint_type in enumerate(robot_builder.joint_type):
+            if joint_type != newton.JointType.REVOLUTE:
+                continue
+            dof_id = robot_builder.joint_qd_start[joint_id]
+            robot_builder.joint_target_ke[dof_id] = 150.0
+            robot_builder.joint_target_kd[dof_id] = 5.0
+            robot_builder.joint_target_mode[dof_id] = int(newton.JointTargetMode.POSITION)
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
@@ -168,6 +175,15 @@ class Example:
             self.state_0,
             "all bodies are above the ground",
             lambda q, qd: q[2] > -0.006,
+        )
+        base_ids = [i for i, label in enumerate(self.model.body_label) if label.endswith("/base")]
+        assert base_ids, "No body label ends with '/base'"
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "robots are standing",
+            lambda q, qd: q[2] > 0.6,
+            indices=base_ids,
         )
         # Only check velocities on CUDA, where example tests run enough frames to settle.
         # Short CPU smoke runs may still be falling when they finish.

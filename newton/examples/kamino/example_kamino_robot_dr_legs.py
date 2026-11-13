@@ -6,7 +6,7 @@
 Shows how to simulate DR Legs with multiple worlds using SolverKamino.
 
 Success criteria:
-- A torso-free biped with complex leg linkages appears.
+- A torso-free biped with complex leg linkages appears and stays standing upright.
 - Right-drag its movable bodies: leg joints remain connected and the mechanism responds without
   explosive motion.
 
@@ -239,9 +239,18 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        # TODO: Add some assertions here once we have a more meaningful test scenario
         if self.dynamics_solver == "lox":
             assert not self.solver.status.numpy()["failed"].any(), "The LOX backend failed"
+        if not self.animated:
+            pelvis_ids = [i for i, label in enumerate(self.model.body_label) if label.endswith("/pelvis")]
+            assert pelvis_ids, "No body label ends with '/pelvis'"
+            newton.examples.test_body_state(
+                self.model,
+                self.state_0,
+                "robots are standing",
+                lambda q, qd: q[2] > 0.25,
+                indices=pelvis_ids,
+            )
 
     def _init_animation(self, model_asset: str, animation_asset: str):
         import numpy as np  # noqa: PLC0415
