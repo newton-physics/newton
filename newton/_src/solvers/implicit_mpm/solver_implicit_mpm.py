@@ -1029,6 +1029,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """Fraction for particles under which the yield surface collapses."""
         air_drag: float = 1.0
         """Numerical drag for the background air."""
+        enable_compliance: bool = True
+        """Build the elasticity system for compliant particles (``mpm:young_modulus`` below 1e12 Pa).
+
+        Set to ``False`` to treat every particle as rigid and skip the
+        elasticity system, which saves time and memory when no particle is
+        compliant. With ``False``, ``mpm:young_modulus`` and
+        ``mpm:poisson_ratio`` are ignored, even if they change at runtime.
+        """
 
         # experimental
         gs_colored_contacts: bool | None = None
@@ -1714,7 +1722,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             self._scratchpad = ImplicitMPMScratchpad()
             pic = self._particles_to_cells(model.particle_q)
             self._rebuild_scratchpad(pic)
-            self._require_velocity_space_fields(self._scratchpad, self._mpm_model.has_compliant_particles)
+            self._require_velocity_space_fields(self._scratchpad, self._mpm_model.enable_compliance)
             self._require_collision_space_fields(self._scratchpad, self._last_step_data)
             self._require_strain_space_fields(self._scratchpad, self._last_step_data)
             if self._sparse_rebuildable and self.collider_basis[:3] != "pic":
@@ -1918,16 +1926,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if array.device != device:
             raise ValueError(f"state.{name} is on device {array.device}, expected {device}.")
 
-    def _validate_reset_inputs(self, state: newton.State) -> None:
-        if state is None:
-            raise ValueError("'state' argument is required.")
-
+    def _validate_particle_count(self) -> None:
+        """Raise if ``model.particle_count`` differs from the count at construction."""
         particle_count = int(self.model.particle_count)
         if particle_count != self._initial_particle_count:
             raise RuntimeError(
                 "SolverImplicitMPM model.particle_count changed after construction: "
-                f"expected {self._initial_particle_count}, got {particle_count}."
+                f"expected {self._initial_particle_count}, got {particle_count}. "
+                "Construct a new solver for a model with a different particle count."
             )
+
+    def _validate_reset_inputs(self, state: newton.State) -> None:
+        if state is None:
+            raise ValueError("'state' argument is required.")
+
+        self._validate_particle_count()
         world_count = int(self.model.world_count)
         if world_count != self._initial_world_count:
             raise RuntimeError(
@@ -2245,7 +2258,30 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
-        if flags & ModelFlags.MODEL_PROPERTIES:
+        """Refresh solver data derived from the model.
+
+        ``ModelFlags.PARTICLE_PROPERTIES`` refreshes everything derived from
+        the particle flags, masses, radii and ``model.mpm.*`` material arrays:
+        particle volumes and densities, and the transfer and material particle
+        masks. This only launches kernels on existing arrays, so the
+        notification may be issued every step and recorded in a CUDA graph.
+
+        ``ModelFlags.MODEL_PROPERTIES`` triggers the same refresh, for
+        compatibility with code that notified material changes this way.
+
+        The solver's code paths do not depend on the material values, so a CUDA
+        graph that captured :meth:`step` follows any material change. With
+        :attr:`Config.enable_compliance` set to ``False``, the elasticity
+        system stays disabled and the elastic material parameters are ignored.
+
+        Raises:
+            RuntimeError: If either flag is set and ``model.particle_count``
+                differs from the count at construction. The solver keeps
+                per-particle state sized at construction, so a new particle
+                count requires a new solver.
+        """
+        if flags & (ModelFlags.MODEL_PROPERTIES | ModelFlags.PARTICLE_PROPERTIES):
+            self._validate_particle_count()
             self._mpm_model.notify_particle_material_changed()
 
     @override
@@ -3356,7 +3392,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         last_step_data = self._last_step_data
 
         self._require_collision_space_fields(scratch, last_step_data)
-        self._require_velocity_space_fields(scratch, mpm_model.has_compliant_particles)
+        self._require_velocity_space_fields(scratch, mpm_model.enable_compliance)
 
         # Rasterize colliders to discrete space
         self._rasterize_colliders(state_in, dt, last_step_data, scratch, inv_cell_volume)
@@ -3610,7 +3646,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         mpm_model = self._mpm_model
 
-        if not mpm_model.has_compliant_particles:
+        if not mpm_model.enable_compliance:
             scratch.elastic_strain_delta_field.dof_values.zero_()
             return
 
@@ -3922,18 +3958,18 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         # Un-integrate strains by scaling with inverse node volume
         M_diag = scratch.strain_node_particle_volume
-        if self._mpm_model.has_compliant_particles:
+        if self._mpm_model.enable_compliance:
             wp.launch(
                 inverse_scale_sym_tensor,
                 dim=node_count,
                 inputs=[M_diag, scratch.elastic_strain_delta_field.dof_values],
             )
-        if self._mpm_model.has_hardening or self.carry_residual_strain == "sampled":
-            wp.launch(
-                inverse_scale_sym_tensor,
-                dim=node_count,
-                inputs=[M_diag, scratch.plastic_strain_delta_field.dof_values],
-            )
+        # The plastic strain feeds the hardening law, which any particle may enable at runtime.
+        wp.launch(
+            inverse_scale_sym_tensor,
+            dim=node_count,
+            inputs=[M_diag, scratch.plastic_strain_delta_field.dof_values],
+        )
 
         if basis_transform is not None:
             # Reconstruct fields in the original nodal basis.
@@ -3981,8 +4017,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 plastic_strain_delta=scratch.plastic_strain_delta_field.dof_values,
                 stress=scratch.stress_field.dof_values,
                 strain_environment_offsets=scratch.strain_environment_offsets,
-                has_viscosity=self._mpm_model.has_viscosity,
-                has_dilatancy=self._mpm_model.has_dilatancy,
+                has_viscosity=True,
+                has_dilatancy=True,
                 strain_velocity_node_count=-1 if self._separate_worlds else self._velocity_nodes_per_strain_sample,
                 strain_nodes_per_cell=(
                     scratch.strain_nodes_per_element
@@ -4075,63 +4111,61 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         model = self.model
         mpm_model = self._mpm_model
 
-        has_compliant_particles = mpm_model.min_young_modulus < INFINITY
-        has_hardening = mpm_model.max_hardening > 0.0
+        # Particle strains always evolve: the hardening law and the stress warm start read them,
+        # and the material parameters that select them may change at runtime.
+        with self._timer("Particle strain update"):
+            # Update particle elastic strain from grid strain delta
 
-        if self._stress_warmstart == "particles" or has_compliant_particles or has_hardening:
-            with self._timer("Particle strain update"):
-                # Update particle elastic strain from grid strain delta
+            if state_in is state_out:
+                elastic_strain_prev = wp.clone(state_in.mpm.particle_elastic_strain)
+                particle_Jp_prev = wp.clone(state_in.mpm.particle_Jp)
+            else:
+                elastic_strain_prev = state_in.mpm.particle_elastic_strain
+                particle_Jp_prev = state_in.mpm.particle_Jp
 
-                if state_in is state_out:
-                    elastic_strain_prev = wp.clone(state_in.mpm.particle_elastic_strain)
-                    particle_Jp_prev = wp.clone(state_in.mpm.particle_Jp)
-                else:
-                    elastic_strain_prev = state_in.mpm.particle_elastic_strain
-                    particle_Jp_prev = state_in.mpm.particle_Jp
-
-                # In place, the copy for skipped particles is a no-op, so no clone is needed for stress
-                for previous, values in (
-                    (particle_Jp_prev, state_out.mpm.particle_Jp),
-                    (state_in.mpm.particle_stress, state_out.mpm.particle_stress),
-                    (elastic_strain_prev, state_out.mpm.particle_elastic_strain),
-                ):
-                    wp.launch(
-                        reset_particle_values,
-                        dim=model.particle_count,
-                        inputs=[
-                            scratch.particle_cells,
-                            mpm_model.material_particle_flags,
-                            mpm_model.particle_density,
-                            True,
-                            previous,
-                            values,
-                        ],
-                    )
-
-                fem.interpolate(
-                    update_particle_strains,
-                    at=pic,
-                    values={
-                        "dt": dt,
-                        "kinematic_elastic_strain": self.carry_residual_strain == "sampled",
-                        "particle_flags": mpm_model.material_particle_flags,
-                        "particle_density": mpm_model.particle_density,
-                        "particle_volume": mpm_model.material_particle_volume,
-                        "elastic_strain_prev": elastic_strain_prev,
-                        "elastic_strain": state_out.mpm.particle_elastic_strain,
-                        "particle_stress": state_out.mpm.particle_stress,
-                        "particle_Jp_prev": particle_Jp_prev,
-                        "particle_Jp": state_out.mpm.particle_Jp,
-                        "material_parameters": mpm_model.material_parameters,
-                    },
-                    fields={
-                        "grid_vel": scratch.velocity_field,
-                        "plastic_strain_delta": scratch.plastic_strain_delta_field,
-                        "elastic_strain_delta": scratch.elastic_strain_delta_field,
-                        "stress": scratch.stress_field,
-                    },
-                    temporary_store=self.temporary_store,
+            # In place, the copy for skipped particles is a no-op, so no clone is needed for stress
+            for previous, values in (
+                (particle_Jp_prev, state_out.mpm.particle_Jp),
+                (state_in.mpm.particle_stress, state_out.mpm.particle_stress),
+                (elastic_strain_prev, state_out.mpm.particle_elastic_strain),
+            ):
+                wp.launch(
+                    reset_particle_values,
+                    dim=model.particle_count,
+                    inputs=[
+                        scratch.particle_cells,
+                        mpm_model.material_particle_flags,
+                        mpm_model.particle_density,
+                        True,
+                        previous,
+                        values,
+                    ],
                 )
+
+            fem.interpolate(
+                update_particle_strains,
+                at=pic,
+                values={
+                    "dt": dt,
+                    "kinematic_elastic_strain": self.carry_residual_strain == "sampled",
+                    "particle_flags": mpm_model.material_particle_flags,
+                    "particle_density": mpm_model.particle_density,
+                    "particle_volume": mpm_model.material_particle_volume,
+                    "elastic_strain_prev": elastic_strain_prev,
+                    "elastic_strain": state_out.mpm.particle_elastic_strain,
+                    "particle_stress": state_out.mpm.particle_stress,
+                    "particle_Jp_prev": particle_Jp_prev,
+                    "particle_Jp": state_out.mpm.particle_Jp,
+                    "material_parameters": mpm_model.material_parameters,
+                },
+                fields={
+                    "grid_vel": scratch.velocity_field,
+                    "plastic_strain_delta": scratch.plastic_strain_delta_field,
+                    "elastic_strain_delta": scratch.elastic_strain_delta_field,
+                    "stress": scratch.stress_field,
+                },
+                temporary_store=self.temporary_store,
+            )
 
         # (A)PIC advection
         with self._timer("Advection"):

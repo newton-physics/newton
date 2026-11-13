@@ -3191,7 +3191,6 @@ def test_inactive_viscous_particles(test, device):
     )
     state = model.state()
     initial = state.particle_q.numpy().copy()
-    test.assertTrue(solver._mpm_model.has_viscosity)
     np.testing.assert_array_equal(solver._mpm_model.material_particle_volume.numpy()[-2:], 0.0)
 
     def assert_finite():
