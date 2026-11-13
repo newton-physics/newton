@@ -117,6 +117,8 @@ class Example:
             )
             ball_cfg = newton.ModelBuilder.ShapeConfig()
             ball_cfg.density = builder.default_shape_cfg.density * WRECKING_BALL_DENSITY_MULT
+            if self.solver_type == "style3d":
+                ball_cfg.ke = 1e10
             builder.add_shape_sphere(body_ball, radius=WRECKING_BALL_RADIUS, cfg=ball_cfg)
 
             # Ramp (static)
