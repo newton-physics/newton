@@ -9932,6 +9932,50 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             np.zeros_like(mujoco_contacts_solver.mjw_model.pair_margin.numpy()),
         )
 
+    def test_pair_properties_follow_compiled_pair_order(self):
+        """Each MuJoCo pair keeps its own properties when the compiler reorders pairs.
+
+        MuJoCo groups explicit pairs by body pair at compile time, so the
+        (box1, box0) pair added last becomes compiled pair 1.
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        shapes = []
+        for x in (0.0, 0.1, 0.2):
+            body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.5), wp.quat_identity()), mass=0.01)
+            shapes.append(builder.add_shape_box(body, hx=0.01, hy=0.01, hz=0.01))
+        for (a, b), mu, timeconst in (((0, 1), 0.1, 0.01), ((0, 2), 0.2, 0.02), ((1, 0), 0.3, 0.03)):
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": builder.current_world,
+                    "mujoco:pair_geom1": shapes[a],
+                    "mujoco:pair_geom2": shapes[b],
+                    "mujoco:pair_friction": vec5(mu, mu, 0.005, 0.0001, 0.0001),
+                    "mujoco:pair_solref": wp.vec2(timeconst, 1.0),
+                }
+            )
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        mj_model = solver.mj_model
+        np.testing.assert_allclose(mj_model.pair_friction[:, 0], [0.1, 0.3, 0.2], rtol=1e-6)
+
+        def assert_device_matches_compiled_model():
+            np.testing.assert_allclose(solver.mjw_model.pair_friction.numpy()[0], mj_model.pair_friction, rtol=1e-6)
+            np.testing.assert_allclose(solver.mjw_model.pair_solref.numpy()[0], mj_model.pair_solref, rtol=1e-6)
+
+        assert_device_matches_compiled_model()
+
+        # A runtime update of the last row reaches compiled pair 1.
+        friction = model.mujoco.pair_friction.numpy()
+        friction[2, 0] = 0.4
+        model.mujoco.pair_friction.assign(wp.array(friction, dtype=vec5, device=model.device))
+        solref = model.mujoco.pair_solref.numpy()
+        solref[2, 0] = 0.04
+        model.mujoco.pair_solref.assign(wp.array(solref, dtype=wp.vec2, device=model.device))
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.pair_friction.numpy()[0, :, 0], [0.1, 0.4, 0.2], rtol=1e-6)
+        np.testing.assert_allclose(solver.mjw_model.pair_solref.numpy()[0, :, 0], [0.01, 0.04, 0.02], rtol=1e-6)
+
     def test_global_pair_exported_to_spec(self):
         """Pairs with pair_world=-1 (global) should be included in the MuJoCo spec.
 
