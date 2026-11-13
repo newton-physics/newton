@@ -1048,7 +1048,7 @@ def test_adaptive_collision_schedule_reacts_to_acceleration(test, device):
     builder.add_shape_sphere(body, radius=0.1)
     model = builder.finalize(device=device)
     states = (model.state(), model.state())
-    pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=travel_budget)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_contact_gap_max=travel_budget)
     solver = newton.solvers.SolverXPBD(model, iterations=1)
     collision_calls = wp.zeros(1, dtype=wp.int32, device=device)
 

@@ -603,9 +603,12 @@ def test_collision_schedule_constant_rotation(test, device, external_capture=Fal
         model, broad_phase="nxn", reduce_contacts=False, speculative_contact_gap_max=10.0
     )
     contacts = pipeline.contacts()
+    tick = wp.zeros(1, dtype=int, device=device)
+    horizons = wp.zeros(8, dtype=float, device=device)
 
     def collide(state, horizon):
         pipeline.collide(state, contacts, dt=horizon)
+        wp.launch(_record_horizon, 1, inputs=[tick, horizons, horizon], device=device)
 
     def step(state_in, state_out, dt):
         wp.launch(
@@ -614,6 +617,7 @@ def test_collision_schedule_constant_rotation(test, device, external_capture=Fal
             inputs=[state_in.body_q, state_in.body_qd, state_out.body_q, state_out.body_qd, dt, True],
             device=device,
         )
+        wp.launch(_increment_tick, 1, inputs=[tick], device=device)
 
     schedule = newton.CollisionSubstepScheduler(
         pipeline, states, collision_callback=collide, substep_callback=step, frame_dt=float(np.pi - 0.05), substeps=8
@@ -624,6 +628,7 @@ def test_collision_schedule_constant_rotation(test, device, external_capture=Fal
         wp.capture_launch(capture.graph)
     else:
         schedule.step()
+    np.testing.assert_allclose(horizons.numpy(), float(np.pi - 0.05) / 8, rtol=1e-6)
     count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertGreater(count, 0)
     pose = states[0].body_q.numpy()[0]
