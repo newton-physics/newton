@@ -324,7 +324,7 @@ class TestMuJoCoActuators(unittest.TestCase):
             if mjc_to_newton[mj_idx] >= 0:  # position sub-actuator carries the authored forceRange
                 np.testing.assert_allclose(solver.mj_model.actuator_forcerange[mj_idx], [-5.0, 5.0], atol=1e-5)
 
-        expected_ranges = solver.mjw_model.actuator_forcerange.numpy()
+        expected_ranges = solver.mjw_model.actuator_forcerange.numpy().copy()
         expected_ranges[0, mjc_to_newton >= 0] = [-2.0, 3.0]
         model.mujoco.actuator_forcerange.assign([[-2.0, 3.0], [-9.0, 9.0]])
         solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
