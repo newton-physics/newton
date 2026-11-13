@@ -1485,8 +1485,13 @@ def eval_rigid_tau(
         force = wp.spatial_top(f_ext_public)
         torque_com = wp.spatial_bottom(f_ext_public)
         x_com_s = wp.transform_get_translation(body_q_com[child]) - body_solve_origin[child]
+        # Shift the public-frame wrench into the internal solve frame. This
+        # must stay a pure local computation: writing the shifted wrench back
+        # into body_f_ext would mutate a kernel input, and the recompute-based
+        # adjoint would then re-derive force/f_s from the overwritten values
+        # (wrong frame and sign), corrupting every gradient that flows through
+        # this kernel.
         f_ext = -wp.spatial_vector(force, torque_com + wp.cross(x_com_s, force))
-        body_f_ext[child] = f_ext
         f_s = f_b_s + f_t_s + f_ext
 
         # compute joint-space forces, writes out tau
@@ -1928,7 +1933,10 @@ def adj_dense_cholesky(
     # outputs
     L: wp.array[float],
 ):
-    # nop, use dense_solve to differentiate through (A^-1)b = x
+    # nop: the factorization is differentiated through (A^-1)b = x - the
+    # solve adjoint (adj_dense_solve) deposits the product gradient into
+    # adjoint[A] and its diagonal directly into adjoint[R]. adjoint[L] stays
+    # untouched: L is internal.
     pass
 
 
@@ -1986,13 +1994,16 @@ def dense_solve(
     L_start: int,
     b_start: int,
     A: wp.array[float],
+    R: wp.array[float],
+    R_start: int,
     L: wp.array[float],
     b: wp.array[float],
     # outputs
     x: wp.array[float],
     tmp: wp.array[float],
 ):
-    # helper function to include tmp argument for backward pass
+    # helper function to include adjoint-only arguments (A, R, tmp) for the
+    # backward pass
     dense_subs(n, L_start, b_start, L, b, x)
 
 
@@ -2002,13 +2013,16 @@ def adj_dense_solve(
     L_start: int,
     b_start: int,
     A: wp.array[float],
+    R: wp.array[float],
+    R_start: int,
     L: wp.array[float],
     b: wp.array[float],
     # outputs
     x: wp.array[float],
     tmp: wp.array[float],
 ):
-    if not tmp or not wp.adjoint[x] or not wp.adjoint[A] or not wp.adjoint[L]:
+    # adjoint[L] is intentionally not checked - see the deposit below
+    if not tmp or not wp.adjoint[x] or not wp.adjoint[A]:
         return
     for i in range(n):
         tmp[b_start + i] = 0.0
@@ -2018,14 +2032,30 @@ def adj_dense_solve(
     for i in range(n):
         wp.adjoint[b][b_start + i] += tmp[b_start + i]
 
-    # A* = -adj_b*x^T
+    # dense_cholesky reads only the lower triangle of A, so the factorized
+    # matrix is the lower-symmetrization of A: perturbing A[i, j] with i > j
+    # moves both the (i, j) and the (j, i) entry of L L^T. Deposit the
+    # symmetrized product gradient -(tmp x^T + x tmp^T) on the lower triangle
+    # and diagonal; the upper triangle is never read, so its gradient is 0.
+    # The Cholesky factor is internal: the factorization is differentiated
+    # through (A^-1)b = x via this deposit, so adjoint[L] must stay untouched.
     for i in range(n):
-        for j in range(n):
-            wp.adjoint[L][L_start + dense_index(n, i, j)] += -tmp[b_start + i] * x[b_start + j]
+        for j in range(i + 1):
+            g = -tmp[b_start + i] * x[b_start + j]
+            if i != j:
+                g -= tmp[b_start + j] * x[b_start + i]
+            wp.adjoint[A][L_start + dense_index(n, i, j)] += g
 
-    for i in range(n):
-        for j in range(n):
-            wp.adjoint[A][L_start + dense_index(n, i, j)] += -tmp[b_start + i] * x[b_start + j]
+    # R regularizes the diagonal (B_jj = A_jj + R_j before factorization), so
+    # R's gradient is the diagonal of the product gradient above. Depositing
+    # it here keeps the solve's own contribution separate from any other
+    # gradient that later lands on adjoint[A] (a relay in adj_dense_cholesky
+    # would misattribute a direct reader's contribution to R), and it is the
+    # only armature route on the fused tile path, where no
+    # adj_dense_cholesky launch exists at all.
+    if wp.adjoint[R]:
+        for i in range(n):
+            wp.adjoint[R][R_start + i] += -tmp[b_start + i] * x[b_start + i]
 
 
 @wp.kernel
@@ -2034,6 +2064,8 @@ def eval_dense_solve_batched(
     L_dim: wp.array[int],
     b_start: wp.array[int],
     A: wp.array[float],
+    R: wp.array[float],
+    R_start: wp.array[int],
     L: wp.array[float],
     b: wp.array[float],
     # outputs
@@ -2042,7 +2074,7 @@ def eval_dense_solve_batched(
 ):
     batch = wp.tid()
 
-    dense_solve(L_dim[batch], L_start[batch], b_start[batch], A, L, b, x, tmp)
+    dense_solve(L_dim[batch], L_start[batch], b_start[batch], A, R, R_start[batch], L, b, x, tmp)
 
 
 @wp.kernel
@@ -2584,16 +2616,23 @@ def compute_body_parent_f(
 
     * ``body_f_s = I*a + spatial_cross_dual(v, I*v) - f_g_s``  (inertial bias minus gravity)
     * ``body_ft_s``                          (accumulated descendant wrenches)
-    * ``body_f_ext``                         (external + contact wrenches,
-      stored with the negated sign convention used by ``eval_rigid_tau``)
+    * ``body_f_ext``                         (external + contact wrenches in
+      the public convention: world-frame force, torque referenced to the
+      body COM -- ``State.body_f`` plus contact and FREE/DISTANCE wrenches)
 
-    Their sum is the spatial wrench transmitted from the parent through the
-    inbound joint, expressed in Featherstone's internal solve frame. For
-    floating-root articulations this frame is translated to the root COM; for
-    other roots it remains at the world origin. We translate it to the body's
-    COM (matching :class:`SolverMuJoCo` and the ``SolverBase.Observables.body_parent_f``
-    convention -- linear ``[N]`` first, torque ``[N·m]`` referenced to the COM,
-    both in world frame).
+    ``body_f_s`` and ``body_ft_s`` are in Featherstone's internal solve
+    frame, but ``body_f_ext`` is not: ``eval_rigid_tau`` keeps its
+    public -> solve-frame shift a pure local computation (writing the
+    shifted wrench back into ``body_f_ext`` would mutate a kernel input
+    and corrupt the recompute-based adjoint), so this kernel repeats the
+    same shift + negation locally before summing. Their sum is the spatial
+    wrench transmitted from the parent through the inbound joint, still in
+    the solve frame. For floating-root articulations this frame is
+    translated to the root COM; for other roots it remains at the world
+    origin. We translate it to the body's COM (matching
+    :class:`SolverMuJoCo` and the ``SolverBase.Observables.body_parent_f``
+    convention -- linear ``[N]`` first, torque ``[N·m]`` referenced to the
+    COM, both in world frame).
 
     The kernel does not special-case roots: it writes the same
     RNEA-backward-pass sum for every body.  For a FREE-jointed body that
@@ -2605,11 +2644,18 @@ def compute_body_parent_f(
     """
     tid = wp.tid()
 
-    f_s = body_f_s[tid] + body_ft_s[tid] + body_f_ext[tid]
+    f_ext_public = body_f_ext[tid]
+    force = wp.spatial_top(f_ext_public)
+    torque_com = wp.spatial_bottom(f_ext_public)
+    r_com = wp.transform_get_translation(body_q_com[tid]) - body_solve_origin[tid]
+    # Same public -> solve-frame shift + negation as eval_rigid_tau, whose
+    # result that kernel no longer leaves behind in body_f_ext.
+    f_ext = -wp.spatial_vector(force, torque_com + wp.cross(r_com, force))
+
+    f_s = body_f_s[tid] + body_ft_s[tid] + f_ext
     f_lin = wp.spatial_top(f_s)
     f_ang_at_origin = wp.spatial_bottom(f_s)
 
-    r_com = wp.transform_get_translation(body_q_com[tid]) - body_solve_origin[tid]
     f_ang_at_com = f_ang_at_origin - wp.cross(r_com, f_lin)
 
     body_parent_f[tid] = wp.spatial_vector(f_lin, f_ang_at_com)
