@@ -23,7 +23,7 @@ from .projections import (
     project_contact_tangent_update,
 )
 from .sparse_kernels import make_compact_schur_pgs_kernel
-from .types import DVIConfigStruct, DVIStatus
+from .types import SCCConfigStruct, SCCStatus
 
 wp.set_module_options({"enable_backward": False, "enable_mathdx_solver": False, "enable_mathdx_gemm": False})
 
@@ -57,8 +57,8 @@ class _Inputs:
     ids: wp.array[wp.int32]
     color_starts: wp.array[wp.int32]
     group_starts: wp.array[wp.int32]
-    config: wp.array[DVIConfigStruct]
-    status: wp.array[DVIStatus]
+    config: wp.array[SCCConfigStruct]
+    status: wp.array[SCCStatus]
     impulses: wp.array[wp.float32]
 
 
@@ -406,7 +406,7 @@ def _recover_and_certify(source: _Inputs, target: _Inputs, work: _Workspace):
 
 
 @wp.kernel
-def _publish(source: _Inputs, staged_status: wp.array[DVIStatus], work: _Workspace):
+def _publish(source: _Inputs, staged_status: wp.array[SCCStatus], work: _Workspace):
     w, lane = wp.tid()
     if work.eligible[w] == 0 or work.failure[w] != 0:
         return
@@ -516,7 +516,7 @@ class EffortLimitCondensation:
             26: zeros(self._worlds * schedule_capacity, wp.int32),
             27: zeros(self._worlds * (schedule_capacity + 1), wp.int32),
             28: zeros(self._worlds * (schedule_capacity + 1), wp.int32),
-            30: zeros(self._worlds, DVIStatus),
+            30: zeros(self._worlds, SCCStatus),
         }
         for index in (16, 17, 18, 19, 24, 31):
             self._overrides[index] = zeros(self._worlds * 64)

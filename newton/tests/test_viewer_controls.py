@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import importlib.util
 import inspect
 import sys
 import unittest
@@ -18,17 +17,15 @@ from newton._src.viewer.gl.gui import UI
 from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_gui import ViewerGui
 from newton._src.viewer.viewer_null import ViewerNull
-from newton.tests.unittest_utils import import_pyglet_window, patch_sys_module
+from newton.tests.unittest_utils import import_pyglet_window, patch_sys_module, requires
 
 _Vec3 = namedtuple("_Vec3", ("x", "y", "z"))
 
 
+@requires("imgui_bundle")
 class TestViewerUI(unittest.TestCase):
     def setUp(self) -> None:
-        try:
-            from imgui_bundle import imgui, imguizmo
-        except ImportError as exc:
-            self.skipTest(f"Viewer UI dependencies not available: {exc}")
+        from imgui_bundle import imgui, imguizmo
 
         context = imgui.create_context()
         self.addCleanup(imgui.destroy_context, context)
@@ -99,7 +96,7 @@ class TestViewerBaseShouldStep(unittest.TestCase):
             self.assertTrue(viewer.should_step())
 
 
-@unittest.skipUnless(importlib.util.find_spec("imgui_bundle"), "Requires imgui_bundle")
+@requires("imgui_bundle")
 class TestViewerGuiRecovery(unittest.TestCase):
     def test_callback_failure_leaves_next_frame_usable(self):
         """Unwind real ImGui windows and styles without a renderer or model."""
@@ -346,12 +343,10 @@ class TestViewerGLNumFramesValidation(unittest.TestCase):
             ViewerGL(enable_cuda_interop=ViewerGL.CudaInterop(1 << 10))
 
 
+@requires("imgui_bundle", "pyglet")
 class TestViewerGizmos(unittest.TestCase):
     def setUp(self) -> None:
-        try:
-            from imgui_bundle import imgui, imguizmo
-        except ImportError:
-            self.skipTest("imgui_bundle is required")
+        from imgui_bundle import imgui, imguizmo
 
         self.imgui = imgui
         self.giz = imguizmo.im_guizmo

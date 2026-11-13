@@ -160,7 +160,7 @@ class TestLinAlgLLTBlockedRCMSolver(unittest.TestCase):
         )
 
         solver.compute(matrix_wp)
-        permutation_1 = solver.P.numpy()
+        permutation_1 = solver.P.numpy().copy()
         reorder_calls = 0
         reorder = solver._reorder_callback
 
@@ -332,7 +332,7 @@ class TestLinAlgLLTBlockedRCMSolver(unittest.TestCase):
         )
 
         reorder()
-        cached = permutation.numpy()
+        cached = permutation.numpy().copy()
         matrix_wp.assign(star_matrix.reshape(-1))
         reorder()
         np.testing.assert_array_equal(permutation.numpy(), cached)

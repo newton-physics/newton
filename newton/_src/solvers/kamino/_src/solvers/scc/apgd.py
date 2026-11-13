@@ -16,11 +16,11 @@ the convex QP ``min_{x in K} 0.5 * x.T A x + (b + s).T x`` using APGD:
 
 .. code-block:: text
 
-   L_seed = estimate_scale(A)             # Once per DVI solve, on the device
+   L_seed = estimate_scale(A)             # Once per SCC solve, on the device
    L = L_seed                            # Retain L across alternating phases
    x = project_K(initial_impulse)
    for each nonlinear correction (at most max_nonlinear_corrections):
-       if this is a later frozen QP in the same DVI solve:
+       if this is a later frozen QP in the same SCC solve:
            L = max(L_seed, 0.9 * L)
        x_outer = x
        s = correction(A x_outer + b)
@@ -57,7 +57,7 @@ The nonlinear residual uses the same expression with ``s`` recomputed from
 ``A x + b``. Both use a unit projection step. Inner convergence alone does
 not establish nonlinear Coulomb convergence.
 
-**Step size.** At the first unilateral phase of each DVI solve, device
+**Step size.** At the first unilateral phase of each SCC solve, device
 kernels initialize ``L = norm(A d) / norm(d)`` using a normalized constant
 probe over unilateral rows. The product uses the effective operator, including
 the factored bilateral response in Schur mode. A null or non-finite probe
@@ -134,7 +134,7 @@ class UnilateralAPGD:
         """Allocate all iteration and response storage before graph capture.
 
         Args:
-            owner: DVI solver supplying per-world configuration, operator
+            owner: SCC solver supplying per-world configuration, operator
                 storage, impulses, and terminal status.
         """
         self.owner = owner
