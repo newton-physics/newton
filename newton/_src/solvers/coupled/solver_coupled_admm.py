@@ -19,6 +19,7 @@ from ...exceptions import NewtonDeprecationWarning
 from ...geometry.flags import ShapeFlags
 from ...math import quat_between_vectors_robust
 from ...sim import BodyFlags, JointType, ModelFlags, StateFlags
+from ..tasks import scope_token, solver_step, warp_task
 from .admm_contact_stream import (
     AdmmContactStream,
     AdmmContactType,
@@ -429,6 +430,10 @@ _AdmmContactGroup = _AdmmRigidRigidContactGroup | _AdmmRigidParticleContactGroup
 
 class SolverCoupledADMM(SolverCoupled):
     """Couple multiple solvers with linearized ADMM over model-derived constraints."""
+
+    #: The step records its own tasks under a cuda.stf recording (see
+    #: :mod:`newton._src.solvers.tasks`): call it from a scope, not from inside a task.
+    records_tasks = True
 
     BODY_PARTICLE_ATTACHMENT_FREQUENCY = "coupling:body_particle_attachment"
     BODY_PARTICLE_ATTACHMENT_BODY_ATTR = "coupling:body_particle_attachment_body"
@@ -2995,56 +3000,65 @@ class SolverCoupledADMM(SolverCoupled):
         del state_out
         coupling = self._coupling
         iters = int(coupling.iterations)
-        self._refresh_collision_contact_groups(state_in)
-        if float(coupling.gamma) > 0.0:
-            self._refresh_admm_proximal_masks()
-            self._refresh_admm_proximal_view_overrides(refresh_supported_solvers=True)
-
-        for name, entry in self._entries.items():
-            buf = self._admm_buffers[name]
-            if buf.body_q_n is not None:
-                wp.copy(buf.body_q_n, entry.state_0.body_q)
-                wp.copy(buf.body_qd_n, entry.state_0.body_qd)
-                wp.copy(buf.body_qd_k, entry.state_0.body_qd)
-            if buf.particle_q_n is not None:
-                wp.copy(buf.particle_q_n, entry.state_0.particle_q)
-                wp.copy(buf.particle_qd_n, entry.state_0.particle_qd)
-                wp.copy(buf.particle_qd_k, entry.state_0.particle_qd)
-            if buf.joint_q_n is not None:
-                wp.copy(buf.joint_q_n, entry.state_0.joint_q)
-                wp.copy(buf.joint_qd_n, entry.state_0.joint_qd)
-                wp.copy(buf.joint_qd_k, entry.state_0.joint_qd)
-
-        self._admm_begin_step(dt)
-
-        for k in range(iters):
-            for name, entry in self._entries.items():
-                self._prepare_admm_iteration_state(
-                    entry,
-                    self._admm_buffers[name],
-                    state_in,
-                    dt,
-                    iteration_restart=k > 0,
-                )
-
-            self._accumulate_admm_forces(k, dt, refresh_jv=k == 0, initialize_contact_u=k == 0)
-
-            for name, entry in self._entries.items():
-                self._apply_admm_force_inputs(entry, self._admm_buffers[name], dt)
-
-            for entry in self._entries.values():
-                self._step_entry(entry, control, contacts, dt)
+        # Under a cuda.stf recording every launch belongs to a task (newton._src.solvers.tasks).
+        # The consensus phases take the scope token read-write and form the sequence of the step;
+        # the per-entry phases touch one entry each, read it, and may overlap.
+        seq = scope_token()
+        with warp_task(seq.rw(), symbol="admm-begin"):
+            self._refresh_collision_contact_groups(state_in)
+            if float(coupling.gamma) > 0.0:
+                self._refresh_admm_proximal_masks()
+                self._refresh_admm_proximal_view_overrides(refresh_supported_solvers=True)
 
             for name, entry in self._entries.items():
                 buf = self._admm_buffers[name]
-                if buf.body_qd_k is not None:
-                    wp.copy(buf.body_qd_k, entry.state_1.body_qd)
-                if buf.particle_qd_k is not None:
-                    wp.copy(buf.particle_qd_k, entry.state_1.particle_qd)
-                if buf.joint_qd_k is not None:
-                    wp.copy(buf.joint_qd_k, entry.state_1.joint_qd)
+                if buf.body_q_n is not None:
+                    wp.copy(buf.body_q_n, entry.state_0.body_q)
+                    wp.copy(buf.body_qd_n, entry.state_0.body_qd)
+                    wp.copy(buf.body_qd_k, entry.state_0.body_qd)
+                if buf.particle_q_n is not None:
+                    wp.copy(buf.particle_q_n, entry.state_0.particle_q)
+                    wp.copy(buf.particle_qd_n, entry.state_0.particle_qd)
+                    wp.copy(buf.particle_qd_k, entry.state_0.particle_qd)
+                if buf.joint_q_n is not None:
+                    wp.copy(buf.joint_q_n, entry.state_0.joint_q)
+                    wp.copy(buf.joint_qd_n, entry.state_0.joint_qd)
+                    wp.copy(buf.joint_qd_k, entry.state_0.joint_qd)
 
-            self._update_admm_dual(k, dt)
+            self._admm_begin_step(dt)
+
+        for k in range(iters):
+            for name, entry in self._entries.items():
+                with warp_task(seq.read(), symbol=f"prep-{name}"):
+                    self._prepare_admm_iteration_state(
+                        entry,
+                        self._admm_buffers[name],
+                        state_in,
+                        dt,
+                        iteration_restart=k > 0,
+                    )
+
+            with warp_task(seq.rw(), symbol="admm-accumulate"):
+                self._accumulate_admm_forces(k, dt, refresh_jv=k == 0, initialize_contact_u=k == 0)
+
+            for name, entry in self._entries.items():
+                # One task, or a scope of its own for a solver that records its tasks.
+                with solver_step(entry.solver, seq.read(), symbol=f"solve-{name}"):
+                    entry_seq = scope_token()
+                    with warp_task(entry_seq.rw(), symbol=f"{name}-admm-inputs"):
+                        self._apply_admm_force_inputs(entry, self._admm_buffers[name], dt)
+                    self._step_entry(entry, control, contacts, dt)
+                    with warp_task(entry_seq.rw(), symbol=f"{name}-admm-publish"):
+                        buf = self._admm_buffers[name]
+                        if buf.body_qd_k is not None:
+                            wp.copy(buf.body_qd_k, entry.state_1.body_qd)
+                        if buf.particle_qd_k is not None:
+                            wp.copy(buf.particle_qd_k, entry.state_1.particle_qd)
+                        if buf.joint_qd_k is not None:
+                            wp.copy(buf.joint_qd_k, entry.state_1.joint_qd)
+
+            with warp_task(seq.rw(), symbol="admm-dual"):
+                self._update_admm_dual(k, dt)
 
     def _refresh_collision_contact_groups(self, state_in: State) -> None:
         if (

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import logging
 from collections.abc import Callable, Iterable, Sequence
@@ -18,6 +19,7 @@ from ...core.reset import reset_world_selected as _reset_world_selected
 from ...geometry import ParticleFlags, ShapeFlags
 from ...sim import JointType, Model, ModelFlags, StateFlags
 from ..solver import SolverBase
+from ..tasks import scope_token, warp_task
 from .interface import (
     CouplingEndpointKind,
     CouplingInterface,
@@ -3032,16 +3034,21 @@ class SolverCoupled(SolverBase, CouplingInterface):
         """
         self.validate_observables(observables, contacts)
         self._require_unreduced_contacts(contacts)
-        self._distribute_state(state_in, dt=dt)
+        # Tasks only matter to a subclass that records its own (``records_tasks``, see
+        # newton._src.solvers.tasks); otherwise they are no-ops.
+        seq = scope_token()
+        with warp_task(seq.rw(), symbol="coupled-distribute"):
+            self._distribute_state(state_in, dt=dt)
         self._active_observables = observables
         try:
             self._step_coupled(state_in, state_out, control, contacts, dt)
         finally:
             self._active_observables = None
-        _copy_state(state_in, state_out)
-        self._reconcile_state(state_out)
-        if observables is not None:
-            self._reconcile_observables(observables)
+        with warp_task(seq.rw(), symbol="coupled-reconcile"):
+            _copy_state(state_in, state_out)
+            self._reconcile_state(state_out)
+            if observables is not None:
+                self._reconcile_observables(observables)
         self._entry_output_state_valid = True
 
     def _reconcile_observables(self, observables: Observables) -> None:
@@ -3519,11 +3526,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
         control_callback: Callable[[Control | None], None] | None = None,
     ) -> Contacts | None:
         """Step one sub-solver entry, honoring its local substep count."""
-        if filter_contacts:
-            contacts = self._contacts_for_entry(entry, contacts)
-        control = _copy_control_to_entry(control, entry)
-        if control_callback is not None:
-            control_callback(control)
+        seq = scope_token()
+        with warp_task(seq.rw(), symbol=f"{entry.name}-inputs"):
+            if filter_contacts:
+                contacts = self._contacts_for_entry(entry, contacts)
+            control = _copy_control_to_entry(control, entry)
+            if control_callback is not None:
+                control_callback(control)
         entry_observables = None
         if self._active_observables is not None:
             entry_observables = self._active_observables.entry_observables[entry.name]
@@ -3533,10 +3542,15 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 entry_observables = None
 
         def step_solver(state_in: State, state_out: State, step_dt: float) -> None:
-            if entry_observables is None:
-                entry.solver.step(state_in, state_out, control, contacts, step_dt)
+            if getattr(entry.solver, "records_tasks", False):
+                step = contextlib.nullcontext()  # the solver records its own tasks
             else:
-                entry.solver.step(state_in, state_out, control, contacts, step_dt, observables=entry_observables)
+                step = warp_task(seq.rw(), symbol=entry.name)
+            with step:
+                if entry_observables is None:
+                    entry.solver.step(state_in, state_out, control, contacts, step_dt)
+                else:
+                    entry.solver.step(state_in, state_out, control, contacts, step_dt, observables=entry_observables)
 
         if entry.in_place:
             substep_dt = dt / float(entry.substeps)
@@ -3551,16 +3565,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
         substep_dt = dt / float(entry.substeps)
         if entry.state_tmp is None:
             raise RuntimeError(f"SolverCoupled.Entry {entry.name!r} is missing a substep scratch state")
-        _copy_same_view_state(entry.state_0, entry.state_1)
+        with warp_task(seq.rw(), symbol=f"{entry.name}-substep-state"):
+            _copy_same_view_state(entry.state_0, entry.state_1)
         state_in = entry.state_1
         state_out = entry.state_tmp
         for substep in range(entry.substeps):
             if substep > 0:
-                _copy_forces(entry.state_0, state_in)
+                with warp_task(seq.rw(), symbol=f"{entry.name}-substep-forces"):
+                    _copy_forces(entry.state_0, state_in)
             step_solver(state_in, state_out, substep_dt)
             state_in, state_out = state_out, state_in
         if state_in is entry.state_tmp:
-            _copy_same_view_state(entry.state_tmp, entry.state_1)
+            with warp_task(seq.rw(), symbol=f"{entry.name}-substep-state"):
+                _copy_same_view_state(entry.state_tmp, entry.state_1)
         return contacts
 
     def _contacts_for_entry(self, entry: SolverEntry, contacts: Contacts | None) -> Contacts | None:
