@@ -87,7 +87,13 @@ def test_gimp_overlap_quadrature(test, device):
             continue
         with test.subTest(grid_type=grid_type), wp.ScopedDevice(device):
             shift = 0.5 if grid_type == "sparse" else 0.0
-            solver, state = _make_solver(device, grid_type=grid_type, positions=(np.array((0.9, 0.4, 0.4)) - shift,))
+            position = np.array((0.9, 0.4, 0.4)) - shift
+            solver, state = _make_solver(device, grid_type=grid_type, positions=(position, position))
+            # A coincident inactive domain must not double either quadrature
+            # measure or point-based strain/contact basis support.
+            flags = solver._mpm_model.particle_flags.numpy()
+            flags[1] = 0
+            solver._mpm_model.particle_flags.assign(flags)
             pic = solver._particles_to_cells(state.particle_q)
             test.assertEqual(pic.active_cell_count(), 2)
             space = fem.make_polynomial_space(pic.domain.geometry, degree=1)
@@ -97,6 +103,7 @@ def test_gimp_overlap_quadrature(test, device):
             integral = fem.integrate(_integrate_field, quadrature=pic, fields={"u": field})
             volume = solver._mpm_model.particle_volume.numpy()[0]
             test.assertAlmostEqual(integral / volume, 0.875, delta=2.0e-6)
+            np.testing.assert_array_equal(solver._scratchpad.particle_cells.numpy()[1], fem.NULL_ELEMENT_INDEX)
 
 
 def test_gimp_particle_contact_weights(test, device):

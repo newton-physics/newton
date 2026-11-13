@@ -55,6 +55,7 @@ Newton Physics
    MuJoCo <solvers/mujoco>
    Kamino <solvers/kamino>
    VBD <solvers/vbd>
+   Implicit MPM sleeping <solvers/implicit_mpm_sleeping>
 
 .. toctree::
    :maxdepth: 1

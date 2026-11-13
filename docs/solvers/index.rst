@@ -51,7 +51,8 @@ MuJoCo, Kamino, and VBD currently have dedicated backend guides:
   bodies in a single VBD-based solver; experimental.
 
 The other solver backends are documented through their linked API references
-and the comparison tables below.
+and the comparison tables below. For experimental implicit MPM execution
+controls, see :doc:`implicit_mpm_sleeping`.
 
 For a rigid articulated robot, first decide which coordinate representation
 fits the application. :class:`~newton.solvers.SolverMuJoCo`,

@@ -512,6 +512,7 @@ def update_particle_frames(
     vel_grad: wp.array[wp.mat33],
     transform_prev: wp.array[wp.mat33],
     transform: wp.array[wp.mat33],
+    step_valid: wp.array[int],
 ):
     i = wp.tid()
 
@@ -519,7 +520,7 @@ def update_particle_frames(
     F_prev = transform_prev[i]
 
     # Inactive particles keep their frame while frozen
-    if ~particle_flags[i] & newton.ParticleFlags.ACTIVE:
+    if (step_valid and step_valid[0] == 0) or ~particle_flags[i] & newton.ParticleFlags.ACTIVE:
         transform[i] = F_prev
         return
 
@@ -993,6 +994,145 @@ def build_active_particle_mask(
 
 
 @wp.kernel
+def count_particle_working_set(
+    mask: wp.array[int],
+    offsets: wp.array[int],
+    capacity: int,
+    stride: int,
+    count: wp.array[int],
+    overflow: wp.array[int],
+):
+    """Retain the required pool size and reject every point on overflow."""
+    last = mask.shape[0] - 1
+    size = (offsets[last] + mask[last]) * stride
+    count[0] = size
+    if size > capacity:
+        overflow[0] = wp.max(overflow[0], size)
+
+
+@wp.kernel
+def compact_particle_indices(
+    mask: wp.array[int],
+    offsets: wp.array[int],
+    count: wp.array[int],
+    indices: wp.array[int],
+    stride: int,
+):
+    particle = wp.tid()
+    if count[0] <= indices.shape[0] * stride and mask[particle] != 0:
+        indices[offsets[particle]] = particle
+
+
+@wp.kernel
+def update_particle_page_mask(
+    positions: wp.array[wp.vec3],
+    flags: wp.array[int],
+    page_size: int,
+    mask: wp.array[int],
+    page_mask: wp.array[int],
+    changed: wp.array[int],
+):
+    """Request an original-ID page whenever any eligible lane is active."""
+    page = wp.tid()
+    requested = int(0)
+    for lane in range(page_size):
+        particle = page * page_size + lane
+        if particle < positions.shape[0]:
+            x = positions[particle]
+            active = int(
+                (flags[particle] & newton.ParticleFlags.ACTIVE) != 0
+                and wp.isfinite(x[0])
+                and wp.isfinite(x[1])
+                and wp.isfinite(x[2])
+            )
+            mask[particle] = active
+            requested |= active
+    if page_mask[page] != requested:
+        wp.atomic_max(changed, 0, 1)
+    page_mask[page] = requested
+
+
+@wp.kernel
+def expand_particle_pages(
+    pages: wp.array[int],
+    count: wp.array[int],
+    page_size: int,
+    particle_count: int,
+    indices: wp.array[int],
+):
+    """Expand resident pages without assigning padded or absent lanes a particle ID."""
+    slot = wp.tid()
+    particle = int(-1)
+    if count[0] <= indices.shape[0] and slot < count[0]:
+        candidate = pages[slot // page_size] * page_size + slot % page_size
+        if candidate >= 0 and candidate < particle_count:
+            particle = candidate
+    indices[slot] = particle
+
+
+@wp.kernel
+def gather_particle_working_set(
+    particle_q: wp.array[wp.vec3],
+    particle_flags: wp.array[int],
+    particle_volume: wp.array[float],
+    particle_environment: wp.array[int],
+    indices: wp.array[int],
+    mask: wp.array[int],
+    count: wp.array[int],
+    overflow: wp.array[int],
+    positions: wp.array[wp.vec3],
+    flags: wp.array[int],
+    volumes: wp.array[float],
+    environments: wp.array[int],
+):
+    slot = wp.tid()
+    particle = int(-1)
+    if overflow[0] == 0 and slot < count[0] and count[0] <= indices.shape[0]:
+        particle = indices[slot]
+    if particle >= 0 and particle < particle_q.shape[0] and mask[particle] != 0:
+        positions[slot] = particle_q[particle]
+        flags[slot] = particle_flags[particle]
+        volumes[slot] = particle_volume[particle]
+        if particle_environment:
+            environments[slot] = particle_environment[particle]
+    else:
+        positions[slot] = wp.vec3(0.0)
+        flags[slot] = 0
+        volumes[slot] = 0.0
+        if environments:
+            environments[slot] = 0
+
+
+@wp.kernel
+def restore_particle_quadrature_indices(
+    indices: wp.array[int],
+    sorted_indices: wp.array[int],
+    particle_count: int,
+):
+    """Map compact evaluation slots back to persistent global particle IDs."""
+    slot = wp.tid()
+    compact_index = sorted_indices[slot]
+    if compact_index != fem.NULL_QP_INDEX:
+        particle = int(-1)
+        if compact_index >= 0 and compact_index < indices.shape[0]:
+            particle = indices[compact_index]
+        sorted_indices[slot] = wp.where(particle >= 0 and particle < particle_count, particle, fem.NULL_QP_INDEX)
+
+
+@wp.kernel
+def scatter_particle_cell_indices(
+    indices: wp.array[int],
+    flags: wp.array[int],
+    compact_cells: wp.array[int],
+    particle_cells: wp.array[int],
+):
+    slot = wp.tid()
+    particle = indices[slot]
+    if flags[slot] & newton.ParticleFlags.ACTIVE and particle >= 0 and particle < particle_cells.shape[0]:
+        particle_cells[particle] = compact_cells[slot]
+
+
+@wp.kernel
 def record_volume_rebuild_status(status: wp.array[wp.uint32], accumulated_status: wp.array[wp.uint32]):
     """Retain and report rebuild failures without a host synchronization."""
     rebuild_status = status[0]
@@ -1215,17 +1355,22 @@ def _rebuild_capacity(
     else:
         if environment_count is None:
             raise ValueError("environment_count is required with point_environment")
-        initial = fem.Nanogrid.from_environment_voxels(
-            particle_q,
-            point_environment,
-            environment_count,
-            point_mask=point_mask,
-            guard_cells=guard_cells,
-            voxel_size=voxel_size,
-            temporary_store=temporary_store,
-            device=particle_q.device,
-        )
-        ijk = initial.cell_grid.get_voxels().numpy()
+        # This setup-only estimate already downloads the resulting voxel list.
+        # A non-rebuildable Nanogrid cannot represent an entirely sleeping bed.
+        if particle_q.shape[0] == 0 or (point_mask is not None and not np.any(point_mask.numpy())):
+            ijk = np.empty((0, 3), dtype=np.int32)
+        else:
+            initial = fem.Nanogrid.from_environment_voxels(
+                particle_q,
+                point_environment,
+                environment_count,
+                point_mask=point_mask,
+                guard_cells=guard_cells,
+                voxel_size=voxel_size,
+                temporary_store=temporary_store,
+                device=particle_q.device,
+            )
+            ijk = initial.cell_grid.get_voxels().numpy()
 
     if ijk.shape[0] == 0:
         automatic_lower = min(max_active_voxels, 8)
@@ -1297,10 +1442,14 @@ def allocate_by_voxels(
     volume = wp.Volume.allocate_by_voxels(
         voxel_points=particle_q.flatten(),
         voxel_size=voxel_size,
+        point_mask=point_mask,
     )
 
     for _pad_i in range(padding_voxels):
-        voxels = wp.empty((volume.get_voxel_count(),), dtype=wp.vec3i)
+        voxel_count = volume.get_voxel_count()
+        if voxel_count == 0:
+            break
+        voxels = wp.empty((voxel_count,), dtype=wp.vec3i)
         volume.get_voxels(voxels)
 
         padded_voxels = wp.zeros((voxels.shape[0], 3, 3, 3), dtype=wp.vec3i)
@@ -1314,11 +1463,17 @@ def allocate_by_voxels(
     return volume
 
 
-def voxel_coordinates(particle_q: wp.array[wp.vec3], voxel_size: float, padding_voxels: int = 0) -> wp.array[wp.vec3i]:
+def voxel_coordinates(
+    particle_q: wp.array[wp.vec3],
+    voxel_size: float,
+    padding_voxels: int = 0,
+    *,
+    point_mask: "wp.array[wp.int32] | None" = None,
+) -> wp.array[wp.vec3i]:
     if particle_q.shape[0] == 0:
         return wp.empty(0, dtype=wp.vec3i, device=particle_q.device)
 
-    volume = allocate_by_voxels(particle_q, voxel_size, padding_voxels=padding_voxels)
+    volume = allocate_by_voxels(particle_q, voxel_size, padding_voxels=padding_voxels, point_mask=point_mask)
     voxels = wp.empty(volume.get_voxel_count(), dtype=wp.vec3i, device=particle_q.device)
     volume.get_voxels(voxels)
     return voxels
