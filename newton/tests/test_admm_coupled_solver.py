@@ -828,40 +828,55 @@ class TestAdmmProximal(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(part_g)))
 
 
+def _cuda_stf_warp_adapter():
+    """The ``cuda.stf`` Warp adapter module, or ``None`` if it is not installed."""
+    try:
+        import cuda.stf._experimental as stf  # noqa: PLC0415
+        from cuda.stf._experimental.interop import warp as stf_warp  # noqa: PLC0415
+    except ImportError:
+        return None
+    return stf, stf_warp
+
+
+def _make_xpbd_vbd_contact_solver(device) -> tuple[newton.Model, SolverCoupledADMM]:
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.default_shape_cfg.density = 1000.0
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    builder.add_shape_box(body=body_a, hx=0.05, hy=0.05, hz=0.05)
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.08, 0.0, 0.0), wp.quat_identity()))
+    builder.add_shape_box(body=body_b, hx=0.05, hy=0.05, hz=0.05)
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = SolverCoupledADMM(
+        model=model,
+        entries=[
+            SolverCoupled.Entry(
+                name="xpbd",
+                solver=lambda v: SolverXPBD(model=v, iterations=1),
+                bodies=[body_a],
+            ),
+            SolverCoupled.Entry(
+                name="vbd",
+                solver=lambda v: SolverVBD(model=v, iterations=1, rigid_compliant_alm=True),
+                bodies=[body_b],
+            ),
+        ],
+        coupling=SolverCoupledADMM.Config(
+            iterations=2,
+            gamma=1.0,
+            contact_pairs=[SolverCoupledADMM.ContactPair(source="xpbd", destination="vbd")],
+        ),
+    )
+    return model, solver
+
+
 class TestAdmmGraphCapture(unittest.TestCase):
     """CUDA graph-capture smoke tests for dynamic proximal refresh."""
 
     @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph capture requires CUDA")
     def test_xpbd_vbd_contact_proximal_refresh_is_graph_capturable(self):
         device = "cuda:0"
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        builder.default_shape_cfg.density = 1000.0
-        body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
-        builder.add_shape_box(body=body_a, hx=0.05, hy=0.05, hz=0.05)
-        body_b = builder.add_body(xform=wp.transform(wp.vec3(0.08, 0.0, 0.0), wp.quat_identity()))
-        builder.add_shape_box(body=body_b, hx=0.05, hy=0.05, hz=0.05)
-        builder.color()
-        model = builder.finalize(device=device)
-        solver = SolverCoupledADMM(
-            model=model,
-            entries=[
-                SolverCoupled.Entry(
-                    name="xpbd",
-                    solver=lambda v: SolverXPBD(model=v, iterations=1),
-                    bodies=[body_a],
-                ),
-                SolverCoupled.Entry(
-                    name="vbd",
-                    solver=lambda v: SolverVBD(model=v, iterations=1, rigid_compliant_alm=True),
-                    bodies=[body_b],
-                ),
-            ],
-            coupling=SolverCoupledADMM.Config(
-                iterations=1,
-                gamma=1.0,
-                contact_pairs=[SolverCoupledADMM.ContactPair(source="xpbd", destination="vbd")],
-            ),
-        )
+        model, solver = _make_xpbd_vbd_contact_solver(device)
 
         state_0 = model.state()
         state_1 = model.state()
@@ -878,6 +893,42 @@ class TestAdmmGraphCapture(unittest.TestCase):
         wp.capture_launch(capture.graph)
         q = state_1.body_q.numpy()
         self.assertTrue(np.all(np.isfinite(q)))
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Recording tasks requires CUDA")
+    @unittest.skipUnless(_cuda_stf_warp_adapter() is not None, "Requires the cuda.stf Warp adapter")
+    def test_step_recorded_as_cuda_stf_tasks_matches_sequential_step(self):
+        stf, stf_warp = _cuda_stf_warp_adapter()
+        device = "cuda:0"
+        dt = 1.0 / 120.0
+
+        def warmed_up():
+            model, solver = _make_xpbd_vbd_contact_solver(device)
+            state_0, state_1, control = model.state(), model.state(), model.control()
+            # Allocations and module loads must precede a recording.
+            solver.step(state_0, state_1, control, contacts=None, dt=dt)
+            wp.synchronize_device(device)
+            return solver, state_1, state_0, control
+
+        # Reference: the same second step, executed sequentially.
+        solver, state_in, state_out, control = warmed_up()
+        solver.step(state_in, state_out, control, contacts=None, dt=dt)
+        expected_q = state_out.body_q.numpy()
+        expected_qd = state_out.body_qd.numpy()
+
+        # The step records its own tasks: it is called from a scope, not from a task.
+        solver, state_in, state_out, control = warmed_up()
+        self.assertTrue(solver.records_tasks)
+        ctx = stf.stackable_context()
+        with wp.ScopedDevice(device):
+            with stf_warp.scope(ctx, launchable=True, symbol="frame") as frame:
+                solver.step(state_in, state_out, control, contacts=None, dt=dt)
+                frame.launch()
+                wp.synchronize_device(device)
+        ctx.finalize()
+        stf_warp.release_graph_handles()
+
+        np.testing.assert_array_equal(state_out.body_q.numpy(), expected_q)
+        np.testing.assert_array_equal(state_out.body_qd.numpy(), expected_qd)
 
 
 class TestAdmmModelJointInterface(unittest.TestCase):
