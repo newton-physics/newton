@@ -18,6 +18,13 @@ friction use ``model.soft_contact_ke``, ``model.soft_contact_kd``, and
 ``model.soft_contact_mu`` and the shape's ``mu``. Edge and triangle soft
 contacts are not supported.
 
+``SolverStyle3D.Config.affine_rigidity_ratio`` controls the dimensionless
+SO(3) penalty strength relative to the mean inertia of the affine directions.
+The actual stiffness is ``affine_rigidity_ratio * trace(S) / (3 * dt**2)``,
+where ``S`` is the COM mass second moment, equivalently
+``affine_rigidity_ratio * trace(body_inertia) / (6 * dt**2)``.
+The default ratio is 1e2; zero disables the penalty.
+
 The ``style3d_balls_dropped_into_bag`` example suspends an open plastic bag by two handles and
 drops five rigid balls into it at 60 FPS with two substeps::
 

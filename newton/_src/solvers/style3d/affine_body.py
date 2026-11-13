@@ -20,6 +20,16 @@ def inertia_to_second_moment(inertia: wp.mat33) -> wp.mat33:
 
 
 @wp.func
+def affine_rigidity(inertia: wp.mat33, rigidity_ratio: float, dt: float) -> float:
+    """Return the SO(3) penalty stiffness [J] from the COM inertia tensor.
+
+    k = rigidity_ratio * trace(S) / (3 dt^2) = rigidity_ratio * trace(I) / (6 dt^2),
+    since trace(I) = 2 trace(S). rigidity_ratio is dimensionless.
+    """
+    return rigidity_ratio * wp.trace(inertia) / (6.0 * dt * dt)
+
+
+@wp.func
 def affine_mass_multiply(
     mass: float,
     inertia: wp.mat33,
@@ -43,8 +53,9 @@ def affine_mass_multiply(
 def eval_affine_orthogonality_kernel(
     x: wp.array[wp.vec3],
     body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
     body_flags: wp.array[int],
-    alpha: float,
+    rigidity_ratio: float,
     dt: float,
     # outputs
     rhs: wp.array[wp.vec3],
@@ -53,7 +64,10 @@ def eval_affine_orthogonality_kernel(
 ):
     """Accumulate the SO(3) penalty force and prepare its normal-space tangent.
 
-    E(A) = k/2 min_{R in SO(3)} ||A - R||_F^2, k = alpha * m / dt^2.
+    E(A) = k/2 min_{R in SO(3)} ||A - R||_F^2,
+    k = rigidity_ratio * trace(S) / (3 dt^2), where S is the COM mass
+    second moment. trace(S)/3 = trace(I)/6 is the mean directional inertia,
+    so rigidity_ratio is dimensionless and k has units of energy.
     With R the closest proper rotation, P_R(X) = R sym(R^T X).
     The force is -k P_R(A - R), removing tangential SVD roundoff.
     Use H(X) = k P_R(X), a positive-semidefinite approximation that is
@@ -69,7 +83,11 @@ def eval_affine_orthogonality_kernel(
     body = wp.tid()
     start = 4 * body
     hessian_diag[start] = wp.mat33(0.0)
-    if alpha <= 0.0 or body_mass[body] <= 0.0 or (body_flags[body] & (BodyFlags.DYNAMIC | BodyFlags.KINEMATIC)) == 0:
+    if (
+        rigidity_ratio <= 0.0
+        or body_mass[body] <= 0.0
+        or (body_flags[body] & (BodyFlags.DYNAMIC | BodyFlags.KINEMATIC)) == 0
+    ):
         hessian_diag[start + 1] = wp.mat33(0.0)
         hessian_diag[start + 2] = wp.mat33(0.0)
         hessian_diag[start + 3] = wp.mat33(0.0)
@@ -82,7 +100,7 @@ def eval_affine_orthogonality_kernel(
     rotation = wp.quat_to_matrix(wp.normalize(wp.quat_from_matrix(U @ wp.transpose(V))))
     residual_local = wp.transpose(rotation) @ (affine - rotation)
     normal_residual = rotation @ (0.5 * (residual_local + wp.transpose(residual_local)))
-    stiffness = alpha * body_mass[body] / (dt * dt)
+    stiffness = affine_rigidity(body_inertia[body], rigidity_ratio, dt)
     force_columns = wp.transpose(-stiffness * normal_residual)
     scaled = wp.sqrt(0.5 * stiffness) * rotation
     scaled_rotation[body] = scaled
@@ -251,20 +269,20 @@ class AffineBody:
         x: wp.array[wp.vec3],
         rhs: wp.array[wp.vec3],
         hessian_diag: wp.array[wp.mat33],
-        alpha: float,
+        rigidity_ratio: float,
         dt: float,
     ) -> None:
         """Accumulate SO(3) forces and overwrite the constraint-only diagonal blocks.
 
         Pass affine views of length 4 * body_count for x, rhs, and hessian_diag.
         Call once per nonlinear iteration before off_diag_multiply, with a
-        positive dt and nonnegative alpha. The cached tangent remains fixed
-        throughout the linear solve. An alpha of zero clears the constraint.
+        positive dt and nonnegative rigidity_ratio. The cached tangent remains
+        fixed throughout the linear solve. A ratio of zero clears the constraint.
         """
         wp.launch(
             eval_affine_orthogonality_kernel,
             dim=self.model.body_count,
-            inputs=[x, self.model.body_mass, self.model.body_flags, alpha, dt],
+            inputs=[x, self.model.body_mass, self.model.body_inertia, self.model.body_flags, rigidity_ratio, dt],
             outputs=[rhs, hessian_diag, self._orthogonality_scaled_rotation],
             device=self.model.device,
         )

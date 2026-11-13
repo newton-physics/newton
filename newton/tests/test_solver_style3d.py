@@ -568,7 +568,7 @@ def test_affine_body_linear_system(test, device):
             model.body_inertia.assign(initial_inertia)
             model.body_inv_inertia.assign(initial_inv_inertia)
             model.body_flags.assign(initial_flags)
-            config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0, affine_alpha=0.0)
+            config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0, affine_rigidity_ratio=0.0)
             solver = newton.solvers.SolverStyle3D(model, config=config, dynamics=dynamics)
             state_in, state_out, state_ref = model.state(), model.state(), model.state()
             state_in.body_f.assign(forces)
@@ -719,7 +719,7 @@ def test_affine_body_linear_system(test, device):
                 solver.collision = collision
 
             # Exercise nonlinear SO(3) forces with a larger rotation, then change
-            # alpha at runtime. NumPy Newton steps independently verify assembly.
+            # the rigidity ratio at runtime. NumPy Newton steps independently verify assembly.
             velocities = state_in.body_qd.numpy()
             velocities[0, 3:] = (4.0, -3.0, 5.0)
             state_in.body_qd.assign(velocities)
@@ -743,46 +743,51 @@ def test_affine_body_linear_system(test, device):
                         hessian[3 + 3 * i : 6 + 3 * i, 3 + 3 * j : 6 + 3 * j] = block
                 return force, hessian
 
-            default_alpha = newton.solvers.SolverStyle3D.Config().affine_alpha
-            test.assertGreater(default_alpha, 0.0)
-            for alpha in (default_alpha, 0.25, 0.0):
-                config.affine_alpha = alpha
+            default_ratio = newton.solvers.SolverStyle3D.Config().affine_rigidity_ratio
+            test.assertGreater(default_ratio, 0.0)
+            for ratio in (default_ratio, 0.25, 0.0):
+                config.affine_rigidity_ratio = ratio
                 solver.step(state_in, state_out, control, contacts, dt)
-                if wp.get_device(device).is_cuda and alpha == default_alpha:
+                if wp.get_device(device).is_cuda and ratio == default_ratio:
                     with wp.ScopedCapture(device=device) as capture:
                         solver.step(state_in, state_out, control, contacts, dt)
                     wp.capture_launch(capture.graph)
                 reference = solver._x_prev.numpy()[offset : offset + 4].astype(np.float64)
                 target = solver._x_inertia.numpy()[offset : offset + 4]
-                stiffness = alpha * model.body_mass.numpy()[0] / dt**2
+                stiffness = ratio * np.trace(mass[1:4, 1:4]) / (3.0 * dt**2)
                 for _iteration in range(config.iterations):
                     force, hessian = constraint_terms(reference, stiffness)
                     expected_rhs = (mass_block @ (target - reference).reshape(-1)).reshape(4, 3) + force
                     expected_matrix = mass_block + hessian
                     reference += np.linalg.solve(expected_matrix, expected_rhs.reshape(-1)).reshape(4, 3)
-                if alpha > 0.0:
+                if ratio > 0.0:
                     test.assertGreater(np.linalg.norm(force), 0.1)
                 np.testing.assert_allclose(solver._x.numpy()[offset : offset + 4], reference, atol=3e-6)
-                np.testing.assert_allclose(solver._rhs.numpy()[offset : offset + 4], expected_rhs, atol=4e-4)
+                # Float32 SVD and iterate roundoff are amplified by the penalty stiffness.
+                stiffness_atol = 4.0 * np.finfo(np.float32).eps * stiffness
+                np.testing.assert_allclose(
+                    solver._rhs.numpy()[offset : offset + 4], expected_rhs, atol=4e-4 + stiffness_atol
+                )
                 diagonal = solver._A_diag.numpy()[offset : offset + 4]
                 preconditioner = solver._inv_A_diag.numpy()[offset : offset + 4]
                 for i in range(4):
                     block = expected_matrix[3 * i : 3 * i + 3, 3 * i : 3 * i + 3]
-                    np.testing.assert_allclose(diagonal[i], block, rtol=3e-6, atol=2e-4)
+                    np.testing.assert_allclose(diagonal[i], block, rtol=3e-6, atol=2e-4 + stiffness_atol)
                     np.testing.assert_allclose(preconditioner[i] @ block, np.eye(3), rtol=3e-6, atol=3e-6)
                 product = solver._matrix_free_multiply(probe_wp)
                 solver._linear_solver.p.assign(probe_wp)
                 solver._linear_solver.step5_update_Ap(solver._pd_off_diag, solver._A_diag, product)
                 expected_product = expected_matrix @ probe[offset : offset + 4].reshape(-1)
+                product_atol = 3e-4 + stiffness_atol * np.linalg.norm(probe[offset + 1 : offset + 4])
                 np.testing.assert_allclose(
                     solver._linear_solver.Ap.numpy()[offset : offset + 4].reshape(-1),
                     expected_product,
                     rtol=3e-6,
-                    atol=3e-4,
+                    atol=product_atol,
                 )
                 np.testing.assert_array_equal(solver._inv_A_diag.numpy()[offset + 4 :], 0.0)
                 np.testing.assert_array_equal(solver._x.numpy()[offset + 4 :], solver._x_prev.numpy()[offset + 4 :])
-                if alpha == 0.0:
+                if ratio == 0.0:
                     np.testing.assert_allclose(
                         solver._A_diag.numpy()[offset:],
                         solver._A_diag_base.numpy()[offset:, None, None] * np.eye(3),
@@ -835,7 +840,7 @@ def test_rigid_contact_linear_system(test, device):
             body, radius=0.5, cfg=newton.ModelBuilder.ShapeConfig(density=0.0, ke=200.0, kd=4.0, kf=40.0, mu=0.5)
         )
     model = builder.finalize(device=device)
-    config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0, affine_alpha=0.0)
+    config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0, affine_rigidity_ratio=0.0)
     solver = newton.solvers.SolverStyle3D(
         model, config=config, dynamics=newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY
     )
@@ -1011,7 +1016,7 @@ def test_soft_contact_linear_system(test, device):
     model.soft_contact_kd = 3.0
     model.soft_contact_kf = 20.0
     model.soft_contact_mu = 0.2
-    config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0, affine_alpha=0.0)
+    config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0, affine_rigidity_ratio=0.0)
     solver = newton.solvers.SolverStyle3D(model, config=config, dynamics=newton.solvers.SolverStyle3D.Dynamics.ALL)
     state_in, state_out = model.state(), model.state()
     contacts = newton.Contacts(0, 2, device=device)

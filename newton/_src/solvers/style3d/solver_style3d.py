@@ -178,8 +178,8 @@ class SolverStyle3D(SolverBase):
         linear_iterations: int = 10
         """Number of PCG iterations per non-linear iteration, capped by PCG capacity (999 by default)."""
 
-        affine_alpha: float = 1e1
-        """SO(3) penalty scale in k = affine_alpha * body_mass / dt^2; zero disables the penalty."""
+        affine_rigidity_ratio: float = 1e2
+        """Dimensionless SO(3) stiffness ratio relative to mean directional inertia."""
 
         drag_spring_stiff: float = 1e2
         """Stiffness of the mouse-dragging spring [N/m]."""
@@ -548,7 +548,7 @@ class SolverStyle3D(SolverBase):
                     self._x[self._particle_count :],
                     self._rhs[self._particle_count :],
                     self._A_diag[self._particle_count :],
-                    self.config.affine_alpha,
+                    self.config.affine_rigidity_ratio,
                     dt,
                 )
 
