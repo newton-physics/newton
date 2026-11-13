@@ -120,6 +120,26 @@ Newton stores the relative coordinate ``rest_q = springref - ref``,
 after conversion to meters or radians. If ``springref`` is omitted,
 MuJoCo defaults it to zero, giving ``rest_q = -ref``.
 
+For hinge, slide, and BALL joints with MuJoCo DOFs, constructing
+:class:`~newton.solvers.SolverMuJoCo` resolves positive MJCF ``springdamper``
+or USD ``mjc:springdamper`` pairs once into core ``joint_stiffness`` and
+``joint_damping``.
+The attribute ``model.mujoco.dof_springdamper`` is a construction-time input:
+consumed positive pairs are reset to zero. ``notify_model_changed`` does not
+read it. Change the core gains for runtime edits; assign new pairs before
+constructing another solver to resolve them again.
+Positive pairs must be identical across a BALL joint's DOFs. Inconsistent
+per-DOF values or positive pairs on joints without MuJoCo DOFs, such as loop
+joints mapped to CONNECT constraints, raise ``ValueError``.
+Resolution uses each world's initial physical inertia and authored armature,
+excluding kinematic-lock regularization, and leaves ``joint_rest_q`` unchanged.
+Both backends initialize these passive gains in every model world. With
+``use_mujoco_cpu=True, separate_worlds=True``, only the template world is simulated.
+Positive pairs override explicit gains; nonpositive pairs retain them. After resolution,
+core edits remain authoritative through inertia updates and solver reconstruction;
+gains are not automatically retuned. Other solvers can use the resolved core
+values, but do not resolve MJCF ``springdamper`` themselves.
+
 .. deprecated:: 1.8
 
     Use :attr:`~newton.Model.joint_stiffness` instead of
