@@ -58,6 +58,9 @@ class FastExampleAnymalPretrained:
     def setup(self):
         self.num_frames = _NUM_FRAMES
         self.example = _create_example(self.num_frames)
+        # Keep one-time device work out of the samples.
+        self.example.step()
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

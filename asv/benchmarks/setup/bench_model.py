@@ -231,6 +231,8 @@ class KpiInitializeViewerGL:
 
         # finalize model
         self._model = builder.finalize()
+        # Load the viewer's kernels before timing.
+        self.time_initialize_renderer(robot, world_count)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_renderer(self, robot, world_count):
@@ -349,6 +351,10 @@ class FastInitializeSolver:
 
         # finalize model
         self._model = builder.finalize()
+        # Load the solver's kernels before timing, and free the warm-up solver.
+        Example.create_solver(self._model, robot, use_mujoco_cpu=False)
+        gc.collect()
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_solver(self, robot, world_count):
@@ -375,6 +381,8 @@ class FastInitializeViewerGL:
 
         # finalize model
         self._model = builder.finalize()
+        # Load the viewer's kernels before timing.
+        self.time_initialize_renderer(robot, world_count)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_renderer(self, robot, world_count):

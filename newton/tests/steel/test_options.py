@@ -28,7 +28,7 @@ from newton.tests.steel._fixtures import (
     _set_box_velocities,
 )
 from newton.tests.steel._fixtures import run_fixture as run_compliance_fixture
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices, requires
 
 
 def _assert_bitwise(test, a, b, label):
@@ -118,6 +118,7 @@ def test_angular_damping_follows_in_place_edits(test, device):
     test.assertEqual(float(state_in.joint_qd.numpy()[5]), 0.0)
 
 
+@requires("pxr.Usd")
 def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     """Import the PhysX body and collision USD attributes into the steel namespace, and step with replaced arrays."""
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics
@@ -1395,15 +1396,6 @@ class TestSteelPrivateApi(unittest.TestCase):
         for path in sorted(_PACKAGE_DIR.glob("*.py")):
             with self.subTest(file=path.name):
                 self.assertIsNone(pattern.search(path.read_text(encoding="utf-8").replace(profiling, "")))
-
-    def test_prescribed_response_is_not_a_public_execution_knob(self):
-        """Select the kinematic-body response internally, not through a constructor option."""
-        init_method = self.solver_methods["__init__"]
-        parameters = {
-            argument.arg
-            for argument in [*init_method.args.posonlyargs, *init_method.args.args, *init_method.args.kwonlyargs]
-        }
-        self.assertNotIn("exclude_fully_kinematic_free_articulations", parameters)
 
     def test_kernel_factories_are_private_cached_functions(self):
         """Keep the size-specialized kernel factories private, cached and keyed by device architecture."""

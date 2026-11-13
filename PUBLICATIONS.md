@@ -60,6 +60,8 @@ published citation when available and retain an accessible preprint link.
 
 - **Backpropagating Through Simulation: Analytic Policy Gradients for Sample and Learning Efficient Differentiable Continuous Control**. *Y. Deng*. June 2026. [arXiv:2606.21525](https://arxiv.org/abs/2606.21525)
 
+- **Alloy: A Multi-Material Physics Engine for Robot Learning**. *P. Gupta, D. Rohilla*. November 2026. [arXiv:2611.16312](https://arxiv.org/abs/2611.16312)
+
 - **RigPI: Dynamic Parameter Identification of Rigid Body via VLM-Seeded Differentiable Simulation**. *X. He, R. Zhang, W. Jiang, W. Xu*. June 2026. [arXiv:2606.25212](https://arxiv.org/abs/2606.25212)
 
 - **RoboMMT: Learning Stable Tracking of Modulated Expressive and Interactive Robot Motion**. *T. Hielscher, K. O. Arras*. October 2026. [arXiv:2610.26414](https://arxiv.org/abs/2610.26414)

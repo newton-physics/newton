@@ -12,8 +12,8 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.core.types import vec6f
-from newton._src.solvers.kamino._src.solvers.dvi import sparse
-from newton._src.solvers.kamino._src.solvers.dvi.joint_blocks import (
+from newton._src.solvers.kamino._src.solvers.scc import sparse
+from newton._src.solvers.kamino._src.solvers.scc.joint_blocks import (
     JointBlockSolver,
     _build_body_masks,
     _build_topology,
@@ -201,7 +201,7 @@ class TestKaminoJointBlocks(unittest.TestCase):
                 original_edges = 4 if topology == "cycle" else 49
                 self.assertEqual(metadata["nb"], groups + original_edges + 1)
                 with patch(
-                    "newton._src.solvers.kamino._src.solvers.dvi.joint_blocks._PERSISTENT_MAX_BLOCKS",
+                    "newton._src.solvers.kamino._src.solvers.scc.joint_blocks._PERSISTENT_MAX_BLOCKS",
                     metadata["nb"] - 1,
                 ):
                     rejected, reason = _build_topology(path, *path.bilateral_nzb_pairs[:3], allow_fill=True)
@@ -429,7 +429,7 @@ class TestKaminoJointBlocks(unittest.TestCase):
         self.assertIsNotNone(solver._assembly_template)
         self.assertIs(solver._entry_target, solver._assembly_template[-1])
         with patch(
-            "newton._src.solvers.kamino._src.solvers.dvi.joint_blocks._build_assembly_template", return_value=None
+            "newton._src.solvers.kamino._src.solvers.scc.joint_blocks._build_assembly_template", return_value=None
         ):
             ordinary = JointBlockSolver.create(path)
         self.assertIsNone(ordinary._assembly_template)

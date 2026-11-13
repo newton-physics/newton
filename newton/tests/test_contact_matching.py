@@ -1443,6 +1443,12 @@ add_function_test(
 )
 add_function_test(TestContactMatching, "test_deterministic_implied", test_deterministic_implied, devices=devices)
 add_function_test(
+    TestContactMatching,
+    "test_matching_sort_width_follows_contact_family",
+    test_matching_sort_width_follows_contact_family,
+    devices=devices,
+)
+add_function_test(
     TestContactMatching, "test_contacts_exposes_matching_mode", test_contacts_exposes_matching_mode, devices=devices
 )
 add_function_test(

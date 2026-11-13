@@ -1429,7 +1429,8 @@ def parse_usd(
             R.collect_prim_attrs(physics_scene_prim)
 
         # Extract custom attributes for model (ONCE and WORLD frequency) from the PhysicsScene prim
-        # WORLD frequency attributes use index 0 here; they get remapped during add_world()
+        # WORLD frequency attributes use the current world, -1 outside a world context;
+        # add_world() remaps them to the destination world.
         builder_custom_attr_model: list[ModelBuilder.CustomAttribute] = [
             attr
             for attr in builder.custom_attributes.values()
@@ -1449,7 +1450,8 @@ def parse_usd(
         # Set values on builder's custom attributes
         for key, value in scene_custom_attrs.items():
             if key in builder.custom_attributes:
-                builder.custom_attributes[key].values[0] = value
+                attribute = builder.custom_attributes[key]
+                attribute.values[builder._model_value_key(attribute)] = value
 
     joint_descriptions = {}
     # stores physics spec for every RigidBody in the selected range

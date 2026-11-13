@@ -11,9 +11,9 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.core.types import vec6f
-from newton._src.solvers.kamino._src.solvers.dvi import sparse
-from newton._src.solvers.kamino._src.solvers.dvi.coupling import PackedCoupling
-from newton._src.solvers.kamino._src.solvers.dvi.joint_blocks import JointBlockSolver
+from newton._src.solvers.kamino._src.solvers.scc import sparse
+from newton._src.solvers.kamino._src.solvers.scc.coupling import PackedCoupling
+from newton._src.solvers.kamino._src.solvers.scc.joint_blocks import JointBlockSolver
 from newton.tests.kamino.test_kamino_joint_blocks import _fixture, _packed_matrix
 
 

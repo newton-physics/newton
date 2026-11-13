@@ -204,14 +204,14 @@ class Example:
         elif self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model,
-                dynamics_solver="dvi",
+                dynamics_solver="scc",
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
-            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
-            solver_config.dvi.max_alternating_iterations = 5
-            solver_config.dvi.bilateral_solve_interval = 5
-            solver_config.dvi.inequality_sweeps_per_iteration = 1
+            solver_config.scc.bilateral_solver_type = "LLTBRCM"
+            solver_config.scc.max_alternating_iterations = 5
+            solver_config.scc.bilateral_solve_interval = 5
+            solver_config.scc.inequality_sweeps_per_iteration = 1
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model)
