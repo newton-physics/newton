@@ -20,6 +20,7 @@ from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _prepare_full_sparse_unilateral_schur as kernel,
 )
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCStatus
+from newton.tests.kamino.utils.make import make_row_storage
 
 
 class TestKaminoCompactSchur(unittest.TestCase):
@@ -206,12 +207,21 @@ class TestKaminoSmallBilateralInverse(unittest.TestCase):
             matrices.append(matrix)
             # Garbage above the diagonal must not leak into the inverse.
             factors.append(np.linalg.cholesky(matrix) + np.triu(rng.normal(size=(n, n)), 1))
-        L = wp.array(np.concatenate([f.ravel() for f in factors]), dtype=wp.float32, device=device)
+        flat_factors = np.concatenate([f.ravel() for f in factors])
         dim = wp.array(dims, dtype=wp.int32, device=device)
-        mio_wp = wp.array(mio, dtype=wp.int32, device=device)
         vio_wp = wp.array(vio, dtype=wp.int32, device=device)
-        lower_inverse = wp.zeros(L.size, dtype=wp.float32, device=device)
-        inverse = wp.zeros(L.size, dtype=wp.float32, device=device)
+        rhs = rng.normal(size=sum(dims))
+        previous = rng.normal(size=sum(dims))
+        scale = rng.uniform(0.5, 2.0, size=sum(dims))
+        active = [1, 33, 0, 128]
+        expected = previous.copy()
+        for n, matrix, start, used in zip(dims, matrices, vio, active, strict=True):
+            if used:
+                expected[start : start + n] = np.linalg.solve(matrix, rhs[start : start + n])
+        L = wp.array(make_row_storage(flat_factors, mio, np.square(dims)), dtype=wp.float32, device=device)
+        mio_wp = wp.zeros(len(dims), dtype=wp.int32, device=device)
+        lower_inverse = wp.zeros_like(L)
+        inverse = wp.zeros_like(L)
         wp.launch_tiled(
             _invert_small_bilateral_block,
             dim=len(dims),
@@ -219,12 +229,8 @@ class TestKaminoSmallBilateralInverse(unittest.TestCase):
             block_dim=128,
             device=device,
         )
-        rhs = rng.normal(size=sum(dims))
-        previous = rng.normal(size=sum(dims))
-        scale = rng.uniform(0.5, 2.0, size=sum(dims))
         solution = wp.array(previous, dtype=wp.float32, device=device)
         lambdas = wp.zeros(sum(dims), dtype=wp.float32, device=device)
-        active = [1, 33, 0, 128]
         wp.launch(
             _apply_small_bilateral_inverse,
             dim=(len(dims), max(dims)),
@@ -242,10 +248,6 @@ class TestKaminoSmallBilateralInverse(unittest.TestCase):
             ],
             device=device,
         )
-        expected = previous.copy()
-        for n, matrix, start, used in zip(dims, matrices, vio, active, strict=True):
-            if used:
-                expected[start : start + n] = np.linalg.solve(matrix, rhs[start : start + n])
         np.testing.assert_allclose(solution.numpy(), expected, rtol=1e-4, atol=1e-4)
         np.testing.assert_allclose(lambdas.numpy(), scale * expected, rtol=1e-4, atol=1e-4)
 

@@ -245,10 +245,8 @@ class SparseSCCPath:
                 and self.size.max_of_num_bilateral_joint_cts <= SMALL_BILATERAL_INVERSE_SIZE
             ):
                 operator = self.data.bilateral_operator
-                self.bilateral_lower_inverse = wp.zeros(
-                    operator.info.total_mat_size, dtype=wp.float32, device=self.device
-                )
-                self.bilateral_inverse = wp.zeros_like(self.bilateral_lower_inverse)
+                self.bilateral_lower_inverse = wp.zeros_like(operator.mat)
+                self.bilateral_inverse = wp.zeros_like(operator.mat)
 
         self.packed_coupling = PackedCoupling.create(self, self.joint_block_solver)
         self.effort_limit_condensation = EffortLimitCondensation.create(self)
@@ -1046,7 +1044,7 @@ def _factor_sparse_bilateral_block(path: SparseSCCPath, problem: DualProblem) ->
 def _assemble_sparse_bilateral_block(
     path: SparseSCCPath,
     problem: DualProblem,
-    matrix: wp.array[float32],
+    matrix: wp.array2d[float32],
     inverse: wp.array[int32] | None = None,
 ) -> None:
     """Assemble the bilateral matrix directly in the requested row ordering."""

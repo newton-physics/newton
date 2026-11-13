@@ -256,11 +256,10 @@ class DualProblemData:
     Shape of `(num_worlds,)`.
     """
 
-    D: wp.array[wp.float32] | None = None
+    D: wp.array2d[wp.float32] | None = None
     """
-    The flat array of Delassus matrix blocks (constraint-space apparent inertia).
+    Delassus matrix blocks stored in one row per world.
     Includes physical compliance when enabled, before numerical regularization.
-    Shape of `(sum_of_max_total_delassus_size,)`.
     """
 
     P: wp.array[wp.float32] | None = None
@@ -931,7 +930,7 @@ def _build_free_velocity(
     model_info_bodies_offset: wp.array[wp.int32],
     data_bodies_u_i: wp.array[wp.spatial_vectorf],
     jacobians_J_cts_offsets: wp.array[wp.int32],
-    jacobians_J_cts_data: wp.array[wp.float32],
+    jacobians_J_cts_data_storage: wp.array2d[wp.float32],
     problem_dim: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
     problem_u_f: wp.array[wp.spatial_vectorf],
@@ -942,6 +941,7 @@ def _build_free_velocity(
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
+    jacobians_J_cts_data = jacobians_J_cts_data_storage[wid]
 
     # Retrieve the problem dimensions and matrix block index offset
     ncts = problem_dim[wid]
@@ -1069,12 +1069,13 @@ def _build_dual_preconditioner_all_constraints(
     problem_njc: wp.array[wp.int32],
     problem_nbc: wp.array[wp.int32],
     problem_nl: wp.array[wp.int32],
-    problem_D: wp.array[wp.float32],
+    problem_D_storage: wp.array2d[wp.float32],
     # Outputs:
     problem_P: wp.array[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
+    problem_D = problem_D_storage[wid]
 
     # Retrieve the world-specific problem config
     config = problem_config[wid]
@@ -1162,10 +1163,11 @@ def _apply_dual_preconditioner_to_matrix(
     problem_vio: wp.array[wp.int32],
     problem_P: wp.array[wp.float32],
     # Outputs:
-    X: wp.array[wp.float32],
+    X_storage: wp.array2d[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
+    X = X_storage[wid]
 
     # Retrieve the number of active constraints in the world
     ncts = problem_dim[wid]

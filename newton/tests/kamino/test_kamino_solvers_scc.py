@@ -70,8 +70,13 @@ from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, S
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
-from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector
-from newton.tests.kamino.utils.make import make_containers, make_test_problem_fourbar, update_containers
+from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector, get_matrix_block
+from newton.tests.kamino.utils.make import (
+    make_containers,
+    make_row_storage,
+    make_test_problem_fourbar,
+    update_containers,
+)
 from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase, requires
 from newton.tests.utils import basics, testing
 
@@ -815,13 +820,45 @@ class TestSCCSolver(NewtonTestCase):
         state_in = model.state()
         state_out = model.state()
         solver.step(state_in, state_out, control=None, contacts=None, dt=1e-3)
-        body_q = state_out.body_q.numpy()
-        body_qd = state_out.body_qd.numpy()
-        self.assertTrue(np.all(np.isfinite(body_q)))
-        self.assertTrue(np.all(np.isfinite(body_qd)))
+        self.assertTrue(np.all(np.isfinite(state_out.body_q.numpy())))
+        self.assertTrue(np.all(np.isfinite(state_out.body_qd.numpy())))
         self.assertIsInstance(solver._solver_kamino.solver_fd, SCCSolver)
         self.assertFalse(solver._solver_kamino.config.dynamics.preconditioning)
         self.assertIsNotNone(solver._solver_kamino.solver_fd.data.info)
+
+        for sparse, metrics in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(sparse=sparse, metrics=metrics):
+                config = SolverKamino.Config(
+                    dynamics_solver="scc",
+                    scc=kamino_config.SCCSolverConfig(
+                        max_alternating_iterations=500,
+                        inequality_sweeps_per_iteration=1,
+                        tolerance=1e-5,
+                    ),
+                    collect_solver_info=True,
+                    sparse_dynamics=sparse,
+                    sparse_jacobian=sparse,
+                    compute_solution_metrics=metrics,
+                )
+                solver = SolverKamino(model, config=config)
+                state_in = model.state()
+                state_out = model.state()
+                solver.step(state_in, state_out, control=None, contacts=None, dt=1e-3)
+                body_q = state_out.body_q.numpy()
+                body_qd = state_out.body_qd.numpy()
+                self.assertTrue(np.all(np.isfinite(body_q)))
+                self.assertTrue(np.all(np.isfinite(body_qd)))
+                self.assertIsInstance(solver._solver_kamino.solver_fd, SCCSolver)
+                self.assertFalse(solver._solver_kamino.config.dynamics.preconditioning)
+                self.assertIsNotNone(solver._solver_kamino.solver_fd.data.info)
+
+                if not sparse:
+                    self.assertIsNone(solver._solver_kamino.problem_fd.delassus._solver)
+                self.assertIsNotNone(solver._solver_kamino.solver_fd._bilateral_solver)
+                if metrics:
+                    values = solver._solver_kamino.metrics.data
+                    for name in ("r_eom", "r_v_plus", "r_ncp_primal", "r_ncp_dual", "r_ncp_compl", "r_vi_natmap"):
+                        self.assertTrue(np.isfinite(getattr(values, name).numpy()).all(), name)
 
     def test_02a_public_solver_reset_accepts_global_mask_slot(self):
         """Accept a global reset slot as a no-op for Kamino state."""
@@ -1565,8 +1602,8 @@ class TestSCCSolver(NewtonTestCase):
         self.assertLess(float(status["r_b"]), 1e-6)
 
         ncts = int(problem.data.dim.numpy()[0])
-        original = problem.data.D.numpy()[: ncts * ncts].reshape(ncts, ncts)
-        projected = solver.data.state.projected_D.numpy()[: ncts * ncts].reshape(ncts, ncts)
+        original = get_matrix_block(0, problem.data.D.numpy(), [ncts])
+        projected = get_matrix_block(0, solver.data.state.projected_D.numpy(), [ncts])
         self.assertGreater(float(np.max(np.abs(projected[njc:, njc:] - original[njc:, njc:]))), 1e-6)
 
     @unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")
@@ -1979,7 +2016,7 @@ class TestSCCSolver(NewtonTestCase):
 
     def test_03i_scc_coldstart_is_repeatable(self):
         """Repeat cold starts without clearing overwritten Schur workspace."""
-        for sparse, schur in ((False, False), (True, False), (True, True)):
+        for sparse, schur in ((False, False), (False, True), (True, False), (True, True)):
             with self.subTest(sparse=sparse, schur=schur):
                 test = TestSetup(
                     builder_fn=basics.build_boxes_hinged,
@@ -2007,9 +2044,9 @@ class TestSCCSolver(NewtonTestCase):
                 if schur:
                     state = solver.data.state
                     response_arrays = (
-                        state.bilateral_coupling,
-                        state.bilateral_response_factor,
-                        state.bilateral_response,
+                        (state.bilateral_coupling, state.bilateral_response_factor, state.bilateral_response)
+                        if sparse
+                        else (state.projected_D,)
                     )
                     before_reset = tuple(array.numpy().copy() for array in response_arrays)
                 solver.reset()
@@ -3703,7 +3740,7 @@ class TestSCCSolver(NewtonTestCase):
                 i32([2]),
                 i32([0]),
                 wp.array(scaling, dtype=wp.float32, device=self.device),
-                wp.array(factor.ravel(), dtype=wp.float32, device=self.device),
+                wp.array(factor.reshape(1, -1), dtype=wp.float32, device=self.device),
                 i32(permutation),
                 True,
                 i32([0]),
@@ -4429,10 +4466,12 @@ class TestSCCSolver(NewtonTestCase):
         workspace = wp.zeros(len(couplings), dtype=wp.float32, device=self.device)
         response = wp.zeros_like(workspace)
         row_start = wp.zeros(len(scaling), dtype=wp.int32, device=self.device)
+        factor_rows = f32(make_row_storage(np.asarray(factors), matrix_offsets, np.square(joint_counts)))
+        factor_offsets = i32(np.zeros(len(joint_counts)))
         wp.launch(
             _find_bilateral_factor_row_start,
             dim=(5, max(joint_counts)),
-            inputs=[joints, i32(matrix_offsets), joints, i32(vector_offsets), f32(factors), row_start],
+            inputs=[joints, factor_offsets, joints, i32(vector_offsets), factor_rows, row_start],
             device=self.device,
         )
         expected_starts = []
@@ -4446,11 +4485,11 @@ class TestSCCSolver(NewtonTestCase):
             inputs=[
                 dims,
                 joints,
-                i32(matrix_offsets),
+                factor_offsets,
                 joints,
                 i32(vector_offsets),
                 f32(scaling),
-                f32(factors),
+                factor_rows,
                 i32(permutations),
                 True,
                 offsets,

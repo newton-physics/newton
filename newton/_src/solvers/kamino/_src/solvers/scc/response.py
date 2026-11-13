@@ -35,7 +35,7 @@ def make_response_kernel(width: int = _RESPONSE_WIDTH):
         bilateral_ld: wp.array[wp.int32],
         vio: wp.array[wp.int32],
         preconditioner: wp.array[wp.float32],
-        factor: wp.array[wp.float32],
+        factor_storage: wp.array2d[wp.float32],
         permutation: wp.array[wp.int32],
         response_mio: wp.array[wp.int32],
         response_stride: wp.array[wp.int32],
@@ -48,6 +48,7 @@ def make_response_kernel(width: int = _RESPONSE_WIDTH):
         task, lane = wp.tid()
         groups = (columns_per_world + width - 1) // width
         world = task // groups
+        factor = factor_storage[world]
         column = (task % groups) * width
         n = njc[world]
         nu = dim[world] - n

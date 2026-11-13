@@ -14,7 +14,12 @@ import warp as wp
 
 from ......core.types import override
 from ...core.types import mat36f, mat66f, to_warp_int32_array, vec6f
-from ...linalg.core import DenseSquareMultiLinearInfo, prefix_offsets, segment_local_indices
+from ...linalg.core import (
+    DenseSquareMultiLinearInfo,
+    prefix_offsets,
+    segment_local_indices,
+    validate_dense_matrix_shape,
+)
 from .contact import mat55f, vec5f
 from .spatial_warmstart import WarmstarterAngularContacts
 
@@ -885,8 +890,7 @@ class ProjectionData:
 class LOXSystemData:
     """Arrays of the batched smooth body system.
 
-    Bodies stay in model order, while the dense matrices and vectors are packed by
-    factor block.
+    Matrices use one row per factor block; vectors are packed by factor block.
 
     Args:
         body_block: Factor block of each body, or ``-1`` for a prescribed body.
@@ -913,7 +917,8 @@ class LOXSystemData:
         """First entry of each body in the packed system vectors, or ``-1``."""
         self.info = info
         """Dense layout of the factor blocks."""
-        self.matrix = wp.zeros(info.total_mat_size, dtype=wp.float32, device=device)
+        validate_dense_matrix_shape(info.matrix_shape, wp.float32)
+        self.matrix = wp.zeros(info.matrix_shape, dtype=wp.float32, device=device)
         """Dense matrix of each factor block: the smooth matrix ``A`` once assembled, then ``A + alpha W``
         once the consensus fraction ``alpha`` of the splitting weights is added. Captured steps assemble
         into the matrix of the factorization, in its row order."""

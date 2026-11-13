@@ -17,6 +17,7 @@ from ...geometry.contacts import ContactsKamino
 from ...kinematics.jacobians import SparseSystemJacobians
 from ...kinematics.limits import LimitsKamino
 from ...linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo, LLTBlockedRCMSolver, LLTBlockedSolver
+from ...linalg.core import validate_dense_matrix_shape
 from ..common import (
     WarmStartMode,
     apply_dual_preconditioner_to_solution,
@@ -367,7 +368,8 @@ class SCCSolver:
         operator.info.finalize(capacities, dtype=float32, device=self._device)
         self._data.bilateral_dim = wp.array(factor_dims, dtype=wp.int32, device=self._device)
         operator.info.dim = self._data.bilateral_dim
-        operator.mat = wp.zeros(shape=(operator.info.total_mat_size,), dtype=float32, device=self._device)
+        validate_dense_matrix_shape(operator.info.matrix_shape, float32)
+        operator.mat = wp.zeros(shape=operator.info.matrix_shape, dtype=float32, device=self._device)
         self._data.state.bilateral_rhs = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
         self._data.state.bilateral_solution = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
         self._data.state.bilateral_preconditioner = wp.zeros(

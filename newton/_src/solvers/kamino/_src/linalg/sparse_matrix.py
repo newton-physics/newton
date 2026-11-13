@@ -604,7 +604,7 @@ def _make_dense_to_bsm_detect_kernel(block_size: int):
         # Dense matrix info
         dense_dim: wp.array[wp.int32],
         dense_mio: wp.array[wp.int32],
-        dense_mat: wp.array[wp.float32],
+        dense_mat_storage: wp.array2d[wp.float32],
         # BSM info
         max_nzb: wp.array[wp.int32],
         nzb_start: wp.array[wp.int32],
@@ -613,6 +613,7 @@ def _make_dense_to_bsm_detect_kernel(block_size: int):
         nzb_coords: wp.array2d[wp.int32],
     ):
         wid, bi, bj = wp.tid()
+        dense_mat = dense_mat_storage[wid]
 
         dim = dense_dim[wid]
         bs = wp.static(block_size)
@@ -663,7 +664,7 @@ def _make_dense_to_bsm_copy_kernel(block_size: int):
         # Dense matrix info
         dense_dim: wp.array[wp.int32],
         dense_mio: wp.array[wp.int32],
-        dense_mat: wp.array[wp.float32],
+        dense_mat_storage: wp.array2d[wp.float32],
         # BSM info
         nzb_start: wp.array[wp.int32],
         num_nzb: wp.array[wp.int32],
@@ -672,6 +673,7 @@ def _make_dense_to_bsm_copy_kernel(block_size: int):
         nzb_values: wp.array[mat_type],
     ):
         wid, block_idx = wp.tid()
+        dense_mat = dense_mat_storage[wid]
 
         if block_idx >= num_nzb[wid]:
             return

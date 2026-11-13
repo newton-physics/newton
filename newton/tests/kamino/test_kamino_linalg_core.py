@@ -12,6 +12,7 @@ import warp as wp
 from newton._src.solvers.kamino._src.linalg.core import (
     DenseRectangularMultiLinearInfo,
     DenseSquareMultiLinearInfo,
+    dense_matrix_layout,
     make_dtype_tolerance,
     prefix_offsets,
     segment_local_indices,
@@ -51,24 +52,19 @@ class TestLinAlgCorePrefixOffsets(unittest.TestCase):
                 np.testing.assert_array_equal(segment_local_indices(counts), expected)
                 np.testing.assert_array_equal(segment_local_indices(counts, prefix_offsets(counts)), expected)
 
-    def test_dense_offset_overflow(self):
-        """Reject overflowing dense offsets for rectangular and square systems."""
-        cases = (
-            (DenseRectangularMultiLinearInfo, [(46341, 46341), (1, 1)], [(1, 1), (182, 182)]),
-            (DenseSquareMultiLinearInfo, [46341, 1], [1, 182]),
-        )
-        for info_type, dims, int16_dims in cases:
-            with self.subTest(info_type=info_type.__name__):
-                with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
-                    info_type().finalize(dimensions=dims, itype=wp.int32)
-                # Every block starts within the index range, but the last one ends past it
-                with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
-                    info_type().finalize(dimensions=dims[::-1], itype=wp.int32)
-                with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
-                    info_type().finalize(dimensions=int16_dims, itype=wp.int16)
-                info = info_type()
-                info.finalize(dimensions=dims, itype=wp.int64)
-                self.assertEqual(info.mio.numpy()[1], 46341 * 46341)
+    def test_dense_matrix_rows(self):
+        """Keep matrix offsets local while checking vector offset overflow."""
+        for sizes, shape in (([], (0, 0)), ([0], (1, 0)), ([4, 9, 4], (3, 32)), ([2**28] * 8, (8, 2**28))):
+            self.assertEqual(dense_matrix_layout(sizes), (shape, [0] * len(sizes)))
+        for info_type, dims in (
+            (DenseRectangularMultiLinearInfo, [(46341, 46341), (1, 1)]),
+            (DenseSquareMultiLinearInfo, [46341, 1]),
+        ):
+            info = info_type()
+            info.finalize(dimensions=dims, itype=wp.int32)
+            np.testing.assert_array_equal(info.mio.numpy(), [0, 0])
+            with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
+                info_type().finalize(dimensions=dims, itype=wp.int16)
 
 
 class TestLinAlgCoreMakeTolerance(unittest.TestCase):
@@ -248,7 +244,7 @@ class TestLinAlgCoreDenseMultiLinearRectangularInfo(unittest.TestCase):
             self.assertEqual(info.maxdim.numpy()[i][1], n)
             self.assertEqual(info.dim.numpy()[i][0], m)
             self.assertEqual(info.dim.numpy()[i][1], n)
-            self.assertEqual(info.mio.numpy()[i], sum(d[0] * d[1] for d in dims[:i]))
+            self.assertEqual(info.mio.numpy()[i], 0)
             self.assertEqual(info.rvio.numpy()[i], sum(d[0] for d in dims[:i]))
             self.assertEqual(info.ivio.numpy()[i], sum(d[1] for d in dims[:i]))
 
@@ -347,7 +343,7 @@ class TestLinAlgCoreDenseMultiLinearSquareInfo(unittest.TestCase):
         for i, n in enumerate(dims):
             self.assertEqual(info.maxdim.numpy()[i], n)
             self.assertEqual(info.dim.numpy()[i], n)
-            self.assertEqual(info.mio.numpy()[i], sum(d * d for d in dims[:i]))
+            self.assertEqual(info.mio.numpy()[i], 0)
             self.assertEqual(info.vio.numpy()[i], sum(d for d in dims[:i]))
 
 

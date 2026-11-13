@@ -103,7 +103,7 @@ def make_llt_blocked_rcm_traversal_solve_kernel(block_size: int):
         vio: wp.array[wp.int32],
         tpo: wp.array[wp.int32],
         P: wp.array[wp.int32],
-        L: wp.array[wp.float32],
+        L_storage: wp.array2d[wp.float32],
         tile_traversal: wp.array[wp.int32],
         b: wp.array[wp.float32],
         # Outputs:
@@ -112,6 +112,7 @@ def make_llt_blocked_rcm_traversal_solve_kernel(block_size: int):
         x: wp.array[wp.float32],
     ):
         tid, tid_block = wp.tid()
+        L = L_storage[tid]
         num_threads_per_block = wp.block_dim()
 
         n_i = dim[tid]

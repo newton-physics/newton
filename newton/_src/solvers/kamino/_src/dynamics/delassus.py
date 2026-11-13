@@ -78,8 +78,9 @@ from ..geometry.contacts import ContactsKamino
 from ..kinematics.constraints import get_max_constraints_per_world
 from ..kinematics.jacobians import ColMajorSparseConstraintJacobians, DenseSystemJacobians, SparseSystemJacobians
 from ..kinematics.limits import LimitsKamino
-from ..linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo, LinearSolverType, prefix_offsets
-from ..linalg.blas import _make_masked_zero_kernel_1d
+from ..linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo, LinearSolverType
+from ..linalg.blas import _make_masked_zero_kernel_1d, zero_dense_blocks
+from ..linalg.core import dense_matrix_layout, validate_dense_matrix_shape
 from ..linalg.linear import IterativeSolver
 from ..linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ..linalg.sparse_operator import BlockSparseLinearOperators
@@ -160,14 +161,16 @@ def _build_delassus_elementwise_dense(
     model_bodies_inv_m_i: wp.array[wp.float32],
     data_bodies_inv_I_i: wp.array[wp.mat33f],
     jacobians_cts_offset: wp.array[wp.int32],
-    jacobians_cts_data: wp.array[wp.float32],
+    jacobians_cts_data_storage: wp.array2d[wp.float32],
     delassus_dim: wp.array[wp.int32],
     delassus_mio: wp.array[wp.int32],
     # Outputs:
-    delassus_D: wp.array[wp.float32],
+    delassus_D_storage: wp.array2d[wp.float32],
 ):
     # Retrieve the thread index as the world index and upper-triangle element index
     wid, tid = wp.tid()
+    delassus_D = delassus_D_storage[wid]
+    jacobians_cts_data = jacobians_cts_data_storage[wid]
 
     # Retrieve the world dimensions
     bio = model_info_bodies_offset[wid]
@@ -246,10 +249,11 @@ def _build_delassus_elementwise_sparse(
     delassus_dim: wp.array[wp.int32],
     delassus_mio: wp.array[wp.int32],
     # Outputs:
-    delassus_D: wp.array[wp.float32],
+    delassus_D_storage: wp.array2d[wp.float32],
 ):
     # Retrieve the thread index as the world index and Jacobian block index pair
     wid, tid = wp.tid()
+    delassus_D = delassus_D_storage[wid]
 
     # Retrieve the problem dimensions
     ncts = delassus_dim[wid]
@@ -323,10 +327,11 @@ def _add_joint_armature_diagonal_regularization_dense(
     delassus_dim: wp.array[wp.int32],
     delassus_mio: wp.array[wp.int32],
     # Outputs:
-    delassus_D: wp.array[wp.float32],
+    delassus_D_storage: wp.array2d[wp.float32],
 ):
     # Retrieve the thread index as the world index and Delassus element index
     wid, tid = wp.tid()
+    delassus_D = delassus_D_storage[wid]
 
     # Retrieve the world dimensions
     num_joint_dyn_cts = model_info_num_joint_dynamic_cts[wid]
@@ -360,9 +365,10 @@ def _add_joint_effort_diagonal_regularization_dense(
     delassus_dim: wp.array[wp.int32],
     delassus_mio: wp.array[wp.int32],
     # Outputs:
-    delassus_D: wp.array[wp.float32],
+    delassus_D_storage: wp.array2d[wp.float32],
 ):
     wid, tid = wp.tid()
+    delassus_D = delassus_D_storage[wid]
 
     num_effort_cts = model_info_num_effort_cts[wid]
     if num_effort_cts == 0 or tid >= num_effort_cts:
@@ -384,10 +390,11 @@ def _regularize_delassus_diagonal_dense(
     delassus_mio: wp.array[wp.int32],
     eta: wp.array[wp.float32],
     # Outputs:
-    delassus_D: wp.array[wp.float32],
+    delassus_D_storage: wp.array2d[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
+    delassus_D = delassus_D_storage[wid]
 
     # Retrieve the problem dimensions and matrix block index offset
     dim = delassus_dim[wid]
@@ -1069,7 +1076,7 @@ class DelassusOperator:
     def num_worlds(self) -> int:
         """
         Returns the number of worlds represented by the Delassus operator.
-        This is equal to the number of matrix blocks contained in the flat array.
+        This is equal to the number of matrix rows in the allocation.
         """
         return self._num_worlds
 
@@ -1084,15 +1091,14 @@ class DelassusOperator:
     @property
     def num_maxsize(self) -> int:
         """
-        Returns the maximum size of the Delassus matrix across all worlds.
-        This is the sum over the sizes of all matrix blocks.
+        Returns the reserved matrix elements before per-world row padding.
         """
         return self._model_maxsize
 
     @property
     def operator(self) -> DenseLinearOperatorData[wp.float32, wp.int32]:
         """
-        Returns a reference to the flat Delassus matrix array.
+        Returns the Delassus operator and its per-world matrix storage.
         """
         return self._operator
 
@@ -1107,14 +1113,14 @@ class DelassusOperator:
     @property
     def info(self) -> DenseSquareMultiLinearInfo[wp.float32, wp.int32]:
         """
-        Returns a reference to the flat Delassus matrix array.
+        Returns the dimensions and offsets of the Delassus matrix blocks.
         """
         return self._operator.info
 
     @property
-    def D(self) -> wp.array[wp.float32]:
+    def D(self) -> wp.array2d[wp.float32]:
         """
-        Returns a reference to the flat Delassus matrix array.
+        Returns the Delassus matrix blocks in per-world rows.
         """
         return self._operator.mat
 
@@ -1179,13 +1185,8 @@ class DelassusOperator:
         self._model_maxsize = sum(self._world_maxsize)
         self._max_of_max_total_D_size = max(self._world_maxsize) if self._world_maxsize else 0
 
-        if self._model_maxsize > np.iinfo(np.int32).max:
-            raise OverflowError(
-                f"Kamino dense Delassus buffer requires {self._model_maxsize} elements across "
-                f"{self._num_worlds} worlds, exceeding the int32 indexing limit of {np.iinfo(np.int32).max}. "
-                "Reduce the number of worlds or max_contacts_per_world, or use sparse_dynamics=True "
-                "and sparse_jacobian=True with an iterative linear solver."
-            )
+        matrix_shape, mat_offsets = dense_matrix_layout(self._world_maxsize)
+        validate_dense_matrix_shape(matrix_shape, wp.float32)
 
         # Use the model's device
         self._device = model.device
@@ -1193,9 +1194,8 @@ class DelassusOperator:
         # Construct the Delassus operator data structure
         self._operator = DenseLinearOperatorData[wp.float32, wp.int32]()
         self._operator.info = DenseSquareMultiLinearInfo[wp.float32, wp.int32]()
-        self._operator.mat = wp.zeros(shape=(self._model_maxsize,), dtype=wp.float32, device=self._device)
+        self._operator.mat = wp.zeros(shape=matrix_shape, dtype=wp.float32, device=self._device)
         if (model.info is not None) and (data.info is not None):
-            mat_offsets = prefix_offsets(self._world_maxsize)
             self._operator.info.assign(
                 maxdim=model.info.max_total_cts,
                 dim=data.info.num_total_cts,
@@ -1235,7 +1235,7 @@ class DelassusOperator:
             model: The model for which the Delassus operator is built.
             data: The current data of the model.
             jacobians: The current Jacobians of the model.
-            reset_to_zero: If True (default), resets the Delassus matrix to zero before building.
+            reset_to_zero: Clear active entries before sparse assembly; dense assembly overwrites them.
 
         Raises:
             ValueError: If the model, data, or Jacobians are not valid.
@@ -1262,9 +1262,10 @@ class DelassusOperator:
         if self._operator.mat is None:
             raise ValueError("Delassus matrix is not allocated. Call finalize() first.")
 
-        # Initialize the Delassus matrix to zero
-        if reset_to_zero:
-            self.zero()
+        # Dense assembly overwrites every active entry; sparse assembly accumulates.
+        if reset_to_zero and not isinstance(jacobians, DenseSystemJacobians):
+            info = self._operator.info
+            zero_dense_blocks(self._operator.mat, info.dim, info.dim, info.mio, self._max_of_max_total_D_size)
 
         # Build the Delassus matrix parallelized over the upper triangle. Warp's
         # CUDA kernels use 32-thread warps, so pad the work count to keep the

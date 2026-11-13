@@ -502,7 +502,7 @@ def _initialize_tolerance_kernel(
 
 @wp.kernel
 def make_jacobi_preconditioner(
-    A: wp.array[Any],
+    A_storage: wp.array2d[Any],
     world_dims: wp.array[wp.int32],
     world_maxdims: wp.array[wp.int32],
     mio: wp.array[wp.int32],
@@ -510,6 +510,7 @@ def make_jacobi_preconditioner(
     diag: wp.array[Any],
 ):
     world, row = wp.tid()
+    A = A_storage[world]
     if row >= world_maxdims[world]:
         return
     world_dim = world_dims[world]

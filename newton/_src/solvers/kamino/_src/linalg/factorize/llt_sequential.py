@@ -37,12 +37,14 @@ def _llt_sequential_factorize(
     # Inputs:
     dim_in: wp.array[wp.int32],
     mio_in: wp.array[wp.int32],
-    A_in: wp.array[wp.float32],
+    A_in_storage: wp.array2d[wp.float32],
     # Outputs:
-    L_out: wp.array[wp.float32],
+    L_out_storage: wp.array2d[wp.float32],
 ):
     # Retrieve the thread index
     tid = wp.tid()
+    A_in = A_in_storage[tid]
+    L_out = L_out_storage[tid]
 
     # Retrieve the matrix start offset and dimension
     mio = mio_in[tid]
@@ -76,7 +78,7 @@ def _llt_sequential_solve(
     dim_in: wp.array[wp.int32],
     mio_in: wp.array[wp.int32],
     vio_in: wp.array[wp.int32],
-    L_in: wp.array[wp.float32],
+    L_in_storage: wp.array2d[wp.float32],
     b_in: wp.array[wp.float32],
     # Outputs:
     y_out: wp.array[wp.float32],
@@ -84,6 +86,7 @@ def _llt_sequential_solve(
 ):
     # Retrieve the thread index
     tid = wp.tid()
+    L_in = L_in_storage[tid]
 
     # Retrieve the start offsets and problem dimension
     mio = mio_in[tid]
@@ -119,11 +122,12 @@ def _llt_sequential_solve_inplace(
     dim_in: wp.array[wp.int32],
     mio_in: wp.array[wp.int32],
     vio_in: wp.array[wp.int32],
-    L_in: wp.array[wp.float32],
+    L_in_storage: wp.array2d[wp.float32],
     x_inout: wp.array[wp.float32],
 ):
     # Retrieve the thread index
     tid = wp.tid()
+    L_in = L_in_storage[tid]
 
     # Retrieve the start offsets and problem dimension
     mio = mio_in[tid]
@@ -162,8 +166,8 @@ def llt_sequential_factorize(
     num_blocks: int,
     dim: wp.array[wp.int32],
     mio: wp.array[wp.int32],
-    A: wp.array[wp.float32],
-    L: wp.array[wp.float32],
+    A: wp.array2d[wp.float32],
+    L: wp.array2d[wp.float32],
 ):
     """
     Launches the sequential Cholesky factorization kernel for a block partitioned matrix.
@@ -188,7 +192,7 @@ def llt_sequential_solve(
     dim: wp.array[wp.int32],
     mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
-    L: wp.array[wp.float32],
+    L: wp.array2d[wp.float32],
     b: wp.array[wp.float32],
     y: wp.array[wp.float32],
     x: wp.array[wp.float32],
@@ -219,7 +223,7 @@ def llt_sequential_solve_inplace(
     dim: wp.array[wp.int32],
     mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
-    L: wp.array[wp.float32],
+    L: wp.array2d[wp.float32],
     x: wp.array[wp.float32],
 ):
     """

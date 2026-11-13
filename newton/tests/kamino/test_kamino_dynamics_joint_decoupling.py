@@ -12,7 +12,7 @@ import newton
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.delassus import _set_decoupled_coupled_rows
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
-from newton._src.solvers.kamino._src.dynamics.joint_decoupling import DynamicJointDecoupling
+from newton._src.solvers.kamino._src.dynamics.joint_decoupling import DecoupledJointDof, DynamicJointDecoupling
 from newton._src.solvers.kamino._src.linalg import LLTBlockedSolver
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
@@ -137,7 +137,7 @@ class TestDynamicJointDecoupling(unittest.TestCase):
         D = self.rng.standard_normal((n, n)).astype(np.float32)
         s = self._shares(0.1, 0.9)
         self.decoupling.body_share.assign(s)
-        D_wp = wp.array(D.ravel(), dtype=wp.float32, device=device)
+        D_wp = wp.array(D.reshape(1, -1), dtype=wp.float32, device=device)
         dim = wp.array([n], dtype=wp.int32, device=device)
         offset = wp.zeros(1, dtype=wp.int32, device=device)
 
@@ -147,6 +147,46 @@ class TestDynamicJointDecoupling(unittest.TestCase):
         scale[self.table["friction_row"]] = s
         scale[self.table["effort_row"]] = s
         np.testing.assert_allclose(D_wp.numpy().reshape(n, n), scale[:, None] * D * scale[None, :], rtol=1e-6)
+
+    def test_dense_decoupling_world_rows(self):
+        """Decouple independent world rows with different sizes and padding."""
+        device = self.model.device
+        table = np.zeros(2, dtype=DecoupledJointDof.numpy_dtype())
+        table[0] = (0, 0, 0, 0, 1, 2)
+        table[1] = (1, 1, -1, 3, 4, -1)
+        self.decoupling.dofs = wp.array(table, dtype=DecoupledJointDof, device=device)
+        self.decoupling.body_share = wp.zeros(2, dtype=wp.float32, device=device)
+
+        blocks = [np.array([[2.0, 0.2, 0.2], [0.2, 3.0, 0.4], [0.2, 0.4, 4.0]]), np.array([[3.0, 0.3], [0.3, 2.0]])]
+        sizes, offsets, vector_offsets = [3, 2], [1, 3], [0, 3]
+        storage = np.full((2, 16), -7.0, dtype=np.float32)
+        for i, block in enumerate(blocks):
+            storage[i, offsets[i] : offsets[i] + block.size] = block.ravel()
+        D = wp.array(storage, dtype=wp.float32, device=device)
+        dims = wp.array(sizes, dtype=wp.int32, device=device)
+        mio = wp.array(offsets, dtype=wp.int32, device=device)
+        vio = wp.array(vector_offsets, dtype=wp.int32, device=device)
+        inv_m_j = wp.array([0.5, 0.75], dtype=wp.float32, device=device)
+        inv_m_a = wp.array([0.4], dtype=wp.float32, device=device)
+
+        self.decoupling.compute_body_share_dense(inv_m_j, dims, mio, vio, D)
+        shares = np.array([0.5 / 0.7, 0.75 / 1.05])
+        np.testing.assert_allclose(self.decoupling.body_share.numpy(), shares, rtol=1e-6)
+        self.decoupling.scale_rows_dense(dims, mio, vio, max(sizes), D)
+        self.decoupling.add_joint_terms_dense(inv_m_j, inv_m_a, dims, mio, vio, D)
+
+        for i, block in enumerate(blocks):
+            s = shares[i]
+            c = (s - 1.0) ** 2 * [0.5, 0.75][i]
+            scale = np.array([1.0] + [s] * (sizes[i] - 1))
+            expected = scale[:, None] * block * scale[None, :]
+            expected[0, 1:] = 0.0
+            expected[1:, 0] = 0.0
+            expected[1:, 1:] += c
+            if i == 0:
+                expected[2, 2] += (1.0 - s * s) * 0.4
+            storage[i, offsets[i] : offsets[i] + block.size] = expected.ravel()
+        np.testing.assert_allclose(D.numpy(), storage, rtol=1e-6, atol=1e-6)
 
     def test_coupled_rows_with_zero_body_share(self):
         """A zero body share, from a zero joint compliance, gives finite zero couplings."""

@@ -33,6 +33,8 @@ from ..core.types import (
 from ..geometry.contacts import ContactsKamino
 from ..kinematics.limits import LimitsKamino
 from ..linalg import prefix_offsets, segment_local_indices
+from ..linalg.blas import zero_dense_blocks
+from ..linalg.core import dense_matrix_layout, validate_dense_matrix_shape
 from ..linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ..linalg.sparse_operator import BlockSparseLinearOperators
 from .joints import gimbal_reciprocal_axes, universal_intermediary_axes
@@ -623,8 +625,8 @@ def _build_joint_jacobians_dense(
     jac_cts_offsets: wp.array[wp.int32],
     jac_dofs_offsets: wp.array[wp.int32],
     # Outputs
-    jac_cts_data: wp.array[wp.float32],
-    jac_dofs_data: wp.array[wp.float32],
+    jac_cts_data_storage: wp.array2d[wp.float32],
+    jac_dofs_data_storage: wp.array2d[wp.float32],
 ):
     """
     A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
@@ -634,6 +636,8 @@ def _build_joint_jacobians_dense(
 
     # Retrieve the joint model data
     wid = model_joints_wid[jid]
+    jac_cts_data = jac_cts_data_storage[wid]
+    jac_dofs_data = jac_dofs_data_storage[wid]
     dof_type = model_joints_dof_type[jid]
     bid_B = model_joints_bid_B[jid]
     bid_F = model_joints_bid_F[jid]
@@ -873,10 +877,10 @@ def _build_limit_jacobians_dense(
     limits_dof: wp.array[wp.int32],
     limits_side: wp.array[wp.float32],
     jacobian_dofs_offsets: wp.array[wp.int32],
-    jacobian_dofs_data: wp.array[wp.float32],
+    jacobian_dofs_data_storage: wp.array2d[wp.float32],
     jacobian_cts_offsets: wp.array[wp.int32],
     # Outputs:
-    jacobian_cts_data: wp.array[wp.float32],
+    jacobian_cts_data_storage: wp.array2d[wp.float32],
 ):
     """
     A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
@@ -890,6 +894,8 @@ def _build_limit_jacobians_dense(
 
     # Retrieve the world index of the active limit
     wid_l = limits_wid[lid]
+    jacobian_cts_data = jacobian_cts_data_storage[wid_l]
+    jacobian_dofs_data = jacobian_dofs_data_storage[wid_l]
 
     # Retrieve the limit description info
     # NOTE: *_l is used to denote a subscript for the limit index
@@ -1022,7 +1028,7 @@ def _build_contact_jacobians_dense(
     contacts_frame: wp.array[wp.quatf],
     jacobian_cts_offsets: wp.array[wp.int32],
     # Outputs:
-    jacobian_cts_data: wp.array[wp.float32],
+    jacobian_cts_data_storage: wp.array2d[wp.float32],
 ):
     """
     A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
@@ -1041,6 +1047,7 @@ def _build_contact_jacobians_dense(
 
     # Retrieve the the contact-specific data
     wid = contacts_wid[cid]
+    jacobian_cts_data = jacobian_cts_data_storage[wid]
     q_k = contacts_frame[cid]
     bid_AB_k = contacts_bid_AB[cid]
     r_Ac_k = contacts_position_A[cid]
@@ -1442,15 +1449,12 @@ class DenseSystemJacobiansData:
 
         self.J_cts_offsets: wp.array[wp.int32] | None = None
         """
-        The index offset of the constraint Jacobian matrix block of each world.
+        The constraint Jacobian offset within each world row.
         Shape of ``(num_worlds,)``.
         """
 
-        self.J_cts_data: wp.array[wp.float32] | None = None
-        """
-        A flat array containing the constraint Jacobian matrix data of all worlds.
-        Shape of ``(sum(ncts_w * nbd_w),)``.
-        """
+        self.J_cts_data: wp.array2d[wp.float32] | None = None
+        """Constraint Jacobian blocks stored in one aligned row per world."""
 
         ###
         # DoFs Jacobian
@@ -1458,15 +1462,12 @@ class DenseSystemJacobiansData:
 
         self.J_dofs_offsets: wp.array[wp.int32] | None = None
         """
-        The index offset of the DoF Jacobian matrix block of each world.
+        The DoF Jacobian offset within each world row.
         Shape of ``(num_worlds,)``.
         """
 
-        self.J_dofs_data: wp.array[wp.float32] | None = None
-        """
-        A flat array containing the joint DoF Jacobian matrix data of all worlds.
-        Shape of ``(sum(njad_w * nbd_w),)``.
-        """
+        self.J_dofs_data: wp.array2d[wp.float32] | None = None
+        """DoF Jacobian blocks stored in one aligned row per world."""
 
 
 ###
@@ -1488,12 +1489,8 @@ class DenseSystemJacobians:
         """
         Creates a :class:`DenseSystemJacobians` container and allocates the Jacobian data if a model is provided.
 
-        The Jacobians are stored in dense format as flat arrays, and the matrix blocks of each world are stored
-        contiguously with the corresponding index offsets. The Jacobian matrix blocks of each world are stored
-        in the order of joints, limits, and contacts. For example, the constraint Jacobian matrix blocks of world
-        ``w`` are stored in the order of joint constraint Jacobian blocks, limit constraint Jacobian blocks, and
-        contact constraint Jacobian blocks, and the DoF Jacobian matrix block of world ``w`` is stored after the
-        constraint Jacobian matrix blocks of world ``w``.
+        Each world has one aligned row in the constraint and DoF buffers. Constraint rows
+        contain joint, limit, and contact blocks in that order; unused capacity is padding.
 
         Args:
             model: The model container describing the system structure and properties, used
@@ -1554,16 +1551,12 @@ class DenseSystemJacobians:
         J_cts_sizes = [maxncts[i] * nbd[i] for i in range(nw)]
         J_dofs_sizes = [njd[i] * nbd[i] for i in range(nw)]
 
-        # Compute the total size of the Jacobian matrix data
-        total_J_cts_size = sum(J_cts_sizes)
-        total_J_dofs_size = sum(J_dofs_sizes)
-
-        # Compute matrix index offsets of each Jacobian block
-        J_cts_offsets = [0] * nw
-        J_dofs_offsets = [0] * nw
-        for w in range(1, nw):
-            J_cts_offsets[w] = J_cts_offsets[w - 1] + J_cts_sizes[w - 1]
-            J_dofs_offsets[w] = J_dofs_offsets[w - 1] + J_dofs_sizes[w - 1]
+        J_cts_shape, J_cts_offsets = dense_matrix_layout(J_cts_sizes)
+        J_dofs_shape, J_dofs_offsets = dense_matrix_layout(J_dofs_sizes)
+        validate_dense_matrix_shape(J_cts_shape, wp.float32)
+        validate_dense_matrix_shape(J_dofs_shape, wp.float32)
+        self._max_J_cts_size = max(J_cts_sizes, default=0)
+        self._max_J_dofs_size = max(J_dofs_sizes, default=0)
 
         # Use the model's device
         device = model.device
@@ -1572,8 +1565,8 @@ class DenseSystemJacobians:
         with wp.ScopedDevice(device):
             self._data.J_cts_offsets = to_warp_int32_array(J_cts_offsets)
             self._data.J_dofs_offsets = to_warp_int32_array(J_dofs_offsets)
-            self._data.J_cts_data = wp.zeros(shape=(total_J_cts_size,), dtype=wp.float32)
-            self._data.J_dofs_data = wp.zeros(shape=(total_J_dofs_size,), dtype=wp.float32)
+            self._data.J_cts_data = wp.zeros(shape=J_cts_shape, dtype=wp.float32)
+            self._data.J_dofs_data = wp.zeros(shape=J_dofs_shape, dtype=wp.float32)
 
     def build(
         self,
@@ -1597,13 +1590,25 @@ class DenseSystemJacobians:
             contacts: The contacts container describing the active contacts in the system,
                 used to compute the contact constraint Jacobians if provided.
             reset_to_zero: Whether to reset the Jacobian values to zero before building.
-                If false, the Jacobian values will be accumulated onto existing values.
+                If false, entries not written by the builders retain their previous values.
                 Defaults to `True`.
         """
-        # Optionally reset the Jacobian array data to zero
+        # Clear the active rows before rebuilding the Jacobians.
         if reset_to_zero:
-            self._data.J_cts_data.zero_()
-            self._data.J_dofs_data.zero_()
+            zero_dense_blocks(
+                self._data.J_cts_data,
+                data.info.num_total_cts,
+                model.info.num_body_dofs,
+                self._data.J_cts_offsets,
+                self._max_J_cts_size,
+            )
+            zero_dense_blocks(
+                self._data.J_dofs_data,
+                model.info.num_joint_dofs,
+                model.info.num_body_dofs,
+                self._data.J_dofs_offsets,
+                self._max_J_dofs_size,
+            )
 
         # Build the joint constraints and actuation Jacobians
         if model.size.sum_of_num_joints > 0:

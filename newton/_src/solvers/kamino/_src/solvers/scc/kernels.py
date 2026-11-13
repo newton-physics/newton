@@ -121,15 +121,17 @@ def _copy_bilateral_block(
     problem_dim: wp.array[int32],
     problem_mio: wp.array[int32],
     problem_njc: wp.array[int32],
-    problem_D: wp.array[float32],
+    problem_D_storage: wp.array2d[float32],
     bilateral_mio: wp.array[int32],
     bilateral_ld: wp.array[int32],
     bilateral_vio: wp.array[int32],
     # Outputs:
-    bilateral_D: wp.array[float32],
+    bilateral_D_storage: wp.array2d[float32],
     bilateral_P: wp.array[float32],
 ):
     wid, tid = wp.tid()
+    problem_D = problem_D_storage[wid]
+    bilateral_D = bilateral_D_storage[wid]
 
     njc = problem_njc[wid]
     if njc == 0:
@@ -166,7 +168,7 @@ def _build_bilateral_rhs(
     problem_mio: wp.array[int32],
     problem_vio: wp.array[int32],
     problem_njc: wp.array[int32],
-    problem_D: wp.array[float32],
+    problem_D_storage: wp.array2d[float32],
     problem_v_f: wp.array[float32],
     bilateral_vio: wp.array[int32],
     bilateral_P: wp.array[float32],
@@ -175,6 +177,7 @@ def _build_bilateral_rhs(
     bilateral_rhs: wp.array[float32],
 ):
     wid, row = wp.tid()
+    problem_D = problem_D_storage[wid]
 
     njc = problem_njc[wid]
     if row >= njc:
@@ -434,14 +437,17 @@ def _solve_bilateral_contact_response(
     bilateral_vio: wp.array[int32],
     bilateral_P: wp.array[float32],
     projected_mio: wp.array[int32],
-    problem_D: wp.array[float32],
-    bilateral_L: wp.array[float32],
+    problem_D_storage: wp.array2d[float32],
+    bilateral_L_storage: wp.array2d[float32],
     bilateral_permutation: wp.array[int32],
     use_permutation: bool,
     unilateral_begin: int32,
-    projected_D: wp.array[float32],
+    projected_D_storage: wp.array2d[float32],
 ):
     wid, unilateral_local = wp.tid()
+    problem_D = problem_D_storage[wid]
+    bilateral_L = bilateral_L_storage[wid]
+    projected_D = projected_D_storage[wid]
     ncts = problem_dim[wid]
     njc = problem_njc[wid]
     unilateral = njc + unilateral_begin + unilateral_local
@@ -479,12 +485,14 @@ def _assemble_bilateral_contact_response(
     bilateral_vio: wp.array[int32],
     bilateral_P: wp.array[float32],
     projected_mio: wp.array[int32],
-    problem_D: wp.array[float32],
+    problem_D_storage: wp.array2d[float32],
     bilateral_permutation: wp.array[int32],
     use_permutation: bool,
-    projected_D: wp.array[float32],
+    projected_D_storage: wp.array2d[float32],
 ):
     wid, unilateral_row_local, unilateral_column_local = wp.tid()
+    problem_D = problem_D_storage[wid]
+    projected_D = projected_D_storage[wid]
     ncts = problem_dim[wid]
     njc = problem_njc[wid]
     unilateral_row = njc + unilateral_row_local
@@ -549,11 +557,12 @@ def _find_bilateral_factor_row_start(
     mio: wp.array[int32],
     bilateral_ld: wp.array[int32],
     vio: wp.array[int32],
-    factor: wp.array[float32],
+    factor_storage: wp.array2d[float32],
     row_start: wp.array[int32],
 ):
     """Skip exact leading zeros while preserving the response reduction order."""
     wid, row = wp.tid()
+    factor = factor_storage[wid]
     n = njc[wid]
     if row >= n:
         return
@@ -570,7 +579,7 @@ def _find_bilateral_factor_row_start_rcm(
     mio: wp.array[int32],
     bilateral_ld: wp.array[int32],
     vio: wp.array[int32],
-    factor: wp.array[float32],
+    factor_storage: wp.array2d[float32],
     row_start: wp.array[int32],
     tpo: wp.array[int32],
     pattern: wp.array[int32],
@@ -578,6 +587,7 @@ def _find_bilateral_factor_row_start_rcm(
 ):
     """Use the filled RCM tile mask to accelerate the exact leading-zero scan."""
     wid, row = wp.tid()
+    factor = factor_storage[wid]
     n = njc[wid]
     if row >= n:
         return
@@ -608,7 +618,7 @@ def _solve_bilateral_unilateral_response_compact(
     bilateral_ld: wp.array[int32],
     bilateral_vio: wp.array[int32],
     bilateral_P: wp.array[float32],
-    bilateral_L: wp.array[float32],
+    bilateral_L_storage: wp.array2d[float32],
     bilateral_permutation: wp.array[int32],
     response_mio: wp.array[int32],
     response_stride: wp.array[int32],
@@ -618,6 +628,7 @@ def _solve_bilateral_unilateral_response_compact(
 ):
     """Whiten permuted response columns independently for large compact batches."""
     wid, lane = wp.tid()
+    bilateral_L = bilateral_L_storage[wid]
     njc = problem_njc[wid]
     nu = problem_dim[wid] - njc
     if not _compact_schur_fits(njc, nu, response_stride[wid]):
@@ -646,7 +657,7 @@ def _solve_bilateral_unilateral_response_cooperative(
     bilateral_ld: wp.array[int32],
     bilateral_vio: wp.array[int32],
     bilateral_P: wp.array[float32],
-    bilateral_L: wp.array[float32],
+    bilateral_L_storage: wp.array2d[float32],
     bilateral_permutation: wp.array[int32],
     use_permutation: bool,
     response_mio: wp.array[int32],
@@ -667,6 +678,7 @@ def _solve_bilateral_unilateral_response_cooperative(
     lane = tid % int32(32)
     task = tid / int32(32)
     wid = task / tasks_per_world
+    bilateral_L = bilateral_L_storage[wid]
     task_in_world = task - wid * tasks_per_world
     local_lane = lane % int32(16)
     njc = problem_njc[wid]
@@ -755,7 +767,7 @@ def _solve_bilateral_unilateral_response(
     bilateral_ld: wp.array[int32],
     bilateral_vio: wp.array[int32],
     bilateral_P: wp.array[float32],
-    bilateral_L: wp.array[float32],
+    bilateral_L_storage: wp.array2d[float32],
     bilateral_permutation: wp.array[int32],
     use_permutation: bool,
     response_mio: wp.array[int32],
@@ -770,6 +782,7 @@ def _solve_bilateral_unilateral_response(
     threads_per_world = int32(wp.block_dim())
     lane = tid % threads_per_world
     wid = tid / threads_per_world
+    bilateral_L = bilateral_L_storage[wid]
     njc = problem_njc[wid]
     nu = problem_dim[wid] - njc
     factor = bilateral_mio[wid]
@@ -820,13 +833,14 @@ def _compute_scc_unilateral_velocities(
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
     problem_bcgo: wp.array[int32],
-    problem_D: wp.array[float32],
+    problem_D_storage: wp.array2d[float32],
     problem_v_f: wp.array[float32],
     solution_lambdas: wp.array[float32],
     state_v_aug: wp.array[float32],
 ):
     """Evaluate every bounded, limit, and contact row at the current dual iterate."""
     wid, local_row = wp.tid()
+    problem_D = problem_D_storage[wid]
     nbc = problem_nbc[wid]
     nl = problem_nl[wid]
     nc = problem_nc[wid]
@@ -902,7 +916,7 @@ def _solve_scc_inequalities_colored_pgs(
     problem_mu: wp.array[float32],
     problem_bound_lower: wp.array[float32],
     problem_bound_upper: wp.array[float32],
-    problem_D: wp.array[float32],
+    problem_D_storage: wp.array2d[float32],
     problem_P: wp.array[float32],
     problem_v_b: wp.array[float32],
     block_iteration: int32,
@@ -921,6 +935,7 @@ def _solve_scc_inequalities_colored_pgs(
     threads_per_world = int32(wp.block_dim())
     lane = tid % threads_per_world
     wid = tid / threads_per_world
+    problem_D = problem_D_storage[wid]
     cfg = solver_config[wid]
     if block_iteration >= int32(0) and block_iteration >= cfg.max_alternating_iterations:
         return
@@ -1145,7 +1160,7 @@ def _compute_scc_solution_vectors(
     problem_dim: wp.array[int32],
     problem_mio: wp.array[int32],
     problem_vio: wp.array[int32],
-    problem_D: wp.array[float32],
+    problem_D_storage: wp.array2d[float32],
     problem_v_f: wp.array[float32],
     # Outputs:
     state_s: wp.array[float32],
@@ -1154,6 +1169,7 @@ def _compute_scc_solution_vectors(
     solution_v_plus: wp.array[float32],
 ):
     wid, tid = wp.tid()
+    problem_D = problem_D_storage[wid]
 
     ncts = problem_dim[wid]
     if tid >= ncts:

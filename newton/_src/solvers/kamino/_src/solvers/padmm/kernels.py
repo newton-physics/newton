@@ -330,10 +330,11 @@ def _update_delassus_proximal_regularization(
     solver_status: wp.array[PADMMStatus],
     solver_state_sigma: wp.array[wp.vec2f],
     # Outputs:
-    D: wp.array[wp.float32],
+    D_storage: wp.array2d[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
+    D = D_storage[wid]
 
     # Retrieve the number of active constraints in the world
     ncts = problem_dim[wid]
@@ -1399,7 +1400,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         problem_mio: wp.array[wp.int32],
         problem_mu: wp.array[wp.float32],
         problem_v_f: wp.array[wp.float32],
-        problem_D: wp.array[wp.float32],
+        problem_D_storage: wp.array2d[wp.float32],
         problem_P: wp.array[wp.float32],
         problem_bound_lower: wp.array[wp.float32],
         problem_bound_upper: wp.array[wp.float32],
@@ -1446,6 +1447,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
     ):
         # Retrieve the thread index as the world index
         wid = wp.tid()
+        problem_D = problem_D_storage[wid]
 
         # Retrieve the world-specific data
         nbc = problem_nbc[wid]

@@ -789,7 +789,7 @@ def _compute_joint_kinematics_residual_dense(
     model_joint_bid_F: wp.array[wp.int32],
     data_bodies_u_i: wp.array[wp.spatial_vectorf],
     jacobian_cts_offset: wp.array[wp.int32],
-    jacobian_cts_data: wp.array[wp.float32],
+    jacobian_cts_data_storage: wp.array2d[wp.float32],
     # Outputs:
     metric_r_kinematics: wp.array[wp.float32],
     metric_r_kinematics_argmax: wp.array[wp.int64],
@@ -799,6 +799,7 @@ def _compute_joint_kinematics_residual_dense(
 
     # Retrieve the world index of the joint
     wid = model_joint_wid[jid]
+    jacobian_cts_data = jacobian_cts_data_storage[wid]
 
     # Retrieve the body indices of the joint
     # NOTE: these indices are w.r.t the model
@@ -1021,7 +1022,7 @@ def _compute_dual_problem_metrics(
     problem_mio: wp.array[wp.int32],
     problem_mu: wp.array[wp.float32],
     problem_v_f: wp.array[wp.float32],
-    problem_D: wp.array[wp.float32],
+    problem_D_storage: wp.array2d[wp.float32],
     problem_P: wp.array[wp.float32],
     problem_bound_lower: wp.array[wp.float32],
     problem_bound_upper: wp.array[wp.float32],
@@ -1048,6 +1049,7 @@ def _compute_dual_problem_metrics(
 ):
     # Retrieve the thread index as the world index
     wid = wp.tid()
+    problem_D = problem_D_storage[wid]
 
     # Retrieve the world-specific data
     nbc = problem_nbc[wid]

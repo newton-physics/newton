@@ -52,7 +52,7 @@ def _compute_joint_dof_body_wrenches_dense(
     model_joints_dof_act_paths: wp.array[wp.int32],
     data_joints_tau_j: wp.array[wp.float32],
     jacobian_dofs_offsets: wp.array[wp.int32],
-    jacobian_dofs_data: wp.array[wp.float32],
+    jacobian_dofs_data_storage: wp.array2d[wp.float32],
     # Outputs:
     data_bodies_w_a: wp.array[wp.spatial_vectorf],
 ):
@@ -61,6 +61,7 @@ def _compute_joint_dof_body_wrenches_dense(
 
     # Retrieve the world index of the joint
     wid = model_joints_wid[jid]
+    jacobian_dofs_data = jacobian_dofs_data_storage[wid]
 
     # Retrieve the body indices of the joint
     # NOTE: these indices are w.r.t the model
@@ -181,7 +182,7 @@ def _compute_joint_cts_body_wrenches_dense(
     model_joints_bid_B: wp.array[wp.int32],
     model_joints_bid_F: wp.array[wp.int32],
     jacobian_cts_offset: wp.array[wp.int32],
-    jacobian_cts_data: wp.array[wp.float32],
+    jacobian_cts_data_storage: wp.array2d[wp.float32],
     lambdas_offsets: wp.array[wp.int32],
     lambdas_data: wp.array[wp.float32],
     # Outputs:
@@ -192,6 +193,7 @@ def _compute_joint_cts_body_wrenches_dense(
 
     # Retrieve the world index of the joint
     wid = model_joints_wid[jid]
+    jacobian_cts_data = jacobian_cts_data_storage[wid]
 
     # Retrieve the body indices of the joint
     # NOTE: these indices are w.r.t the model
@@ -280,7 +282,7 @@ def _compute_joint_effort_cts_body_wrenches_dense(
     model_joints_bid_B: wp.array[wp.int32],
     model_joints_bid_F: wp.array[wp.int32],
     jacobian_cts_offset: wp.array[wp.int32],
-    jacobian_cts_data: wp.array[wp.float32],
+    jacobian_cts_data_storage: wp.array2d[wp.float32],
     lambdas_offsets: wp.array[wp.int32],
     lambdas_data: wp.array[wp.float32],
     # Outputs:
@@ -291,6 +293,7 @@ def _compute_joint_effort_cts_body_wrenches_dense(
 
     # Retrieve the world index of the joint
     wid = model_joints_wid[jid]
+    jacobian_cts_data = jacobian_cts_data_storage[wid]
 
     # Retrieve the body indices of the joint
     # NOTE: these indices are w.r.t the model
@@ -362,7 +365,7 @@ def _compute_joint_friction_body_wrenches_dense(
     model_joints_bid_B: wp.array[wp.int32],
     model_joints_bid_F: wp.array[wp.int32],
     jacobian_cts_offset: wp.array[wp.int32],
-    jacobian_cts_data: wp.array[wp.float32],
+    jacobian_cts_data_storage: wp.array2d[wp.float32],
     lambdas_offsets: wp.array[wp.int32],
     lambdas_data: wp.array[wp.float32],
     # Outputs:
@@ -373,6 +376,7 @@ def _compute_joint_friction_body_wrenches_dense(
 
     # Retrieve the world index of the joint
     wid = model_joints_wid[jid]
+    jacobian_cts_data = jacobian_cts_data_storage[wid]
 
     # Retrieve the body indices of the joint
     # NOTE: these indices are w.r.t the model
@@ -443,7 +447,7 @@ def _compute_limit_cts_body_wrenches_dense(
     limits_lid: wp.array[wp.int32],
     limits_bids: wp.array[wp.vec2i],
     jacobian_cts_offset: wp.array[wp.int32],
-    jacobian_cts_data: wp.array[wp.float32],
+    jacobian_cts_data_storage: wp.array2d[wp.float32],
     lambdas_offsets: wp.array[wp.int32],
     lambdas_data: wp.array[wp.float32],
     # Outputs:
@@ -461,6 +465,7 @@ def _compute_limit_cts_body_wrenches_dense(
 
     # Retrieve the world index of the limit
     wid = limits_wid[tid]
+    jacobian_cts_data = jacobian_cts_data_storage[wid]
 
     # Extract the body indices associated with the limit
     # NOTE: These indices are w.r.t the model
@@ -530,7 +535,7 @@ def _compute_contact_cts_body_wrenches_dense(
     contacts_cid: wp.array[wp.int32],
     contacts_bid_AB: wp.array[wp.vec2i],
     jacobian_cts_offset: wp.array[wp.int32],
-    jacobian_cts_data: wp.array[wp.float32],
+    jacobian_cts_data_storage: wp.array2d[wp.float32],
     lambdas_offsets: wp.array[wp.int32],
     lambdas_data: wp.array[wp.float32],
     # Outputs:
@@ -548,6 +553,7 @@ def _compute_contact_cts_body_wrenches_dense(
 
     # Retrieve the world index of the contact
     wid = contacts_wid[tid]
+    jacobian_cts_data = jacobian_cts_data_storage[wid]
 
     # Extract the body indices associated with the contact
     # NOTE: These indices are w.r.t the model
