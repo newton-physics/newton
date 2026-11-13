@@ -115,8 +115,9 @@ Collision frequency
    :class:`CollisionSubstepScheduler` instead of a fixed collision interval.
    It preserves velocity-guided speculative contacts and refreshes them based on
    observed shape velocity changes, travel, and the maximum refresh interval.
-   After a velocity change, it uses a one-substep prediction horizon; gravity and
-   impacts may require checks every substep. It preserves every solver substep.
+   Rotating shapes and observed velocity changes require one-substep prediction
+   horizons; gravity and impacts may require checks every substep. It preserves
+   every solver substep.
    See :ref:`tuning-adaptive-collision-detection` for
    configuration, solver requirements, overflow diagnostics, and the limits of
    this alternative to full continuous collision detection.

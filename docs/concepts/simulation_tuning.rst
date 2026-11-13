@@ -135,7 +135,9 @@ could close before the next check, up to the configured distance limit. Supply
 that time as ``pipeline.collide(..., dt=collision_dt)``. Scheduled checks preserve
 this velocity-guided extension. After a collidable shape changes linear or
 angular velocity, the scheduler refreshes contacts with a one-substep prediction
-horizon. Gravity and impacts can therefore require a check every substep.
+horizon. Rotating shapes also require one-substep horizons because their
+witness approach directions change even at constant angular velocity.
+Gravity and impacts can therefore require a check every substep.
 Monitor ``interval_overflow`` for travel beyond the configured distance limit,
 and use enough substeps for abrupt motion: forces and impulses within a substep
 can invalidate the velocity forecast before the scheduler observes them.

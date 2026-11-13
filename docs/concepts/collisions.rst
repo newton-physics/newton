@@ -1590,11 +1590,16 @@ reserve or change authored gaps and physical margins. The global point-speed
 bound determines refresh timing, not per-shape detection distances.
 
 Refreshes occur when the travel estimate approaches the configured distance
-cap, the previous horizon expires, or a collidable shape's linear or angular
+cap, the previous horizon expires, or a routed shape's linear or angular
 velocity changes. After an observed velocity change, the next prediction
-horizon is one solver substep. The first substep may use a longer horizon.
-Gravity, braking, turning, and impacts can therefore require a refresh every
-substep. Shapes with rigid collision disabled do not affect the schedule.
+horizon is one solver substep. Rotating shapes always use one-substep horizons:
+even constant angular velocity changes witness approach directions. Without
+rotation, the first substep may use a longer horizon. Gravity, braking, turning,
+and impacts can also require a refresh every substep.
+
+For explicit broad phase, the pair list determines which shapes affect the
+schedule, including listed shapes with rigid collision disabled; unlisted
+shapes do not affect it. Other broad phases use the rigid collision flags.
 
 The same ``step()`` call works directly or inside CUDA graph capture; callbacks
 must therefore be capture-safe and preallocate their storage. The scheduler

@@ -79,7 +79,7 @@ def test_collision_schedule_horizon_deadline(test, device, external_capture=Fals
                 builder.body_qd[body] = (float(speeds[0]), 0.0, 0.0, 0.0, 0.0, 0.0)
                 model = builder.finalize(device=device)
                 states = (model.state(), model.state())
-                pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=0.03)
+                pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_contact_gap_max=0.03)
                 tick = wp.zeros(1, dtype=int, device=device)
                 horizons = wp.zeros(2 * substeps, dtype=float, device=device)
                 velocities = wp.array(speeds, dtype=float, device=device)
@@ -215,7 +215,7 @@ def test_collision_schedule_refreshes_for_velocity_changes(test, device, externa
             model = builder.finalize(device=device)
             states = (model.state(), model.state())
             changed_velocity = wp.array([(*velocity, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device)
-            pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=1.0)
+            pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_contact_gap_max=1.0)
             tick = wp.zeros(1, dtype=int, device=device)
             horizons = wp.zeros(4, dtype=float, device=device)
 
@@ -335,7 +335,7 @@ def test_collision_schedule_checks_final_substep_overflow(test, device):
     builder.add_shape_sphere(body, radius=0.1)
     model = builder.finalize(device=device)
     states = (model.state(), model.state())
-    pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=0.5)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_contact_gap_max=0.5)
     tick = wp.zeros(1, dtype=int, device=device)
     velocities = wp.array([0.0, 0.0, 0.6], dtype=float, device=device)
 
@@ -408,7 +408,7 @@ def test_collision_schedule_nondivisor_intervals(test, device, external_capture=
             builder.body_qd[body] = (speed, 0.0, 0.0, 0.0, 0.0, 0.0)
             model = builder.finalize(device=device)
             states = (model.state(), model.state())
-            pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=1.3)
+            pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_contact_gap_max=1.3)
             tick = wp.zeros(1, dtype=int, device=device)
             horizons = wp.zeros(2 * substeps, dtype=float, device=device)
 
@@ -514,7 +514,137 @@ class TestCollisionSchedule(unittest.TestCase):
     """Test collision deadlines and their effect on thin-wall contact."""
 
 
+@wp.kernel
+def _advance_prescribed_motion(
+    body_q_in: wp.array[wp.transform],
+    body_qd_in: wp.array[wp.spatial_vector],
+    body_q_out: wp.array[wp.transform],
+    body_qd_out: wp.array[wp.spatial_vector],
+    dt: float,
+    rotating: bool,
+):
+    pose = body_q_in[0]
+    velocity = body_qd_in[0]
+    position = wp.transform_get_translation(pose) + wp.spatial_top(velocity) * dt
+    rotation = wp.transform_get_rotation(pose)
+    if rotating:
+        rotation = wp.mul(wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), dt), rotation)
+    else:
+        velocity = wp.spatial_vector(0.0, 0.0, -1.0, 0.0, 0.0, 0.0)
+    body_q_out[0] = wp.transform(position, rotation)
+    body_qd_out[0] = velocity
+
+
+def test_collision_schedule_explicit_motion(test, device, external_capture=False):
+    """Track disabled explicit-pair participants and ignore unlisted moving shapes."""
+    if external_capture and not wp.is_conditional_graph_supported():
+        test.skipTest("CUDA graph capture requires conditional graph support")
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    cfg = builder.ShapeConfig(gap=0.0, margin=0.0, has_shape_collision=False)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15)))
+    sphere = builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
+    builder.body_qd[body] = (0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+    unlisted = builder.add_body(xform=wp.transform(wp.vec3(10.0, 0.0, 0.0)))
+    builder.add_shape_sphere(unlisted, radius=0.1)
+    builder.body_qd[unlisted] = (1000.0, 0.0, 0.0, 0.0, 0.0, 1000.0)
+    ground = builder.add_ground_plane(cfg=builder.ShapeConfig(gap=0.0, margin=0.0))
+    model = builder.finalize(device=device)
+    states = model.state(), model.state()
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        shape_pairs_filtered=wp.array([(sphere, ground)], dtype=wp.vec2i, device=device),
+        speculative_contact_gap_max=0.2,
+    )
+    contacts = pipeline.contacts()
+    calls = wp.zeros(1, dtype=int, device=device)
+
+    def collide(state, horizon):
+        pipeline.collide(state, contacts, dt=horizon)
+        wp.launch(_increment_tick, 1, inputs=[calls], device=device)
+
+    def step(state_in, state_out, dt):
+        wp.copy(state_out.body_q, state_in.body_q)
+        wp.copy(state_out.body_qd, state_in.body_qd)
+        wp.launch(
+            _advance_prescribed_motion,
+            1,
+            inputs=[state_in.body_q, state_in.body_qd, state_out.body_q, state_out.body_qd, dt, False],
+            device=device,
+        )
+
+    schedule = newton.CollisionSubstepScheduler(
+        pipeline, states, collision_callback=collide, substep_callback=step, frame_dt=0.1, substeps=8
+    )
+    if external_capture:
+        with wp.ScopedCapture(device=device) as capture:
+            schedule.step()
+        wp.capture_launch(capture.graph)
+    else:
+        schedule.step()
+    test.assertEqual(int(schedule.interval_overflow.numpy()[0]), 0)
+    test.assertGreater(int(calls.numpy()[0]), 1)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+def test_collision_schedule_constant_rotation(test, device, external_capture=False):
+    """Retain a mesh's newly approaching vertices under a constant angular velocity."""
+    if external_capture and not wp.is_conditional_graph_supported():
+        test.skipTest("CUDA graph capture requires conditional graph support")
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    cfg = builder.ShapeConfig(gap=0.0, margin=0.0)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.001)))
+    builder.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.05, 0.05, 1.0), cfg=cfg)
+    builder.body_qd[body] = (0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+    builder.add_ground_plane(cfg=cfg)
+    model = builder.finalize(device=device)
+    states = model.state(), model.state()
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", reduce_contacts=False, speculative_contact_gap_max=10.0
+    )
+    contacts = pipeline.contacts()
+
+    def collide(state, horizon):
+        pipeline.collide(state, contacts, dt=horizon)
+
+    def step(state_in, state_out, dt):
+        wp.launch(
+            _advance_prescribed_motion,
+            1,
+            inputs=[state_in.body_q, state_in.body_qd, state_out.body_q, state_out.body_qd, dt, True],
+            device=device,
+        )
+
+    schedule = newton.CollisionSubstepScheduler(
+        pipeline, states, collision_callback=collide, substep_callback=step, frame_dt=float(np.pi - 0.05), substeps=8
+    )
+    if external_capture:
+        with wp.ScopedCapture(device=device) as capture:
+            schedule.step()
+        wp.capture_launch(capture.graph)
+    else:
+        schedule.step()
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0)
+    pose = states[0].body_q.numpy()[0]
+    transform = wp.transform(wp.vec3(pose[:3]), wp.quat(pose[3:]))
+    shape_body = model.shape_body.numpy()
+    heights = []
+    for side in (0, 1):
+        shapes = getattr(contacts, f"rigid_contact_shape{side}").numpy()[:count]
+        points = getattr(contacts, f"rigid_contact_point{side}").numpy()[:count]
+        heights.extend(
+            float(wp.transform_point(transform, wp.vec3(point))[2])
+            for shape, point in zip(shapes, points, strict=True)
+            if shape_body[shape] == body
+        )
+    test.assertLess(min(heights), 0.0, "Cached witnesses missed the mesh's new contacting vertices")
+    test.assertEqual(int(schedule.interval_overflow.numpy()[0]), 0)
+
+
 for name, function in (
+    ("explicit_motion", test_collision_schedule_explicit_motion),
+    ("constant_rotation", test_collision_schedule_constant_rotation),
     ("velocity_changes", test_collision_schedule_refreshes_for_velocity_changes),
     ("visual_shapes", test_collision_schedule_ignores_visual_shapes),
     ("stopping_leader", test_collision_schedule_stopping_leader),

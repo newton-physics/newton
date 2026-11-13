@@ -19,6 +19,15 @@ __all__ = ["CollisionSubstepScheduler"]
 
 
 @wp.kernel(enable_backward=False)
+def _mark_explicit_motion_shapes(pairs: wp.array[wp.vec2i], shape_flags: wp.array[wp.int32]):
+    pair = pairs[wp.tid()]
+    for side in range(2):
+        shape = pair[side]
+        if shape >= 0 and shape < shape_flags.shape[0]:
+            wp.atomic_max(shape_flags, shape, int(ShapeFlags.COLLIDE_SHAPES))
+
+
+@wp.kernel(enable_backward=False)
 def _find_max_point_speed(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -54,12 +63,16 @@ def _find_max_point_speed(
     velocity = wp.spatial_vector(shape_origin_velocity, angular_velocity)
     # Slowing or turning can increase pairwise closing speed without increasing
     # either shape's speed bound, invalidating previously omitted contacts.
-    changed = bool(False)
+    changed = int(0)
     for axis in range(6):
         if velocity[axis] != previous_shape_velocity[shape_id][axis]:
-            changed = True
-    if changed:
-        wp.atomic_max(motion_changed, 0, 1)
+            changed = 1
+    # Constant angular velocity still changes witness approach directions.
+    # Mark rotation separately so even the first horizon is one substep.
+    if wp.length_sq(angular_velocity) > 0.0:
+        changed = 2
+    if changed > 0:
+        wp.atomic_max(motion_changed, 0, changed)
     previous_shape_velocity[shape_id] = velocity
 
 
@@ -116,7 +129,7 @@ def _update_collision_schedule(
         if float(collision_intervals[interval_index]) * relative_travel_per_substep <= travel_budget:
             selected_interval_index = interval_index
     # Impacts and acceleration invalidate a long constant-velocity forecast.
-    if substep_index > 0 and changed > 0:
+    if (substep_index > 0 and changed > 0) or changed > 1:
         selected_interval_index = 0
     for interval_index in range(interval_count):
         interval_conditions[interval_index] = int(interval_index == selected_interval_index)
@@ -138,10 +151,12 @@ def _check_final_substep(
     interval_overflow: wp.array[wp.int32],
     substep_dt: float,
     travel_budget: float,
+    motion_changed: wp.array[wp.int32],
 ):
     """Check motion observed after the final solver substep."""
     speed = max_point_speed[0]
     max_point_speed[0] = 0.0
+    motion_changed[0] = 0
     previous_speed = previous_max_point_speed[0]
     accumulated_travel = travel_estimate[0]
     if speed > previous_speed:
@@ -156,7 +171,7 @@ class CollisionSubstepScheduler:
     The scheduler always invokes ``substep_callback`` exactly ``substeps``
     times per frame. It invokes ``collision_callback`` before substep zero and
     thereafter whenever the accumulated global relative-travel estimate would
-    exhaust the configured budget, a collidable shape's velocity changes,
+    exhaust the configured budget, a routed shape's velocity changes or it rotates,
     or the previous collision horizon expires.
     The speed bound is reevaluated after every substep, including the final
     substep for overflow reporting.
@@ -166,9 +181,15 @@ class CollisionSubstepScheduler:
     Collision detection keeps the pipeline's velocity-guided speculative
     extension. The global speed bound only selects refresh times; it does not
     expand contact gaps in every direction. After observing any change in a
-    collidable shape's linear or angular velocity, refresh with a one-substep
-    prediction horizon. The first substep may use a longer horizon. Gravity
-    and impacts can therefore require a collision pass every substep.
+    routed shape's linear or angular velocity, refresh with a one-substep
+    prediction horizon. Rotating shapes always use one-substep horizons,
+    since constant angular velocity still changes witness approach directions.
+    Without rotation, the first substep may use a longer horizon. Gravity
+    and impacts can also require a collision pass every substep.
+
+    An explicit collision pair list determines which shapes affect the schedule,
+    including listed shapes with shape collision disabled. Other broad phases
+    use the model's shape collision flags.
 
     Scheduling reacts to acceleration and impulses after a completed substep;
     it does not bound unobserved forces or impulses within the next substep.
@@ -300,6 +321,14 @@ class CollisionSubstepScheduler:
         self._travel_estimate = wp.zeros(1, dtype=wp.float32, device=device)
         self._previous_shape_velocity = wp.zeros(model.shape_count, dtype=wp.spatial_vector, device=device)
         self._motion_changed = wp.zeros(1, dtype=wp.int32, device=device)
+        self._explicit_shape_pairs = (
+            collision_pipeline.shape_pairs_filtered if collision_pipeline.broad_phase_mode == "explicit" else None
+        )
+        self._motion_shape_flags = (
+            wp.zeros(model.shape_count, dtype=wp.int32, device=device)
+            if self._explicit_shape_pairs is not None
+            else model.shape_flags
+        )
         self.interval_overflow = wp.zeros(1, dtype=wp.int32, device=device)
         """Device scalar set when observed per-substep or accumulated travel exceeds the budget."""
 
@@ -336,6 +365,15 @@ class CollisionSubstepScheduler:
     def step(self) -> None:
         """Execute or record one complete fixed-substep frame."""
         model = self._model
+        if self._explicit_shape_pairs is not None:
+            # Rebuild on device so updates to the pair array also work in graphs.
+            self._motion_shape_flags.zero_()
+            wp.launch(
+                _mark_explicit_motion_shapes,
+                dim=len(self._explicit_shape_pairs),
+                inputs=[self._explicit_shape_pairs, self._motion_shape_flags],
+                device=model.device,
+            )
         for substep_index in range(self._substeps):
             state_in = substep_index % 2
             state = self._states[state_in]
@@ -347,7 +385,7 @@ class CollisionSubstepScheduler:
                     state.body_qd,
                     model.body_com,
                     model.shape_body,
-                    model.shape_flags,
+                    self._motion_shape_flags,
                     model.shape_transform,
                     model.shape_collision_aabb_lower,
                     model.shape_collision_aabb_upper,
@@ -394,7 +432,7 @@ class CollisionSubstepScheduler:
                 self._states[0].body_qd,
                 model.body_com,
                 model.shape_body,
-                model.shape_flags,
+                self._motion_shape_flags,
                 model.shape_transform,
                 model.shape_collision_aabb_lower,
                 model.shape_collision_aabb_upper,
@@ -415,6 +453,7 @@ class CollisionSubstepScheduler:
                 self.interval_overflow,
                 self._substep_dt,
                 self._travel_budget,
+                self._motion_changed,
             ],
             device=model.device,
         )
