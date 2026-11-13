@@ -21,10 +21,10 @@ from newton.tests._usd_deformable_test_utils import (
     _author_unit_tet,
     _deformable_stage,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUSDDeformableVisual(unittest.TestCase):
     @staticmethod
     def _bind(prim, points):

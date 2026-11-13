@@ -34,7 +34,7 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino.config import ConstraintStabilizationConfig, PADMMSolverConfig
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 class TestPhysicsVerification(unittest.TestCase):
@@ -1551,11 +1551,15 @@ for device in devices:
             True,
         ),
         "mujoco_cpu": (
-            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
+            requires(*MUJOCO_MODULES)(
+                lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+            ),
             True,
         ),
         "mujoco_warp": (
-            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
+            requires(*MUJOCO_MODULES)(
+                lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+            ),
             True,
         ),
         "xpbd": (
@@ -1611,11 +1615,15 @@ for device in devices:
             True,
         ),
         "mujoco_cpu": (
-            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
+            requires(*MUJOCO_MODULES)(
+                lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+            ),
             True,
         ),
         "mujoco_warp": (
-            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
+            requires(*MUJOCO_MODULES)(
+                lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+            ),
             True,
         ),
         "semi_implicit": (
@@ -1746,7 +1754,7 @@ for device in devices:
             "test_restitution_mujoco_cpu",
             test_restitution_mujoco,
             devices=[device],
-            solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
+            solver_fn=requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True)),
             use_mujoco_cpu=True,
         )
     if device.is_cuda:
@@ -1755,7 +1763,7 @@ for device in devices:
             "test_restitution_mujoco_warp",
             test_restitution_mujoco,
             devices=[device],
-            solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+            solver_fn=requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
             use_mujoco_cpu=False,
         )
 
@@ -1763,11 +1771,11 @@ for device in devices:
     # equalities and revolute or fixed loop closures, and its stiff ball closure resolves the initial
     # 0.29 m closure violation with an orbit below this test's MuJoCo-tuned amplitude bound.
     loop_solvers = {
-        "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(
-            model, use_mujoco_cpu=True, iterations=100, ls_iterations=50
+        "mujoco_cpu": requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, iterations=100, ls_iterations=50)
         ),
-        "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
-            model, use_mujoco_cpu=False, iterations=100, ls_iterations=50
+        "mujoco_warp": requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, iterations=100, ls_iterations=50)
         ),
     }
     for solver_name, solver_fn in loop_solvers.items():

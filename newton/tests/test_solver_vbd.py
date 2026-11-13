@@ -79,10 +79,10 @@ from newton._src.solvers.vbd.solver_vbd import (
 )
 from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.unittest_utils import (
-    USD_AVAILABLE,
     add_function_test,
     configure_sdf_for_collision_shapes,
     get_test_devices,
+    requires,
 )
 
 devices = get_test_devices()
@@ -5164,7 +5164,7 @@ def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
         newton.solvers.SolverVBD.register_custom_attributes(newton.ModelBuilder(), dahl_defaults_enabled=True)
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires USD (pxr)")
+@requires("pxr.Usd")
 class TestVBDUsdParsing(unittest.TestCase):
     def test_scene_attributes_configure_solver(self):
         """Parse authored VBD scene values while preserving explicit solver overrides."""

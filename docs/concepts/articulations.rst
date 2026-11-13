@@ -456,7 +456,7 @@ Implementation details differ by coordinate formulation:
   kinematic bodies can therefore be softer under SemiImplicit.
 - :class:`~newton.solvers.SolverKamino` with ``dynamics_solver="lox"`` advances the pose of
   kinematic bodies with their prescribed :attr:`newton.State.body_qd` over the step, while its
-  PADMM and DVI backends keep the input :attr:`newton.State.body_q`. Under LOX, write a velocity
+  PADMM and SCC backends keep the input :attr:`newton.State.body_q`. Under LOX, write a velocity
   that reaches the target pose within the step.
 
 :class:`~newton.solvers.SolverMuJoCo` holds kinematic roots with a weld constraint to the world, and
