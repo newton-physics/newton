@@ -945,7 +945,6 @@ class TestModelBuilderReplicate(unittest.TestCase):
         source = ModelBuilder()
         source.add_rod(
             rod=Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.5, 0.0, 2.0)], radius=0.1),
-            body_frame_origin="com",
         )
 
         array_backed = ModelBuilder()

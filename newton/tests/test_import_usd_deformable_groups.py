@@ -201,7 +201,6 @@ class TestUSDDeformableGroups(unittest.TestCase):
                 native_result = native.add_rod(
                     rod=newton.Rod(points, edges=edges, radius=0.02),
                     label="/World/Cables",
-                    body_frame_origin="com",
                 )
 
                 stage = _deformable_stage()
@@ -257,7 +256,6 @@ class TestUSDDeformableGroups(unittest.TestCase):
                 radius=0.02,
             ),
             label=graph_label,
-            body_frame_origin="com",
         )
         self.assertEqual((bodies, joints), ([0, 1, 2, 3, 4], [1, 2, 3, 4]))
         for source in (native, builder):

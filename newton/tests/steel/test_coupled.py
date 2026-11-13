@@ -105,7 +105,7 @@ def _coupled(model, boxes, rigid_factory=_steel, *, iterations=1, mode="lagged",
             ),
             SolverCoupledProxy.Entry(
                 name="vbd",
-                solver=lambda v: SolverVBD(model=v, iterations=10, rigid_compliant_alm=True),
+                solver=lambda v: SolverVBD(model=v, iterations=10),
                 particles=list(range(model.particle_count)),
             ),
         ],
@@ -798,9 +798,7 @@ def _admm(model, box, rod_bodies, rigid_factory=_steel, *, iterations=3, gamma=0
             SolverCoupled.Entry(name="rigid", solver=rigid_factory, bodies=[box], joints=box_joints),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda v: SolverVBD(
-                    model=v, iterations=8, rigid_compliant_alm=True, rigid_contact_history=False
-                ),
+                solver=lambda v: SolverVBD(model=v, iterations=8, rigid_contact_history=False),
                 bodies=rod_bodies,
                 joints=[j for j in range(model.joint_count) if j not in box_joints],
             ),
@@ -939,7 +937,7 @@ def test_unsupported_roles_raise(test, device):
         entries=[
             SolverCoupledProxy.Entry(
                 name="vbd",
-                solver=lambda v: SolverVBD(model=v, iterations=4, rigid_compliant_alm=True),
+                solver=lambda v: SolverVBD(model=v, iterations=4),
                 bodies=[soft_box],
                 joints=[1],
             ),

@@ -448,7 +448,7 @@ def test_selection_replays_from_cuda_graph(test, device):
     model = scene.finalize(device=device)
     mujoco = newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False)
     vbd = newton.solvers.SolverVBD(
-        model, rigid_compliant_alm=True, rigid_soft_enable_dat=True, collision_pipeline=newton.CollisionPipeline(model)
+        model, rigid_soft_enable_dat=True, collision_pipeline=newton.CollisionPipeline(model)
     )
     cube_radius = vbd._rigid_dat_body_bounding_radius.numpy()[0]
 

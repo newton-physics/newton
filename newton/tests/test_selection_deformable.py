@@ -75,7 +75,6 @@ def _add_test_cable(builder, label="cable"):
     builder.add_rod(
         rod=newton.Rod(_CABLE_PTS, radius=0.02),
         label=label,
-        body_frame_origin="com",
     )
 
 
@@ -484,7 +483,6 @@ class TestDeformableBuilderObjects(unittest.TestCase):
             rod=newton.Rod([(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)], radius=0.02),
             label="cable_proto",
             wrap_in_articulation=True,
-            body_frame_origin="com",
         )
 
         scene = newton.ModelBuilder()
@@ -572,7 +570,6 @@ class TestDeformableBuilderObjects(unittest.TestCase):
             rod=newton.Rod(_CABLE_PTS[:3], radius=0.02),
             label="anchored_curve",
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
         anchor = builder.add_joint_fixed(parent, bodies[0])
         builder.add_articulation([root, *joints, anchor], label="robot_with_cable")
@@ -741,7 +738,6 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         cable_bodies, _cable_joints = builder.add_rod(
             rod=newton.Rod([(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)], radius=0.02),
             label="cable",
-            body_frame_origin="com",
         )
         _add_test_cloth(builder)
         _add_test_soft_body(builder)
@@ -1725,7 +1721,7 @@ def test_compact_cable_requires_its_generated_root(test, device):
     stage = _deformable_stage()
     _add_cable_curve(stage, "/World/Cable", _CABLE_PTS)
     builder = newton.ModelBuilder()
-    builder.add_rod(rod=newton.Rod(_CABLE_PTS, radius=0.01), label="background", body_frame_origin="com")
+    builder.add_rod(rod=newton.Rod(_CABLE_PTS, radius=0.01), label="background")
     result = builder.add_usd(stage, return_deformable_results=True)
     bodies, rod_joints = result["path_cable_map"]["/World/Cable"]
     test.assertEqual(rod_joints, [4, 5])
@@ -1914,7 +1910,6 @@ class TestUSDDeformableObjects(unittest.TestCase):
             rod=newton.Rod(_CABLE_PTS[:3], radius=0.02),
             label="/World/Cable",
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
         anchor = native.add_joint_ball(
             -1,

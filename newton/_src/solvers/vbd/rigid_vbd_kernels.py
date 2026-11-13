@@ -7,11 +7,9 @@ Rigid body VBD solver kernels and utilities.
 This module contains all rigid body-specific kernels, device functions, data structures,
 and constants for the VBD solver's rigid body domain.
 
-Every constraint row runs one of two paths, selected by the ``use_compliant_alm``
-flag threaded through the kernels: the legacy AVBD ramping penalty, or compliant
-ALM, which pairs a finite material stiffness with an augmented-Lagrangian metric.
-The two paths share their geometry and differ only in how a row turns a
-constraint violation into a force and how its dual state advances.
+Rigid joint and body-body contact rows use compliant ALM, which pairs finite
+material stiffness with an augmented-Lagrangian metric. Body-particle contacts
+are penalty contacts at their averaged material stiffness.
 
 Organization, in file order:
 - Constants: Solver parameters and thresholds
@@ -135,17 +133,14 @@ def _alm_relaxed_ascent(lam: Any, R: Any, material_k: float, rho: float) -> Any:
 
 
 @wp.func
-def _material_force_terms(rho: float, material_k: float, dual: Any, use_compliant_alm: int):
-    """Return the ``(k, lam_eff)`` pair of a row force ``k*C + lam_eff``.
+def _material_force_terms(rho: float, material_k: float, dual: Any):
+    """Return ``(k_eff, s * dual)``, the ``(k, lam_eff)`` pair of a row force ``k*C + lam_eff``.
 
-    Compliant ALM gives ``(k_eff, s*dual)``, legacy ``(rho, dual)``. Coulomb
+    ``s`` and ``k_eff`` come from :func:`_compliant_alm_coefficients`. Coulomb
     tangents bypass this: their dual is not scaled by ``s``.
     """
-    if use_compliant_alm == 1:
-        s, k_eff, _a = _compliant_alm_coefficients(material_k, rho)
-        return k_eff, dual * s
-
-    return rho, dual
+    s, k_eff, _a = _compliant_alm_coefficients(material_k, rho)
+    return k_eff, dual * s
 
 
 # ---------------------------------
@@ -225,7 +220,6 @@ def _contact_auto_tangent_rho(
 @wp.struct
 class RigidContactHistory:
     lambda_: wp.array[wp.vec3]
-    penalty_k: wp.array[float]
     normal: wp.array[wp.vec3]
 
 
@@ -676,46 +670,9 @@ def _contact_force_terms(
     a Coulomb bound with no material stiffness, so it passes through unscaled.
     """
     lambda_n = wp.dot(lam, normal)
-    normal_primal_k, lambda_n_eff = _material_force_terms(normal_rho, material_k, lambda_n, 1)
+    normal_primal_k, lambda_n_eff = _material_force_terms(normal_rho, material_k, lambda_n)
     lam_n = normal * lambda_n
     return normal_primal_k, normal * lambda_n_eff + (lam - lam_n)
-
-
-@wp.func
-def _load_solve_weight(
-    legacy_penalty_k: wp.array[float],
-    compliant_rho: wp.array[float],
-    idx: int,
-    use_compliant_alm: int,
-):
-    """Load the active solve weight without reading the inactive array.
-
-    Compliant ALM uses ``rho``, constant across the sweeps; legacy AVBD uses the
-    mutable ``legacy_penalty_k`` (material stiffness in soft mode, a ramping
-    penalty in hard mode).
-    """
-    if use_compliant_alm == 1:
-        return compliant_rho[idx]
-    return legacy_penalty_k[idx]
-
-
-@wp.func
-def _structural_row_has_stiffness(solve_weight: float, material_k: float, use_compliant_alm: int):
-    """Return whether a structural row has stiffness in the selected formulation."""
-    if use_compliant_alm == 1:
-        return material_k > 0.0
-    return solve_weight > 0.0
-
-
-@wp.func
-def _ramp_penalty_k(
-    current: float,
-    cap: float,
-    beta: float,
-    residual: float,
-):
-    """Ramp the legacy penalty, clamped to the material stiffness."""
-    return wp.min(cap, current + beta * residual)
 
 
 @wp.func
@@ -945,18 +902,6 @@ def _contact_tangent_conditioning_scale(
 
 
 @wp.func
-def _contact_penalty_floor(material_k: float, k_start: float):
-    """Resolve the mutable legacy contact-penalty floor.
-
-    A nonnegative ``k_start`` gives ``min(k_start, material_k)``; a negative value
-    uses ``material_k``, disabling the ramp.
-    """
-    if k_start >= 0.0:
-        return wp.min(k_start, material_k)
-    return material_k
-
-
-@wp.func
 def _update_dual_vec3(
     C_vec: wp.vec3,
     C0: wp.vec3,
@@ -964,21 +909,11 @@ def _update_dual_vec3(
     solve_weight: float,
     material_k: float,
     lam: wp.vec3,
-    legacy_is_hard: int,
-    use_compliant_alm: int,
 ):
-    """Update one vec3 dual in the selected formulation.
-
-    Compliant ALM uses finite-material relaxed ascent; legacy hard accumulates
-    the stabilized residual; legacy soft leaves the multiplier unchanged.
-    """
-    if use_compliant_alm == 0 and legacy_is_hard == 0:
-        return lam
+    """Update one vec3 dual using finite-material relaxed ascent."""
 
     C_update = C_vec - alpha * C0
-    if use_compliant_alm == 1:
-        return _alm_relaxed_ascent(lam, C_update, material_k, solve_weight)
-    return solve_weight * C_update + lam
+    return _alm_relaxed_ascent(lam, C_update, material_k, solve_weight)
 
 
 @wp.func
@@ -986,23 +921,14 @@ def _update_joint_structural_dual(
     residual: wp.vec3,
     C0: wp.vec3,
     alpha: float,
-    penalty_k: wp.array[float],
     rho: wp.array[float],
     material_k: wp.array[float],
-    joint_is_hard: wp.array[wp.int32],
     idx: int,
     lam: wp.vec3,
-    use_compliant_alm: int,
-    beta: float,
 ) -> wp.vec3:
-    """Update one structural dual and ramp its legacy penalty."""
+    """Update one structural dual using its material stiffness and ALM metric."""
     row_material_k = material_k[idx]
-    legacy_is_hard = int(0)
-    if use_compliant_alm == 1:
-        solve_weight = rho[idx]
-    else:
-        solve_weight = penalty_k[idx]
-        legacy_is_hard = joint_is_hard[idx]
+    solve_weight = rho[idx]
 
     lam_new = _update_dual_vec3(
         residual,
@@ -1011,16 +937,7 @@ def _update_joint_structural_dual(
         solve_weight,
         row_material_k,
         lam,
-        legacy_is_hard,
-        use_compliant_alm,
     )
-    if use_compliant_alm != 1:
-        penalty_k[idx] = _ramp_penalty_k(
-            solve_weight,
-            row_material_k,
-            beta,
-            wp.length(residual),
-        )
     return lam_new
 
 
@@ -1040,7 +957,6 @@ def evaluate_angular_constraint_force_hessian(
     C0_ang: wp.vec3,
     alpha: float,
     damping: float,
-    use_compliant_alm: int,
     dt: float,
 ):
     """Projected angular constraint force/Hessian for an angular error ``kappa`` with Jacobian ``J_world``.
@@ -1058,9 +974,7 @@ def evaluate_angular_constraint_force_hessian(
       - P = I - a*a^T: revolute (1 free angular axis)
       - arbitrary P: D6 (0-3 free angular axes)
 
-    ``solve_weight`` is ALM ``rho`` in compliant mode and the mutable penalty
-    stiffness in legacy mode. ``material_k`` supplies the finite material stiffness
-    used by compliant ALM.
+    ``solve_weight`` is ALM ``rho``; ``material_k`` is the finite material stiffness.
     Returns:
         (tau_world, H_aa) -- constraint torque and Hessian in world frame.
     """
@@ -1068,7 +982,7 @@ def evaluate_angular_constraint_force_hessian(
 
     kappa_stab = kappa_now_vec - alpha * C0_ang
     kappa_perp = P * kappa_stab
-    joint_primal_k, lambda_eff = _material_force_terms(solve_weight, material_k, lambda_ang, use_compliant_alm)
+    joint_primal_k, lambda_eff = _material_force_terms(solve_weight, material_k, lambda_ang)
 
     # P_ang is constant for joint angular residuals, so lambda_ang should already
     # be in-basis. Project here too so stale or externally edited state cannot
@@ -1184,7 +1098,6 @@ def evaluate_linear_constraint_force_hessian(
     C0_lin: wp.vec3,
     alpha: float,
     damping: float,
-    use_compliant_alm: int,
     dt: float,
 ):
     """Projected linear constraint force/Hessian for anchor coincidence.
@@ -1200,9 +1113,7 @@ def evaluate_linear_constraint_force_hessian(
       - P = I - a*a^T: prismatic (1 free linear axis)
       - arbitrary P: D6 (0-3 free linear axes)
 
-    ``solve_weight`` is ALM ``rho`` in compliant mode and the mutable penalty
-    stiffness in legacy mode. ``material_k`` supplies the finite material stiffness
-    used by compliant ALM.
+    ``solve_weight`` is ALM ``rho``; ``material_k`` is the finite material stiffness.
 
     Returns:
       - force (wp.vec3): Linear force (world)
@@ -1224,7 +1135,7 @@ def evaluate_linear_constraint_force_hessian(
     C_vec = x_c - x_p
     C_stab = C_vec - alpha * C0_lin
     C_perp = P * C_stab
-    joint_primal_k, lambda_eff = _material_force_terms(solve_weight, material_k, lambda_lin, use_compliant_alm)
+    joint_primal_k, lambda_eff = _material_force_terms(solve_weight, material_k, lambda_lin)
 
     # P_lin rotates per call -> must re-project lambda_lin (see build_joint_projectors).
     f_attachment = joint_primal_k * C_perp + P * lambda_eff
@@ -1269,7 +1180,7 @@ def evaluate_body_particle_attachment_particle_force_hessian(
 
     C = particle_pos - anchor
     C_prev = particle_pos_prev - anchor_prev
-    k_eff, lambda_eff = _material_force_terms(rho, stiffness, attachment_lambda, 1)
+    k_eff, lambda_eff = _material_force_terms(rho, stiffness, attachment_lambda)
     force_body = k_eff * C + lambda_eff
     hessian = k_eff * wp.identity(3, float)
     if damping > 0.0 and not wp.isinf(stiffness):
@@ -1454,16 +1365,13 @@ def evaluate_rigid_contact_from_collision(
     contact_lam: wp.vec3,
     friction_mu: float,
     friction_epsilon: float,
-    legacy_hard_contact: int,
-    contact_compliant_alm: int,
     dt: float,
     friction_c0: wp.vec3,
     contact_damping_bidirectional: bool,
 ):
     """Compute rigid-contact forces and 3x3 Hessian blocks for a contact pair.
 
-    Legacy hard and compliant ALM contacts use displacement-based projected
-    Coulomb friction; legacy soft contact uses velocity-based IPC friction.
+    Contacts use displacement-based projected Coulomb friction.
     Normal damping acts on a closing gap only, or in both directions when
     ``contact_damping_bidirectional`` is set.
 
@@ -1471,12 +1379,9 @@ def evaluate_rigid_contact_from_collision(
         10-tuple: (force_a, torque_a, H_ll_a, H_al_a, H_aa_a,
                    force_b, torque_b, H_ll_b, H_al_b, H_aa_b)
     """
-    normal_primal_k = normal_solve_weight
-    contact_lam_eff = contact_lam
-    if contact_compliant_alm == 1:
-        normal_primal_k, contact_lam_eff = _contact_force_terms(
-            normal_solve_weight, contact_material_ke, contact_lam, contact_normal
-        )
+    normal_primal_k, contact_lam_eff = _contact_force_terms(
+        normal_solve_weight, contact_material_ke, contact_lam, contact_normal
+    )
 
     lam_n = wp.dot(contact_lam_eff, contact_normal)
 
@@ -1492,9 +1397,8 @@ def evaluate_rigid_contact_from_collision(
         return (zero_vec, zero_vec, zero_mat, zero_mat, zero_mat, zero_vec, zero_vec, zero_mat, zero_mat, zero_mat)
     f_n = wp.max(f_n, 0.0)
 
-    # Only legacy hard retains a zero-force Hessian. Soft and compliant rows release
-    # it so separated contacts do not resist free motion.
-    if f_n == 0.0 and (legacy_hard_contact == 0 or contact_compliant_alm == 1):
+    # Release the Hessian so separated contacts do not resist free motion.
+    if f_n == 0.0:
         zero_vec = wp.vec3(0.0)
         zero_mat = wp.mat33(0.0)
         return (zero_vec, zero_vec, zero_mat, zero_mat, zero_mat, zero_vec, zero_vec, zero_mat, zero_mat, zero_mat)
@@ -1550,39 +1454,27 @@ def evaluate_rigid_contact_from_collision(
     f_t_vec = wp.vec3(0.0)
     K_t = wp.mat33(0.0)
 
-    if legacy_hard_contact == 1 or contact_compliant_alm == 1:
-        if friction_mu > 0.0 and f_n > 0.0:
-            # Hard/ALM: Coulomb projection of rho_t*(disp + friction_c0) + lambda_t.
-            # friction_c0 is (1-alpha)*C0_t from the caller. ALM uses contact_tangent_rho;
-            # legacy hard reuses the normal solve weight.
-            rho_t = normal_solve_weight
-            if contact_compliant_alm == 1:
-                rho_t = contact_tangent_rho
-            tangential_disp = -(v_t * dt)
-            lam_t = contact_lam_eff - contact_normal * lam_n
-            f_t_vec = rho_t * (tangential_disp + friction_c0) + lam_t
-            f_t_len = wp.length(f_t_vec)
-            cone_limit = friction_mu * f_n
-            if contact_compliant_alm == 1 and f_t_len > cone_limit:
-                # Outside the Coulomb cone, the exact projection Jacobian has zero slip-direction
-                # stiffness. Add a conservative PSD solve metric there; force stays unchanged.
-                t_hat = f_t_vec / f_t_len
-                t_outer = wp.outer(t_hat, t_hat)
-                slip_norm = wp.length(tangential_disp)
-                sliding_solve_metric = cone_limit * _regularized_coulomb_scale(slip_norm, friction_epsilon * dt)
-                K_t = (cone_limit / f_t_len) * rho_t * (I3 - n_outer - t_outer)
-                K_t = K_t + sliding_solve_metric * t_outer
-            else:
-                K_t = rho_t * (I3 - n_outer)
-            f_t_vec = _project_coulomb_tangent(f_t_vec, f_t_len, cone_limit)
-    else:
-        # Soft: IPC regularized Coulomb (force and Hessian).
-        if friction_mu > 0.0 and f_n > 0.0:
-            f_friction, K_friction = compute_projected_isotropic_friction(
-                friction_mu, f_n, contact_normal, v_t * dt, friction_epsilon * dt
-            )
-            f_t_vec = f_friction
-            K_t = K_friction
+    if friction_mu > 0.0 and f_n > 0.0:
+        # Coulomb projection of rho_t*(disp + friction_c0) + lambda_t.
+        # friction_c0 is (1-alpha)*C0_t from the caller.
+        rho_t = contact_tangent_rho
+        tangential_disp = -(v_t * dt)
+        lam_t = contact_lam_eff - contact_normal * lam_n
+        f_t_vec = rho_t * (tangential_disp + friction_c0) + lam_t
+        f_t_len = wp.length(f_t_vec)
+        cone_limit = friction_mu * f_n
+        if f_t_len > cone_limit:
+            # Outside the Coulomb cone, the exact projection Jacobian has zero slip-direction
+            # stiffness. Add a conservative PSD solve metric there; force stays unchanged.
+            t_hat = f_t_vec / f_t_len
+            t_outer = wp.outer(t_hat, t_hat)
+            slip_norm = wp.length(tangential_disp)
+            sliding_solve_metric = cone_limit * _regularized_coulomb_scale(slip_norm, friction_epsilon * dt)
+            K_t = (cone_limit / f_t_len) * rho_t * (I3 - n_outer - t_outer)
+            K_t = K_t + sliding_solve_metric * t_outer
+        else:
+            K_t = rho_t * (I3 - n_outer)
+        f_t_vec = _project_coulomb_tangent(f_t_vec, f_t_len, cone_limit)
 
     if contact_kd > 0.0 and f_n > 0.0 and (contact_damping_bidirectional or v_dot_n < 0.0):
         f_n_vec = f_n_vec - contact_kd * v_dot_n * contact_normal
@@ -1872,8 +1764,7 @@ def _eval_soft_ef_contact(
 
         relative_translation = dx - bv * dt
 
-        # contact_ke/kd/mu are the per-contact AVBD values (ramped penalty + pre-mixed material,
-        # cached by init_body_particle_contacts) -- the same source the particle path uses.
+        # Use the same pre-mixed material as the particle path.
         force, hessian = _compute_body_particle_contact_force(
             distance,
             collision_radius,
@@ -2046,40 +1937,6 @@ def compute_projected_isotropic_friction(
 
 
 @wp.func
-def resolve_drive_limit_mode(
-    q: float,
-    target_pos: float,
-    lim_lower: float,
-    lim_upper: float,
-    has_drive: bool,
-    has_limits: bool,
-):
-    """Resolve drive/limit priority and compute position error [m or rad].
-
-    Limits take precedence: if q is outside [lower, upper], the active limit
-    wins. Otherwise the drive engages with target clamped to the limit range.
-
-    Returns:
-        (mode, err_pos) -- active mode constant and signed position error.
-    """
-    mode = _DRIVE_LIMIT_MODE_NONE
-    err_pos = float(0.0)
-    drive_target = target_pos
-    if has_limits:
-        drive_target = wp.clamp(target_pos, lim_lower, lim_upper)
-        if q < lim_lower:
-            mode = _DRIVE_LIMIT_MODE_LIMIT_LOWER
-            err_pos = q - lim_lower
-        elif q > lim_upper:
-            mode = _DRIVE_LIMIT_MODE_LIMIT_UPPER
-            err_pos = q - lim_upper
-    if mode == _DRIVE_LIMIT_MODE_NONE and has_drive:
-        mode = _DRIVE_LIMIT_MODE_DRIVE
-        err_pos = q - drive_target
-    return mode, err_pos
-
-
-@wp.func
 def _resolve_active_drive_row(
     q: float,
     target_pos: float,
@@ -2087,14 +1944,8 @@ def _resolve_active_drive_row(
     lim_upper: float,
     has_drive: bool,
     has_limits: bool,
-    use_compliant_alm: int,
 ):
-    """Legacy mutex mode, or ALM drive mode with target clamped into limits.
-
-    ALM clamps so the drive never fights the separate limit row.
-    """
-    if use_compliant_alm == 0:
-        return resolve_drive_limit_mode(q, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+    """Clamp the drive target so it never fights the separate limit row."""
 
     if not has_drive:
         return _DRIVE_LIMIT_MODE_NONE, 0.0
@@ -2141,32 +1992,6 @@ def _spring_damper_step(error: float, rate_error: float, material_k: float, mate
     if step_k <= 0.0:
         return 0.0, 0.0
     return (material_k * error + material_d * rate_error) / step_k, step_k
-
-
-@wp.func
-def _evaluate_drive_limit_axis(
-    error: float,
-    rate: float,
-    target_rate: float,
-    active_mode: int,
-    drive_k: float,
-    drive_d: float,
-    limit_k: float,
-    limit_d: float,
-    inv_dt: float,
-):
-    """Legacy mutex drive/limit spring: one active mode, no dual.
-
-    The damper is an explicit additive term (not folded into the residual).
-    """
-    if active_mode == _DRIVE_LIMIT_MODE_DRIVE:
-        return (
-            drive_k * error + drive_d * (rate - target_rate),
-            drive_k + drive_d * inv_dt,
-        )
-    if active_mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or active_mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-        return limit_k * error + limit_d * rate, limit_k + limit_d * inv_dt
-    return 0.0, 0.0
 
 
 @wp.func
@@ -2232,8 +2057,7 @@ def _evaluate_limit_axis(
     """Evaluate a compliant unilateral limit alongside the independent drive row.
 
     Keep only forces directed into the selected bound, allowing a resting limit
-    to retain its multiplier while releasing forces directed away. Legacy mode
-    does not call this function.
+    to retain its multiplier while releasing forces directed away.
     """
     bound = _nearest_limit_bound(q, lim_lower, lim_upper, has_limits)
     if bound == _DRIVE_LIMIT_MODE_NONE or limit_k <= 0.0 or axis_support <= 0.0:
@@ -2284,22 +2108,12 @@ def _update_limit_lambda(
 # Drive/limit row predicates shared by support seeding, force, and dual paths.
 @wp.func
 def _drive_row_applies_force(drive_ke: float, drive_kd: float):
-    """Whether the drive row contributes force on either path.
+    """Return whether authored drive coefficients activate force and multiplier updates.
 
     A pure damper (zero stiffness, nonzero damping) is a valid authored drive,
     so damping alone activates the row.
     """
     return drive_ke > 0.0 or drive_kd > 0.0
-
-
-@wp.func
-def _drive_row_needs_state_update(drive_ke: float, drive_kd: float, use_compliant_alm: int):
-    """Whether the dual pass must update this drive row.
-
-    Compliant ALM updates a multiplier for stiffness or damping; legacy only
-    ramps penalty state for positive stiffness.
-    """
-    return drive_ke > 0.0 or (use_compliant_alm == 1 and drive_kd > 0.0)
 
 
 @wp.func
@@ -2327,15 +2141,11 @@ def _drive_limit_needs_support(
 class JointAxisDriveLimit:
     """Drive and limit data for one joint DOF.
 
-    ``material_*_ke`` retain authored stiffness for activation and compliant ALM.
-    ``drive_ke``/``limit_ke`` are the solve stiffnesses, capped by the legacy
-    ramping penalty. Drive damping may independently activate a drive row.
+    Drive damping may independently activate a drive row.
     """
 
     material_drive_ke: float
     material_limit_ke: float
-    drive_ke: float
-    limit_ke: float
     drive_kd: float
     limit_kd: float
     target_pos: float
@@ -2348,7 +2158,6 @@ class JointAxisDriveLimit:
 def _load_joint_axis_drive_limit(
     dof_idx: int,
     target_q_idx: int,
-    penalty_slot: int,
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_target_q: wp.array[float],
@@ -2357,8 +2166,6 @@ def _load_joint_axis_drive_limit(
     joint_limit_upper: wp.array[float],
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
-    joint_penalty_k: wp.array[float],
-    use_compliant_alm: int,
 ):
     """Gather one DOF's drive/limit coefficients from the model arrays."""
     axis = JointAxisDriveLimit()
@@ -2371,12 +2178,6 @@ def _load_joint_axis_drive_limit(
     axis.lower = joint_limit_lower[dof_idx]
     axis.upper = joint_limit_upper[dof_idx]
 
-    axis.drive_ke = axis.material_drive_ke
-    axis.limit_ke = axis.material_limit_ke
-    if use_compliant_alm == 0:
-        penalty_ke = joint_penalty_k[penalty_slot]
-        axis.drive_ke = wp.min(penalty_ke, axis.material_drive_ke)
-        axis.limit_ke = wp.min(penalty_ke, axis.material_limit_ke)
     return axis
 
 
@@ -2390,32 +2191,17 @@ def _eval_joint_axis_drive_limit(
     axis_support: float,
     drive_lambda: float,
     limit_lambda: float,
-    use_compliant_alm: int,
     inv_dt: float,
 ):
-    """One DOF drive/limit force and Hessian: legacy mutex or ALM superposition."""
-    active_mode, err_pos = _resolve_active_drive_row(
-        q, axis.target_pos, axis.lower, axis.upper, has_drive, has_limits, use_compliant_alm
-    )
-    if use_compliant_alm == 0:
-        return _evaluate_drive_limit_axis(
-            err_pos,
-            rate,
-            axis.target_vel,
-            active_mode,
-            axis.drive_ke,
-            axis.drive_kd,
-            axis.limit_ke,
-            axis.limit_kd,
-            inv_dt,
-        )
+    """Superpose the drive and limit force and Hessian for one DOF."""
+    active_mode, err_pos = _resolve_active_drive_row(q, axis.target_pos, axis.lower, axis.upper, has_drive, has_limits)
 
     f_drive, H_drive = _evaluate_drive_axis(
         err_pos,
         rate,
         axis.target_vel,
         active_mode,
-        axis.drive_ke,
+        axis.material_drive_ke,
         axis.drive_kd,
         axis_support,
         drive_lambda,
@@ -2426,7 +2212,7 @@ def _eval_joint_axis_drive_limit(
         axis.lower,
         axis.upper,
         has_limits,
-        axis.limit_ke,
+        axis.material_limit_ke,
         axis.limit_kd,
         rate,
         axis_support,
@@ -2444,25 +2230,13 @@ def _update_joint_axis_drive_limit_state(
     has_drive: bool,
     has_limits: bool,
     dof_idx: int,
-    penalty_slot: int,
-    beta: float,
     inv_dt: float,
-    joint_penalty_k: wp.array[float],
-    joint_material_k: wp.array[float],
     joint_drive_limit_support: wp.array[float],
     joint_drive_lambda: wp.array[float],
     joint_limit_lambda: wp.array[float],
-    use_compliant_alm: int,
 ):
-    """Update compliant drive/limit multipliers or the legacy shared penalty."""
-    active_mode, err_pos = _resolve_active_drive_row(
-        q, axis.target_pos, axis.lower, axis.upper, has_drive, has_limits, use_compliant_alm
-    )
-    if use_compliant_alm == 0:
-        joint_penalty_k[penalty_slot] = _ramp_penalty_k(
-            joint_penalty_k[penalty_slot], joint_material_k[penalty_slot], beta, wp.abs(err_pos)
-        )
-        return
+    """Update compliant drive/limit multipliers."""
+    active_mode, err_pos = _resolve_active_drive_row(q, axis.target_pos, axis.lower, axis.upper, has_drive, has_limits)
 
     axis_support = joint_drive_limit_support[dof_idx]
     joint_drive_lambda[dof_idx] = _update_drive_lambda(
@@ -2567,7 +2341,6 @@ def evaluate_joint_force_hessian(
     joint_qd_start: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
-    joint_penalty_k: wp.array[float],
     joint_rho: wp.array[float],
     joint_material_k: wp.array[float],
     joint_penalty_kd: wp.array[float],
@@ -2590,9 +2363,7 @@ def evaluate_joint_force_hessian(
     joint_lambda_ang: wp.array[wp.vec3],
     joint_C0_lin: wp.array[wp.vec3],
     joint_C0_ang: wp.array[wp.vec3],
-    joint_is_hard: wp.array[wp.int32],
     stab_alpha: float,
-    joint_compliant_alm: int,
     joint_dof_dim: wp.array2d[int],
     joint_rest_angle: wp.array[float],
     joint_angle_prev: wp.array[float],
@@ -2606,16 +2377,12 @@ def evaluate_joint_force_hessian(
 
     Indexing:
         joint_constraint_start[j] is a solver-owned start offset into the per-constraint
-        arrays (joint_penalty_k, joint_penalty_kd, joint_material_k, joint_rho,
-        and joint_is_hard). Layout per joint type:
+        arrays (joint_penalty_kd, joint_material_k, joint_rho). Layout per joint type:
           - ROD:   4 scalars -> [stretch, shear, bend, twist]
           - BALL:  1 scalar  -> [linear]
           - FIXED: 2 scalars -> [linear, angular]
-          - REVOLUTE:  3 scalars -> [linear, angular, ang_drive_limit]
-          - PRISMATIC: 3 scalars -> [linear, angular, lin_drive_limit]
-          - D6: 2 + lin_count + ang_count scalars -> [linear, angular, per-DOF drive/limit]
-        Legacy drive/limit slots use AVBD-ramped penalty stiffness. Under
-        compliant ALM, each free DOF is a scalar finite-material row with its
+          - REVOLUTE, PRISMATIC, D6: 2 scalars -> [linear, angular]
+        Each free DOF is a separate scalar finite-material row with its
         own multiplier; active limits project onto the appropriate half-line.
     """
     jt = joint_type[joint_index]
@@ -2674,10 +2441,10 @@ def evaluate_joint_force_hessian(
         bend_idx = c_start + 2
         twist_idx = c_start + 3
 
-        solve_weight_stretch = _load_solve_weight(joint_penalty_k, joint_rho, stretch_idx, joint_compliant_alm)
-        solve_weight_shear = _load_solve_weight(joint_penalty_k, joint_rho, shear_idx, joint_compliant_alm)
-        solve_weight_bend = _load_solve_weight(joint_penalty_k, joint_rho, bend_idx, joint_compliant_alm)
-        solve_weight_twist = _load_solve_weight(joint_penalty_k, joint_rho, twist_idx, joint_compliant_alm)
+        solve_weight_stretch = joint_rho[stretch_idx]
+        solve_weight_shear = joint_rho[shear_idx]
+        solve_weight_bend = joint_rho[bend_idx]
+        solve_weight_twist = joint_rho[twist_idx]
 
         material_stretch = joint_material_k[stretch_idx]
         material_shear = joint_material_k[shear_idx]
@@ -2695,54 +2462,35 @@ def evaluate_joint_force_hessian(
         total_H_al = wp.mat33(0.0)
         total_H_aa = wp.mat33(0.0)
 
-        bend_stiff = _structural_row_has_stiffness(solve_weight_bend, material_bend, joint_compliant_alm)
-        twist_stiff = _structural_row_has_stiffness(solve_weight_twist, material_twist, joint_compliant_alm)
+        bend_stiff = material_bend > 0.0
+        twist_stiff = material_twist > 0.0
         bend_active = bend_stiff or kd_bend > 0.0
         twist_active = twist_stiff or kd_twist > 0.0
         if bend_active or twist_active:
             lambda_ang = joint_lambda_ang[joint_index]
             C0_ang = joint_C0_ang[joint_index]
-            bend_hard = bend_stiff and joint_compliant_alm == 0 and joint_is_hard[bend_idx] == 1
-            twist_hard = twist_stiff and joint_compliant_alm == 0 and joint_is_hard[twist_idx] == 1
 
             bend_dual = wp.vec3(lambda_ang[0], lambda_ang[1], 0.0)
             twist_dual = wp.vec3(0.0, 0.0, lambda_ang[2])
-            bend_dual_active = joint_compliant_alm == 1 or bend_hard
-            twist_dual_active = joint_compliant_alm == 1 or twist_hard
-            if not bend_dual_active:
-                bend_dual = wp.vec3(0.0)
-            if not twist_dual_active:
-                twist_dual = wp.vec3(0.0)
 
-            bend_primal_k, bend_dual_eff = _material_force_terms(
-                solve_weight_bend, material_bend, bend_dual, joint_compliant_alm
-            )
-            twist_primal_k, twist_dual_eff = _material_force_terms(
-                solve_weight_twist, material_twist, twist_dual, joint_compliant_alm
-            )
+            bend_primal_k, bend_dual_eff = _material_force_terms(solve_weight_bend, material_bend, bend_dual)
+            twist_primal_k, twist_dual_eff = _material_force_terms(solve_weight_twist, material_twist, twist_dual)
 
             K_elastic_diag = wp.vec3(bend_primal_k, bend_primal_k, twist_primal_k)
             K_damp_diag = wp.vec3(kd_bend, kd_bend, kd_twist)
             damping_active = kd_bend > 0.0 or kd_twist > 0.0
 
-            bend_alpha = float(0.0)
-            twist_alpha = float(0.0)
-            if joint_compliant_alm == 1 or bend_hard:
-                bend_alpha = stab_alpha
-            if joint_compliant_alm == 1 or twist_hard:
-                twist_alpha = stab_alpha
-
             sigma = wp.vec3(0.0)
             H_fric_diag = wp.vec3(0.0)
             lambda_projected = bend_dual_eff + twist_dual_eff
-            C0_force = bend_primal_k * bend_alpha * wp.vec3(C0_ang[0], C0_ang[1], 0.0)
-            C0_force = C0_force + twist_primal_k * twist_alpha * wp.vec3(0.0, 0.0, C0_ang[2])
+            C0_force = bend_primal_k * stab_alpha * wp.vec3(C0_ang[0], C0_ang[1], 0.0)
+            C0_force = C0_force + twist_primal_k * stab_alpha * wp.vec3(0.0, 0.0, C0_ang[2])
             dahl_sigma = joint_sigma_start[joint_index]
             dahl_fric = joint_C_fric[joint_index]
-            if bend_stiff and not bend_hard:
+            if bend_stiff:
                 sigma = sigma + wp.vec3(dahl_sigma[0], dahl_sigma[1], 0.0)
                 H_fric_diag = H_fric_diag + wp.vec3(dahl_fric[0], dahl_fric[1], 0.0)
-            if twist_stiff and not twist_hard:
+            if twist_stiff:
                 sigma = sigma + wp.vec3(0.0, 0.0, dahl_sigma[2])
                 H_fric_diag = H_fric_diag + wp.vec3(0.0, 0.0, dahl_fric[2])
 
@@ -2766,46 +2514,29 @@ def evaluate_joint_force_hessian(
             total_torque = total_torque + rod_torque
             total_H_aa = total_H_aa + rod_H_aa
 
-        stretch_stiff = _structural_row_has_stiffness(solve_weight_stretch, material_stretch, joint_compliant_alm)
-        shear_stiff = _structural_row_has_stiffness(solve_weight_shear, material_shear, joint_compliant_alm)
+        stretch_stiff = material_stretch > 0.0
+        shear_stiff = material_shear > 0.0
         stretch_active = stretch_stiff or kd_stretch > 0.0
         shear_active = shear_stiff or kd_shear > 0.0
         if stretch_active or shear_active:
             lambda_lin = joint_lambda_lin[joint_index]
             C0_lin = joint_C0_lin[joint_index]
-            stretch_hard = stretch_stiff and joint_compliant_alm == 0 and joint_is_hard[stretch_idx] == 1
-            shear_hard = shear_stiff and joint_compliant_alm == 0 and joint_is_hard[shear_idx] == 1
 
             stretch_dual = wp.vec3(0.0, 0.0, lambda_lin[2])
             shear_dual = wp.vec3(lambda_lin[0], lambda_lin[1], 0.0)
-            stretch_dual_active = joint_compliant_alm == 1 or stretch_hard
-            shear_dual_active = joint_compliant_alm == 1 or shear_hard
-            if not stretch_dual_active:
-                stretch_dual = wp.vec3(0.0)
-            if not shear_dual_active:
-                shear_dual = wp.vec3(0.0)
 
             stretch_primal_k, stretch_dual_eff = _material_force_terms(
-                solve_weight_stretch, material_stretch, stretch_dual, joint_compliant_alm
+                solve_weight_stretch, material_stretch, stretch_dual
             )
-            shear_primal_k, shear_dual_eff = _material_force_terms(
-                solve_weight_shear, material_shear, shear_dual, joint_compliant_alm
-            )
+            shear_primal_k, shear_dual_eff = _material_force_terms(solve_weight_shear, material_shear, shear_dual)
 
             k_diag = wp.vec3(shear_primal_k, shear_primal_k, stretch_primal_k)
             kd_diag = wp.vec3(kd_shear, kd_shear, kd_stretch)
             damping_active = kd_stretch > 0.0 or kd_shear > 0.0
 
-            stretch_alpha = float(0.0)
-            shear_alpha = float(0.0)
-            if joint_compliant_alm == 1 or stretch_hard:
-                stretch_alpha = stab_alpha
-            if joint_compliant_alm == 1 or shear_hard:
-                shear_alpha = stab_alpha
-
             lambda_local = stretch_dual_eff + shear_dual_eff
-            C0_force_local = shear_primal_k * shear_alpha * wp.vec3(C0_lin[0], C0_lin[1], 0.0)
-            C0_force_local = C0_force_local + stretch_primal_k * stretch_alpha * wp.vec3(0.0, 0.0, C0_lin[2])
+            C0_force_local = shear_primal_k * stab_alpha * wp.vec3(C0_lin[0], C0_lin[1], 0.0)
+            C0_force_local = C0_force_local + stretch_primal_k * stab_alpha * wp.vec3(0.0, 0.0, C0_lin[2])
 
             f_l, t_l, Hll_l, Hal_l, Haa_l = evaluate_rod_stretch_shear_force_hessian(
                 X_wp,
@@ -2834,28 +2565,21 @@ def evaluate_joint_force_hessian(
 
     P_I = wp.identity(3, float)
 
-    # AL gating for non-rod structural slots.
-    lin_lambda = wp.vec3(0.0)
-    lin_C0 = wp.vec3(0.0)
-    lin_alpha = float(0.0)
-    lin_hard = joint_is_hard[c_start] == 1
-    if lin_hard or joint_compliant_alm == 1:
-        lin_lambda = joint_lambda_lin[joint_index]
-        lin_C0 = joint_C0_lin[joint_index]
-        lin_alpha = stab_alpha
+    # Linear structural state for non-Rod joints.
+    lin_lambda = joint_lambda_lin[joint_index]
+    lin_C0 = joint_C0_lin[joint_index]
 
     # BALL has no angular structural slot; other non-rod joints do.
     ang_lambda = wp.vec3(0.0)
     ang_C0 = wp.vec3(0.0)
     ang_alpha = float(0.0)
-    ang_hard = jt != JointType.BALL and joint_is_hard[c_start + 1] == 1
-    if jt != JointType.BALL and (ang_hard or joint_compliant_alm == 1):
+    if jt != JointType.BALL:
         ang_lambda = joint_lambda_ang[joint_index]
         ang_C0 = joint_C0_ang[joint_index]
         ang_alpha = stab_alpha
 
     if jt == JointType.BALL:
-        solve_weight = _load_solve_weight(joint_penalty_k, joint_rho, c_start, joint_compliant_alm)
+        solve_weight = joint_rho[c_start]
         damping = joint_penalty_kd[c_start]
         if solve_weight > 0.0:
             return evaluate_linear_constraint_force_hessian(
@@ -2873,9 +2597,8 @@ def evaluate_joint_force_hessian(
                 P_I,
                 lin_lambda,
                 lin_C0,
-                lin_alpha,
+                stab_alpha,
                 damping,
-                joint_compliant_alm,
                 dt,
             )
         return _zero_force_hessian()
@@ -2889,7 +2612,7 @@ def evaluate_joint_force_hessian(
     q_wc_rest = wp.transform_get_rotation(X_wc_rest)
 
     if jt == JointType.FIXED:
-        solve_weight_lin = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 0, joint_compliant_alm)
+        solve_weight_lin = joint_rho[c_start + 0]
         kd_lin = joint_penalty_kd[c_start + 0]
         if solve_weight_lin > 0.0:
             f_lin, t_lin, Hll_lin, Hal_lin, Haa_lin = evaluate_linear_constraint_force_hessian(
@@ -2907,9 +2630,8 @@ def evaluate_joint_force_hessian(
                 P_I,
                 lin_lambda,
                 lin_C0,
-                lin_alpha,
+                stab_alpha,
                 kd_lin,
-                joint_compliant_alm,
                 dt,
             )
         else:
@@ -2919,7 +2641,7 @@ def evaluate_joint_force_hessian(
             Hal_lin = wp.mat33(0.0)
             Haa_lin = wp.mat33(0.0)
 
-        solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
+        solve_weight_ang = joint_rho[c_start + 1]
         kd_ang = joint_penalty_kd[c_start + 1]
         if solve_weight_ang > 0.0:
             kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
@@ -2938,7 +2660,6 @@ def evaluate_joint_force_hessian(
                 ang_C0,
                 ang_alpha,
                 kd_ang,
-                joint_compliant_alm,
                 dt,
             )
         else:
@@ -2952,7 +2673,7 @@ def evaluate_joint_force_hessian(
         P_lin, P_ang = build_joint_projectors(jt, joint_axis, qd_start, 0, 1, q_wp)
         a = wp.normalize(joint_axis[qd_start])
 
-        solve_weight_lin = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 0, joint_compliant_alm)
+        solve_weight_lin = joint_rho[c_start + 0]
         kd_lin = joint_penalty_kd[c_start + 0]
         if solve_weight_lin > 0.0:
             f_lin, t_lin, Hll_lin, Hal_lin, Haa_lin = evaluate_linear_constraint_force_hessian(
@@ -2970,9 +2691,8 @@ def evaluate_joint_force_hessian(
                 P_lin,
                 lin_lambda,
                 lin_C0,
-                lin_alpha,
+                stab_alpha,
                 kd_lin,
-                joint_compliant_alm,
                 dt,
             )
         else:
@@ -2982,7 +2702,7 @@ def evaluate_joint_force_hessian(
             Hal_lin = wp.mat33(0.0)
             Haa_lin = wp.mat33(0.0)
 
-        solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
+        solve_weight_ang = joint_rho[c_start + 1]
         kd_ang = joint_penalty_kd[c_start + 1]
 
         kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
@@ -3003,19 +2723,17 @@ def evaluate_joint_force_hessian(
                 ang_C0,
                 ang_alpha,
                 kd_ang,
-                joint_compliant_alm,
                 dt,
             )
         else:
             t_ang = wp.vec3(0.0)
             Haa_ang = wp.mat33(0.0)
 
-        # Drive + limits on free angular DOF (constraint slot c_start + 2)
+        # Drive + limits on the free angular DOF.
         dof_idx = qd_start
         axis_dl = _load_joint_axis_drive_limit(
             dof_idx,
             joint_target_q_start[joint_index],
-            c_start + 2,
             joint_target_ke,
             joint_target_kd,
             joint_target_q,
@@ -3024,8 +2742,6 @@ def evaluate_joint_force_hessian(
             joint_limit_upper,
             joint_limit_ke,
             joint_limit_kd,
-            joint_penalty_k,
-            joint_compliant_alm,
         )
         has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
         has_limits = _limit_row_exists(axis_dl.material_limit_ke, axis_dl.lower, axis_dl.upper)
@@ -3049,7 +2765,6 @@ def evaluate_joint_force_hessian(
                 joint_drive_limit_support[dof_idx],
                 joint_drive_lambda[dof_idx],
                 joint_limit_lambda[dof_idx],
-                joint_compliant_alm,
                 inv_dt,
             )
             if H_scalar > 0.0:
@@ -3064,7 +2779,7 @@ def evaluate_joint_force_hessian(
         axis_local = joint_axis[qd_start]
         P_lin, P_ang = build_joint_projectors(jt, joint_axis, qd_start, 1, 0, q_wp)
 
-        solve_weight_lin = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 0, joint_compliant_alm)
+        solve_weight_lin = joint_rho[c_start + 0]
         kd_lin = joint_penalty_kd[c_start + 0]
         if solve_weight_lin > 0.0:
             f_lin, t_lin, Hll_lin, Hal_lin, Haa_lin = evaluate_linear_constraint_force_hessian(
@@ -3082,9 +2797,8 @@ def evaluate_joint_force_hessian(
                 P_lin,
                 lin_lambda,
                 lin_C0,
-                lin_alpha,
+                stab_alpha,
                 kd_lin,
-                joint_compliant_alm,
                 dt,
             )
         else:
@@ -3094,7 +2808,7 @@ def evaluate_joint_force_hessian(
             Hal_lin = wp.mat33(0.0)
             Haa_lin = wp.mat33(0.0)
 
-        solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
+        solve_weight_ang = joint_rho[c_start + 1]
         kd_ang = joint_penalty_kd[c_start + 1]
         if solve_weight_ang > 0.0:
             kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
@@ -3113,19 +2827,17 @@ def evaluate_joint_force_hessian(
                 ang_C0,
                 ang_alpha,
                 kd_ang,
-                joint_compliant_alm,
                 dt,
             )
         else:
             t_ang = wp.vec3(0.0)
             Haa_ang = wp.mat33(0.0)
 
-        # Drive + limits on free linear DOF (constraint slot c_start + 2)
+        # Drive + limits on the free linear DOF.
         dof_idx = qd_start
         axis_dl = _load_joint_axis_drive_limit(
             dof_idx,
             joint_target_q_start[joint_index],
-            c_start + 2,
             joint_target_ke,
             joint_target_kd,
             joint_target_q,
@@ -3134,8 +2846,6 @@ def evaluate_joint_force_hessian(
             joint_limit_upper,
             joint_limit_ke,
             joint_limit_kd,
-            joint_penalty_k,
-            joint_compliant_alm,
         )
         has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
         has_limits = _limit_row_exists(axis_dl.material_limit_ke, axis_dl.lower, axis_dl.upper)
@@ -3164,7 +2874,6 @@ def evaluate_joint_force_hessian(
                 joint_drive_limit_support[dof_idx],
                 joint_drive_lambda[dof_idx],
                 joint_limit_lambda[dof_idx],
-                joint_compliant_alm,
                 inv_dt,
             )
             if H_scalar > 0.0:
@@ -3208,7 +2917,7 @@ def evaluate_joint_force_hessian(
         total_H_aa = wp.mat33(0.0)
 
         # Linear constraint (constrained when lin_count < 3)
-        solve_weight_lin = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 0, joint_compliant_alm)
+        solve_weight_lin = joint_rho[c_start + 0]
         kd_lin = joint_penalty_kd[c_start + 0]
 
         if lin_count < 3 and solve_weight_lin > 0.0:
@@ -3227,9 +2936,8 @@ def evaluate_joint_force_hessian(
                 P_lin,
                 lin_lambda,
                 lin_C0,
-                lin_alpha,
+                stab_alpha,
                 kd_lin,
-                joint_compliant_alm,
                 dt,
             )
             total_force = total_force + f_l
@@ -3239,7 +2947,7 @@ def evaluate_joint_force_hessian(
             total_H_aa = total_H_aa + Haa_l
 
         # Angular constraint (constrained when ang_count < 3)
-        solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
+        solve_weight_ang = joint_rho[c_start + 1]
         kd_ang = joint_penalty_kd[c_start + 1]
 
         kappa, J_world = compute_joint_kappa_and_jacobian(
@@ -3262,7 +2970,6 @@ def evaluate_joint_force_hessian(
                 ang_C0,
                 ang_alpha,
                 kd_ang,
-                joint_compliant_alm,
                 dt,
             )
 
@@ -3295,7 +3002,6 @@ def evaluate_joint_force_hessian(
                     axis_dl = _load_joint_axis_drive_limit(
                         dof_idx,
                         target_q_base + li,
-                        c_start + 2 + li,
                         joint_target_ke,
                         joint_target_kd,
                         joint_target_q,
@@ -3304,8 +3010,6 @@ def evaluate_joint_force_hessian(
                         joint_limit_upper,
                         joint_limit_ke,
                         joint_limit_kd,
-                        joint_penalty_k,
-                        joint_compliant_alm,
                     )
                     has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
                     has_limits = _limit_row_exists(axis_dl.material_limit_ke, axis_dl.lower, axis_dl.upper)
@@ -3324,7 +3028,6 @@ def evaluate_joint_force_hessian(
                             joint_drive_limit_support[dof_idx],
                             joint_drive_lambda[dof_idx],
                             joint_limit_lambda[dof_idx],
-                            joint_compliant_alm,
                             inv_dt,
                         )
                         if H_scalar > 0.0:
@@ -3353,7 +3056,6 @@ def evaluate_joint_force_hessian(
                     axis_dl = _load_joint_axis_drive_limit(
                         dof_idx,
                         target_q_base + lin_count + ai,
-                        c_start + 2 + lin_count + ai,
                         joint_target_ke,
                         joint_target_kd,
                         joint_target_q,
@@ -3362,8 +3064,6 @@ def evaluate_joint_force_hessian(
                         joint_limit_upper,
                         joint_limit_ke,
                         joint_limit_kd,
-                        joint_penalty_k,
-                        joint_compliant_alm,
                     )
                     has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
                     has_limits = _limit_row_exists(axis_dl.material_limit_ke, axis_dl.lower, axis_dl.upper)
@@ -3385,7 +3085,6 @@ def evaluate_joint_force_hessian(
                             joint_drive_limit_support[dof_idx],
                             joint_drive_lambda[dof_idx],
                             joint_limit_lambda[dof_idx],
-                            joint_compliant_alm,
                             inv_dt,
                         )
                         if H_scalar > 0.0:
@@ -3406,10 +3105,6 @@ def evaluate_joint_force_hessian(
 @wp.func
 def _reset_joint_history(
     joint: int,
-    joint_constraint_start: wp.array[wp.int32],
-    joint_constraint_dim: wp.array[wp.int32],
-    joint_penalty_k_min: wp.array[float],
-    joint_penalty_k: wp.array[float],
     joint_C0_lin: wp.array[wp.vec3],
     joint_C0_ang: wp.array[wp.vec3],
     joint_lambda_lin: wp.array[wp.vec3],
@@ -3423,11 +3118,6 @@ def _reset_joint_history(
     refreshes it in the end-of-step finalizer. DOF-indexed drive/limit state is
     reset by the caller.
     """
-    constraint_start = joint_constraint_start[joint]
-    constraint_dim = joint_constraint_dim[joint]
-    for slot in range(constraint_dim):
-        constraint = constraint_start + slot
-        joint_penalty_k[constraint] = joint_penalty_k_min[constraint]
     joint_C0_lin[joint] = wp.vec3(0.0)
     joint_C0_ang[joint] = wp.vec3(0.0)
     joint_lambda_lin[joint] = wp.vec3(0.0)
@@ -3441,16 +3131,12 @@ def reset_rigid_state(
     world_count: int,
     body_world: wp.array[wp.int32],
     joint_world: wp.array[wp.int32],
-    joint_constraint_start: wp.array[wp.int32],
-    joint_constraint_dim: wp.array[wp.int32],
     joint_qd_start: wp.array[wp.int32],
     joint_dof_dim: wp.array2d[wp.int32],
     model_body_q: wp.array[wp.transform],
     model_body_qd: wp.array[wp.spatial_vector],
-    joint_penalty_k_min: wp.array[float],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
-    joint_penalty_k: wp.array[float],
     joint_C0_lin: wp.array[wp.vec3],
     joint_C0_ang: wp.array[wp.vec3],
     joint_lambda_lin: wp.array[wp.vec3],
@@ -3494,10 +3180,6 @@ def reset_rigid_state(
         if joint_selected:
             _reset_joint_history(
                 tid,
-                joint_constraint_start,
-                joint_constraint_dim,
-                joint_penalty_k_min,
-                joint_penalty_k,
                 joint_C0_lin,
                 joint_C0_ang,
                 joint_lambda_lin,
@@ -3548,92 +3230,38 @@ def refresh_body_structural_k(
 def refresh_joint_material_params(
     joint_type: wp.array[int],
     joint_qd_start: wp.array[int],
-    joint_dof_dim: wp.array2d[int],
     joint_constraint_start: wp.array[wp.int32],
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
-    joint_limit_ke: wp.array[float],
-    legacy_lin_k_start: float,
-    legacy_ang_k_start: float,
     joint_material_k: wp.array[float],
-    joint_penalty_k: wp.array[float],
-    joint_penalty_k_min: wp.array[float],
     joint_penalty_kd: wp.array[float],
 ):
-    """Recompute ``joint_material_k`` from ``joint_target_ke``/``joint_limit_ke`` and reseed
-    ``joint_penalty_k``/``joint_penalty_k_min`` to match, plus ROD ``joint_penalty_kd`` from
-    ``joint_target_kd`` (see ``_init_joint_penalty_k`` for the same formulas at construction
-    time).
+    """Refresh Rod material stiffness and damping from joint DOF properties.
 
-    Stiffness slots are reseeded only where the effective stiffness actually changed, so a
-    slot the caller did not touch keeps whatever legacy AVBD ramping has accumulated in
-    ``joint_penalty_k``. Damping is written unconditionally: it has no ramp state.
-
-    Stiffness covers ROD (all four material slots) and the drive/limit slot(s) of REVOLUTE,
-    PRISMATIC, and D6. Only legacy AVBD reads those non-ROD slots; compliant ALM gathers the
-    same coefficients live from the model each solve (see ``_load_joint_axis_drive_limit``).
-    Not covered: BALL, FIXED, and REVOLUTE/PRISMATIC/D6's structural slots, which come from the
-    solver-wide ``rigid_joint_linear_ke``/``rigid_joint_angular_ke`` constants rather than
-    ``joint_target_ke``.
-
-    Damping is ROD-only: other joint types' ``joint_penalty_kd`` slots hold the solver-wide
-    ``rigid_joint_{linear,angular}_kd`` constants or zero, and their drive damping is read
-    live from ``joint_target_kd`` by the stepping kernels rather than cached here.
-
-    Args:
-        legacy_lin_k_start: Ramp-cap seed for linear slots [N/m], negative to disable.
-        legacy_ang_k_start: Ramp-cap seed for angular slots [N·m/rad], negative to disable.
+    Non-Rod joints take structural stiffness and damping from the solver-wide
+    constants; the stepping kernels read their drive/limit coefficients live.
     """
     joint_id = wp.tid()
     jt = joint_type[joint_id]
-    c0 = joint_constraint_start[joint_id]
-    dof0 = joint_qd_start[joint_id]
-
-    if jt == JointType.ROD:
-        for s in range(4):  # 0=stretch, 1=shear, 2=bend, 3=twist
-            # ROD material slots are packed from its canonical XYZ velocity axes:
-            # stretch=linear Z, shear=linear X/Y, bend=angular X/Y, twist=angular Z.
-            dof = dof0
-            if s == 0:
-                dof = dof0 + 2
-            elif s == 1:
-                dof = dof0
-            elif s == 2:
-                dof = dof0 + 3
-            else:
-                dof = dof0 + 5
-            ke = joint_target_ke[dof]
-            if joint_material_k[c0 + s] != ke:
-                joint_material_k[c0 + s] = ke
-                seed = legacy_lin_k_start if s < 2 else legacy_ang_k_start
-                seeded = wp.min(seed, ke) if seed >= 0.0 else ke
-                joint_penalty_k[c0 + s] = seeded
-                joint_penalty_k_min[c0 + s] = seeded
-            joint_penalty_kd[c0 + s] = joint_target_kd[dof]
+    if jt != JointType.ROD:
         return
 
-    linear_count = int(0)
-    angular_count = int(0)
-    if jt == JointType.PRISMATIC:
-        linear_count = 1
-    elif jt == JointType.REVOLUTE:
-        angular_count = 1
-    elif jt == JointType.D6:
-        linear_count = joint_dof_dim[joint_id, 0]
-        angular_count = joint_dof_dim[joint_id, 1]
-    else:
-        return  # BALL, FIXED, and anything else: no joint_target_ke-derived slot.
-
-    slot0 = c0 + 2  # drive/limit slots follow the 2 structural slots (see _init_joint_penalty_k)
-    for axis in range(linear_count + angular_count):
-        dof = dof0 + axis
-        ke = wp.max(joint_target_ke[dof], joint_limit_ke[dof])
-        if joint_material_k[slot0 + axis] != ke:
-            seed = legacy_lin_k_start if axis < linear_count else legacy_ang_k_start
-            seeded = wp.min(seed, ke) if seed >= 0.0 else ke
-            joint_material_k[slot0 + axis] = ke
-            joint_penalty_k[slot0 + axis] = seeded
-            joint_penalty_k_min[slot0 + axis] = seeded
+    c0 = joint_constraint_start[joint_id]
+    dof0 = joint_qd_start[joint_id]
+    for s in range(4):  # 0=stretch, 1=shear, 2=bend, 3=twist
+        # Rod slots read the canonical DOFs: stretch = linear Z, shear = linear X,
+        # bend = angular X, twist = angular Z.
+        dof = dof0
+        if s == 0:
+            dof = dof0 + 2
+        elif s == 1:
+            dof = dof0
+        elif s == 2:
+            dof = dof0 + 3
+        else:
+            dof = dof0 + 5
+        joint_material_k[c0 + s] = joint_target_ke[dof]
+        joint_penalty_kd[c0 + s] = joint_target_kd[dof]
 
 
 # -----------------------------
@@ -3674,7 +3302,7 @@ def forward_step_rigid_bodies(
         body_q_prev: Previous body transforms (output). Rebaselined to the current
             pre-step pose for worlds selected by ``pose_rebaseline_mask`` (first step
             after construction or reset); left unchanged otherwise.
-        body_inertia_q: Inertial target body transforms for the AVBD solve (output).
+        body_inertia_q: Inertial target body transforms for the rigid solve (output).
     """
     tid = wp.tid()
 
@@ -3976,11 +3604,7 @@ def step_joint_C0_lambda_rho(
     pose_rebaseline_mask: wp.array[wp.bool],
     joint_constraint_start: wp.array[wp.int32],
     joint_constraint_dim: wp.array[wp.int32],
-    joint_is_hard: wp.array[wp.int32],
-    joint_compliant_alm: int,
     lambda_retention: float,
-    penalty_decay: float,
-    joint_penalty_k_min: wp.array[float],
     joint_material_k: wp.array[float],
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
@@ -3991,7 +3615,6 @@ def step_joint_C0_lambda_rho(
     body_com: wp.array[wp.vec3],
     body_inv_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
-    joint_penalty_k: wp.array[float],
     joint_C0_lin: wp.array[wp.vec3],
     joint_C0_ang: wp.array[wp.vec3],
     joint_lambda_lin: wp.array[wp.vec3],
@@ -4007,10 +3630,9 @@ def step_joint_C0_lambda_rho(
     Sole owner of hinge-angle history and all per-step joint maintenance:
       0. revolute and one-axis-D6 winding history (enabled or not; reset-selected
          worlds re-anchor to the rest coordinate);
-      1. penalty-k decay (runs even for disabled joints);
-      2. compliant-ALM auto-``rho`` refresh for structural rows;
-      3. directional support + multiplier retention for drive/limit rows;
-      4. C0 snapshot + lambda retention for stabilized structural rows.
+      1. compliant-ALM auto-``rho`` refresh for structural rows;
+      2. directional support + multiplier retention for drive/limit rows;
+      3. C0 snapshot + lambda retention for stabilized structural rows.
 
     Bilateral structural and drive auto-rho keep ``k_eff >= 0.9K`` in each local
     solve. Limits use their directional support directly as the ALM metric.
@@ -4047,16 +3669,8 @@ def step_joint_C0_lambda_rho(
             reference = joint_rest_angle[dof]
         joint_angle_prev[dof] = _unwrap_hinge_angle(angle, reference)
 
-    # 1. Penalty-k decay runs unconditionally (even for disabled joints).
-    for s in range(c_dim):
-        idx = c_start + s
-        joint_penalty_k[idx] = wp.clamp(
-            penalty_decay * joint_penalty_k[idx], joint_penalty_k_min[idx], joint_material_k[idx]
-        )
-
-    # 2. Auto-rho refresh under compliant ALM. Unconditional like the decay above
-    #    (no enabled gate, to avoid a divergent branch); a disabled joint's rho is unused.
-    if joint_compliant_alm == 1 and c_dim > 0 and child >= 0:
+    # Auto-rho refresh has no enabled gate; a disabled joint's rho is unused.
+    if c_dim > 0 and child >= 0:
         jt = joint_type[j]
         if jt == JointType.ROD:
             linear_support = _joint_linear_rho_seed(parent, child, body_inv_mass, inv_dt_sq)
@@ -4074,26 +3688,57 @@ def step_joint_C0_lambda_rho(
                 angular_support = _joint_angular_rho_seed(parent, child, body_inv_mass, body_inv_inertia, inv_dt_sq)
                 joint_rho[c_start + 1] = _structural_joint_auto_rho(angular_support, joint_material_k[c_start + 1])
 
-    # 3. Free DOFs use their exact scalar support; structural vec3 slots use
-    #    the isotropic seeds above.
-    if joint_compliant_alm == 1:
-        jt = joint_type[j]
-        linear_count = 0
-        angular_count = 0
-        if jt == JointType.PRISMATIC:
-            linear_count = 1
-        elif jt == JointType.REVOLUTE:
-            angular_count = 1
-        elif jt == JointType.D6:
-            linear_count = joint_dof_dim[j, 0]
-            angular_count = joint_dof_dim[j, 1]
+    # Free DOFs use their exact scalar support; structural vec3 slots use
+    # the isotropic seeds above.
+    jt = joint_type[j]
+    linear_count = 0
+    angular_count = 0
+    if jt == JointType.PRISMATIC:
+        linear_count = 1
+    elif jt == JointType.REVOLUTE:
+        angular_count = 1
+    elif jt == JointType.D6:
+        linear_count = joint_dof_dim[j, 0]
+        angular_count = joint_dof_dim[j, 1]
 
-        qd_start = joint_qd_start[j]
-        has_material_row = bool(False)
-        has_angular_material_row = bool(False)
-        for axis in range(linear_count + angular_count):
+    qd_start = joint_qd_start[j]
+    has_material_row = bool(False)
+    has_angular_material_row = bool(False)
+    for axis in range(linear_count + angular_count):
+        dof = qd_start + axis
+        joint_drive_limit_support[dof] = 0.0
+        if _drive_limit_needs_support(
+            dof,
+            joint_target_ke,
+            joint_target_kd,
+            joint_limit_lower,
+            joint_limit_upper,
+            joint_limit_ke,
+        ):
+            has_material_row = True
+            if axis >= linear_count:
+                has_angular_material_row = True
+            if joint_enabled[j] and child >= 0:
+                joint_drive_lambda[dof] = lambda_retention * joint_drive_lambda[dof]
+                joint_limit_lambda[dof] = lambda_retention * joint_limit_lambda[dof]
+            else:
+                joint_drive_lambda[dof] = 0.0
+                joint_limit_lambda[dof] = 0.0
+        else:
+            joint_drive_lambda[dof] = 0.0
+            joint_limit_lambda[dof] = 0.0
+
+    if joint_enabled[j] and child >= 0 and has_material_row:
+        parent_pose = wp.transform_identity()
+        if parent >= 0:
+            parent_pose = body_q_prev[parent]
+        child_pose = body_q_prev[child]
+        X_wp = parent_pose * joint_X_p[j]
+        X_wc = child_pose * joint_X_c[j]
+        q_wp = wp.transform_get_rotation(X_wp)
+        q_wc = wp.transform_get_rotation(X_wc)
+        for axis in range(linear_count):
             dof = qd_start + axis
-            joint_drive_limit_support[dof] = 0.0
             if _drive_limit_needs_support(
                 dof,
                 joint_target_ke,
@@ -4102,30 +3747,29 @@ def step_joint_C0_lambda_rho(
                 joint_limit_upper,
                 joint_limit_ke,
             ):
-                has_material_row = True
-                if axis >= linear_count:
-                    has_angular_material_row = True
-                if joint_enabled[j] and child >= 0:
-                    joint_drive_lambda[dof] = lambda_retention * joint_drive_lambda[dof]
-                    joint_limit_lambda[dof] = lambda_retention * joint_limit_lambda[dof]
-                else:
-                    joint_drive_lambda[dof] = 0.0
-                    joint_limit_lambda[dof] = 0.0
-            else:
-                joint_drive_lambda[dof] = 0.0
-                joint_limit_lambda[dof] = 0.0
+                axis_world = wp.normalize(wp.quat_rotate(q_wp, joint_axis[dof]))
+                joint_drive_limit_support[dof] = _joint_axis_linear_support(
+                    parent,
+                    child,
+                    parent_pose,
+                    child_pose,
+                    joint_X_p[j],
+                    joint_X_c[j],
+                    axis_world,
+                    body_com,
+                    body_inv_mass,
+                    body_inv_inertia,
+                    inv_dt_sq,
+                )
 
-        if joint_enabled[j] and child >= 0 and has_material_row:
-            parent_pose = wp.transform_identity()
-            if parent >= 0:
-                parent_pose = body_q_prev[parent]
-            child_pose = body_q_prev[child]
-            X_wp = parent_pose * joint_X_p[j]
-            X_wc = child_pose * joint_X_c[j]
-            q_wp = wp.transform_get_rotation(X_wp)
-            q_wc = wp.transform_get_rotation(X_wc)
-            for axis in range(linear_count):
-                dof = qd_start + axis
+        if has_angular_material_row:
+            q_wp_rest = wp.transform_get_rotation((body_q_rest[parent] * joint_X_p[j]) if parent >= 0 else joint_X_p[j])
+            q_wc_rest = wp.transform_get_rotation(body_q_rest[child] * joint_X_c[j])
+            _kappa, angular_jacobian_world = compute_joint_kappa_and_jacobian(
+                joint_axis, qd_start + linear_count, angular_count, q_wp, q_wc, q_wp_rest, q_wc_rest
+            )
+            for axis in range(angular_count):
+                dof = qd_start + linear_count + axis
                 if _drive_limit_needs_support(
                     dof,
                     joint_target_ke,
@@ -4134,52 +3778,19 @@ def step_joint_C0_lambda_rho(
                     joint_limit_upper,
                     joint_limit_ke,
                 ):
-                    axis_world = wp.normalize(wp.quat_rotate(q_wp, joint_axis[dof]))
-                    joint_drive_limit_support[dof] = _joint_axis_linear_support(
+                    gradient_world = angular_jacobian_world * wp.normalize(joint_axis[dof])
+                    joint_drive_limit_support[dof] = _joint_axis_angular_support(
                         parent,
                         child,
                         parent_pose,
                         child_pose,
-                        joint_X_p[j],
-                        joint_X_c[j],
-                        axis_world,
-                        body_com,
+                        gradient_world,
                         body_inv_mass,
                         body_inv_inertia,
                         inv_dt_sq,
                     )
 
-            if has_angular_material_row:
-                q_wp_rest = wp.transform_get_rotation(
-                    (body_q_rest[parent] * joint_X_p[j]) if parent >= 0 else joint_X_p[j]
-                )
-                q_wc_rest = wp.transform_get_rotation(body_q_rest[child] * joint_X_c[j])
-                _kappa, angular_jacobian_world = compute_joint_kappa_and_jacobian(
-                    joint_axis, qd_start + linear_count, angular_count, q_wp, q_wc, q_wp_rest, q_wc_rest
-                )
-                for axis in range(angular_count):
-                    dof = qd_start + linear_count + axis
-                    if _drive_limit_needs_support(
-                        dof,
-                        joint_target_ke,
-                        joint_target_kd,
-                        joint_limit_lower,
-                        joint_limit_upper,
-                        joint_limit_ke,
-                    ):
-                        gradient_world = angular_jacobian_world * wp.normalize(joint_axis[dof])
-                        joint_drive_limit_support[dof] = _joint_axis_angular_support(
-                            parent,
-                            child,
-                            parent_pose,
-                            child_pose,
-                            gradient_world,
-                            body_inv_mass,
-                            body_inv_inertia,
-                            inv_dt_sq,
-                        )
-
-    # 4. C0 snapshot + lambda retention for stabilized structural slots.
+    # C0 snapshot + lambda retention for stabilized structural slots.
     if not joint_enabled[j] or c_dim == 0 or child < 0:
         joint_C0_lin[j] = zero
         joint_lambda_lin[j] = zero
@@ -4199,15 +3810,10 @@ def step_joint_C0_lambda_rho(
 
         has_linear = int(0)
         has_angular = int(0)
-        if joint_is_hard[stretch_idx] == 1 or joint_is_hard[shear_idx] == 1:
+        if joint_material_k[stretch_idx] > 0.0 or joint_material_k[shear_idx] > 0.0:
             has_linear = 1
-        if joint_is_hard[bend_idx] == 1 or joint_is_hard[twist_idx] == 1:
+        if joint_material_k[bend_idx] > 0.0 or joint_material_k[twist_idx] > 0.0:
             has_angular = 1
-        if joint_compliant_alm == 1:
-            if joint_material_k[stretch_idx] > 0.0 or joint_material_k[shear_idx] > 0.0:
-                has_linear = 1
-            if joint_material_k[bend_idx] > 0.0 or joint_material_k[twist_idx] > 0.0:
-                has_angular = 1
 
         if has_linear == 0 and has_angular == 0:
             joint_C0_lin[j] = zero
@@ -4251,15 +3857,10 @@ def step_joint_C0_lambda_rho(
     # slots are maintained separately.
     has_linear = int(0)
     has_angular = int(0)
-    if joint_is_hard[c_start] == 1:
+    if joint_material_k[c_start] > 0.0:
         has_linear = 1
-    if c_dim > 1 and joint_is_hard[c_start + 1] == 1:
+    if c_dim > 1 and joint_material_k[c_start + 1] > 0.0:
         has_angular = 1
-    if joint_compliant_alm == 1:
-        if joint_material_k[c_start] > 0.0:
-            has_linear = 1
-        if c_dim > 1 and joint_material_k[c_start + 1] > 0.0:
-            has_angular = 1
 
     if has_linear == 0 and has_angular == 0:
         joint_C0_lin[j] = zero
@@ -4314,19 +3915,13 @@ def init_body_body_contact_materials(
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
     shape_material_mu: wp.array[float],
-    k_start: float,
-    # Outputs
-    contact_penalty_k: wp.array[float],
     contact_material_kd: wp.array[float],
     contact_material_mu: wp.array[float],
     contact_material_ke: wp.array[float],
 ):
-    """Cold-start body-body contact penalties and cache material properties.
+    """Cache the material properties averaged from both shapes.
 
-    Averages both shapes' material. Legacy penalty is seeded at
-    ``min(k_start, avg_ke)`` when ramping (k_start >= 0) or at ``avg_ke`` when
-    fixed-k (k_start < 0). Compliant-ALM contact keeps contact material
-    stiffness as physical ``k``. Rho has a single owner: the per-step setup
+    Rho has a single owner: the per-step setup
     kernel ``step_body_body_contact_C0_lambda`` resolves it every step.
     """
     i = wp.tid()
@@ -4351,8 +3946,6 @@ def init_body_body_contact_materials(
     contact_material_mu[i] = avg_mu
     contact_material_ke[i] = avg_ke
 
-    contact_penalty_k[i] = _contact_penalty_floor(avg_ke, k_start)
-
 
 @wp.kernel
 def init_body_body_contacts_alm(
@@ -4366,8 +3959,6 @@ def init_body_body_contacts_alm(
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
     shape_material_mu: wp.array[float],
-    legacy_hard_contacts: int,
-    contact_compliant_alm: int,
     restore_compliant_tangent_warmstart: int,
     # Pipeline-owned correspondence and VBD-owned cross-step state
     match_index: wp.array[wp.int32],
@@ -4382,10 +3973,7 @@ def init_body_body_contacts_alm(
     shape_world: wp.array[wp.int32],
     shape_body: wp.array[wp.int32],
     body_world: wp.array[wp.int32],
-    # Scalar parameters
-    k_start: float,
     # Outputs
-    contact_penalty_k: wp.array[float],
     contact_lambda: wp.array[wp.vec3],
     contact_material_kd: wp.array[float],
     contact_material_mu: wp.array[float],
@@ -4397,10 +3985,9 @@ def init_body_body_contacts_alm(
     own row on the same contact set, else its match index when the indices refer to
     the snapshotted set) and starts cold otherwise.
 
-    ALM: always restore matched ``lambda_n``; with ``latest`` matching also
+    Always restore matched ``lambda_n``; with ``latest`` matching also
     restore cone-clamped ``lambda_t``. Sticky matching keeps tangent memory in
-    the replayed material anchor (via C0), not in ``lambda_t``. Legacy hard:
-    full-vector warm start. Legacy soft: ``penalty_k`` only. C0/decay live in
+    the replayed material anchor (via C0), not in ``lambda_t``. C0/retention live in
     :func:`step_body_body_contact_C0_lambda`.
     """
     i = wp.tid()
@@ -4426,7 +4013,6 @@ def init_body_body_contacts_alm(
     contact_material_kd[i] = avg_kd
     contact_material_mu[i] = avg_mu
 
-    k_floor = _contact_penalty_floor(avg_ke, k_start)
     slot = _contact_history_slot(i, match_index, match_generation, contact_generation, contact_buffer_id, history_frame)
     # Drop the saved match for reset-selected worlds so they cold-start instead
     # of warm-starting from pre-reset history.
@@ -4436,29 +4022,22 @@ def init_body_body_contacts_alm(
                 slot = -1
 
     if slot >= 0:
-        contact_penalty_k[i] = wp.clamp(history.penalty_k[slot], k_floor, avg_ke)
-        use_legacy_hard = legacy_hard_contacts == 1 and contact_compliant_alm == 0
-        restore_multiplier = use_legacy_hard or contact_compliant_alm == 1
-        if restore_multiplier:
-            lam_hist = history.lambda_[slot]
-            n_new = rigid_contact_normal[i]
-            n_old = history.normal[slot]
-            lam_n = wp.dot(lam_hist, n_old)
-            lam_new = n_new * lam_n
-            if use_legacy_hard or restore_compliant_tangent_warmstart == 1:
-                lam_t_old = lam_hist - n_old * lam_n
-                lam_t_new = lam_t_old - n_new * wp.dot(lam_t_old, n_new)
-                if contact_compliant_alm == 1:
-                    # Compliant ALM restores only a valid Coulomb-cone warm start.
-                    lam_t_new = _project_coulomb_tangent(
-                        lam_t_new,
-                        wp.length(lam_t_new),
-                        avg_mu * wp.max(lam_n, 0.0),
-                    )
-                lam_new += lam_t_new
-            contact_lambda[i] = lam_new
-    else:
-        contact_penalty_k[i] = k_floor
+        lam_hist = history.lambda_[slot]
+        n_new = rigid_contact_normal[i]
+        n_old = history.normal[slot]
+        lam_n = wp.dot(lam_hist, n_old)
+        lam_new = n_new * lam_n
+        if restore_compliant_tangent_warmstart == 1:
+            lam_t_old = lam_hist - n_old * lam_n
+            lam_t_new = lam_t_old - n_new * wp.dot(lam_t_old, n_new)
+            # Restore only a valid Coulomb-cone warm start.
+            lam_t_new = _project_coulomb_tangent(
+                lam_t_new,
+                wp.length(lam_t_new),
+                avg_mu * wp.max(lam_n, 0.0),
+            )
+            lam_new += lam_t_new
+        contact_lambda[i] = lam_new
 
 
 @wp.kernel
@@ -4466,12 +4045,10 @@ def snapshot_body_body_contact_history(
     rigid_contact_count: wp.array[int],
     rigid_contact_normal: wp.array[wp.vec3],
     contact_lambda: wp.array[wp.vec3],
-    contact_penalty_k: wp.array[float],
     contact_generation: wp.array[wp.int32],
     contact_buffer_id: int,
     # Persistent outputs, in RigidContactHistory order
     prev_lambda: wp.array[wp.vec3],
-    prev_penalty_k: wp.array[float],
     prev_normal: wp.array[wp.vec3],
     history_frame: wp.array[wp.int32],
 ):
@@ -4489,7 +4066,6 @@ def snapshot_body_body_contact_history(
         return
 
     prev_lambda[i] = contact_lambda[i]
-    prev_penalty_k[i] = contact_penalty_k[i]
     prev_normal[i] = rigid_contact_normal[i]
 
 
@@ -4513,27 +4089,19 @@ def step_body_body_contact_C0_lambda(
     body_structural_k: wp.array[float],
     proxy_flag: int,
     body_q: wp.array[wp.transform],
-    legacy_hard_contacts: int,
-    contact_compliant_alm: int,
     lambda_retention: float,
     inv_dt_sq: float,
-    penalty_decay: float,
     contact_material_ke: wp.array[float],
-    k_start: float,
-    # In/out
     contact_normal_rho: wp.array[float],
-    contact_penalty_k: wp.array[float],
     contact_C0: wp.array[wp.vec3],
     contact_lambda: wp.array[wp.vec3],
     contact_tangent_rho: wp.array[float],
 ):
-    """Per-step contact penalty decay, lambda retention, C0, and ALM rho.
+    """Apply per-step lambda retention and refresh contact C0 and ALM rho.
 
     ALM retention needs a compressive warm-start (``lambda·n > 0``), a live row
-    (``ke > 0`` and ``rho_n > 0``), and positive ``lambda_retention``. Legacy
-    AVBD applies its ``alpha*gamma`` retention to the full multiplier vector
-    without those gates. ALM rho is automatic from support and independent of
-    history. C0 is refreshed for legacy hard and ALM contacts.
+    (``ke > 0`` and ``rho_n > 0``), and positive ``lambda_retention``.
+    ALM rho is automatic from support and independent of history.
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
@@ -4545,77 +4113,69 @@ def step_body_body_contact_C0_lambda(
     ke = contact_material_ke[i]
     s0 = rigid_contact_shape0[i]
     s1 = rigid_contact_shape1[i]
-    k_min = _contact_penalty_floor(ke, k_start)
-    contact_penalty_k[i] = wp.clamp(penalty_decay * contact_penalty_k[i], k_min, ke)
 
     # Snapshot the fresh residual before validating warm-start support; the
     # dual uses it to release truly separated rows.
     n = rigid_contact_normal[i]
-    if legacy_hard_contacts == 1 or contact_compliant_alm == 1:
-        b0 = shape_body[s0] if s0 >= 0 else -1
-        b1 = shape_body[s1] if s1 >= 0 else -1
-        p0 = rigid_contact_point0[i]
-        p1 = rigid_contact_point1[i]
-        anchor0_local = p0 + rigid_contact_offset0[i]
-        anchor1_local = p1 + rigid_contact_offset1[i]
-        cp0 = wp.transform_point(body_q[b0], p0) if b0 >= 0 else p0
-        cp1 = wp.transform_point(body_q[b1], p1) if b1 >= 0 else p1
-        C0_n = -contact_surface_separation(cp0, cp1, n, rigid_contact_margin0[i], rigid_contact_margin1[i])
-        a0 = wp.transform_point(body_q[b0], anchor0_local) if b0 >= 0 else anchor0_local
-        a1 = wp.transform_point(body_q[b1], anchor1_local) if b1 >= 0 else anchor1_local
-        d_surf = a1 - a0
-        C0_t = -(d_surf - n * wp.dot(n, d_surf))
-        contact_C0[i] = n * C0_n + C0_t
+    b0 = shape_body[s0] if s0 >= 0 else -1
+    b1 = shape_body[s1] if s1 >= 0 else -1
+    p0 = rigid_contact_point0[i]
+    p1 = rigid_contact_point1[i]
+    anchor0_local = p0 + rigid_contact_offset0[i]
+    anchor1_local = p1 + rigid_contact_offset1[i]
+    cp0 = wp.transform_point(body_q[b0], p0) if b0 >= 0 else p0
+    cp1 = wp.transform_point(body_q[b1], p1) if b1 >= 0 else p1
+    C0_n = -contact_surface_separation(cp0, cp1, n, rigid_contact_margin0[i], rigid_contact_margin1[i])
+    a0 = wp.transform_point(body_q[b0], anchor0_local) if b0 >= 0 else anchor0_local
+    a1 = wp.transform_point(body_q[b1], anchor1_local) if b1 >= 0 else anchor1_local
+    d_surf = a1 - a0
+    C0_t = -(d_surf - n * wp.dot(n, d_surf))
+    contact_C0[i] = n * C0_n + C0_t
 
-        if contact_compliant_alm == 1:
-            # Resolve rho before using it to validate retained history.
-            normal_support = _contact_conditioning_scale(
-                s0,
-                s1,
-                p0,
-                p1,
-                n,
-                shape_body,
-                body_q,
-                body_com,
-                body_inv_mass,
-                body_inv_inertia,
-                body_structural_k,
-                inv_dt_sq,
-            )
-            contact_normal_rho[i] = _contact_auto_normal_rho(normal_support, ke)
-            tangent_support = _contact_tangent_conditioning_scale(
-                s0,
-                s1,
-                anchor0_local,
-                anchor1_local,
-                n,
-                shape_body,
-                body_q,
-                body_com,
-                body_inv_mass,
-                body_inv_inertia,
-                inv_dt_sq,
-            )
-            structural_support = _contact_pair_structural_scale(
-                b0,
-                b1,
-                body_flags,
-                body_inv_mass,
-                body_structural_k,
-                proxy_flag,
-            )
-            contact_tangent_rho[i] = _contact_auto_tangent_rho(
-                tangent_support,
-                contact_normal_rho[i],
-                structural_support,
-            )
+    # Resolve rho before using it to validate retained history.
+    normal_support = _contact_conditioning_scale(
+        s0,
+        s1,
+        p0,
+        p1,
+        n,
+        shape_body,
+        body_q,
+        body_com,
+        body_inv_mass,
+        body_inv_inertia,
+        body_structural_k,
+        inv_dt_sq,
+    )
+    contact_normal_rho[i] = _contact_auto_normal_rho(normal_support, ke)
+    tangent_support = _contact_tangent_conditioning_scale(
+        s0,
+        s1,
+        anchor0_local,
+        anchor1_local,
+        n,
+        shape_body,
+        body_q,
+        body_com,
+        body_inv_mass,
+        body_inv_inertia,
+        inv_dt_sq,
+    )
+    structural_support = _contact_pair_structural_scale(
+        b0,
+        b1,
+        body_flags,
+        body_inv_mass,
+        body_structural_k,
+        proxy_flag,
+    )
+    contact_tangent_rho[i] = _contact_auto_tangent_rho(
+        tangent_support,
+        contact_normal_rho[i],
+        structural_support,
+    )
 
     lam = contact_lambda[i]
-    if contact_compliant_alm == 0:
-        # Preserve legacy full-vector retention.
-        contact_lambda[i] = lam * lambda_retention
-        return
 
     has_compressive_warmstart = wp.dot(lam, n) > 0.0
     live = ke > 0.0 and contact_normal_rho[i] > 0.0
@@ -4635,22 +4195,18 @@ def init_body_particle_contacts(
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
     shape_material_mu: wp.array[float],
-    k_start: float,
-    # Outputs
-    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
-    body_particle_contact_material_ke: wp.array[float],
 ):
-    """Cold-start body-particle contact penalties and cache material properties.
+    """Cache the averaged body-particle material properties.
 
     Averages particle-side material (scalar `soft_contact_ke/kd/mu`) with the
-    rigid shape's material. Penalty is seeded at ``min(k_start, avg_ke)`` when
-    ramping (k_start >= 0) or at ``avg_ke`` when fixed-k (k_start < 0).
+    rigid shape's material.
     """
     i = wp.tid()
     # Process every soft contact (single total count) so edge/face records get the same pre-mixed
-    # material and seeded penalty as particle contacts.
+    # material as particle contacts.
     if i >= body_particle_contact_count[0]:
         return
 
@@ -4669,31 +4225,18 @@ def init_body_particle_contacts(
     body_particle_contact_material_kd[i] = avg_kd
     body_particle_contact_material_mu[i] = avg_mu
 
-    body_particle_contact_penalty_k[i] = _contact_penalty_floor(avg_ke, k_start)
-
 
 @wp.func
 def _rod_dahl_active_stiffness(
     c_start: int,
-    joint_penalty_k: wp.array[float],
     joint_material_k: wp.array[float],
-    joint_is_hard: wp.array[wp.int32],
-    joint_compliant_alm: int,
 ) -> wp.vec3:
     """Return bend/twist stiffness that carries Dahl hysteresis."""
     bend_idx = c_start + 2
     twist_idx = c_start + 3
 
-    k_bend = float(0.0)
-    k_twist = float(0.0)
-    if joint_compliant_alm == 1:
-        k_bend = joint_material_k[bend_idx]
-        k_twist = joint_material_k[twist_idx]
-    else:
-        if joint_is_hard[bend_idx] == 0:
-            k_bend = joint_penalty_k[bend_idx]
-        if joint_is_hard[twist_idx] == 0:
-            k_twist = joint_penalty_k[twist_idx]
+    k_bend = joint_material_k[bend_idx]
+    k_twist = joint_material_k[twist_idx]
 
     return wp.vec3(k_bend, k_bend, k_twist)
 
@@ -4749,10 +4292,7 @@ def compute_rod_dahl_parameters(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     joint_constraint_start: wp.array[int],
-    joint_penalty_k: wp.array[float],
     joint_material_k: wp.array[float],
-    joint_is_hard: wp.array[wp.int32],
-    joint_compliant_alm: int,
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
     body_q: wp.array[wp.transform],
@@ -4775,7 +4315,7 @@ def compute_rod_dahl_parameters(
 
     Dahl ``eps_max`` and ``tau`` are per-joint scalars. Bend and twist
     receive separate envelopes from their respective active stiffnesses.
-    Legacy-hard and inactive subspaces produce zero Dahl stress and tangent
+    Inactive (zero-stiffness) subspaces produce zero Dahl stress and tangent
     stiffness.
 
     On a selected first/reset step, curvature is rebased to the current
@@ -4810,10 +4350,7 @@ def compute_rod_dahl_parameters(
     c_start = joint_constraint_start[j]
     k_dahl = _rod_dahl_active_stiffness(
         c_start,
-        joint_penalty_k,
         joint_material_k,
-        joint_is_hard,
-        joint_compliant_alm,
     )
     # A gated joint (no Dahl this step) still owes state clearing on a
     # rebaseline step, so stale pre-reset stress can never resurface when a
@@ -4896,7 +4433,6 @@ def create_accumulate_body_body_contacts_per_body():
         body_inv_mass: wp.array[float],
         friction_epsilon: float,
         contact_damping_bidirectional: bool,
-        contact_penalty_k: wp.array[float],
         contact_normal_rho: wp.array[float],
         contact_material_ke: wp.array[float],
         contact_material_kd: wp.array[float],
@@ -4905,8 +4441,6 @@ def create_accumulate_body_body_contacts_per_body():
         contact_lambda: wp.array[wp.vec3],
         contact_C0: wp.array[wp.vec3],
         stab_alpha: float,
-        legacy_hard_contacts: int,
-        contact_compliant_alm: int,
         rigid_contact_count: wp.array[int],
         rigid_contact_shape0: wp.array[int],
         rigid_contact_shape1: wp.array[int],
@@ -4929,7 +4463,7 @@ def create_accumulate_body_body_contacts_per_body():
         body_hessian_aa: wp.array[wp.mat33],
     ):
         """
-        Per-body contact force/Hessian accumulation (compliant ALM or legacy penalty)
+        Per-body compliant-ALM contact force/Hessian accumulation
         with _NUM_CONTACT_THREADS_PER_BODY strided threads.
         """
         tid = wp.tid()
@@ -4990,32 +4524,23 @@ def create_accumulate_body_body_contacts_per_body():
                 rigid_contact_margin1[contact_idx],
             )
 
-            lam_n = float(0.0)
-            C_eff = C_n
-            lam_vec = wp.vec3(0.0)
-            normal_solve_weight = _load_solve_weight(
-                contact_penalty_k, contact_normal_rho, contact_idx, contact_compliant_alm
-            )
+            normal_solve_weight = contact_normal_rho[contact_idx]
             material_k = contact_material_ke[contact_idx]
-            friction_c0 = wp.vec3(0.0)
 
-            if legacy_hard_contacts == 1 or contact_compliant_alm == 1:
-                lam_vec = contact_lambda[contact_idx]
-                lam_n = wp.dot(lam_vec, contact_normal)
-                C0_vec = contact_C0[contact_idx]
-                C0_n = wp.dot(contact_normal, C0_vec)
-                # C0 stabilization: normal uses C_n - alpha*C0_n;
-                # tangent caches (1 - alpha)*C0_t for the later tangential update.
-                C_eff = C_n - stab_alpha * C0_n
-                friction_c0 = (1.0 - stab_alpha) * (C0_vec - contact_normal * C0_n)
+            lam_vec = contact_lambda[contact_idx]
+            lam_n = wp.dot(lam_vec, contact_normal)
+            C0_vec = contact_C0[contact_idx]
+            C0_n = wp.dot(contact_normal, C0_vec)
+            # C0 stabilization: normal uses C_n - alpha*C0_n;
+            # tangent caches (1 - alpha)*C0_t for the later tangential update.
+            C_eff = C_n - stab_alpha * C0_n
+            friction_c0 = (1.0 - stab_alpha) * (C0_vec - contact_normal * C0_n)
 
             if C_n <= _SMALL_LENGTH_EPS and lam_n <= 0.0:
                 i += _NUM_CONTACT_THREADS_PER_BODY
                 continue
 
-            normal_primal_k, lambda_n_eff = _material_force_terms(
-                normal_solve_weight, material_k, lam_n, contact_compliant_alm
-            )
+            normal_primal_k, lambda_n_eff = _material_force_terms(normal_solve_weight, material_k, lam_n)
             f_n_check = normal_primal_k * C_eff + lambda_n_eff
             if f_n_check <= 0.0 and lam_n <= 0.0:
                 i += _NUM_CONTACT_THREADS_PER_BODY
@@ -5059,8 +4584,6 @@ def create_accumulate_body_body_contacts_per_body():
                 lam_vec,
                 contact_mu,
                 friction_epsilon,
-                legacy_hard_contacts,
-                contact_compliant_alm,
                 dt,
                 friction_c0,
                 contact_damping_bidirectional,
@@ -5113,7 +4636,6 @@ def _evaluate_body_body_contact_slot(
     body_q_prev: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     # Contact material properties (per-contact)
-    contact_penalty_k: wp.array[float],
     contact_normal_rho: wp.array[float],
     contact_material_ke: wp.array[float],
     contact_material_kd: wp.array[float],
@@ -5122,8 +4644,6 @@ def _evaluate_body_body_contact_slot(
     contact_lambda: wp.array[wp.vec3],
     contact_C0: wp.array[wp.vec3],
     stab_alpha: float,
-    legacy_hard_contacts: int,
-    contact_compliant_alm: int,
     friction_epsilon: float,
     contact_damping_bidirectional: bool,
 ):
@@ -5167,24 +4687,19 @@ def _evaluate_body_body_contact_slot(
         cp0_world, cp1_world, contact_normal, rigid_contact_margin0[contact_idx], rigid_contact_margin1[contact_idx]
     )
 
-    lam_n = float(0.0)
-    C_eff = C_n
-    lam_vec = wp.vec3(0.0)
-    normal_solve_weight = _load_solve_weight(contact_penalty_k, contact_normal_rho, contact_idx, contact_compliant_alm)
+    normal_solve_weight = contact_normal_rho[contact_idx]
     material_k = contact_material_ke[contact_idx]
-    friction_c0 = wp.vec3(0.0)
 
-    if legacy_hard_contacts == 1 or contact_compliant_alm == 1:
-        lam_vec = contact_lambda[contact_idx]
-        lam_n = wp.dot(lam_vec, contact_normal)
-        C0_vec = contact_C0[contact_idx]
-        C0_n = wp.dot(contact_normal, C0_vec)
-        # C0 stabilization: normal uses C_n - alpha*C0_n;
-        # tangent caches (1 - alpha)*C0_t for the later tangential update.
-        C_eff = C_n - stab_alpha * C0_n
-        friction_c0 = (1.0 - stab_alpha) * (C0_vec - contact_normal * C0_n)
+    lam_vec = contact_lambda[contact_idx]
+    lam_n = wp.dot(lam_vec, contact_normal)
+    C0_vec = contact_C0[contact_idx]
+    C0_n = wp.dot(contact_normal, C0_vec)
+    # C0 stabilization: normal uses C_n - alpha*C0_n;
+    # tangent caches (1 - alpha)*C0_t for the later tangential update.
+    C_eff = C_n - stab_alpha * C0_n
+    friction_c0 = (1.0 - stab_alpha) * (C0_vec - contact_normal * C0_n)
 
-    normal_primal_k, lambda_n_eff = _material_force_terms(normal_solve_weight, material_k, lam_n, contact_compliant_alm)
+    normal_primal_k, lambda_n_eff = _material_force_terms(normal_solve_weight, material_k, lam_n)
     f_n_check = normal_primal_k * C_eff + lambda_n_eff
     if (C_n <= _SMALL_LENGTH_EPS or f_n_check <= 0.0) and lam_n <= 0.0:
         return b0, b1, point0_world, point1_world, zero, zero, zero
@@ -5227,8 +4742,6 @@ def _evaluate_body_body_contact_slot(
         lam_vec,
         contact_mu,
         friction_epsilon,
-        legacy_hard_contacts,
-        contact_compliant_alm,
         dt,
         friction_c0,
         contact_damping_bidirectional,
@@ -5262,7 +4775,6 @@ def create_compute_rigid_contact_forces():
         body_q_prev: wp.array[wp.transform],
         body_com: wp.array[wp.vec3],
         # Contact material properties (per-contact)
-        contact_penalty_k: wp.array[float],
         contact_normal_rho: wp.array[float],
         contact_material_ke: wp.array[float],
         contact_material_kd: wp.array[float],
@@ -5271,8 +4783,6 @@ def create_compute_rigid_contact_forces():
         contact_lambda: wp.array[wp.vec3],
         contact_C0: wp.array[wp.vec3],
         stab_alpha: float,
-        legacy_hard_contacts: int,
-        contact_compliant_alm: int,
         friction_epsilon: float,
         contact_damping_bidirectional: bool,
         # Outputs (length = rigid_contact_max)
@@ -5312,7 +4822,6 @@ def create_compute_rigid_contact_forces():
             body_q,
             body_q_prev,
             body_com,
-            contact_penalty_k,
             contact_normal_rho,
             contact_material_ke,
             contact_material_kd,
@@ -5321,8 +4830,6 @@ def create_compute_rigid_contact_forces():
             contact_lambda,
             contact_C0,
             stab_alpha,
-            legacy_hard_contacts,
-            contact_compliant_alm,
             friction_epsilon,
             contact_damping_bidirectional,
         )
@@ -5361,7 +4868,6 @@ def compute_body_body_contact_forces(
     body_q_prev: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     # Contact material properties (per-contact)
-    contact_penalty_k: wp.array[float],
     contact_normal_rho: wp.array[float],
     contact_material_ke: wp.array[float],
     contact_material_kd: wp.array[float],
@@ -5370,8 +4876,6 @@ def compute_body_body_contact_forces(
     contact_lambda: wp.array[wp.vec3],
     contact_C0: wp.array[wp.vec3],
     stab_alpha: float,
-    legacy_hard_contacts: int,
-    contact_compliant_alm: int,
     friction_epsilon: float,
     contact_damping_bidirectional: bool,
     # Output (length >= rigid_contact_max)
@@ -5408,7 +4912,6 @@ def compute_body_body_contact_forces(
         body_q,
         body_q_prev,
         body_com,
-        contact_penalty_k,
         contact_normal_rho,
         contact_material_ke,
         contact_material_kd,
@@ -5417,8 +4920,6 @@ def compute_body_body_contact_forces(
         contact_lambda,
         contact_C0,
         stab_alpha,
-        legacy_hard_contacts,
-        contact_compliant_alm,
         friction_epsilon,
         contact_damping_bidirectional,
     )
@@ -5549,11 +5050,10 @@ def accumulate_body_particle_contacts_per_body(
     body_com: wp.array[wp.vec3],
     body_inv_mass: wp.array[float],
     shape_body: wp.array[int],
-    # AVBD body-particle soft contact penalties and material properties
+    # Body-particle contact material properties
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
     contact_damping_bidirectional: bool,
-    body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
@@ -5592,7 +5092,7 @@ def accumulate_body_particle_contacts_per_body(
     Notes:
       - Only dynamic bodies (inv_mass > 0) are updated.
       - Hessian contributions are accumulated into body_hessian_ll/al/aa.
-      - Uses per-contact effective penalty/material parameters initialized once per step.
+      - Uses per-contact material parameters initialized once per step.
     """
     tid = wp.tid()
     body_idx_in_group = tid // threads_per_body
@@ -5675,7 +5175,7 @@ def accumulate_body_particle_contacts_per_body(
                 collision_radius,
                 n,
                 relative_translation,
-                body_particle_contact_penalty_k[contact_idx],
+                body_particle_contact_material_ke[contact_idx],
                 body_particle_contact_material_kd[contact_idx],
                 body_particle_contact_material_mu[contact_idx],
                 friction_epsilon,
@@ -5694,7 +5194,7 @@ def accumulate_body_particle_contacts_per_body(
                 particle_q,
                 particle_q_prev,
                 particle_radius,
-                body_particle_contact_penalty_k[contact_idx],
+                body_particle_contact_material_ke[contact_idx],
                 body_particle_contact_material_kd[contact_idx],
                 body_particle_contact_material_mu[contact_idx],
                 friction_epsilon,
@@ -5744,11 +5244,11 @@ def compute_body_particle_contact_forces(
     body_q_prev: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
-    # AVBD body-particle soft contact penalties and material properties
+    # Body-particle contact material properties
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
     contact_damping_bidirectional: bool,
-    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     # Soft contact data (body-particle)
@@ -5768,7 +5268,7 @@ def compute_body_particle_contact_forces(
 
     One thread per soft-contact slot. Active records use the same dispatch and force law as the
     solve (``_eval_body_particle_contact`` for a particle record, ``_eval_soft_ef_contact`` for an
-    edge/face record) with the per-contact AVBD penalty and pre-mixed material. Each row stores the
+    edge/face record) with the pre-mixed contact material. Each row stores the
     force on the contacted shape's body (the reaction to the force on the soft point) and its torque
     about that body's COM -- the world origin for a static shape -- in world frame. Slots at or
     beyond the active count are zeroed. This is a read-only evaluation: nothing is accumulated into
@@ -5792,7 +5292,7 @@ def compute_body_particle_contact_forces(
         X_wb = body_q[body_index]
         com_world = wp.transform_point(X_wb, body_com[body_index])
 
-    contact_ke = body_particle_contact_penalty_k[tid]
+    contact_ke = body_particle_contact_material_ke[tid]
     contact_kd = body_particle_contact_material_kd[tid]
     contact_mu = body_particle_contact_material_mu[tid]
 
@@ -5890,7 +5390,6 @@ def create_solve_rigid_body(has_tendons: bool):
         joint_target_q_start: wp.array[int],
         joint_constraint_start: wp.array[int],
         # Joint constraint state (scalar constraints indexed via joint_constraint_start)
-        joint_penalty_k: wp.array[float],
         joint_rho: wp.array[float],
         joint_material_k: wp.array[float],
         joint_penalty_kd: wp.array[float],
@@ -5914,9 +5413,7 @@ def create_solve_rigid_body(has_tendons: bool):
         joint_lambda_ang: wp.array[wp.vec3],
         joint_C0_lin: wp.array[wp.vec3],
         joint_C0_ang: wp.array[wp.vec3],
-        joint_is_hard: wp.array[wp.int32],
         stab_alpha: float,
-        joint_compliant_alm: int,
         joint_dof_dim: wp.array2d[int],
         joint_rest_angle: wp.array[float],
         joint_angle_prev: wp.array[float],
@@ -5947,7 +5444,7 @@ def create_solve_rigid_body(has_tendons: bool):
         body_q_new: wp.array[wp.transform],
     ):
         """
-        AVBD solve step for rigid bodies.
+        VBD block solve step for rigid bodies.
 
         Assembles inertial, joint, and collision contributions into a 6x6 SPD
         block system and solves via direct LDL^T.
@@ -5969,7 +5466,6 @@ def create_solve_rigid_body(has_tendons: bool):
             body_com: Center of mass offsets (local body frame).
             adjacency: Body-joint adjacency (CSR format).
             joint_*: Joint configuration arrays.
-            joint_penalty_k: Per-constraint legacy penalty stiffness.
             joint_sigma_start: Dahl hysteresis state at start of step.
             joint_C_fric: Dahl friction configuration per joint.
             external_forces: External linear forces from rigid contacts.
@@ -6115,7 +5611,6 @@ def create_solve_rigid_body(has_tendons: bool):
                 joint_qd_start,
                 joint_target_q_start,
                 joint_constraint_start,
-                joint_penalty_k,
                 joint_rho,
                 joint_material_k,
                 joint_penalty_kd,
@@ -6136,9 +5631,7 @@ def create_solve_rigid_body(has_tendons: bool):
                 joint_lambda_ang,
                 joint_C0_lin,
                 joint_C0_ang,
-                joint_is_hard,
                 stab_alpha,
-                joint_compliant_alm,
                 joint_dof_dim,
                 joint_rest_angle,
                 joint_angle_prev,
@@ -6212,13 +5705,9 @@ def update_duals_joint(
     joint_dof_dim: wp.array2d[int],
     joint_C0_lin: wp.array[wp.vec3],
     joint_C0_ang: wp.array[wp.vec3],
-    joint_is_hard: wp.array[wp.int32],
     stab_alpha: float,
     joint_material_k: wp.array[float],
     joint_rho: wp.array[float],
-    joint_compliant_alm: int,
-    beta_lin: float,
-    beta_ang: float,
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_target_q: wp.array[float],
@@ -6232,16 +5721,14 @@ def update_duals_joint(
     joint_drive_limit_support: wp.array[float],
     dt: float,
     # Input/output
-    joint_penalty_k: wp.array[float],
     joint_lambda_lin: wp.array[wp.vec3],
     joint_lambda_ang: wp.array[wp.vec3],
     joint_drive_lambda: wp.array[float],
     joint_limit_lambda: wp.array[float],
 ):
-    """Update joint duals / legacy penalties each iteration.
+    """Update joint duals each iteration.
 
-    ALM structural and legacy-hard slots update vector multipliers; legacy soft
-    only ramps penalty. Drive/limit: legacy ramps penalty, ALM uses separate
+    Structural slots update vector multipliers; drives and limits use separate
     scalar lambdas (limits half-line projected). Rho is fixed within the step.
     """
     j = wp.tid()
@@ -6296,7 +5783,7 @@ def update_duals_joint(
             joint_rod_rest_twist[j],
         )
 
-        # Linear penalty update in the parent-material frame: local
+        # Linear dual update in the parent-material frame: local
         # u = [shear_x, shear_y, stretch_z], so stretch is z and shear is xy.
         stretch_idx = c_start
         shear_idx = c_start + 1
@@ -6309,34 +5796,22 @@ def update_duals_joint(
             u_stretch,
             wp.vec3(0.0, 0.0, C0_lin[2]),
             stab_alpha,
-            joint_penalty_k,
             joint_rho,
             joint_material_k,
-            joint_is_hard,
             stretch_idx,
             wp.vec3(0.0, 0.0, lambda_lin[2]),
-            joint_compliant_alm,
-            beta_lin,
         )
-        if joint_compliant_alm == 0 and joint_is_hard[stretch_idx] == 0:
-            lam_stretch = wp.vec3(0.0)
 
         u_shear = wp.vec3(u[0], u[1], 0.0)
         lam_shear = _update_joint_structural_dual(
             u_shear,
             wp.vec3(C0_lin[0], C0_lin[1], 0.0),
             stab_alpha,
-            joint_penalty_k,
             joint_rho,
             joint_material_k,
-            joint_is_hard,
             shear_idx,
             wp.vec3(lambda_lin[0], lambda_lin[1], 0.0),
-            joint_compliant_alm,
-            beta_lin,
         )
-        if joint_compliant_alm == 0 and joint_is_hard[shear_idx] == 0:
-            lam_shear = wp.vec3(0.0)
         joint_lambda_lin[j] = lam_stretch + lam_shear
 
         bend_idx = c_start + 2
@@ -6349,38 +5824,26 @@ def update_duals_joint(
             kappa_bend,
             wp.vec3(C0_ang[0], C0_ang[1], 0.0),
             stab_alpha,
-            joint_penalty_k,
             joint_rho,
             joint_material_k,
-            joint_is_hard,
             bend_idx,
             wp.vec3(lambda_ang[0], lambda_ang[1], 0.0),
-            joint_compliant_alm,
-            beta_ang,
         )
-        if joint_compliant_alm == 0 and joint_is_hard[bend_idx] == 0:
-            lam_bend = wp.vec3(0.0)
 
         kappa_twist = wp.vec3(0.0, 0.0, kappa[2])
         lam_twist = _update_joint_structural_dual(
             kappa_twist,
             wp.vec3(0.0, 0.0, C0_ang[2]),
             stab_alpha,
-            joint_penalty_k,
             joint_rho,
             joint_material_k,
-            joint_is_hard,
             twist_idx,
             wp.vec3(0.0, 0.0, lambda_ang[2]),
-            joint_compliant_alm,
-            beta_ang,
         )
-        if joint_compliant_alm == 0 and joint_is_hard[twist_idx] == 0:
-            lam_twist = wp.vec3(0.0)
         joint_lambda_ang[j] = lam_bend + lam_twist
         return
 
-    # BALL joint: update isotropic linear anchor-coincidence penalty (single scalar).
+    # BALL joint: update the isotropic linear anchor-coincidence dual.
     if jt == JointType.BALL:
         x_p = wp.transform_get_translation(X_wp)
         x_c = wp.transform_get_translation(X_wc)
@@ -6391,14 +5854,10 @@ def update_duals_joint(
             C_vec,
             joint_C0_lin[j],
             stab_alpha,
-            joint_penalty_k,
             joint_rho,
             joint_material_k,
-            joint_is_hard,
             i0,
             joint_lambda_lin[j],
-            joint_compliant_alm,
-            beta_lin,
         )
         return
 
@@ -6408,7 +5867,7 @@ def update_duals_joint(
         X_wp_rest = joint_X_p[j]
     X_wc_rest = body_q_rest[child] * joint_X_c[j]
 
-    # FIXED joint: update isotropic linear + isotropic angular penalties (2 scalars).
+    # FIXED joint: update isotropic linear and angular duals.
     if jt == JointType.FIXED:
         i_lin = c_start + 0
         i_ang = c_start + 1
@@ -6420,14 +5879,10 @@ def update_duals_joint(
             C_vec_lin,
             joint_C0_lin[j],
             stab_alpha,
-            joint_penalty_k,
             joint_rho,
             joint_material_k,
-            joint_is_hard,
             i_lin,
             joint_lambda_lin[j],
-            joint_compliant_alm,
-            beta_lin,
         )
 
         q_wp = wp.transform_get_rotation(X_wp)
@@ -6439,18 +5894,14 @@ def update_duals_joint(
             kappa,
             joint_C0_ang[j],
             stab_alpha,
-            joint_penalty_k,
             joint_rho,
             joint_material_k,
-            joint_is_hard,
             i_ang,
             joint_lambda_ang[j],
-            joint_compliant_alm,
-            beta_ang,
         )
         return
 
-    # REVOLUTE joint: isotropic linear + perpendicular angular penalties (2 scalars).
+    # REVOLUTE joint: update isotropic linear and perpendicular angular duals.
     if jt == JointType.REVOLUTE:
         i_lin = c_start + 0
         i_ang = c_start + 1
@@ -6465,14 +5916,10 @@ def update_duals_joint(
             C_vec_lin,
             P_lin * joint_C0_lin[j],
             stab_alpha,
-            joint_penalty_k,
             joint_rho,
             joint_material_k,
-            joint_is_hard,
             i_lin,
             joint_lambda_lin[j],
-            joint_compliant_alm,
-            beta_lin,
         )
 
         q_wc = wp.transform_get_rotation(X_wc)
@@ -6485,22 +5932,17 @@ def update_duals_joint(
             kappa_perp,
             P_ang * joint_C0_ang[j],
             stab_alpha,
-            joint_penalty_k,
             joint_rho,
             joint_material_k,
-            joint_is_hard,
             i_ang,
             lam_old,
-            joint_compliant_alm,
-            beta_ang,
         )
 
-        # Drive/limit dual update for free angular DOF (slot c_start + 2)
+        # Drive/limit dual update for the free angular DOF.
         dof_idx = qd_start
         axis_dl = _load_joint_axis_drive_limit(
             dof_idx,
             joint_target_q_start[j],
-            c_start + 2,
             joint_target_ke,
             joint_target_kd,
             joint_target_q,
@@ -6509,10 +5951,8 @@ def update_duals_joint(
             joint_limit_upper,
             joint_limit_ke,
             joint_limit_kd,
-            joint_penalty_k,
-            joint_compliant_alm,
         )
-        has_drive = _drive_row_needs_state_update(axis_dl.material_drive_ke, axis_dl.drive_kd, joint_compliant_alm)
+        has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
         has_limits = _limit_row_exists(axis_dl.material_limit_ke, axis_dl.lower, axis_dl.upper)
 
         if has_drive or has_limits:
@@ -6531,19 +5971,14 @@ def update_duals_joint(
                 has_drive,
                 has_limits,
                 dof_idx,
-                c_start + 2,
-                beta_ang,
                 1.0 / dt,
-                joint_penalty_k,
-                joint_material_k,
                 joint_drive_limit_support,
                 joint_drive_lambda,
                 joint_limit_lambda,
-                joint_compliant_alm,
             )
         return
 
-    # PRISMATIC joint: perpendicular linear + isotropic angular penalties (2 scalars).
+    # PRISMATIC joint: update perpendicular linear and isotropic angular duals.
     if jt == JointType.PRISMATIC:
         i_lin = c_start + 0
         i_ang = c_start + 1
@@ -6562,14 +5997,10 @@ def update_duals_joint(
             C_vec_perp,
             P_lin * joint_C0_lin[j],
             stab_alpha,
-            joint_penalty_k,
             joint_rho,
             joint_material_k,
-            joint_is_hard,
             i_lin,
             lam_old,
-            joint_compliant_alm,
-            beta_lin,
         )
 
         q_wc = wp.transform_get_rotation(X_wc)
@@ -6581,22 +6012,17 @@ def update_duals_joint(
             kappa_perp,
             P_ang * joint_C0_ang[j],
             stab_alpha,
-            joint_penalty_k,
             joint_rho,
             joint_material_k,
-            joint_is_hard,
             i_ang,
             joint_lambda_ang[j],
-            joint_compliant_alm,
-            beta_ang,
         )
 
-        # Drive/limit dual update for free linear DOF (slot c_start + 2)
+        # Drive/limit dual update for the free linear DOF.
         dof_idx = qd_start
         axis_dl = _load_joint_axis_drive_limit(
             dof_idx,
             joint_target_q_start[j],
-            c_start + 2,
             joint_target_ke,
             joint_target_kd,
             joint_target_q,
@@ -6605,10 +6031,8 @@ def update_duals_joint(
             joint_limit_upper,
             joint_limit_ke,
             joint_limit_kd,
-            joint_penalty_k,
-            joint_compliant_alm,
         )
-        has_drive = _drive_row_needs_state_update(axis_dl.material_drive_ke, axis_dl.drive_kd, joint_compliant_alm)
+        has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
         has_limits = _limit_row_exists(axis_dl.material_limit_ke, axis_dl.lower, axis_dl.upper)
 
         if has_drive or has_limits:
@@ -6624,19 +6048,14 @@ def update_duals_joint(
                 has_drive,
                 has_limits,
                 dof_idx,
-                c_start + 2,
-                beta_lin,
                 1.0 / dt,
-                joint_penalty_k,
-                joint_material_k,
                 joint_drive_limit_support,
                 joint_drive_lambda,
                 joint_limit_lambda,
-                joint_compliant_alm,
             )
         return
 
-    # D6 joint: projected linear + projected angular penalties (2 scalars).
+    # D6 joint: update projected linear and projected angular duals.
     if jt == JointType.D6:
         i_lin = c_start + 0
         i_ang = c_start + 1
@@ -6661,14 +6080,10 @@ def update_duals_joint(
                 C_vec_perp,
                 P_lin * joint_C0_lin[j],
                 stab_alpha,
-                joint_penalty_k,
                 joint_rho,
                 joint_material_k,
-                joint_is_hard,
                 i_lin,
                 lam_old,
-                joint_compliant_alm,
-                beta_lin,
             )
 
         q_wc = wp.transform_get_rotation(X_wc)
@@ -6690,14 +6105,10 @@ def update_duals_joint(
                 kappa_perp,
                 P_ang * joint_C0_ang[j],
                 stab_alpha,
-                joint_penalty_k,
                 joint_rho,
                 joint_material_k,
-                joint_is_hard,
                 i_ang,
                 lam_old,
-                joint_compliant_alm,
-                beta_ang,
             )
 
         # Drive/limit dual update for D6 free DOFs
@@ -6708,7 +6119,6 @@ def update_duals_joint(
                 axis_dl = _load_joint_axis_drive_limit(
                     dof_idx,
                     target_q_base + li,
-                    c_start + 2 + li,
                     joint_target_ke,
                     joint_target_kd,
                     joint_target_q,
@@ -6717,12 +6127,8 @@ def update_duals_joint(
                     joint_limit_upper,
                     joint_limit_ke,
                     joint_limit_kd,
-                    joint_penalty_k,
-                    joint_compliant_alm,
                 )
-                has_drive = _drive_row_needs_state_update(
-                    axis_dl.material_drive_ke, axis_dl.drive_kd, joint_compliant_alm
-                )
+                has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
                 has_limits = _limit_row_exists(axis_dl.material_limit_ke, axis_dl.lower, axis_dl.upper)
 
                 if has_drive or has_limits:
@@ -6734,15 +6140,10 @@ def update_duals_joint(
                         has_drive,
                         has_limits,
                         dof_idx,
-                        c_start + 2 + li,
-                        beta_lin,
                         inv_dt,
-                        joint_penalty_k,
-                        joint_material_k,
                         joint_drive_limit_support,
                         joint_drive_lambda,
                         joint_limit_lambda,
-                        joint_compliant_alm,
                     )
 
         for ai in range(3):
@@ -6751,7 +6152,6 @@ def update_duals_joint(
                 axis_dl = _load_joint_axis_drive_limit(
                     dof_idx,
                     target_q_base + lin_count + ai,
-                    c_start + 2 + lin_count + ai,
                     joint_target_ke,
                     joint_target_kd,
                     joint_target_q,
@@ -6760,12 +6160,8 @@ def update_duals_joint(
                     joint_limit_upper,
                     joint_limit_ke,
                     joint_limit_kd,
-                    joint_penalty_k,
-                    joint_compliant_alm,
                 )
-                has_drive = _drive_row_needs_state_update(
-                    axis_dl.material_drive_ke, axis_dl.drive_kd, joint_compliant_alm
-                )
+                has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
                 has_limits = _limit_row_exists(axis_dl.material_limit_ke, axis_dl.lower, axis_dl.upper)
 
                 if has_drive or has_limits:
@@ -6780,15 +6176,10 @@ def update_duals_joint(
                         has_drive,
                         has_limits,
                         dof_idx,
-                        c_start + 2 + lin_count + ai,
-                        beta_ang,
                         inv_dt,
-                        joint_penalty_k,
-                        joint_material_k,
                         joint_drive_limit_support,
                         joint_drive_lambda,
                         joint_limit_lambda,
-                        joint_compliant_alm,
                     )
         return
 
@@ -6817,17 +6208,12 @@ def create_update_duals_body_body_contacts():
         contact_material_mu: wp.array[float],
         contact_C0: wp.array[wp.vec3],
         stab_alpha: float,
-        legacy_hard_contacts: int,
-        contact_compliant_alm: int,
         contact_material_ke: wp.array[float],
         contact_tangent_rho: wp.array[float],
         contact_normal_rho: wp.array[float],
-        beta: float,
-        # Input/output
-        contact_penalty_k: wp.array[float],
         contact_lambda: wp.array[wp.vec3],
     ):
-        """Update body-body contact duals and legacy penalty stiffness."""
+        """Update body-body contact duals."""
         idx = wp.tid()
         if idx >= rigid_contact_count[0]:
             return
@@ -6870,52 +6256,36 @@ def create_update_duals_body_body_contacts():
             p0_world, p1_world, n, rigid_contact_margin0[idx], rigid_contact_margin1[idx]
         )
 
-        if legacy_hard_contacts == 1 or contact_compliant_alm == 1:
-            if contact_compliant_alm == 1:
-                rho_n = contact_normal_rho[idx]
-            else:
-                rho_n = contact_penalty_k[idx]
-            material_k = contact_material_ke[idx]
-            lam_vec = contact_lambda[idx]
-            mu = contact_material_mu[idx]
+        rho_n = contact_normal_rho[idx]
+        material_k = contact_material_ke[idx]
+        lam_vec = contact_lambda[idx]
+        mu = contact_material_mu[idx]
 
-            C0_vec = contact_C0[idx]
-            C0_n = wp.dot(n, C0_vec)
-            C_stab_n = C_n_raw - stab_alpha * C0_n
-            C0_t_vec = C0_vec - n * C0_n
+        C0_vec = contact_C0[idx]
+        C0_n = wp.dot(n, C0_vec)
+        C_stab_n = C_n_raw - stab_alpha * C0_n
+        C0_t_vec = C0_vec - n * C0_n
 
-            # Bypass C0 stabilization on separation so normal support releases fully.
-            if C_n_raw < 0.0:
-                C_stab_n = C_n_raw
+        # Bypass C0 stabilization on separation so normal support releases fully.
+        if C_n_raw < 0.0:
+            C_stab_n = C_n_raw
 
-            rel_disp = (a0_world - a0_prev) - (a1_world - a1_prev)
-            if rigid_contact_surface_velocity:
-                rel_disp -= rigid_contact_surface_velocity[idx] * dt
-            tangential_disp = rel_disp - n * wp.dot(n, rel_disp)
-            tangent_residual = tangential_disp + (1.0 - stab_alpha) * C0_t_vec
+        rel_disp = (a0_world - a0_prev) - (a1_world - a1_prev)
+        if rigid_contact_surface_velocity:
+            rel_disp -= rigid_contact_surface_velocity[idx] * dt
+        tangential_disp = rel_disp - n * wp.dot(n, rel_disp)
+        tangent_residual = tangential_disp + (1.0 - stab_alpha) * C0_t_vec
 
-            if contact_compliant_alm == 1:
-                contact_lambda[idx] = _compliant_contact_dual_step(
-                    lam_vec,
-                    n,
-                    C_stab_n,
-                    tangent_residual,
-                    material_k,
-                    mu,
-                    rho_n,
-                    contact_tangent_rho[idx],
-                )
-            else:
-                lam_n_old = wp.dot(lam_vec, n)
-                lam_t_old = lam_vec - n * lam_n_old
-                lam_n_new = wp.max(lam_n_old + rho_n * C_stab_n, 0.0)
-                lam_t_new = lam_t_old + rho_n * tangent_residual
-                cone_limit = mu * lam_n_new
-                lam_t_new = _project_coulomb_tangent(lam_t_new, wp.length(lam_t_new), cone_limit)
-                contact_lambda[idx] = n * lam_n_new + lam_t_new
-
-        if contact_compliant_alm == 0 and C_n_raw > 0.0:
-            contact_penalty_k[idx] = _ramp_penalty_k(contact_penalty_k[idx], contact_material_ke[idx], beta, C_n_raw)
+        contact_lambda[idx] = _compliant_contact_dual_step(
+            lam_vec,
+            n,
+            C_stab_n,
+            tangent_residual,
+            material_k,
+            mu,
+            rho_n,
+            contact_tangent_rho[idx],
+        )
 
     # ``module="unique"`` kernels do not inherit this file's module options.
     wp.set_module_options({"enable_backward": False}, module=update_duals_body_body_contacts.module)
@@ -6923,77 +6293,6 @@ def create_update_duals_body_body_contacts():
 
 
 update_duals_body_body_contacts = create_update_duals_body_body_contacts()
-
-
-@wp.kernel
-def update_duals_body_particle_contacts(
-    body_particle_contact_count: wp.array[int],
-    contact_filter: _SoftContactFilterData,
-    soft_contact_indices: wp.array[wp.vec3i],
-    body_particle_contact_shape: wp.array[int],
-    body_particle_contact_body_pos: wp.array[wp.vec3],
-    body_particle_contact_normal: wp.array[wp.vec3],
-    soft_contact_barycentric: wp.array[wp.vec3],
-    particle_q: wp.array[wp.vec3],
-    particle_radius: wp.array[float],
-    shape_body: wp.array[int],
-    shape_margin: wp.array[float],
-    body_q: wp.array[wp.transform],
-    body_particle_contact_material_ke: wp.array[float],
-    beta: float,
-    body_particle_contact_penalty_k: wp.array[float],
-):
-    """
-    Update AVBD penalty parameters for body-particle soft contacts (per-iteration).
-
-    Ramps each contact's penalty by beta * penetration, clamped to the per-contact material
-    stiffness ceiling. Covers all soft contacts via the record's -1-padded corners: a particle
-    record uses the particle position; an edge/face record uses the barycentric point over its
-    2-3 soft particles -- matching _eval_soft_ef_contact.
-    """
-    idx = wp.tid()
-    if idx >= body_particle_contact_count[0] or not _soft_contact_force_enabled(idx, contact_filter):
-        return
-
-    corners = soft_contact_indices[idx]
-    shape_idx = body_particle_contact_shape[idx]
-    body_idx = shape_body[shape_idx] if shape_idx >= 0 else -1
-
-    stiffness = body_particle_contact_material_ke[idx]
-
-    X_wb = wp.transform_identity()
-    if body_idx >= 0:
-        X_wb = body_q[body_idx]
-
-    cp_world = wp.transform_point(X_wb, body_particle_contact_body_pos[idx])
-    margin = shape_margin[shape_idx] if shape_idx >= 0 and shape_margin.shape[0] > 0 else 0.0
-    n = body_particle_contact_normal[idx]
-
-    if corners[1] < 0:
-        # Particle contact (p, -1, -1).
-        p = corners[0]
-        contact_pos = particle_q[p]
-        radius = particle_radius[p]
-    else:
-        # Edge/face: barycentric point + max radius over the record's valid corners.
-        bary = soft_contact_barycentric[idx]
-        v0 = corners[0]
-        c1 = corners[1]
-        c2 = corners[2]
-        contact_pos = bary[0] * particle_q[v0]
-        radius = particle_radius[v0]
-        if c1 >= 0:
-            contact_pos += bary[1] * particle_q[c1]
-            radius = wp.max(radius, particle_radius[c1])
-        if c2 >= 0:
-            contact_pos += bary[2] * particle_q[c2]
-            radius = wp.max(radius, particle_radius[c2])
-
-    penetration = -(wp.dot(n, contact_pos - cp_world) - radius - margin)
-    penetration = wp.max(0.0, penetration)
-
-    k = body_particle_contact_penalty_k[idx]
-    body_particle_contact_penalty_k[idx] = wp.min(k + beta * penetration, stiffness)
 
 
 # -----------------------------
@@ -7075,10 +6374,7 @@ def update_rod_dahl_state(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     joint_constraint_start: wp.array[int],
-    joint_penalty_k: wp.array[float],
     joint_material_k: wp.array[float],
-    joint_is_hard: wp.array[wp.int32],
-    joint_compliant_alm: int,
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
     # Body states (final, after solver convergence)
@@ -7094,8 +6390,8 @@ def update_rod_dahl_state(
     """
     Persist rod Dahl hysteresis state after solver convergence.
 
-    State is diagonal in [bend_x, bend_y, twist_z]. Compliant ALM uses authored
-    material stiffness; legacy AVBD advances only active soft rod modes.
+    State is diagonal in [bend_x, bend_y, twist_z] and uses the authored bend/twist
+    stiffness.
     """
     j = wp.tid()
     zero = wp.vec3(0.0)
@@ -7127,10 +6423,7 @@ def update_rod_dahl_state(
     c_start = joint_constraint_start[j]
     k_dahl = _rod_dahl_active_stiffness(
         c_start,
-        joint_penalty_k,
         joint_material_k,
-        joint_is_hard,
-        joint_compliant_alm,
     )
 
     # Inactive modes clear stress and use the current strain as the next baseline.

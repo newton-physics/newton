@@ -2675,9 +2675,7 @@ class TestSolverXPBD(unittest.TestCase):
     def test_rejects_rod_joints(self):
         """Raise at construction instead of silently skipping Rod joints in the constraint kernels."""
         builder = newton.ModelBuilder()
-        builder.add_rod(
-            rod=newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 2.0)], radius=0.1), body_frame_origin="com"
-        )
+        builder.add_rod(rod=newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 2.0)], radius=0.1))
         with self.assertRaisesRegex(ValueError, "JointType.ROD"):
             newton.solvers.SolverXPBD(builder.finalize(device="cpu"))
 

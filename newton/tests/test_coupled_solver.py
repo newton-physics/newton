@@ -1081,7 +1081,7 @@ def _coupled_reset_replays_with_mutable_device_mask(test, device):
         (
             SolverCoupled.Entry(
                 "vbd",
-                lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=True),
+                lambda view: SolverVBD(view, iterations=0),
                 bodies=range(model.body_count),
                 joints=range(model.joint_count),
             ),
@@ -1319,23 +1319,22 @@ class TestSolverCoupledBasic(unittest.TestCase):
         builder.color()
         model = builder.finalize(device="cpu")
 
-        with self.assertWarns(DeprecationWarning):
-            coupled = SolverCoupled(
-                model,
-                (
-                    SolverCoupled.Entry(
-                        "other",
-                        _StepCountingCopySolver,
-                        particles=(external_particle,),
-                    ),
-                    SolverCoupled.Entry(
-                        "vbd",
-                        lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
-                        bodies=(body_a, body_b),
-                        particles=(owned_particle,),
-                    ),
+        coupled = SolverCoupled(
+            model,
+            (
+                SolverCoupled.Entry(
+                    "other",
+                    _StepCountingCopySolver,
+                    particles=(external_particle,),
                 ),
-            )
+                SolverCoupled.Entry(
+                    "vbd",
+                    lambda view: SolverVBD(view, iterations=0),
+                    bodies=(body_a, body_b),
+                    particles=(owned_particle,),
+                ),
+            ),
+        )
         view = coupled.view("vbd")
 
         # The view compacts bodies but keeps every particle visible, so the retained row pairs a
@@ -3033,7 +3032,6 @@ class TestSolverCoupledBasic(unittest.TestCase):
             rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0)], radius=0.02),
             label="segment",
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
         curve, _ = _add_curve(builder, label="partial")
         model = builder.finalize(device="cpu")
@@ -3325,7 +3323,7 @@ def _coupled_vbd_reset_preserves_pose_history(test, device):
         entries=[
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=True),
+                solver=lambda view: SolverVBD(view, iterations=0),
                 bodies=[dynamic_body, kinematic_body],
                 joints=[dynamic_joint, kinematic_joint],
             ),
@@ -3419,7 +3417,6 @@ def _harvest_wrench_on_one_proxy_body(buffer_size, particle_count, depth=0.01, r
         iterations=1,
         integrate_with_external_rigid_solver=False,
         rigid_body_particle_contact_buffer_size=buffer_size,
-        rigid_compliant_alm=True,
     )
     state_in = model.state()
     state_out = model.state()
@@ -3493,9 +3490,7 @@ def _harvest_comoving_proxy_contact(
             ),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda view: _RecordingVBD(
-                    view, iterations=4, rigid_compliant_alm=True, soft_contact_damping_bidirectional=False
-                ),
+                solver=lambda view: _RecordingVBD(view, iterations=4, soft_contact_damping_bidirectional=False),
                 bodies=[] if proxy_bodies else [body],
                 particles=[] if proxy_particles else [0],
                 substeps=vbd_substeps,
@@ -4630,7 +4625,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
                 ),
                 SolverCoupled.Entry(
                     name="dst",
-                    solver=lambda view: SolverVBD(view, iterations=1, rigid_compliant_alm=True),
+                    solver=lambda view: SolverVBD(view, iterations=1),
                     bodies=[2, 3, 4],
                     joints=[2, 3, 4, fixed_joint],
                 ),
@@ -4663,40 +4658,39 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         SolverVBD.register_custom_attributes(builder)
         for _ in range(5):
             builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        soft_joint = builder.add_joint_fixed(parent=3, child=4, custom_attributes={"vbd:joint_is_hard": 0})
+        joint = builder.add_joint_fixed(parent=3, child=4, custom_attributes={"vbd:dahl_eps_max": 0.1})
         builder.color()
         model = builder.finalize(device="cpu")
         model.vbd.namespace_marker = "parent metadata"
 
-        parent_joint_is_hard = model.vbd.joint_is_hard.numpy().copy()
-        vbd_joint_order = [2, 3, 4, soft_joint]
+        parent_dahl_eps_max = model.vbd.dahl_eps_max.numpy().copy()
+        vbd_joint_order = [2, 3, 4, joint]
 
-        with self.assertWarnsRegex(DeprecationWarning, "joint_is_hard"):
-            coupled = SolverCoupled(
-                model=model,
-                entries=[
-                    SolverCoupled.Entry(
-                        name="src",
-                        solver=SolverSemiImplicit,
-                        bodies=[0, 1],
-                        joints=[0, 1],
-                    ),
-                    SolverCoupled.Entry(
-                        name="dst",
-                        solver=lambda view: SolverVBD(view, iterations=1, rigid_compliant_alm=True),
-                        bodies=[2, 3, 4],
-                        joints=vbd_joint_order,
-                    ),
-                ],
-            )
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="src",
+                    solver=SolverSemiImplicit,
+                    bodies=[0, 1],
+                    joints=[0, 1],
+                ),
+                SolverCoupled.Entry(
+                    name="dst",
+                    solver=lambda view: SolverVBD(view, iterations=1),
+                    bodies=[2, 3, 4],
+                    joints=vbd_joint_order,
+                ),
+            ],
+        )
 
-        np.testing.assert_array_equal(model.vbd.joint_is_hard.numpy(), parent_joint_is_hard)
+        np.testing.assert_array_equal(model.vbd.dahl_eps_max.numpy(), parent_dahl_eps_max)
 
         view = coupled.view("dst")
         self.assertIsNot(view.vbd, model.vbd)
         self.assertEqual(view.vbd.namespace_marker, model.vbd.namespace_marker)
-        self.assertEqual(view.vbd.joint_is_hard.shape[0], view.joint_count)
-        np.testing.assert_array_equal(view.vbd.joint_is_hard.numpy(), parent_joint_is_hard[vbd_joint_order])
+        self.assertEqual(view.vbd.dahl_eps_max.shape[0], view.joint_count)
+        np.testing.assert_array_equal(view.vbd.dahl_eps_max.numpy(), parent_dahl_eps_max[vbd_joint_order])
 
     def test_compacted_custom_frequency_namespace_metadata_is_generic(self):
         builder = newton.ModelBuilder()

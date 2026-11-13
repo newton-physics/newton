@@ -2757,7 +2757,7 @@ class TestModelJoints(unittest.TestCase):
         builder = newton.ModelBuilder()
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
         rod = newton.Rod(pts, radius=0.02)
-        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
+        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True)
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att")
         labels_before = sorted(builder.joint_label)
         builder.collapse_fixed_joints()
@@ -2774,7 +2774,7 @@ class TestModelJoints(unittest.TestCase):
         builder = newton.ModelBuilder()
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
         rod = newton.Rod(pts, radius=0.02)
-        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
+        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True)
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att_a")
         with self.assertWarnsRegex(UserWarning, "undefined semantics"):
             builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
@@ -2832,7 +2832,7 @@ class TestModelJoints(unittest.TestCase):
         builder.add_joint_fixed(b0, b1)
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
         rod = newton.Rod(pts, radius=0.02)
-        bodies, _ = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
+        bodies, _ = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True)
         self.assertEqual(builder.curve_label, ["cable"])
         builder.add_joint_ball(parent=-1, child=bodies[-1], label="att")
         cable_labels_before = [builder.body_label[b] for b in bodies]
