@@ -15,7 +15,6 @@
 
 import numpy as np
 import warp as wp
-from scipy.spatial.transform import Rotation  # noqa: TID253
 
 import newton
 import newton.examples
@@ -311,8 +310,7 @@ class Example:
         return np.pi / 12 if local_index < 6 else -np.pi / 12
 
     def _reset_config_base_pose(self):
-        R_b = Rotation.from_rotvec(np.pi / 4 * np.array([0, 0, 1]))
-        q_b = R_b.as_quat()  # x, y, z, w
+        q_b = wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), np.pi / 4)
         q_base = wp.transformf((0.1, 0.1, 0.3), q_b)
         self.base_q.assign([q_base] * self.world_count)
         return newton.solvers.SolverKamino.ResetConfig(
@@ -320,8 +318,7 @@ class Example:
         )
 
     def _reset_config_base_pose_and_twist(self, u_base: wp.spatial_vectorf, **kwargs):
-        R_b = Rotation.from_rotvec(np.pi / 4 * np.array([0, 0, 1]))
-        q_b = R_b.as_quat()  # x, y, z, w
+        q_b = wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), np.pi / 4)
         q_base = wp.transformf((0.1, 0.1, 0.3), q_b)
         self.base_q.assign([q_base] * self.world_count)
         self.base_u.assign([u_base] * self.world_count)

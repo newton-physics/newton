@@ -377,16 +377,8 @@ def _solve_cholesky_lower_numpy(L: np.ndarray, b: np.ndarray) -> tuple[np.ndarra
     Returns:
         np.ndarray: The solution vector x.
     """
-    # Attempt to import scipy.linalg, which is required
-    # for the LDLT decomposition and reference solutions
-    try:
-        import scipy.linalg
-    except ImportError as e:
-        raise ImportError(
-            "scipy is required for RandomProblemLDLT but is not installed. install with: pip install scipy"
-        ) from e
-    y = scipy.linalg.solve_triangular(L, b, lower=True)
-    x = scipy.linalg.solve_triangular(L.T, y, lower=False)
+    y = np.linalg.solve(L, b)
+    x = np.linalg.solve(L.T, y)
     return y, x
 
 
@@ -401,16 +393,8 @@ def _solve_cholesky_upper_numpy(U: np.ndarray, b: np.ndarray) -> tuple[np.ndarra
     Returns:
         np.ndarray: The solution vector x.
     """
-    # Attempt to import scipy.linalg, which is required
-    # for the LDLT decomposition and reference solutions
-    try:
-        import scipy.linalg
-    except ImportError as e:
-        raise ImportError(
-            "scipy is required for RandomProblemLDLT but is not installed. install with: pip install scipy"
-        ) from e
-    y = scipy.linalg.solve_triangular(U.T, b, lower=True)
-    x = scipy.linalg.solve_triangular(U, y, lower=False)
+    y = np.linalg.solve(U.T, b)
+    x = np.linalg.solve(U, y)
     return y, x
 
 

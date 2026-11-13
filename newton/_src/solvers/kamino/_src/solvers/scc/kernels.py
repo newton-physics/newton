@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Warp kernels for the Kamino DVI solver."""
+"""Warp kernels for the Kamino SCC solver."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from .projections import (
 from .projections import (
     project_contact_tangent_update as _project_contact_tangent_update,
 )
-from .types import DVIConfigStruct, DVIStatus
+from .types import SCCConfigStruct, SCCStatus
 
 wp.set_module_options({"enable_backward": False})
 
@@ -66,7 +66,7 @@ def _compute_row_velocity(
 
 
 @wp.kernel
-def _reset_dvi_solver_data(
+def _reset_scc_solver_data(
     # Inputs:
     world_mask: wp.array[wp.bool],
     problem_vio: wp.array[int32],
@@ -84,13 +84,13 @@ def _reset_dvi_solver_data(
 
 
 @wp.kernel
-def _scale_dvi_tangential_warmstart(
+def _scale_scc_tangential_warmstart(
     model_info_total_cts_offset: wp.array[int32],
     data_info_contact_cts_group_offset: wp.array[int32],
     contact_model_num_contacts: wp.array[int32],
     contact_wid: wp.array[int32],
     contact_cid: wp.array[int32],
-    solver_config: wp.array[DVIConfigStruct],
+    solver_config: wp.array[SCCConfigStruct],
     solution_lambdas: wp.array[float32],
 ):
     """Decay copied tangential warmstarts while retaining normal warmstarts."""
@@ -107,12 +107,12 @@ def _scale_dvi_tangential_warmstart(
 
 
 @wp.kernel
-def _reset_dvi_status(
+def _reset_scc_status(
     # Outputs:
-    solver_status: wp.array[DVIStatus],
+    solver_status: wp.array[SCCStatus],
 ):
     wid = wp.tid()
-    solver_status[wid] = DVIStatus()
+    solver_status[wid] = SCCStatus()
 
 
 @wp.kernel
@@ -235,7 +235,7 @@ def _warp_max_32(value: float32) -> float32: ...
 
 
 @wp.kernel
-def _compute_dvi_status_residuals(
+def _compute_scc_status_residuals(
     # Inputs:
     problem_dim: wp.array[int32],
     problem_vio: wp.array[int32],
@@ -251,11 +251,11 @@ def _compute_dvi_status_residuals(
     problem_mu: wp.array[float32],
     problem_bound_lower: wp.array[float32],
     problem_bound_upper: wp.array[float32],
-    solver_config: wp.array[DVIConfigStruct],
+    solver_config: wp.array[SCCConfigStruct],
     state_v_aug: wp.array[float32],
     solution_lambdas: wp.array[float32],
     # Outputs:
-    solver_status: wp.array[DVIStatus],
+    solver_status: wp.array[SCCStatus],
     workers_per_world: int32,
     minimum_iterations: int32,
 ):
@@ -346,15 +346,15 @@ def _compute_dvi_status_residuals(
 
 
 @wp.kernel
-def _initialize_dvi_status(
+def _initialize_scc_status(
     # Inputs:
-    solver_config: wp.array[DVIConfigStruct],
+    solver_config: wp.array[SCCConfigStruct],
     # Outputs:
-    solver_status: wp.array[DVIStatus],
+    solver_status: wp.array[SCCStatus],
 ):
     wid = wp.tid()
     cfg = solver_config[wid]
-    status = DVIStatus()
+    status = SCCStatus()
     status.converged = int32(0)
     status.iterations = cfg.inequality_sweeps_per_iteration
     status.r_p = float32(0.0)
@@ -365,15 +365,15 @@ def _initialize_dvi_status(
 
 
 @wp.kernel
-def _set_dvi_direct_status_iterations(
+def _set_scc_direct_status_iterations(
     # Inputs:
     problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
-    solver_config: wp.array[DVIConfigStruct],
+    solver_config: wp.array[SCCConfigStruct],
     preserve_reported: wp.bool,
     # Outputs:
-    solver_status: wp.array[DVIStatus],
+    solver_status: wp.array[SCCStatus],
 ):
     wid = wp.tid()
     cfg = solver_config[wid]
@@ -387,14 +387,14 @@ def _set_dvi_direct_status_iterations(
 
 
 @wp.kernel
-def _set_dvi_bilateral_active_dim(
+def _set_scc_bilateral_active_dim(
     # Inputs:
     problem_njc: wp.array[int32],
     problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
     block_iteration: int32,
-    solver_config: wp.array[DVIConfigStruct],
+    solver_config: wp.array[SCCConfigStruct],
     # Outputs:
     bilateral_active_dim: wp.array[int32],
 ):
@@ -825,7 +825,7 @@ def _solve_bilateral_unilateral_response(
 
 
 @wp.kernel
-def _compute_dvi_unilateral_velocities(
+def _compute_scc_unilateral_velocities(
     problem_dim: wp.array[int32],
     problem_mio: wp.array[int32],
     problem_vio: wp.array[int32],
@@ -900,7 +900,7 @@ def _dense_unilateral_terminal_residuals(
 
 
 @wp.kernel
-def _solve_dvi_inequalities_colored_pgs(
+def _solve_scc_inequalities_colored_pgs(
     problem_dim: wp.array[int32],
     problem_mio: wp.array[int32],
     problem_vio: wp.array[int32],
@@ -923,14 +923,14 @@ def _solve_dvi_inequalities_colored_pgs(
     inequality_num_colors: wp.array[int32],
     inequality_ids_by_color: wp.array[int32],
     inequality_color_starts: wp.array[int32],
-    solver_config: wp.array[DVIConfigStruct],
+    solver_config: wp.array[SCCConfigStruct],
     enable_adaptive: wp.bool,
-    solver_status: wp.array[DVIStatus],
+    solver_status: wp.array[SCCStatus],
     state_delta: wp.array[float32],
     state_v_aug: wp.array[float32],
     solution_lambdas: wp.array[float32],
 ):
-    """Apply one graph-colored PGS schedule to all DVI inequalities."""
+    """Apply one graph-colored PGS schedule to all SCC inequalities."""
     tid = wp.tid()
     threads_per_world = int32(wp.block_dim())
     lane = tid % threads_per_world
@@ -1155,7 +1155,7 @@ def _solve_dvi_inequalities_colored_pgs(
 
 
 @wp.kernel
-def _compute_dvi_solution_vectors(
+def _compute_scc_solution_vectors(
     # Inputs:
     problem_dim: wp.array[int32],
     problem_mio: wp.array[int32],
@@ -1186,7 +1186,7 @@ def _compute_dvi_solution_vectors(
 
 
 @wp.kernel
-def _compute_dvi_desaxce_corrections(
+def _compute_scc_desaxce_corrections(
     # Inputs:
     problem_nc: wp.array[int32],
     problem_ccgo: wp.array[int32],
@@ -1210,14 +1210,14 @@ def _compute_dvi_desaxce_corrections(
     vt0 = solution_v_plus[vio + ccio]
     vt1 = solution_v_plus[vio + ccio + 1]
     # s = [0, 0, mu * ||v_t||] maps physical contact velocity to the dual-cone
-    # variable v_aug = v_plus + s used by the DVI contact conditions.
+    # variable v_aug = v_plus + s used by the SCC contact conditions.
     s_n = problem_mu[problem_cio[wid] + cid] * wp.sqrt(vt0 * vt0 + vt1 * vt1)
     state_s[vio + ccio + 2] = s_n
     state_v_aug[vio + ccio + 2] = solution_v_plus[vio + ccio + 2] + s_n
 
 
 @wp.kernel
-def _unprecondition_dvi_solution(
+def _unprecondition_scc_solution(
     # Inputs:
     problem_dim: wp.array[int32],
     problem_vio: wp.array[int32],

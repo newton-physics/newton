@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Blocked forward responses for compact DVI operators."""
+"""Blocked forward responses for compact SCC operators."""
 
 from functools import cache
 

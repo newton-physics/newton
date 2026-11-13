@@ -32,13 +32,13 @@ class Example:
         self.dynamics_solver = getattr(args, "dynamics_solver", "padmm") if args else "padmm"
         self.linear_solver_type = getattr(args, "linear_solver_type", "LLTB") if args else "LLTB"
         self.linear_solver_kwargs = getattr(args, "linear_solver_kwargs", {}) if args else {}
-        target_sim_dt = self.frame_dt / 12 if self.dynamics_solver == "dvi" else 0.01
+        target_sim_dt = self.frame_dt / 12 if self.dynamics_solver == "scc" else 0.01
         self.sim_substeps = max(1, round(self.frame_dt / target_sim_dt))
         self.sim_dt = self.frame_dt / self.sim_substeps
-        # DVI benefits from early contact detection because it solves inequality
+        # SCC benefits from early contact detection because it solves inequality
         # constraints slightly less accurately than PADMM. Contact forces remain
         # zero until the shapes overlap.
-        dvi_contact_margin = 5.0e-4 if self.dynamics_solver == "dvi" else 1e-6
+        scc_contact_margin = 5.0e-4 if self.dynamics_solver == "scc" else 1e-6
         self.viewer = viewer
         self.device = wp.get_device()
         self.animated = getattr(args, "animated", False) if args else False
@@ -47,13 +47,13 @@ class Example:
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
-        robot_builder.default_shape_cfg.margin = dvi_contact_margin
+        robot_builder.default_shape_cfg.margin = scc_contact_margin
         robot_builder.default_shape_cfg.gap = 1e-2
         if self.animated:
             robot_builder.default_shape_cfg.mu = 0.1
         # Load the DR Legs USD and add it to the builder.
         # Pinned to an older revision: the current one is better for RL but tips over
-        # differently in simulation, which the DVI contact regressions detect. Drop the
+        # differently in simulation, which the SCC contact regressions detect. Drop the
         # ref once that is understood.
         asset_path = newton.utils.download_asset("disneyresearch", ref="261cd1f429619d8ef4f546bd788ab9dea906b5e1")
         asset_file = str(asset_path / "dr_legs" / "usd" / "dr_legs_with_meshes_and_boxes.usda")
@@ -89,7 +89,7 @@ class Example:
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        builder.default_shape_cfg.margin = dvi_contact_margin
+        builder.default_shape_cfg.margin = scc_contact_margin
         builder.default_shape_cfg.gap = 1e-2
         for _ in range(self.world_count):
             builder.add_world(robot_builder)
@@ -105,8 +105,8 @@ class Example:
         self.config = newton.solvers.SolverKamino.Config.from_model(
             self.model,
             dynamics_solver=self.dynamics_solver,
-            sparse_dynamics=self.dynamics_solver == "dvi",
-            sparse_jacobian=self.dynamics_solver in ("dvi", "lox"),
+            sparse_dynamics=self.dynamics_solver == "scc",
+            sparse_jacobian=self.dynamics_solver in ("scc", "lox"),
         )
         self.config.use_fk_solver = True
         self.config.use_collision_detector = self.use_kamino_contacts
@@ -118,7 +118,7 @@ class Example:
         self.config.padmm.dual_tolerance = 1e-4
         self.config.padmm.compl_tolerance = 1e-4
         self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", True) if args else True
-        if self.dynamics_solver == "dvi":
+        if self.dynamics_solver == "scc":
             self.config.use_fk_solver = False
             if self.use_kamino_contacts:
                 self.config.integrator = "moreau"
@@ -128,16 +128,16 @@ class Example:
             self.config.dynamics.preconditioning = False
             self.config.dynamics.linear_solver_type = "CR"
             self.config.dynamics.linear_solver_kwargs = {"maxiter": 9}
-            self.config.dvi.bilateral_solver_type = "LLTBRCM"
-            self.config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
-            self.config.dvi.tolerance = 1e-4
-            self.config.dvi.regularization = 1e-5
-            self.config.dvi.max_alternating_iterations = 4
-            self.config.dvi.inequality_sweeps_per_iteration = 3
-            self.config.dvi.bilateral_solve_interval = 1
-            self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
-            self.config.dvi.unilateral_solver = getattr(args, "unilateral_solver", "pgs")
-            self.config.dvi.use_schur_complement = getattr(args, "use_schur_complement", None)
+            self.config.scc.bilateral_solver_type = "LLTBRCM"
+            self.config.scc.bilateral_solver_kwargs = {"parallel_factorization": True}
+            self.config.scc.tolerance = 1e-4
+            self.config.scc.regularization = 1e-5
+            self.config.scc.max_alternating_iterations = 4
+            self.config.scc.inequality_sweeps_per_iteration = 3
+            self.config.scc.bilateral_solve_interval = 1
+            self.config.scc.contact_warmstart_method = "key_and_position_with_tangential_net_force"
+            self.config.scc.unilateral_solver = getattr(args, "unilateral_solver", "pgs")
+            self.config.scc.use_schur_complement = getattr(args, "use_schur_complement", None)
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -340,7 +340,7 @@ class Example:
         newton.examples.add_kamino_contacts_arg(parser)
         parser.add_argument(
             "--dynamics-solver",
-            choices=("padmm", "dvi", "lox"),
+            choices=("padmm", "scc", "lox"),
             default="padmm",
             help="Kamino dynamics solver to use.",
         )
@@ -348,13 +348,13 @@ class Example:
             "--unilateral-solver",
             choices=("pgs", "apgd"),
             default="pgs",
-            help="DVI unilateral subsolver; APGD uses De Saxce contact correction.",
+            help="SCC unilateral subsolver; APGD uses De Saxce contact correction.",
         )
         parser.add_argument(
             "--use-schur-complement",
             action=argparse.BooleanOptionalAction,
             default=None,
-            help="Eliminate bilateral rows during DVI unilateral solves (automatic for bounded PD drives).",
+            help="Eliminate bilateral rows during SCC unilateral solves (automatic for bounded PD drives).",
         )
         parser.add_argument(
             "--linear-solver-type",

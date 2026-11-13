@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Sparse DVI solve path for Kamino dual systems."""
+"""Sparse SCC solve path for Kamino dual systems."""
 
 from __future__ import annotations
 
@@ -28,9 +28,9 @@ from .kernels import (
     _FUSED_INEQUALITY_BLOCK,
     _find_bilateral_factor_row_start,
     _find_bilateral_factor_row_start_rcm,
-    _initialize_dvi_status,
+    _initialize_scc_status,
     _scatter_bilateral_solution,
-    _set_dvi_direct_status_iterations,
+    _set_scc_direct_status_iterations,
     _solve_bilateral_unilateral_response,
     _solve_bilateral_unilateral_response_compact,
     _solve_bilateral_unilateral_response_cooperative,
@@ -55,9 +55,9 @@ from .sparse_kernels import (
     _color_compact_contact_groups,
     _compact_contact_group_starts,
     _compare_compact_contact_topology,
-    _compute_dvi_sparse_solution_vectors,
+    _compute_scc_sparse_solution_vectors,
     _expand_colored_contact_groups,
-    _group_mapped_dvi_inequalities,
+    _group_mapped_scc_inequalities,
     _invert_small_bilateral_block,
     _map_active_contacts,
     _map_active_limits,
@@ -72,9 +72,9 @@ from .sparse_kernels import (
     _reconstruct_fused_bilateral_solution,
     _select_parallel_contact_colors,
     _set_sparse_bilateral_diagonal,
-    _solve_dvi_sparse_contacts_pgs,
-    _solve_dvi_sparse_inequalities_pgs,
-    _solve_dvi_sparse_inequalities_pgs_cooperative,
+    _solve_scc_sparse_contacts_pgs,
+    _solve_scc_sparse_inequalities_pgs,
+    _solve_scc_sparse_inequalities_pgs_cooperative,
     _sparse_bilateral_gemv,
     _zero_bilateral_lambdas,
     make_compact_schur_pgs_kernel,
@@ -92,7 +92,7 @@ _PARALLEL_CONTACT_MAX_COLORS = 8
 _PARALLEL_CONTACT_MIN_CAPACITY = 32768
 _MAX_ALTERNATING_BATCH_WORLDS = 2048
 _ALTERNATING_BATCH_INVERSE_ENTRIES = 16 * 1024 * 1024
-_SPARSE_INEQUALITY_TOPOLOGY_ERROR = "Sparse DVI inequalities require limit/contact topology and sparse Jacobians."
+_SPARSE_INEQUALITY_TOPOLOGY_ERROR = "Sparse SCC inequalities require limit/contact topology and sparse Jacobians."
 
 
 def _use_parallel_contact_colors(num_worlds: int, max_limits: int, max_contacts: int, is_cuda: bool) -> bool:
@@ -109,8 +109,8 @@ def _parallel_contact_group_width(sm_count: int, group_capacity: int) -> int:
     return min(32, 1 << (required - 1).bit_length())
 
 
-class SparseDVIPath:
-    """Own workspace and operations for the sparse Kamino DVI solve path."""
+class SparseSCCPath:
+    """Own workspace and operations for the sparse Kamino SCC solve path."""
 
     def __init__(
         self,
@@ -216,7 +216,7 @@ class SparseDVIPath:
             and delassus._col_major_jacobian is not None
         )
         if self.model_data is None or self.jacobians is None:
-            raise RuntimeError("Sparse DVI requires model data and sparse Jacobians.")
+            raise RuntimeError("Sparse SCC requires model data and sparse Jacobians.")
         if self.bilateral_solver is not None and self.data.bilateral_operator is not None:
             _build_sparse_bilateral_pairs(self, problem)
             _build_sparse_bilateral_row_nzb_topology(self, problem)
@@ -252,7 +252,7 @@ class SparseDVIPath:
         self.effort_limit_condensation = EffortLimitCondensation.create(self)
 
     def solve(self, problem: DualProblem) -> None:
-        """Solve a sparse Kamino DVI problem without materializing dense Delassus."""
+        """Solve a sparse Kamino SCC problem without materializing dense Delassus."""
         if self.bilateral_solver is not None and self.data.bilateral_operator is not None:
             _solve_sparse_with_bilateral_direct_block(self, problem)
         elif _can_use_sparse_colored_inequalities(self):
@@ -263,7 +263,7 @@ class SparseDVIPath:
             _compute_sparse_solution_vectors(self, problem)
 
 
-def _can_use_sparse_colored_inequalities(path: SparseDVIPath) -> bool:
+def _can_use_sparse_colored_inequalities(path: SparseSCCPath) -> bool:
     has_limit_capacity = path.size.max_of_max_limits > 0
     has_contact_capacity = path.size.max_of_max_contacts > 0
     has_bounded_capacity = path.size.max_of_num_bounded_joint_cts > 0
@@ -277,7 +277,7 @@ def _can_use_sparse_colored_inequalities(path: SparseDVIPath) -> bool:
     )
 
 
-def _can_use_cooperative_articulation(path: SparseDVIPath) -> bool:
+def _can_use_cooperative_articulation(path: SparseSCCPath) -> bool:
     """Return whether one warp can solve each articulated world's inequalities."""
     return (
         path.use_schur_complement
@@ -287,7 +287,7 @@ def _can_use_cooperative_articulation(path: SparseDVIPath) -> bool:
     )
 
 
-def _prepare_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) -> None:
+def _prepare_sparse_inequality_pgs(path: SparseSCCPath, problem: DualProblem) -> None:
     """Map and color active inequalities with the multi-world fast path."""
     state = path.data.state
     num_joints = path.size.sum_of_num_joints
@@ -422,7 +422,7 @@ def _prepare_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) ->
     )
     if not use_parallel_groups:
         wp.launch(
-            kernel=_group_mapped_dvi_inequalities,
+            kernel=_group_mapped_scc_inequalities,
             dim=path.size.num_worlds,
             inputs=[
                 problem.data.nbc,
@@ -551,7 +551,7 @@ def _prepare_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) ->
 
 
 def _launch_sparse_inequality_pgs(
-    path: SparseDVIPath,
+    path: SparseSCCPath,
     problem: DualProblem,
     block_iteration: int,
     enable_compact_schur: bool = False,
@@ -592,7 +592,7 @@ def _launch_sparse_inequality_pgs(
         path.size.max_of_max_contacts,
         path.device.is_cuda,
     )
-    kernel = _solve_dvi_sparse_contacts_pgs if contact_only else _solve_dvi_sparse_inequalities_pgs
+    kernel = _solve_scc_sparse_contacts_pgs if contact_only else _solve_scc_sparse_inequalities_pgs
     if contact_only:
         wp.launch(
             kernel=_cache_sparse_contact_diagonal,
@@ -609,11 +609,11 @@ def _launch_sparse_inequality_pgs(
         )
     cooperative_articulation = _can_use_cooperative_articulation(path)
     if cooperative_articulation:
-        kernel = _solve_dvi_sparse_inequalities_pgs_cooperative
+        kernel = _solve_scc_sparse_inequalities_pgs_cooperative
         threads_per_world = 32
-    if (world_start != 0 or world_count != path.size.num_worlds) and kernel != _solve_dvi_sparse_inequalities_pgs:
+    if (world_start != 0 or world_count != path.size.num_worlds) and kernel != _solve_scc_sparse_inequalities_pgs:
         raise ValueError("World batches require the general sparse PGS kernel.")
-    if kernel == _solve_dvi_sparse_inequalities_pgs:
+    if kernel == _solve_scc_sparse_inequalities_pgs:
         if path.device.is_cuda:
             # Small batches need wider blocks; saturated batches benefit from more resident worlds.
             if path.size.num_worlds <= 512:
@@ -923,7 +923,7 @@ def _launch_sparse_inequality_pgs(
             )
         if path.effort_limit_condensation is not None:
             path.effort_limit_condensation.publish(compact_inputs)
-    if kernel == _solve_dvi_sparse_inequalities_pgs:
+    if kernel == _solve_scc_sparse_inequalities_pgs:
         kernel_inputs.extend(body_inputs)
     wp.launch(
         kernel=kernel,
@@ -934,7 +934,7 @@ def _launch_sparse_inequality_pgs(
     )
 
 
-def _solve_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) -> None:
+def _solve_sparse_inequality_pgs(path: SparseSCCPath, problem: DualProblem) -> None:
     delassus = _get_sparse_delassus(problem)
     delassus.diagonal(path.data.state.scratch)
     _prepare_sparse_inequality_pgs(path, problem)
@@ -943,7 +943,7 @@ def _solve_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) -> N
         _launch_sparse_inequality_pgs(path, problem, block_iteration)
     _compute_sparse_solution_vectors(path, problem)
     wp.launch(
-        kernel=_set_dvi_direct_status_iterations,
+        kernel=_set_scc_direct_status_iterations,
         dim=path.size.num_worlds,
         inputs=[problem.data.nbc, problem.data.nl, problem.data.nc, path.data.config, False, path.data.status],
         device=path.device,
@@ -953,11 +953,11 @@ def _solve_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) -> N
 def _get_sparse_delassus(problem: DualProblem) -> BlockSparseMatrixFreeDelassusOperator:
     delassus = problem.delassus
     if not isinstance(delassus, BlockSparseMatrixFreeDelassusOperator):
-        raise TypeError("Sparse DVI requires a `BlockSparseMatrixFreeDelassusOperator`.")
+        raise TypeError("Sparse SCC requires a `BlockSparseMatrixFreeDelassusOperator`.")
     return delassus
 
 
-def _compute_sparse_solution_vectors(path: SparseDVIPath, problem: DualProblem) -> None:
+def _compute_sparse_solution_vectors(path: SparseSCCPath, problem: DualProblem) -> None:
     state = path.data.state
     problem.delassus.matvec(
         x=path.data.solution.lambdas,
@@ -965,7 +965,7 @@ def _compute_sparse_solution_vectors(path: SparseDVIPath, problem: DualProblem) 
         world_mask=path.all_worlds_mask,
     )
     wp.launch(
-        kernel=_compute_dvi_sparse_solution_vectors,
+        kernel=_compute_scc_sparse_solution_vectors,
         dim=(path.size.num_worlds, path.size.max_of_max_total_cts),
         inputs=[
             problem.data.dim,
@@ -979,7 +979,7 @@ def _compute_sparse_solution_vectors(path: SparseDVIPath, problem: DualProblem) 
     )
 
 
-def _sparse_bilateral_matvec(path: SparseDVIPath, problem: DualProblem) -> None:
+def _sparse_bilateral_matvec(path: SparseSCCPath, problem: DualProblem) -> None:
     """Evaluate the bilateral rows needed by the matrix-free RHS solve."""
     delassus = _get_sparse_delassus(problem)
     state = path.data.state
@@ -987,7 +987,7 @@ def _sparse_bilateral_matvec(path: SparseDVIPath, problem: DualProblem) -> None:
     body_space = path.body_space
     bsm = delassus.bsm
     if bsm is None:
-        raise RuntimeError("Sparse DVI row products require initialized Delassus sparse operators.")
+        raise RuntimeError("Sparse SCC row products require initialized Delassus sparse operators.")
 
     # Evaluate bilateral rows of D * lambda = J * M^-1 * J^T * lambda + R * lambda
     # without materializing the Delassus matrix.
@@ -1015,7 +1015,7 @@ def _sparse_bilateral_matvec(path: SparseDVIPath, problem: DualProblem) -> None:
     )
 
 
-def _factor_sparse_bilateral_block(path: SparseDVIPath, problem: DualProblem) -> None:
+def _factor_sparse_bilateral_block(path: SparseSCCPath, problem: DualProblem) -> None:
     operator = path.data.bilateral_operator
     operator.info.dim = path.data.bilateral_dim
     if isinstance(path.bilateral_solver, LLTBlockedRCMSolver):
@@ -1042,7 +1042,7 @@ def _factor_sparse_bilateral_block(path: SparseDVIPath, problem: DualProblem) ->
 
 
 def _assemble_sparse_bilateral_block(
-    path: SparseDVIPath,
+    path: SparseSCCPath,
     problem: DualProblem,
     matrix: wp.array2d[float32],
     inverse: wp.array[int32] | None = None,
@@ -1052,7 +1052,7 @@ def _assemble_sparse_bilateral_block(
     state = path.data.state
     matrix_offsets = operator.info.mio
     if path.bilateral_nzb_pairs is None:
-        raise RuntimeError("Sparse DVI topology is not prepared. Call `SparseDVIPath.prepare()` before solving.")
+        raise RuntimeError("Sparse SCC topology is not prepared. Call `SparseSCCPath.prepare()` before solving.")
     pair_wid, pair_row, pair_col, pair_bid, pair_i, pair_j = path.bilateral_nzb_pairs
     state.bilateral_preconditioner.zero_()
     problem.delassus.diagonal(state.scratch)
@@ -1124,7 +1124,7 @@ def group_bilateral_pairs(pairs: Sequence[Sequence[int]]) -> tuple[list[list[int
     return pairs, entry_starts
 
 
-def _build_sparse_bilateral_pairs(path: SparseDVIPath, problem: DualProblem) -> None:
+def _build_sparse_bilateral_pairs(path: SparseSCCPath, problem: DualProblem) -> None:
     """Cache joint Jacobian block pairs that contribute to the bilateral matrix."""
     jacobian = problem.delassus.constraint_jacobian
     counts = path.jacobians.joint_constraint_nzb_count.numpy().tolist()
@@ -1167,7 +1167,7 @@ def _build_sparse_bilateral_pairs(path: SparseDVIPath, problem: DualProblem) -> 
     path.bilateral_entry_starts = wp.array(entry_starts, dtype=int32, device=path.device)
 
 
-def _build_sparse_bilateral_row_nzb_topology(path: SparseDVIPath, problem: DualProblem) -> None:
+def _build_sparse_bilateral_row_nzb_topology(path: SparseSCCPath, problem: DualProblem) -> None:
     """Cache bilateral and bounded joint blocks by constraint row in storage order."""
     jacobian = problem.delassus.constraint_jacobian
     counts = path.jacobians.joint_constraint_nzb_count.numpy().tolist()
@@ -1195,7 +1195,7 @@ def _build_sparse_bilateral_row_nzb_topology(path: SparseDVIPath, problem: DualP
     )
 
 
-def _can_use_fused_bilateral_inverse(path: SparseDVIPath) -> bool:
+def _can_use_fused_bilateral_inverse(path: SparseSCCPath) -> bool:
     """Return whether the matrix-free inverse solve owns each world's complete RHS."""
     return (
         path.bilateral_inverse is not None
@@ -1205,7 +1205,7 @@ def _can_use_fused_bilateral_inverse(path: SparseDVIPath) -> bool:
     )
 
 
-def _sparse_alternating_world_batch_size(path: SparseDVIPath) -> int:
+def _sparse_alternating_world_batch_size(path: SparseSCCPath) -> int:
     """Bound inverse working sets so repeated solves can reuse the GPU cache."""
     worlds = path.size.num_worlds
     if (
@@ -1222,7 +1222,7 @@ def _sparse_alternating_world_batch_size(path: SparseDVIPath) -> int:
 
 
 def _solve_sparse_bilateral_block(
-    path: SparseDVIPath,
+    path: SparseSCCPath,
     problem: DualProblem,
     active_dim: wp.array[int32] | None = None,
     forward_only: bool = False,
@@ -1436,7 +1436,7 @@ def _solve_sparse_bilateral_block(
     )
 
 
-def _solve_sparse_with_bilateral_direct_block(path: SparseDVIPath, problem: DualProblem) -> None:
+def _solve_sparse_with_bilateral_direct_block(path: SparseSCCPath, problem: DualProblem) -> None:
     """Solve coupled sparse bilateral and unilateral constraint blocks."""
     if not path.use_schur_complement:
         _solve_sparse_with_bilateral_alternation(path, problem)
@@ -1464,7 +1464,7 @@ def _solve_sparse_with_bilateral_direct_block(path: SparseDVIPath, problem: Dual
     )
 
 
-def _solve_sparse_with_bilateral_alternation(path: SparseDVIPath, problem: DualProblem) -> None:
+def _solve_sparse_with_bilateral_alternation(path: SparseSCCPath, problem: DualProblem) -> None:
     """Alternate direct bilateral solves with projected sparse unilateral sweeps."""
     state = path.data.state
     _factor_sparse_bilateral_block(path, problem)
@@ -1476,7 +1476,7 @@ def _solve_sparse_with_bilateral_alternation(path: SparseDVIPath, problem: DualP
         raise RuntimeError(_SPARSE_INEQUALITY_TOPOLOGY_ERROR)
 
     wp.launch(
-        kernel=_initialize_dvi_status,
+        kernel=_initialize_scc_status,
         dim=path.size.num_worlds,
         inputs=[path.data.config, path.data.status],
         device=path.device,
@@ -1532,7 +1532,7 @@ def _solve_sparse_with_bilateral_alternation(path: SparseDVIPath, problem: DualP
     path.set_bilateral_active_dim(problem, -1)
     _solve_sparse_bilateral_block(path, problem, active_dim=state.bilateral_active_dim)
     wp.launch(
-        kernel=_set_dvi_direct_status_iterations,
+        kernel=_set_scc_direct_status_iterations,
         dim=path.size.num_worlds,
         inputs=[problem.data.nbc, problem.data.nl, problem.data.nc, path.data.config, False, path.data.status],
         device=path.device,
@@ -1541,7 +1541,7 @@ def _solve_sparse_with_bilateral_alternation(path: SparseDVIPath, problem: DualP
 
 
 def _solve_sparse_with_bilateral_schur_complement(
-    path: SparseDVIPath, problem: DualProblem, *, joint_blocks: JointBlockSolver | None = None
+    path: SparseSCCPath, problem: DualProblem, *, joint_blocks: JointBlockSolver | None = None
 ) -> None:
     """Eliminate bilateral rows from projected sparse unilateral sweeps."""
     state = path.data.state
@@ -1574,7 +1574,7 @@ def _solve_sparse_with_bilateral_schur_complement(
         return
 
     wp.launch(
-        kernel=_initialize_dvi_status,
+        kernel=_initialize_scc_status,
         dim=path.size.num_worlds,
         inputs=[
             path.data.config,
@@ -1878,7 +1878,7 @@ def _solve_sparse_with_bilateral_schur_complement(
         )
     if not cooperative_fused_pgs:
         wp.launch(
-            kernel=_set_dvi_direct_status_iterations,
+            kernel=_set_scc_direct_status_iterations,
             dim=path.size.num_worlds,
             inputs=[
                 problem.data.nbc,
@@ -1893,7 +1893,7 @@ def _solve_sparse_with_bilateral_schur_complement(
     _compute_sparse_solution_vectors(path, problem)
 
 
-def _assemble_sparse_bilateral_coupling(path: SparseDVIPath, problem: DualProblem, compact_layout: bool) -> None:
+def _assemble_sparse_bilateral_coupling(path: SparseSCCPath, problem: DualProblem, compact_layout: bool) -> None:
     state = path.data.state
     max_unilateral_rows = (
         path.size.max_of_num_bounded_joint_cts + path.size.max_of_max_limits + 3 * path.size.max_of_max_contacts
@@ -1903,7 +1903,7 @@ def _assemble_sparse_bilateral_coupling(path: SparseDVIPath, problem: DualProble
         delassus.update()
     bsm = delassus.bsm
     if path.bilateral_row_nzb_topology is None:
-        raise RuntimeError("Sparse DVI topology is not prepared. Call `SparseDVIPath.prepare()` before solving.")
+        raise RuntimeError("Sparse SCC topology is not prepared. Call `SparseSCCPath.prepare()` before solving.")
     world_row_offsets, row_starts, row_nzb_indices = path.bilateral_row_nzb_topology
     # One thread per column; split rows only when the batch is too small to fill the GPU.
     coupling_row_groups = max(1, min(32, (1 << 20) // (path.size.num_worlds * max_unilateral_rows)))

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the Kamino DVI solver."""
+"""Unit tests for the Kamino SCC solver."""
 
 from __future__ import annotations
 
@@ -24,35 +24,36 @@ from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constr
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians
 from newton._src.solvers.kamino._src.linalg import LLTBlockedRCMSolver, LLTBlockedSolver
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
-from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
-from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
+from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
+from newton._src.solvers.kamino._src.solvers.scc import SCCSolver
+from newton._src.solvers.kamino._src.solvers.scc.kernels import (
     BILATERAL_FAILED_PIVOT_SHIFT,
     _find_bilateral_factor_row_start,
-    _initialize_dvi_status,
+    _initialize_scc_status,
     _solve_bilateral_unilateral_response,
     _solve_bilateral_unilateral_response_cooperative,
-    _solve_dvi_inequalities_colored_pgs,
+    _solve_scc_inequalities_colored_pgs,
 )
-from newton._src.solvers.kamino._src.solvers.dvi.projections import (
+from newton._src.solvers.kamino._src.solvers.scc.projections import (
     contact_friction_normal_load as _contact_friction_normal_load,
 )
-from newton._src.solvers.kamino._src.solvers.dvi.projections import (
+from newton._src.solvers.kamino._src.solvers.scc.projections import (
     project_contact_tangent_update as _project_contact_tangent_update,
 )
-from newton._src.solvers.kamino._src.solvers.dvi.sparse import (
+from newton._src.solvers.kamino._src.solvers.scc.sparse import (
     _can_use_cooperative_articulation,
     _sparse_bilateral_matvec,
 )
-from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
+from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _assemble_compact_unilateral_schur_blocked,
     _assemble_compact_unilateral_schur_tiled,
     _color_compact_contact_groups,
-    _color_mapped_dvi_inequalities,
+    _color_mapped_scc_inequalities,
     _compact_contact_group_starts,
     _compact_unilateral_correction,
     _compare_compact_contact_topology,
     _expand_colored_contact_groups,
-    _group_mapped_dvi_inequalities,
+    _group_mapped_scc_inequalities,
     _map_active_contacts,
     _map_bounded_constraints,
     _map_ordered_active_contacts,
@@ -62,11 +63,10 @@ from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
     _prepare_contact_pair_sort,
     _prepare_contact_world_sort,
     _reconstruct_fused_bilateral_solution,
-    _solve_dvi_sparse_contacts_pgs,
-    _solve_dvi_sparse_inequalities_pgs,
+    _solve_scc_sparse_contacts_pgs,
+    _solve_scc_sparse_inequalities_pgs,
 )
-from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, DVIState, convert_config_to_struct
-from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
+from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCState, convert_config_to_struct
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
@@ -77,7 +77,7 @@ from newton.tests.kamino.utils.make import (
     make_test_problem_fourbar,
     update_containers,
 )
-from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
+from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase, requires
 from newton.tests.utils import basics, testing
 
 
@@ -105,7 +105,7 @@ def _contact_friction_normal_load_for_test(
     diagonal_n: wp.float32,
     result: wp.array[wp.float32],
 ):
-    """Evaluate the unbiased DVI friction load in a test kernel."""
+    """Evaluate the unbiased SCC friction load in a test kernel."""
     result[0] = _contact_friction_normal_load(
         lambda_n,
         bias_n,
@@ -125,7 +125,7 @@ def _project_contact_tangent_for_test(
     lambda_max: wp.float32,
     result: wp.array[wp.vec2f],
 ):
-    """Evaluate the shared DVI tangential projection in a test kernel."""
+    """Evaluate the shared SCC tangential projection in a test kernel."""
     result[0] = _project_contact_tangent_update(
         lambda_old,
         velocity,
@@ -252,7 +252,7 @@ def _reduce_solver_status(status: np.ndarray) -> dict[str, object]:
     }
 
 
-def _check_solution_matches_dual_problem(testcase: unittest.TestCase, problem: DualProblem, solver: DVISolver):
+def _check_solution_matches_dual_problem(testcase: unittest.TestCase, problem: DualProblem, solver: SCCSolver):
     """Check that final physical solution vectors match ``D lambda + v_f``."""
     D_np = extract_delassus(problem.delassus, only_active_dims=True)
     v_f_np = extract_problem_vector(problem.delassus, problem.data.v_f.numpy(), only_active_dims=True)
@@ -303,21 +303,21 @@ def _make_sparse_dual_problem(model, data, limits, contacts, jacobians) -> DualP
     return problem
 
 
-def _solve_dvi(
+def _solve_scc(
     model,
     problem,
     warmstart: WarmStartMode = WarmStartMode.NONE,
-    config: kamino_config.DVISolverConfig | None = None,
+    config: kamino_config.SCCSolverConfig | None = None,
     setup: TestSetup | None = None,
-) -> DVISolver:
-    solver = DVISolver(
+) -> SCCSolver:
+    solver = SCCSolver(
         model=model,
         data=setup.data if setup is not None else None,
         limits=setup.limits if setup is not None else None,
         contacts=setup.contacts if setup is not None else None,
         jacobians=setup.jacobians if setup is not None else None,
         config=config
-        or kamino_config.DVISolverConfig(
+        or kamino_config.SCCSolverConfig(
             max_alternating_iterations=300,
             inequality_sweeps_per_iteration=1,
             tolerance=1e-4,
@@ -331,7 +331,7 @@ def _solve_dvi(
     return solver
 
 
-def _status_iteration_budget(solver: DVISolver, wid: int) -> int:
+def _status_iteration_budget(solver: SCCSolver, wid: int) -> int:
     """Bound the backend's reported projected steps across unilateral phases."""
     config = solver.config[wid]
     if config.unilateral_solver == "apgd":
@@ -342,7 +342,7 @@ def _status_iteration_budget(solver: DVISolver, wid: int) -> int:
     return config.max_alternating_iterations * config.inequality_sweeps_per_iteration
 
 
-def _assert_solver_status_converged(testcase: unittest.TestCase, solver: DVISolver):
+def _assert_solver_status_converged(testcase: unittest.TestCase, solver: SCCSolver):
     status = solver.data.status.numpy()
     for wid in range(solver.size.num_worlds):
         testcase.assertEqual(int(status[wid]["converged"]), 1, msg=str(status[wid]))
@@ -353,12 +353,12 @@ def _assert_solver_status_converged(testcase: unittest.TestCase, solver: DVISolv
         testcase.assertLessEqual(float(status[wid]["r_b"]), solver.config[wid].tolerance)
 
 
-def _assert_solution_finite(testcase: unittest.TestCase, solver: DVISolver):
+def _assert_solution_finite(testcase: unittest.TestCase, solver: SCCSolver):
     testcase.assertTrue(np.all(np.isfinite(solver.data.solution.lambdas.numpy())))
     testcase.assertTrue(np.all(np.isfinite(solver.data.solution.v_plus.numpy())))
 
 
-def _evaluate_solution_metrics(test: TestSetup, solver: DVISolver) -> dict[str, float]:
+def _evaluate_solution_metrics(test: TestSetup, solver: SCCSolver) -> dict[str, float]:
     integrate_euler_semi_implicit(model=test.model, data=test.data)
     metrics = SolutionMetrics(model=test.model)
     metrics.evaluate(
@@ -390,7 +390,7 @@ def _evaluate_solution_metrics(test: TestSetup, solver: DVISolver) -> dict[str, 
     }
 
 
-class TestDVISolver(NewtonTestCase):
+class TestSCCSolver(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
@@ -399,7 +399,7 @@ class TestDVISolver(NewtonTestCase):
 
     def test_00_sparse_projection_is_allocated_only_for_schur(self):
         """Allocate the large sparse response workspace only for Schur solves."""
-        state = DVIState()
+        state = SCCState()
         size = SimpleNamespace(sum_of_max_inequalities=1, num_worlds=1, sum_of_max_total_cts=1)
 
         state.allocate_sparse_projection(
@@ -411,7 +411,7 @@ class TestDVISolver(NewtonTestCase):
         )
         self.assertEqual(state.bilateral_coupling.size, 1)
 
-        with self.assertRaisesRegex(ValueError, "Sparse DVI projection exceeds"):
+        with self.assertRaisesRegex(ValueError, "Sparse SCC projection exceeds"):
             state.allocate_sparse_projection(
                 size=size,
                 joint_rows=[46341],
@@ -436,24 +436,24 @@ class TestDVISolver(NewtonTestCase):
         self.assertFalse(_can_use_cooperative_articulation(path))
 
     def test_00_config_selection(self):
-        """Verify default, dense, PADMM, and explicit DVI configuration selection."""
-        default_config = SolverKamino.Config(dynamics_solver="dvi")
+        """Verify default, dense, PADMM, and explicit SCC configuration selection."""
+        default_config = SolverKamino.Config(dynamics_solver="scc")
         self.assertFalse(default_config.sparse_dynamics)
         self.assertTrue(default_config.sparse_jacobian)
         self.assertEqual(default_config.integrator, "euler")
         self.assertEqual(default_config.dynamics.linear_solver_type, "LLTBRCM")
         self.assertEqual(default_config.dynamics.linear_solver_kwargs, {})
-        self.assertEqual(default_config.dvi.omega, 1.0)
-        self.assertEqual(default_config.dvi.max_alternating_iterations, 24)
-        self.assertEqual(default_config.dvi.inequality_sweeps_per_iteration, 2)
-        self.assertIsNone(default_config.dvi.use_schur_complement)
-        self.assertEqual(default_config.dvi.tangential_warmstart_scale, 0.97)
-        self.assertEqual(default_config.dvi.bilateral_solve_interval, 1)
-        self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTB")
-        self.assertEqual(default_config.dvi.bilateral_solver_kwargs, {})
+        self.assertEqual(default_config.scc.omega, 1.0)
+        self.assertEqual(default_config.scc.max_alternating_iterations, 24)
+        self.assertEqual(default_config.scc.inequality_sweeps_per_iteration, 2)
+        self.assertIsNone(default_config.scc.use_schur_complement)
+        self.assertEqual(default_config.scc.tangential_warmstart_scale, 0.97)
+        self.assertEqual(default_config.scc.bilateral_solve_interval, 1)
+        self.assertEqual(default_config.scc.bilateral_solver_type, "LLTB")
+        self.assertEqual(default_config.scc.bilateral_solver_kwargs, {})
 
         dense_config = SolverKamino.Config(
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
             sparse_dynamics=False,
             sparse_jacobian=False,
         )
@@ -461,7 +461,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertFalse(dense_config.sparse_jacobian)
         self.assertEqual(dense_config.integrator, "euler")
         self.assertEqual(dense_config.dynamics.linear_solver_type, "LLTBRCM")
-        self.assertEqual(dense_config.dvi.max_alternating_iterations, 24)
+        self.assertEqual(dense_config.scc.max_alternating_iterations, 24)
 
         padmm_config = SolverKamino.Config()
         self.assertFalse(padmm_config.sparse_dynamics)
@@ -469,31 +469,31 @@ class TestDVISolver(NewtonTestCase):
         self.assertEqual(padmm_config.integrator, "euler")
 
         config = SolverKamino.Config(
-            dynamics_solver="dvi",
-            dvi=kamino_config.DVISolverConfig(max_alternating_iterations=32, tolerance=1e-4),
+            dynamics_solver="scc",
+            scc=kamino_config.SCCSolverConfig(max_alternating_iterations=32, tolerance=1e-4),
         )
-        self.assertEqual(config.dynamics_solver, "dvi")
-        self.assertEqual(config.dvi.max_alternating_iterations, 32)
-        self.assertEqual(config.dvi.inequality_sweeps_per_iteration, 2)
-        self.assertEqual(config.dvi.bilateral_solve_interval, 1)
+        self.assertEqual(config.dynamics_solver, "scc")
+        self.assertEqual(config.scc.max_alternating_iterations, 32)
+        self.assertEqual(config.scc.inequality_sweeps_per_iteration, 2)
+        self.assertEqual(config.scc.bilateral_solve_interval, 1)
         self.assertEqual(
-            config.dvi.contact_warmstart_method,
+            config.scc.contact_warmstart_method,
             "key_and_position_with_tangential_net_force",
         )
         self.assertFalse(config.dynamics.preconditioning)
 
-        sparse_config = SolverKamino.Config(dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True)
+        sparse_config = SolverKamino.Config(dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True)
         self.assertTrue(sparse_config.sparse_dynamics)
         self.assertTrue(sparse_config.sparse_jacobian)
-        self.assertEqual(sparse_config.dvi.omega, 1.0)
+        self.assertEqual(sparse_config.scc.omega, 1.0)
         self.assertEqual(sparse_config.dynamics.linear_solver_type, "CR")
         self.assertEqual(sparse_config.dynamics.linear_solver_kwargs, {"maxiter": 9})
         with self.assertRaises(ValueError):
             SolverKamino.Config(
-                dynamics_solver="dvi",
+                dynamics_solver="scc",
                 dynamics=kamino_config.ConstrainedDynamicsConfig(preconditioning=True),
             )
-        invalid_dvi_configs = (
+        invalid_scc_configs = (
             {"tolerance": -1.0},
             {"regularization": 0.0},
             {"omega": 0.0},
@@ -506,9 +506,9 @@ class TestDVISolver(NewtonTestCase):
             {"bilateral_solver_type": "invalid"},
             {"warmstart_mode": "invalid"},
         )
-        for kwargs in invalid_dvi_configs:
+        for kwargs in invalid_scc_configs:
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
-                kamino_config.DVISolverConfig(**kwargs)
+                kamino_config.SCCSolverConfig(**kwargs)
         for method in (
             "key_and_position",
             "geom_pair_net_force",
@@ -517,33 +517,61 @@ class TestDVISolver(NewtonTestCase):
             "key_and_position_with_net_force_backup_and_tangential_net_force",
         ):
             self.assertEqual(
-                kamino_config.DVISolverConfig(contact_warmstart_method=method).contact_warmstart_method, method
+                kamino_config.SCCSolverConfig(contact_warmstart_method=method).contact_warmstart_method, method
             )
         for method in ("reaction", "geom_pair_net_wrench"):
             with self.assertRaises(ValueError):
-                kamino_config.DVISolverConfig(contact_warmstart_method=method)
+                kamino_config.SCCSolverConfig(contact_warmstart_method=method)
 
         model_with_attrs = SimpleNamespace(
             kamino=SimpleNamespace(max_solver_iterations=wp.array([37], dtype=wp.int32, device=self.device))
         )
-        self.assertEqual(kamino_config.DVISolverConfig.from_model(model_with_attrs).max_alternating_iterations, 37)
+        self.assertEqual(kamino_config.SCCSolverConfig.from_model(model_with_attrs).max_alternating_iterations, 37)
+
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                with self.assertWarnsRegex(newton.NewtonDeprecationWarning, 'dynamics_solver="scc"') as warning:
+                    legacy_config = SolverKamino.Config(dynamics_solver="dvi", sparse_dynamics=sparse)
+                self.assertEqual(warning.filename, __file__)
+                canonical_config = SolverKamino.Config(dynamics_solver="scc", sparse_dynamics=sparse)
+                self.assertEqual(legacy_config, canonical_config)
+                with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "config.scc") as warning:
+                    legacy_settings = legacy_config.dvi
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(legacy_settings, legacy_config.scc)
+                legacy_settings.max_alternating_iterations = 31
+                self.assertEqual(legacy_config.scc.max_alternating_iterations, 31)
+                replacement = kamino_config.SCCSolverConfig(max_alternating_iterations=17)
+                with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "config.scc"):
+                    legacy_config.dvi = replacement
+                self.assertIs(legacy_config.scc, replacement)
+
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        model = builder.finalize(device=self.device)
+        replacement = kamino_config.SCCSolverConfig(max_alternating_iterations=17)
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            imported_config = SolverKamino.Config.from_model(model, dynamics_solver="dvi", scc=replacement)
+        self.assertEqual(imported_config.dynamics_solver, "scc")
+        self.assertEqual(imported_config.scc.max_alternating_iterations, 17)
+        self.assertFalse(imported_config.dynamics.preconditioning)
 
     def test_00_schur_ignores_bilateral_solve_interval(self):
         """Do not fall back to bilateral alternation after Schur elimination."""
         configs = [
-            kamino_config.DVISolverConfig(max_alternating_iterations=4, bilateral_solve_interval=interval)
+            kamino_config.SCCSolverConfig(max_alternating_iterations=4, bilateral_solve_interval=interval)
             for interval in (1, 2)
         ]
         solver = SimpleNamespace(_use_schur_complement=True, _max_alternating_iterations=4)
 
-        schedule = DVISolver._make_bilateral_solve_schedule(solver, configs)
+        schedule = SCCSolver._make_bilateral_solve_schedule(solver, configs)
 
         self.assertEqual(schedule, (False, False, False))
         solver._use_schur_complement = False
-        self.assertEqual(DVISolver._make_bilateral_solve_schedule(solver, configs), (True, True, True))
+        self.assertEqual(SCCSolver._make_bilateral_solve_schedule(solver, configs), (True, True, True))
 
-    def test_00a_dvi_contact_capacity_uses_geometry_heuristic(self):
-        """Limit DVI contact allocation while honoring explicit overrides."""
+    def test_00a_scc_contact_capacity_uses_geometry_heuristic(self):
+        """Limit SCC contact allocation while honoring explicit overrides."""
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
         for box_index in range(16):
@@ -552,7 +580,7 @@ class TestDVISolver(NewtonTestCase):
         model = builder.finalize(device=self.device)
 
         config = SolverKamino.Config(
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
             sparse_jacobian=False,
             use_collision_detector=True,
         )
@@ -563,7 +591,7 @@ class TestDVISolver(NewtonTestCase):
             solver._model_kamino.geoms.model_minimum_contacts,
         )
         override_config = SolverKamino.Config(
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
             sparse_jacobian=False,
             use_collision_detector=True,
             collision_detector=kamino_config.CollisionDetectorConfig(max_contacts_per_world=37),
@@ -571,7 +599,7 @@ class TestDVISolver(NewtonTestCase):
         override_solver = SolverKamino(model, override_config)
         self.assertEqual(override_solver._contacts_kamino.world_max_contacts_host, [37])
 
-    def test_00a2_dvi_contact_capacity_reports_per_world_overflow(self):
+    def test_00a2_scc_contact_capacity_reports_per_world_overflow(self):
         """Report contacts dropped when one world exhausts its capacity."""
         expect_contact_capacity_warning(self)
         builder = newton.ModelBuilder()
@@ -588,7 +616,7 @@ class TestDVISolver(NewtonTestCase):
         model = builder.finalize(device=self.device)
 
         config = SolverKamino.Config(
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
             sparse_jacobian=False,
             use_collision_detector=True,
             collision_detector=kamino_config.CollisionDetectorConfig(max_contacts_per_world=1),
@@ -607,7 +635,7 @@ class TestDVISolver(NewtonTestCase):
         )
 
     def test_00b_bilateral_solver_selection(self):
-        """Verify DVI constructs and validates the configured bilateral solver."""
+        """Verify SCC constructs and validates the configured bilateral solver."""
 
         def make_model(dimensions):
             return SimpleNamespace(
@@ -620,11 +648,11 @@ class TestDVISolver(NewtonTestCase):
                 ),
             )
 
-        config = kamino_config.DVISolverConfig(
+        config = kamino_config.SCCSolverConfig(
             bilateral_solver_type="LLTBRCM",
             bilateral_solver_kwargs={"block_size": 16, "reuse_permutation": True},
         )
-        solver = DVISolver()
+        solver = SCCSolver()
         solver._config = [config]
         solver._data = SimpleNamespace(bilateral_operator=None, state=SimpleNamespace())
         solver._device = self.device
@@ -639,21 +667,21 @@ class TestDVISolver(NewtonTestCase):
         for kwargs, expected_shift in (({}, BILATERAL_FAILED_PIVOT_SHIFT), ({"failed_pivot_shift": 0.0}, 0.0)):
             with self.subTest(kwargs=kwargs):
                 solver._config = [
-                    kamino_config.DVISolverConfig(bilateral_solver_type="LLTB", bilateral_solver_kwargs=kwargs)
+                    kamino_config.SCCSolverConfig(bilateral_solver_type="LLTB", bilateral_solver_kwargs=kwargs)
                 ]
                 solver._allocate_bilateral_solver(make_model([3]))
                 self.assertIsInstance(solver._bilateral_solver, LLTBlockedSolver)
                 self.assertEqual(solver._bilateral_solver._failed_pivot_shift, expected_shift)
 
         solver._config = [
-            kamino_config.DVISolverConfig(bilateral_solver_type="LLTB"),
-            kamino_config.DVISolverConfig(bilateral_solver_type="LLTBRCM"),
+            kamino_config.SCCSolverConfig(bilateral_solver_type="LLTB"),
+            kamino_config.SCCSolverConfig(bilateral_solver_type="LLTBRCM"),
         ]
         with self.assertRaisesRegex(ValueError, "All worlds must use the same"):
             solver._allocate_bilateral_solver(make_model([3, 3]))
 
     def test_00a_multiworld_status_reduction_requires_all_worlds_converged(self):
-        """Require every world to converge when reducing DVI status."""
+        """Require every world to converge when reducing SCC status."""
         status = np.array(
             [(True, 2, 1.0e-5), (False, 7, 2.0e-3)],
             dtype=[("converged", np.bool_), ("iterations", np.int32), ("r_d", np.float32)],
@@ -665,7 +693,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertEqual(reduced["iterations"], 7)
         self.assertAlmostEqual(reduced["r_d"], 2.0e-3)
 
-    def test_01_dvi_solve_dense_dual_problem(self):
+    def test_01_scc_solve_dense_dual_problem(self):
         builder = basics.build_boxes_fourbar()
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
@@ -695,13 +723,13 @@ class TestDVISolver(NewtonTestCase):
         )
         problem.build(model=model, data=data, limits=limits, contacts=detector.contacts, jacobians=jacobians)
 
-        solver = DVISolver(
+        solver = SCCSolver(
             model=model,
             data=data,
             limits=limits,
             contacts=detector.contacts,
             jacobians=jacobians,
-            config=kamino_config.DVISolverConfig(
+            config=kamino_config.SCCSolverConfig(
                 max_alternating_iterations=1000,
                 inequality_sweeps_per_iteration=1,
                 tolerance=1e-5,
@@ -729,7 +757,7 @@ class TestDVISolver(NewtonTestCase):
         _check_solution_matches_dual_problem(self, problem, solver)
         np.testing.assert_array_equal(solver.data.info.status.numpy(), solver.data.status.numpy())
 
-    def test_01a_dvi_requires_contact_topology_at_allocation(self):
+    def test_01a_scc_requires_contact_topology_at_allocation(self):
         """Reject missing contact topology when the model allocates contacts.
 
         Graph-colored inequality solves consume the contact container, so the
@@ -745,9 +773,9 @@ class TestDVISolver(NewtonTestCase):
         self.assertGreater(model.size.max_of_max_contacts, 0)
 
         with self.assertRaises(ValueError):
-            DVISolver(model=model, data=data, limits=limits, jacobians=jacobians)
+            SCCSolver(model=model, data=data, limits=limits, jacobians=jacobians)
 
-        solver = DVISolver(
+        solver = SCCSolver(
             model=model,
             data=data,
             limits=limits,
@@ -756,7 +784,7 @@ class TestDVISolver(NewtonTestCase):
         )
         self.assertIsNotNone(solver.data)
 
-    def test_02_public_solver_step_with_dvi(self):
+    def test_02_public_solver_step_with_scc(self):
         builder = newton.ModelBuilder()
         SolverKamino.register_custom_attributes(builder)
         builder.default_shape_cfg.margin = 0.0
@@ -780,11 +808,29 @@ class TestDVISolver(NewtonTestCase):
         builder.end_world()
         model = builder.finalize(device=self.device)
 
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            config = SolverKamino.Config(dynamics_solver="dvi", collect_solver_info=True)
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            config.dvi = kamino_config.SCCSolverConfig(
+                max_alternating_iterations=500,
+                inequality_sweeps_per_iteration=1,
+                tolerance=1e-5,
+            )
+        solver = SolverKamino(model, config=config)
+        state_in = model.state()
+        state_out = model.state()
+        solver.step(state_in, state_out, control=None, contacts=None, dt=1e-3)
+        self.assertTrue(np.all(np.isfinite(state_out.body_q.numpy())))
+        self.assertTrue(np.all(np.isfinite(state_out.body_qd.numpy())))
+        self.assertIsInstance(solver._solver_kamino.solver_fd, SCCSolver)
+        self.assertFalse(solver._solver_kamino.config.dynamics.preconditioning)
+        self.assertIsNotNone(solver._solver_kamino.solver_fd.data.info)
+
         for sparse, metrics in ((False, False), (False, True), (True, False), (True, True)):
             with self.subTest(sparse=sparse, metrics=metrics):
                 config = SolverKamino.Config(
-                    dynamics_solver="dvi",
-                    dvi=kamino_config.DVISolverConfig(
+                    dynamics_solver="scc",
+                    scc=kamino_config.SCCSolverConfig(
                         max_alternating_iterations=500,
                         inequality_sweeps_per_iteration=1,
                         tolerance=1e-5,
@@ -802,7 +848,7 @@ class TestDVISolver(NewtonTestCase):
                 body_qd = state_out.body_qd.numpy()
                 self.assertTrue(np.all(np.isfinite(body_q)))
                 self.assertTrue(np.all(np.isfinite(body_qd)))
-                self.assertIsInstance(solver._solver_kamino.solver_fd, DVISolver)
+                self.assertIsInstance(solver._solver_kamino.solver_fd, SCCSolver)
                 self.assertFalse(solver._solver_kamino.config.dynamics.preconditioning)
                 self.assertIsNotNone(solver._solver_kamino.solver_fd.data.info)
 
@@ -838,7 +884,7 @@ class TestDVISolver(NewtonTestCase):
 
         np.testing.assert_array_equal(state.body_q.numpy(), body_q)
 
-    def test_03_dvi_solve_single_contact(self):
+    def test_03_scc_solve_single_contact(self):
         builder = basics.build_sphere_on_plane()
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
@@ -867,13 +913,13 @@ class TestDVISolver(NewtonTestCase):
         )
         problem.build(model=model, data=data, limits=limits, contacts=detector.contacts, jacobians=jacobians)
 
-        solver = DVISolver(
+        solver = SCCSolver(
             model=model,
             data=data,
             limits=limits,
             contacts=detector.contacts,
             jacobians=jacobians,
-            config=kamino_config.DVISolverConfig(
+            config=kamino_config.SCCSolverConfig(
                 max_alternating_iterations=200,
                 inequality_sweeps_per_iteration=1,
                 tolerance=1e-4,
@@ -889,7 +935,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertTrue(np.all(np.isfinite(solver.data.solution.lambdas.numpy())))
         self.assertTrue(np.all(np.isfinite(solver.data.solution.v_plus.numpy())))
 
-    def test_03l_sparse_dvi_skips_inequalities_without_mapped_topology(self):
+    def test_03l_sparse_scc_skips_inequalities_without_mapped_topology(self):
         """Skip a sparse inequality whose row has no mapped Jacobian topology.
 
         The sweep reads per-entity Jacobian offsets through the mapped index,
@@ -907,7 +953,7 @@ class TestDVISolver(NewtonTestCase):
             config = wp.array(
                 [
                     convert_config_to_struct(
-                        kamino_config.DVISolverConfig(
+                        kamino_config.SCCSolverConfig(
                             max_alternating_iterations=1,
                             inequality_sweeps_per_iteration=1,
                             tolerance=0.0,
@@ -916,13 +962,13 @@ class TestDVISolver(NewtonTestCase):
                         )
                     )
                 ],
-                dtype=DVIConfigStruct,
+                dtype=SCCConfigStruct,
                 device=self.device,
             )
             threads_per_world = 64 if self.device.is_cuda else 1
             body_space = wp.full(6, float("nan"), dtype=wp.float32, device=self.device)
             wp.launch(
-                kernel=_solve_dvi_sparse_inequalities_pgs,
+                kernel=_solve_scc_sparse_inequalities_pgs,
                 dim=threads_per_world,
                 inputs=[
                     int32_array([1]),  # bsm_num_nzb
@@ -1029,15 +1075,15 @@ class TestDVISolver(NewtonTestCase):
         setup = SimpleNamespace(data=data, limits=limits, contacts=detector.contacts, jacobians=jacobians)
         return model, problem, setup
 
-    def test_03i_dvi_stationary_contact_patch_avoids_tangent_self_stress(self):
+    def test_03i_scc_stationary_contact_patch_avoids_tangent_self_stress(self):
         """Avoid tangential self-stress while supporting a stationary contact patch."""
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
                 model, problem, setup = self._make_box_on_plane_setup(sparse=sparse)
-                solver = _solve_dvi(
+                solver = _solve_scc(
                     model,
                     problem,
-                    config=kamino_config.DVISolverConfig(
+                    config=kamino_config.SCCSolverConfig(
                         max_alternating_iterations=32,
                         inequality_sweeps_per_iteration=1,
                         tolerance=0.0,
@@ -1053,7 +1099,7 @@ class TestDVISolver(NewtonTestCase):
                 self.assertGreater(float(np.sum(impulses[:, 2])), 0.0)
                 self.assertLess(float(np.max(np.linalg.norm(impulses[:, :2], axis=1))), 1.0e-6)
 
-    def test_03ib_dvi_balances_sticking_friction_across_contact_patch(self):
+    def test_03ib_scc_balances_sticking_friction_across_contact_patch(self):
         """Balance sticking friction across a symmetric contact patch."""
         friction = 0.5
         applied_force = 2.0
@@ -1079,8 +1125,8 @@ class TestDVISolver(NewtonTestCase):
         for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
             with self.subTest(sparse=sparse, unilateral_solver=unilateral_solver):
                 config = SolverKamino.Config(
-                    dynamics_solver="dvi",
-                    dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
+                    dynamics_solver="scc",
+                    scc=kamino_config.SCCSolverConfig(unilateral_solver=unilateral_solver),
                     use_collision_detector=True,
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
@@ -1090,11 +1136,11 @@ class TestDVISolver(NewtonTestCase):
                         max_contacts_per_pair=8,
                     ),
                 )
-                config.dvi.max_alternating_iterations = 200
-                config.dvi.tolerance = 1.0e-4
-                config.dvi.warmstart_mode = "none"
+                config.scc.max_alternating_iterations = 200
+                config.scc.tolerance = 1.0e-4
+                config.scc.warmstart_mode = "none"
                 # Resolve sticking below the 1e-6 m/s rest-speed assertion.
-                config.dvi.apgd.tolerance = 1.0e-7
+                config.scc.apgd.tolerance = 1.0e-7
                 solver = SolverKamino(model, config=config)
                 state_0 = model.state()
                 state_1 = model.state()
@@ -1126,7 +1172,7 @@ class TestDVISolver(NewtonTestCase):
                 self.assertLess(abs(front_tangent - back_tangent), 5.0e-4)
                 self.assertLess(abs(float(state_0.body_qd.numpy()[body, 0])), 1.0e-6)
 
-    def test_03ia_dvi_decays_tangential_but_not_normal_warmstarts(self):
+    def test_03ia_scc_decays_tangential_but_not_normal_warmstarts(self):
         """Decay copied tangential warmstarts without mutating cached reactions."""
         model, problem, setup = self._make_box_on_plane_setup()
         contact_count = int(setup.contacts.model_active_contacts.numpy()[0])
@@ -1134,12 +1180,12 @@ class TestDVISolver(NewtonTestCase):
         reactions[:contact_count] = np.array([2.0, -4.0, 3.0], dtype=np.float32)
         setup.contacts.reaction.assign(reactions)
 
-        solver = DVISolver(
+        solver = SCCSolver(
             model=model,
             data=setup.data,
             limits=setup.limits,
             contacts=setup.contacts,
-            config=kamino_config.DVISolverConfig(
+            config=kamino_config.SCCSolverConfig(
                 max_alternating_iterations=1,
                 inequality_sweeps_per_iteration=1,
                 tangential_warmstart_scale=0.5,
@@ -1189,7 +1235,7 @@ class TestDVISolver(NewtonTestCase):
         actual_repeated_lambdas = np.stack([repeated_lambdas[offset : offset + 3] for offset in contact_offsets])
         np.testing.assert_allclose(actual_repeated_lambdas, expected_lambdas, atol=1.0e-7, rtol=1.0e-6)
 
-    def test_03j_dvi_omega_scales_projected_updates_without_moving_the_solution(self):
+    def test_03j_scc_omega_scales_projected_updates_without_moving_the_solution(self):
         """Relax projected updates by `omega` while preserving the fixed point.
 
         `omega` scales the step of every projected update, so a single sweep
@@ -1199,10 +1245,10 @@ class TestDVISolver(NewtonTestCase):
         model, problem, setup = self._make_box_on_plane_setup()
 
         def solve_normal_impulse(omega: float, sweep_count: int) -> float:
-            solver = _solve_dvi(
+            solver = _solve_scc(
                 model,
                 problem,
-                config=kamino_config.DVISolverConfig(
+                config=kamino_config.SCCSolverConfig(
                     max_alternating_iterations=sweep_count,
                     inequality_sweeps_per_iteration=1,
                     tolerance=0.0,
@@ -1225,7 +1271,7 @@ class TestDVISolver(NewtonTestCase):
         converged_fast = solve_normal_impulse(1.0, sweep_count=400)
         self.assertAlmostEqual(converged_slow, converged_fast, delta=1.0e-4 * converged_fast)
 
-    def test_03j1_dvi_tangent_block_update_preserves_sliding(self):
+    def test_03j1_scc_tangent_block_update_preserves_sliding(self):
         """Couple sticking updates without changing sliding Coulomb friction."""
         velocity = np.array([-1.0, -0.2], dtype=np.float32)
         diagonal = np.array([2.0, 4.0], dtype=np.float32)
@@ -1257,13 +1303,13 @@ class TestDVISolver(NewtonTestCase):
         expected_sliding = 0.1 * scalar_candidate / np.linalg.norm(scalar_candidate)
         np.testing.assert_allclose(sliding, expected_sliding, atol=1.0e-6, rtol=0.0)
 
-    def test_03k_dvi_inequality_only_status_reports_the_sweep_budget(self):
+    def test_03k_scc_inequality_only_status_reports_the_sweep_budget(self):
         """Fuse inequality-only sweeps while reporting their full budget."""
         max_alternating_iterations = 17
         inequality_sweeps_per_iteration = 3
         for sparse, inequality_kernel in (
-            (False, _solve_dvi_inequalities_colored_pgs),
-            (True, _solve_dvi_sparse_contacts_pgs),
+            (False, _solve_scc_inequalities_colored_pgs),
+            (True, _solve_scc_sparse_contacts_pgs),
         ):
             with self.subTest(sparse=sparse):
                 model, problem, setup = self._make_box_on_plane_setup(sparse=sparse)
@@ -1278,10 +1324,10 @@ class TestDVISolver(NewtonTestCase):
                     return _launch(*args, **kwargs)
 
                 with mock.patch.object(wp, "launch", side_effect=tracked_launch):
-                    solver = _solve_dvi(
+                    solver = _solve_scc(
                         model,
                         problem,
-                        config=kamino_config.DVISolverConfig(
+                        config=kamino_config.SCCSolverConfig(
                             max_alternating_iterations=max_alternating_iterations,
                             tolerance=1e-4,
                             regularization=1e-6,
@@ -1296,7 +1342,7 @@ class TestDVISolver(NewtonTestCase):
                     max_alternating_iterations * inequality_sweeps_per_iteration,
                 )
 
-    def test_03d_dvi_direct_block_honors_per_world_iteration_counts(self):
+    def test_03d_scc_direct_block_honors_per_world_iteration_counts(self):
         """Honor each world's projected and bilateral iteration schedule."""
         builder = newton.ModelBuilder()
         builder.replicate(builder=basics.build_boxes_hinged(), copy_count=3)
@@ -1318,20 +1364,20 @@ class TestDVISolver(NewtonTestCase):
 
         problem = _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
         configs = [
-            kamino_config.DVISolverConfig(
+            kamino_config.SCCSolverConfig(
                 tolerance=0.0,
                 regularization=1e-5,
                 max_alternating_iterations=1,
                 inequality_sweeps_per_iteration=1,
             ),
-            kamino_config.DVISolverConfig(
+            kamino_config.SCCSolverConfig(
                 tolerance=0.0,
                 regularization=1e-5,
                 max_alternating_iterations=3,
                 inequality_sweeps_per_iteration=1,
                 bilateral_solve_interval=2,
             ),
-            kamino_config.DVISolverConfig(
+            kamino_config.SCCSolverConfig(
                 tolerance=0.0,
                 regularization=1e-5,
                 max_alternating_iterations=1,
@@ -1340,7 +1386,7 @@ class TestDVISolver(NewtonTestCase):
         ]
 
         def solve_normal_sums() -> list[float]:
-            solver = DVISolver(
+            solver = SCCSolver(
                 model=model,
                 data=data,
                 limits=limits,
@@ -1398,7 +1444,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertGreater(abs(normal_sums[1] - normal_sums[0]), 1e-6)
         self.assertGreater(abs(normal_sums[2] - normal_sums[0]), 1e-6)
 
-    def test_03d1_sparse_dvi_honors_per_world_bilateral_intervals(self):
+    def test_03d1_sparse_scc_honors_per_world_bilateral_intervals(self):
         """Restrict sparse bilateral re-solves to each world's configured interval."""
         builder = newton.ModelBuilder()
         builder.replicate(builder=basics.build_boxes_hinged(), copy_count=2)
@@ -1418,16 +1464,16 @@ class TestDVISolver(NewtonTestCase):
         )
         problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
         configs = [
-            kamino_config.DVISolverConfig(
+            kamino_config.SCCSolverConfig(
                 max_alternating_iterations=3,
                 bilateral_solve_interval=1,
             ),
-            kamino_config.DVISolverConfig(
+            kamino_config.SCCSolverConfig(
                 max_alternating_iterations=3,
                 bilateral_solve_interval=99,
             ),
         ]
-        solver = DVISolver(
+        solver = SCCSolver(
             model=model,
             data=data,
             limits=limits,
@@ -1473,8 +1519,8 @@ class TestDVISolver(NewtonTestCase):
         # Force the budget fallback on the same problem and heterogeneous
         # intervals, without allocating a contact-capacity-sized buffer.
         expected = solver.data.solution.lambdas.numpy().copy()
-        with mock.patch("newton._src.solvers.kamino._src.solvers.dvi.solver._MAX_CACHED_BILATERAL_COUPLING_ENTRIES", 0):
-            fallback = DVISolver(
+        with mock.patch("newton._src.solvers.kamino._src.solvers.scc.solver._MAX_CACHED_BILATERAL_COUPLING_ENTRIES", 0):
+            fallback = SCCSolver(
                 model=model,
                 data=data,
                 limits=limits,
@@ -1489,7 +1535,7 @@ class TestDVISolver(NewtonTestCase):
 
             def launch_one_warp(kernel, *args, **kwargs):
                 # Exercise the large-batch schedule on this heterogeneous reference problem.
-                if self.device.is_cuda and kernel is _solve_dvi_sparse_inequalities_pgs:
+                if self.device.is_cuda and kernel is _solve_scc_sparse_inequalities_pgs:
                     worlds = kwargs["dim"] // kwargs["block_dim"]
                     kwargs["dim"] = worlds * 32
                     kwargs["block_dim"] = 32
@@ -1509,7 +1555,7 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_array_equal(fallback.data.state.bilateral_active_dim.numpy(), joint_dims)
         np.testing.assert_allclose(fallback.data.solution.lambdas.numpy(), expected, atol=2e-5, rtol=2e-5)
 
-    def test_03d2_dvi_direct_block_finishes_with_bilateral_solve(self):
+    def test_03d2_scc_direct_block_finishes_with_bilateral_solve(self):
         """Recover a consistent bilateral solution after fused inequality iterations."""
         builder = basics.build_boxes_hinged()
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
@@ -1529,13 +1575,13 @@ class TestDVISolver(NewtonTestCase):
         self.assertGreater(int(detector.contacts.world_active_contacts.numpy()[0]), 0)
 
         problem = _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
-        solver = DVISolver(
+        solver = SCCSolver(
             model=model,
             data=data,
             limits=limits,
             contacts=detector.contacts,
             jacobians=jacobians,
-            config=kamino_config.DVISolverConfig(
+            config=kamino_config.SCCSolverConfig(
                 tolerance=0.0,
                 regularization=1e-5,
                 max_alternating_iterations=3,
@@ -1561,7 +1607,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertGreater(float(np.max(np.abs(projected[njc:, njc:] - original[njc:, njc:]))), 1e-6)
 
     @unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")
-    def test_03d3_dvi_direct_block_reports_backend_iteration_contract(self):
+    def test_03d3_scc_direct_block_reports_backend_iteration_contract(self):
         """Verify CPU budget reporting and CUDA adaptive iteration reporting."""
         config_kwargs = {
             "tolerance": 1.0e-4,
@@ -1590,13 +1636,13 @@ class TestDVISolver(NewtonTestCase):
                     jacobians=jacobians,
                 )
                 problem = _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
-                solver = DVISolver(
+                solver = SCCSolver(
                     model=model,
                     data=data,
                     limits=limits,
                     contacts=detector.contacts,
                     jacobians=jacobians,
-                    config=kamino_config.DVISolverConfig(**config_kwargs),
+                    config=kamino_config.SCCSolverConfig(**config_kwargs),
                     warmstart=WarmStartMode.NONE,
                 )
                 # Dense coloring must not depend on the sparse execution helper.
@@ -1615,7 +1661,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertGreater(iterations["cuda"], 0)
         self.assertLess(iterations["cuda"], iteration_budget)
 
-    def test_03e_dvi_direct_block_no_unilateral_rows_reports_single_iteration(self):
+    def test_03e_scc_direct_block_no_unilateral_rows_reports_single_iteration(self):
         builder = basics.build_box_pendulum(ground=False)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
@@ -1637,13 +1683,13 @@ class TestDVISolver(NewtonTestCase):
         self.assertEqual(int(problem.data.nl.numpy()[0]), 0)
         self.assertEqual(int(problem.data.nc.numpy()[0]), 0)
 
-        solver = DVISolver(
+        solver = SCCSolver(
             model=model,
             data=data,
             limits=limits,
             contacts=detector.contacts,
             jacobians=jacobians,
-            config=kamino_config.DVISolverConfig(
+            config=kamino_config.SCCSolverConfig(
                 tolerance=1e-4,
                 regularization=1e-5,
                 max_alternating_iterations=7,
@@ -1660,7 +1706,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertEqual(int(solver.data.state.bilateral_active_dim.numpy()[0]), 0)
         _check_solution_matches_dual_problem(self, problem, solver)
 
-    def test_03f_dvi_bilateral_only_solve_resets_stale_status(self):
+    def test_03f_scc_bilateral_only_solve_resets_stale_status(self):
         builder = basics.build_box_pendulum(ground=False)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
@@ -1682,13 +1728,13 @@ class TestDVISolver(NewtonTestCase):
         self.assertEqual(int(problem.data.nl.numpy()[0]), 0)
         self.assertEqual(int(problem.data.nc.numpy()[0]), 0)
 
-        solver = DVISolver(
+        solver = SCCSolver(
             model=model,
             data=data,
             limits=limits,
             contacts=detector.contacts,
             jacobians=jacobians,
-            config=kamino_config.DVISolverConfig(
+            config=kamino_config.SCCSolverConfig(
                 tolerance=1e-4,
                 regularization=1e-5,
                 inequality_sweeps_per_iteration=5,
@@ -1698,7 +1744,7 @@ class TestDVISolver(NewtonTestCase):
         solver.reset()
         solver.coldstart()
         wp.launch(
-            kernel=_initialize_dvi_status,
+            kernel=_initialize_scc_status,
             dim=solver.size.num_worlds,
             inputs=[
                 solver.data.config,
@@ -1714,7 +1760,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertEqual(int(status["iterations"]), 1)
         _check_solution_matches_dual_problem(self, problem, solver)
 
-    def test_03g_dvi_inequality_coloring_separates_dynamic_conflicts(self):
+    def test_03g_scc_inequality_coloring_separates_dynamic_conflicts(self):
         """Separate conflicting inequality endpoints while sharing safe colors."""
         problem_nbc = wp.array([0], dtype=wp.int32, device=self.device)
         problem_nl = wp.array([1], dtype=wp.int32, device=self.device)
@@ -1738,7 +1784,7 @@ class TestDVISolver(NewtonTestCase):
         inequality_color_starts = wp.zeros(shape=6, dtype=wp.int32, device=self.device)
 
         wp.launch(
-            kernel=_color_mapped_dvi_inequalities,
+            kernel=_color_mapped_scc_inequalities,
             dim=1,
             inputs=[
                 problem_nbc,
@@ -1768,7 +1814,7 @@ class TestDVISolver(NewtonTestCase):
             scheduled = ids_by_color[color_starts[color] : color_starts[color + 1]]
             self.assertTrue(np.all(colors[scheduled] == color))
 
-    def test_03g1_dvi_inequality_coloring_keeps_worlds_independent(self):
+    def test_03g1_scc_inequality_coloring_keeps_worlds_independent(self):
         """Color independent worlds concurrently without sharing body masks."""
         problem_nbc = wp.array([0, 0], dtype=wp.int32, device=self.device)
         problem_nl = wp.array([0, 0], dtype=wp.int32, device=self.device)
@@ -1786,7 +1832,7 @@ class TestDVISolver(NewtonTestCase):
         inequality_color_starts = wp.zeros(shape=6, dtype=wp.int32, device=self.device)
 
         wp.launch(
-            kernel=_color_mapped_dvi_inequalities,
+            kernel=_color_mapped_scc_inequalities,
             dim=2,
             inputs=[
                 problem_nbc,
@@ -1808,7 +1854,7 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_array_equal(inequality_ids_by_color.numpy(), [0, 1, 0, 1])
         np.testing.assert_array_equal(inequality_color_starts.numpy(), [0, 1, 2, 0, 1, 2])
 
-    def test_03g2_dvi_inequality_coloring_handles_more_than_64_colors(self):
+    def test_03g2_scc_inequality_coloring_handles_more_than_64_colors(self):
         """Preserve valid coloring when one body requires more than 64 colors."""
         num_inequalities = 66
         problem_nbc = wp.array([0], dtype=wp.int32, device=self.device)
@@ -1832,7 +1878,7 @@ class TestDVISolver(NewtonTestCase):
         inequality_color_starts = wp.zeros(shape=num_inequalities + 1, dtype=wp.int32, device=self.device)
 
         wp.launch(
-            kernel=_color_mapped_dvi_inequalities,
+            kernel=_color_mapped_scc_inequalities,
             dim=1,
             inputs=[
                 problem_nbc,
@@ -1855,7 +1901,7 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_array_equal(inequality_ids_by_color.numpy(), np.arange(num_inequalities))
         np.testing.assert_array_equal(inequality_color_starts.numpy(), np.arange(num_inequalities + 1))
 
-    def test_03g3_dvi_ordered_contacts_follow_bounded_rows_and_limits(self):
+    def test_03g3_scc_ordered_contacts_follow_bounded_rows_and_limits(self):
         """Keep ordered contacts after bounded rows and joint limits."""
         contacts_model_active = wp.array([2], dtype=wp.int32, device=self.device)
         contacts_wid = wp.array([0, 0], dtype=wp.int32, device=self.device)
@@ -1898,7 +1944,7 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_array_equal(inequality_bodies.numpy()[2:], [[0, -1], [1, -1]])
         np.testing.assert_array_equal(inequality_order.numpy()[2:4], [2, 3])
 
-    def test_03g4_dvi_coloring_separates_bounded_from_limit_conflicts(self):
+    def test_03g4_scc_coloring_separates_bounded_from_limit_conflicts(self):
         """Separate bounded and limit rows that share a dynamic body."""
         problem_nbc = wp.array([1], dtype=wp.int32, device=self.device)
         problem_nl = wp.array([2], dtype=wp.int32, device=self.device)
@@ -1914,7 +1960,7 @@ class TestDVISolver(NewtonTestCase):
         inequality_color_starts = wp.zeros(shape=4, dtype=wp.int32, device=self.device)
 
         wp.launch(
-            kernel=_color_mapped_dvi_inequalities,
+            kernel=_color_mapped_scc_inequalities,
             dim=1,
             inputs=[
                 problem_nbc,
@@ -1936,7 +1982,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertEqual(colors[2], colors[0])
         np.testing.assert_array_equal(np.sort(inequality_ids_by_color.numpy()), np.arange(3))
 
-    def test_03g5_dvi_map_bounded_constraints_writes_joint_body_pairs(self):
+    def test_03g5_scc_map_bounded_constraints_writes_joint_body_pairs(self):
         """Map mixed friction and effort rows in constraint order across worlds."""
 
         def ints(values):
@@ -1968,7 +2014,7 @@ class TestDVISolver(NewtonTestCase):
         expected[9:12] = [[-1, 2], [-1, 2], [2, 3]]
         np.testing.assert_array_equal(inequality_bodies.numpy(), expected)
 
-    def test_03i_dvi_coldstart_is_repeatable(self):
+    def test_03i_scc_coldstart_is_repeatable(self):
         """Repeat cold starts without clearing overwritten Schur workspace."""
         for sparse, schur in ((False, False), (False, True), (True, False), (True, True)):
             with self.subTest(sparse=sparse, schur=schur):
@@ -1982,12 +2028,12 @@ class TestDVISolver(NewtonTestCase):
                 )
                 test.build()
                 config = SolverKamino.Config(
-                    dynamics_solver="dvi",
+                    dynamics_solver="scc",
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
-                ).dvi
+                ).scc
                 config.use_schur_complement = schur
-                solver = _solve_dvi(test.model, test.problem, config=config, setup=test)
+                solver = _solve_scc(test.model, test.problem, config=config, setup=test)
                 first_lambdas = solver.data.solution.lambdas.numpy().copy()
                 first_v_plus = solver.data.solution.v_plus.numpy().copy()
                 first_status = solver.data.status.numpy().copy()
@@ -2026,7 +2072,7 @@ class TestDVISolver(NewtonTestCase):
                 for residual in ("r_p", "r_d", "r_c", "r_b"):
                     np.testing.assert_allclose(status[residual], first_status[residual], rtol=1e-5, atol=1e-8)
 
-    def test_04_dvi_solve_active_joint_limit(self):
+    def test_04_scc_solve_active_joint_limit(self):
         """Resolve an active joint limit through the inequality solver."""
         builder = testing.build_unary_revolute_joint_test(limits=True, ground=False)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
@@ -2046,10 +2092,10 @@ class TestDVISolver(NewtonTestCase):
         self.assertGreater(int(limits.model_active_limits.numpy()[0]), 0)
 
         problem = _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
-        solver = _solve_dvi(
+        solver = _solve_scc(
             model,
             problem,
-            config=kamino_config.DVISolverConfig(
+            config=kamino_config.SCCSolverConfig(
                 max_alternating_iterations=32,
                 inequality_sweeps_per_iteration=4,
                 tolerance=1e-4,
@@ -2072,7 +2118,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertGreaterEqual(limit_velocity, -solver.config[0].tolerance)
         self.assertLessEqual(abs(limit_impulse * limit_velocity), solver.config[0].tolerance)
 
-    def test_07_dvi_singular_limit_rows_remain_finite(self):
+    def test_07_scc_singular_limit_rows_remain_finite(self):
         model, data, _state, limits, contacts = make_test_problem_fourbar(
             device=self.device,
             max_world_contacts=0,
@@ -2084,7 +2130,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertGreater(int(limits.model_active_limits.numpy()[0]), 0)
 
         problem = _make_dense_dual_problem(model, data, limits, contacts, jacobians)
-        solver = _solve_dvi(
+        solver = _solve_scc(
             model,
             problem,
             setup=SimpleNamespace(data=data, limits=limits, contacts=contacts, jacobians=jacobians),
@@ -2101,7 +2147,7 @@ class TestDVISolver(NewtonTestCase):
         limit_lambdas = lambdas_np[limit_start : limit_start + limit_count]
         self.assertLess(float(np.max(np.abs(limit_lambdas))), 1.0)
 
-    def test_08_public_solver_short_rollout_with_dvi(self):
+    def test_08_public_solver_short_rollout_with_scc(self):
         builder = newton.ModelBuilder()
         SolverKamino.register_custom_attributes(builder)
         builder.default_shape_cfg.margin = 0.0
@@ -2126,8 +2172,8 @@ class TestDVISolver(NewtonTestCase):
         model = builder.finalize(device=self.device)
 
         config = SolverKamino.Config(
-            dynamics_solver="dvi",
-            dvi=kamino_config.DVISolverConfig(
+            dynamics_solver="scc",
+            scc=kamino_config.SCCSolverConfig(
                 max_alternating_iterations=300,
                 inequality_sweeps_per_iteration=1,
                 tolerance=1e-4,
@@ -2141,10 +2187,10 @@ class TestDVISolver(NewtonTestCase):
             state_in, state_out = state_out, state_in
         self.assertTrue(np.all(np.isfinite(state_in.body_q.numpy())))
         self.assertTrue(np.all(np.isfinite(state_in.body_qd.numpy())))
-        self.assertIsInstance(solver._solver_kamino.solver_fd, DVISolver)
+        self.assertIsInstance(solver._solver_kamino.solver_fd, SCCSolver)
 
-    def test_08a_public_solver_heterogeneous_contact_rollout_with_dvi(self):
-        """Use Cholesky for heterogeneous dense and sparse DVI rollouts."""
+    def test_08a_public_solver_heterogeneous_contact_rollout_with_scc(self):
+        """Use Cholesky for heterogeneous dense and sparse SCC rollouts."""
         builder = newton.ModelBuilder()
         SolverKamino.register_custom_attributes(builder)
         basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
@@ -2153,7 +2199,7 @@ class TestDVISolver(NewtonTestCase):
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
                 config = SolverKamino.Config(
-                    dynamics_solver="dvi",
+                    dynamics_solver="scc",
                     sparse_dynamics=sparse,
                     sparse_jacobian=True,
                     use_collision_detector=True,
@@ -2176,27 +2222,27 @@ class TestDVISolver(NewtonTestCase):
                         np.any(solver._contacts_kamino.world_active_contacts.numpy() > 0)
                     )
 
-                dvi_solver = solver._solver_kamino.solver_fd
-                status = dvi_solver.data.status.numpy()
+                scc_solver = solver._solver_kamino.solver_fd
+                status = scc_solver.data.status.numpy()
                 self.assertTrue(contact_seen)
                 self.assertTrue(np.all(np.isfinite(state_in.body_q.numpy())))
                 self.assertTrue(np.all(np.isfinite(state_in.body_qd.numpy())))
                 self.assertTrue(np.all(np.isfinite(status["r_p"])))
                 self.assertTrue(np.all(np.isfinite(status["r_d"])))
                 self.assertLess(float(np.max(np.abs(state_in.body_qd.numpy()))), 100.0)
-                self.assertIsInstance(dvi_solver, DVISolver)
-                self.assertIsInstance(dvi_solver._bilateral_solver, (LLTBlockedSolver, LLTBlockedRCMSolver))
+                self.assertIsInstance(scc_solver, SCCSolver)
+                self.assertIsInstance(scc_solver._bilateral_solver, (LLTBlockedSolver, LLTBlockedRCMSolver))
                 joint_dims = solver._solver_kamino._model.info.num_joint_bilateral_cts.numpy()
                 self.assertTrue(np.any(joint_dims == 0))
                 self.assertTrue(np.any(joint_dims > 0))
                 np.testing.assert_array_equal(
-                    dvi_solver.data.bilateral_operator.info.dimensions,
+                    scc_solver.data.bilateral_operator.info.dimensions,
                     np.maximum(joint_dims, 1),
                 )
                 self.assertEqual(config.sparse_dynamics, sparse)
                 self.assertTrue(config.sparse_jacobian)
 
-    def test_03a_sparse_dvi_bilateral_matvec_matches_full_rows(self):
+    def test_03a_sparse_scc_bilateral_matvec_matches_full_rows(self):
         """Match nonempty bilateral rows and leave contact rows zero."""
         builder = basics.build_boxes_hinged()
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
@@ -2216,13 +2262,13 @@ class TestDVISolver(NewtonTestCase):
         self.assertGreater(int(detector.contacts.model_active_contacts.numpy()[0]), 0)
 
         problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
-        solver = DVISolver(
+        solver = SCCSolver(
             model=model,
             data=data,
             limits=limits,
             contacts=detector.contacts,
             jacobians=jacobians,
-            config=kamino_config.DVISolverConfig(
+            config=kamino_config.SCCSolverConfig(
                 tolerance=0.0,
                 regularization=1e-5,
                 max_alternating_iterations=1,
@@ -2249,7 +2295,7 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_allclose(joint_np[:njc], full_np[:njc], rtol=1e-5, atol=1e-5)
         np.testing.assert_array_equal(joint_np[njc:dim], 0.0)
 
-    def test_05_dvi_solve_multi_world_contacts(self):
+    def test_05_scc_solve_multi_world_contacts(self):
         builder = newton.ModelBuilder()
         builder.replicate(builder=basics.build_box_on_plane(ground=True), copy_count=4)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
@@ -2269,7 +2315,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertTrue(np.all(detector.contacts.world_active_contacts.numpy() > 0))
 
         problem = _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
-        solver = _solve_dvi(
+        solver = _solve_scc(
             model,
             problem,
             setup=SimpleNamespace(data=data, limits=limits, contacts=detector.contacts, jacobians=jacobians),
@@ -2278,8 +2324,8 @@ class TestDVISolver(NewtonTestCase):
         _assert_solver_status_converged(self, solver)
         _check_solution_matches_dual_problem(self, problem, solver)
 
-    def test_05a_dvi_maps_packed_multiworld_contacts(self):
-        """Verify dense and sparse DVI map packed contacts to raw topology."""
+    def test_05a_scc_maps_packed_multiworld_contacts(self):
+        """Verify dense and sparse SCC map packed contacts to raw topology."""
         for sparse in (False, True):
             builder = newton.ModelBuilder()
             builder.replicate(builder=basics.build_box_on_plane(ground=True), copy_count=8)
@@ -2302,13 +2348,13 @@ class TestDVISolver(NewtonTestCase):
                 if sparse
                 else _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
             )
-            solver = DVISolver(
+            solver = SCCSolver(
                 model=model,
                 data=data,
                 limits=limits,
                 contacts=detector.contacts,
                 jacobians=jacobians,
-                config=kamino_config.DVISolverConfig(
+                config=kamino_config.SCCSolverConfig(
                     max_alternating_iterations=100,
                     inequality_sweeps_per_iteration=1,
                     tolerance=1e-5,
@@ -2332,7 +2378,7 @@ class TestDVISolver(NewtonTestCase):
 
             _assert_solver_status_converged(self, solver)
 
-    def test_05b_dvi_five_box_stack_converges_within_budget(self):
+    def test_05b_scc_five_box_stack_converges_within_budget(self):
         """Converge a coupled five-box stack in dense and sparse modes."""
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
@@ -2355,10 +2401,10 @@ class TestDVISolver(NewtonTestCase):
                     if sparse
                     else _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
                 )
-                low_budget_solver = _solve_dvi(
+                low_budget_solver = _solve_scc(
                     model,
                     problem,
-                    config=kamino_config.DVISolverConfig(
+                    config=kamino_config.SCCSolverConfig(
                         max_alternating_iterations=20,
                         inequality_sweeps_per_iteration=1,
                         tolerance=0.0,
@@ -2374,10 +2420,10 @@ class TestDVISolver(NewtonTestCase):
                 low_budget_dual_residual = float(low_budget_solver.data.status.numpy()[0]["r_d"])
                 self.assertLess(low_budget_dual_residual, 7.0e-4)
 
-                default_solver = _solve_dvi(
+                default_solver = _solve_scc(
                     model,
                     problem,
-                    config=kamino_config.DVISolverConfig(
+                    config=kamino_config.SCCSolverConfig(
                         tolerance=0.0,
                         regularization=1.0e-6,
                     ),
@@ -2391,10 +2437,10 @@ class TestDVISolver(NewtonTestCase):
                 default_dual_residual = float(default_solver.data.status.numpy()[0]["r_d"])
                 self.assertLess(default_dual_residual, 0.6 * low_budget_dual_residual)
 
-                solver = _solve_dvi(
+                solver = _solve_scc(
                     model,
                     problem,
-                    config=kamino_config.DVISolverConfig(
+                    config=kamino_config.SCCSolverConfig(
                         max_alternating_iterations=100,
                         inequality_sweeps_per_iteration=1,
                         tolerance=1.0e-5,
@@ -2439,7 +2485,7 @@ class TestDVISolver(NewtonTestCase):
                         delta=0.02 * expected_total_impulse,
                     )
 
-    def test_05b2_dvi_reduced_kapla_tower_remains_stable(self):
+    def test_05b2_scc_reduced_kapla_tower_remains_stable(self):
         """Keep a six-layer plank tower stable in dense and sparse modes."""
         builder, bodies, initial_positions = _build_reduced_kapla_tower()
         model = builder.finalize(device=self.device)
@@ -2450,7 +2496,7 @@ class TestDVISolver(NewtonTestCase):
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
                 config = SolverKamino.Config(
-                    dynamics_solver="dvi",
+                    dynamics_solver="scc",
                     use_collision_detector=True,
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
@@ -2492,7 +2538,7 @@ class TestDVISolver(NewtonTestCase):
         if len(final_positions) == 2:
             np.testing.assert_allclose(final_positions[0], final_positions[1], rtol=0.0, atol=2.0e-3)
 
-    def test_05c_dvi_high_mass_ratio_stack_supports_weight(self):
+    def test_05c_scc_high_mass_ratio_stack_supports_weight(self):
         """Support a 100:1 sphere stack accurately in dense and sparse modes."""
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
@@ -2511,10 +2557,10 @@ class TestDVISolver(NewtonTestCase):
                     if sparse
                     else _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
                 )
-                solver = _solve_dvi(
+                solver = _solve_scc(
                     model,
                     problem,
-                    config=kamino_config.DVISolverConfig(
+                    config=kamino_config.SCCSolverConfig(
                         max_alternating_iterations=500,
                         inequality_sweeps_per_iteration=1,
                         tolerance=1.0e-4,
@@ -2546,7 +2592,7 @@ class TestDVISolver(NewtonTestCase):
                     delta=0.02 * expected_pair_impulse,
                 )
 
-    def test_05d_dvi_colors_contacts_with_joint_limits(self):
+    def test_05d_scc_colors_contacts_with_joint_limits(self):
         """Solve contacts and joint limits through one colored inequality path."""
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
@@ -2586,10 +2632,10 @@ class TestDVISolver(NewtonTestCase):
                     problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
                 else:
                     problem = _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
-                solver = _solve_dvi(
+                solver = _solve_scc(
                     model,
                     problem,
-                    config=kamino_config.DVISolverConfig(
+                    config=kamino_config.SCCSolverConfig(
                         max_alternating_iterations=64,
                         inequality_sweeps_per_iteration=1,
                         tolerance=1.0e-5,
@@ -2624,7 +2670,7 @@ class TestDVISolver(NewtonTestCase):
                 self.assertGreaterEqual(limit_velocity, -solver.config[0].tolerance)
                 self.assertLessEqual(abs(limit_impulse * limit_velocity), solver.config[0].tolerance)
 
-    def test_06_dvi_warmstart_modes(self):
+    def test_06_scc_warmstart_modes(self):
         builder = basics.build_box_on_plane()
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
@@ -2642,7 +2688,7 @@ class TestDVISolver(NewtonTestCase):
         )
         problem = _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
 
-        internal_solver = _solve_dvi(
+        internal_solver = _solve_scc(
             model,
             problem,
             warmstart=WarmStartMode.INTERNAL,
@@ -2665,13 +2711,13 @@ class TestDVISolver(NewtonTestCase):
             limits=limits,
             contacts=detector.contacts,
         )
-        container_solver = DVISolver(
+        container_solver = SCCSolver(
             model=model,
             data=data,
             limits=limits,
             contacts=detector.contacts,
             jacobians=jacobians,
-            config=kamino_config.DVISolverConfig(
+            config=kamino_config.SCCSolverConfig(
                 max_alternating_iterations=300,
                 inequality_sweeps_per_iteration=1,
                 tolerance=1e-4,
@@ -2685,7 +2731,7 @@ class TestDVISolver(NewtonTestCase):
         _assert_solver_status_converged(self, container_solver)
         _check_solution_matches_dual_problem(self, problem, container_solver)
 
-    def test_06a_dvi_masked_reset_preserves_unselected_worlds(self):
+    def test_06a_scc_masked_reset_preserves_unselected_worlds(self):
         builder = newton.ModelBuilder()
         builder.replicate(basics.build_box_on_plane(ground=True), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
@@ -2703,7 +2749,7 @@ class TestDVISolver(NewtonTestCase):
             jacobians=jacobians,
         )
         problem = _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
-        solver = _solve_dvi(
+        solver = _solve_scc(
             model,
             problem,
             setup=SimpleNamespace(data=data, limits=limits, contacts=detector.contacts, jacobians=jacobians),
@@ -2729,7 +2775,7 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_array_equal(lambdas_after[1], np.zeros_like(lambdas_after[1]))
         np.testing.assert_array_equal(v_plus_after[1], np.zeros_like(v_plus_after[1]))
 
-    def test_12_dvi_opening_contact_releases_warmstarted_force(self):
+    def test_12_scc_opening_contact_releases_warmstarted_force(self):
         radius = 0.1
         separation = 0.005
         gap = 0.03
@@ -2771,8 +2817,8 @@ class TestDVISolver(NewtonTestCase):
                 max_contacts_per_pair=8,
                 default_gap=gap,
             ),
-            dynamics_solver="dvi",
-            dvi=kamino_config.DVISolverConfig(
+            dynamics_solver="scc",
+            scc=kamino_config.SCCSolverConfig(
                 tolerance=1e-5,
                 regularization=1e-5,
                 max_alternating_iterations=32,
@@ -2807,7 +2853,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertLess(float(abs(state_0.body_qd.numpy()[0, 2])), 2.0)
         self.assertEqual(int(solver.status.numpy()[0]["converged"]), 1)
 
-    def test_03h_dvi_canonical_contact_solution_metrics(self):
+    def test_03h_scc_canonical_contact_solution_metrics(self):
         for builder_fn, max_world_contacts in (
             (basics.build_box_on_plane, 4),
             (basics.build_boxes_hinged, 8),
@@ -2824,18 +2870,18 @@ class TestDVISolver(NewtonTestCase):
                     )
                     test.build()
                     config = SolverKamino.Config(
-                        dynamics_solver="dvi",
+                        dynamics_solver="scc",
                         sparse_dynamics=sparse,
                         sparse_jacobian=sparse,
-                    ).dvi
-                    solver = _solve_dvi(test.model, test.problem, config=config, setup=test)
+                    ).scc
+                    solver = _solve_scc(test.model, test.problem, config=config, setup=test)
                     solution_metrics = _evaluate_solution_metrics(test, solver)
 
                     _assert_solution_finite(self, solver)
                     for name, value in solution_metrics.items():
                         self.assertTrue(np.isfinite(value), msg=f"{name}={value}")
 
-                    # DVI trades some contact accuracy for throughput, but its
+                    # SCC trades some contact accuracy for throughput, but its
                     # solution must still satisfy dynamics and cone feasibility.
                     self.assertLess(solution_metrics["r_eom"], 1.0e-4, msg=str(solution_metrics))
                     self.assertLess(solution_metrics["r_kinematics"], 1.0e-4, msg=str(solution_metrics))
@@ -2847,7 +2893,7 @@ class TestDVISolver(NewtonTestCase):
                     self.assertLess(solution_metrics["r_ncp_compl"], 1.0e-2, msg=str(solution_metrics))
                     self.assertLess(solution_metrics["r_vi_natmap"], 1.0e-2, msg=str(solution_metrics))
 
-    def test_08c_dvi_zero_friction_preserves_tangent_momentum(self):
+    def test_08c_scc_zero_friction_preserves_tangent_momentum(self):
         """Preserve horizontal momentum exactly when Coulomb friction is zero."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         SolverKamino.register_custom_attributes(builder)
@@ -2866,8 +2912,8 @@ class TestDVISolver(NewtonTestCase):
         for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
             with self.subTest(sparse=sparse, unilateral_solver=unilateral_solver):
                 config = SolverKamino.Config(
-                    dynamics_solver="dvi",
-                    dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
+                    dynamics_solver="scc",
+                    scc=kamino_config.SCCSolverConfig(unilateral_solver=unilateral_solver),
                     use_collision_detector=True,
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
@@ -2895,11 +2941,11 @@ class TestDVISolver(NewtonTestCase):
 
                     solver_kamino = solver._solver_kamino
                     problem = solver_kamino._problem_fd
-                    solver_dvi = solver_kamino.solver_fd
+                    solver_scc = solver_kamino.solver_fd
                     contact_count = int(solver._contacts_kamino.world_active_contacts.numpy()[0])
                     contact_seen = contact_seen or contact_count > 0
                     constraint_offset = int(problem.data.vio.numpy()[0] + problem.data.ccgo.numpy()[0])
-                    contact_lambdas = solver_dvi.data.solution.lambdas.numpy()[
+                    contact_lambdas = solver_scc.data.solution.lambdas.numpy()[
                         constraint_offset : constraint_offset + 3 * contact_count
                     ].reshape((-1, 3))
                     if contact_count > 0:
@@ -2910,11 +2956,11 @@ class TestDVISolver(NewtonTestCase):
 
                 self.assertTrue(contact_seen)
                 if unilateral_solver == "pgs":
-                    self.assertGreater(int(solver_dvi.data.state.inequality_num_colors.numpy()[0]), 0)
+                    self.assertGreater(int(solver_scc.data.state.inequality_num_colors.numpy()[0]), 0)
                 np.testing.assert_allclose(velocities, initial_speed, rtol=0.0, atol=1.0e-6)
                 self.assertLessEqual(max_tangent_impulse, 1.0e-8)
 
-    def test_08d_dvi_kinetic_friction_matches_coulomb_deceleration(self):
+    def test_08d_scc_kinetic_friction_matches_coulomb_deceleration(self):
         """Match analytic Coulomb deceleration for a sliding box."""
         friction = 0.5
         initial_speed = 3.0
@@ -2938,8 +2984,8 @@ class TestDVISolver(NewtonTestCase):
         for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
             with self.subTest(sparse=sparse, unilateral_solver=unilateral_solver):
                 config = SolverKamino.Config(
-                    dynamics_solver="dvi",
-                    dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
+                    dynamics_solver="scc",
+                    scc=kamino_config.SCCSolverConfig(unilateral_solver=unilateral_solver),
                     use_collision_detector=True,
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
@@ -2950,7 +2996,7 @@ class TestDVISolver(NewtonTestCase):
                     ),
                 )
                 # Resolve the correction for the analytical velocity/distance checks.
-                config.dvi.apgd.max_nonlinear_corrections = 8
+                config.scc.apgd.max_nonlinear_corrections = 8
                 solver = SolverKamino(model, config=config)
                 state_0 = model.state()
                 state_1 = model.state()
@@ -2968,7 +3014,7 @@ class TestDVISolver(NewtonTestCase):
                 self.assertGreater(int(solver._contacts_kamino.world_active_contacts.numpy()[0]), 0)
                 np.testing.assert_allclose(measured_speeds, expected_speeds, rtol=0.0, atol=1.0e-4)
 
-    def test_08d2_dvi_friction_sweep_matches_speed_and_distance(self):
+    def test_08d2_scc_friction_sweep_matches_speed_and_distance(self):
         """Match analytic sliding speed and distance across friction values."""
         initial_speed = 3.0
         dt = 2.0e-3
@@ -2993,8 +3039,8 @@ class TestDVISolver(NewtonTestCase):
             for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
                 with self.subTest(friction=friction, sparse=sparse, unilateral_solver=unilateral_solver):
                     config = SolverKamino.Config(
-                        dynamics_solver="dvi",
-                        dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
+                        dynamics_solver="scc",
+                        scc=kamino_config.SCCSolverConfig(unilateral_solver=unilateral_solver),
                         use_collision_detector=True,
                         sparse_dynamics=sparse,
                         sparse_jacobian=sparse,
@@ -3005,7 +3051,7 @@ class TestDVISolver(NewtonTestCase):
                         ),
                     )
                     # Resolve the correction for the analytical velocity/distance checks.
-                    config.dvi.apgd.max_nonlinear_corrections = 8
+                    config.scc.apgd.max_nonlinear_corrections = 8
                     solver = SolverKamino(model, config=config)
                     state_0 = model.state()
                     state_1 = model.state()
@@ -3030,7 +3076,7 @@ class TestDVISolver(NewtonTestCase):
                         delta=1.0e-5,
                     )
 
-    def test_08d3_dvi_friction_propagates_through_fixed_joint(self):
+    def test_08d3_scc_friction_propagates_through_fixed_joint(self):
         """Converge articulated contact friction at a 2 kHz step rate."""
         friction = 0.2
         initial_speed = 3.0
@@ -3066,8 +3112,8 @@ class TestDVISolver(NewtonTestCase):
         for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
             with self.subTest(sparse=sparse, unilateral_solver=unilateral_solver):
                 config = SolverKamino.Config(
-                    dynamics_solver="dvi",
-                    dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
+                    dynamics_solver="scc",
+                    scc=kamino_config.SCCSolverConfig(unilateral_solver=unilateral_solver),
                     use_collision_detector=True,
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
@@ -3087,14 +3133,14 @@ class TestDVISolver(NewtonTestCase):
 
                 solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
                 state_0, state_1 = state_1, state_0
-                dvi_solver = solver._solver_kamino.solver_fd
-                first_sweeps = int(dvi_solver.data.status.numpy()[0]["iterations"])
-                _assert_solver_status_converged(self, dvi_solver)
+                scc_solver = solver._solver_kamino.solver_fd
+                first_sweeps = int(scc_solver.data.status.numpy()[0]["iterations"])
+                _assert_solver_status_converged(self, scc_solver)
                 for _ in range(1, steps):
                     solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
                     state_0, state_1 = state_1, state_0
 
-                _assert_solver_status_converged(self, dvi_solver)
+                _assert_solver_status_converged(self, scc_solver)
                 self.assertGreater(first_sweeps, 1)
                 positions = state_0.body_q.numpy()
                 velocities = state_0.body_qd.numpy()
@@ -3121,7 +3167,7 @@ class TestDVISolver(NewtonTestCase):
                     1.0e-4,
                 )
 
-    def test_08d4_dvi_incline_friction_threshold(self):
+    def test_08d4_scc_incline_friction_threshold(self):
         """Hold or slide according to the Coulomb incline threshold."""
         dt = 2.0e-3
         steps = 100
@@ -3151,8 +3197,8 @@ class TestDVISolver(NewtonTestCase):
                     angle=angle_degrees, friction=friction, sparse=sparse, unilateral_solver=unilateral_solver
                 ):
                     config = SolverKamino.Config(
-                        dynamics_solver="dvi",
-                        dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
+                        dynamics_solver="scc",
+                        scc=kamino_config.SCCSolverConfig(unilateral_solver=unilateral_solver),
                         use_collision_detector=True,
                         sparse_dynamics=sparse,
                         sparse_jacobian=sparse,
@@ -3181,7 +3227,7 @@ class TestDVISolver(NewtonTestCase):
                         self.assertLess(abs(velocity_x), 1.0e-4)
                         self.assertLess(abs(position_x), 1.0e-5)
 
-    def test_08e_dvi_sliding_sphere_settles_into_analytic_rolling(self):
+    def test_08e_scc_sliding_sphere_settles_into_analytic_rolling(self):
         """Match the analytic sliding-to-rolling transition of a sphere.
 
         A sphere contacts the ground through a lever arm, so its tangential
@@ -3217,8 +3263,8 @@ class TestDVISolver(NewtonTestCase):
         for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
             with self.subTest(sparse=sparse, unilateral_solver=unilateral_solver):
                 config = SolverKamino.Config(
-                    dynamics_solver="dvi",
-                    dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
+                    dynamics_solver="scc",
+                    scc=kamino_config.SCCSolverConfig(unilateral_solver=unilateral_solver),
                     use_collision_detector=True,
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
@@ -3252,6 +3298,7 @@ class TestDVISolver(NewtonTestCase):
                 # Coulomb friction only opposes sliding, so the speed never rises.
                 self.assertLessEqual(float(np.max(np.diff(speeds))), 1.0e-5)
 
+    @requires("git", "pxr.Usd")
     def test_08b_dr_legs_contact_capacity_scales_with_world_count(self):
         if not self.device.is_cuda:
             self.skipTest("Dr Legs multi-world capacity regression uses the CUDA graph path")
@@ -3265,7 +3312,7 @@ class TestDVISolver(NewtonTestCase):
         args = SimpleNamespace(
             world_count=world_count,
             use_kamino_contacts=False,
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
         )
         example = Example(ViewerNull(num_frames=1), args)
 
@@ -3274,9 +3321,10 @@ class TestDVISolver(NewtonTestCase):
         self.assertEqual(example.contacts.rigid_contact_max, expected_capacity)
         self.assertEqual(example.collision_pipeline.rigid_contact_max, expected_capacity)
 
-    def test_09_dr_legs_dvi_first_contact_remains_finite(self):
+    @requires("git", "pxr.Usd")
+    def test_09_dr_legs_scc_first_contact_remains_finite(self):
         if not self.device.is_cuda:
-            self.skipTest("Dr Legs DVI first-contact regression uses the CUDA graph path")
+            self.skipTest("Dr Legs SCC first-contact regression uses the CUDA graph path")
 
         from types import SimpleNamespace  # noqa: PLC0415
 
@@ -3286,7 +3334,7 @@ class TestDVISolver(NewtonTestCase):
         args = SimpleNamespace(
             world_count=1,
             use_kamino_contacts=True,
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
         )
         example = Example(ViewerNull(num_frames=1), args)
 
@@ -3326,9 +3374,11 @@ class TestDVISolver(NewtonTestCase):
         self.assertTrue(contact_seen)
         self.assertTrue(color_checked)
 
-    def test_10_dr_legs_dvi_tipped_contact_does_not_creep(self):
+    @requires("git", "pxr.Usd")
+    def test_10_dr_legs_scc_tipped_contact_does_not_creep(self):
+        """Keep tipped contacts stable and release the reset example's graph safely."""
         if not self.device.is_cuda:
-            self.skipTest("Dr Legs DVI tipped-contact regression uses the CUDA graph path")
+            self.skipTest("Dr Legs SCC tipped-contact regression uses the CUDA graph path")
 
         from types import SimpleNamespace  # noqa: PLC0415
 
@@ -3338,7 +3388,7 @@ class TestDVISolver(NewtonTestCase):
         args = SimpleNamespace(
             world_count=1,
             use_kamino_contacts=True,
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
         )
         example = Example(ViewerNull(num_frames=1), args)
 
@@ -3347,7 +3397,7 @@ class TestDVISolver(NewtonTestCase):
         reset_config = SolverKamino.ResetConfig(base_pose=SolverKamino.ResetConfig.FromBaseQ(example.base_q))
         example.solver.reset(state=example.state_0, config=reset_config)
         example.solver.reset(state=example.state_1, config=reset_config)
-        example.capture()
+        # Reset updates the captured buffers in place; keep their owning graph alive.
 
         base_start = example.state_0.body_q.numpy()[0, :3].copy()
         contact_seen = False
@@ -3376,9 +3426,18 @@ class TestDVISolver(NewtonTestCase):
         self.assertLess(float(np.percentile(post_settle_penetration, 95)), 0.0035)
         self.assertLess(float(np.linalg.norm(post_settle_xy[-1] - post_settle_xy[0])), 2.0e-4)
 
-    def test_11_dr_legs_dvi_contact_force_balances_weight(self):
+        # Force graph teardown here so deferred CUDA errors cannot poison later tests.
+        import gc  # noqa: PLC0415
+
+        del example
+        gc.collect()
+        values = wp.array([[1.0, 2.0], [3.0, 4.0]], dtype=wp.float32, device=self.device)
+        np.testing.assert_array_equal(wp.clone(values[:, 0]).numpy(), [1.0, 3.0])
+
+    @requires("git", "pxr.Usd")
+    def test_11_dr_legs_scc_contact_force_balances_weight(self):
         if not self.device.is_cuda:
-            self.skipTest("Dr Legs DVI contact-force regression uses the CUDA graph path")
+            self.skipTest("Dr Legs SCC contact-force regression uses the CUDA graph path")
 
         from types import SimpleNamespace  # noqa: PLC0415
 
@@ -3389,7 +3448,7 @@ class TestDVISolver(NewtonTestCase):
         args = SimpleNamespace(
             world_count=1,
             use_kamino_contacts=True,
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
         )
         example = Example(ViewerNull(num_frames=1), args)
 
@@ -3427,12 +3486,12 @@ class TestDVISolver(NewtonTestCase):
             sum_of_max_inequalities=6,
             sum_of_max_total_cts=10,
         )
-        solver = DVISolver()
+        solver = SCCSolver()
         solver._device = self.device
         solver._size = size
         solver._use_schur_complement = True
         solver._data = SimpleNamespace(
-            state=DVIState(),
+            state=SCCState(),
             bilateral_operator=SimpleNamespace(info=SimpleNamespace(total_vec_size=4)),
         )
         solver._joint_rows_host = [1, 3]
@@ -3454,7 +3513,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertEqual(solver.data.state.bilateral_response_factor.shape[0], 12)
         self.assertEqual(solver.data.state.bilateral_response.shape[0], 12)
 
-    def test_03ic_dvi_excludes_penetration_recovery_from_friction_load(self):
+    def test_03ic_scc_excludes_penetration_recovery_from_friction_load(self):
         """Exclude penetration-recovery impulses from the Coulomb friction load."""
         result = wp.empty(1, dtype=wp.float32, device=self.device)
 
@@ -3507,9 +3566,9 @@ class TestDVISolver(NewtonTestCase):
                 weighted.extend(np.full((3, 6), np.nan, dtype=np.float32))
                 body_space = wp.zeros(12, dtype=wp.float32, device=self.device)
                 impulses = wp.zeros(6, dtype=wp.float32, device=self.device)
-                config = convert_config_to_struct(kamino_config.DVISolverConfig(max_alternating_iterations=1))
+                config = convert_config_to_struct(kamino_config.SCCSolverConfig(max_alternating_iterations=1))
                 wp.launch(
-                    _solve_dvi_sparse_contacts_pgs,
+                    _solve_scc_sparse_contacts_pgs,
                     dim=1,
                     inputs=[
                         wp.array(weighted, dtype=vec6f, device=self.device),
@@ -3543,7 +3602,7 @@ class TestDVISolver(NewtonTestCase):
                         1,
                         1,
                         -1,
-                        wp.array([config], dtype=DVIConfigStruct, device=self.device),
+                        wp.array([config], dtype=SCCConfigStruct, device=self.device),
                         body_space,
                         impulses,
                     ],
@@ -3555,16 +3614,16 @@ class TestDVISolver(NewtonTestCase):
                 self.assertAlmostEqual(float(result[:, 2].sum()), 1.0, places=5)
                 np.testing.assert_allclose(body_space.numpy()[6:], [0, 0, 1, 0, 0, 0], atol=1.0e-5)
 
-    def test_03j2_sparse_dvi_refreshes_tangent_cross_cache(self):
+    def test_03j2_sparse_scc_refreshes_tangent_cross_cache(self):
         """Refresh tangent coupling before the fused friction phase."""
         model, problem, setup = self._make_box_on_plane_setup(sparse=True)
-        solver = DVISolver(
+        solver = SCCSolver(
             model=model,
             data=setup.data,
             limits=setup.limits,
             contacts=setup.contacts,
             jacobians=setup.jacobians,
-            config=kamino_config.DVISolverConfig(
+            config=kamino_config.SCCSolverConfig(
                 max_alternating_iterations=4,
                 inequality_sweeps_per_iteration=1,
                 tolerance=0.0,
@@ -3587,7 +3646,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertGreater(contact_count, 0)
         self.assertTrue(np.all(np.isfinite(contact_cross)))
 
-    def test_03g3_dvi_inequality_coloring_groups_contact_pairs(self):
+    def test_03g3_scc_inequality_coloring_groups_contact_pairs(self):
         """Group consecutive contacts while preserving independent parallel groups."""
         problem_nl = wp.array([1], dtype=wp.int32, device=self.device)
         problem_nc = wp.array([5], dtype=wp.int32, device=self.device)
@@ -3612,7 +3671,7 @@ class TestDVISolver(NewtonTestCase):
         inequality_group_starts = wp.zeros(shape=7, dtype=wp.int32, device=self.device)
 
         wp.launch(
-            kernel=_group_mapped_dvi_inequalities,
+            kernel=_group_mapped_scc_inequalities,
             dim=1,
             inputs=[
                 wp.zeros(1, dtype=wp.int32, device=self.device),
@@ -3638,7 +3697,7 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_array_equal(inequality_color_starts.numpy()[:2], [0, 4])
         np.testing.assert_array_equal(inequality_group_starts.numpy()[:5], [0, 1, 3, 4, 6])
 
-    def test_03g3a_dvi_compact_correction_selects_component(self):
+    def test_03g3a_scc_compact_correction_selects_component(self):
         """Select bounded, normal, and paired tangent corrections from compact rows."""
         component_q = wp.array([11.0, 22.0, 33.0], dtype=wp.float32, device=self.device)
         component_corrections = wp.empty(3, dtype=wp.vec2f, device=self.device)
@@ -3653,7 +3712,7 @@ class TestDVISolver(NewtonTestCase):
             [[11.0, 0.0], [33.0, 0.0], [11.0, 22.0]],
         )
 
-    def test_03g3ac_dvi_reconstructs_fused_bilateral_solution(self):
+    def test_03g3ac_scc_reconstructs_fused_bilateral_solution(self):
         """Match a fresh direct solve with warm starts, scaling, and permutation."""
         bilateral = np.array([[4.0, 1.0], [1.0, 3.0]], dtype=np.float32)
         coupling = np.array([[0.75, -0.2], [0.35, 0.6]], dtype=np.float32)
@@ -3723,7 +3782,7 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_allclose(reconstruct(True), expected_b, rtol=3.0e-6, atol=3.0e-6)
         np.testing.assert_allclose(reconstruct(False), expected_b, rtol=3.0e-6, atol=3.0e-6)
 
-    def test_03g3b_dvi_groups_contacts_in_private_pair_order(self):
+    def test_03g3b_scc_groups_contacts_in_private_pair_order(self):
         """Group geometry-pair contacts without changing their constraint indices."""
         problem_nl = wp.array([1], dtype=wp.int32, device=self.device)
         problem_nc = wp.array([4], dtype=wp.int32, device=self.device)
@@ -3741,7 +3800,7 @@ class TestDVISolver(NewtonTestCase):
         inequality_group_starts = wp.array([0, 1, 3, 2, 4, -1], dtype=wp.int32, device=self.device)
 
         wp.launch(
-            kernel=_group_mapped_dvi_inequalities,
+            kernel=_group_mapped_scc_inequalities,
             dim=1,
             inputs=[
                 wp.zeros(1, dtype=wp.int32, device=self.device),
@@ -3765,7 +3824,7 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_array_equal(inequality_group_starts.numpy()[:4], [0, 1, 3, 5])
         np.testing.assert_array_equal(inequality_bodies.numpy(), [[0, -1], [1, -1], [2, -1], [1, -1], [2, -1]])
 
-    def test_03g3c_dvi_contact_pair_order_is_world_major(self):
+    def test_03g3c_scc_contact_pair_order_is_world_major(self):
         """Sort interleaved contacts by world and geometry pair without moving contact data."""
         contact_count = 6
         contacts_model_active = wp.array([contact_count], dtype=wp.int32, device=self.device)
@@ -3835,7 +3894,7 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_array_equal(inequality_order.numpy(), [0, 1, 2, -1, 0, 1, 2, -1])
         np.testing.assert_array_equal(contacts_wid.numpy(), [1, 0, 1, 0, 0, 1])
 
-    def test_03g3d_dvi_compact_contact_scheduler_matches_pair_order(self):
+    def test_03g3d_scc_compact_contact_scheduler_matches_pair_order(self):
         """Expand compact colored manifolds in stable geometry-pair order."""
         contact_count = 6
         active = wp.array([contact_count], dtype=wp.int32, device=self.device)
@@ -3941,7 +4000,7 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_array_equal(ids_by_color.numpy(), [0, 2, 1, 4, 3, 5])
         np.testing.assert_array_equal(final_group_starts.numpy()[:4], [0, 2, 4, 6])
 
-    def test_03g3e_dvi_compact_contact_topology_cache(self):
+    def test_03g3e_scc_compact_contact_topology_cache(self):
         """Reuse only exact effective-body topology while rebuilding manifold expansion."""
         capacity = 6
         active = wp.array([4], dtype=wp.int32, device=self.device)
@@ -4090,7 +4149,7 @@ class TestDVISolver(NewtonTestCase):
             groups_by_color.ptr, sorter.sorted_keys.ptr + capacity * wp.types.type_size_in_bytes(wp.int32)
         )
 
-    def test_03g4_dvi_inequality_coloring_ignores_immovable_bodies(self):
+    def test_03g4_scc_inequality_coloring_ignores_immovable_bodies(self):
         """Color contacts sharing an immovable body in parallel."""
         contact_count = 3
         contacts_model_active = wp.array([contact_count], dtype=wp.int32, device=self.device)
@@ -4136,7 +4195,7 @@ class TestDVISolver(NewtonTestCase):
         inequality_group_starts = wp.zeros(shape=contact_count + 1, dtype=wp.int32, device=self.device)
 
         wp.launch(
-            kernel=_group_mapped_dvi_inequalities,
+            kernel=_group_mapped_scc_inequalities,
             dim=1,
             inputs=[
                 wp.zeros(1, dtype=wp.int32, device=self.device),
@@ -4163,8 +4222,8 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_array_equal(inequality_colors.numpy(), [0, 0, 0])
         self.assertEqual(int(inequality_num_colors.numpy()[0]), 1)
 
-    def test_11_dvi_detects_contacts_at_moreau_midpoint(self):
-        """Detect fast impacts at the pose used to assemble the DVI problem."""
+    def test_11_scc_detects_contacts_at_moreau_midpoint(self):
+        """Detect fast impacts at the pose used to assemble the SCC problem."""
         sphere_radius = 1.0
         box_half = 0.5
         time_step = 0.01
@@ -4193,7 +4252,7 @@ class TestDVISolver(NewtonTestCase):
         model = builder.finalize(device=self.device)
 
         config = SolverKamino.Config(
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
             sparse_dynamics=True,
             sparse_jacobian=True,
             use_collision_detector=True,
@@ -4201,7 +4260,7 @@ class TestDVISolver(NewtonTestCase):
             constraints=kamino_config.ConstraintStabilizationConfig(
                 contact_recovery_time=time_step * (1.0 / 0.01 - 1.0), delta=0.0
             ),
-            dvi=kamino_config.DVISolverConfig(
+            scc=kamino_config.SCCSolverConfig(
                 max_alternating_iterations=8,
                 bilateral_solve_interval=1,
             ),
@@ -4224,7 +4283,7 @@ class TestDVISolver(NewtonTestCase):
 
         self.assertLess(max_overlap, 0.08)
 
-    def test_08ca_dvi_penetration_recovery_does_not_lock_tangent_motion(self):
+    def test_08ca_scc_penetration_recovery_does_not_lock_tangent_motion(self):
         """Keep penetration recovery from creating artificial static friction."""
         friction = 0.5
         dt = 1.0e-3
@@ -4249,7 +4308,7 @@ class TestDVISolver(NewtonTestCase):
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
                 config = SolverKamino.Config(
-                    dynamics_solver="dvi",
+                    dynamics_solver="scc",
                     use_collision_detector=True,
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
@@ -4412,14 +4471,7 @@ class TestDVISolver(NewtonTestCase):
         wp.launch(
             _find_bilateral_factor_row_start,
             dim=(5, max(joint_counts)),
-            inputs=[
-                joints,
-                factor_offsets,
-                joints,
-                i32(vector_offsets),
-                factor_rows,
-                row_start,
-            ],
+            inputs=[joints, factor_offsets, joints, i32(vector_offsets), factor_rows, row_start],
             device=self.device,
         )
         expected_starts = []

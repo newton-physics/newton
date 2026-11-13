@@ -316,7 +316,6 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             J_dofs_size[w] = num_joint_dofs[w] * num_body_dofs[w]
             J_cts_size[w] = max_total_cts[w] * num_body_dofs[w]
 
-        # Compute Jacobian allocation shapes and offsets
         J_dofs_shape, J_dofs_offsets = dense_matrix_layout(J_dofs_size)
         J_cts_shape, J_cts_offsets = dense_matrix_layout(J_cts_size)
 
@@ -389,7 +388,6 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             J_dofs_size[w] = num_joint_dofs[w] * num_body_dofs[w]
             J_cts_size[w] = max_total_cts[w] * num_body_dofs[w]
 
-        # Compute Jacobian allocation shapes and offsets
         J_dofs_shape, J_dofs_offsets = dense_matrix_layout(J_dofs_size)
         J_cts_shape, J_cts_offsets = dense_matrix_layout(J_cts_size)
 
@@ -422,7 +420,6 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         jacobians.build(model=model, data=data, limits=limits.data, contacts=contacts.data)
         wp.synchronize()
 
-        # Extract the actuation and constraint Jacobians as matrices
         J_dofs_offsets = jacobians.data.J_dofs_offsets.numpy()
         J_dofs_flat = jacobians.data.J_dofs_data.numpy()
         J_dofs_mat = extract_dofs_jacobians(model, jacobians)[0]

@@ -671,10 +671,18 @@ def parse_mjcf(
             See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
             actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
             from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
-            For position-only drives using ``dampratio``, constructing
+            A scalar ``gear`` on a one-DOF (hinge or slide) position/velocity actuator is folded into the
+            joint-target drive, so the targets stay in joint units: the actuator is imported with unit gear, ``kp``,
+            ``kv``, ``damping`` and ``armature`` are scaled by ``gear**2``, ``forcerange`` by ``gear`` and ``ctrlrange``
+            by ``1 / gear`` (bounds swapped for a negative ``gear``). Position/velocity actuators whose gear cannot be
+            folded (a gear on a multi-DOF joint, a vector gear or a zero gear) are imported as
+            :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` so that MuJoCo applies the gear.
+            For position-only joint-target drives using ``dampratio``, constructing
             :class:`~newton.solvers.SolverMuJoCo` initializes zero entries in
             :attr:`newton.Model.joint_target_kd` with the resolved damping coefficients.
             Subsequent damping edits use ``joint_target_kd`` as usual.
+            This does not apply to ``CTRL_DIRECT`` actuators: their gains stay in the MuJoCo actuator (in actuator
+            units), and ``joint_target_kd`` is neither written nor read for them.
         path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. By default, assets are searched relative to the main model with the compiler asset directory, then relative to the included file without that directory prefix, and finally relative to the included file with it. Custom resolvers receive the authoring file's directory and the file path with that file's compiler asset directory prefix.
         legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
             where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
@@ -4096,13 +4104,26 @@ def parse_mjcf(
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
 
             ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+            folded_gear = 1.0
             if actuator_type in {"position", "velocity"} and trntype == 0 and total_dofs != 0 and not ctrl_direct:
-                ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
+                # SolverMuJoCo rebuilds JOINT_TARGET actuators with unit gear. A scalar gear on a one-DOF joint is
+                # folded into the joint-target drive below; other non-unit gears (vector gear, zero gear) cannot be
+                # folded and keep the MuJoCo actuator (CTRL_DIRECT) so MuJoCo compiles the gear in.
+                gear = np.zeros(6)
+                authored_gear = np.array(merged_attrib.get("gear", "1").split(), dtype=float)
+                gear[: len(authored_gear)] = authored_gear
+                if np.allclose(gear, (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)):
+                    ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
+                elif total_dofs == 1 and gear[0] != 0.0 and not np.any(gear[1:]):
+                    ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
+                    folded_gear = float(gear[0])
+            # Folding gear g into the actuator scales stiffness/damping/armature by g**2.
+            gear_sq = folded_gear**2
             ctrlrange_is_derived = False
             if actuator_type == "position":
-                kp = parse_float(merged_attrib, "kp", 1.0)  # MuJoCo default kp=1
-                kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
-                dampratio = parse_float(merged_attrib, "dampratio", 0.0)
+                kp = parse_float(merged_attrib, "kp", 1.0) * gear_sq  # MuJoCo default kp=1
+                kv = parse_float(merged_attrib, "kv", 0.0) * gear_sq  # Optional velocity damping
+                dampratio = parse_float(merged_attrib, "dampratio", 0.0)  # dimensionless; solver resolves it from kp
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 if kv > 0.0:
@@ -4134,7 +4155,7 @@ def parse_mjcf(
                             builder.joint_target_kd[dof_idx] = kv
 
             elif actuator_type == "velocity":
-                kv = parse_float(merged_attrib, "kv", 1.0)  # MuJoCo default kv=1
+                kv = parse_float(merged_attrib, "kv", 1.0) * gear_sq  # MuJoCo default kv=1
                 gainprm = vec10(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 if ctrl_source_val == SolverMuJoCo.CtrlSource.JOINT_TARGET:
@@ -4227,6 +4248,26 @@ def parse_mjcf(
                 and "mujoco:actuator_actrange" in parsed_attrs
             ):
                 parsed_attrs["mujoco:actuator_actrange"] *= scale
+            if folded_gear != 1.0:
+                # Express the authored gear in joint units: the folded actuator has unit gear, ctrl is the joint
+                # target, and MuJoCo's actuator-space limits and passive terms map through gear g.
+                if "mujoco:actuator_ctrlrange" in parsed_attrs:
+                    lo, hi = (float(v) / folded_gear for v in parsed_attrs["mujoco:actuator_ctrlrange"])
+                    parsed_attrs["mujoco:actuator_ctrlrange"] = wp.vec2(min(lo, hi), max(lo, hi))
+                if "mujoco:actuator_forcerange" in parsed_attrs:
+                    lo, hi = (float(v) * folded_gear for v in parsed_attrs["mujoco:actuator_forcerange"])
+                    parsed_attrs["mujoco:actuator_forcerange"] = wp.vec2(min(lo, hi), max(lo, hi))
+                for key in ("mujoco:actuator_damping", "mujoco:actuator_armature"):
+                    if key in parsed_attrs:
+                        parsed_attrs[key] = float(parsed_attrs[key]) * gear_sq
+                if "mujoco:actuator_dampingpoly" in parsed_attrs:
+                    poly = parsed_attrs["mujoco:actuator_dampingpoly"]
+                    parsed_attrs["mujoco:actuator_dampingpoly"] = wp.vec2(
+                        float(poly[0]) * gear_sq, float(poly[1]) * gear_sq
+                    )
+                parsed_attrs["mujoco:actuator_gear"] = wp.types.vector(length=6, dtype=wp.float32)(
+                    1.0, 0.0, 0.0, 0.0, 0.0, 0.0
+                )
             if crank_length is not None:
                 parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 

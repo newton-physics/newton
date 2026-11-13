@@ -40,7 +40,7 @@ __all__ = [
 
 
 def dense_matrix_layout(block_sizes: list[int]) -> tuple[tuple[int, int], list[int]]:
-    """Allocate one row per matrix block, aligned to 32 elements."""
+    """Return the aligned shape and offsets for matrix block rows."""
     row_size = (max(block_sizes, default=0) + 31) // 32 * 32
     return (len(block_sizes), row_size), [0] * len(block_sizes)
 
@@ -277,7 +277,6 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
         if device is not None:
             self.device = device
 
-        # Compute allocation sizes and offsets.
         mat_sizes = [m * n for m, n in self.dimensions]
         self.max_mat_size = max(mat_sizes)
         mat_flat_size = sum(mat_sizes)
@@ -512,7 +511,6 @@ class DenseSquareMultiLinearInfo(Generic[ScalarType, IndexType]):
         if device is not None:
             self.device = device
 
-        # Compute allocation sizes and offsets.
         mat_sizes = [n * n for n in self.dimensions]
         mat_flat_size = sum(mat_sizes)
         self.matrix_shape, _ = dense_matrix_layout(mat_sizes)

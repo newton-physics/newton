@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regressions for blocked and split Kamino DVI responses."""
+"""Regressions for blocked and split Kamino SCC responses."""
 
 import unittest
 
@@ -9,16 +9,16 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import make_llt_blocked_rcm_solve_kernel
-from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
+from newton._src.solvers.kamino._src.solvers.scc.kernels import (
     _solve_bilateral_unilateral_response_compact,
     _solve_bilateral_unilateral_response_cooperative,
 )
-from newton._src.solvers.kamino._src.solvers.dvi.response import (
+from newton._src.solvers.kamino._src.solvers.scc.response import (
     _add_forward_bilateral_gradient,
     _update_forward_bilateral_rhs,
     make_response_kernel,
 )
-from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
+from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _assemble_compact_unilateral_schur_tiled,
 )
 from newton.tests.kamino.utils.make import make_row_storage

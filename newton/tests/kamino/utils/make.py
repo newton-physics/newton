@@ -64,9 +64,6 @@ __all__ = [
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
-# Dense storage layouts.
-
-
 def make_dense_matrix_storage(
     info: DenseSquareMultiLinearInfo, matrices: list[np.ndarray], fill_value: float = 0.0
 ) -> np.ndarray:

@@ -17,7 +17,7 @@ from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import (
 )
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
 from newton._src.solvers.kamino._src.linalg.linear import LLTBlockedSolver, LLTSequentialSolver
-from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
+from newton._src.solvers.kamino._src.solvers.scc.kernels import (
     _find_bilateral_factor_row_start,
     _find_bilateral_factor_row_start_rcm,
 )

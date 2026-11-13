@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Data containers for the Kamino DVI solver."""
+"""Data containers for the Kamino SCC solver."""
 
 from __future__ import annotations
 
 import warp as wp
 
-from ....config import DVISolverConfig
+from ....config import SCCSolverConfig
 from ...core.size import SizeKamino
 from ...linalg import DenseLinearOperatorData
 from ...linalg.core import dense_matrix_layout, validate_dense_matrix_shape
@@ -23,11 +23,11 @@ vec2i = wp.vec2i
 
 
 @wp.struct
-class DVIConfigStruct:
-    """On-device DVI solver configuration."""
+class SCCConfigStruct:
+    """On-device SCC solver configuration."""
 
     tolerance: float32
-    """Tolerance for iterate-change stopping and terminal DVI residuals."""
+    """Tolerance for iterate-change stopping and terminal SCC residuals."""
 
     regularization: float32
     """Diagonal regularization used by projected Gauss-Seidel updates."""
@@ -49,11 +49,11 @@ class DVIConfigStruct:
 
 
 @wp.struct
-class DVIStatus:
-    """Per-world DVI convergence status after bilateral recovery.
+class SCCStatus:
+    """Per-world SCC convergence status after bilateral recovery.
 
     The terminal feasibility, bilateral, and complementarity checks use
-    ``DVISolverConfig.tolerance``, independently of the APGD natural-map
+    ``SCCSolverConfig.tolerance``, independently of the APGD natural-map
     tolerance. An inner or nonlinear APGD budget can be exhausted without
     determining the full-system ``converged`` flag; inspect ``apgd_residual``
     when requiring the APGD threshold as well. A failed APGD line search
@@ -73,7 +73,7 @@ class DVIStatus:
 
     Uses the fresh De Saxce correction at the relaxed impulse with a unit
     projection step and infinity norm. Budget exhaustion can leave this above
-    ``DVIAPGDConfig.tolerance``. A failed line search sets it to ``3e38``.
+    ``SCCAPGDConfig.tolerance``. A failed line search sets it to ``3e38``.
     """
     apgd_line_search_failed: int32
     """Whether an APGD line search exhausted its budget or encountered non-finite data."""
@@ -87,26 +87,26 @@ class DVIStatus:
     """Bilateral constraint-space velocity residual."""
 
 
-class DVIInfo:
+class SCCInfo:
     """Optional terminal convergence diagnostics for each simulated world."""
 
     def __init__(self, size: SizeKamino | None = None):
-        self.status: wp.array[DVIStatus] | None = None
-        """Terminal DVI status, shape ``(num_worlds,)``."""
+        self.status: wp.array[SCCStatus] | None = None
+        """Terminal SCC status, shape ``(num_worlds,)``."""
         if size is not None:
             self.finalize(size)
 
     def finalize(self, size: SizeKamino) -> None:
         """Allocate diagnostic arrays for a model size."""
-        self.status = wp.zeros(shape=(size.num_worlds,), dtype=DVIStatus)
+        self.status = wp.zeros(shape=(size.num_worlds,), dtype=SCCStatus)
 
     def zero(self) -> None:
         """Reset diagnostics to zero."""
         self.status.zero_()
 
 
-class DVIState:
-    """Scratch arrays used by the DVI solver."""
+class SCCState:
+    """Scratch arrays used by the SCC solver."""
 
     def __init__(self, size: SizeKamino | None = None):
         self.sigma: wp.array[vec2f] | None = None
@@ -161,7 +161,7 @@ class DVIState:
         self.inequality_num_colors = wp.zeros(max(1, size.num_worlds), dtype=int32)
         self.inequality_ids_by_color = wp.full(max(1, size.sum_of_max_inequalities), -1, dtype=int32)
         self.inequality_color_starts = wp.zeros(max(1, size.sum_of_max_inequalities + size.num_worlds), dtype=int32)
-        # Sparse DVI only needs a harmless dummy permutation when RCM is disabled.
+        # Sparse SCC only needs a harmless dummy permutation when RCM is disabled.
         self.projected_mio = wp.zeros(max(1, size.num_worlds), dtype=int32)
 
     def allocate_dense_projection(self, size: SizeKamino) -> None:
@@ -213,7 +213,7 @@ class DVIState:
                 response_offsets.append(response_size)
                 response_size += num_joint_rows * unilateral_stride
             if response_size > 2**31 - 1:
-                raise ValueError("Sparse DVI projection exceeds the supported int32 index range.")
+                raise ValueError("Sparse SCC projection exceeds the supported int32 index range.")
             self.bilateral_response_mio = wp.array(response_offsets, dtype=int32)
             self.bilateral_response_stride = wp.array(unilateral_strides, dtype=int32)
             self.bilateral_coupling = wp.zeros(max(1, response_size), dtype=float32)
@@ -262,8 +262,8 @@ class DVIState:
             self.bilateral_delta.zero_()
 
 
-class DVIData:
-    """High-level DVI solver data."""
+class SCCData:
+    """High-level SCC solver data."""
 
     def __init__(
         self,
@@ -271,30 +271,30 @@ class DVIData:
         collect_info: bool = False,
         device: wp.DeviceLike = None,
     ):
-        self.config: wp.array[DVIConfigStruct] | None = None
-        self.status: wp.array[DVIStatus] | None = None
-        self.state: DVIState | None = None
+        self.config: wp.array[SCCConfigStruct] | None = None
+        self.status: wp.array[SCCStatus] | None = None
+        self.state: SCCState | None = None
         self.solution: DualSolution | None = None
-        self.info: DVIInfo | None = None
+        self.info: SCCInfo | None = None
         self.bilateral_operator: DenseLinearOperatorData | None = None
         self.bilateral_dim: wp.array[int32] | None = None
         if size is not None:
             self.finalize(size=size, collect_info=collect_info, device=device)
 
     def finalize(self, size: SizeKamino, collect_info: bool = False, device: wp.DeviceLike = None):
-        """Allocate DVI data arrays."""
+        """Allocate SCC data arrays."""
         with wp.ScopedDevice(device):
-            self.config = wp.zeros(shape=(size.num_worlds,), dtype=DVIConfigStruct)
-            self.status = wp.zeros(shape=(size.num_worlds,), dtype=DVIStatus)
-            self.state = DVIState(size)
+            self.config = wp.zeros(shape=(size.num_worlds,), dtype=SCCConfigStruct)
+            self.status = wp.zeros(shape=(size.num_worlds,), dtype=SCCStatus)
+            self.state = SCCState(size)
             self.solution = DualSolution(size)
-            self.info = DVIInfo(size) if collect_info else None
+            self.info = SCCInfo(size) if collect_info else None
             self.bilateral_operator = None
 
 
-def convert_config_to_struct(config: DVISolverConfig) -> DVIConfigStruct:
-    """Convert a host-side DVI config to an on-device struct."""
-    config_struct = DVIConfigStruct()
+def convert_config_to_struct(config: SCCSolverConfig) -> SCCConfigStruct:
+    """Convert a host-side SCC config to an on-device struct."""
+    config_struct = SCCConfigStruct()
     config_struct.tolerance = config.tolerance
     config_struct.regularization = config.regularization
     config_struct.omega = config.omega

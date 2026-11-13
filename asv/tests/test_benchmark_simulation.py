@@ -589,21 +589,21 @@ class TestSimulationBenchmarks(unittest.TestCase):
 
         solver_cls.assert_called_once()
 
-    def test_g1_dvi_remains_available_outside_pr_gate(self):
+    def test_g1_scc_remains_available_outside_pr_gate(self):
         """Keep small and large G1 batches outside the PR gate with bounded sampling."""
         patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
         for pr_gate in (False, True):
             inventory = self._discover_benchmarks(pr_gate=pr_gate)
-            benchmarks = [benchmark for benchmark in inventory if "G1DVI" in benchmark["name"]]
+            benchmarks = [benchmark for benchmark in inventory if "G1SCC" in benchmark["name"]]
             self.assertEqual(len(benchmarks), 1)
             benchmark = benchmarks[0]
             self.assertFalse(any(pattern.search(benchmark["name"]) for pattern in patterns))
             self.assertEqual(benchmark["params"], [["4", "512"]])
             self.assertEqual((benchmark["rounds"], benchmark["repeat"]), (1, 3))
 
-    def test_g1_dvi_builds_once_per_world_count(self):
+    def test_g1_scc_builds_once_per_world_count(self):
         """Avoid rebuilding and warming G1 for each ASV timing sample."""
-        workload = bench_kamino.G1DVI()
+        workload = bench_kamino.G1SCC()
         with (
             patch("newton.examples.robot.example_robot_g1.Example") as example_cls,
             patch.object(wp, "get_cuda_device_count", return_value=1),
