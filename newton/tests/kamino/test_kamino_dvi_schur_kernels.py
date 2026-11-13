@@ -10,6 +10,8 @@ import warp as wp
 
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import _compute_dvi_status_residuals
 from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
+    COMPACT_SCHUR_PGS_BLOCK_DIM,
+    COMPACT_SCHUR_PGS_TIERS,
     _apply_small_bilateral_inverse,
     _assemble_compact_unilateral_schur_blocked,
     _invert_small_bilateral_block,
@@ -159,7 +161,7 @@ class TestKaminoCompactSchur(unittest.TestCase):
                 results = []
                 for kernels in (
                     (_solve_dvi_sparse_inequalities_pgs_cooperative,),
-                    (make_compact_schur_pgs_kernel(64), make_compact_schur_pgs_kernel(128)),
+                    tuple(make_compact_schur_pgs_kernel(rows) for rows in COMPACT_SCHUR_PGS_TIERS),
                 ):
                     data["compact_q"] = self.floats(np.concatenate([np.zeros(n), q0]))
                     data["solution_lambdas"] = self.floats(initial)
@@ -174,12 +176,16 @@ class TestKaminoCompactSchur(unittest.TestCase):
                                 # Full compact sweeps never read sparse body-space inputs.
                                 shape = (1, 2) if arg.type.ndim == 2 else 1
                                 inputs.append(wp.zeros(shape, dtype=arg.type.dtype, device=self.device))
-                        wp.launch(kernel, dim=32, inputs=inputs, device=self.device, block_dim=32)
-                        # Each world must be updated by exactly one specialization,
-                        # including the partially filled vectors at 63/64/65 rows.
-                        if len(kernels) == 2 and (nu > 64 if index == 0 else nu <= 64):
-                            np.testing.assert_array_equal(data["solution_lambdas"].numpy(), before[0])
-                            np.testing.assert_array_equal(data["compact_q"].numpy(), before[1])
+                        wp.launch(
+                            kernel, dim=32, inputs=inputs, device=self.device, block_dim=COMPACT_SCHUR_PGS_BLOCK_DIM
+                        )
+                        # Each world must be updated by exactly one tier, including the
+                        # partially filled vectors at 63/64/65 and 95/96/97 rows.
+                        if kernels[0] is not _solve_dvi_sparse_inequalities_pgs_cooperative:
+                            lower = COMPACT_SCHUR_PGS_TIERS[index - 1] if index > 0 else 0
+                            if not lower < nu <= COMPACT_SCHUR_PGS_TIERS[index]:
+                                np.testing.assert_array_equal(data["solution_lambdas"].numpy(), before[0])
+                                np.testing.assert_array_equal(data["compact_q"].numpy(), before[1])
                     results.append((data["solution_lambdas"].numpy(), data["compact_q"].numpy()))
                 np.testing.assert_array_equal(results[1][0][:n], initial[:n])
                 np.testing.assert_allclose(results[0][0], results[1][0], atol=3e-6, rtol=3e-6)

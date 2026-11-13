@@ -1079,12 +1079,16 @@ class DVISolverConfig:
     Defaults to `0.97`.
     """
 
-    bilateral_solver_type: Literal["LLTB", "LLTBRCM"] = "LLTB"
+    bilateral_solver_type: Literal["LLTB", "LLTBRCM"] = "LLTBRCM"
     """
     Direct linear solver used for the bilateral constraint block.
-    ``LLTBRCM`` can accelerate large sparse articulated systems, while
-    ``LLTB`` remains preferable for small or dense systems. Defaults to
-    ``LLTB``.
+    ``LLTBRCM`` factors in a fill-reducing ordering and skips empty tiles;
+    ``LLTB`` factors dense tiles. Defaults to ``LLTBRCM``.
+
+    ``LLTBRCM`` pads each world's factor to a multiple of its 32-row tile, so
+    worlds with very few bilateral rows store a larger factor than with
+    ``LLTB``. Only ``LLTB`` enables the fused small-matrix inverse that sparse
+    CUDA solves use without a Schur complement for at most 128 bilateral rows.
     """
 
     bilateral_solver_kwargs: dict[str, Any] = field(default_factory=dict)

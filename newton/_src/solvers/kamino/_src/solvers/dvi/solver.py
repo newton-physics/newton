@@ -503,6 +503,55 @@ class DVISolver:
             elif self._use_schur_complement:
                 self._data.state.allocate_dense_projection(self._size)
 
+    def _launch_colored_pgs(
+        self,
+        problem: DualProblem,
+        block_iteration: int,
+        *,
+        enable_adaptive: bool,
+        mio: wp.array | None = None,
+        D: wp.array | None = None,
+    ) -> None:
+        """Launch dense colored PGS on ``D`` (default: the problem's Delassus matrix)."""
+        state = self._data.state
+        threads_per_world = 64 if self.device.is_cuda else 1
+        wp.launch(
+            kernel=_solve_dvi_inequalities_colored_pgs,
+            dim=self._size.num_worlds * threads_per_world,
+            inputs=[
+                problem.data.dim,
+                problem.data.mio if mio is None else mio,
+                problem.data.vio,
+                problem.data.nbc,
+                problem.data.nl,
+                problem.data.nc,
+                problem.data.bcgo,
+                problem.data.lcgo,
+                problem.data.ccgo,
+                problem.data.bcio,
+                problem.data.cio,
+                problem.data.iio,
+                problem.data.mu,
+                problem.data.bound_lower,
+                problem.data.bound_upper,
+                problem.data.D if D is None else D,
+                problem.data.P,
+                problem.data.v_b_friction,
+                block_iteration,
+                state.inequality_num_colors,
+                state.inequality_ids_by_color,
+                state.inequality_color_starts,
+                self._data.config,
+                wp.bool(enable_adaptive),
+                self._data.status,
+                state.scratch,
+                state.v_aug,
+                self._data.solution.lambdas,
+            ],
+            device=self.device,
+            block_dim=threads_per_world,
+        )
+
     def solve(self, problem: DualProblem):
         """Solve the cone-complementarity problem defined by ``problem``.
 
@@ -819,45 +868,9 @@ class DVISolver:
             ],
             device=self.device,
         )
-        threads_per_world = 64 if self.device.is_cuda else 1
         # Inequality-only solves need no host work between PGS blocks.
         for block_iteration in (_FUSED_INEQUALITY_BLOCK,):
-            wp.launch(
-                kernel=_solve_dvi_inequalities_colored_pgs,
-                dim=self._size.num_worlds * threads_per_world,
-                inputs=[
-                    problem.data.dim,
-                    problem.data.mio,
-                    problem.data.vio,
-                    problem.data.nbc,
-                    problem.data.nl,
-                    problem.data.nc,
-                    problem.data.bcgo,
-                    problem.data.lcgo,
-                    problem.data.ccgo,
-                    problem.data.bcio,
-                    problem.data.cio,
-                    problem.data.iio,
-                    problem.data.mu,
-                    problem.data.bound_lower,
-                    problem.data.bound_upper,
-                    problem.data.D,
-                    problem.data.P,
-                    problem.data.v_b_friction,
-                    block_iteration,
-                    state.inequality_num_colors,
-                    state.inequality_ids_by_color,
-                    state.inequality_color_starts,
-                    self._data.config,
-                    False,
-                    self._data.status,
-                    state.scratch,
-                    state.v_aug,
-                    self._data.solution.lambdas,
-                ],
-                device=self.device,
-                block_dim=threads_per_world,
-            )
+            self._launch_colored_pgs(problem, block_iteration, enable_adaptive=False)
         wp.launch(
             kernel=_set_dvi_direct_status_iterations,
             dim=self._size.num_worlds,
@@ -954,7 +967,6 @@ class DVISolver:
             device=self.device,
         )
         self._prepare_inequality_coloring(problem)
-        threads_per_world = 64 if self.device.is_cuda else 1
         for block_iteration in range(self._max_alternating_iterations):
             wp.launch(
                 kernel=_compute_dvi_unilateral_velocities,
@@ -974,42 +986,7 @@ class DVISolver:
                 ],
                 device=self.device,
             )
-            wp.launch(
-                kernel=_solve_dvi_inequalities_colored_pgs,
-                dim=self._size.num_worlds * threads_per_world,
-                inputs=[
-                    problem.data.dim,
-                    problem.data.mio,
-                    problem.data.vio,
-                    problem.data.nbc,
-                    problem.data.nl,
-                    problem.data.nc,
-                    problem.data.bcgo,
-                    problem.data.lcgo,
-                    problem.data.ccgo,
-                    problem.data.bcio,
-                    problem.data.cio,
-                    problem.data.iio,
-                    problem.data.mu,
-                    problem.data.bound_lower,
-                    problem.data.bound_upper,
-                    problem.data.D,
-                    problem.data.P,
-                    problem.data.v_b_friction,
-                    block_iteration,
-                    self._data.state.inequality_num_colors,
-                    self._data.state.inequality_ids_by_color,
-                    self._data.state.inequality_color_starts,
-                    self._data.config,
-                    False,
-                    self._data.status,
-                    self._data.state.scratch,
-                    self._data.state.v_aug,
-                    self._data.solution.lambdas,
-                ],
-                device=self.device,
-                block_dim=threads_per_world,
-            )
+            self._launch_colored_pgs(problem, block_iteration, enable_adaptive=False)
             if self._should_solve_bilateral_after_block(block_iteration):
                 self._set_bilateral_active_dim(problem, block_iteration)
                 self._solve_bilateral_block(problem, active_dim=self._data.state.bilateral_active_dim)
@@ -1097,7 +1074,6 @@ class DVISolver:
         )
 
         self._prepare_inequality_coloring(problem)
-        threads_per_world = 64 if self.device.is_cuda else 1
         wp.launch(
             kernel=_compute_dvi_unilateral_velocities,
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
@@ -1116,41 +1092,12 @@ class DVISolver:
             ],
             device=self.device,
         )
-        wp.launch(
-            kernel=_solve_dvi_inequalities_colored_pgs,
-            dim=self._size.num_worlds * threads_per_world,
-            inputs=[
-                problem.data.dim,
-                self._data.state.projected_mio,
-                problem.data.vio,
-                problem.data.nbc,
-                problem.data.nl,
-                problem.data.nc,
-                problem.data.bcgo,
-                problem.data.lcgo,
-                problem.data.ccgo,
-                problem.data.bcio,
-                problem.data.cio,
-                problem.data.iio,
-                problem.data.mu,
-                problem.data.bound_lower,
-                problem.data.bound_upper,
-                self._data.state.projected_D,
-                problem.data.P,
-                problem.data.v_b_friction,
-                _FUSED_BILATERAL_BLOCK,
-                self._data.state.inequality_num_colors,
-                self._data.state.inequality_ids_by_color,
-                self._data.state.inequality_color_starts,
-                self._data.config,
-                wp.bool(self.device.is_cuda),
-                self._data.status,
-                self._data.state.scratch,
-                self._data.state.v_aug,
-                self._data.solution.lambdas,
-            ],
-            device=self.device,
-            block_dim=threads_per_world,
+        self._launch_colored_pgs(
+            problem,
+            _FUSED_BILATERAL_BLOCK,
+            enable_adaptive=self.device.is_cuda,
+            mio=self._data.state.projected_mio,
+            D=self._data.state.projected_D,
         )
 
         self._set_bilateral_active_dim(problem, -1)

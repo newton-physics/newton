@@ -115,8 +115,8 @@ class TestKaminoEffortLimitCondensation(unittest.TestCase):
         wp.launch(make_compact_schur_pgs_kernel(64), dim=128, inputs=inputs, block_dim=32, device=self.device)
 
     def test_static_fallback(self):
-        """Keep small batches, short sweeps, and models without efforts on the original path."""
-        for worlds, iterations, sweeps, efforts in ((4, 32, 2, 12), (4096, 16, 1, 16), (8192, 32, 2, 0)):
+        """Keep short sweeps and models without efforts on the original path."""
+        for worlds, iterations, sweeps, efforts in ((4, 16, 1, 12), (4096, 16, 1, 16), (8192, 32, 2, 0)):
             with self.subTest(worlds=worlds, iterations=iterations, sweeps=sweeps, efforts=efforts):
                 path = SimpleNamespace(
                     device=self.device,
@@ -127,6 +127,36 @@ class TestKaminoEffortLimitCondensation(unittest.TestCase):
                     max_inequality_sweeps_per_iteration=sweeps,
                 )
                 self.assertIsNone(EffortLimitCondensation.create(path))
+
+    def test_small_batch_creation(self):
+        """Condense eligible worlds at any batch size, not only saturated ones."""
+        worlds = 4
+
+        def ints(values):
+            return wp.array(np.asarray(values, dtype=np.int32), device=self.device)
+
+        path = SimpleNamespace(
+            device=self.device,
+            size=SimpleNamespace(num_worlds=worlds, sum_of_num_effort_joint_cts=2 * worlds, max_of_max_inequalities=8),
+            use_schur_complement=True,
+            data=SimpleNamespace(bilateral_operator=object()),
+            max_alternating_iterations=16,
+            max_inequality_sweeps_per_iteration=2,
+            model=SimpleNamespace(
+                joints=SimpleNamespace(
+                    wid=ints(range(worlds)),
+                    num_effort_cts=ints([2] * worlds),
+                    effort_cts_offset_total_cts=ints([10 * world + 3 for world in range(worlds)]),
+                ),
+                info=SimpleNamespace(
+                    total_cts_offset=ints([10 * world for world in range(worlds)]),
+                    joint_bounded_cts_group_offset=ints([1] * worlds),
+                ),
+            ),
+        )
+        helper = EffortLimitCondensation.create(path)
+        self.assertIsNotNone(helper)
+        self.assertEqual(helper._worlds, worlds)
 
     def test_dense_stationary_solution(self):
         """Recover a known full-system solution with ragged and full effort/response tiles."""

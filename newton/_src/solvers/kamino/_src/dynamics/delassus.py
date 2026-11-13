@@ -1462,12 +1462,12 @@ def _raw_joint_transpose(
     # Match jacobians.py: dynamic, kinematic, friction, then effort blocks,
     # with body A rows before body B rows in each group. Adapt this traversal
     # if the sparse joint Jacobian block ordering changes.
-    joint, slot = wp.tid()
+    # One thread per joint side accumulates all six body components, so each
+    # row block, preconditioner and impulse is loaded once.
+    joint, side = wp.tid()
     world = joint_world[joint]
     if not mask[world]:
         return
-    side = slot / 6
-    component = slot % 6
     binary = bid_B[joint] >= 0
     if side == 1 and not binary:
         return
@@ -1483,15 +1483,20 @@ def _raw_joint_transpose(
             count = effort[joint]
         if count > 0:
             source = base + side * count
-            value = wp.float32(0.0)
+            value = vec6f(0.0)
             for row in range(count):
                 nzb = source + row
                 index = row_start[world] + coords[nzb, 0]
-                coefficient = values[nzb][component]
-                if P:
-                    coefficient *= P[index]
-                value += coefficient * lambdas[index]
-            wp.atomic_add(output, col_start[world] + coords[source, 1] + component, value)
+                block = values[nzb]
+                impulse = lambdas[index]
+                for component in range(6):
+                    coefficient = block[component]
+                    if P:
+                        coefficient *= P[index]
+                    value[component] += coefficient * impulse
+            column = col_start[world] + coords[source, 1]
+            for component in range(6):
+                wp.atomic_add(output, column + component, value[component])
         base += count * advance
 
 
@@ -1513,26 +1518,29 @@ def _raw_dynamic_transpose(
     rows: wp.int32,
 ):
     """Accumulate limit or contact transpose products from their row blocks."""
-    constraint, slot = wp.tid()
+    constraint, side = wp.tid()
     if constraint >= wp.min(active_count[0], capacity):
         return
     world = worlds[constraint]
     if not mask[world]:
         return
-    side = slot / 6
-    component = slot % 6
     if side == 1 and body_ids[constraint][0] < 0:
         return
     source = offsets[constraint] + side * rows
-    value = wp.float32(0.0)
+    value = vec6f(0.0)
     for row in range(rows):
         nzb = source + row
         index = row_start[world] + coords[nzb, 0]
-        coefficient = values[nzb][component]
-        if P:
-            coefficient *= P[index]
-        value += coefficient * lambdas[index]
-    wp.atomic_add(output, col_start[world] + coords[source, 1] + component, value)
+        block = values[nzb]
+        impulse = lambdas[index]
+        for component in range(6):
+            coefficient = block[component]
+            if P:
+                coefficient *= P[index]
+            value[component] += coefficient * impulse
+    column = col_start[world] + coords[source, 1]
+    for component in range(6):
+        wp.atomic_add(output, column + component, value[component])
 
 
 class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float32, wp.int32]):
@@ -2476,7 +2484,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
             joints = self._model.joints
             wp.launch(
                 _raw_joint_transpose,
-                dim=(self._model.size.sum_of_num_joints, 12),
+                dim=(self._model.size.sum_of_num_joints, 2),
                 inputs=[
                     joints.wid,
                     joints.bid_B,
@@ -2493,7 +2501,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         if limits is not None and limits.model_max_limits_host > 0:
             wp.launch(
                 _raw_dynamic_transpose,
-                dim=(limits.model_max_limits_host, 12),
+                dim=(limits.model_max_limits_host, 2),
                 inputs=[
                     limits.model_active_limits,
                     limits.model_max_limits_host,
@@ -2509,7 +2517,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         if contacts is not None and contacts.model_max_contacts_host > 0:
             wp.launch(
                 _raw_dynamic_transpose,
-                dim=(contacts.model_max_contacts_host, 12),
+                dim=(contacts.model_max_contacts_host, 2),
                 inputs=[
                     contacts.model_active_contacts,
                     contacts.model_max_contacts_host,

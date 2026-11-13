@@ -77,6 +77,8 @@ class TestKaminoDVIWorldBatches(unittest.TestCase):
                 max_alternating_iterations=iterations,
                 inequality_sweeps_per_iteration=sweeps,
                 bilateral_solve_interval=interval,
+                # The fused matrix-free inverse is specific to LLTB.
+                bilateral_solver_type="LLTB",
             )
             for iterations, sweeps, interval in ((1, 1, 1), (4, 1, 2), (3, 2, 99))
         ]

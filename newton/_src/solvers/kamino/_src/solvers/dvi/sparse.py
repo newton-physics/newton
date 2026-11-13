@@ -42,6 +42,8 @@ from .response import (
     make_response_kernel,
 )
 from .sparse_kernels import (
+    COMPACT_SCHUR_PGS_BLOCK_DIM,
+    COMPACT_SCHUR_PGS_TIERS,
     SMALL_BILATERAL_INVERSE_SIZE,
     _apply_small_bilateral_inverse,
     _assemble_compact_unilateral_schur_blocked,
@@ -728,47 +730,11 @@ def _launch_sparse_inequality_pgs(
             state.bilateral_coupling,
             state.bilateral_response,
             state.bilateral_delta,
-            wp.bool(path.use_schur_complement),
         ]
         if cooperative_articulation:
-            kernel_inputs = [
-                *common_inputs,
-                jacobians.bounded_constraint_nzb_offsets,
-                jacobians.limit_constraint_nzb_offsets,
-                jacobians.contact_constraint_nzb_offsets,
-                state.limit_indices,
-                state.contact_indices,
-                problem.data.nbc,
-                problem.data.nl,
-                problem.data.nc,
-                problem.data.bcio,
-                problem.data.lio,
-                problem.data.cio,
-                problem.data.iio,
-                problem.data.bcgo,
-                problem.data.lcgo,
-                problem.data.ccgo,
-                problem.data.vio,
-                problem.data.mu,
-                problem.data.bound_lower,
-                problem.data.bound_upper,
-                problem.data.P,
-                problem.data.v_f,
-                problem.data.v_b_friction,
-                state.scratch,
-                state.inequality_projected_diagonal,
-                delassus.regularization,
-                problem.data.njc,
-                bilateral_vio,
-                state.bilateral_response_mio,
-                state.bilateral_response_stride,
-                state.bilateral_coupling,
-                state.bilateral_response,
-                state.bilateral_delta,
-                state.bilateral_response_factor,
-                state.s,
-                wp.bool(enable_compact_schur),
-            ]
+            kernel_inputs += [state.bilateral_response_factor, state.s, wp.bool(enable_compact_schur)]
+        else:
+            kernel_inputs.append(wp.bool(path.use_schur_complement))
         kernel_inputs.extend(
             [
                 state.inequality_num_colors,
@@ -915,13 +881,13 @@ def _launch_sparse_inequality_pgs(
         if path.effort_limit_condensation is not None:
             fallback_inputs = list(compact_inputs)
             fallback_inputs[4] = path.effort_limit_condensation.prepare_candidates(compact_inputs)
-        for max_rows in (64, 128):
+        for max_rows in COMPACT_SCHUR_PGS_TIERS:
             wp.launch(
                 kernel=make_compact_schur_pgs_kernel(max_rows),
                 dim=path.size.num_worlds * 32,
                 inputs=fallback_inputs,
                 device=path.device,
-                block_dim=32,
+                block_dim=COMPACT_SCHUR_PGS_BLOCK_DIM,
             )
         if path.effort_limit_condensation is not None:
             path.effort_limit_condensation.publish(compact_inputs)

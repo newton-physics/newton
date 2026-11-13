@@ -22,7 +22,7 @@ from .projections import (
     project_contact_normal_update,
     project_contact_tangent_update,
 )
-from .sparse_kernels import make_compact_schur_pgs_kernel
+from .sparse_kernels import COMPACT_SCHUR_PGS_BLOCK_DIM, make_compact_schur_pgs_kernel
 from .types import DVIConfigStruct, DVIStatus
 
 wp.set_module_options({"enable_backward": False, "enable_mathdx_solver": False, "enable_mathdx_gemm": False})
@@ -426,10 +426,9 @@ class EffortLimitCondensation:
 
     @classmethod
     def create(cls, path):
-        """Allocate only for saturated compact solves with enough projected sweeps."""
+        """Allocate only for compact solves with enough projected sweeps."""
         if (
             not path.device.is_cuda
-            or path.size.num_worlds < 2048
             or not path.use_schur_complement
             or path.data.bilateral_operator is None
             or path.max_alternating_iterations * path.max_inequality_sweeps_per_iteration < 32
@@ -532,7 +531,11 @@ class EffortLimitCondensation:
                 kernel, dim=(self._worlds, 32), inputs=[source, target, self._work], block_dim=32, device=self._device
             )
         wp.launch(
-            make_compact_schur_pgs_kernel(32), dim=self._worlds * 32, inputs=stage, block_dim=32, device=self._device
+            make_compact_schur_pgs_kernel(32),
+            dim=self._worlds * 32,
+            inputs=stage,
+            block_dim=COMPACT_SCHUR_PGS_BLOCK_DIM,
+            device=self._device,
         )
         wp.launch(
             _recover_and_certify,

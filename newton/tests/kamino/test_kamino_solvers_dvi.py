@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import itertools
 import unittest
 from itertools import product
 from types import SimpleNamespace
@@ -444,7 +445,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertIsNone(default_config.dvi.use_schur_complement)
         self.assertEqual(default_config.dvi.tangential_warmstart_scale, 0.97)
         self.assertEqual(default_config.dvi.bilateral_solve_interval, 1)
-        self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTB")
+        self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTBRCM")
         self.assertEqual(default_config.dvi.bilateral_solver_kwargs, {})
 
         dense_config = SolverKamino.Config(
@@ -1400,13 +1401,16 @@ class TestDVISolver(NewtonTestCase):
         )
         problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
         configs = [
+            # The fused small-inverse path that owns these re-solves is specific to LLTB.
             kamino_config.DVISolverConfig(
                 max_alternating_iterations=3,
                 bilateral_solve_interval=1,
+                bilateral_solver_type="LLTB",
             ),
             kamino_config.DVISolverConfig(
                 max_alternating_iterations=3,
                 bilateral_solve_interval=99,
+                bilateral_solver_type="LLTB",
             ),
         ]
         solver = DVISolver(
@@ -1490,6 +1494,51 @@ class TestDVISolver(NewtonTestCase):
         self.assertIs(body_products.call_args.args[1], problem.delassus._vec_temp_body_space)
         np.testing.assert_array_equal(fallback.data.state.bilateral_active_dim.numpy(), joint_dims)
         np.testing.assert_allclose(fallback.data.solution.lambdas.numpy(), expected, atol=2e-5, rtol=2e-5)
+
+    def test_03d1b_sparse_dvi_rcm_honors_per_world_bilateral_intervals(self):
+        """Restrict bilateral re-solves to each world's interval with the default RCM solver."""
+        builder = newton.ModelBuilder()
+        builder.replicate(builder=basics.build_boxes_hinged(), copy_count=2)
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
+        model, data, state, limits, detector, jacobians = make_containers(
+            model=model,
+            max_world_contacts=8,
+            sparse=True,
+        )
+        update_containers(model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians)
+        problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
+        configs = [
+            kamino_config.DVISolverConfig(max_alternating_iterations=3, bilateral_solve_interval=1),
+            kamino_config.DVISolverConfig(max_alternating_iterations=3, bilateral_solve_interval=99),
+        ]
+        self.assertEqual(configs[0].bilateral_solver_type, "LLTBRCM")
+        solver = DVISolver(
+            model=model,
+            data=data,
+            limits=limits,
+            contacts=detector.contacts,
+            jacobians=jacobians,
+            problem=problem,
+            config=configs,
+            warmstart=WarmStartMode.NONE,
+        )
+        self.assertIsInstance(solver._bilateral_solver, LLTBlockedRCMSolver)
+        active_dim_updates = []
+        set_bilateral_active_dim = solver._sparse_path.set_bilateral_active_dim
+
+        def record_bilateral_active_dim(problem: DualProblem, block_iteration: int) -> None:
+            set_bilateral_active_dim(problem, block_iteration)
+            active_dim_updates.append((block_iteration, solver.data.state.bilateral_active_dim.numpy().copy()))
+
+        solver._sparse_path.set_bilateral_active_dim = record_bilateral_active_dim
+        solver.coldstart()
+        solver.solve(problem)
+        joint_dims = problem.data.njc.numpy()
+        self.assertEqual([block_iteration for block_iteration, _ in active_dim_updates], [0, 1, -1])
+        np.testing.assert_array_equal(active_dim_updates[0][1], np.array([joint_dims[0], 0], dtype=np.int32))
+        np.testing.assert_array_equal(active_dim_updates[1][1], active_dim_updates[0][1])
+        np.testing.assert_array_equal(active_dim_updates[2][1], joint_dims)
+        self.assertTrue(np.all(np.isfinite(solver.data.solution.lambdas.numpy())))
 
     def test_03d2_dvi_direct_block_finishes_with_bilateral_solve(self):
         """Recover a consistent bilateral solution after fused inequality iterations."""
@@ -2132,10 +2181,11 @@ class TestDVISolver(NewtonTestCase):
         basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
         model = builder.finalize(device=self.device, skip_validation_joints=True)
 
-        for sparse in (False, True):
-            with self.subTest(sparse=sparse):
+        for sparse, bilateral_solver_type in itertools.product((False, True), ("LLTB", "LLTBRCM")):
+            with self.subTest(sparse=sparse, bilateral_solver_type=bilateral_solver_type):
                 config = SolverKamino.Config(
                     dynamics_solver="dvi",
+                    dvi=kamino_config.DVISolverConfig(bilateral_solver_type=bilateral_solver_type),
                     sparse_dynamics=sparse,
                     sparse_jacobian=True,
                     use_collision_detector=True,
@@ -2171,10 +2221,12 @@ class TestDVISolver(NewtonTestCase):
                 joint_dims = solver._solver_kamino._model.info.num_joint_bilateral_cts.numpy()
                 self.assertTrue(np.any(joint_dims == 0))
                 self.assertTrue(np.any(joint_dims > 0))
-                np.testing.assert_array_equal(
-                    dvi_solver.data.bilateral_operator.info.dimensions,
-                    np.maximum(joint_dims, 1),
-                )
+                if bilateral_solver_type == "LLTB":
+                    # LLTB pads joint-free worlds to one row; LLTBRCM uses a shared capacity stride.
+                    np.testing.assert_array_equal(
+                        dvi_solver.data.bilateral_operator.info.dimensions,
+                        np.maximum(joint_dims, 1),
+                    )
                 self.assertEqual(config.sparse_dynamics, sparse)
                 self.assertTrue(config.sparse_jacobian)
 

@@ -795,7 +795,6 @@ class Example:
         config.dynamics.preconditioning = False
         config.dynamics.linear_solver_type = "CR"
         config.dynamics.linear_solver_kwargs = {"maxiter": 9}
-        config.dvi.bilateral_solver_type = "LLTBRCM"
         config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
         config.dvi.tolerance = 1e-5
         config.dvi.regularization = 1e-8

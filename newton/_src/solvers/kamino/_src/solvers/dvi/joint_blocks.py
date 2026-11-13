@@ -19,10 +19,10 @@ import warp as wp
 
 from ...core.math import FLOAT32_EPS
 from ...core.types import vec6f
-from ...linalg.factorize.llt_blocked_rcm import _sync_threads, get_float32_array_offset_ptr
-from .coupling import PackedCoupling, read_packed_coupling
+from ...linalg.factorize.llt_blocked_rcm import _sync_threads
+from .coupling import PackedCoupling, _count_bits
 from .kernels import BILATERAL_DIAGONAL_FLOOR, _compact_schur_fits
-from .sparse_kernels import _shuffle_lane_32, _unilateral_nzb_offsets
+from .sparse_kernels import _shuffle_lane_32, _sync_warp_32, _unilateral_nzb_offsets
 
 if TYPE_CHECKING:
     from ...dynamics.dual import DualProblem
@@ -212,18 +212,8 @@ def _build_body_masks(path: SparseDVIPath, metadata: dict) -> tuple[wp.array, wp
     return seeds, wp.array(np.asarray(masks, dtype=np.uint64), dtype=wp.uint64, device=path.device)
 
 
-@wp.func_native("""
-#if defined(__CUDA_ARCH__)
-unsigned long long bits = (unsigned long long)value;
-for (int delta = 16; delta > 0; delta >>= 1) {
-    bits |= __shfl_xor_sync(0xffffffff, bits, delta);
-}
-return bits;
-#else
-return value;
-#endif
-""")
-def _warp_or_mask(value: wp.uint64) -> wp.uint64: ...
+_SOLVE_LANES = 8
+"""Lanes per world in the batched joint-block factor and solve; lanes 0-5 own the six block rows."""
 
 
 @wp.kernel
@@ -237,24 +227,58 @@ def _factor(
     lefts: wp.array[wp.int32],
     rights: wp.array[wp.int32],
     nb: int,
+    num_worlds: int,
 ):
-    w, _lane = wp.tid()
-    aa = wp.array(ptr=get_float32_array_offset_ptr(blocks, w * nb * 36), shape=(nb * 6, 6), dtype=wp.float32)
-    ll = wp.array(ptr=get_float32_array_offset_ptr(factors, w * nb * 36), shape=(nb * 6, 6), dtype=wp.float32)
+    """Factor each world with a group of lanes, one per block row.
+
+    Block updates and off-diagonal triangular solves are row independent;
+    diagonal Cholesky columns gather the pivot row by warp shuffle. No lane
+    returns early, since the group shuffles span the whole warp.
+    """
+    tid = wp.tid()
+    w = wp.min(tid / _SOLVE_LANES, num_worlds - 1)
+    lane = tid % _SOLVE_LANES
+    i = wp.min(lane, 5)
+    group = tid % 32 - lane
+    store = tid / _SOLVE_LANES < num_worlds and lane < 6
+    base = w * nb * 36
     for b in range(nb):
-        value = wp.tile_load(aa, shape=(6, 6), offset=(b * 6, 0), storage="shared")
+        offset = base + b * 36
+        value = vec6f()
+        for j in range(6):
+            value[j] = blocks[offset + i * 6 + j]
         for update in range(starts[b], starts[b + 1]):
-            left = wp.tile_load(ll, shape=(6, 6), offset=(lefts[update] * 6, 0))
-            right = wp.tile_load(ll, shape=(6, 6), offset=(rights[update] * 6, 0))
-            wp.tile_matmul(left, wp.tile_transpose(right), value, alpha=-1.0)
+            left = base + lefts[update] * 36 + i * 6
+            right = base + rights[update] * 36
+            for k in range(6):
+                a = factors[left + k]
+                for j in range(6):
+                    value[j] -= a * factors[right + j * 6 + k]
+        lower = vec6f()
         if rows[b] == cols[b]:
-            wp.tile_cholesky_inplace(value, fill_mode="upper")
-            wp.tile_store(ll, wp.tile_transpose(value), offset=(b * 6, 0))
+            # Column j: every lane forms A[i][j] - L[i,:j] . L[j,:j]; on lane j
+            # this is the pivot term, broadcast after its square root.
+            for j in range(6):
+                total = value[j]
+                for k in range(j):
+                    total -= lower[k] * _shuffle_lane_32(lower[k], group + j)
+                pivot = _shuffle_lane_32(wp.sqrt(total), group + j)
+                if i == j:
+                    lower[j] = pivot
+                elif i > j:
+                    lower[j] = total / pivot
         else:
-            d = wp.tile_load(ll, shape=(6, 6), offset=(diagonal[cols[b]] * 6, 0))
-            transposed = wp.tile_transpose(value)
-            wp.tile_lower_solve_inplace(d, transposed)
-            wp.tile_store(ll, wp.tile_transpose(transposed), offset=(b * 6, 0))
+            # Row i solves L_d x = value by forward substitution.
+            d = base + diagonal[cols[b]] * 36
+            for j in range(6):
+                total = value[j]
+                for k in range(j):
+                    total -= factors[d + j * 6 + k] * lower[k]
+                lower[j] = total / factors[d + j * 7]
+        if store:
+            for j in range(6):
+                factors[offset + i * 6 + j] = lower[j]
+        _sync_warp_32()
 
 
 @wp.kernel
@@ -523,22 +547,6 @@ def _make_assemble_entries(shared: bool):
 
 @wp.kernel
 def _check_factor(
-    factors: wp.array[wp.float32], diagonal: wp.array[wp.int32], failure: wp.array[wp.int32], nb: int, ng: int
-):
-    w = wp.tid()
-    failed = int(0)
-    for e in range(nb * 36):
-        if not wp.isfinite(factors[w * nb * 36 + e]):
-            failed = 1
-    for row in range(ng):
-        for i in range(6):
-            if factors[w * nb * 36 + diagonal[row] * 36 + i * 6 + i] <= 0.0:
-                failed = 1
-    wp.atomic_max(failure, 0, failed)
-
-
-@wp.kernel
-def _check_factor_parallel(
     factors: wp.array[wp.float32],
     diagonal: wp.array[wp.int32],
     failure: wp.array[wp.int32],
@@ -601,32 +609,60 @@ def _solve(
     nb: int,
     ng: int,
     padded: int,
+    num_worlds: int,
 ):
-    w, _lane = wp.tid()
-    if active[w] == 0:
-        return
-    ll = wp.array(ptr=get_float32_array_offset_ptr(factors, w * nb * 36), shape=(nb * 6, 6), dtype=wp.float32)
-    yy = wp.array(ptr=get_float32_array_offset_ptr(scratch, w * padded), shape=(padded, 1), dtype=wp.float32)
+    """Solve each world with a group of lanes, one per block row.
+
+    Off-diagonal products are row independent; the triangular solves
+    broadcast each finished entry within the group. No lane returns early,
+    since the group shuffles span the whole warp.
+    """
+    tid = wp.tid()
+    w = wp.min(tid / _SOLVE_LANES, num_worlds - 1)
+    lane = tid % _SOLVE_LANES
+    i = wp.min(lane, 5)
+    group = tid % 32 - lane
+    store = tid / _SOLVE_LANES < num_worlds and lane < 6 and active[w] != 0
+    base = w * nb * 36
+    y0 = w * padded
     for row in range(ng):
-        value = wp.tile_load(yy, shape=(6, 1), offset=(row * 6, 0), storage="shared")
+        value = scratch[y0 + row * 6 + i]
         for entry in range(previous_start[row], previous_start[row + 1]):
             block = previous[entry]
-            left = wp.tile_load(ll, shape=(6, 6), offset=(block * 6, 0))
-            right = wp.tile_load(yy, shape=(6, 1), offset=(cols[block] * 6, 0))
-            wp.tile_matmul(left, right, value, alpha=-1.0)
-        d = wp.tile_load(ll, shape=(6, 6), offset=(diagonal[row] * 6, 0))
-        wp.tile_lower_solve_inplace(d, value)
-        wp.tile_store(yy, value, offset=(row * 6, 0))
-    for row in range(ng - 1, -1, -1):
-        value = wp.tile_load(yy, shape=(6, 1), offset=(row * 6, 0), storage="shared")
+            source = y0 + cols[block] * 6
+            offset = base + block * 36 + i * 6
+            for j in range(6):
+                value -= factors[offset + j] * scratch[source + j]
+        offset = base + diagonal[row] * 36
+        for j in range(6):
+            if i == j:
+                value /= factors[offset + j * 7]
+            solved = _shuffle_lane_32(value, group + j)
+            if i > j:
+                value -= factors[offset + i * 6 + j] * solved
+        if store:
+            scratch[y0 + row * 6 + i] = value
+        _sync_warp_32()
+    for reverse in range(ng):
+        row = ng - 1 - reverse
+        value = scratch[y0 + row * 6 + i]
         for entry in range(following_start[row], following_start[row + 1]):
             block = following[entry]
-            left = wp.tile_load(ll, shape=(6, 6), offset=(block * 6, 0))
-            right = wp.tile_load(yy, shape=(6, 1), offset=(rows[block] * 6, 0))
-            wp.tile_matmul(wp.tile_transpose(left), right, value, alpha=-1.0)
-        d = wp.tile_load(ll, shape=(6, 6), offset=(diagonal[row] * 6, 0))
-        wp.tile_upper_solve_inplace(wp.tile_transpose(d), value)
-        wp.tile_store(yy, value, offset=(row * 6, 0))
+            source = y0 + rows[block] * 6
+            offset = base + block * 36 + i
+            for j in range(6):
+                value -= factors[offset + j * 6] * scratch[source + j]
+        offset = base + diagonal[row] * 36
+        for k in range(6):
+            j = 5 - k
+            if i == j:
+                value /= factors[offset + j * 7]
+            solved = _shuffle_lane_32(value, group + j)
+            if i < j:
+                value -= factors[offset + j * 6 + i] * solved
+        if store:
+            scratch[y0 + row * 6 + i] = value
+        _sync_warp_32()
 
 
 @wp.kernel
@@ -685,80 +721,76 @@ def make_response_kernel(use_packed: bool):
         limit_offsets: wp.array[wp.int32],
         contact_offsets: wp.array[wp.int32],
     ):
-        w, group, lane = wp.tid()
+        # One thread forward-solves one unilateral column; a warp covers 32
+        # columns of a world, so factor loads are broadcast across the warp.
+        w, col = wp.tid()
         nu = dim[w] - njc[w]
-        if group * 16 >= nu:
+        if col >= nu:
             return
-        ll = wp.array(ptr=get_float32_array_offset_ptr(factors, w * nb * 36), shape=(nb * 6, 6), dtype=wp.float32)
+        base = w * nb * 36
         reach = wp.uint64(0)
         if body_reach:
-            unilateral = group * 16 + lane % 16
-            if unilateral < nu:
-                blocks = _unilateral_nzb_offsets(
-                    unilateral,
-                    njc[w],
-                    nbc[w],
-                    nbc[w] + nl[w],
-                    bcio[w],
-                    lio[w],
-                    cio[w],
-                    bsm_nzb_start[w] + bsm_num_nzb[w],
-                    bsm_nzb_coords,
-                    limit_indices,
-                    contact_indices,
-                    bounded_offsets,
-                    limit_offsets,
-                    contact_offsets,
-                )
-                for side in range(2):
-                    if blocks[side] >= 0:
-                        reach = reach | body_reach[bsm_nzb_coords[blocks[side], 1] // 6]
-            reach = _warp_or_mask(reach)
-        for row in range(ng):
-            value = wp.tile_zeros(shape=(6, 16), dtype=wp.float32, storage="shared")
-            if body_reach and (reach & (wp.uint64(1) << wp.uint64(row))) == wp.uint64(0):
-                # Contacts can move to another branch: overwrite formerly active
-                # response rows instead of retaining values from the previous solve.
-                target = wp.array(
-                    ptr=get_float32_array_offset_ptr(response, rio[w] + offsets[row] * nu),
-                    shape=(lengths[row], nu),
-                    dtype=wp.float32,
-                )
-                wp.tile_store(target, value, offset=(0, group * 16))
-                continue
-            for entry in range(lane, 96, 32):
-                local = entry // 16
-                col = group * 16 + entry % 16
-                original = order[row * 6 + local]
-                v = wp.float32(0)
-                if original >= 0 and col < nu:
-                    if wp.static(use_packed):
-                        v = scale[vio[w] + original] * read_packed_coupling(
-                            packed_values, packed_masks, w, col, row, local, packed_width, packed_slots
-                        )
-                    else:
-                        v = scale[vio[w] + original] * coupling[rio[w] + original * nu + col]
-                value[local, entry % 16] = v
-            _sync_threads()
-            for entry in range(starts[row], starts[row + 1]):
-                block = previous[entry]
-                left = wp.tile_load(ll, shape=(6, 6), offset=(block * 6, 0))
-                previous_row = cols[block]
-                source = wp.array(
-                    ptr=get_float32_array_offset_ptr(response, rio[w] + offsets[previous_row] * nu),
-                    shape=(lengths[previous_row], nu),
-                    dtype=wp.float32,
-                )
-                right = wp.tile_load(source, shape=(6, 16), offset=(0, group * 16))
-                wp.tile_matmul(left, right, value, alpha=-1.0)
-            d = wp.tile_load(ll, shape=(6, 6), offset=(diagonal[row] * 6, 0))
-            wp.tile_lower_solve_inplace(d, value)
-            target = wp.array(
-                ptr=get_float32_array_offset_ptr(response, rio[w] + offsets[row] * nu),
-                shape=(lengths[row], nu),
-                dtype=wp.float32,
+            blocks = _unilateral_nzb_offsets(
+                col,
+                njc[w],
+                nbc[w],
+                nbc[w] + nl[w],
+                bcio[w],
+                lio[w],
+                cio[w],
+                bsm_nzb_start[w] + bsm_num_nzb[w],
+                bsm_nzb_coords,
+                limit_indices,
+                contact_indices,
+                bounded_offsets,
+                limit_offsets,
+                contact_offsets,
             )
-            wp.tile_store(target, value, offset=(0, group * 16))
+            for side in range(2):
+                if blocks[side] >= 0:
+                    reach = reach | body_reach[bsm_nzb_coords[blocks[side], 1] // 6]
+        packed_mask = wp.uint64(0)
+        if wp.static(use_packed):
+            packed_mask = packed_masks[w * packed_width + col]
+        for row in range(ng):
+            target = rio[w] + offsets[row] * nu + col
+            value = vec6f()
+            # Unreached rows are exactly zero; overwrite them, since contacts can
+            # move to another branch and leave stale responses behind.
+            if not body_reach or (reach & (wp.uint64(1) << wp.uint64(row))) != wp.uint64(0):
+                if wp.static(use_packed):
+                    bit = wp.uint64(1) << wp.uint64(row)
+                    if (packed_mask & bit) != wp.uint64(0):
+                        slot = _count_bits(packed_mask & (bit - wp.uint64(1)))
+                        for local in range(6):
+                            original = order[row * 6 + local]
+                            if original >= 0:
+                                coefficient = packed_values[
+                                    ((w * packed_slots + slot) * 6 + local) * packed_width + col
+                                ]
+                                value[local] = scale[vio[w] + original] * coefficient
+                else:
+                    for local in range(6):
+                        original = order[row * 6 + local]
+                        if original >= 0:
+                            value[local] = scale[vio[w] + original] * coupling[rio[w] + original * nu + col]
+                for entry in range(starts[row], starts[row + 1]):
+                    block = previous[entry]
+                    previous_row = cols[block]
+                    source = rio[w] + offsets[previous_row] * nu + col
+                    offset = base + block * 36
+                    for j in range(lengths[previous_row]):
+                        y = response[source + j * nu]
+                        for i in range(6):
+                            value[i] -= factors[offset + i * 6 + j] * y
+                offset = base + diagonal[row] * 36
+                for i in range(6):
+                    total = value[i]
+                    for j in range(i):
+                        total -= factors[offset + i * 6 + j] * value[j]
+                    value[i] = total / factors[offset + i * 7]
+            for i in range(lengths[row]):
+                response[target + i * nu] = value[i]
 
     return response
 
@@ -1009,9 +1041,9 @@ class JointBlockSolver:
                 device=self._device,
             )
         else:
-            wp.launch_tiled(
+            wp.launch(
                 _factor,
-                dim=self._worlds,
+                dim=(self._worlds * _SOLVE_LANES + 31) // 32 * 32,
                 inputs=[
                     self._matrix,
                     self._factor,
@@ -1022,13 +1054,14 @@ class JointBlockSolver:
                     schedule["left"],
                     schedule["right"],
                     self._blocks,
+                    self._worlds,
                 ],
                 block_dim=32,
                 device=self._device,
             )
         wp.launch(
-            _check_factor_parallel if self._persistent else _check_factor,
-            dim=(self._worlds, 256) if self._persistent else self._worlds,
+            _check_factor,
+            dim=(self._worlds, 256),
             inputs=[self._factor, schedule["diagonal"], self.failure, self._blocks, self._groups],
             block_dim=256,
             device=self._device,
@@ -1073,9 +1106,9 @@ class JointBlockSolver:
                 device=self._device,
             )
         else:
-            wp.launch_tiled(
+            wp.launch(
                 _solve,
-                dim=self._worlds,
+                dim=(self._worlds * _SOLVE_LANES + 31) // 32 * 32,
                 inputs=[
                     self._factor,
                     self._vector,
@@ -1090,6 +1123,7 @@ class JointBlockSolver:
                     self._blocks,
                     self._groups,
                     self._padded,
+                    self._worlds,
                 ],
                 block_dim=32,
                 device=self._device,
@@ -1123,9 +1157,9 @@ class JointBlockSolver:
                 path.jacobians.limit_constraint_nzb_offsets,
                 path.jacobians.contact_constraint_nzb_offsets,
             ]
-        wp.launch_tiled(
+        wp.launch(
             make_response_kernel(coupling is not None),
-            dim=(self._worlds, (self._n + 15) // 16),
+            dim=(self._worlds, (self._n + 31) // 32 * 32),
             inputs=[
                 coupling.masks if coupling is not None else None,
                 coupling.values if coupling is not None else None,
@@ -1150,6 +1184,6 @@ class JointBlockSolver:
                 schedule["row_offsets"],
                 *reach_inputs,
             ],
-            block_dim=32,
+            block_dim=128,
             device=self._device,
         )
