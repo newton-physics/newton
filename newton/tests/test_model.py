@@ -25,7 +25,7 @@ from newton._src.geometry.utils import transform_points
 from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
-from newton.tests.unittest_utils import assert_np_equal, patch_sys_module
+from newton.tests.unittest_utils import assert_np_equal, patch_sys_module, requires
 
 
 def _eq_set_value(builder, name, idx, value):
@@ -1013,6 +1013,7 @@ class TestModelMesh(unittest.TestCase):
         with self.assertRaises(ValueError):
             expand([1.0, 2.0], 3)
 
+    @requires("scipy")
     def test_mesh_approximation(self):
         def box_mesh(scale=(1.0, 1.0, 1.0), transform: wp.transform | None = None):
             mesh = newton.Mesh.create_box(
@@ -1101,6 +1102,7 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertAlmostEqual(model.approx_attr.numpy()[visual_shape], keep_visual_attr, places=6)
 
+    @requires("scipy")
     def test_mesh_approximation_shares_replacements_per_source_mesh(self):
         """Share one convex-hull replacement per source mesh and keep hull-vertex limits distinct."""
         sphere = newton.Mesh.create_sphere(1.0, num_latitudes=16, num_longitudes=16, compute_inertia=False)
@@ -1156,6 +1158,7 @@ class TestModelMesh(unittest.TestCase):
             builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2)
         self.assertEqual(captured["threshold"], 0.2)
 
+    @requires("scipy")
     def test_mesh_approximation_coacd_limits_hull_vertices(self):
         """Limit each CoACD part to the source mesh's maxhullvert."""
 
@@ -1211,6 +1214,7 @@ class TestModelMesh(unittest.TestCase):
             for part, expected in zip(again, first, strict=True):
                 np.testing.assert_array_equal(part, expected)
 
+    @requires("scipy")
     def test_mesh_approximation_coacd_unavailable_falls_back_to_convex_hull(self):
         builder = ModelBuilder()
         box = newton.Mesh.create_box(
@@ -1302,6 +1306,7 @@ class TestModelMesh(unittest.TestCase):
                 self.assertEqual(builder.shape_type[successful_shape], newton.GeoType.CONVEX_MESH)
                 self.assertEqual(fallback_meshes, [empty_mesh])
 
+    @requires("scipy")
     def test_mesh_approximation_empty_convex_decomposition_reaches_bounding_box_fallback(self):
         """Reach the bounding-box fallback when an empty decomposition is followed by a hull failure."""
 
@@ -1332,6 +1337,7 @@ class TestModelMesh(unittest.TestCase):
                 self.assertEqual(builder.shape_type[shape], newton.GeoType.BOX)
                 self.assertIsNone(builder.shape_source[shape])
 
+    @requires("scipy")
     def test_mesh_approximation_ignores_non_mesh_shapes(self):
         builder = ModelBuilder()
         box_prim = builder.add_shape_box(body=-1)
@@ -1349,6 +1355,7 @@ class TestModelMesh(unittest.TestCase):
         self.assertEqual(builder.shape_type[box_prim], newton.GeoType.BOX)
         self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.BOX)
 
+    @requires("scipy")
     def test_mesh_approximation_convex_hull_failure_falls_back_to_bounding_box(self):
         builder = ModelBuilder()
         box = newton.Mesh.create_box(

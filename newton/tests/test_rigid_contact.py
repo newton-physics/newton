@@ -12,10 +12,12 @@ from newton._src.geometry.contact_data import ContactData, contact_passes_gap_ch
 from newton._src.sim.collide import ContactWriterData, write_contact, write_contact_speculative
 from newton._src.solvers.semi_implicit.kernels_contact import eval_body_contact_forces
 from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
     add_function_test,
     assert_np_equal,
     get_selected_cuda_test_devices,
     get_test_devices,
+    requires,
 )
 
 
@@ -600,6 +602,7 @@ def test_mesh_box_on_ground(test, device):
         )
 
 
+@requires(*MUJOCO_MODULES)
 def test_mujoco_warp_newton_contacts(test, device):
     """Test that MuJoCo Warp solver correctly handles contact transfer from Newton's collision pipeline.
 
@@ -955,8 +958,10 @@ cuda_devices = get_selected_cuda_test_devices()
 
 solvers = {
     "featherstone": newton.solvers.SolverFeatherstone,
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
+    "mujoco_cpu": requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True)),
+    "mujoco_warp": requires(*MUJOCO_MODULES)(
+        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150)
+    ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
     "semi_implicit": newton.solvers.SolverSemiImplicit,
     "kamino": newton.solvers.SolverKamino,

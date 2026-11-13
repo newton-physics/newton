@@ -66,11 +66,11 @@ from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
 from newton.geometry import BroadPhaseAllPairs, BroadPhaseExplicit, NarrowPhase
 from newton.tests.unittest_utils import (
-    USD_AVAILABLE,
     add_function_test,
     configure_sdf_for_collision_shapes,
     get_cuda_test_devices,
     get_test_devices,
+    requires,
     warp_version_at_least,
 )
 from newton.tests.utils.soft_contacts import evaluate_soft_contact_force_mask
@@ -3926,6 +3926,7 @@ add_function_test(
 )
 
 
+@requires("scipy")
 def test_triangle_contact_with_hull_aabb_center_outside(test, device):
     """Keep triangle contacts for hulls whose AABB center is not interior."""
     rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.4, 0.5)), 0.6)
@@ -3976,6 +3977,7 @@ add_function_test(
 )
 
 
+@requires("scipy")
 def test_triangle_contact_independent_of_hull_tessellation(test, device):
     """Keep triangle contacts for a hull sunk below the mean of its unevenly spaced vertices."""
     # A 41 x 54 x 13 mm sole whose 5 mm bottom fillets carry most of its
@@ -6401,7 +6403,7 @@ def test_particle_only_mesh_sdf_emits_full_surface_contacts(test, device):
             np.testing.assert_allclose(surface_z, 1.0, atol=5.0e-3)
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 def test_particle_only_usd_mesh_sdf_near_surface_contacts(test, device):
     """Keep imported mesh contact normals unit length and contact points on the surface."""
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics

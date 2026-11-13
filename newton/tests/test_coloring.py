@@ -17,7 +17,7 @@ from newton._src.sim.graph_coloring import (
     convert_to_color_groups,
     validate_graph_coloring,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
+from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices, requires
 
 
 def create_lattice_grid(N):
@@ -118,7 +118,7 @@ def test_color_graph_returns_valid_color_groups(test, device):
             test.assertNotEqual(node_colors[edge[0]], node_colors[edge[1]])
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 def test_coloring_trimesh(test, device):
     from pxr import Usd, UsdGeom
 
@@ -232,7 +232,7 @@ def test_coloring_trimesh(test, device):
         builder.color(include_bending=True)
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 def test_combine_coloring(test, device):
     from pxr import Usd, UsdGeom
 

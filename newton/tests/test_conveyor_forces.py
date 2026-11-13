@@ -16,7 +16,14 @@ import warp as wp
 
 import newton
 from newton.examples.basic.example_basic_conveyor_forces import ConveyorForceModel
-from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase, add_function_test, get_test_devices
+from newton.tests.unittest_utils import (
+    MODULE_LOAD_OUTPUT_RE,
+    MUJOCO_MODULES,
+    NewtonTestCase,
+    add_function_test,
+    get_test_devices,
+    requires,
+)
 
 BELT_HALF_X = 1.5
 BELT_HALF_Y = 6.0
@@ -456,6 +463,7 @@ def test_backend_parity(test, device, _solver_name):
     test.assertLess(spread, 0.6, f"backends disagree on transport distance: {ys}")
 
 
+@requires(*MUJOCO_MODULES)
 class TestConveyorForces(NewtonTestCase):
     """Scenario matrix for the force-based conveyor model."""
 

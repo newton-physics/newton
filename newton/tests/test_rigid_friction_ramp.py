@@ -29,9 +29,11 @@ import warp as wp
 
 import newton
 from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
     add_function_test,
     get_selected_cuda_test_devices,
     get_test_devices,
+    requires,
 )
 
 # --- Scene / sim configuration ---
@@ -394,14 +396,14 @@ def test_friction_stopping_distance(
 # --- Solver matrix ---
 
 
-def _make_kamino_dvi_solver(model, *, unilateral_solver, sparse):
-    """Exercise DVI friction through the public solver with Newton contacts."""
+def _make_kamino_scc_solver(model, *, unilateral_solver, sparse):
+    """Exercise SCC friction through the public solver with Newton contacts."""
     config = newton.solvers.SolverKamino.Config(
-        dynamics_solver="dvi",
+        dynamics_solver="scc",
         sparse_jacobian=sparse,
         sparse_dynamics=sparse,
     )
-    config.dvi.unilateral_solver = unilateral_solver
+    config.scc.unilateral_solver = unilateral_solver
     return newton.solvers.SolverKamino(model, config=config)
 
 
@@ -424,15 +426,17 @@ _SOLVERS = {
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
     "mujoco_warp": {
-        "factory": lambda model: newton.solvers.SolverMuJoCo(
-            model,
-            use_mujoco_cpu=False,
-            njmax=800,
-            nconmax=500,
-            cone="elliptic",
-            impratio=10.0,
-            iterations=200,
-            ls_iterations=100,
+        "factory": requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(
+                model,
+                use_mujoco_cpu=False,
+                njmax=800,
+                nconmax=500,
+                cone="elliptic",
+                impratio=10.0,
+                iterations=200,
+                ls_iterations=100,
+            )
         ),
         "native_contacts": True,
         "mus": _DEFAULT_MUS,
@@ -444,16 +448,18 @@ _SOLVERS = {
     # Same config as mujoco_warp but consuming Newton CollisionPipeline
     # contacts — covers the elliptic + Newton-contacts constraint path.
     "mujoco_warp_newton_contacts": {
-        "factory": lambda model: newton.solvers.SolverMuJoCo(
-            model,
-            use_mujoco_cpu=False,
-            use_mujoco_contacts=False,
-            njmax=800,
-            nconmax=500,
-            cone="elliptic",
-            impratio=10.0,
-            iterations=200,
-            ls_iterations=100,
+        "factory": requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(
+                model,
+                use_mujoco_cpu=False,
+                use_mujoco_contacts=False,
+                njmax=800,
+                nconmax=500,
+                cone="elliptic",
+                impratio=10.0,
+                iterations=200,
+                ls_iterations=100,
+            )
         ),
         "mus": _DEFAULT_MUS,
         "angles_deg": _DEFAULT_ANGLES_DEG,
@@ -466,13 +472,15 @@ _SOLVERS = {
         "run_stopping_distance": False,
     },
     "mujoco_cpu": {
-        "factory": lambda model: newton.solvers.SolverMuJoCo(
-            model,
-            use_mujoco_cpu=True,
-            cone="elliptic",
-            impratio=10.0,
-            iterations=200,
-            ls_iterations=100,
+        "factory": requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(
+                model,
+                use_mujoco_cpu=True,
+                cone="elliptic",
+                impratio=10.0,
+                iterations=200,
+                ls_iterations=100,
+            )
         ),
         "native_contacts": True,
         "mus": _DEFAULT_MUS,
@@ -505,10 +513,10 @@ _SOLVERS = {
 
 for _backend in ("pgs", "apgd"):
     for _sparse in (False, True):
-        _name = f"kamino_dvi_{_backend}_{'sparse' if _sparse else 'dense'}"
+        _name = f"kamino_scc_{_backend}_{'sparse' if _sparse else 'dense'}"
         _SOLVERS[_name] = {
             **_SOLVERS["kamino"],
-            "factory": partial(_make_kamino_dvi_solver, unilateral_solver=_backend, sparse=_sparse),
+            "factory": partial(_make_kamino_scc_solver, unilateral_solver=_backend, sparse=_sparse),
         }
 
 
