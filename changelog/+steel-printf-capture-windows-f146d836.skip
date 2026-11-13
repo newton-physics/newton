@@ -1,1 +1,0 @@
-Test-only change: the SolverSteel row-overflow tests stop asserting on captured kernel printf output on Windows, where Warp's device printf cannot be reliably captured in-process; they still check the overflow flags there.
