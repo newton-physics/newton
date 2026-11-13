@@ -51,7 +51,7 @@ class TestBenchmarkMetrics(unittest.TestCase):
             @property
             def free_memory(self):
                 if workloads:
-                    self_test.assertEqual(workloads[0].step_count, 2)
+                    self_test.assertEqual(workloads[0].step_count, 3)
                 return next(self.free_memory_values)
 
         self_test = self
@@ -65,7 +65,7 @@ class TestBenchmarkMetrics(unittest.TestCase):
                 self.step_count = 0
 
             def step(self):
-                self.benchmark_time += (0.01, 0.02)[self.step_count]
+                self.benchmark_time += (0.5, 0.01, 0.02)[self.step_count]
                 self.step_count += 1
 
         def create_workload():
