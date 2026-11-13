@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import shlex
 import subprocess
 import sys
 import unittest
@@ -103,6 +104,7 @@ class TestExampleBatch(unittest.TestCase):
             mock.patch.object(unittest_utils, "strict_warnings", True),
             mock.patch.object(test_examples, "_run_example_subprocess", side_effect=run_batch),
         ):
+            warning_args = unittest_utils.get_strict_warning_args()
             Batch("test_basic.example_basic_pendulum_cpu").run(result)
         failures = {test.id(): failure for test, failure in result.failures}
         self.assertEqual(len(failures), 2)
@@ -110,7 +112,7 @@ class TestExampleBatch(unittest.TestCase):
             next(failure for test_id, failure in failures.items() if f"variant='{suffix}'" in test_id)
             for suffix in ("strict", "lenient")
         )
-        self.assertIn("-W error::DeprecationWarning -m newton.examples.basic.example_basic_pendulum", strict)
+        self.assertIn(shlex.join([*warning_args, "-m", "newton.examples.basic.example_basic_pendulum"]), strict)
         self.assertNotIn("-W error", lenient)
 
 

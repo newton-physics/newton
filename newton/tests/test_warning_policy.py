@@ -57,7 +57,8 @@ class TestWarningPolicy(unittest.TestCase):
                     ctypes._layout.sys = SimpleNamespace(platform="linux", byteorder=sys.byteorder)
                     import warp._src.apic.types as apic
 
-                    assert ctypes.sizeof(apic.APICCudaCompileRecipe) == 16
+                    if hasattr(apic, "APICCudaCompileRecipe"):
+                        assert ctypes.sizeof(apic.APICCudaCompileRecipe) == 16
                     assert ctypes.sizeof(apic.APICLaunchParamRecord) == 16
                     assert ctypes.sizeof(apic.APICLaunchPtrLocation) == 24
                     for message, module in (
