@@ -99,9 +99,8 @@ jobs:
       matrix:
         include:
           - &unittest-arm { os: ubuntu-24.04-arm, shard-index: 0, shard-count: 1 }
-          - &unittest-macos { os: macos-latest, shard-index: 0, shard-count: 1 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'macos-latest' && 120 || 60 }}
+    timeout-minutes: 60
     env:
       OS: ${{ matrix.os }}
 
@@ -248,6 +247,21 @@ jobs:
       OS: ${{ matrix.os }}
     steps: *unittest-steps
 
+  newton-unittests-macos:
+    needs: dependency-install-test
+    name: newton-unittests (${{ matrix.os }}, shard ${{ matrix.shard-index }}/${{ matrix.shard-count }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - &unittest-macos-0 { os: macos-latest, shard-index: 0, shard-count: 2 }
+          - &unittest-macos-1 { os: macos-latest, shard-index: 1, shard-count: 2 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      OS: ${{ matrix.os }}
+    steps: *unittest-steps
+
   # Tests must skip, not fail, when optional dependencies are unavailable.
   newton-unittests-reduced-deps:
     needs: dependency-install-test
@@ -359,9 +373,24 @@ jobs:
             exit 1
           fi
 
+  newton-unittests-macos-gate:
+    needs: newton-unittests-macos
+    if: ${{ always() && (github.event_name != 'push' || github.repository == 'newton-physics/newton') }}
+    name: newton-unittests (macos-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check shard results
+        env:
+          RESULT: ${{ needs.newton-unittests-macos.result }}
+        run: |
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::macOS unit test shards finished with result '$RESULT'."
+            exit 1
+          fi
+
   codecov-upload:
     name: Upload reports to Codecov
-    needs: [newton-unittests, newton-unittests-ubuntu, newton-unittests-windows]
+    needs: [newton-unittests, newton-unittests-ubuntu, newton-unittests-windows, newton-unittests-macos]
     # Codecov only tracks main: pull request, merge queue, release branch, and
     # tag runs skip the upload. Mirrors UPLOAD_TO_CODECOV, which a job-level
     # condition cannot read.
@@ -369,7 +398,7 @@ jobs:
       !cancelled() &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      (needs.newton-unittests.result != 'skipped' || needs.newton-unittests-ubuntu.result != 'skipped' || needs.newton-unittests-windows.result != 'skipped')
+      (needs.newton-unittests.result != 'skipped' || needs.newton-unittests-ubuntu.result != 'skipped' || needs.newton-unittests-windows.result != 'skipped' || needs.newton-unittests-macos.result != 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -379,7 +408,8 @@ jobs:
           - *unittest-arm
           - *unittest-windows-0
           - *unittest-windows-1
-          - *unittest-macos
+          - *unittest-macos-0
+          - *unittest-macos-1
     runs-on: ubuntu-latest
     # Same-run artifact downloads use the runtime token; contents access is
     # only used to build Codecov's source network for coverage path mapping.
