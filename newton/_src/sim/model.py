@@ -1306,8 +1306,8 @@ class Model:
         """Horizontal and vertical principal-point offset of each pinhole camera [m], shape [camera_count], vec2."""
         self.camera_clipping_range: wp.array[wp.vec2f] | None = None
         """Near and far clip distance of each camera [m], shape [camera_count], vec2. For ``PINHOLE`` cameras
-        they are depths along the camera's -Z axis (planar clipping, as in USD and MJCF); for ``CUSTOM``
-        cameras, and pinhole cameras a sensor gives explicit rays, they are distances along each ray."""
+        they are depths along the camera's -Z axis (planar clipping, as in USD and MJCF) for rays projected from
+        the camera's intrinsics, and distances along each ray for rays a sensor gives the camera explicitly."""
         self.camera_resolution: wp.array[wp.vec2i] | None = None
         """Image size (width, height) each camera's aperture maps onto exactly [px], shape [camera_count], vec2i.
         It also fixes the pixel aspect ratio kept at other image sizes and is the default size of a bound

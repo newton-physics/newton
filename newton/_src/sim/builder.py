@@ -10382,9 +10382,9 @@ class ModelBuilder:
             body: Parent body index (an integer), or ``-1`` for a fixed camera.
             xform: Camera frame relative to the parent body [m, unitless
                 quaternion]; the world pose for ``body == -1``. Defaults to identity.
-            lens_type: Lens type. :attr:`~newton.CameraLensType.PINHOLE` uses the
-                intrinsics below; :attr:`~newton.CameraLensType.CUSTOM` takes its rays
-                from the rendering sensor and ignores the intrinsics.
+            lens_type: Lens model. :attr:`~newton.CameraLensType.PINHOLE` projects
+                with the intrinsics below. A rendering sensor may replace a camera's
+                rays with its own (see :meth:`~newton.sensors.SensorCamera.set_camera_rays`).
             fov: Vertical field of view [rad], in ``(0, pi)``, like MJCF ``fovy``
                 (in radians). Mutually exclusive with ``focal_length``. The horizontal
                 extent follows the image aspect ratio. Defaults to 45 degrees when no
@@ -10401,10 +10401,10 @@ class ModelBuilder:
                 conform policy.
             horizontal_aperture_offset: Horizontal principal-point offset [m].
             vertical_aperture_offset: Vertical principal-point offset [m].
-            clipping_range: Near and far clip distance [m]. For ``PINHOLE`` cameras
-                they are depths along the camera's ``-Z`` axis (planar clipping, as in
-                USD and MJCF); for ``CUSTOM`` cameras, and pinhole cameras a sensor
-                gives explicit rays, they are distances along each ray. Hits outside
+            clipping_range: Near and far clip distance [m]. For rays projected
+                from the camera's intrinsics they are depths along the camera's ``-Z``
+                axis (planar clipping, as in USD and MJCF); for rays a sensor gives
+                the camera explicitly they are distances along each ray. Hits outside
                 the range are misses.
             resolution: Image size ``(width, height)`` [px] that the apertures map
                 onto exactly. When both apertures are set, it also fixes the pixel

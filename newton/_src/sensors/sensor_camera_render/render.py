@@ -119,7 +119,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             # One bundle shared by every view.
             return camera_rays[py, px, sample_index, 0], camera_rays[py, px, sample_index, 1]
         else:
-            # A view with its own bundle (a CUSTOM camera, a site, or a pinhole camera given rays)
+            # A view with its own bundle (a site, or a camera given rays with set_camera_rays())
             # uses it; the others generate pinhole rays from
             # view_pinhole = (horizontal aperture, vertical aperture, horizontal offset, vertical offset) / focal.
             bundle = view_ray_bundle[view_index]

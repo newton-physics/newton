@@ -33,6 +33,9 @@ if TYPE_CHECKING:
     from ..sim.model import Model
     from ..sim.state import State
 
+# Lens value of site views, which have no intrinsics and always render rays given to the sensor.
+_SITE_LENS = -1
+
 # Enable NVTX ranges / timing around SensorCamera.update() when NEWTON_PROFILE is set.
 PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
 
@@ -165,6 +168,26 @@ class SensorCamera:
     plus hemispheric ambient light (see :meth:`set_ambient_light`) when
     :attr:`RenderConfig.enable_ambient_lighting` is set.
 
+    Each sensor owns its renderer, including one constructed with ``cameras``
+    or ``sites``: lights, ambient light and materials set on a sensor apply
+    only to that sensor.
+
+    A sensor constructed with ``cameras`` or ``sites`` is *bound*. It renders
+    one view per selected model camera or site and world, and computes view
+    poses and rays itself, so :meth:`update` needs only the state. Rays are
+    projected from each camera's intrinsics unless rays are given with
+    :meth:`set_camera_rays` or :meth:`update`.
+
+    .. experimental::
+
+        The bound-sensor API may change without a formal deprecation cycle:
+        the ``cameras``, ``sites``, ``width``, ``height``, ``sample_count``
+        and ``clipping_range`` constructor arguments, :meth:`set_camera_rays`,
+        :meth:`compute_view_transforms`, :attr:`is_bound`, and the
+        :attr:`width`, :attr:`height`, :attr:`sample_count`,
+        :attr:`view_count`, :attr:`view_camera`, :attr:`view_site` and
+        :attr:`view_world` attributes.
+
     .. experimental::
 
         Rendering of lights authored on the model, and how they combine with
@@ -222,13 +245,15 @@ class SensorCamera:
     ):
         """Construct a camera sensor for a model.
 
-        A sensor constructed with ``cameras`` or ``sites`` is *bound*: it renders one
-        view per selected camera or site and world, computes view poses from the
-        state, and needs no camera transforms or rays in :meth:`update`.
+        A sensor constructed with ``cameras`` or ``sites`` is *bound* (experimental,
+        see the class documentation): it renders one view per selected camera or site
+        and world, computes view poses from the state, and needs no camera transforms
+        or rays in :meth:`update`.
 
         Args:
             model: Newton simulation model to render. The sensor builds and owns
-                its internal renderer for this model.
+                its internal renderer for this model; it shares no lights or
+                materials with other sensors.
             cameras: Model cameras to render, by label pattern or index (see
                 :ref:`label-matching`). Mutually exclusive with ``sites``.
             sites: Sites to render from, by label pattern or index. Sites only
@@ -240,12 +265,12 @@ class SensorCamera:
                 :attr:`~newton.Model.camera_resolution`.
             sample_count: Rays per pixel of generated rays.
             clipping_range: Near and far clip distance [m] for every view. Defaults
-                to the cameras' clip ranges, or ``(0, 1e6)`` for sites. For pinhole
-                cameras that generate their rays from their intrinsics they are depths
-                along the camera's ``-Z`` axis, as in USD and MJCF; for ``CUSTOM``
-                cameras, sites, and views given rays with :meth:`set_camera_rays` or
-                :meth:`update` they are distances along each ray. Distances along a ray
-                are also limited by the render config's ``max_distance``.
+                to the cameras' clip ranges, or ``(0, 1e6)`` for sites. For rays
+                projected from a camera's intrinsics they are depths along the
+                camera's ``-Z`` axis, as in USD and MJCF; for rays given with
+                :meth:`set_camera_rays` or :meth:`update`, including all rays of sites,
+                they are distances along each ray. Distances along a ray are also
+                limited by the render config's ``max_distance``.
             default_clear_data: Clear values used by :meth:`update` when its
                 ``clear_data`` argument is ``None``. Defaults to ``ClearData()``.
             default_render_config: Render settings used by :meth:`update` when
@@ -286,9 +311,12 @@ class SensorCamera:
         """Rays per pixel of a sensor constructed with ``cameras`` or ``sites``, else ``None``."""
         self.view_count: int | None = None
         """Number of views of a sensor constructed with ``cameras`` or ``sites``, else ``None``."""
-        self.view_frame: wp.array[wp.int32] | None = None
-        """Model camera index of each view, or the site's shape index for a sensor constructed
-        with ``sites``, shape ``(view_count,)``; ``None`` for a sensor without either."""
+        self.view_camera: wp.array[wp.int32] | None = None
+        """Model camera index of each view, shape ``(view_count,)``, of a sensor constructed with
+        ``cameras``; ``None`` otherwise."""
+        self.view_site: wp.array[wp.int32] | None = None
+        """Site (shape) index of each view, shape ``(view_count,)``, of a sensor constructed with
+        ``sites``; ``None`` otherwise."""
         self.view_world: wp.array[wp.int32] | None = None
         """World rendered by each view, shape ``(view_count,)``; ``None`` for a sensor without
         ``cameras`` or ``sites``."""
@@ -322,7 +350,7 @@ class SensorCamera:
                 raise ValueError(f"Shapes {not_sites} are not sites")
             frame_world = model.shape_world.numpy()
             self._frame_labels = model.shape_label
-            frame_lens = {f: int(CameraLensType.CUSTOM) for f in frames}
+            frame_lens = dict.fromkeys(frames, _SITE_LENS)
         else:
             # Model views may expose fewer cameras than the labels they share with their model.
             camera_labels = list(model.camera_label)[: int(model.camera_count)]
@@ -362,7 +390,12 @@ class SensorCamera:
         self.height = int(height)
         self.sample_count = int(sample_count)
         self.view_count = len(view_frame)
-        self.view_frame = wp.array(view_frame, dtype=wp.int32, device=device)
+        # Kernels index the camera or site arrays through one view-to-frame table.
+        self._view_frame = wp.array(view_frame, dtype=wp.int32, device=device)
+        if self._from_sites:
+            self.view_site = self._view_frame
+        else:
+            self.view_camera = self._view_frame
         self.view_world = wp.array(view_world, dtype=wp.int32, device=device)
 
         self._view_frame_np = np.asarray(view_frame, dtype=np.int32)
@@ -398,7 +431,7 @@ class SensorCamera:
 
     @property
     def is_bound(self) -> bool:
-        """Whether this sensor renders model cameras or sites selected at construction."""
+        """Whether this sensor renders model cameras or sites selected at construction (experimental)."""
         return self._bound
 
     def _require_bound(self) -> None:
@@ -417,7 +450,7 @@ class SensorCamera:
             _compute_view_pinhole_kernel,
             dim=self.view_count,
             inputs=[
-                self.view_frame,
+                self._view_frame,
                 model.camera_focal_length,
                 model.camera_aperture,
                 model.camera_aperture_offset,
@@ -470,33 +503,42 @@ class SensorCamera:
         rays: wp.array4d[wp.vec3f],
         *,
         cameras: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        sites: str | list[str] | re.Pattern[str] | list[int] | None = None,
     ) -> None:
-        """Assign custom camera-space rays to views of a bound sensor.
+        """Assign camera-space rays to views of a bound sensor.
 
         Rays use the sensor's frame convention: origins in ``[..., 0]`` and unit
         directions in ``[..., 1]``, in the camera (or site) frame. A zero direction
-        marks an unused ray. Pinhole cameras given rays this way use them instead
-        of their intrinsics and, like custom lenses, clip along each ray. To give cameras different rays, call this once per
-        camera. The rays are copied into sensor-owned storage; calling again with
-        the same selection is a device copy that keeps the storage address, so it
-        can run inside a captured CUDA graph.
+        marks an unused ray. Cameras given rays this way use them instead of
+        their intrinsics and clip along each ray. Sites have no intrinsics and
+        need rays from this method or :meth:`update` before they render. To give
+        views different rays, call this once per selection. The rays are copied
+        into sensor-owned storage; calling again with the same selection is a
+        device copy that keeps the storage address, so it can run inside a
+        captured CUDA graph.
+
+        .. experimental::
+
+            Part of the bound-sensor API; see the class documentation.
 
         Args:
             rays: One ``(height, width, sample_count, 2)`` bundle shared by the
                 selected views.
-            cameras: Label pattern or indices restricting the views to update. ``None``
-                selects every view of a site-bound sensor and every ``CUSTOM`` camera
-                otherwise.
+            cameras: Model cameras whose views to update, by label pattern or index,
+                on a sensor constructed with ``cameras``.
+            sites: Sites whose views to update, by label pattern or index, on a
+                sensor constructed with ``sites``. With neither ``cameras`` nor
+                ``sites``, every view of the sensor is updated.
         """
         self._require_bound()
-        if cameras is None:
-            views = np.arange(self.view_count)
-            if not self._from_sites:
-                views = np.flatnonzero(self._view_lens_np == int(CameraLensType.CUSTOM))
-        else:
-            views = self._views_matching(cameras)
+        if cameras is not None and sites is not None:
+            raise ValueError("cameras and sites are mutually exclusive")
+        if (cameras is not None and self._from_sites) or (sites is not None and not self._from_sites):
+            bound_to = "sites" if self._from_sites else "cameras"
+            raise ValueError(f"This sensor was constructed with {bound_to}; select its views with {bound_to}=")
+        views = self._views_matching(cameras if cameras is not None else sites)
         if len(views) == 0:
-            raise ValueError("No views match the camera selection")
+            raise ValueError("No views match the selection")
 
         expected = (self.height, self.width, self.sample_count, 2)
         self._validate_render_array("rays", rays, wp.vec3f, self.device)
@@ -523,6 +565,10 @@ class SensorCamera:
     def compute_view_transforms(self, state: State, *, out: wp.array[wp.transformf] | None = None) -> wp.array:
         """Compute the world-space pose of every view of a bound sensor.
 
+        .. experimental::
+
+            Part of the bound-sensor API; see the class documentation.
+
         Args:
             state: State providing ``body_q``.
             out: Optional output array, shape ``(view_count,)``.
@@ -546,7 +592,7 @@ class SensorCamera:
         wp.launch(
             _compute_view_transforms_kernel,
             dim=self.view_count,
-            inputs=[self.view_frame, frame_body, frame_transform, body_q],
+            inputs=[self._view_frame, frame_body, frame_transform, body_q],
             outputs=[out],
             device=self.device,
         )
@@ -1576,7 +1622,7 @@ class SensorCamera:
             wp.launch(
                 _gather_view_clip_kernel,
                 dim=self.view_count,
-                inputs=[self.view_frame, model.camera_clipping_range],
+                inputs=[self._view_frame, model.camera_clipping_range],
                 outputs=[view_clip],
                 device=self.device,
             )
@@ -1594,12 +1640,12 @@ class SensorCamera:
                 )
             ray_kwargs["sample_count"] = shape[2]
         else:
-            # Pinhole views without their own bundle are generated in the kernel; every other
-            # view needs rays.
+            # Camera views without their own bundle project rays from their intrinsics in the
+            # kernel; site views need rays.
             missing = np.flatnonzero((self._view_bundle_np < 0) & (self._view_lens_np != int(CameraLensType.PINHOLE)))
             if len(missing):
                 labels = sorted({self._frame_labels[int(self._view_frame_np[v])] for v in missing})
-                raise RuntimeError(f"No rays for {labels}; call set_camera_rays() for CUSTOM cameras and sites")
+                raise RuntimeError(f"No rays for sites {labels}; call set_camera_rays() first")
             camera_rays = self._camera_rays
             # Only pinhole views can lack a bundle here; sites index shapes, not cameras.
             if np.any(self._view_bundle_np < 0):

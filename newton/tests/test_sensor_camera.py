@@ -1027,7 +1027,7 @@ class TestSensorCamera(unittest.TestCase):
                         self.assertEqual(float(depth_np[view][corner]), 0.0)
 
     def test_bound_camera_ray_sources(self) -> None:
-        """Verify in-kernel pinhole, custom and site rays, clip ranges, and that custom rays are copied."""
+        """Verify projected, given and site rays, clip ranges, view tables, and that given rays are copied."""
         # A quad 2 m in front of the origin, where every camera and the site sit.
         world = newton.ModelBuilder(up_axis=newton.Axis.Z)
         quad = np.array([[-0.5, -0.5, -2.0], [0.5, -0.5, -2.0], [0.5, 0.5, -2.0], [-0.5, 0.5, -2.0]])
@@ -1036,8 +1036,8 @@ class TestSensorCamera(unittest.TestCase):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         fov = math.radians(60.0)
         builder.add_camera(-1, fov=fov, label="pinhole")
-        custom_a = builder.add_camera(-1, lens_type=newton.CameraLensType.CUSTOM, label="custom_a")
-        builder.add_camera(-1, lens_type=newton.CameraLensType.CUSTOM, label="custom_b")
+        cam_a = builder.add_camera(-1, fov=fov, label="cam_a")
+        builder.add_camera(-1, fov=fov, label="cam_b")
         builder.replicate(world, 1)
         width, height = 8, 8
         center = (height // 2, width // 2)
@@ -1065,38 +1065,41 @@ class TestSensorCamera(unittest.TestCase):
                     camera = SensorCamera(model, cameras="pinhole", width=width, height=height, clipping_range=clip)
                     self.assertEqual(float(render(camera)[0][center]), 0.0, msg=f"clipping_range={clip}")
 
-                # Custom rays are copied into the sensor: reusing the caller's buffer after a call must not
+                # Given rays are copied into the sensor: reusing the caller's buffer after a call must not
                 # change the stored rays, even when a later call re-packs the storage.
                 buffer = wp.clone(hit_rays)
-                camera = SensorCamera(model, cameras="custom_*", width=width, height=height)
-                camera.set_camera_rays(buffer, cameras="custom_a")
+                camera = SensorCamera(model, cameras="cam_*", width=width, height=height)
+                self.assertIsNone(camera.view_site)
+                camera.set_camera_rays(buffer, cameras="cam_a")
                 storage = camera._camera_rays.ptr
-                camera.set_camera_rays(buffer, cameras="custom_a")
+                camera.set_camera_rays(buffer, cameras="cam_a")
                 self.assertEqual(camera._camera_rays.ptr, storage)
                 buffer.zero_()
-                camera.set_camera_rays(buffer, cameras="custom_b")
+                camera.set_camera_rays(buffer, cameras="cam_b")
                 depth = render(camera)
-                view_a = camera.view_frame.numpy().tolist().index(custom_a)
+                view_a = camera.view_camera.numpy().tolist().index(cam_a)
                 self.assertAlmostEqual(float(depth[view_a][center]), 2.0, delta=0.05)
                 self.assertEqual(float(depth[1 - view_a][center]), 0.0)
+                with self.assertRaises(ValueError):
+                    camera.set_camera_rays(hit_rays, sites="site")
 
-                # Sites take their rays from set_camera_rays.
+                # Sites have no intrinsics and render only once given rays.
                 camera = SensorCamera(model, sites="site", width=width, height=height)
-                camera.set_camera_rays(hit_rays)
-                self.assertAlmostEqual(float(render(camera)[0][center]), 2.0, delta=0.05)
-
-                # An analytic sensor renders pinhole and custom cameras together, and rays given to a
-                # pinhole camera replace its intrinsics.
-                camera = SensorCamera(model, cameras="*", width=width, height=height)
-                self.assertEqual(camera.view_count, 3)
+                self.assertIsNone(camera.view_camera)
+                self.assertEqual(camera.view_site.numpy().tolist(), [model.shape_label.index("site")])
                 with self.assertRaises(RuntimeError):
                     render(camera)
-                camera.set_camera_rays(hit_rays)
-                depth = render(camera)
-                np.testing.assert_allclose(depth[:, center[0], center[1]], 2.0, atol=0.05)
-                camera.set_camera_rays(wp.zeros_like(hit_rays), cameras="pinhole")
-                depth = render(camera)
-                self.assertEqual(float(depth[camera.view_frame.numpy().tolist().index(0)][center]), 0.0)
+                with self.assertRaises(ValueError):
+                    camera.set_camera_rays(hit_rays, cameras="cam_a")
+                camera.set_camera_rays(hit_rays, sites="site")
+                self.assertAlmostEqual(float(render(camera)[0][center]), 2.0, delta=0.05)
+
+                # Without a selection, set_camera_rays() replaces the rays of every view.
+                camera = SensorCamera(model, cameras="*", width=width, height=height)
+                self.assertEqual(camera.view_count, 3)
+                np.testing.assert_allclose(render(camera)[:, center[0], center[1]], 2.0, atol=0.05)
+                camera.set_camera_rays(wp.zeros_like(hit_rays))
+                np.testing.assert_allclose(render(camera)[:, center[0], center[1]], 0.0)
 
     def test_site_sensor_without_cameras(self) -> None:
         """Verify a site-bound sensor renders on a model without cameras in the default ray mode."""
@@ -1196,7 +1199,7 @@ class TestSensorCamera(unittest.TestCase):
                     camera = SensorCamera(model, cameras="*", width=width, height=height)
                     camera._compute_pinhole_params(camera._view_pinhole)
                     pinhole = camera._view_pinhole.numpy()
-                    for view, camera_index in enumerate(camera.view_frame.numpy()):
+                    for view, camera_index in enumerate(camera.view_camera.numpy()):
                         name = labels[camera_index]
                         np.testing.assert_allclose(pinhole[view][:2], expected[name], rtol=1e-5, err_msg=name)
 
@@ -1237,7 +1240,7 @@ class TestSensorCamera(unittest.TestCase):
                 )
 
     def test_bound_camera_planar_clipping(self) -> None:
-        """Verify pinhole cameras clip on depth along -Z while custom cameras clip along each ray."""
+        """Verify projected rays clip on depth along -Z while given rays clip along each ray."""
         # A wide wall 2 m in front of the cameras. With a 90-degree field of view the corner ray of an
         # 8 x 8 image reaches the wall about 3.2 m away.
         world = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -1245,7 +1248,7 @@ class TestSensorCamera(unittest.TestCase):
         world.add_shape_mesh(-1, mesh=newton.Mesh(wall.astype(np.float32), [0, 1, 2, 0, 2, 3]))
         fov = math.radians(90.0)
         world.add_camera(-1, fov=fov, clipping_range=(0.1, 2.05), label="pinhole")
-        world.add_camera(-1, lens_type=newton.CameraLensType.CUSTOM, clipping_range=(0.1, 2.05), label="custom")
+        world.add_camera(-1, fov=fov, clipping_range=(0.1, 2.05), label="given")
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.replicate(world, 1)
         width = height = 8
@@ -1257,28 +1260,23 @@ class TestSensorCamera(unittest.TestCase):
                 rays = SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=fov, device=device)
                 expected_corner = float(np.linalg.norm(rays.numpy()[0, 0, 0, 1] * 2.0 / -rays.numpy()[0, 0, 0, 1][2]))
                 camera = SensorCamera(model, cameras="*", width=width, height=height)
-                camera.set_camera_rays(rays, cameras="custom")
+                camera.set_camera_rays(rays, cameras="given")
                 depth = camera.allocate_image_depth()
                 camera.update(state, depth_image=depth)
                 depth_np = depth.numpy()
-                views = camera.view_frame.numpy().tolist()
-                pinhole_view, custom_view = views.index(0), views.index(1)
+                views = camera.view_camera.numpy().tolist()
+                pinhole_view, given_view = views.index(0), views.index(1)
                 # The wall is 2 m deep everywhere, inside the pinhole camera's 2.05 m far plane.
                 self.assertAlmostEqual(float(depth_np[pinhole_view][corner]), expected_corner, delta=0.02)
                 self.assertAlmostEqual(float(depth_np[pinhole_view][center]), 2.0, delta=0.05)
                 # Along the ray, the corner is beyond 2.05 m and clipped; the center is not.
-                self.assertEqual(float(depth_np[custom_view][corner]), 0.0)
-                self.assertAlmostEqual(float(depth_np[custom_view][center]), 2.0, delta=0.05)
+                self.assertEqual(float(depth_np[given_view][corner]), 0.0)
+                self.assertAlmostEqual(float(depth_np[given_view][center]), 2.0, delta=0.05)
 
-                # A pinhole camera given explicit rays, by set_camera_rays() or for one update() call,
-                # clips along those rays like a custom camera.
-                override = camera.allocate_image_depth()
-                camera.update(state, camera_rays=rays, depth_image=override)
-                camera.set_camera_rays(rays, cameras="pinhole")
-                camera.update(state, depth_image=depth)
-                for image in (override.numpy(), depth.numpy()):
-                    self.assertEqual(float(image[pinhole_view][corner]), 0.0)
-                    self.assertAlmostEqual(float(image[pinhole_view][center]), 2.0, delta=0.05)
+                # Rays passed to one update() call clip along the ray for every view.
+                camera.update(state, camera_rays=rays, depth_image=depth)
+                self.assertEqual(float(depth.numpy()[pinhole_view][corner]), 0.0)
+                self.assertAlmostEqual(float(depth.numpy()[pinhole_view][center]), 2.0, delta=0.05)
 
     def test_bound_camera_rejects_invalid_arrays(self) -> None:
         """Verify bound sensors validate caller arrays and define their attributes when unbound."""
@@ -1290,7 +1288,7 @@ class TestSensorCamera(unittest.TestCase):
         state = model.state()
 
         unbound = SensorCamera(model)
-        for name in ("width", "height", "sample_count", "view_count", "view_frame", "view_world"):
+        for name in ("width", "height", "sample_count", "view_count", "view_camera", "view_site", "view_world"):
             self.assertIsNone(getattr(unbound, name), name)
 
         camera = SensorCamera(model, cameras="cam", width=4, height=4)
