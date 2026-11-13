@@ -144,13 +144,21 @@ class UI:
             int(getattr(imgui.MouseCursor_, name)): getattr(window, cursor) for name, cursor in _CURSOR_NAMES.items()
         }
         self._cursor: int | None = None
+        held_modifiers = set()
 
         def on_key(symbol, down):
             imgui_key = keys.get(symbol)
             if imgui_key is not None:
                 io.add_key_event(imgui_key, down)
-                if imgui_key in modifiers:
-                    io.add_key_event(modifiers[imgui_key], down)
+                modifier = modifiers.get(imgui_key)
+                if modifier is not None:
+                    # The modifier stays down while either of its keys is held.
+                    (held_modifiers.add if down else held_modifiers.discard)(imgui_key)
+                    io.add_key_event(modifier, any(modifiers[held] == modifier for held in held_modifiers))
+
+        def on_mouse_button(button, down):
+            if button in buttons:
+                io.add_mouse_button_event(buttons[button], down)
 
         def on_text(text):
             for char in text:
@@ -166,10 +174,8 @@ class UI:
             on_mouse_motion=on_mouse_position,
             # Button transitions belong to press/release; a press on every drag motion restarts cancelled drags.
             on_mouse_drag=on_mouse_position,
-            on_mouse_press=lambda _x, _y, button, _modifiers: io.add_mouse_button_event(buttons.get(button, 0), True),
-            on_mouse_release=lambda _x, _y, button, _modifiers: io.add_mouse_button_event(
-                buttons.get(button, 0), False
-            ),
+            on_mouse_press=lambda _x, _y, button, _modifiers: on_mouse_button(button, True),
+            on_mouse_release=lambda _x, _y, button, _modifiers: on_mouse_button(button, False),
             on_mouse_scroll=lambda _x, _y, scroll_x, scroll_y: io.add_mouse_wheel_event(scroll_x, scroll_y),
             on_resize=lambda _width, _height: self._refresh_io_metrics(),
             # Release the renderer while the window still has its GL context.
