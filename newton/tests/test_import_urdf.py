@@ -558,7 +558,7 @@ class TestImportUrdfBasic(unittest.TestCase):
             self.assertIsNotNone(texture)
             np.testing.assert_array_equal(texture[0, 0, :3], np.array([255, 0, 0], dtype=np.uint8))
 
-    @requires("trimesh")
+    @requires("trimesh", "collada")
     def test_dae_visual_texture_uri_preserved(self):
         """Verify URI-style Collada textures are not path-joined against the mesh directory."""
         urdf = """
