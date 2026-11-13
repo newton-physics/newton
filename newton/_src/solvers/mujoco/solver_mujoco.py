@@ -11503,9 +11503,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         try:
             if locked:
                 self._set_const_0(lock_kinematic=False)
+            # CPU numpy views would be overwritten when restoring the lock.
             weights = (
-                native.dof_invweight0[None].copy() if self.use_mujoco_cpu else self.mjw_model.dof_invweight0.numpy()
-            )
+                native.dof_invweight0[None] if self.use_mujoco_cpu else self.mjw_model.dof_invweight0.numpy()
+            ).copy()
         finally:
             if locked:
                 self._set_const_0()

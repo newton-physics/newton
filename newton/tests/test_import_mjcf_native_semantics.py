@@ -250,14 +250,19 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 <geom type="box" size=".1 .2 .3" mass="{mass}"/>
                 <body pos="0 0 1"><joint name="j" axis="0 1 0" springdamper=".4 .5"/>
                     <geom size=".2" mass="{mass}"/></body></body></body></worldbody>{inertia}</mujoco>"""
-        for cpu, kind in ((False, "tendon"), (True, "tendon"), (True, "actuator")):
+        cases = [(False, "tendon", None), (True, "tendon", None), (True, "actuator", None)]
+        if wp.get_device().is_cuda:
+            cases.append((False, "tendon", "cpu"))
+        for cpu, kind, device in cases:
             inertia = (
                 '<tendon><fixed armature=".2"><joint joint="j" coef="1"/></fixed></tendon>'
                 if kind == "tendon"
                 else '<actuator><motor joint="j" armature=".2"/></actuator>'
             )
             for kinematic in (False, True):
-                with self.subTest(cpu=cpu, kind=kind, kinematic=kinematic):
+                if device == "cpu" and not kinematic:
+                    continue
+                with self.subTest(cpu=cpu, kind=kind, kinematic=kinematic, device=device), wp.ScopedDevice(device):
                     asset = newton.ModelBuilder()
                     asset.add_mjcf_native(xml.format(base_mass=3, mass=1, inertia=inertia))
                     if kinematic:
