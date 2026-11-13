@@ -49,6 +49,7 @@ class FastExampleQuadrupedXPBD:
 
 
 class FastMetricsExampleQuadrupedXPBD(_SimulationMetricTracksUnparameterized):
+    version = "2"  # One untimed frame precedes the samples.
     num_frames = 1000
     samples = 1
     world_count = 200

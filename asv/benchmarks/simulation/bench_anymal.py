@@ -67,6 +67,7 @@ class FastExampleAnymalPretrained:
 
 
 class FastMetricsExampleAnymalPretrained(_SimulationMetricTracksUnparameterized):
+    version = "2"  # One untimed frame precedes the samples.
     num_frames = _NUM_FRAMES
     samples = 3
     world_count = 1

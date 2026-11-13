@@ -42,6 +42,7 @@ class _SimulationMetricTracksMuJoCo(_SimulationMetricTracks):
 class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
     """Utility base class for KPI benchmarks."""
 
+    version = "2"  # One untimed frame precedes the samples.
     param_names = ["world_count"]
     num_frames = None
     params = None
@@ -347,7 +348,7 @@ class FastKitchenG1(_KpiBenchmark):
     num_frames = 50
     robot = "g1"
     timeout = 900
-    version = "2"  # The pre-v2 series accidentally omitted the kitchen environment.
+    version = "3"  # One untimed frame precedes the samples.
     samples = 2
     random_init = True
     environment = "kitchen"
