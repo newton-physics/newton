@@ -1486,6 +1486,18 @@ def load_physics_from_range(stage, root_paths, exclude_paths=()):
     return load(stage, list(root_paths), excludePaths=list(exclude_paths))
 
 
+def physics_parser_skips_disabled_bodies() -> bool:
+    """Whether the native physics parser treats disabled rigid bodies as unapplied.
+
+    From OpenUSD 26.11, the colliders and joints of a rigid body with
+    ``physics:rigidBodyEnabled = false`` resolve to the nearest enabled ancestor body, and
+    colliders without one are static. Earlier versions assign them to the disabled body.
+    """
+    from pxr import Usd
+
+    return Usd.GetVersion() >= (0, 26, 11)
+
+
 def _get_physics_material_density(material_prim) -> float | None:
     """Read a bound material's base ``UsdPhysicsMaterialAPI`` density.
 

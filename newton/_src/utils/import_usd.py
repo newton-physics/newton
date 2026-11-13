@@ -253,7 +253,7 @@ def parse_usd(
                     - ``body_idx``
                     - ❌ Error: FREE joints require world frame
 
-        only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
+        only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded. With OpenUSD 26.11 or newer, disabled rigid bodies are never loaded, since OpenUSD assigns their colliders and joints to the nearest enabled ancestor body.
         only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
         joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
         verbose: If True, log additional information about the parsed USD file. Default is False.
@@ -463,6 +463,7 @@ def parse_usd(
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
     require_newton_usd_schemas(Usd)
+    skip_disabled_rigid_bodies = only_load_enabled_rigid_bodies or usd.physics_parser_skips_disabled_bodies()
 
     from ..usd import _joints  # noqa: PLC0415
     from ..usd._articulations import _parse_articulations  # noqa: PLC0415
@@ -472,7 +473,11 @@ def parse_usd(
         _apply_filtered_pairs,
         _collect_filtered_pairs,
     )
-    from ..usd._mass_properties import _is_enabled_collider, _UsdMassProperties  # noqa: PLC0415
+    from ..usd._mass_properties import (  # noqa: PLC0415
+        _is_enabled_collider,
+        _owns_descendant_colliders,
+        _UsdMassProperties,
+    )
     from ..usd._visuals import _UsdVisuals  # noqa: PLC0415
 
     # Capture material defaults at the start of this import.
@@ -1146,7 +1151,7 @@ def parse_usd(
         nonlocal path_body_map
         nonlocal physics_scene_prim
 
-        if not rigid_body_desc.rigidBodyEnabled and only_load_enabled_rigid_bodies:
+        if not rigid_body_desc.rigidBodyEnabled and skip_disabled_rigid_bodies:
             return -1
 
         if origin is None:
@@ -1550,7 +1555,7 @@ def parse_usd(
                 # This fallback is only needed for enabled descendant MassAPI overrides.
                 descendants = iter(Usd.PrimRange(prim, Usd.TraverseInstanceProxies()))
                 for descendant in descendants:
-                    if descendant != prim and descendant.HasAPI(UsdPhysics.RigidBodyAPI):
+                    if descendant != prim and _owns_descendant_colliders(descendant):
                         descendants.PruneChildren()
                         continue
                     if _is_enabled_collider(descendant) and descendant.HasAPI(UsdPhysics.MassAPI):

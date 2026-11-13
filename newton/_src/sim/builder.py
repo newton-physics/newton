@@ -5274,7 +5274,7 @@ class ModelBuilder:
                         - ``body_idx``
                         - ❌ Error: FREE joints require world frame
 
-            only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
+            only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded. With OpenUSD 26.11 or newer, disabled rigid bodies are never loaded, since OpenUSD assigns their colliders and joints to the nearest enabled ancestor body.
             only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
             verbose: If True, log additional information about the parsed USD file. Default is False.

@@ -7008,6 +7008,72 @@ def Xform "Articulation" (
                     )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_disabled_rigid_bodies_match_parsed_collider_ownership(self):
+        """Load a disabled rigid body only while the parser still assigns it colliders.
+
+        OpenUSD 26.11 treats ``physics:rigidBodyEnabled = false`` as if ``RigidBodyAPI`` were
+        not applied, so a disabled body's colliders move to the nearest enabled ancestor body or
+        become static. Every loaded body must then own exactly the colliders its mass comes from.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        def define_body(path, enabled, collider_mass=None):
+            body = UsdGeom.Xform.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim()).CreateRigidBodyEnabledAttr().Set(enabled)
+            if collider_mass is None:
+                return
+            collider = UsdGeom.Cube.Define(stage, f"{path}/Collider")
+            collider.CreateSizeAttr().Set(0.2)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            UsdPhysics.MassAPI.Apply(collider.GetPrim()).CreateMassAttr().Set(collider_mass)
+
+        define_body("/World/Disabled", False, 1.0)
+        define_body("/World/Outer", True, 2.0)
+        define_body("/World/Outer/Inner", False, 3.0)
+        define_body("/World/Empty", True)
+        define_body("/World/Empty/Inner", False, 4.0)
+
+        if Usd.GetVersion() >= (0, 26, 11):
+            ancestor_owned = {
+                "/World/Outer": (5.0, {"/World/Outer/Collider", "/World/Outer/Inner/Collider"}),
+                "/World/Empty": (4.0, {"/World/Empty/Inner/Collider"}),
+            }
+            expected = {False: ancestor_owned, True: ancestor_owned}
+        else:
+            expected = {
+                False: {
+                    "/World/Disabled": (1.0, {"/World/Disabled/Collider"}),
+                    "/World/Outer": (2.0, {"/World/Outer/Collider"}),
+                    "/World/Outer/Inner": (3.0, {"/World/Outer/Inner/Collider"}),
+                    "/World/Empty": (0.0, set()),
+                    "/World/Empty/Inner": (4.0, {"/World/Empty/Inner/Collider"}),
+                },
+                True: {
+                    "/World/Outer": (2.0, {"/World/Outer/Collider"}),
+                    "/World/Empty": (0.0, set()),
+                },
+            }
+
+        for only_enabled, expected_bodies in expected.items():
+            with self.subTest(only_load_enabled_rigid_bodies=only_enabled):
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, only_load_enabled_rigid_bodies=only_enabled)
+                self.assertEqual(set(result["path_body_map"]), set(expected_bodies))
+                for body_path, (mass, collider_paths) in expected_bodies.items():
+                    body_idx = result["path_body_map"][body_path]
+                    self.assertAlmostEqual(builder.body_mass[body_idx], mass, places=5)
+                    owned = {
+                        path
+                        for path, shape in result["path_shape_map"].items()
+                        if builder.shape_body[shape] == body_idx
+                    }
+                    self.assertEqual(owned, collider_paths)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collider_massapi_aggregates_material_density_sibling(self):
         """Combine collider MassAPI mass with sibling material density."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
