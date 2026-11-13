@@ -66,6 +66,8 @@ with its evidence, or "n/a" when it does not apply. Answering "yes" to
 Simplest requires naming the alternative you compared against. An output
 format set by the caller takes precedence.
 
-A re-review repeats every step on the complete current diff; step 6 is where
-it checks whether earlier findings were addressed. Follow the caller when it
-limits the scope, as the automated follow-up review does.
+A re-review repeats every step on the complete current diff, but keeps the
+step 2 baseline of the earlier review when it has one, unless the stated
+intent changed; step 6 is where it checks whether earlier findings were
+addressed. Follow the caller when it limits the scope, as the automated
+follow-up review does.
