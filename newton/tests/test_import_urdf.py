@@ -508,7 +508,7 @@ class TestImportUrdfBasic(unittest.TestCase):
                     np.testing.assert_array_equal(source.vertices, vertices)
                     np.testing.assert_array_equal(source.indices.reshape(-1, 3), faces)
 
-    @requires("trimesh")
+    @requires("trimesh", "collada")
     def test_empty_mesh_reports_filename(self):
         """Reject empty geometry before processing colors or material overrides."""
         files = {
