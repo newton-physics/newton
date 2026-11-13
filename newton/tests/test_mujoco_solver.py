@@ -15573,5 +15573,30 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
             self.assertTrue(np.all(mapping[w, touched] >= 0))
 
 
+@requires(*MUJOCO_MODULES)
+class TestMuJoCoWithoutBodyForces(unittest.TestCase):
+    """Steps with ``State.body_f = None``."""
+
+    DT = 0.01
+
+    def test_free_joint_force_without_body_f(self):
+        """Replace, not accumulate, free-joint forces over steps when the state has no body forces."""
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+                builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01))
+                model = builder.finalize(device="cpu" if use_mujoco_cpu else None)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
+                states = [model.state(), model.state()]
+                for state in states:
+                    state.body_f = None
+                control = model.control()
+                control.joint_f.assign([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
+                for _ in range(3):
+                    solver.step(states[0], states[1], control, None, self.DT)
+                    states.reverse()
+                np.testing.assert_allclose(states[0].body_qd.numpy()[0], np.zeros(6), atol=1.0e-5)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

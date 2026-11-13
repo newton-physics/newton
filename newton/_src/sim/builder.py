@@ -73,6 +73,7 @@ from ..geometry.inertia import (
     _INERTIA_ABS_FLOOR,
     _INERTIA_REL_TOL,
     _inverse_inertia,
+    _validate_hollow_thickness,
     compute_body_inverses_kernel,
     validate_and_correct_inertia_kernel,
     verify_and_correct_inertia,
@@ -10755,6 +10756,7 @@ class ModelBuilder:
         rod: Rod,
         *,
         cfg: ShapeConfig | None,
+        total_mass: float | None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
         shear_stiffness: float | None,
@@ -10826,6 +10828,7 @@ class ModelBuilder:
                 quaternions=rod_quaternions,
                 radius=radius,
                 cfg=cfg,
+                total_mass=total_mass,
                 stretch_stiffness=stretch_stiffness,
                 stretch_damping=stretch_damping,
                 shear_stiffness=shear_stiffness,
@@ -10848,6 +10851,7 @@ class ModelBuilder:
                 edges=[(int(edge[0]), int(edge[1])) for edge in rod_edges],
                 radius=radius,
                 cfg=cfg,
+                total_mass=total_mass,
                 stretch_stiffness=stretch_stiffness,
                 stretch_damping=stretch_damping,
                 shear_stiffness=shear_stiffness,
@@ -10892,6 +10896,7 @@ class ModelBuilder:
         rest_straight: bool = False,
         radius: float,
         cfg: ShapeConfig | None,
+        total_mass: float | None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
         shear_stiffness: float | None,
@@ -10938,6 +10943,7 @@ class ModelBuilder:
             rest_node_positions=rest_positions_wp if rest_positions is not None else None,
             radius=radius,
             cfg=cfg,
+            total_mass=total_mass,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
             shear_stiffness=shear_stiffness,
@@ -11049,6 +11055,7 @@ class ModelBuilder:
         *,
         rod: Rod,
         cfg: ShapeConfig | None = None,
+        total_mass: float | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
         shear_stiffness: float | None = None,
@@ -11080,6 +11087,11 @@ class ModelBuilder:
         Args:
             rod: Initial/rest geometry, frame, topology, and constitutive-data source.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
+            total_mass: Optional total rod mass [kg], distributed in proportion to each segment's
+                rest volume (equivalently, rest length for the uniform cross section).
+                Overrides ``cfg.density``. Must be finite and nonnegative; zero sets every
+                segment's mass and inertia to zero without setting the kinematic body flag.
+                If None, mass is derived from density.
             stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, it is derived locally from Rod material or section rigidity;
                 otherwise it defaults to 1.0e5.
@@ -11149,6 +11161,10 @@ class ModelBuilder:
             ValueError: If the structural-rest centerline of a closed chain does not close.
             ValueError: If the Rod uses ``rest_straight`` with explicit rest inputs or a graph.
             ValueError: If ``body_frame_origin`` is passed with a value other than ``"com"``.
+            ValueError: If ``total_mass`` is negative or non-finite.
+            ValueError: If a hollow rod with positive assigned mass has a negative or non-finite
+                wall thickness ``cfg.margin``, or one at least as large as the stored radius.
+                A positive ``total_mass`` also requires nonzero hollow wall thickness.
             ValueError: If automatic section-rigidity discretization is requested
                 for branching topology or for a wrapped explicit cycle.
 
@@ -11163,6 +11179,12 @@ class ModelBuilder:
               arguments override the derived value per mode.
             - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
               the cylindrical centerline, excluding the hemispherical caps.
+            - Density-based mass is ``cfg.density * area * rest_length`` per segment, excluding the
+              overlapping caps. ``area`` is the circular cross section ``pi * radius**2``, as in USD
+              cable import, or for hollow rods the tube wall of thickness ``cfg.margin``.
+            - Inertia uses the solid-cylinder or open-tube tensor at each segment's assigned mass
+              and rest length, as in USD cable import for solid sections. Collision geometry and
+              the caller's ``cfg`` are unchanged.
             - The body origin and COM coincide at the segment midpoint, and centerline endpoints are at
               local ``(0, 0, -half_height)`` and ``(0, 0, half_height)``.
         """
@@ -11185,6 +11207,7 @@ class ModelBuilder:
         result = self._add_rod_object(
             rod,
             cfg=cfg,
+            total_mass=total_mass,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
             shear_stiffness=shear_stiffness,
@@ -11202,6 +11225,27 @@ class ModelBuilder:
         self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
         return result
 
+    def _set_rod_segment_mass(self, body: int, mass: float) -> None:
+        """Assign mass and cylinder or open-tube inertia to a generated single-capsule rod segment."""
+        inertia = wp.mat33(0.0)
+        if mass > 0.0:
+            shape = self.body_shapes[body][0]
+            scale = self.shape_scale[shape]
+            radius, half_height = float(scale[0]), float(scale[1])
+            inner_radius = 0.0
+            if not self.shape_is_solid[shape]:
+                thickness = _validate_hollow_thickness("capsule", self.shape_margin[shape], (("radius", radius),))
+                inner_radius = radius - thickness
+            # Use assigned mass directly: subtracting shell tensors loses precision for thin walls.
+            radial_sum = radius * radius + inner_radius * inner_radius
+            transverse = mass * (radial_sum / 4.0 + half_height * half_height / 3.0)
+            axial = mass * radial_sum / 2.0
+            inertia = wp.mat33(transverse, 0.0, 0.0, 0.0, transverse, 0.0, 0.0, 0.0, axial)
+        self.body_mass[body] = mass
+        self.body_inv_mass[body] = 1.0 / mass if mass > 0.0 else 0.0
+        self.body_inertia[body] = inertia
+        self.body_inv_inertia[body] = _inverse_inertia(inertia) if mass > 0.0 else wp.mat33(0.0)
+
     def _add_rod_graph(
         self,
         node_positions: list[Vec3],
@@ -11211,6 +11255,7 @@ class ModelBuilder:
         rest_quaternions: list[Quat] | np.ndarray | None = None,
         radius: float,
         cfg: ShapeConfig | None,
+        total_mass: float | None = None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
         shear_stiffness: float | None,
@@ -11231,6 +11276,8 @@ class ModelBuilder:
         """Build a rod graph, optionally using an importer-provided articulation root joint."""
         if cfg is None:
             cfg = self.default_shape_cfg
+        if total_mass is not None and (not math.isfinite(total_mass) or total_mass < 0.0):
+            raise ValueError("add_rod: total_mass must be finite and >= 0")
 
         # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
         stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
@@ -11377,6 +11424,22 @@ class ModelBuilder:
             shape_label = f"{label}_edge_capsule_0" if label else f"shape_{self.shape_count}"
             cfg._validate_site(shape_label)
 
+        # Assigned rod mass replaces the primitive contribution; leave the caller's config intact.
+        segment_cfg = replace(cfg, density=0.0)
+        # Resolve mass per rest length in Python precision, including NumPy scalar inputs.
+        linear_density = (
+            float(total_mass) / sum(edge_len) if total_mass is not None else float(cfg.density) * math.pi * radius**2
+        )
+        if linear_density > 0.0 and not cfg.is_solid:
+            if total_mass is not None and cfg.margin == 0.0:
+                raise ValueError("add_rod: positive total_mass requires positive hollow wall thickness")
+            # Validate the stored float32 radius before adding bodies; zero thickness warns and leaves zero mass.
+            _validate_hollow_thickness("capsule", cfg.margin, (("radius", np.float32(radius)),))
+            if total_mass is None:
+                # Hollow density mass covers the tube wall of thickness ``cfg.margin``.
+                thickness_ratio = float(cfg.margin) / radius
+                linear_density *= thickness_ratio * (2.0 - thickness_ratio)
+
         # Warn after validation but before mutating the builder.
         if warn_deprecated_body_frame_origin:
             warnings.warn(
@@ -11397,10 +11460,11 @@ class ModelBuilder:
                 body_id,
                 radius=radius,
                 half_height=0.5 * edge_len[e_idx],
-                cfg=cfg,
+                cfg=segment_cfg,
                 label=shape_label,
                 color=rod_color,
             )
+            self._set_rod_segment_mass(body_id, linear_density * edge_len[e_idx])
 
             edge_bodies.append(body_id)
 
