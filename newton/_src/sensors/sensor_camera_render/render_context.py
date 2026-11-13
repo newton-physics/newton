@@ -645,8 +645,7 @@ class RenderContext:
             # snapshots the mutable config so a later mutation cannot alter a stored
             # key (state/clear_data are snapshotted the same way on insert).
             key_config = replace(config, block_dim=0)
-            global_instances = optix is not None and optix.has_global_instances
-            render_kernel = self._kernel_cache.get((key_config, self._render_state, clear_data, global_instances))
+            render_kernel = self._kernel_cache.get((key_config, self._render_state, clear_data))
             if render_kernel is None:
                 # Copies: the factories capture them in wp.static, and shared modules may recompile.
                 render_kernel = create_kernel(replace(config), replace(self._render_state), replace(clear_data), optix)
@@ -654,9 +653,7 @@ class RenderContext:
                     render_kernel = optix.pipeline(
                         render_kernel, enable_backface_culling=config.enable_backface_culling
                     )
-                self._kernel_cache[(key_config, replace(self._render_state), replace(clear_data), global_instances)] = (
-                    render_kernel
-                )
+                self._kernel_cache[(key_config, replace(self._render_state), replace(clear_data))] = render_kernel
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
 

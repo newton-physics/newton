@@ -152,8 +152,6 @@ class Scene:
             self.data.grid += 1
         self.data.extent = wp.ones(1, dtype=float, device=self.device)
         self.data.has_instances = wp.array(has_instances, dtype=wp.bool, device=self.device)
-        # Lets kernels compile out the global-world traversal, usually only a ground plane.
-        self.has_global_instances = has_instances[-1]
         self.data.planes = wp.array(planes, dtype=wp.int32, device=self.device)
         self.data.plane_offsets = wp.array(offsets, dtype=wp.int32, device=self.device)
 
@@ -370,11 +368,7 @@ def _create_ray_pipeline(scene, enable_global_world, write_dist, write_shape_id,
             world = wp.where(i == 1 or ray_worlds[tid] < 0, data.world_count, ray_worlds[tid])
             interval = ray_interval(origin, direction, data.extent[0], distance)
             packed_origin = origin + world_offset(world, data.grid, data.extent[0])
-            if (
-                (i == 0 or wp.static(scene.has_global_instances))
-                and data.has_instances[world]
-                and interval[1] >= interval[0]
-            ):
+            if data.has_instances[world] and interval[1] >= interval[0]:
                 query = wo.accel_query_ray(data.handle, packed_origin, direction, interval[1], interval[0])
                 if query.result and query.t < distance:
                     shape = int(query.instance_id)
