@@ -2414,6 +2414,7 @@ def _soft_block_on_tilted_box(
     substeps: int,
     seconds: tuple,
     damping_bidirectional: bool = True,
+    capture_handoff: bool = False,
 ):
     """Mean positions of a soft block resting on a static box under gravity tilted along x.
 
@@ -2426,13 +2427,26 @@ def _soft_block_on_tilted_box(
     model, pipeline, solver = _soft_block_on_box(mu, full_surface, anchored, damping_bidirectional)
     state_0, state_1, contacts = model.state(), model.state(), pipeline.contacts()
 
+    collision_graphs = {}
+    if capture_handoff:
+        pipeline.collide(state_0, contacts)
+        for state in (state_0, state_1):
+            with wp.ScopedCapture() as capture:
+                pipeline.collide(state, contacts)
+            collision_graphs[id(state)] = capture.graph
+        # Replay must restore anchored friction after a non-anchoring pipeline used the buffer.
+        newton.CollisionPipeline(model, soft_contact_gap=0.01).collide(state_0, contacts)
+
     positions = []
     loads = load if isinstance(load, tuple) else (load,) * len(seconds)
     for duration, window_load in zip(seconds, loads, strict=True):
         tilt = math.atan(window_load * mu)
         model.set_gravity((9.81 * math.sin(tilt), 0.0, -9.81 * math.cos(tilt)))
         for _ in range(round(duration * fps * substeps)):
-            pipeline.collide(state_0, contacts)
+            if capture_handoff:
+                wp.capture_launch(collision_graphs[id(state_0)])
+            else:
+                pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, None, contacts, dt)
             state_0, state_1 = state_1, state_0
         positions.append(state_0.particle_q.numpy().mean(axis=0))
@@ -2513,7 +2527,14 @@ def _anchored_soft_contacts_hold_static_load(test, device, full_surface, substep
     """
     with wp.ScopedDevice(device):
         for count in substeps:
-            settled, held = _soft_block_on_tilted_box(0.5, full_surface, True, count, (0.3, 0.2))
+            settled, held = _soft_block_on_tilted_box(
+                0.5,
+                full_surface,
+                True,
+                count,
+                (0.3, 0.2),
+                capture_handoff=wp.get_device().is_cuda and count == 5,
+            )
             test.assertGreater(settled[2], 0.0)
             test.assertLess(abs(held[0] - settled[0]), 2.0e-5, f"substeps={count}")
 

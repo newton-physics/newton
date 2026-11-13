@@ -3827,7 +3827,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 filtered._soft_contact_history = SoftContactHistory(
                     contacts.soft_contact_max, device=contacts.device, replayable=False
                 )
-            filtered._soft_contact_history.replayed = source_history.replayed
+            wp.copy(filtered._soft_contact_history.anchors.enabled, source_history.anchors.enabled)
         # Entry solvers check this stamp; the filtered rows are as reduced as their source.
         filtered._rigid_contact_body_pair_reduced = contacts.rigid_contact_body_pair_reduced
         filtered._enable_rigid_soft_full_surface_contact = bool(

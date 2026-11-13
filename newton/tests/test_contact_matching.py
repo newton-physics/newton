@@ -1474,9 +1474,9 @@ def test_soft_contact_anchor_history_follows_world_and_buffer(test, device):
         np.testing.assert_allclose(body_points_at(0.0005, other), [0.0004, 0.0005], atol=1.0e-7)
 
         # A pass of a pipeline without soft matching leaves the buffer's anchors unreplayed.
-        test.assertTrue(contacts._soft_contact_history.replayed)
+        test.assertTrue(contacts._soft_contact_history.anchors.enabled.numpy()[0])
         newton.CollisionPipeline(model, soft_contact_gap=0.01).collide(state, contacts)
-        test.assertFalse(contacts._soft_contact_history.replayed)
+        test.assertFalse(contacts._soft_contact_history.anchors.enabled.numpy()[0])
 
 
 def test_soft_contact_anchor_reset_reaches_both_worlds_of_a_record(test, device):
@@ -1717,6 +1717,15 @@ def test_soft_contact_anchor_external_buffer_cuda_graph(test, device):
             state.particle_q.assign([[0.0004, 0.0, 0.009]])
             wp.capture_launch(capture.graph)
             np.testing.assert_allclose(_soft_body_points(contacts, 1)[0], [0.0004, 0.0, 0.0], atol=1.0e-7)
+            test.assertTrue(contacts._soft_contact_history.anchors.enabled.numpy()[0])
+
+            with wp.ScopedCapture(device=device) as fresh_capture:
+                latest.collide(state, contacts)
+            pipeline.collide(state, contacts)
+            state.particle_q.assign([[0.0005, 0.0, 0.009]])
+            wp.capture_launch(fresh_capture.graph)
+            test.assertFalse(contacts._soft_contact_history.anchors.enabled.numpy()[0])
+            np.testing.assert_allclose(_soft_body_points(contacts, 1)[0], [0.0005, 0.0, 0.0], atol=1.0e-7)
     finally:
         wp.set_mempool_enabled(device, mempool_enabled)
 

@@ -47,6 +47,8 @@ if TYPE_CHECKING:
 class SoftContactAnchors:
     """Contact points each rigid-soft record keeps across collision passes; null arrays when none are kept."""
 
+    enabled: wp.array[wp.bool]
+    """Whether the current records use anchored friction; device-resident for CUDA graph replay."""
     barycentric: wp.array[wp.vec3]
     """Soft-side material point, as weights over the record's soft particles [unitless]."""
     body_pos: wp.array[wp.vec3]
@@ -69,6 +71,7 @@ class SoftContactHistory:
         replay_capacity = capacity if replayable else 0
         with wp.ScopedDevice(device):
             self.anchors = SoftContactAnchors()
+            self.anchors.enabled = wp.zeros(1, dtype=wp.bool)
             self.anchors.barycentric = wp.zeros(capacity, dtype=wp.vec3)
             self.anchors.body_pos = wp.zeros(capacity, dtype=wp.vec3)
             self.anchors.normal_force = wp.full(capacity, -1.0, dtype=float)
@@ -78,8 +81,13 @@ class SoftContactHistory:
             """World reset epochs each record was written at."""
             self.owner = wp.full(1, -1, dtype=wp.int32)
             """History id of the pipeline that last wrote the buffer's records."""
-        self.replayed = False
-        """Whether the last collision pass replayed the anchors, so they describe its records."""
+
+    def use_fresh_points(self, contacts: Contacts) -> None:
+        """Mirror fresh geometry for consumers when a pipeline without matching fills this buffer."""
+        wp.copy(self.anchors.barycentric, contacts.soft_contact_barycentric)
+        wp.copy(self.anchors.body_pos, contacts.soft_contact_body_pos)
+        self.anchors.normal_force.fill_(-1.0)
+        self.anchors.enabled.fill_(False)
 
 
 @wp.func
@@ -423,4 +431,4 @@ class SoftContactMatcher:
             ],
             device=contacts.soft_contact_count.device,
         )
-        history.replayed = True
+        history.anchors.enabled.fill_(True)

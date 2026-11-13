@@ -1670,7 +1670,7 @@ def _friction_slip(
     With anchors, ``x`` and ``bx`` are the anchor points, and the slip is their drift since the record was
     first seen. Without anchors, or on a moving surface, it is this step's motion.
     """
-    if anchors.body_pos and wp.length_sq(surface_velocity) == 0.0:
+    if anchors.enabled and anchors.enabled[0] and wp.length_sq(surface_velocity) == 0.0:
         return x - bx
     return relative_translation
 
@@ -1678,7 +1678,7 @@ def _friction_slip(
 @wp.func
 def _kept_normal_force(anchors: SoftContactAnchors, contact_index: int):
     """Normal force an anchored record carried at the end of the previous step, or -1 without one."""
-    if anchors.normal_force:
+    if anchors.enabled and anchors.enabled[0]:
         return anchors.normal_force[contact_index]
     return -1.0
 
@@ -1697,6 +1697,7 @@ def relax_body_particle_contact_anchors(
     soft_contact_normal: wp.array[wp.vec3],
     soft_contact_body_vel: wp.array[wp.vec3],
     anchor_barycentric: wp.array[wp.vec3],
+    anchors_enabled: wp.array[wp.bool],
     # in/out
     anchor_body_pos: wp.array[wp.vec3],
 ):
@@ -1705,6 +1706,8 @@ def relax_body_particle_contact_anchors(
     Drift beyond the friction regularization length within a step is sliding. Kept, it would pull a
     body back once it stops; the collision pipeline replays the dragged anchor instead.
     """
+    if not anchors_enabled[0]:
+        return
     for i in range(wp.tid(), wp.min(soft_contact_count[0], soft_contact_max), worker_count):
         corners = soft_contact_indices[i]
         if corners[0] < 0 or wp.length_sq(soft_contact_body_vel[i]) > 0.0:
@@ -1750,6 +1753,7 @@ def record_body_particle_contact_normal_forces(
     contact_kd: wp.array[float],
     use_log_barrier: bool,
     contact_damping_bidirectional: bool,
+    anchors_enabled: wp.array[wp.bool],
     # out
     anchor_normal_force: wp.array[float],
 ):
@@ -1760,6 +1764,8 @@ def record_body_particle_contact_normal_forces(
     the iterates, whose inertial start overstates penetration and damping. A record that does not touch at the
     end of the step stores no load (-1), so a substep in which it touches down uses its elastic force.
     """
+    if not anchors_enabled[0]:
+        return
     for i in range(wp.tid(), wp.min(soft_contact_count[0], soft_contact_max), worker_count):
         corners = soft_contact_indices[i]
         if corners[0] < 0 or not _soft_contact_force_enabled(i, contact_filter):

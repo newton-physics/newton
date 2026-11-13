@@ -210,27 +210,26 @@ def _rigid_lambda_retention(alpha: float, gamma: float, use_compliant_alm: bool)
     return gamma if use_compliant_alm else alpha * gamma
 
 
-def _replayed_soft_contact_history(contacts: Contacts | None) -> SoftContactHistory | None:
-    """History whose anchors describe the buffer's current soft records, if the last collision pass replayed them."""
-    history = contacts._soft_contact_history if contacts is not None else None
-    return history if history is not None and history.replayed else None
+def _soft_contact_history(contacts: Contacts | None) -> SoftContactHistory | None:
+    """Allocated contact history, whose geometry stays current even when anchoring is disabled."""
+    return contacts._soft_contact_history if contacts is not None else None
 
 
 def _soft_contact_anchors(contacts: Contacts) -> SoftContactAnchors:
-    """Anchors friction acts on, so it can hold a static tangential load; null without soft contact matching."""
-    history = _replayed_soft_contact_history(contacts)
+    """Allocated anchors, with a device flag selecting anchored or ordinary friction."""
+    history = _soft_contact_history(contacts)
     return history.anchors if history is not None else SoftContactAnchors()
 
 
 def _soft_contact_barycentric(contacts: Contacts) -> wp.array:
-    """Soft-side contact points VBD solves at: the anchors when the records were replayed, else this pass's points."""
-    history = _replayed_soft_contact_history(contacts)
+    """Soft-side contact points VBD solves at, mirrored from fresh points when anchoring is disabled."""
+    history = _soft_contact_history(contacts)
     return history.anchors.barycentric if history is not None else contacts.soft_contact_barycentric
 
 
 def _soft_contact_body_pos(contacts: Contacts) -> wp.array:
-    """Body-side contact points VBD solves at: the anchors when the records were replayed, else this pass's points."""
-    history = _replayed_soft_contact_history(contacts)
+    """Body-side contact points VBD solves at, mirrored from fresh points when anchoring is disabled."""
+    history = _soft_contact_history(contacts)
     return history.anchors.body_pos if history is not None else contacts.soft_contact_body_pos
 
 
@@ -3125,7 +3124,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self, state_in: State, state_out: State, contacts: Contacts | None, dt: float
     ):
         """Store each anchored record's final normal load, the friction cone of its next step."""
-        history = _replayed_soft_contact_history(contacts)
+        history = _soft_contact_history(contacts)
         if history is None or self._particle_contact_worker_count == 0:
             return
         body_q, body_q_prev, body_qd = self._body_poses_for_particles(state_in, state_out)
@@ -3157,6 +3156,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.body_particle_contact_material_kd,
                 self.rigid_soft_contact_use_log_barrier,
                 self.soft_contact_damping_bidirectional,
+                history.anchors.enabled,
             ],
             outputs=[history.anchors.normal_force],
             device=self.device,
@@ -3164,7 +3164,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     def _relax_body_particle_contact_anchors(self, state_out: State, contacts: Contacts | None, dt: float):
         """Keep body-particle contact anchors within the friction regularization length."""
-        history = _replayed_soft_contact_history(contacts)
+        history = _soft_contact_history(contacts)
         if history is None or self._particle_contact_worker_count == 0:
             return
         wp.launch(
@@ -3183,6 +3183,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 contacts.soft_contact_normal,
                 contacts.soft_contact_body_vel,
                 history.anchors.barycentric,
+                history.anchors.enabled,
             ],
             outputs=[history.anchors.body_pos],
             device=self.device,

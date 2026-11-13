@@ -3174,7 +3174,6 @@ class CollisionPipeline:
         if history is not None:
             # Any pass that rewrites the soft records makes them its own history.
             history.owner.fill_(self._soft_contact_history_id)
-            history.replayed = False
 
         # A reused buffer can retain mesh tags from a full-surface pipeline. The mesh pass
         # resets them itself; without that pass, replacement particle rows need invalid tags.
@@ -3725,6 +3724,8 @@ class CollisionPipeline:
         # Anchor the soft records once every soft producer has written them.
         if self._soft_contact_matcher is not None and state.particle_q:
             self._soft_contact_matcher.replay(model, state, contacts)
+        elif history is not None:
+            history.use_fresh_points(contacts)
 
         # Preserve the previous provenance if validation or collision setup fails.
         contacts._contact_matching_mode = self.contact_matching
