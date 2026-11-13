@@ -36,8 +36,27 @@ def create_closest_hit(config, scene):
         direction: wp.vec3f,
         camera_forward: wp.vec3f,
     ) -> raytrace.ClosestHit:
+        # Global planes first: a nearer hit shortens the traversals.
+        if wp.static(config.enable_global_world):
+            for p in range(wp.static(len(scene.planes))):
+                si = wp.static(scene.planes[p])
+                distance, normal = raycast.ray_intersect_shape(
+                    shape_transforms[si],
+                    shape_sizes[si],
+                    GeoType.PLANE,
+                    origin,
+                    direction,
+                    wp.static(config.enable_backface_culling),
+                )
+                if distance >= 0.0 and distance < hit.distance:
+                    hit.distance = distance
+                    hit.normal = normal
+                    hit.shape_index = wp.uint32(si)
+                    hit.bary_u = 0.0
+                    hit.bary_v = 0.0
+                    hit.face_idx = -1
         # Unrolled: dynamic traversal loops miscompile with warp-optix 0.3.0.
-        for i in range(wp.static(2 if config.enable_global_world else 1)):
+        for i in range(wp.static(2 if config.enable_global_world and scene.has_global_instances else 1)):
             world = wp.where(i == 1, wp.static(world_count), world_index)
             interval = ray_interval(origin, direction, wp.static(extent), hit.distance)
             if wp.static(scene.has_instances) and interval[1] >= interval[0]:
@@ -111,8 +130,21 @@ def create_first_hit(config, scene):
         direction: wp.vec3f,
         max_dist: wp.float32,
     ) -> wp.bool:
+        if wp.static(config.enable_global_world):
+            for p in range(wp.static(len(scene.planes))):
+                si = wp.static(scene.planes[p])
+                distance, _normal = raycast.ray_intersect_shape_no_normal(
+                    shape_transforms[si],
+                    shape_sizes[si],
+                    GeoType.PLANE,
+                    origin,
+                    direction,
+                    wp.static(config.enable_backface_culling),
+                )
+                if distance >= 0.0 and distance < max_dist:
+                    return True
         # Unrolled: dynamic traversal loops miscompile with warp-optix 0.3.0.
-        for i in range(wp.static(2 if config.enable_global_world else 1)):
+        for i in range(wp.static(2 if config.enable_global_world and scene.has_global_instances else 1)):
             world = wp.where(i == 1, wp.static(world_count), world_index)
             interval = ray_interval(origin, direction, wp.static(extent), max_dist)
             if wp.static(scene.has_instances) and interval[1] >= interval[0]:

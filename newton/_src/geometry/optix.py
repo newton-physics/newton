@@ -73,7 +73,8 @@ class Scene:
 
     The cell grid, world count and cell extent are fixed when the scene is built, so kernels
     compile them in. Shapes must stay within twice their initial distance from the origin, and
-    infinite planes are bounded by the cell.
+    per-world infinite planes are bounded by the cell. Global planes (usually the ground) are not
+    instanced; kernels intersect them analytically.
     """
 
     def __init__(self, model):
@@ -107,6 +108,9 @@ class Scene:
         )
         enabled = leaves[leaves >= 0]
         sources = model.shape_source_ptr.numpy() if model.shape_count else np.empty(0, dtype=np.uint64)
+        shape_world = model.shape_world.numpy() if model.shape_count else np.empty(0, dtype=np.int32)
+        global_plane = (types[enabled] == GeoType.PLANE) & (shape_world[enabled] < 0)
+        self.planes = tuple(int(si) for si in enabled[global_plane])
 
         self.ray_pipelines = {}
         self.geometry = []
@@ -125,7 +129,7 @@ class Scene:
             is_mesh = types[si] == GeoType.MESH
             handles[si] = mesh_handles[int(sources[si])] if is_mesh else primitive.id
         self.traversables = wp.array(handles, dtype=wp.uint64, device=model.device)
-        indices = enabled
+        indices = enabled[~global_plane]
         self.indices = wp.array(indices, dtype=wp.int32, device=model.device)
 
         self.world_count = model.world_count
@@ -141,6 +145,7 @@ class Scene:
         # Room for shapes to move; the padding also encloses the primitives' padded unit cube.
         self.extent = max(2.0 * 1.01 * radius, 1.0)
         self.has_instances = len(indices) > 0
+        self.has_global_instances = bool(np.any(shape_world[indices] < 0))
 
         grid, extent, world_count = self.grid, self.extent, self.world_count
 
@@ -322,8 +327,18 @@ def _create_ray_pipeline(scene, enable_global_world, write_dist, write_shape_id,
         distance = float(wp.static(raycast.MAXVAL))
         shape = int(-1)
         normal = wp.vec3(0.0)
+        if wp.static(enable_global_world) or ray_worlds[tid] < 0:
+            for p in range(wp.static(len(scene.planes))):
+                si = wp.static(scene.planes[p])
+                plane_distance, plane_normal = raycast.ray_intersect_shape(
+                    shape_transforms[si], shape_sizes[si], GeoType.PLANE, origin, direction, False
+                )
+                if plane_distance >= 0.0 and plane_distance < distance:
+                    shape = si
+                    distance = plane_distance
+                    normal = plane_normal
         # Match the camera's unrolled local/global traversal (OptiX 0.3.0).
-        for i in range(wp.static(2 if enable_global_world else 1)):
+        for i in range(wp.static(2 if enable_global_world and scene.has_global_instances else 1)):
             world = wp.where(i == 1 or ray_worlds[tid] < 0, wp.static(world_count), ray_worlds[tid])
             interval = ray_interval(origin, direction, wp.static(extent), distance)
             if wp.static(scene.has_instances) and interval[1] >= interval[0]:
