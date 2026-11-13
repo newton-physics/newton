@@ -1,0 +1,1 @@
+Fix the Kamino DR TestMech, heterogeneous basics, and ANYmal D examples: the 16-world TestMech run now initializes, the box-on-plane and hinged-boxes assets collide with their platforms, and ANYmal D holds its standing stance with explicit PD drives.

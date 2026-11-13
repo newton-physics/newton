@@ -18,7 +18,13 @@ from newton.solvers.experimental.coupled import (
     SolverCoupledProxy,
 )
 from newton.tests.steel._fixtures import set_torsion_radius
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 DT = 1.0 / 480.0
 
@@ -279,6 +285,7 @@ def test_contact_feedback_is_consumed_exactly(test, device):
     test.assertLess(float(rollout.state_0.particle_qd.numpy()[:, 2].mean()), -0.05)
 
 
+@requires(*MUJOCO_MODULES)
 def test_box_lands_on_cloth_like_mujoco(test, device):
     """Land a box on a pinned cloth within 2 mm of the MuJoCo source."""
     final = {}
@@ -557,6 +564,7 @@ def test_articulated_effective_mass(test, device):
     np.testing.assert_allclose(out_inertia.numpy()[0], model.body_inertia.numpy()[link] * scale, rtol=1.0e-4)
 
 
+@requires(*MUJOCO_MODULES)
 def test_effective_mass_offset_com(test, device):
     """Measure endpoints from an offset COM, match MuJoCo at the COM, and treat an immobile point as free."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -885,7 +893,7 @@ def test_effective_mass_ignores_loop_closures(test, device):
                     bodies.append(body)
                 builder.add_articulation(joints)
                 if closure:
-                    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "Parallel joints"):
+                    with test.assertWarnsRegex(newton.NewtonWarning, "Parallel joints"):
                         builder.add_joint_ball(-1, bodies[0], enabled=False)
             model = builder.finalize(device=device)
             solver = _steel(model)

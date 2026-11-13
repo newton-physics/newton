@@ -31,10 +31,12 @@ from newton._src.geometry.sdf_mc import _get_marching_cubes_class, get_triangle_
 from newton._src.geometry.utils import _scan_scratch_size, scan_with_total
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
     add_function_test,
     capture_with_cuda_driver,
     get_selected_cuda_test_devices,
     get_test_devices,
+    requires,
 )
 
 # --- Configuration ---
@@ -65,14 +67,16 @@ cuda_devices = get_selected_cuda_test_devices()
 scan_devices = get_test_devices()
 
 solvers = {
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
-        model,
-        use_mujoco_cpu=False,
-        use_mujoco_contacts=False,
-        njmax=500,
-        nconmax=200,
-        solver="newton",
-        ls_iterations=100,
+    "mujoco_warp": requires(*MUJOCO_MODULES)(
+        lambda model: newton.solvers.SolverMuJoCo(
+            model,
+            use_mujoco_cpu=False,
+            use_mujoco_contacts=False,
+            njmax=500,
+            nconmax=200,
+            solver="newton",
+            ls_iterations=100,
+        )
     ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
 }
@@ -1408,6 +1412,7 @@ def test_hydroelastic_margin_contact_area_is_deprecated(test, device, reduce_con
     )
 
 
+@requires(*MUJOCO_MODULES)
 def test_mujoco_warp_hydroelastic_speculative_activation(test, device):
     """Keep speculative contacts inactive until they enter the margin band."""
     model, state_0, body_b = _build_margin_gap_boxes(device)
@@ -2257,6 +2262,7 @@ def test_exported_margin_stiffness_matches_shape_series_combination(test, device
     )
 
 
+@requires(*MUJOCO_MODULES)
 def test_mujoco_hydroelastic_penetration_depth(test, device):
     """Test that hydroelastic penetration depth matches expectation.
 
@@ -2862,6 +2868,14 @@ add_function_test(
     test_stacked_small_primitive_cubes_hydroelastic,
     devices=cuda_devices,
     solver_fn=solvers["mujoco_warp"],
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_stacked_mesh_cubes_hydroelastic_xpbd",
+    test_stacked_mesh_cubes_hydroelastic,
+    devices=cuda_devices,
+    solver_fn=solvers["xpbd"],
 )
 
 add_function_test(

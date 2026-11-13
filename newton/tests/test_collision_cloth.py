@@ -40,11 +40,11 @@ from newton._src.solvers.vbd.solver_vbd import _self_contact_record_bounds
 from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector, leq_n_ring_vertices, set_to_csr
 from newton.solvers import SolverVBD
 from newton.tests.unittest_utils import (
-    USD_AVAILABLE,
     add_function_test,
     assert_np_equal,
     get_cuda_test_devices,
     get_test_devices,
+    requires,
 )
 
 
@@ -517,7 +517,7 @@ def get_data():
     return vertices, faces
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 def test_vertex_triangle_collision(test, device):
     vertices, faces = get_data()
 
@@ -528,11 +528,11 @@ def test_vertex_triangle_collision(test, device):
 
     for query_radius in rs:
         collision_detector.vertex_triangle_collision_detection(query_radius)
-        vertex_colliding_triangles_count_1 = collision_detector.vertex_colliding_triangles_count.numpy()
-        vertex_min_dis_1 = collision_detector.vertex_colliding_triangles_min_dist.numpy()
+        vertex_colliding_triangles_count_1 = collision_detector.vertex_colliding_triangles_count.numpy().copy()
+        vertex_min_dis_1 = collision_detector.vertex_colliding_triangles_min_dist.numpy().copy()
 
-        triangle_colliding_vertices_count_1 = collision_detector.triangle_colliding_vertices_count.numpy()
-        triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy()
+        triangle_colliding_vertices_count_1 = collision_detector.triangle_colliding_vertices_count.numpy().copy()
+        triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy().copy()
 
         _, _, vt_overflow, _ = collision_detector.check_self_contact_overflow(warn=False)
         test.assertFalse(vt_overflow)  # no vertex-triangle overflow
@@ -596,10 +596,10 @@ def test_vertex_triangle_collision(test, device):
 
     for query_radius in rs:
         collision_detector.vertex_triangle_collision_detection(query_radius)
-        vertex_colliding_triangles_count_1 = collision_detector.vertex_colliding_triangles_count.numpy()
-        vertex_min_dis_1 = collision_detector.vertex_colliding_triangles_min_dist.numpy()
+        vertex_colliding_triangles_count_1 = collision_detector.vertex_colliding_triangles_count.numpy().copy()
+        vertex_min_dis_1 = collision_detector.vertex_colliding_triangles_min_dist.numpy().copy()
 
-        triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy()
+        triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy().copy()
 
         wp.launch(
             kernel=validate_vertex_collisions,
@@ -635,7 +635,7 @@ def test_vertex_triangle_collision(test, device):
         assert_np_equal(vertex_min_dis_2, vertex_min_dis_1)
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 def test_edge_edge_collision(test, device):
     vertices, faces = get_data()
 
@@ -646,8 +646,8 @@ def test_edge_edge_collision(test, device):
 
     for query_radius in rs:
         collision_detector.edge_edge_collision_detection(query_radius)
-        edge_colliding_edges_count_1 = collision_detector.edge_colliding_edges_count.numpy()
-        edge_min_dist_1 = collision_detector.edge_colliding_edges_min_dist.numpy()
+        edge_colliding_edges_count_1 = collision_detector.edge_colliding_edges_count.numpy().copy()
+        edge_min_dist_1 = collision_detector.edge_colliding_edges_min_dist.numpy().copy()
 
         _, _, _, ee_overflow = collision_detector.check_self_contact_overflow(warn=False)
         test.assertFalse(ee_overflow)  # no edge-edge overflow
@@ -1160,7 +1160,7 @@ def validate_edge_collisions_distance_filter(
         wp.expect_eq(get_edge_collision_buffer_edge_index(collision_info, e0_index, col) == e0_index, True)
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 def test_collision_filtering(test, device):
     """Ensure filtering lists include requested exclusions and respect n-ring topology.
 
@@ -1318,6 +1318,7 @@ def test_collision_filtering(test, device):
     wp.synchronize_device(device)
 
 
+@requires("pxr.Usd")
 def test_collision_detector_requires_adjacency(test, device):
     # TriMeshCollisionDetector needs the model's soft-mesh adjacency; a missing one is a clear error.
     vertices, faces = get_data()
@@ -1438,6 +1439,7 @@ def test_edge_topology_reciprocity(test, device):
             np.testing.assert_allclose(forces_np.sum(axis=0), 0.0, atol=1.0e-3)
 
 
+@requires("pxr.Usd")
 def test_collision_filter_decouple(test, device):
     # Providing an explicit vertex-triangle filter must not suppress edge-edge generation:
     # the edge-edge side is still built from its external map (the two families decouple).
@@ -1565,6 +1567,7 @@ def test_sorted_contact_rows(test, device):
     assert_np_equal(detector_sorted.vertex_colliding_triangles.numpy(), first)
 
 
+@requires("pxr.Usd")
 def test_collision_info_injection(test, device):
     """Verify an injected TriMeshCollisionInfo yields results identical to self-allocation.
 
@@ -1623,6 +1626,7 @@ def test_collision_info_injection(test, device):
         )
 
 
+@requires("pxr.Usd")
 def test_pipeline_soft_self_contact(test, device):
     """Verify pipeline-driven self-contact matches a standalone detector and rebinds per buffer.
 
@@ -1746,6 +1750,7 @@ def test_pipeline_soft_self_contact(test, device):
     test.assertEqual(unconfigured.soft_contact_gap, 0.05)
 
 
+@requires("pxr.Usd")
 def test_soft_self_contact_buffer_validation(test, device):
     """Reject invalid self-contact mesh sizes and incompatible result buffers."""
     for particle_count, tri_count, edge_count in ((0, 1, 1), (1, 0, 1), (1, 1, 0)):

@@ -92,7 +92,7 @@ import os
 import secrets
 import zipfile
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -409,7 +409,7 @@ def save_sparse_data(
         newton_version if newton_version is not None else _resolve_newton_version(),
         dtype=np.str_,
     )
-    arrays[_CREATED_UTC_KEY] = np.asarray(datetime.now(timezone.utc).isoformat(), dtype=np.str_)
+    arrays[_CREATED_UTC_KEY] = np.asarray(datetime.now(UTC).isoformat(), dtype=np.str_)
 
     # ``np.savez`` appends ``.npz`` to its target, so the tmp path must
     # already end in ``.npz`` for the post-save ``os.replace`` to find

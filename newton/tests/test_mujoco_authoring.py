@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton.solvers import mujoco
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 def _add_revolute(builder: newton.ModelBuilder, label: str) -> tuple[int, int]:
@@ -27,6 +28,7 @@ def _add_revolute(builder: newton.ModelBuilder, label: str) -> tuple[int, int]:
 class TestMuJoCoActuatorAuthoring(unittest.TestCase):
     """Tests for public MuJoCo actuator authoring helpers."""
 
+    @requires(*MUJOCO_MODULES)
     def test_add_actuator_dcmotor(self):
         """Match native shortcut resolution without duplicating dynamics tests."""
         native = newton.solvers.SolverMuJoCo.import_mujoco()[0]
@@ -116,6 +118,7 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
         np.testing.assert_array_equal(solver.mj_model.actuator_gaintype, int(native.mjtGain.mjGAIN_DCMOTOR))
         self.assertEqual(solver.mj_model.nu, 4)
 
+    @requires(*MUJOCO_MODULES)
     def test_add_actuator_dcmotor_nominal_inference_uses_damping(self):
         """Include actuator damping when inferring electrical parameters."""
         native = newton.solvers.SolverMuJoCo.import_mujoco()[0]
@@ -177,6 +180,7 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "dof"):
             mujoco.add_actuator_motor(builder, target=mujoco.ActuatorTarget.joint(joint))
 
+    @requires(*MUJOCO_MODULES)
     def test_d6_actuator_drives_selected_axis(self):
         """Drive each D6 axis through both local and absolute DOF targets."""
         native = newton.solvers.SolverMuJoCo.import_mujoco()[0]
@@ -210,6 +214,7 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
                     expected[1 + dof] = 2.0
                     np.testing.assert_allclose(data.qfrc_actuator, expected, atol=1e-7)
 
+    @requires(*MUJOCO_MODULES)
     def test_ball_free_targets_require_native_gear(self):
         """Reject ambiguous Newton DOF selection on native ball/free transmissions."""
         rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2)
@@ -257,6 +262,7 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
                     self.assertGreater(velocities[0][angular_start + 1], 0.0)
                     self.assertAlmostEqual(velocities[0][angular_start], 0.0, places=6)
 
+    @requires(*MUJOCO_MODULES)
     def test_zero_feedback_gains(self):
         """Allow a damping-only position actuator and a disabled velocity actuator."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -276,6 +282,7 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
             with self.subTest(gains=gains), self.assertRaisesRegex(ValueError, "nonnegative"):
                 mujoco.add_actuator_position(builder, target, **gains)
 
+    @requires(*MUJOCO_MODULES)
     def test_import_actuator_damping_and_armature(self):
         """Preserve scalar and vector passive properties on native MuJoCo."""
         for damping in ("3", "1 0 0"):
@@ -370,6 +377,7 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
             [[1, -1], [1, -1], [1, 2], [1, -1], [1, 2]],
         )
 
+    @requires(*MUJOCO_MODULES)
     def test_remap_mjcf_actuator_targets_when_merging_builders(self):
         """Offset imported ctrl-direct actuator targets for each merged builder copy."""
         for actuator in (
@@ -468,6 +476,7 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         )
         np.testing.assert_array_equal(model.mujoco.actuator_trnid.numpy(), [[tendon, -1]])
 
+    @requires(*MUJOCO_MODULES)
     def test_add_spatial_tendon(self):
         """Compile complete spatial tendon branches with a wrapping geom and pulley."""
         builder = newton.ModelBuilder()
@@ -591,6 +600,7 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                 self.assertEqual(builder._custom_frequency_counts.get("mujoco:tendon", 0), 0)
                 self.assertEqual(builder._custom_frequency_counts.get("mujoco:tendon_joint", 0), 0)
 
+    @requires(*MUJOCO_MODULES)
     def test_weld_default_preserves_initial_relative_pose(self):
         """An omitted weld pose preserves the offset; explicit identity removes it."""
         for use_mujoco_cpu in (True, False):
@@ -617,6 +627,7 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                     positions = state0.body_q.numpy()[:, :3]
                     np.testing.assert_allclose(positions[1] - positions[0], [expected_offset, 0.0, 0.0], atol=1e-5)
 
+    @requires(*MUJOCO_MODULES)
     def test_weld_runtime_relpose_overrides_inferred_pose(self):
         """An explicit relpose set at runtime survives MuJoCo's constant refresh."""
         for use_mujoco_cpu in (True, False):
@@ -650,6 +661,7 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                 positions = state0.body_q.numpy()[:, :3]
                 np.testing.assert_allclose(positions[1] - positions[0], [0.0, 0.0, 0.0], atol=1e-5)
 
+    @requires(*MUJOCO_MODULES)
     def test_weld_relpose_inference_per_world(self):
         """Each world infers or keeps its weld pose according to its own authored relpose."""
         blueprint = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -703,6 +715,7 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         np.testing.assert_allclose(model.mujoco.equality_constraint_anchor.numpy()[0], [0.1, 0.2, 0.3])
         np.testing.assert_allclose(model.mujoco.equality_constraint_polycoef.numpy()[2], [1.0, 2.0, 0.0, 0.0, 0.0])
 
+    @requires(*MUJOCO_MODULES)
     def test_add_equality_tendon(self):
         """Remap tendon equalities per world and propagate runtime polycoef updates."""
         blueprint = newton.ModelBuilder()
@@ -729,6 +742,7 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :5], polycoef)
 
+    @requires(*MUJOCO_MODULES)
     def test_reject_heterogeneous_tendon_equality_targets(self):
         """Reject separate worlds whose tendon equalities target different world-relative tendons."""
         for swap_world1, error in ((False, None), (True, "tendon1 mismatch at position 0")):
@@ -827,6 +841,7 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                         helper(builder, *operands, custom_attributes=extras)
                     self.assertEqual(builder._custom_frequency_counts.get("mujoco:equality_constraint", 0), 0)
 
+    @requires(*MUJOCO_MODULES)
     def test_weld_preserves_each_world_initial_pose(self):
         """Infer weld-to-world poses per copy and preserve them across notifications."""
         blueprint = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))

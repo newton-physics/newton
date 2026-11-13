@@ -17,7 +17,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.solvers.xpbd import kernels as xpbd_kernels
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 def test_particle_particle_friction_uses_relative_velocity(test, device):
@@ -1734,12 +1734,14 @@ def test_xpbd_contact_force_zero_when_no_contact(test, device):
     dt = 1.0 / 60.0
     state_in.clear_forces()
     collision_pipeline.collide(state_in, contacts)
+    # Seed the buffer so the step has to clear it
+    observables.contact_f.fill_(wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0))
     solver.step(state_in, state_out, control, contacts, dt, observables=observables)
 
-    ncontacts = int(contacts.rigid_contact_count.numpy()[0])
-    if ncontacts > 0:
-        forces = observables.contact_f.numpy()[:ncontacts]
-        np.testing.assert_allclose(forces, 0.0, atol=1e-6, err_msg="No contact force expected in free-fall")
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+    np.testing.assert_allclose(
+        observables.contact_f.numpy(), 0.0, atol=1e-6, err_msg="No contact force expected in free-fall"
+    )
 
 
 def test_xpbd_contact_force_zero_when_not_touching(test, device):
@@ -2203,6 +2205,7 @@ def test_xpbd_parent_f_centripetal_zero_g(test, device):
     )
 
 
+@requires(*MUJOCO_MODULES)
 def test_xpbd_parent_f_consistent_across_solvers(test, device):
     """XPBD's ``body_parent_f`` must match MuJoCo / Featherstone for a static pendulum.
 

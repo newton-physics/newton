@@ -22,14 +22,14 @@ from newton.tests._usd_deformable_test_utils import (
     group_labels,
     group_range,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 
 _MIXED_ASSET = os.path.join(os.path.dirname(__file__), "assets", "deformables_mixed.usda")
 
 _CABLE_PTS = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUSDDeformableGroups(unittest.TestCase):
     """Prim-path group registries across lifecycle transformations."""
 
