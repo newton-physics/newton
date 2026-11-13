@@ -2425,6 +2425,41 @@ class TestModelMesh(unittest.TestCase):
                 builder._validate_structure()
 
 
+class TestShapePlaneEquation(unittest.TestCase):
+    def _check_plane(self, plane):
+        builder = newton.ModelBuilder()
+        shape = builder.add_shape_plane(plane=plane)
+        xform = builder.shape_transform[shape]
+        normal = np.array(plane[:3], dtype=np.float64)
+        norm = np.linalg.norm(normal)
+        normal /= norm
+        collision_normal = wp.quat_rotate(xform.q, wp.vec3(0.0, 0.0, 1.0))
+        assert_np_equal(np.array(collision_normal), normal, tol=1.0e-5)
+        assert_np_equal(np.array(xform.p), -plane[3] / norm * normal, tol=1.0e-5)
+
+    def test_plane_equation_sets_collision_normal_and_offset(self):
+        """The plane's local +Z is the equation normal and the plane passes through -d/|n| * n/|n|."""
+        cases = [
+            (0.0, 0.0, 1.0, 0.0),
+            (0.0, 0.0, -1.0, 0.0),
+            (0.0, 0.0, -1.0, 2.0),
+            (0.0, 0.0, -3.0, 6.0),
+            (0.0, -1.0, 0.0, 1.0),
+            (1.0, 0.0, 0.0, 0.0),
+            (0.0, -0.05, -1.0, 0.0),
+            (1.0e-4, 0.0, 1.0, 0.0),
+        ]
+        for plane in cases:
+            with self.subTest(plane=plane):
+                self._check_plane(plane)
+
+    def test_plane_equation_accepts_integers(self):
+        """A plane equation given as integers is accepted."""
+        for plane in [(0, 0, 1, 0), (0, 0, -1, 2), (0, 1, 0, -1)]:
+            with self.subTest(plane=plane):
+                self._check_plane(plane)
+
+
 class TestShapeConfigValidation(unittest.TestCase):
     def test_shape_config_rejects_invalid_density(self):
         """Reject negative and non-finite density values."""
