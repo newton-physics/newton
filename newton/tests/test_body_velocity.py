@@ -28,7 +28,7 @@ import warp as wp
 
 import newton
 from newton._src.viewer.kernels import compute_com_positions
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 class TestBodyVelocity(unittest.TestCase):
@@ -682,12 +682,16 @@ solvers = {
         1e-3,  # Internal free-joint speeds differ, but the public boundary is COM-based.
     ),
     "mujoco_cpu": (
-        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
+        requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        ),
         True,
         1e-3,  # Higher tolerance due to body origin velocity integration
     ),
     "mujoco_warp": (
-        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
+        requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+        ),
         True,
         1e-3,  # Higher tolerance due to body origin velocity integration
     ),

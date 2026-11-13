@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..utils import is_graph_capture_allocation_enabled
 from ..utils.deprecation import RemovedAttribute
 from .clamping.base import ClampingBase
 from .clamping.clamping_current_duty import ClampingCurrentDuty
@@ -666,6 +667,7 @@ class Actuator:
             self.device,
             self._drive_output,
             self._motor_voltage,
+            self.requires_grad,
         )
 
     def is_stateful(self) -> bool:
@@ -673,7 +675,13 @@ class Actuator:
         return any(p.is_stateful() for p in self.input_processors) or self.drive.is_stateful()
 
     def is_graphable(self) -> bool:
-        """Return True if all components can be captured in a CUDA graph."""
+        """Return True if all components can be captured in a CUDA graph.
+
+        With ``requires_grad``, each step allocates fresh buffers, so capture
+        also needs allocation during capture (Warp's CUDA memory pool).
+        """
+        if self.requires_grad and not is_graph_capture_allocation_enabled(self.device):
+            return False
         return all(p.is_graphable() for p in self.input_processors) and self._effort_mode.is_graphable()
 
     def state(self) -> Actuator.State | None:
@@ -793,6 +801,16 @@ class Actuator:
         current_states = (current_act_state and current_act_state.input_processor_states) or no_states
         next_states = (next_act_state and next_act_state.input_processor_states) or no_states
 
+        computed_forces, applied_forces, supply_voltage = (
+            self._computed_forces,
+            self._applied_forces,
+            self._supply_voltage,
+        )
+        if self.requires_grad:
+            computed_forces, applied_forces = wp.empty_like(computed_forces), wp.empty_like(applied_forces)
+            if supply_voltage is not None:
+                supply_voltage = wp.empty_like(supply_voltage)
+
         # --- 1. Input processors (read current_state, write next_state) ---
         inputs = InputProcessorBase.Inputs(
             positions=positions,
@@ -832,7 +850,7 @@ class Actuator:
             supply_current = _require_array(sim_control, self.control_supply_current_attr)
         if self.motor is not None:
             self.motor.compute_supply_voltage(
-                battery_voltage, self.actuator_indices, self._supply_voltage, device=self.device
+                battery_voltage, self.actuator_indices, supply_voltage, device=self.device
             )
 
         # --- 3-5. Effort mode: drive, clamps, optional motor ---
@@ -849,13 +867,13 @@ class Actuator:
             inputs.vel_indices,
             inputs.target_pos_indices,
             inputs.target_vel_indices,
-            self._computed_forces,
-            self._applied_forces,
+            computed_forces,
+            applied_forces,
             drive_state,
             dt,
             custom_inputs,
             bias_force,
-            self._supply_voltage,
+            supply_voltage,
             supply_current,
             self.actuator_indices,
         )
@@ -873,7 +891,7 @@ class Actuator:
             dim=self.num_actuators,
             inputs=[
                 output_forces,
-                self._computed_forces,
+                computed_forces,
                 self.effort_indices,
             ],
             outputs=[applied_output, computed_output],

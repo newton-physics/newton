@@ -127,10 +127,10 @@ class Example:
 
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
-            solver_config.dvi.max_alternating_iterations = 7
-            solver_config.dvi.inequality_sweeps_per_iteration = 1
+            solver_config.scc.max_alternating_iterations = 7
+            solver_config.scc.inequality_sweeps_per_iteration = 1
             solver_config.constraints.gamma = 0.1
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:

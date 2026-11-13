@@ -4,7 +4,6 @@
 """Tests for Newton actuators."""
 
 import dataclasses
-import importlib.util
 import json
 import math
 import os
@@ -53,22 +52,13 @@ from newton.actuators import (
     parse_battery_prim,
 )
 from newton.selection import ArticulationView
-from newton.tests.unittest_utils import get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, get_test_devices, has_module, requires
 
-try:
+if has_module("pxr.Usd"):
     from pxr import Usd
 
-    HAS_USD = True
-except ImportError:
-    HAS_USD = False
 
-
-_HAS_ONNX = importlib.util.find_spec("onnx") is not None
-_HAS_TORCH = importlib.util.find_spec("torch") is not None
-_HAS_WARP_NN = importlib.util.find_spec("warp_nn") is not None
-
-
-if _HAS_TORCH:
+if has_module("torch"):
     import torch as _torch
 
     class _LSTMNet(_torch.nn.Module):
@@ -702,6 +692,37 @@ class TestDrivePID(unittest.TestCase):
 
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
 
+    def test_integral_gradient_with_fixed_gains(self):
+        """Gains without gradients still pass target gradients through the integral.
+
+        With ``kp = 2``, ``ki = 3``, ``dt = 0.1``, ``q = 0`` and targets 10, 20, 30,
+        the last effort is ``2 * 30 + 0.3 * 60`` = 78; its derivative is
+        ``ki * dt`` = 0.3 for each earlier target and 2.3 for the last.
+        """
+        device = wp.get_device()
+        gains = [wp.full(1, v, dtype=float, device=device) for v in (2.0, 3.0, 0.0, math.inf)]
+        actuator = Actuator(wp.array([0], dtype=wp.uint32, device=device), drive=DrivePID(*gains), requires_grad=True)
+        sim_state = {
+            "joint_q": wp.zeros(1, dtype=float, device=device),
+            "joint_qd": wp.zeros(1, dtype=float, device=device),
+        }
+        targets = [wp.full(1, t, dtype=float, device=device, requires_grad=True) for t in (10.0, 20.0, 30.0)]
+        controls = [
+            {
+                "joint_target_q": t,
+                "joint_target_qd": wp.zeros(1, dtype=float, device=device),
+                "joint_f": wp.zeros(1, dtype=float, device=device, requires_grad=True),
+            }
+            for t in targets
+        ]
+        act_states = [actuator.state() for _ in range(4)]
+        with wp.Tape() as tape:
+            for k, control in enumerate(controls):
+                actuator.step(sim_state, control, act_states[k], act_states[k + 1], dt=0.1)
+        tape.backward(grads={controls[-1]["joint_f"]: wp.ones(1, dtype=float, device=device)})
+        np.testing.assert_allclose(controls[-1]["joint_f"].numpy(), [78.0], rtol=1e-6)
+        np.testing.assert_allclose([t.grad.numpy()[0] for t in targets], [0.3, 0.3, 2.3], rtol=1e-5)
+
 
 def _actuator_dofs(model):
     """Return the DOF of each actuator of *model*, indexed like per-actuator arrays."""
@@ -723,7 +744,7 @@ def _delay_state_of(actuator_state):
     )
 
 
-@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
+@requires("onnx", "warp_nn")
 class TestDriveNeuralGRU(unittest.TestCase):
     """DriveNeuralGRU ONNX loading and Warp-NN inference."""
 
@@ -1637,7 +1658,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         without_bias = build_model(self._save_gru("declared_none.onnx", metadata))
         self.assertEqual(without_bias.actuators[0].drive.custom_inputs, ())
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_model_builder_constructs_relative_onnx_usd_actuator(self):
         """Construct a finalized GRU actuator from a relative USD asset path."""
         model_path = self._save_gru("builder_gru.onnx")
@@ -1680,7 +1701,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         self.assertEqual(by_path[shared_path].num_actuators, 2)
         self.assertEqual(by_path[distinct_path].num_actuators, 1)
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_usd_dispatches_onnx_asset_to_gru(self):
         """Dispatch a USD actuator prim with gru model_type to DriveNeuralGRU."""
         from pxr import Sdf
@@ -1706,7 +1727,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         self.assertEqual(os.path.realpath(parsed.drive_kwargs["model_path"]), os.path.realpath(model_path))
 
 
-@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
+@requires("onnx", "warp_nn")
 class TestDriveNeuralMLP(unittest.TestCase):
     """DriveNeuralMLP - load via model_path, call compute() directly."""
 
@@ -2141,7 +2162,7 @@ class TestDriveNeuralMLP(unittest.TestCase):
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), expected_tau, delta=abs(expected_tau) * 3e-3)
 
 
-@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
+@requires("onnx", "warp_nn")
 class TestDriveNeuralLSTM(unittest.TestCase):
     """DriveNeuralLSTM - load via model_path, call compute() directly."""
 
@@ -2378,7 +2399,7 @@ class _TorchCheckpointTestMixin:
         return path
 
 
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+@requires("torch")
 class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
     """DriveNeuralMLP loading from pt2 checkpoints."""
 
@@ -2485,7 +2506,7 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
         np.testing.assert_allclose(forces.numpy(), expected.cpu().numpy(), rtol=1e-4, atol=1e-6)
 
 
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+@requires("torch")
 class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
     """DriveNeuralLSTM loading from pt2 checkpoints."""
 
@@ -2746,6 +2767,75 @@ class TestMotorDC(unittest.TestCase):
                         tape.backward(grads={control.joint_f: wp.ones_like(control.joint_f)})
                         np.testing.assert_allclose(actuator.drive.kp.grad.numpy(), [0.75 if requested == 0.25 else 0.0])
                         tape.zero()
+
+    def test_battery_feedback_gradient_over_three_steps(self):
+        """Differentiate three actuator steps on one tape through the battery voltage.
+
+        The motor has ``kt = 1`` and 1 Ω and the joint does not move, so with
+        duty ``d = 0.5 * kp`` and supply ``V`` the effort is ``d V`` and the
+        supply current ``d^2 V``. A 10 V battery with resistance ``R = 1`` gives
+        the voltages 10, ``V_2 = 10 - 10 R d^2`` and ``V_3 = 10 - R d^2 V_2``.
+        The third effort ``d V_3 = 10 d - 10 d^3 + 10 d^5`` is 4.0625; its
+        derivative at ``kp = 1`` is 2.8125, and with respect to ``R`` it is
+        ``-d^3 V_2 + R d^5 * 10 = -0.625``. As in ``example_diffsim_drone``,
+        each step gets its own ``Control``, and the battery writes the next
+        voltage into the next one.
+        """
+        for device in get_test_devices():
+            with self.subTest(device=device), wp.ScopedDevice(device):
+                builder = newton.ModelBuilder()
+                joint = builder.add_joint_revolute(-1, builder.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA))
+                builder.add_articulation([joint])
+                slot = builder.add_actuator(
+                    DrivePD,
+                    index=0,
+                    kp=1.0,
+                    output_space=DriveOutputSpace.DUTY,
+                    motor=(MotorDC, {"kt": 1.0, "resistance": 1.0, "supply_from_battery": True}),
+                )
+                builder.add_battery(BatteryConstantResistance, [slot], nominal_voltage=10.0, resistance=1.0)
+                model = builder.finalize(device=device, requires_grad=True)
+                actuator, state = model.actuators[0], model.state()
+                controls = tuple(model.control() for _ in range(4))
+                for control in controls:
+                    control.joint_target_q.fill_(0.5)
+                with wp.Tape() as tape:
+                    for k in range(3):
+                        actuator.step(state, controls[k], dt=0.01)
+                        model.batteries[0].step(controls[k], controls[k + 1])
+                tape.backward(grads={controls[2].joint_f: wp.ones_like(controls[2].joint_f)})
+                np.testing.assert_allclose(controls[2].joint_f.numpy(), [4.0625], rtol=1e-6)
+                np.testing.assert_allclose(actuator.drive.kp.grad.numpy(), [2.8125], rtol=1e-6)
+                np.testing.assert_allclose(model.batteries[0].resistance.grad.numpy(), [-0.625], rtol=1e-6)
+
+    def test_battery_resistance_gradient_with_fixed_nominal_voltage(self):
+        """A differentiable resistance alone keeps each step's current for the backward pass.
+
+        A 10 V battery with ``R = 1`` sees 2 A, then 4 A, so the voltages are
+        ``10 - 2 R`` and ``10 - 4 R``, and their sum has derivative -6 with respect to ``R``.
+        """
+        device = wp.get_device()
+        battery = BatteryConstantResistance(
+            nominal_voltage=wp.full(1, 10.0, dtype=float, device=device),
+            resistance=wp.full(1, 1.0, dtype=float, device=device, requires_grad=True),
+            min_voltage=wp.zeros(1, dtype=float, device=device),
+            actuator_start=wp.array([0, 1], dtype=wp.int32, device=device),
+            actuators=wp.array([0], dtype=wp.int32, device=device),
+        )
+        controls = [
+            {
+                "actuator_supply_current": wp.full(1, current, dtype=float, device=device),
+                "actuator_supply_voltage": wp.zeros(1, dtype=float, device=device, requires_grad=True),
+            }
+            for current in (2.0, 4.0, 0.0)
+        ]
+        with wp.Tape() as tape:
+            for k in range(2):
+                battery.step(controls[k], controls[k + 1])
+        voltages = [c["actuator_supply_voltage"] for c in controls[1:]]
+        tape.backward(grads={v: wp.ones(1, dtype=float, device=device) for v in voltages})
+        np.testing.assert_allclose([v.numpy()[0] for v in voltages], [8.0, 6.0])
+        np.testing.assert_allclose(battery.resistance.grad.numpy(), [-6.0], rtol=1e-6)
 
     def test_compute(self):
         """Construct the motor directly and call compute() from a voltage command.
@@ -4308,6 +4398,63 @@ class TestActuatorStep(unittest.TestCase):
         _refresh_and_step(actuator, response, state, control, h)
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), implicit_tau, delta=abs(implicit_tau) * 1e-5)
 
+    def test_gradients_with_control_and_state_per_step(self):
+        """Differentiate five steps with one Control and actuator state per step.
+
+        Targets are ``t_k`` = 10, 20, 30, 40, 50 at ``q = 0`` with ``kp = 2``,
+        and the loss is the sum of all five efforts, so a buffer shared across
+        steps would mix their gradients.
+
+        * Delay of 3 steps: the five steps wrap its 3-row buffer. The steps read
+          ``t_0, t_0, t_0, t_0, t_1``.
+        * PID with ``ki = 3``, ``dt = 0.1``: ``effort_k = 2 t_k + 0.3 sum_{j<=k} t_j``,
+          so ``d loss / d t_j = 2 + 0.3 (5 - j)`` and ``d loss / d q = -10 - 0.3 * 15``.
+        * Max effort 50: the last three steps saturate and pass no gradient.
+        * Encoder reading the actuated joint itself: the drive sees ``2 q``,
+          so ``d loss / d q = -2 kp * 5``.
+        """
+        cases = (
+            (
+                (DrivePD, {"input_processors": [(InputProcessorDelay, {"delay_steps": 3})]}),
+                [20, 20, 20, 20, 40],
+                [8, 2, 0, 0, 0],
+                -10,
+            ),
+            ((DrivePID, {"ki": 3.0}), [23, 49, 78, 110, 145], [3.5, 3.2, 2.9, 2.6, 2.3], -14.5),
+            (
+                (DrivePD, {"clamping": [(ClampingMaxEffort, {"max_effort": 50.0})]}),
+                [20, 40, 50, 50, 50],
+                [2, 2, 0, 0, 0],
+                -4,
+            ),
+            (
+                (DrivePD, {"input_processors": [(InputProcessorEncoder, {"output_joint": 0})]}),
+                [20, 40, 60, 80, 100],
+                [2, 2, 2, 2, 2],
+                -20,
+            ),
+        )
+        for device in get_test_devices():
+            for (drive_class, kwargs), efforts, target_grads, q_grad in cases:
+                with self.subTest(device=device, case=efforts), wp.ScopedDevice(device):
+                    builder = newton.ModelBuilder()
+                    joint = builder.add_joint_revolute(-1, builder.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA))
+                    builder.add_articulation([joint])
+                    builder.add_actuator(drive_class, index=0, kp=2.0, **kwargs)
+                    model = builder.finalize(device=device, requires_grad=True)
+                    actuator, state = model.actuators[0], model.state()
+                    controls = tuple(model.control() for _ in range(5))
+                    act_states = tuple(actuator.state() for _ in range(6))
+                    targets = tuple(wp.full(1, 10.0 * (k + 1), dtype=float, requires_grad=True) for k in range(5))
+                    with wp.Tape() as tape:
+                        for k, control in enumerate(controls):
+                            wp.copy(control.joint_target_q, targets[k])
+                            actuator.step(state, control, act_states[k], act_states[k + 1], dt=0.1)
+                    tape.backward(grads={c.joint_f: wp.ones_like(c.joint_f) for c in controls})
+                    np.testing.assert_allclose([c.joint_f.numpy()[0] for c in controls], efforts, rtol=1e-5)
+                    np.testing.assert_allclose([t.grad.numpy()[0] for t in targets], target_grads, rtol=1e-5, atol=1e-6)
+                    np.testing.assert_allclose(state.joint_q.grad.numpy(), [q_grad], rtol=1e-5)
+
 
 # ---------------------------------------------------------------------------
 # 5. Implicit effort mode — validation and coupled-solve internals
@@ -4965,6 +5112,7 @@ class TestJointSpaceResponse(unittest.TestCase):
             expected[sl] = np.linalg.solve(J, h * f0) / h
         np.testing.assert_allclose(_arm_values(model, control.joint_f), expected, rtol=1e-3, atol=1e-3)
 
+    @requires(*MUJOCO_MODULES)
     def test_refresh_from_solve_captures_without_warmup(self):
         """refresh_from_solve captures and replays, with no warm-up call first.
 
@@ -4999,6 +5147,7 @@ class TestJointSpaceResponse(unittest.TestCase):
             atol=1e-6,
         )
 
+    @requires(*MUJOCO_MODULES)
     def test_response_from_mujoco_factorization(self):
         """Fill the response from MuJoCo's per-step factorized inertia.
 
@@ -5058,6 +5207,7 @@ class TestJointSpaceResponse(unittest.TestCase):
         np.testing.assert_allclose(_arm_values(model, control.joint_f)[:n], expected, rtol=1e-3, atol=1e-3)
         _assert_worlds_match(self, model, control.joint_f, rtol=1e-4, atol=1e-4)
 
+    @requires(*MUJOCO_MODULES)
     def test_response_from_mujoco_free_and_ball_joints(self):
         """Verify refresh_from_solve converts MuJoCo's free and ball joint coordinates.
 
@@ -5109,6 +5259,7 @@ class TestJointSpaceResponse(unittest.TestCase):
             response.inverse_blocks.numpy(), reference.inverse_blocks.numpy(), rtol=1e-4, atol=1e-5
         )
 
+    @requires(*MUJOCO_MODULES)
     def test_full_loop_response_from_mujoco_matches_refresh(self):
         """Closed-loop run with the coupled response from MuJoCo's inertia.
 
@@ -5258,7 +5409,7 @@ class TestActuatorBuilder(unittest.TestCase):
                 motor=MotorDC(array(0.5), array(2.0), array(12.0), supply_from_battery=array(0.0)),
             )
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_from_usd(self):
         """Load actuators from a USD stage and verify params after finalize.
 
@@ -5299,7 +5450,7 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertIsInstance(parsed, ActuatorParsed)
         self.assertEqual(parsed.drive_class, DrivePD)
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_from_usd_ignore_paths(self):
         """Actuator prims matched by ignore_paths are not registered."""
         test_dir = os.path.dirname(__file__)
@@ -5313,7 +5464,7 @@ class TestActuatorBuilder(unittest.TestCase):
         result2 = parse_usd(builder2, usd_path, ignore_paths=[".*Actuator"])
         self.assertEqual(result2["actuator_count"], 0)
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_from_usd_schema_plugin_not_loaded(self):
         """parse_actuator_prim works when the USD schema plugin is not registered.
 
@@ -5562,7 +5713,7 @@ class TestActuatorBuilder(unittest.TestCase):
             with self.subTest(name=name), self.assertRaisesRegex(KeyError, f"'{name}' is not known"):
                 source.get_attribute_frequency(name)
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_motor_from_usd(self):
         """Servos with a DC motor, a delay, backlash and a battery, loaded from USD and replicated.
 
@@ -5639,7 +5790,7 @@ class TestActuatorBuilder(unittest.TestCase):
             drawn = (duty * supply * duty / 2.0).reshape(2, 3)[:, :2].sum(axis=1)
             supply = np.ravel([[6.0 - 0.5 * max(i, 0.0)] * 2 + [5.0] for i in drawn])
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_usd_unknown_actuator_schema_warns(self):
         """An unknown Newton actuator API token warns; registered tokens and their bases do not."""
         stage = Usd.Stage.CreateInMemory()
@@ -5667,7 +5818,7 @@ def Xform "World"
         self.assertEqual(len(messages), 1)
         self.assertIn("NewtonFooAPI", messages[0])
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_usd_clamping_input_space(self):
         """Accept a newton:inputSpace equal to the space the clamp bounds and reject any other."""
         for input_space, valid in (("effort", True), ("duty", False)):
@@ -6187,6 +6338,7 @@ class TestStateReset(unittest.TestCase):
     wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()),
     "CUDA graph capture requires CUDA device with memory pools",
 )
+@requires(*MUJOCO_MODULES)
 class TestDelayGraphCapture(unittest.TestCase):
     """Verify delayed actuator is graph-safe with device-side write_idx.
 
@@ -6437,7 +6589,7 @@ class TestActuatorStateAssign(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "undeclared state attributes: extra"):
             Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
 
-    @unittest.skipUnless(_HAS_TORCH, "PyTorch is required")
+    @requires("torch")
     def test_assign_copies_torch_state_without_aliasing(self):
         """Copy Torch-backed drive state without aliasing the source tensors."""
         with _torch.inference_mode():
@@ -6570,7 +6722,7 @@ class TestDriveStateGraphCapture(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-@unittest.skipUnless(HAS_USD, "pxr not installed")
+@requires("pxr.Usd")
 class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """Verify ``parse_actuator_prim`` correctly handles neural drive
     prims with asset-typed ``newton:modelPath`` attributes.
@@ -6654,7 +6806,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
         return stage
 
-    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
+    @requires("onnx")
     def test_parse_mlp_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for MLP checkpoint."""
         model_path = self._make_mlp_checkpoint(metadata={"model_type": "mlp"})
@@ -6672,7 +6824,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.assertEqual(cls, ClampingDCMotor)
         self.assertAlmostEqual(kwargs["saturation_effort"], 100.0)
 
-    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
+    @requires("onnx")
     def test_parse_lstm_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for LSTM checkpoint."""
         model_path = self._make_lstm_checkpoint(metadata={"model_type": "lstm"})

@@ -9,6 +9,7 @@ import numpy as np
 import newton
 from newton.selection import ArticulationView
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 class TestMujocoSpatialTendon(unittest.TestCase):
@@ -426,6 +427,7 @@ class TestMujocoSpatialTendon(unittest.TestCase):
                 self.assertNotIn(unnamed_sites[0], sidesites)
                 self.assertEqual(len(messages), 2 if reference else 1)
 
+    @requires(*MUJOCO_MODULES)
     def test_spatial_tendon_simulation(self):
         """Verify that a spatial tendon with stiffness exerts forces and moves joints."""
         # Use an explicit springlength shorter than the initial tendon length
@@ -500,6 +502,7 @@ class TestMujocoSpatialTendon(unittest.TestCase):
                 msg=f"World 0 dof {d} ({joint_q[d]}) != World 1 dof {d} ({joint_q[d + num_dofs_per_world]})",
             )
 
+    @requires(*MUJOCO_MODULES)
     def test_spatial_tendon_with_actuator(self):
         """Verify that an actuator can target a spatial tendon."""
         mjcf = """<?xml version="1.0" ?>
@@ -559,6 +562,7 @@ class TestMujocoSpatialTendon(unittest.TestCase):
         joint_q = state_in.joint_q.numpy()
         self.assertTrue(np.all(np.isfinite(joint_q)), "Joint positions should be finite")
 
+    @requires(*MUJOCO_MODULES)
     def test_mixed_fixed_and_spatial_tendons(self):
         """Verify that fixed and spatial tendons coexist correctly."""
         mjcf = """<?xml version="1.0" ?>
@@ -762,6 +766,7 @@ class TestMujocoSpatialTendon(unittest.TestCase):
 
         np.testing.assert_array_equal(model.mujoco.tendon_wrap_articulation.numpy(), [0, 0, -1])
 
+    @requires(*MUJOCO_MODULES)
     def test_spatial_tendon_site_geom_disambiguation(self):
         """Verify that sites and geoms sharing the same name are correctly disambiguated."""
         mjcf = """<?xml version="1.0" ?>
@@ -906,6 +911,7 @@ class TestMujocoSpatialTendon(unittest.TestCase):
         wrap_num = mujoco_attrs.tendon_wrap_num.numpy()
         self.assertEqual(wrap_num[0], 1)  # only the valid site
 
+    @requires(*MUJOCO_MODULES)
     def test_spatial_tendon_warning_out_of_bounds_wrap(self):
         """Verify that out-of-bounds wrap ranges produce a warning during solver init."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))

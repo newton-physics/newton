@@ -8,19 +8,58 @@ transfer, and dynamic roller activation.
 """
 
 import math
+import sys
 import unittest
+import warnings
 from itertools import pairwise
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton import Axis, TendonGuideFlags, TendonGuideType
-from newton._src.solvers.tendon_kernels import tangent_point_circle, tendon_segment_length_rate
+from newton import Axis, NewtonWarning, TendonGuideFlags, TendonGuideType
+from newton._src.solvers.tendon_kernels import (
+    _tendon_segment_attachment_points,
+    tangent_point_circle,
+    tendon_segment_length_rate,
+)
+from newton._src.solvers.tendon_state import _segment_attachment_points_np
 from newton._src.solvers.xpbd.tendon_kernels import solve_tendon_slip, solve_tendon_stretch
 from newton.examples.tendon.example_tendon_capstan_friction import Example as CapstanFrictionExample
 from newton.examples.tendon.example_tendon_mujoco_switch import Example as MujocoSwitchExample
-from newton.tests.unittest_utils import sanitize_identifier
+from newton.examples.tendon.utils import get_tendon_total_lengths
+from newton.tests.unittest_utils import StdOutCapture, sanitize_identifier
+
+
+@wp.kernel
+def _measure_circle_pair_attachments(
+    center_l: wp.vec3,
+    center_r: wp.vec3,
+    normal_l: wp.vec3,
+    normal_r: wp.vec3,
+    radius_l: float,
+    radius_r: float,
+    winding_l: int,
+    winding_r: int,
+    seeds: wp.array[wp.vec3],
+    points: wp.array[wp.vec3],
+):
+    point_l, point_r = _tendon_segment_attachment_points(
+        center_l,
+        center_r,
+        normal_l,
+        normal_r,
+        int(TendonGuideType.ROLLER),
+        int(TendonGuideType.ROLLER),
+        radius_l,
+        radius_r,
+        winding_l,
+        winding_r,
+        seeds[0],
+        seeds[1],
+    )
+    points[0] = point_l
+    points[1] = point_r
 
 
 @wp.kernel
@@ -772,7 +811,7 @@ def build_motorized_pulley_drive(mu=0.0):
     return builder.finalize(), slider, pulley, j_pulley
 
 
-def build_kinematic_rolling_transport(mu=10.0):
+def build_kinematic_rolling_transport(mu=10.0, *, pre_stretch=0.0):
     """Build a fixed anchor - rolling pulley - fixed anchor route for prescribed spin tests."""
     builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=(0.0, 0.0, 0.0))
 
@@ -802,7 +841,7 @@ def build_kinematic_rolling_transport(mu=10.0):
             axis=(0.0, 0.0, 1.0),
             compliance=1.0e-6,
             damping=0.0,
-            rest_length=-1.0,
+            rest_length=math.sqrt(0.4**2 - 0.1**2) - pre_stretch if pre_stretch else -1.0,
         )
     )
     route.append(
@@ -813,7 +852,7 @@ def build_kinematic_rolling_transport(mu=10.0):
             axis=(0.0, 0.0, 1.0),
             compliance=1.0e-6,
             damping=0.0,
-            rest_length=-1.0,
+            rest_length=math.sqrt(0.4**2 - 0.1**2) - pre_stretch if pre_stretch else -1.0,
         )
     )
     builder.add_tendon(route)
@@ -1709,12 +1748,10 @@ def test_force_driven_dynamic_route_updates_inside_solver(test, device):
                 att_r_local = solver.tendon_segment_attachment_r_local.numpy()
                 radius_l = att_r_local[0] - candidate_center
                 radius_r = att_l_local[1] - candidate_center
-                theta = abs(
-                    np.atan2(
-                        np.dot(np.cross(radius_l, radius_r), candidate_axis),
-                        np.dot(radius_l, radius_r),
-                    )
-                )
+                theta = np.atan2(
+                    np.dot(np.cross(radius_l, radius_r), candidate_axis),
+                    np.dot(radius_l, radius_r),
+                ) * int(model.tendon_guide_orientation.numpy()[candidate_guide])
                 material_length += theta * float(model.tendon_guide_radius.numpy()[candidate_guide])
             if candidate_active != previous_active:
                 transition_material_errors.append(abs(material_length - previous_material_length))
@@ -1740,6 +1777,230 @@ def test_force_driven_dynamic_route_updates_inside_solver(test, device):
             1.0e-5,
             "Changing route representation should conserve free-span rest length plus wrapped material",
         )
+
+
+def _build_grazing_route(device, winding, *, dynamic=True):
+    """Build one movable roller crossing a fixed world-space bypass chord."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    candidate = builder.add_body(
+        xform=wp.transform(p=wp.vec3(winding * 0.25, 0.0, 0.0)),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    builder.add_tendon(
+        [
+            newton.TendonGuide(body=-1, offset=(0.0, 0.0, -0.5)),
+            newton.TendonGuide(
+                body=candidate,
+                guide_type=TendonGuideType.ROLLER,
+                radius=0.1,
+                axis=(0.0, 1.0, 0.0),
+                orientation=winding,
+                dynamic=dynamic,
+                mu=0.3,
+                compliance=0.01,
+            ),
+            newton.TendonGuide(body=-1, offset=(0.0, 0.0, 0.5), compliance=0.01),
+        ]
+    )
+    builder.color()
+    return builder.finalize(device=device), candidate
+
+
+def _grazing_route_inventory(state, winding):
+    """Measure material independently from body-local tangent points."""
+    rest = state.tendon_segment_rest_length.numpy()
+    if not state.tendon_guide_active.numpy()[1]:
+        return float(rest[0]), 0.0
+    left = state.tendon_segment_attachment_r_local.numpy()[0]
+    right = state.tendon_segment_attachment_l_local.numpy()[1]
+    angle = float(np.arctan2(np.cross(left, right)[1], np.dot(left, right))) * winding
+    return float(np.sum(rest, dtype=np.float64)) + 0.1 * angle, angle
+
+
+def _advance_grazing_route(solver, state, output, winding, target, dt, graphs):
+    """Cross the route boundary inside a real solver step, optionally captured."""
+    velocity = np.zeros((1, 6), dtype=np.float32)
+    velocity[0, 0] = (winding * target - state.body_q.numpy()[0, 0]) / dt
+    state.body_qd.assign(velocity)
+    if graphs is not None:
+        key = id(state)
+        if key not in graphs:
+            with wp.ScopedCapture(device=solver.model.device) as scope:
+                solver.step(state, output, None, None, dt)
+            graphs[key] = scope.graph
+        wp.capture_launch(graphs[key])
+    else:
+        solver.step(state, output, None, None, dt)
+    return output, state
+
+
+def test_dynamic_route_signed_arc_inventory(test, device):
+    """Conserve material through repeated negative-wrap activation and deactivation."""
+    dt = 1.0 / 1200.0
+    for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+        for winding in (-1, 1):
+            for capture in (False, True) if wp.get_device(device).is_cuda else (False,):
+                with test.subTest(solver=solver_type.__name__, winding=winding, capture=capture):
+                    model, _ = _build_grazing_route(device, winding)
+                    solver = solver_type(model, iterations=1)
+                    state, output = model.state(), model.state()
+                    control = model.control()
+                    solver.step(state, output, control, None, dt)
+                    state, output = output, state
+                    test.assertFalse(state.tendon_guide_active.numpy()[1])
+                    expected_material, _ = _grazing_route_inventory(state, winding)
+                    expected_stretch = 1.0 - float(state.tendon_segment_rest_length.numpy()[0])
+                    graphs = {} if capture else None
+
+                    # Move inside while bypassed, then activate and cross back out in
+                    # one substep. Both topology transitions must conserve the ledger.
+                    for _ in range(4):
+                        state, output = _advance_grazing_route(solver, state, output, winding, 0.099, dt, graphs)
+                        test.assertFalse(state.tendon_guide_active.numpy()[1])
+                        state, output = _advance_grazing_route(solver, state, output, winding, 0.16, dt, graphs)
+                        test.assertTrue(state.tendon_guide_active.numpy()[1])
+                        material, angle = _grazing_route_inventory(state, winding)
+                        test.assertLess(angle, -np.radians(10.0))
+                        test.assertAlmostEqual(material, expected_material, delta=1.0e-6)
+                        geometric_length = float(np.sum(solver.tendon_segment_length.numpy())) + 0.1 * angle
+                        test.assertAlmostEqual(
+                            float(get_tendon_total_lengths(solver, model, state)[0]), geometric_length, delta=1.0e-6
+                        )
+                        state, output = _advance_grazing_route(solver, state, output, winding, 0.16, dt, graphs)
+                        test.assertFalse(state.tendon_guide_active.numpy()[1])
+                        material, _ = _grazing_route_inventory(state, winding)
+                        test.assertAlmostEqual(material, expected_material, delta=1.0e-6)
+                        test.assertAlmostEqual(
+                            float(
+                                solver.tendon_segment_length.numpy()[0] - state.tendon_segment_rest_length.numpy()[0]
+                            ),
+                            expected_stretch,
+                            delta=1.0e-6,
+                        )
+
+
+def test_dynamic_route_deactivation_signed_arc(test, device):
+    """Preserve material when a previously positive wrap turns negative before merging."""
+    dt = 1.0 / 1200.0
+    for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+        for winding in (-1, 1):
+            with test.subTest(solver=solver_type.__name__, winding=winding):
+                model, _ = _build_grazing_route(device, winding)
+                solver = solver_type(model, iterations=1)
+                state, output = model.state(), model.state()
+                solver.step(state, output, None, None, dt)
+                state, output = output, state
+                expected, _ = _grazing_route_inventory(state, winding)
+                # Move into contact, then select the engaged route at the next step start.
+                for _ in range(2):
+                    state, output = _advance_grazing_route(solver, state, output, winding, 0.098, dt, None)
+                test.assertTrue(state.tendon_guide_active.numpy()[1])
+                material, angle = _grazing_route_inventory(state, winding)
+                test.assertGreater(angle, 0.0)
+                test.assertAlmostEqual(material, expected, delta=1.0e-6)
+                state, output = _advance_grazing_route(solver, state, output, winding, 0.1001, dt, None)
+                test.assertTrue(state.tendon_guide_active.numpy()[1])
+                material, angle = _grazing_route_inventory(state, winding)
+                test.assertLess(angle, 0.0)
+                test.assertGreater(2.0 * abs(angle) * 0.1, 1.0e-5)
+                test.assertAlmostEqual(material, expected, delta=1.0e-6)
+                state, output = _advance_grazing_route(solver, state, output, winding, 0.1001, dt, None)
+                test.assertFalse(state.tendon_guide_active.numpy()[1])
+                material, _ = _grazing_route_inventory(state, winding)
+                test.assertAlmostEqual(material, expected, delta=1.0e-6)
+
+
+def test_fixed_negative_wrap_keeps_unsigned_reference(test, device):
+    """Keep fixed references unsigned while diagnosing unsupported accepted wraps."""
+    for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+        with test.subTest(solver=solver_type.__name__):
+            model, _ = _build_grazing_route(device, 1, dynamic=False)
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", NewtonWarning)
+                solver = solver_type(model, iterations=1)
+            _signed_material, angle = _grazing_route_inventory(solver, 1)
+            test.assertLess(angle, 0.0)
+            material = float(solver.tendon_segment_rest_length.numpy().sum()) + 0.1 * abs(angle)
+            test.assertAlmostEqual(float(solver.tendon_total_cable.numpy()[0]), material, delta=1.0e-6)
+            test.assertAlmostEqual(
+                float(get_tendon_total_lengths(solver, model, model.state())[0]), material, delta=1.0e-6
+            )
+            capture = StdOutCapture()
+            capture.begin()
+            try:
+                solver._update_tendon_cone_rows(model, model.body_q, report_unsupported_wrap=True)
+                wp.synchronize_device(device)
+            finally:
+                message = capture.end()
+            if sys.platform != "win32":
+                test.assertIn("crossed the supported wrap range", message)
+
+
+def test_fixed_half_turn_material_reference(test, device):
+    """Keep either winding of a fixed half-circle positive, including world guides."""
+    # This placement exposes cancellation in the centimetre-scale contact vectors.
+    rotated_pose = wp.transform(
+        wp.vec3(0.77568998, 0.62335008, 0.99493911),
+        wp.quat(-0.84797758, 0.48976767, 0.04073934, 0.19849946),
+    )
+    for world_attached in (False, True):
+        for winding in (-1, 1):
+            for radius, height, pose in ((0.15, 1.0, wp.transform_identity()), (0.01, 0.2, rotated_pose)):
+                _check_fixed_half_turn(test, device, world_attached, winding, radius, height, pose)
+
+
+def _check_fixed_half_turn(test, device, world_attached, winding, radius, height, pose):
+    """Check a half-turn and its example measurement in the same coordinate frame."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = -1 if world_attached else builder.add_body(mass=0.0, xform=pose)
+    local_points = [
+        wp.vec3(-winding * radius, 0.0, 0.0),
+        wp.vec3(0.0, 0.0, height),
+        wp.vec3(winding * radius, 0.0, 0.0),
+    ]
+    points = [wp.transform_point(pose, point) for point in local_points] if world_attached else local_points
+    axis = wp.transform_vector(pose, wp.vec3(0.0, 1.0, 0.0)) if world_attached else wp.vec3(0.0, 1.0, 0.0)
+    builder.add_tendon(
+        [
+            newton.TendonGuide(body=body, offset=points[0]),
+            newton.TendonGuide(
+                body=body,
+                guide_type=TendonGuideType.ROLLER,
+                offset=points[1],
+                axis=axis,
+                radius=radius,
+                orientation=winding,
+                compliance=1.0e-5,
+            ),
+            newton.TendonGuide(body=body, offset=points[2], compliance=1.0e-5),
+        ]
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+        with test.subTest(solver=solver_type.__name__, world=world_attached, winding=winding, radius=radius):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", NewtonWarning)
+                solver = solver_type(model, iterations=1)
+            test.assertAlmostEqual(
+                float(solver.tendon_total_cable.numpy()[0]), 2.0 * height + np.pi * radius, delta=1.0e-6
+            )
+            test.assertAlmostEqual(
+                float(get_tendon_total_lengths(solver, model, model.state())[0]),
+                2.0 * height + np.pi * radius,
+                delta=1.0e-6,
+            )
+            capture = StdOutCapture()
+            wp.synchronize_device(device)
+            capture.begin()
+            try:
+                solver._update_tendon_cone_rows(model, model.body_q, report_unsupported_wrap=True)
+                wp.synchronize_device(device)
+            finally:
+                message = capture.end()
+            if sys.platform != "win32":
+                test.assertNotIn("crossed the supported wrap range", message)
 
 
 def test_dynamic_route_activation_uses_accepted_pose(test, device):
@@ -1906,7 +2167,7 @@ def test_inactive_dynamic_route_preserves_mixed_rest_length(test, device):
 def test_xpbd_reset_restores_tendon_material_state(test, device):
     """Reset should restore mutable tendon rest lengths and route history."""
     with wp.ScopedDevice(device):
-        model, pulley = build_kinematic_rolling_transport(mu=10.0)
+        model, pulley = build_kinematic_rolling_transport(mu=10.0, pre_stretch=0.08)
         solver = newton.solvers.SolverXPBD(model, iterations=1)
         state_0, state_1 = model.state(), model.state()
         initial_rest = solver.tendon_segment_rest_length.numpy().copy()
@@ -1927,6 +2188,482 @@ def test_xpbd_reset_restores_tendon_material_state(test, device):
 
         solver.step(state_1, state_0, model.control(), None, 1.0 / 60.0)
         np.testing.assert_allclose(solver.tendon_segment_rest_length.numpy(), initial_rest, atol=1.0e-7)
+
+
+def test_circle_pair_tangents_match_geometry(test, device):
+    """Check planar tangency independently of seeds, overlap, winding, and axis sign."""
+    with wp.ScopedDevice(device):
+        for radius_l, radius_r, distance, opposite in (
+            (0.3, 0.3, 0.25, False),
+            (0.3, 0.3, 0.02, False),
+            (0.3, 0.3, 0.005, False),
+            (0.3, 0.1, 0.25, False),
+            (0.1, 0.1, 0.201, True),
+            (0.1, 0.2, 0.8, True),
+        ):
+            for winding in (-1, 1):
+                for axis_sign in (-1, 1):
+                    with test.subTest(radii=(radius_l, radius_r), opposite=opposite, winding=winding, axis=axis_sign):
+                        centers = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, distance]], dtype=np.float32)
+                        normal_r = (0.0, float(axis_sign), 0.0)
+                        winding_r = winding * axis_sign * (-1 if opposite else 1)
+                        outputs = wp.empty(2, dtype=wp.vec3)
+                        seeds = wp.array(centers, dtype=wp.vec3)
+                        wp.launch(
+                            _measure_circle_pair_attachments,
+                            dim=1,
+                            inputs=[
+                                *map(wp.vec3, centers),
+                                wp.vec3(0.0, 1.0, 0.0),
+                                wp.vec3(normal_r),
+                                radius_l,
+                                radius_r,
+                                winding,
+                                winding_r,
+                                seeds,
+                            ],
+                            outputs=[outputs],
+                        )
+                        points = outputs.numpy()
+                        span = points[1] - points[0]
+                        test.assertGreater(float(np.linalg.norm(span)), 0.0)
+                        direction = span / np.linalg.norm(span)
+                        for index, radius in enumerate((radius_l, radius_r)):
+                            radial = points[index] - centers[index]
+                            test.assertAlmostEqual(float(np.linalg.norm(radial)), radius, delta=2.0e-7)
+                            test.assertAlmostEqual(float(radial[1]), 0.0, delta=2.0e-7)
+                            test.assertAlmostEqual(float(np.dot(radial, direction)), 0.0, delta=2.0e-6)
+                        test.assertLess(float(points[0, 0]) * winding, 0.0)
+                        host_points = _segment_attachment_points_np(
+                            *centers,
+                            int(TendonGuideType.ROLLER),
+                            int(TendonGuideType.ROLLER),
+                            radius_l,
+                            radius_r,
+                            winding,
+                            winding_r,
+                            np.array([0.0, 1.0, 0.0]),
+                            np.array(normal_r),
+                        )
+                        np.testing.assert_allclose(points, host_points, atol=2.0e-7)
+                        # Changing the iterative seed must not select a different planar route.
+                        seeds.assign(centers + np.array([0.025, 0.0, -0.04], dtype=np.float32))
+                        wp.launch(
+                            _measure_circle_pair_attachments,
+                            dim=1,
+                            inputs=[
+                                *map(wp.vec3, centers),
+                                wp.vec3(0.0, 1.0, 0.0),
+                                wp.vec3(normal_r),
+                                radius_l,
+                                radius_r,
+                                winding,
+                                winding_r,
+                                seeds,
+                            ],
+                            outputs=[outputs],
+                        )
+                        np.testing.assert_array_equal(outputs.numpy(), points)
+
+        # Axial offsets and small tilts must not resurrect the center-seeded
+        # iteration's large error on nearly concentric circles.
+        for tilt in (0.0, 2.0e-6, 5.0e-4):
+            normal_l = np.array([0.0, 1.0, 0.0])
+            normal_r_np = np.array([math.sin(tilt), math.cos(tilt), 0.0])
+            centers = np.array([[0.0, 0.0, 0.0], [0.0, 0.001, 0.005]], dtype=np.float32)
+            seeds = wp.array(centers, dtype=wp.vec3)
+            wp.launch(
+                _measure_circle_pair_attachments,
+                dim=1,
+                inputs=[*map(wp.vec3, centers), wp.vec3(normal_l), wp.vec3(normal_r_np), 0.3, 0.3, 1, 1, seeds],
+                outputs=[outputs],
+            )
+            points = outputs.numpy()
+            host = np.array(
+                _segment_attachment_points_np(
+                    *centers,
+                    int(TendonGuideType.ROLLER),
+                    int(TendonGuideType.ROLLER),
+                    0.3,
+                    0.3,
+                    1,
+                    1,
+                    normal_l,
+                    normal_r_np,
+                )
+            )
+            for measured in (points, host):
+                span = measured[1] - measured[0]
+                direction = span / np.linalg.norm(span)
+                for index, normal in enumerate((normal_l, normal_r_np)):
+                    radial = measured[index] - centers[index]
+                    test.assertAlmostEqual(float(np.linalg.norm(radial)), 0.3, delta=2.0e-7)
+                    test.assertAlmostEqual(float(np.dot(radial, normal)), 0.0, delta=2.0e-7)
+                    test.assertAlmostEqual(float(np.dot(radial, direction)), 0.0, delta=2.0e-6)
+                if tilt == 0.0:
+                    np.testing.assert_allclose(measured, centers + np.array([-0.3, 0.0, 0.0]), atol=2.0e-7, rtol=0.0)
+
+        # Tilted contacts must remain in their own circle planes.
+        tilt = 5.0e-4
+        normal_r = wp.vec3(math.sin(tilt), math.cos(tilt), 0.0)
+        centers = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.8]], dtype=np.float32)
+        seeds = wp.array(centers, dtype=wp.vec3)
+        wp.launch(
+            _measure_circle_pair_attachments,
+            dim=1,
+            inputs=[*map(wp.vec3, centers), wp.vec3(0.0, 1.0, 0.0), normal_r, 0.1, 0.1, 1, 1, seeds],
+            outputs=[outputs],
+        )
+        point_r = outputs.numpy()[1]
+        test.assertAlmostEqual(float(np.dot(point_r - centers[1], np.array(normal_r))), 0.0, delta=1.0e-7)
+
+        # Small coplanar rollers must keep the analytic route after world placement.
+        rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+        normal = wp.quat_rotate(rotation, wp.vec3(0.0, 1.0, 0.0))
+        for translation in (0.0, 5.0, 20.0):
+            pose = wp.transform(wp.vec3(translation), rotation)
+            centers = [wp.transform_point(pose, wp.vec3(0.0, 0.0, z)) for z in (0.0, 0.05)]
+            seeds = wp.array(centers, dtype=wp.vec3)
+            wp.launch(
+                _measure_circle_pair_attachments,
+                dim=1,
+                inputs=[*centers, normal, normal, 0.1, 0.1, 1, 1, seeds],
+                outputs=[outputs],
+            )
+            expected = np.array([wp.transform_point(pose, wp.vec3(-0.1, 0.0, z)) for z in (0.0, 0.05)])
+            np.testing.assert_allclose(outputs.numpy(), expected, rtol=0.0, atol=5.0e-6)
+            host = _segment_attachment_points_np(
+                *map(np.asarray, centers),
+                int(TendonGuideType.ROLLER),
+                int(TendonGuideType.ROLLER),
+                0.1,
+                0.1,
+                1,
+                1,
+                np.asarray(normal),
+                np.asarray(normal),
+            )
+            np.testing.assert_allclose(host, expected, rtol=0.0, atol=5.0e-6)
+
+
+def _build_circle_neighbor_route(device, winding=1):
+    """Build a straight tangent route with one dynamic candidate between equal circles."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    bodies = [
+        builder.add_body(xform=wp.transform(p=wp.vec3(p)), mass=0.0)
+        for p in ((0.0, 0.0, -0.125), (0.0, 0.0, 0.0), (0.0, 0.0, 0.125))
+    ]
+    guides = [newton.TendonGuide(body=-1, offset=(-0.3 * winding, 0.0, -1.0))]
+    for i, body in enumerate(bodies):
+        guides.append(
+            newton.TendonGuide(
+                body=body,
+                guide_type=TendonGuideType.ROLLER,
+                radius=0.1 if i == 1 else 0.3,
+                axis=(0.0, 1.0, 0.0),
+                orientation=winding,
+                dynamic=i == 1,
+                mu=0.3,
+                compliance=0.01,
+            )
+        )
+    guides.append(newton.TendonGuide(body=-1, offset=(-0.3 * winding, 0.0, 1.0), compliance=0.01))
+    builder.add_tendon(guides)
+    builder.color()
+    return builder.finalize(device=device), bodies
+
+
+def test_dynamic_route_overlapping_neighbors(test, device):
+    """Use the valid external tangent even when neighboring circles overlap."""
+    with wp.ScopedDevice(device):
+        for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+            for winding in (-1, 1):
+                with test.subTest(solver=solver_type.__name__, winding=winding):
+                    model, bodies = _build_circle_neighbor_route(device, winding)
+                    solver = solver_type(model, iterations=1)
+                    test.assertFalse(solver.tendon_guide_active.numpy()[2])
+                    test.assertAlmostEqual(float(solver.tendon_guide_route_rest_length.numpy()[2]), 0.25, delta=2.0e-7)
+                    test.assertAlmostEqual(float(solver.tendon_segment_length.numpy()[1]), 0.25, delta=2.0e-7)
+                    state, output = model.state(), model.state()
+                    solver.step(state, output, model.control(), None, 1.0 / 600.0)
+                    test.assertFalse(output.tendon_guide_active.numpy()[2])
+                    np.testing.assert_allclose(solver.tendon_segment_material_tension.numpy(), 0.0, atol=2.0e-5)
+                    poses = model.body_q.numpy()
+                    for prior in (False, True):
+                        for x, expected in ((-0.25, True), (0.0, False)):
+                            poses[bodies[1], 0] = x * winding
+                            model.body_q.assign(poses)
+                            active = solver.tendon_guide_active.numpy()
+                            active[2] = prior
+                            solver.tendon_guide_active.assign(active)
+                            solver._update_tendon_guide_active(model, model.body_q)
+                            test.assertEqual(bool(solver.tendon_guide_active.numpy()[2]), expected)
+
+                    for tilt in (0.0, 2.0e-6, 5.0e-4):
+                        poses[bodies[0], :3] = (0.0, 0.0, -0.005)
+                        poses[bodies[2], :3] = (0.0, 0.001, 0.005)
+                        poses[bodies[2], 3:] = np.asarray(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -tilt))
+                        for prior in (False, True):
+                            for x, expected in ((-0.25, True), (0.0, False)):
+                                poses[bodies[1], :3] = (x * winding, 0.0, 0.0)
+                                model.body_q.assign(poses)
+                                active[2] = prior
+                                solver.tendon_guide_active.assign(active)
+                                solver._update_tendon_guide_active(model, model.body_q)
+                                test.assertEqual(bool(solver.tendon_guide_active.numpy()[2]), expected)
+
+                    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+                    for translation in (5.0, 20.0):
+                        placement = wp.transform(wp.vec3(translation), rotation)
+                        for prior in (False, True):
+                            for x, expected in ((-0.25, True), (0.0, False)):
+                                for index, z in enumerate((-0.125, 0.0, 0.125)):
+                                    local = wp.transform(wp.vec3(x * winding if index == 1 else 0.0, 0.0, z))
+                                    poses[bodies[index]] = np.asarray(wp.transform_multiply(placement, local))
+                                model.body_q.assign(poses)
+                                active[2] = prior
+                                solver.tendon_guide_active.assign(active)
+                                solver._update_tendon_guide_active(model, model.body_q)
+                                test.assertEqual(bool(solver.tendon_guide_active.numpy()[2]), expected)
+
+
+def test_dynamic_route_accepts_short_spans_and_small_radii(test, device):
+    """Activate valid routes without a diameter cutoff or an absolute engagement gap."""
+    with wp.ScopedDevice(device):
+        for radius, half_span, engaged_x in ((0.01, 0.0025, 0.0098), (5.0e-5, 5.0e-4, 4.5e-5)):
+            # Both endpoints are outside the circle even when the bypass is shorter
+            # than its diameter. The incoming and outgoing tangents have positive wrap.
+            test.assertGreater(math.hypot(engaged_x, half_span), radius)
+            for winding in (-1, 1):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                circle = builder.add_body(xform=wp.transform(p=wp.vec3(2.0 * radius * winding, 0.0, 0.0)), mass=0.0)
+                builder.add_tendon(
+                    [
+                        newton.TendonGuide(body=-1, offset=(0.0, 0.0, -half_span)),
+                        newton.TendonGuide(
+                            body=circle,
+                            guide_type=TendonGuideType.ROLLER,
+                            radius=radius,
+                            axis=(0.0, 1.0, 0.0),
+                            orientation=winding,
+                            dynamic=True,
+                            mu=0.3,
+                            compliance=0.01,
+                        ),
+                        newton.TendonGuide(body=-1, offset=(0.0, 0.0, half_span), compliance=0.01),
+                    ]
+                )
+                builder.color()
+                model = builder.finalize(device=device)
+                for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+                    with test.subTest(radius=radius, half_span=half_span, winding=winding, solver=solver_type.__name__):
+                        solver = solver_type(model, iterations=1)
+                        state, output = model.state(), model.state()
+                        test.assertFalse(solver.tendon_guide_active.numpy()[1])
+                        poses = state.body_q.numpy()
+                        # Exercise engagement, retention, release, and re-engagement
+                        # through real solver steps, including route material updates.
+                        for x, expected in (
+                            (engaged_x, True),
+                            (engaged_x, True),
+                            (2.0 * radius, False),
+                            (engaged_x, True),
+                        ):
+                            poses[circle, 0] = x * winding
+                            state.body_q.assign(poses)
+                            solver.step(state, output, model.control(), None, 1.0 / 600.0)
+                            test.assertEqual(bool(output.tendon_guide_active.numpy()[1]), expected)
+                            np.testing.assert_array_equal(solver.tendon_segment_active.numpy(), [1, int(expected)])
+                            test.assertTrue(np.isfinite(solver.tendon_segment_material_tension.numpy()).all())
+                            state, output = output, state
+
+
+def test_dynamic_route_nonplanar_roundoff(test, device):
+    """Decide activation when a nonplanar bypass has converged to float32 precision."""
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+    normal = wp.quat_rotate(rotation, wp.vec3(0.0, 0.0, 1.0))
+    tilted = wp.quat_rotate(
+        rotation, wp.quat_rotate(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 1.0e-4), wp.vec3(0.0, 0.0, 1.0))
+    )
+    for translation in (5.0, 20.0, 50.0):
+        with test.subTest(translation=translation):
+            placement = wp.transform(wp.vec3(translation), rotation)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            candidate = builder.add_body(
+                xform=wp.transform(wp.transform_point(placement, wp.vec3(0.025, 0.0, 0.0)), rotation), mass=0.0
+            )
+            points = [(-0.3, -0.1, 0.0), (0.0, 0.0, 0.0), (0.025, 0.0, 0.0), (0.05, 0.0, 0.0), (0.35, -0.1, 0.0)]
+            guides = []
+            for index, point in enumerate(points):
+                guides.append(
+                    newton.TendonGuide(
+                        body=candidate if index == 2 else -1,
+                        offset=wp.vec3() if index == 2 else wp.transform_point(placement, wp.vec3(point)),
+                        guide_type=TendonGuideType.ANCHOR if index in (0, 4) else TendonGuideType.ROLLER,
+                        axis=wp.vec3(0.0, 0.0, 1.0) if index == 2 else (tilted if index == 3 else normal),
+                        radius=0.0 if index in (0, 4) else (0.02 if index == 2 else 0.1),
+                        dynamic=index == 2,
+                        mu=0.0 if index in (0, 4) else 0.3,
+                        compliance=0.0 if index == 0 else 0.01,
+                    )
+                )
+            builder.add_tendon(guides)
+            model = builder.finalize(device=device)
+            solver = newton.solvers.SolverXPBD(model, iterations=1)
+            poses = model.body_q.numpy()
+            for prior in (False, True):
+                for y, expected in ((-0.09, True), (0.0, False)):
+                    poses[candidate, :3] = np.asarray(wp.transform_point(placement, wp.vec3(0.025, y, 0.0)))
+                    model.body_q.assign(poses)
+                    active = solver.tendon_guide_active.numpy()
+                    active[2] = prior
+                    solver.tendon_guide_active.assign(active)
+                    solver._update_tendon_guide_active(model, model.body_q)
+                    test.assertEqual(bool(solver.tendon_guide_active.numpy()[2]), expected)
+
+
+def test_dynamic_route_missing_bypass_preserves_state(test, device):
+    """Keep either previous state for a missing tangent, then resume on valid geometry."""
+    with wp.ScopedDevice(device):
+        for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+            model, bodies = _build_circle_neighbor_route(device)
+            solver = solver_type(model, iterations=1)
+            poses = model.body_q.numpy()
+            # Containment has no external tangent. Coincident circles have no unique one.
+            for distance in (0.0, 0.05):
+                for prior in (False, True):
+                    radii = model.tendon_guide_radius.numpy()
+                    radii[3] = 0.2 if distance else 0.3
+                    model.tendon_guide_radius.assign(radii)
+                    poses[bodies[2], 2] = poses[bodies[0], 2] + distance
+                    poses[bodies[1], :3] = (0.0, 0.0, -0.1)
+                    model.body_q.assign(poses)
+                    active = solver.tendon_guide_active.numpy()
+                    active[2] = prior
+                    solver.tendon_guide_active.assign(active)
+                    solver._update_tendon_guide_active(model, model.body_q)
+                    test.assertEqual(bool(solver.tendon_guide_active.numpy()[2]), prior)
+            poses[bodies[1], :3] = (-0.3, 0.0, 0.0)
+            # A truly unconverged nonplanar bypass must report the skipped update.
+            radii = model.tendon_guide_radius.numpy()
+            radii[3] = 0.3
+            model.tendon_guide_radius.assign(radii)
+            poses[bodies[2], 2] = 0.125
+            poses[bodies[2], 3:] = np.asarray(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5))
+            model.body_q.assign(poses)
+            capture = StdOutCapture()
+            wp.synchronize_device(device)
+            capture.begin()
+            try:
+                for prior in (False, True):
+                    active[2] = prior
+                    solver.tendon_guide_active.assign(active)
+                    solver._update_tendon_guide_active(model, model.body_q)
+                    test.assertEqual(bool(solver.tendon_guide_active.numpy()[2]), prior)
+                wp.synchronize_device(device)
+            finally:
+                message = capture.end()
+            if sys.platform != "win32":
+                test.assertIn("dynamic ROLLER guide 2 bypass tangent did not converge", message)
+
+            poses[bodies[2], 2] = 0.5
+            poses[bodies[2], 3:] = np.asarray(wp.quat_identity())
+            model.body_q.assign(poses)
+            solver._update_tendon_guide_active(model, model.body_q)
+            test.assertTrue(solver.tendon_guide_active.numpy()[2])
+
+
+def test_missing_circle_tangent_preserves_history_and_reports(test, device):
+    """Hold valid local attachments and diagnose an impossible accepted span."""
+    with wp.ScopedDevice(device):
+        centers = np.array([[0.0, 0.0, -0.125], [0.0, 0.0, 0.125]], dtype=np.float32)
+        # Opposite winding requires an internal tangent; distance 0.25 < r_l + r_r.
+        history = centers + np.array([[-0.3, 0.0, 0.0], [0.3, 0.0, 0.0]], dtype=np.float32)
+        seeds = wp.array(history, dtype=wp.vec3)
+        points = wp.empty(2, dtype=wp.vec3)
+        wp.launch(
+            _measure_circle_pair_attachments,
+            dim=1,
+            inputs=[*map(wp.vec3, centers), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 1.0, 0.0), 0.3, 0.3, 1, -1, seeds],
+            outputs=[points],
+        )
+        np.testing.assert_array_equal(points.numpy(), history)
+
+        model, _bodies = _build_circle_neighbor_route(device)
+        solver = newton.solvers.SolverXPBD(model, iterations=1)
+        # Directly exercise the shared accepted-pose diagnostic, not a supported model edit.
+        orientations = model.tendon_guide_orientation.numpy()
+        orientations[3] = -1
+        model.tendon_guide_orientation.assign(orientations)
+        capture = StdOutCapture()
+        wp.synchronize_device(device)
+        capture.begin()
+        try:
+            solver._update_tendon_cone_rows(model, model.body_q, report_unsupported_wrap=True)
+            wp.synchronize_device(device)
+        finally:
+            message = capture.end()
+        # Native printf capture is unreliable on Windows; geometry checks above
+        # still run there, and Linux checks the diagnostic on CPU and CUDA.
+        if sys.platform != "win32":
+            test.assertIn("ROLLER guides 1 and 3 have no nonzero common tangent", message)
+
+        # Zero-radius ROLLER guides use point routing, not a circle-pair tangent.
+        for radius_l, radius_r in ((0.0, 0.3), (0.3, 0.0), (0.0, 0.0)):
+            radii = model.tendon_guide_radius.numpy()
+            radii[1], radii[3] = radius_l, radius_r
+            model.tendon_guide_radius.assign(radii)
+            capture.begin()
+            try:
+                solver._update_tendon_cone_rows(model, model.body_q, report_unsupported_wrap=True)
+                wp.synchronize_device(device)
+            finally:
+                message = capture.end()
+            if sys.platform != "win32":
+                test.assertNotIn("no nonzero common tangent", message)
+
+
+def test_dynamic_route_recovers_from_zero_initial_bypass(test, device):
+    """Allow route changes after initially coincident bypass endpoints separate."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        left = builder.add_body(mass=0.0)
+        right = builder.add_body(mass=0.0)
+        circle = builder.add_body(xform=wp.transform(p=wp.vec3(0.3, 0.0, 0.0)), mass=0.0)
+        builder.add_tendon(
+            [
+                newton.TendonGuide(body=left),
+                newton.TendonGuide(
+                    body=circle,
+                    guide_type=TendonGuideType.ROLLER,
+                    radius=0.1,
+                    axis=(0.0, 1.0, 0.0),
+                    dynamic=True,
+                    mu=0.3,
+                    compliance=0.01,
+                ),
+                newton.TendonGuide(body=right, compliance=0.01),
+            ]
+        )
+        builder.color()
+        model = builder.finalize(device=device)
+        for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+            with test.subTest(solver=solver_type.__name__):
+                solver = solver_type(model, iterations=1)
+                test.assertFalse(solver.tendon_guide_active.numpy()[1])
+                test.assertLessEqual(float(solver.tendon_total_cable.numpy()[0]), 1.0e-6)
+                test.assertEqual(float(solver.tendon_guide_route_rest_length.numpy()[1]), 0.0)
+                state, output = model.state(), model.state()
+                poses = state.body_q.numpy()
+                poses[left, 2], poses[right, 2] = -0.5, 0.5
+                for x, expected in ((0.25, False), (0.05, True), (0.25, False)):
+                    poses[circle, 0] = x
+                    state.body_q.assign(poses)
+                    solver.step(state, output, model.control(), None, 1.0 / 600.0)
+                    test.assertEqual(bool(output.tendon_guide_active.numpy()[1]), expected)
+                    np.testing.assert_array_equal(solver.tendon_segment_active.numpy(), [1, int(expected)])
+                    test.assertTrue(np.isfinite(solver.tendon_segment_material_tension.numpy()).all())
+                    state, output = output, state
 
 
 def test_dynamic_route_uses_oriented_signed_distance(test, device):
@@ -1970,6 +2707,16 @@ def test_dynamic_route_activation_tolerance_preserves_boundary_state(test, devic
         activation_tol = 1.0e-3
         activation_gap = activation_tol * radius
         for orientation in (-1, 1):
+            # Initialization has no inactive history: contact within the full
+            # radius must start engaged, even inside the hysteresis band.
+            for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+                initial_model, initial_candidate = _build_grazing_route(device, orientation)
+                initial_pose = initial_model.body_q.numpy()
+                initial_pose[initial_candidate, 0] = (radius - 0.5 * activation_gap) * orientation
+                initial_model.body_q.assign(initial_pose)
+                initial_solver = solver_type(initial_model, iterations=1, tendon_activation_tol=activation_tol)
+                test.assertTrue(initial_solver.tendon_guide_active.numpy()[1])
+
             model, candidate, candidate_guide = build_oriented_dynamic_route(orientation, device)
             solver = newton.solvers.SolverXPBD(
                 model,
@@ -2237,7 +2984,9 @@ def test_dynamic_capstan_mu_controls_pulley_rotation(test, device):
     """Dynamic capstan: zero mu slips, mid mu grips partially, high mu approaches no-slip."""
     with wp.ScopedDevice(device):
         low = _dynamic_capstan_metrics(device, mu=0.0)
-        mid = _dynamic_capstan_metrics(device, mu=0.04)
+        # Stay below the sticking threshold: near-threshold angular
+        # transients need not be ordered by mu at a single observation time.
+        mid = _dynamic_capstan_metrics(device, mu=0.005)
         high = _dynamic_capstan_metrics(device, mu=10.0)
 
         for label, metrics in [("low", low), ("mid", mid), ("high", high)]:
@@ -2663,6 +3412,96 @@ def test_tendon_damping_does_not_generate_compression(test, device):
         test.assertAlmostEqual(tension, 0.0, delta=1.0e-6)
 
 
+def test_xpbd_spin_reaction_bounds_accumulated_impulse(test, device):
+    """Bound the total friction impulse and retract it when the cable unloads."""
+    with wp.ScopedDevice(device):
+        for mu, compliance, material in (
+            (0.0, [0.01, 0.01], [100.0, 100.0]),
+            (0.1, [0.01, 0.01], [100.0, 100.0]),
+            (10.0, [0.01, 0.01], [100.0, 100.0]),
+            (0.1, [0.0, 0.0], [1.0e26, 1.0e26]),
+            (0.1, [0.0, 0.0], [0.0, 0.0]),
+            (0.1, [0.0, 0.01], [1.0e26, 100.0]),
+            (0.1, [0.01, 0.0], [100.0, 0.0]),
+        ):
+            with test.subTest(mu=mu, compliance=compliance, material=material):
+                lambdas = wp.zeros(2)
+                tension = wp.array(material, dtype=float)
+                reaction = wp.zeros(3, dtype=wp.vec3)
+                deltas = wp.zeros(1, dtype=wp.spatial_vector)
+                inputs = [
+                    wp.array([wp.transform_identity()], dtype=wp.transform),
+                    wp.array([-1, 0, -1], dtype=int),
+                    wp.array([-1, 1, -1], dtype=int),
+                    wp.zeros(3, dtype=int),
+                    wp.array(
+                        [int(TendonGuideType.ANCHOR), int(TendonGuideType.ROLLER), int(TendonGuideType.ANCHOR)],
+                        dtype=int,
+                    ),
+                    wp.array([0.0, 1.0, 0.0], dtype=float),
+                    wp.array([0.0, mu, 0.0], dtype=float),
+                    wp.ones(3, dtype=bool),
+                    wp.zeros(3, dtype=wp.vec3),
+                    wp.array([[0.0, 1.0, 0.0]] * 3, dtype=wp.vec3),
+                    wp.array([[-1.0, 0.0, -1.0], [1.0, 0.0, 0.0]], dtype=wp.vec3),
+                    wp.array([[-1.0, 0.0, 0.0], [1.0, 0.0, -1.0]], dtype=wp.vec3),
+                    wp.array(compliance, dtype=float),
+                    tension,
+                    wp.zeros(2),
+                    lambdas,
+                    0.01,
+                    reaction,
+                ]
+                accumulated = 0.0
+                for pair in ([-1.0, 0.0], [-1.0, 0.0], [-2.0, 0.0], [-0.5, -0.5], [0.0, -1.0]):
+                    lambdas.assign(np.asarray(pair, dtype=np.float32))
+                    deltas.zero_()
+                    wp.launch(solve_tendon_slip, dim=3, inputs=inputs, outputs=[deltas])
+                    accumulated += float(deltas.numpy()[0, 4])
+                    rho = np.exp(min(mu * np.pi, 20.0))
+                    forces = np.where(np.asarray(compliance) > 0.0, material, -np.asarray(pair) / 0.01)
+                    bound = 0.01 * (rho - 1.0) / (rho + 1.0) * float(forces.sum())
+                    expected = np.clip(pair[0] - pair[1], -bound, bound)
+                    test.assertAlmostEqual(accumulated, float(expected), delta=1.0e-6)
+                # Hard spans carry force in their multipliers, not geometric stretch.
+                if 0.0 in compliance:
+                    lambdas.zero_()
+                tension.zero_()
+                deltas.zero_()
+                wp.launch(solve_tendon_slip, dim=3, inputs=inputs, outputs=[deltas])
+                accumulated += float(deltas.numpy()[0, 4])
+                test.assertAlmostEqual(accumulated, 0.0, delta=1.0e-6)
+                # A world roller must never write its reaction to the last body.
+                inputs[3].fill_(-1)
+                tension.fill_(100.0)
+                deltas.zero_()
+                wp.launch(solve_tendon_slip, dim=3, inputs=inputs, outputs=[deltas])
+                np.testing.assert_array_equal(deltas.numpy(), 0.0)
+
+        # Exercise the stretch solver's multipliers too: a hard tendon must
+        # transmit its finite load to a movable roller, without using d/c.
+        for mu in (0.0, 0.1):
+            with test.subTest(full_solver=True, mu=mu):
+                model, _, _, pulley = build_dynamic_pulley_atwood(mu=mu, compliance=0.0)
+                solver = newton.solvers.SolverXPBD(
+                    model, iterations=32, joint_linear_relaxation=1.0, joint_angular_relaxation=1.0
+                )
+                state, output = model.state(), model.state()
+                solver.step(state, output, model.control(), None, 1.0 / 60.0)
+                lambdas = solver.tendon_segment_lambda.numpy()
+                test.assertTrue(np.all(lambdas < 0.0), "Both hard spans must carry load")
+                rho = float(solver.tendon_guide_cap_ratio.numpy()[1])
+                bound = 0.15 * (rho - 1.0) / (rho + 1.0) * float(-lambdas.sum())
+                expected = np.clip(0.15 * float(lambdas[0] - lambdas[1]), -bound, bound)
+                inertia = float(model.body_inertia.numpy()[pulley, 1, 1])
+                angular_impulse = inertia * float(output.body_qd.numpy()[pulley, 4])
+                test.assertAlmostEqual(angular_impulse, expected, delta=1.0e-5)
+                if mu > 0.0:
+                    test.assertGreater(angular_impulse, 1.0e-3)
+                else:
+                    test.assertAlmostEqual(angular_impulse, 0.0, delta=1.0e-7)
+
+
 def test_tendon_slip_uses_active_route_segments(test, device):
     """The slip cone should use the current routed neighbors and their physical tension."""
     with wp.ScopedDevice(device):
@@ -2698,7 +3537,7 @@ def test_tendon_slip_uses_active_route_segments(test, device):
             [(1.0 - rest_l) / compliance_l, 0.0, (1.0 - rest_r) / compliance_r], dtype=float
         )
         seg_damping_tension = wp.zeros(3, dtype=float)
-        seg_delta_lambda = wp.array([-1.0, 0.0, 0.0], dtype=float)
+        seg_lambda = wp.array([-1.0, 0.0, 0.0], dtype=float)
         body_deltas = wp.zeros(1, dtype=wp.spatial_vector)
 
         wp.launch(
@@ -2720,8 +3559,9 @@ def test_tendon_slip_uses_active_route_segments(test, device):
                 seg_compliance,
                 seg_material_tension,
                 seg_damping_tension,
-                seg_delta_lambda,
-                1.0,
+                seg_lambda,
+                0.01,
+                wp.zeros(4, dtype=wp.vec3),
             ],
             outputs=[body_deltas],
         )
@@ -2732,8 +3572,7 @@ def test_tendon_slip_uses_active_route_segments(test, device):
         force_r = (1.0 - float(rest[2])) / float(compliance[2])
         cap_ratio = math.exp(mu * math.pi)
         beta = (cap_ratio - 1.0) / (cap_ratio + 1.0)
-        scale = min(1.0, beta * (force_l + force_r) / max(abs(force_l - force_r), 1.0e-8))
-        expected_spin_y = -scale * beta
+        expected_spin_y = -min(1.0, 0.01 * beta * (force_l + force_r))
 
         test.assertAlmostEqual(float(body_deltas.numpy()[0, 4]), expected_spin_y, delta=1.0e-6)
 
@@ -3051,8 +3890,8 @@ def test_rolling_link_body_preserves_center_motion_jacobian(test, device):
         test.assertLess(float(model.joint_q.numpy()[joint_q]), -1.0e-3)
 
 
-def test_motorized_pulley_drives_slider(test, device):
-    """A rolling drive pulley must convert rotation into cable sliding."""
+def test_unloaded_motorized_pulley_does_not_drive_slider(test, device):
+    """Check that finite friction cannot grip a cable with no paying-out tension."""
     with wp.ScopedDevice(device):
         model, slider_idx, pulley_idx, drive_joint = build_motorized_pulley_drive(mu=10.0)
         state = run_motorized_model(model, drive_joint)
@@ -3064,7 +3903,7 @@ def test_motorized_pulley_drives_slider(test, device):
         theta = abs(2.0 * np.arctan2(float(q[5]), float(q[6])))
 
         test.assertGreater(theta, 0.5, f"Drive pulley should rotate under its target: theta={theta:.4f}")
-        test.assertGreater(slider_x, -0.2, f"No-slip drive should pull the slider through the cable: x={slider_x:.4f}")
+        test.assertAlmostEqual(slider_x, -0.4, delta=1.0e-5)
 
 
 def test_frictionless_motorized_pulley_does_not_drive_slider(test, device):
@@ -3087,8 +3926,8 @@ def test_frictionless_motorized_pulley_does_not_drive_slider(test, device):
         )
 
 
-def test_motorized_pulley_couples_without_delay(test, device):
-    """A driven pulley should move the cable during the initial rotation, not later."""
+def test_unloaded_motorized_pulley_preserves_rest(test, device):
+    """Check that an unloaded spinning pulley does not inject stretch during startup."""
     with wp.ScopedDevice(device):
         model, slider_idx, pulley_idx, drive_joint = build_motorized_pulley_drive(mu=10.0)
         solver = newton.solvers.SolverXPBD(model, iterations=12, joint_linear_relaxation=0.8)
@@ -3101,6 +3940,7 @@ def test_motorized_pulley_couples_without_delay(test, device):
 
         q_start = int(model.joint_q_start.numpy()[drive_joint])
         initial_x = float(state_0.body_q.numpy()[slider_idx][0])
+        initial_rest = solver.tendon_segment_rest_length.numpy().copy()
         dt = 1.0 / 60.0 / 10.0
         for _ in range(30):
             control.joint_target_q[q_start : q_start + 1].fill_(1.0)
@@ -3114,13 +3954,16 @@ def test_motorized_pulley_couples_without_delay(test, device):
         theta = abs(2.0 * np.arctan2(float(body_q[pulley_idx][5]), float(body_q[pulley_idx][6])))
 
         test.assertGreater(theta, 0.1, f"Pulley should have started rotating: theta={theta:.4f}")
-        test.assertGreater(slider_dx, 0.02, f"Pulley rotation should immediately pull cable: dx={slider_dx:.4f}")
+        test.assertAlmostEqual(slider_dx, 0.0, delta=1.0e-5)
+        np.testing.assert_allclose(state_0.tendon_segment_rest_length.numpy(), initial_rest, atol=1.0e-6, rtol=0)
 
 
 def test_motorized_pulley_updates_rest_in_first_step(test, device):
-    """Rolling surface transfer should happen in the same XPBD step as pulley rotation."""
+    """Check that a pre-tensioned cable grips during the first step of pulley rotation."""
     with wp.ScopedDevice(device):
         model, _, pulley_idx, drive_joint = build_motorized_pulley_drive(mu=10.0)
+        model.tendon_segment_compliance.fill_(1.0e-3)
+        model.tendon_segment_rest_length.fill_(math.sqrt(0.4**2 - 0.1**2) - 0.01)
         solver = newton.solvers.SolverXPBD(model, iterations=12, joint_linear_relaxation=0.8)
         state_0 = model.state()
         state_1 = model.state()
@@ -3150,7 +3993,9 @@ def test_motorized_pulley_updates_rest_in_first_step(test, device):
 
 
 def _moving_rolling_route_material_error(solver_factory, mu, short_segment=None):
-    model, _ = build_kinematic_rolling_transport(mu=mu)
+    # Keep both spans taut in the depletion case; a slack neighbor would
+    # simply refill the short span instead of exercising its rest floor.
+    model, _ = build_kinematic_rolling_transport(mu=mu, pre_stretch=0.25 if short_segment is not None else 0.0)
     endpoint = int(model.tendon_guide_body.numpy()[2])
     start_angle = -0.2
     body_q = model.body_q.numpy()
@@ -3163,7 +4008,7 @@ def _moving_rolling_route_material_error(solver_factory, mu, short_segment=None)
     if short_segment is not None:
         rest = solver.tendon_segment_rest_length.numpy()
         total_rest = float(np.sum(rest))
-        rest[short_segment] = 5.0e-3
+        rest[short_segment] = 1.0e-5
         rest[1 - short_segment] = total_rest - rest[short_segment]
         state_0.tendon_segment_rest_length.assign(rest)
 
@@ -3218,15 +4063,16 @@ def test_moving_rolling_route_conserves_material(test, device):
                     1.0e-4,
                     f"Cable material drifted by {error} m when segment {short_segment} started near its minimum rest length",
                 )
+                test.assertGreaterEqual(min_rest, 0.99e-6)
                 if short_segment == 1:
-                    test.assertLess(min_rest, 1.1e-6, "The material-donor span should exercise the minimum-rest clamp")
+                    test.assertLess(min_rest, 1.1e-6, "The moving route must actually deplete the outgoing span")
 
 
 def test_kinematic_rolling_transfer_independent_of_iterations(test, device):
     """Prescribed pulley spin should transfer the same material for any XPBD iteration count."""
 
     def run_once(iterations):
-        model, pulley_idx = build_kinematic_rolling_transport(mu=10.0)
+        model, pulley_idx = build_kinematic_rolling_transport(mu=10.0, pre_stretch=0.08)
         solver = newton.solvers.SolverXPBD(model, iterations=iterations, joint_linear_relaxation=1.0)
         state_0 = model.state()
         state_1 = model.state()
@@ -3244,11 +4090,9 @@ def test_kinematic_rolling_transfer_independent_of_iterations(test, device):
 
     with wp.ScopedDevice(device):
         reference = run_once(1)
-        test.assertGreater(
-            float(np.max(np.abs(reference))),
-            1.0e-4,
-            f"Prescribed rolling spin should produce nonzero material transfer: delta={reference}",
-        )
+        # R * angle = 0.04 m. Both spans stay taut, with tension ratio 3
+        # below the capstan bound.
+        np.testing.assert_allclose(np.sort(reference), [-0.04, 0.04], atol=1.0e-6, rtol=0)
         for iterations in (2, 4, 8, 16):
             rest_delta = run_once(iterations)
             np.testing.assert_allclose(
@@ -3266,13 +4110,13 @@ def test_kinematic_rolling_transfer_independent_of_iterations(test, device):
 def test_kinematic_rolling_transfer_independent_of_cone_sweeps(test, device):
     """Prescribed pulley spin should transfer the same material for any cone sweep count.
 
-    The rolling transport is a one-shot kinematic move set by the pulley geometry, not a
-    convergent relaxation; refining the capstan cone must not erode it. ``tendon_settle_tol=0``
+    Inside the sticking cone, the pre-tensioned cable follows the pulley motion;
+    refining the capstan cone must not erode that transport. ``tendon_settle_tol=0``
     forces the full ``tendon_max_sweeps`` budget so the executed count varies.
     """
 
     def run_once(tendon_max_sweeps):
-        model, pulley_idx = build_kinematic_rolling_transport(mu=10.0)
+        model, pulley_idx = build_kinematic_rolling_transport(mu=10.0, pre_stretch=0.08)
         solver = newton.solvers.SolverXPBD(
             model,
             iterations=8,
@@ -3298,13 +4142,11 @@ def test_kinematic_rolling_transfer_independent_of_cone_sweeps(test, device):
 
     with wp.ScopedDevice(device):
         reference, reference_sweeps = run_once(1)
-        test.assertGreater(
-            float(np.max(np.abs(reference))),
-            1.0e-4,
-            f"Prescribed rolling spin should produce nonzero material transfer: delta={reference}",
-        )
+        # R * angle = 0.04 m. Both spans stay taut, with tension ratio 3
+        # below the capstan bound.
+        np.testing.assert_allclose(np.sort(reference), [-0.04, 0.04], atol=1.0e-6, rtol=0)
         test.assertEqual(reference_sweeps, 1)
-        for tendon_max_sweeps in (2, 4, 8, 16, 64, 256):
+        for tendon_max_sweeps in (2, 4, 8, 16, 64, 256, 512):
             rest_delta, sweep_count = run_once(tendon_max_sweeps)
             np.testing.assert_allclose(
                 rest_delta,
@@ -3466,8 +4308,8 @@ def test_stiff_pinhole_capstan_matches_euler_eytelwein(test, device):
 def test_settle_tol_early_out_matches_full_sweeps(test, device):
     """The settle-based cone early-out must not change the converged capstan result.
 
-    The relaxation stops once the per-sweep relative tension change drops below
-    ``tendon_settle_tol``; the default (1e-3) must reach the same Euler-Eytelwein bound as
+    The relaxation stops once the final capstan-force residual satisfies the
+    absolute and relative tolerances; the default must reach the same Euler-Eytelwein bound as
     forcing the full sweep budget (``tendon_settle_tol=0``). Regression for an early-out that
     fires before the cone has settled and leaves the cable under-relaxed.
     """
@@ -3654,6 +4496,44 @@ add_test(
     devices,
     test_dynamic_route_activation_uses_accepted_pose,
 )
+add_test(TestTendonCapstan, "dynamic_route_signed_arc_inventory", devices, test_dynamic_route_signed_arc_inventory)
+add_test(
+    TestTendonCapstan, "dynamic_route_deactivation_signed_arc", devices, test_dynamic_route_deactivation_signed_arc
+)
+add_test(
+    TestTendonCapstan,
+    "fixed_negative_wrap_keeps_unsigned_reference",
+    devices,
+    test_fixed_negative_wrap_keeps_unsigned_reference,
+)
+add_test(TestTendonCapstan, "fixed_half_turn_material_reference", devices, test_fixed_half_turn_material_reference)
+add_test(TestTendonCapstan, "circle_pair_tangents_match_geometry", devices, test_circle_pair_tangents_match_geometry)
+add_test(
+    TestTendonCapstan,
+    "dynamic_route_recovers_from_zero_initial_bypass",
+    devices,
+    test_dynamic_route_recovers_from_zero_initial_bypass,
+)
+add_test(
+    TestTendonCapstan,
+    "missing_circle_tangent_preserves_history_and_reports",
+    devices,
+    test_missing_circle_tangent_preserves_history_and_reports,
+)
+add_test(TestTendonCapstan, "dynamic_route_overlapping_neighbors", devices, test_dynamic_route_overlapping_neighbors)
+add_test(TestTendonCapstan, "dynamic_route_nonplanar_roundoff", devices, test_dynamic_route_nonplanar_roundoff)
+add_test(
+    TestTendonCapstan,
+    "dynamic_route_accepts_short_spans_and_small_radii",
+    devices,
+    test_dynamic_route_accepts_short_spans_and_small_radii,
+)
+add_test(
+    TestTendonCapstan,
+    "dynamic_route_missing_bypass_preserves_state",
+    devices,
+    test_dynamic_route_missing_bypass_preserves_state,
+)
 add_test(
     TestTendonCapstan,
     "xpbd_tendon_diagnostics_match_final_pose",
@@ -3734,7 +4614,12 @@ add_test(
     devices,
     test_tendon_slip_uses_active_route_segments,
 )
-add_test(TestTendonCapstan, "motorized_pulley_drives_slider", devices, test_motorized_pulley_drives_slider)
+add_test(
+    TestTendonCapstan,
+    "unloaded_motorized_pulley_does_not_drive_slider",
+    devices,
+    test_unloaded_motorized_pulley_does_not_drive_slider,
+)
 add_test(
     TestTendonCapstan,
     "frictionless_motorized_pulley_does_not_drive_slider",
@@ -3742,7 +4627,10 @@ add_test(
     test_frictionless_motorized_pulley_does_not_drive_slider,
 )
 add_test(
-    TestTendonCapstan, "motorized_pulley_couples_without_delay", devices, test_motorized_pulley_couples_without_delay
+    TestTendonCapstan,
+    "unloaded_motorized_pulley_preserves_rest",
+    devices,
+    test_unloaded_motorized_pulley_preserves_rest,
 )
 add_test(
     TestTendonCapstan,
@@ -3797,6 +4685,14 @@ add_test(
     "slack_tendon_settles_without_chasing_vanishing_tension",
     devices,
     test_slack_tendon_settles_without_chasing_vanishing_tension,
+)
+
+
+add_test(
+    TestTendonCapstan,
+    "xpbd_spin_reaction_bounds_accumulated_impulse",
+    devices,
+    test_xpbd_spin_reaction_bounds_accumulated_impulse,
 )
 
 
