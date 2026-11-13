@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -13,11 +14,13 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
+from ..exceptions import NewtonDeprecationWarning
 from ..geometry.deformable_visual import DeformableVisuals
 from ..geometry.flags import ShapeFlags
 from ..sim.camera import CameraLensType
 from ..utils.selection import match_labels
 from .sensor_camera_render import Utils
+from .sensor_camera_render.camera_utils import model_camera_pinhole
 from .sensor_camera_render.types import (
     AntiAliasing,
     ClearData,
@@ -81,29 +84,13 @@ def _compute_view_pinhole_kernel(
 ):
     view = wp.tid()
     camera = view_frame[view]
-    focal = camera_focal_length[camera]
-    aperture = camera_aperture[camera]
-    horizontal = aperture[0]
-    vertical = aperture[1]
-    if horizontal <= 0.0:
-        # A zero aperture component follows the image aspect ratio (square pixels).
-        horizontal = vertical * aspect
-    elif vertical <= 0.0:
-        vertical = horizontal / aspect
-    else:
-        # Keep the pixel aspect ratio the camera has at its own resolution (square pixels
-        # without one) and expand the aperture to the image aspect ratio, like USD's
-        # default ``expandAperture`` conform policy.
-        resolution = camera_resolution[camera]
-        target = aspect
-        if resolution[0] > 0 and resolution[1] > 0:
-            target = aspect * (horizontal * float(resolution[1])) / (vertical * float(resolution[0]))
-        if horizontal < vertical * target:
-            horizontal = vertical * target
-        else:
-            vertical = horizontal / target
-    offset = camera_aperture_offset[camera]
-    out_pinhole[view] = wp.vec4f(horizontal / focal, vertical / focal, offset[0] / focal, offset[1] / focal)
+    out_pinhole[view] = model_camera_pinhole(
+        camera_focal_length[camera],
+        camera_aperture[camera],
+        camera_aperture_offset[camera],
+        camera_resolution[camera],
+        aspect,
+    )
 
 
 def _validate_camera_ray_output(
@@ -211,7 +198,7 @@ class SensorCamera:
         camera.create_default_light()
 
         width, height = 640, 480
-        camera_rays = SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=1.0, device=model.device)
+        camera_rays = SensorCamera.compute_camera_rays_pinhole(width, height, fov=1.0, device=model.device)
         camera_transforms = wp.array([wp.transform_identity()], dtype=wp.transformf, device=model.device)
         color = camera.allocate_image_color(camera_transforms.shape[0], width, height)
 
@@ -263,7 +250,9 @@ class SensorCamera:
                 :attr:`~newton.Model.camera_resolution`.
             height: Image height [px]; defaults to the selected cameras' common
                 :attr:`~newton.Model.camera_resolution`.
-            sample_count: Rays per pixel of generated rays.
+            sample_count: Rays per pixel. Values above 1 require
+                ``default_render_config`` to use :attr:`AntiAliasing.SSAA` or
+                :attr:`AntiAliasing.MSAA`.
             clipping_range: Near and far clip distance [m] for every view. Defaults
                 to the cameras' clip ranges, or ``(0, 1e6)`` for sites. For rays
                 projected from a camera's intrinsics they are depths along the
@@ -352,8 +341,7 @@ class SensorCamera:
             self._frame_labels = model.shape_label
             frame_lens = dict.fromkeys(frames, _SITE_LENS)
         else:
-            # Model views may expose fewer cameras than the labels they share with their model.
-            camera_labels = list(model.camera_label)[: int(model.camera_count)]
+            camera_labels = model.camera_label
             frames = list(match_labels(camera_labels, cameras))
             if not frames:
                 raise ValueError(f"No cameras match {cameras!r}")
@@ -384,6 +372,11 @@ class SensorCamera:
             height = res_h if height is None else height
         if int(width) <= 0 or int(height) <= 0 or int(sample_count) <= 0:
             raise ValueError("width, height and sample_count must be positive")
+        if int(sample_count) > 1 and AntiAliasing(self.default_render_config.anti_aliasing) == AntiAliasing.NONE:
+            raise ValueError(
+                "sample_count > 1 requires default_render_config.anti_aliasing to be SSAA or MSAA, "
+                f"got {AntiAliasing(self.default_render_config.anti_aliasing).name}"
+            )
 
         device = self.device
         self.width = int(width)
@@ -752,7 +745,7 @@ class SensorCamera:
         width: int,
         height: int,
         *,
-        camera_fov: float | None = None,
+        fov: float | None = None,
         focal_length: float | None = None,
         horizontal_aperture: float | None = None,
         vertical_aperture: float | None = None,
@@ -761,10 +754,11 @@ class SensorCamera:
         sample_count: int = 1,
         out_rays: wp.array4d[wp.vec3f] | None = None,
         device: Devicelike = None,
+        camera_fov: float | None = None,
     ) -> wp.array4d[wp.vec3f]:
         """Compute camera-space rays for one pinhole camera.
 
-        Provide either ``camera_fov`` or the aperture triple (``focal_length``,
+        Provide either ``fov`` or the aperture triple (``focal_length``,
         ``horizontal_aperture``, ``vertical_aperture``), not both. The focal
         length and apertures share consistent units; only their ratios affect
         the ray directions. The apertures always map onto the full image, so an
@@ -775,8 +769,9 @@ class SensorCamera:
         Args:
             width: Image width [px].
             height: Image height [px].
-            camera_fov: Vertical field of view [rad], in ``(0, pi)``. Mutually
-                exclusive with the aperture parameters.
+            fov: Vertical field of view [rad], in ``(0, pi)``, as in
+                :meth:`~newton.ModelBuilder.add_camera`. Mutually exclusive with
+                the aperture parameters.
             focal_length: Lens focal length; must be positive.
             horizontal_aperture: Horizontal sensor aperture; must be positive.
             vertical_aperture: Vertical sensor aperture; must be positive.
@@ -787,6 +782,7 @@ class SensorCamera:
             out_rays: Optional output buffer, shape
                 ``(height, width, sample_count, 2)`` of ``vec3f``.
             device: Device for the ray bundle. Defaults to the current Warp device.
+            camera_fov: Deprecated alias of ``fov``.
 
         Returns:
             Ray origins and directions, shape
@@ -794,13 +790,19 @@ class SensorCamera:
         """
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
+        if camera_fov is not None:
+            warnings.warn("camera_fov is deprecated; use fov instead.", NewtonDeprecationWarning, stacklevel=2)
+            if fov is not None:
+                raise ValueError("fov and camera_fov are mutually exclusive.")
+            fov = camera_fov
+
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
         )
         use_aperture = focal_length is not None or horizontal_aperture is not None or vertical_aperture is not None
         if use_aperture:
-            if camera_fov is not None:
-                raise ValueError("camera_fov cannot be provided with aperture parameters.")
+            if fov is not None:
+                raise ValueError("fov cannot be provided with aperture parameters.")
             if focal_length is None or horizontal_aperture is None or vertical_aperture is None:
                 raise ValueError("focal_length, horizontal_aperture, and vertical_aperture must be provided together.")
             if float(focal_length) <= 0.0 or float(horizontal_aperture) <= 0.0 or float(vertical_aperture) <= 0.0:
@@ -825,10 +827,10 @@ class SensorCamera:
 
             return out_rays
 
-        if camera_fov is None:
-            raise ValueError("camera_fov must be provided when aperture parameters are not used.")
-        if not 0.0 < float(camera_fov) < math.pi:
-            raise ValueError(f"camera_fov must be in (0, pi) radians, got {float(camera_fov)}.")
+        if fov is None:
+            raise ValueError("fov must be provided when aperture parameters are not used.")
+        if not 0.0 < float(fov) < math.pi:
+            raise ValueError(f"fov must be in (0, pi) radians, got {float(fov)}.")
 
         wp.launch(
             kernel=camera_utils.compute_camera_rays_pinhole,
@@ -836,7 +838,7 @@ class SensorCamera:
             inputs=[
                 width,
                 height,
-                float(camera_fov),
+                float(fov),
                 sample_count,
                 out_rays,
             ],

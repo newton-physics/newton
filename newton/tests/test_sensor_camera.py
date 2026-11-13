@@ -26,7 +26,7 @@ class TestSensorCamera(unittest.TestCase):
     @staticmethod
     def _rays(width: int, height: int, fov: float = math.radians(45.0), device: str = "cpu") -> wp.array4d[wp.vec3f]:
         """Camera-space pinhole rays, shape ``(height, width, 1, 2)``."""
-        return SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=fov, device=device)
+        return SensorCamera.compute_camera_rays_pinhole(width, height, fov=fov, device=device)
 
     @staticmethod
     def _sphere_world_builder() -> newton.ModelBuilder:
@@ -95,7 +95,7 @@ class TestSensorCamera(unittest.TestCase):
 
         width, height = 3, 3
         rays = [
-            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=math.radians(45.0), device="cpu"),
+            SensorCamera.compute_camera_rays_pinhole(width, height, fov=math.radians(45.0), device="cpu"),
             SensorCamera.compute_camera_rays_pinhole(
                 width,
                 height,
@@ -128,7 +128,7 @@ class TestSensorCamera(unittest.TestCase):
         out_rays = wp.zeros((height, width, 1, 2), dtype=wp.vec3f, device="cpu")
 
         rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), out_rays=out_rays, device="cpu"
+            width, height, fov=math.radians(45.0), out_rays=out_rays, device="cpu"
         )
 
         self.assertIs(rays, out_rays)
@@ -137,14 +137,12 @@ class TestSensorCamera(unittest.TestCase):
     def test_camera_ray_helpers_generate_multisamples(self) -> None:
         """Generate distinct subpixel rays from every camera model."""
         width, height = 4, 3
-        default_rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), device="cpu"
-        )
+        default_rays = SensorCamera.compute_camera_rays_pinhole(width, height, fov=math.radians(45.0), device="cpu")
         one_sample_rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), sample_count=1, device="cpu"
+            width, height, fov=math.radians(45.0), sample_count=1, device="cpu"
         )
         multisample_rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), sample_count=4, device="cpu"
+            width, height, fov=math.radians(45.0), sample_count=4, device="cpu"
         )
 
         self.assertEqual(default_rays.shape, (height, width, 1, 2))
@@ -189,16 +187,16 @@ class TestSensorCamera(unittest.TestCase):
             with self.subTest(sample_count=sample_count):
                 with self.assertRaisesRegex(ValueError, "sample_count must be positive"):
                     SensorCamera.compute_camera_rays_pinhole(
-                        width, height, camera_fov=1.0, sample_count=sample_count, device="cpu"
+                        width, height, fov=1.0, sample_count=sample_count, device="cpu"
                     )
 
     def test_camera_multisample_offsets_center_on_pixel(self) -> None:
         """Center the pattern and place its first ray at the center when possible."""
-        center_ray = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=1.0, device="cpu").numpy()[0, 0, 0, 1]
+        center_ray = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=1.0, device="cpu").numpy()[0, 0, 0, 1]
         for sample_count in (2, 3, 4, 5, 6, 8, 16):
             with self.subTest(sample_count=sample_count):
                 rays = SensorCamera.compute_camera_rays_pinhole(
-                    1, 1, camera_fov=1.0, sample_count=sample_count, device="cpu"
+                    1, 1, fov=1.0, sample_count=sample_count, device="cpu"
                 ).numpy()[0, 0, :, 1]
                 ray_slopes = -rays[:, :2] / rays[:, 2, None]
                 np.testing.assert_allclose(ray_slopes.mean(axis=0), (0.0, 0.0), atol=1.0e-6)
@@ -218,11 +216,11 @@ class TestSensorCamera(unittest.TestCase):
         """Verify camera ray helpers accept only single-camera parameters."""
         width, height = 4, 3
 
-        with self.assertRaisesRegex(ValueError, "camera_fov cannot be provided with aperture parameters"):
+        with self.assertRaisesRegex(ValueError, "fov cannot be provided with aperture parameters"):
             SensorCamera.compute_camera_rays_pinhole(
                 width,
                 height,
-                camera_fov=math.radians(45.0),
+                fov=math.radians(45.0),
                 focal_length=1.0,
                 horizontal_aperture=2.0,
                 vertical_aperture=2.0,
@@ -230,7 +228,7 @@ class TestSensorCamera(unittest.TestCase):
             )
 
         with self.assertRaises(TypeError):
-            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=[math.radians(45.0)], device="cpu")
+            SensorCamera.compute_camera_rays_pinhole(width, height, fov=[math.radians(45.0)], device="cpu")
 
         with self.assertRaises(TypeError):
             SensorCamera.compute_camera_rays_pinhole(
@@ -244,18 +242,27 @@ class TestSensorCamera(unittest.TestCase):
 
         out_rays = wp.zeros((1, height, width, 2), dtype=wp.vec3f, device="cpu")
         with self.assertRaisesRegex(ValueError, "out_rays must have shape"):
-            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=math.radians(45.0), out_rays=out_rays)
+            SensorCamera.compute_camera_rays_pinhole(width, height, fov=math.radians(45.0), out_rays=out_rays)
 
     def test_pinhole_rays_reject_out_of_range_parameters(self) -> None:
         """Verify pinhole ray generation rejects non-positive focal length and out-of-range fov."""
         width, height = 4, 3
         for bad_fov in (0.0, math.pi, -0.1, math.pi + 0.1):
-            with self.assertRaisesRegex(ValueError, r"camera_fov must be in \(0, pi\)"):
-                SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=bad_fov, device="cpu")
+            with self.assertRaisesRegex(ValueError, r"fov must be in \(0, pi\)"):
+                SensorCamera.compute_camera_rays_pinhole(width, height, fov=bad_fov, device="cpu")
         with self.assertRaisesRegex(ValueError, "must be positive"):
             SensorCamera.compute_camera_rays_pinhole(
                 width, height, focal_length=0.0, horizontal_aperture=2.0, vertical_aperture=2.0, device="cpu"
             )
+
+    def test_pinhole_rays_camera_fov_is_deprecated(self) -> None:
+        """Verify the deprecated camera_fov alias warns and matches fov."""
+        expected = SensorCamera.compute_camera_rays_pinhole(4, 3, fov=0.8, device="cpu").numpy()
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            rays = SensorCamera.compute_camera_rays_pinhole(4, 3, camera_fov=0.8, device="cpu")
+        np.testing.assert_array_equal(rays.numpy(), expected)
+        with self.assertWarns(newton.NewtonDeprecationWarning), self.assertRaises(ValueError):
+            SensorCamera.compute_camera_rays_pinhole(4, 3, fov=0.8, camera_fov=0.8, device="cpu")
 
     def test_update_validates_rays_and_transforms(self) -> None:
         """Verify update rejects mistyped or misshaped rays and camera transforms."""
@@ -430,15 +437,13 @@ class TestSensorCamera(unittest.TestCase):
         camera.create_default_light()
         state = model.state()
         transforms = self._identity_transforms(1)
-        center_rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device="cpu")
+        center_rays = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=0.8, device="cpu")
         center_hdr = camera.allocate_image_color_hdr(1, 1, 1)
         camera.update(state, transforms, center_rays, hdr_color_image=center_hdr)
 
         for sample_count in (3, 4, 8):
             with self.subTest(sample_count=sample_count):
-                rays = SensorCamera.compute_camera_rays_pinhole(
-                    1, 1, camera_fov=0.8, sample_count=sample_count, device="cpu"
-                )
+                rays = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=0.8, sample_count=sample_count, device="cpu")
                 msaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
                 camera.update(
                     state,
@@ -451,7 +456,7 @@ class TestSensorCamera(unittest.TestCase):
 
     @staticmethod
     def _center_hdr(camera: SensorCamera, model: newton.Model, **update_kwargs) -> np.ndarray:
-        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device="cpu")
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=0.8, device="cpu")
         hdr = camera.allocate_image_color_hdr(1, 1, 1)
         camera.update(
             model.state(), TestSensorCamera._identity_transforms(1), rays, hdr_color_image=hdr, **update_kwargs
@@ -488,7 +493,7 @@ class TestSensorCamera(unittest.TestCase):
         model = builder.finalize(device="cpu")
         camera = SensorCamera(model)
         camera.set_ambient_light((0.3, 0.3, 0.3))
-        rays = SensorCamera.compute_camera_rays_pinhole(16, 16, camera_fov=0.8, device="cpu")
+        rays = SensorCamera.compute_camera_rays_pinhole(16, 16, fov=0.8, device="cpu")
         hdr = camera.allocate_image_color_hdr(1, 16, 16)
         shape_index = camera.allocate_image_shape_index(1, 16, 16)
         camera.update(
@@ -524,7 +529,7 @@ class TestSensorCamera(unittest.TestCase):
             model = builder.finalize(device="cpu")
             camera = SensorCamera(model)
             camera.create_default_light()
-            rays = SensorCamera.compute_camera_rays_pinhole(24, 24, camera_fov=1.2, device="cpu")
+            rays = SensorCamera.compute_camera_rays_pinhole(24, 24, fov=1.2, device="cpu")
             hdr = camera.allocate_image_color_hdr(1, 24, 24)
             transforms = wp.array([wp.transformf(wp.vec3f(0.0), wp.quatf(q))], dtype=wp.transformf, device="cpu")
             camera.update(model.state(), transforms, rays, hdr_color_image=hdr)
@@ -574,7 +579,7 @@ class TestSensorCamera(unittest.TestCase):
         camera = SensorCamera(model)
         camera.create_default_light()
         transforms = self._identity_transforms(1)
-        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, sample_count=3, device="cpu")
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=0.8, sample_count=3, device="cpu")
         first_rays = wp.array(rays.numpy()[:, :, 0:1].copy(), dtype=wp.vec3f, device="cpu")
         first_hdr = camera.allocate_image_color_hdr(1, 1, 1)
         msaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
@@ -646,7 +651,7 @@ class TestSensorCamera(unittest.TestCase):
     def test_update_rejects_multisample_rays_without_anti_aliasing(self) -> None:
         """Reject multisampled rays when the resolve mode is left at NONE."""
         model, camera = self._build_sphere_scene()
-        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=1.0, sample_count=4, device="cpu")
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=1.0, sample_count=4, device="cpu")
         color = camera.allocate_image_color(1, 1, 1)
 
         with self.assertRaisesRegex(ValueError, "anti_aliasing"):
@@ -1052,7 +1057,7 @@ class TestSensorCamera(unittest.TestCase):
 
             with self.subTest(device=str(device)):
                 # The in-kernel pinhole generator matches the same camera given precomputed pinhole rays.
-                hit_rays = SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=fov, device=device)
+                hit_rays = SensorCamera.compute_camera_rays_pinhole(width, height, fov=fov, device=device)
                 generated = render(SensorCamera(model, cameras="pinhole", width=width, height=height))
                 camera = SensorCamera(model, cameras="pinhole", width=width, height=height)
                 camera.set_camera_rays(hit_rays, cameras="pinhole")
@@ -1115,9 +1120,7 @@ class TestSensorCamera(unittest.TestCase):
                 model = builder.finalize(device=device)
                 self.assertEqual(model.camera_count, 0)
                 camera = SensorCamera(model, sites="site", width=width, height=height)
-                camera.set_camera_rays(
-                    SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=1.0, device=device)
-                )
+                camera.set_camera_rays(SensorCamera.compute_camera_rays_pinhole(width, height, fov=1.0, device=device))
                 depth = camera.allocate_image_depth()
                 camera.update(model.state(), depth_image=depth)
                 self.assertAlmostEqual(float(depth.numpy()[0, height // 2, width // 2]), 2.0, delta=0.05)
@@ -1257,7 +1260,7 @@ class TestSensorCamera(unittest.TestCase):
             with self.subTest(device=str(device)):
                 model = builder.finalize(device=device)
                 state = model.state()
-                rays = SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=fov, device=device)
+                rays = SensorCamera.compute_camera_rays_pinhole(width, height, fov=fov, device=device)
                 expected_corner = float(np.linalg.norm(rays.numpy()[0, 0, 0, 1] * 2.0 / -rays.numpy()[0, 0, 0, 1][2]))
                 camera = SensorCamera(model, cameras="*", width=width, height=height)
                 camera.set_camera_rays(rays, cameras="given")
@@ -1291,6 +1294,10 @@ class TestSensorCamera(unittest.TestCase):
         for name in ("width", "height", "sample_count", "view_count", "view_camera", "view_site", "view_world"):
             self.assertIsNone(getattr(unbound, name), name)
 
+        # Several samples per pixel need an anti-aliasing mode that combines them.
+        with self.assertRaisesRegex(ValueError, "sample_count > 1 requires"):
+            SensorCamera(model, cameras="cam", width=4, height=4, sample_count=4)
+
         camera = SensorCamera(model, cameras="cam", width=4, height=4)
         depth = camera.allocate_image_depth()
         with self.assertRaises(ValueError):
@@ -1301,7 +1308,7 @@ class TestSensorCamera(unittest.TestCase):
             camera.update(state, wp.zeros(2, dtype=wp.vec3f, device="cpu"), depth_image=depth)
         with self.assertRaises(ValueError):
             camera.update(state, camera_rays=wp.zeros((4, 4), dtype=wp.vec3f, device="cpu"), depth_image=depth)
-        rays = SensorCamera.compute_camera_rays_pinhole(4, 4, camera_fov=1.0, device="cpu")
+        rays = SensorCamera.compute_camera_rays_pinhole(4, 4, fov=1.0, device="cpu")
         with self.assertRaises(TypeError):
             camera.set_camera_rays([rays, rays], cameras="cam")
 
@@ -2051,7 +2058,7 @@ class TestSensorCameraDeformable(unittest.TestCase):
 
     @staticmethod
     def _camera_arrays(model, view_count=1):
-        rays = SensorCamera.compute_camera_rays_pinhole(16, 16, device=model.device, camera_fov=math.radians(45))
+        rays = SensorCamera.compute_camera_rays_pinhole(16, 16, device=model.device, fov=math.radians(45))
         transforms = wp.array(
             [wp.transform(wp.vec3(0, 0, 2), wp.quat_identity())] * view_count,
             dtype=wp.transform,

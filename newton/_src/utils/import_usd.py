@@ -134,10 +134,12 @@ class _CableAttachmentCandidate:
     target_path: str
 
 
-def _usd_render_product_resolutions(stage) -> dict[str, tuple[tuple[int, int], str, float]]:
-    """Map camera prim paths to the image format of the first ``UsdRender.Product`` that renders them.
+def _usd_render_product_resolutions(stage) -> dict[str, tuple[tuple[int, int], str, float] | None]:
+    """Map camera prim paths to the image format of the ``UsdRender.Product`` prims that render them.
 
     Each entry holds the resolution, the ``aspectRatioConformPolicy`` and the ``pixelAspectRatio``.
+    A camera rendered by several products with different image formats maps to ``None``, since no
+    single format describes it.
     A product inherits unauthored values from the ``UsdRender.Settings`` that lists it in
     ``products``; values authored on the product take precedence. A resolution is never taken from
     the schema fallback, while the policy and pixel aspect ratio fall back to the USD defaults.
@@ -146,14 +148,14 @@ def _usd_render_product_resolutions(stage) -> dict[str, tuple[tuple[int, int], s
     """
     from pxr import Usd, UsdRender
 
-    resolutions: dict[str, tuple[tuple[int, int], str, float]] = {}
+    formats: dict[str, set[tuple[tuple[int, int], str, float]]] = {}
     render_prims = [
         prim
         for prim in Usd.PrimRange(stage.GetPseudoRoot())
         if prim.IsA(UsdRender.Settings) or prim.IsA(UsdRender.Product)
     ]
     if not render_prims:
-        return resolutions
+        return {}
 
     def authored(attr):
         return attr.Get() if attr and attr.HasAuthoredValue() else None
@@ -181,7 +183,7 @@ def _usd_render_product_resolutions(stage) -> dict[str, tuple[tuple[int, int], s
         if resolution is None or resolution[0] <= 0 or resolution[1] <= 0:
             return
         for target in cameras:
-            resolutions.setdefault(str(target), ((int(resolution[0]), int(resolution[1])), policy, pixel_aspect))
+            formats.setdefault(str(target), set()).add(((int(resolution[0]), int(resolution[1])), policy, pixel_aspect))
 
     listed_products = set()
     for prim in render_prims:
@@ -204,7 +206,7 @@ def _usd_render_product_resolutions(stage) -> dict[str, tuple[tuple[int, int], s
         if prim.IsA(UsdRender.Product) and prim.GetPath() not in listed_products:
             product = UsdRender.Product(prim)
             add(authored_cameras(product), authored_resolution(product), *image_format(product))
-    return resolutions
+    return {path: next(iter(found)) if len(found) == 1 else None for path, found in formats.items()}
 
 
 def _conform_usd_aperture(
@@ -304,13 +306,24 @@ def _import_usd_cameras(
             pos, rot, _scale = wp.transform_decompose(get_world_mat(prim))
             camera_xform = wp.transform(pos, rot)
 
-        near, far = camera.GetClippingRangeAttr().Get()
+        clipping_attr = camera.GetClippingRangeAttr()
+        near, far = clipping_attr.Get()
+        if not clipping_attr.HasAuthoredValue():
+            # USD's schema fallback is (1, 1e6) scene units; it is kept so the camera renders as in other USD tools.
+            logger.debug("Camera %s has no authored clippingRange; using the USD fallback %s.", path, (near, far))
         horizontal = float(camera.GetHorizontalApertureAttr().Get())
         vertical = float(camera.GetVerticalApertureAttr().Get())
         resolution = None
-        if path in resolutions:
-            resolution, policy, pixel_aspect = resolutions[path]
+        image_format = resolutions.get(path)
+        if image_format is not None:
+            resolution, policy, pixel_aspect = image_format
             horizontal, vertical = _conform_usd_aperture(horizontal, vertical, resolution, policy, pixel_aspect)
+        elif path in resolutions:
+            logger.warning(
+                "Camera %s is rendered by several RenderProducts with different image formats; "
+                "keeping its authored aperture without a resolution.",
+                path,
+            )
         try:
             camera_id = builder.add_camera(
                 body,
@@ -472,7 +485,12 @@ def parse_usd(
         load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_cameras: If True, perspective ``UsdGeom.Camera`` prims are added as model cameras
             (see :meth:`~newton.ModelBuilder.add_camera`), attached to their nearest imported rigid-body
-            ancestor or fixed in the world. Orthographic cameras are skipped and logged. Default is True.
+            ancestor or fixed in the world. A camera rendered by one ``UsdRender.Product`` takes its
+            resolution and conforms its aperture to the product's image format; a camera rendered by
+            several products with different image formats keeps its authored aperture without a
+            resolution. An unauthored ``clippingRange`` uses the USD fallback of ``(1, 1000000)`` scene
+            units, a 1 m near plane in meter-scale stages. Orthographic cameras are skipped and logged.
+            Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             Also imports experimental deformable visual meshes; see :ref:`usd-deformable-visual-import`.
         load_static_visual_shapes: If True, supported visual-only geometry outside

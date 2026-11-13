@@ -5332,7 +5332,12 @@ class ModelBuilder:
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_cameras: If True, perspective ``UsdGeom.Camera`` prims are added as model cameras
                 (see :meth:`~newton.ModelBuilder.add_camera`), attached to their nearest imported rigid-body
-                ancestor or fixed in the world. Orthographic cameras are skipped and logged. Default is True.
+                ancestor or fixed in the world. A camera rendered by one ``UsdRender.Product`` takes its
+                resolution and conforms its aperture to the product's image format; a camera rendered by
+                several products with different image formats keeps its authored aperture without a
+                resolution. An unauthored ``clippingRange`` uses the USD fallback of ``(1, 1000000)`` scene
+                units, a 1 m near plane in meter-scale stages. Orthographic cameras are skipped and logged.
+                Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
                 Also imports experimental deformable visual meshes; see :ref:`usd-deformable-visual-import`.
             load_static_visual_shapes: If True, supported visual-only geometry outside
@@ -5686,9 +5691,8 @@ class ModelBuilder:
             parse_cameras: Whether ``<camera>`` elements should be added as model cameras (see
                 :meth:`~newton.ModelBuilder.add_camera`). Tracking cameras (``track``, ``trackcom``,
                 ``targetbody``, ``targetbodycom``) are imported as fixed mounts on their body, which match
-                MuJoCo only at the initial pose; their ``mode`` and ``target`` are kept in the
-                ``mujoco:camera_mode`` and ``mujoco:camera_target`` custom attributes. Orthographic cameras
-                are skipped and logged. Default is True.
+                MuJoCo only at the initial pose, and are reported in one warning. Orthographic cameras are
+                skipped and logged. Default is True.
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             up_axis: The up axis of the MuJoCo scene. The default is Z up.

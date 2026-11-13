@@ -642,9 +642,8 @@ def parse_mjcf(
         parse_cameras: Whether ``<camera>`` elements should be added as model cameras (see
             :meth:`~newton.ModelBuilder.add_camera`). Tracking cameras (``track``, ``trackcom``,
             ``targetbody``, ``targetbodycom``) are imported as fixed mounts on their body, which match
-            MuJoCo only at the initial pose; their ``mode`` and ``target`` are kept in the
-            ``mujoco:camera_mode`` and ``mujoco:camera_target`` custom attributes. Orthographic cameras
-            are skipped and logged. Default is True.
+            MuJoCo only at the initial pose, and are reported in one warning. Orthographic cameras are
+            skipped and logged. Default is True.
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
         parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -2282,7 +2281,7 @@ def parse_mjcf(
 
         return site_shapes
 
-    pending_camera_targets: list[tuple[int, str, str]] = []
+    tracking_camera_names: list[str] = []
     builder_custom_attr_camera: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [Model.AttributeFrequency.CAMERA]
     )
@@ -2305,16 +2304,8 @@ def parse_mjcf(
             if camera_attrib.get("orthographic", "false").lower() == "true":
                 logger.warning("MJCF camera '%s' is orthographic, which is not supported; skipping.", camera_name)
                 continue
-            mode = camera_attrib.get("mode", "fixed")
-            if mode != "fixed":
-                # Tracking cameras are common in MuJoCo assets and their mode and target are kept as custom
-                # attributes, so the documented fixed-mount approximation is logged at debug level.
-                logger.debug(
-                    "MJCF camera '%s' uses mode='%s'; it is imported as a fixed mount that matches MuJoCo only "
-                    "at the initial pose. The mode is kept in the mujoco:camera_mode custom attribute.",
-                    camera_name,
-                    mode,
-                )
+            if camera_attrib.get("mode", "fixed") != "fixed":
+                tracking_camera_names.append(camera_name)
 
             camera_pos = parse_vec(camera_attrib, "pos", (0.0, 0.0, 0.0)) * scale
             camera_xform = wp.transform(camera_pos, parse_orientation(camera_attrib))
@@ -2377,7 +2368,7 @@ def parse_mjcf(
                 if builder_custom_attr_camera
                 else None
             )
-            camera_id = builder.add_camera(
+            builder.add_camera(
                 link,
                 xform=camera_xform,
                 resolution=resolution,
@@ -2385,9 +2376,6 @@ def parse_mjcf(
                 custom_attributes=camera_custom_attrs,
                 **intrinsics,
             )
-            if "target" in camera_attrib:
-                # Targets may name bodies defined later; they are resolved once every body is parsed.
-                pending_camera_targets.append((camera_id, camera_name, camera_attrib["target"]))
 
     def get_frame_xform(frame_element, incoming_xform: wp.transform) -> wp.transform:
         """Compute composed transform for a frame element."""
@@ -3718,17 +3706,14 @@ def parse_mjcf(
             track_root_boundaries=True,
         )
 
-        if pending_camera_targets:
-            camera_target = builder.custom_attributes["mujoco:camera_target"]
-            for camera_id, camera_name, target_name in pending_camera_targets:
-                target = body_name_to_idx.get(sanitize_name(target_name))
-                if target is None:
-                    logger.warning("MJCF camera '%s' targets unknown body '%s'; ignoring it.", camera_name, target_name)
-                    continue
-                camera_target.values[camera_id] = target
-
     # -----------------
     # Report once outside the recursive body parser so the warning points to the caller.
+    if tracking_camera_names:
+        logger.warning(
+            "MJCF cameras %s use tracking modes, which are not supported; they are imported as fixed mounts "
+            "that match MuJoCo only at the initial pose.",
+            tracking_camera_names,
+        )
     if approximated_spring_rest:
         warnings.warn(
             "Converting three hinges to a ball joint uses an identity spring rest orientation; "

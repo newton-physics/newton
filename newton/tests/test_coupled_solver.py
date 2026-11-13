@@ -1374,6 +1374,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(model.camera_count, 2)
         self.assertEqual(view.camera_count, 0)
         self.assertEqual(view.camera_body.shape[0], 0)
+        self.assertEqual(view.camera_label, [])
+        self.assertEqual(len(model.camera_label), 2)
 
     def test_noncompact_views_hide_cross_entry_attachments(self):
         """Filter attachment ownership even when an owned joint's out-of-entry child prevents compaction."""

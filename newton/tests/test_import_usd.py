@@ -3005,6 +3005,8 @@ def Xform "World"
     def Camera "Standalone" {}
     def Camera "Unauthored" {}
     def Camera "Elsewhere" {}
+    def Camera "Shared" {}
+    def Camera "Agreeing" {}
 }
 
 def Scope "Render"
@@ -3038,6 +3040,31 @@ def Scope "Render"
     {
         rel camera = </World/Unauthored>
     }
+
+    def RenderProduct "SharedSmall"
+    {
+        rel camera = </World/Shared>
+        int2 resolution = (640, 480)
+        uniform token aspectRatioConformPolicy = "cropAperture"
+    }
+
+    def RenderProduct "SharedLarge"
+    {
+        rel camera = </World/Shared>
+        int2 resolution = (1920, 1080)
+    }
+
+    def RenderProduct "AgreeingA"
+    {
+        rel camera = </World/Agreeing>
+        int2 resolution = (200, 100)
+    }
+
+    def RenderProduct "AgreeingB"
+    {
+        rel camera = </World/Agreeing>
+        int2 resolution = (200, 100)
+    }
 }
 
 def Scope "Elsewhere"
@@ -3051,8 +3078,12 @@ def Scope "Elsewhere"
 """
         )
         builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+        with self.assertLogs("newton", level="WARNING") as logs:
+            builder.add_usd(stage)
         cameras = {label: index for index, label in enumerate(builder.camera_label)}
+        several = [line for line in logs.output if "several RenderProducts" in line]
+        self.assertEqual(len(several), 1)
+        self.assertIn("/World/Shared", several[0])
 
         mounted = cameras["/World/Body/Mount/Inherited"]
         self.assertEqual(builder.camera_body[mounted], 0)
@@ -3082,6 +3113,15 @@ def Scope "Elsewhere"
             builder.camera_aperture[cameras["/World/Standalone"]], (fallback[1] * 2.0, fallback[1]), rtol=1e-5
         )
         np.testing.assert_allclose(builder.camera_aperture[cameras["/World/Unauthored"]], fallback, rtol=1e-5)
+
+        # Products with different image formats leave the authored aperture and no resolution; products
+        # that agree are used like one product.
+        self.assertEqual(builder.camera_resolution[cameras["/World/Shared"]], (0, 0))
+        np.testing.assert_allclose(builder.camera_aperture[cameras["/World/Shared"]], fallback, rtol=1e-5)
+        self.assertEqual(builder.camera_resolution[cameras["/World/Agreeing"]], (200, 100))
+
+        # An unauthored clippingRange keeps the USD fallback (1, 1e6) in scene units.
+        np.testing.assert_allclose(builder.camera_clipping_range[cameras["/World/Shared"]], (1.0, 1.0e6), rtol=1e-6)
 
     def test_conform_usd_aperture_policies(self):
         """Conform a 3:2 aperture to a 1:1 image under each UsdRender aspect-ratio policy."""
