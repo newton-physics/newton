@@ -1012,18 +1012,21 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
             pipeline.body_pair_reduction = None
 
     def test_vbd_owns_a_reducing_pipeline(self):
-        """Drive body-pair reduction from a solver-owned pipeline during a real VBD step."""
+        """Support a penetrating foot using reduced contacts from a solver-owned pipeline."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        _cylinder_foot(builder, (0.0, 0.0, 0.020))
+        _cylinder_foot(builder, (0.0, 0.0, 0.0149))
         builder.add_ground_plane()
         builder.color()
         model = builder.finalize(device=wp.get_device())
         pipeline = _make_pipeline(model, True)
         solver = newton.solvers.SolverVBD(model, collision_pipeline=pipeline, iterations=4)
         state, out = model.state(), model.state()
+        initial_z = float(state.body_q.numpy()[0, 2])
         solver.step(state, out, model.control(), None, DT)
         self.assertGreater(pipeline._body_pair_reducer.stats()["total_frames"], 0)
         self.assertTrue(np.isfinite(out.body_q.numpy()).all())
+        # Without contact, semi-implicit gravity drops the foot by g * dt**2.
+        self.assertGreater(float(out.body_q.numpy()[0, 2]), initial_z - 0.5 * 9.81 * DT * DT)
 
 
 class TestBodyPairReductionMultiPatch(unittest.TestCase):
