@@ -642,7 +642,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_anymal.FastMetricsExampleAnymalPretrained.track_mean_world_step_time",
             "simulation.bench_teleop_mujoco.FastTeleopMuJoCo.time_teleop_loop",
             "simulation.bench_teleop_mujoco.FastTeleopMuJoCo.track_p95_loop_ms",
-            "simulation.bench_kamino.FastDRLegs.time_simulate",
+            "simulation.bench_kamino.FastMetricsDRLegs.track_mean_world_step_time",
             "simulation.bench_viewer.FastViewerGL.time_rendering_frame",
             "simulation.bench_mujoco.FastAllegro.track_p95_step_time",
             "simulation.bench_mujoco.FastAllegro.track_simulate",
@@ -695,7 +695,6 @@ class TestSimulationBenchmarks(unittest.TestCase):
     def test_pr_gate_caps_repeats_without_dropping_cases(self):
         """Keep full workloads with three timing samples in the PR gate."""
         cases = (
-            (bench_quadruped_xpbd.FastExampleQuadrupedXPBD, 10),
             (bench_selection.FastExampleSelectionCartpoleMuJoCo, 10),
             (bench_contacts.FastConvexCollision, 5),
         )

@@ -5,7 +5,6 @@ import os
 import sys
 
 import warp as wp
-from asv_runner.benchmarks.mark import skip_benchmark_if
 
 wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
@@ -13,7 +12,6 @@ wp.config.log_level = wp.LOG_WARNING
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-from benchmark_config import pr_gate_repeat
 from benchmark_metric_tracks import _SimulationMetricTracksUnparameterized
 from benchmark_metrics import (
     collect_simulation_metrics,
@@ -31,24 +29,6 @@ def _create_example(num_frames, world_count):
         args.world_count = world_count
         return Example(newton.viewer.ViewerNull(num_frames=num_frames), args)
     return Example(newton.viewer.ViewerNull(num_frames=num_frames), world_count)
-
-
-class FastExampleQuadrupedXPBD:
-    repeat = pr_gate_repeat(10)
-    number = 1
-
-    def setup(self):
-        self.num_frames = 1000
-        self.example = _create_example(self.num_frames, world_count=200)
-        # Keep one-time device work out of the samples.
-        self.example.step()
-        wp.synchronize_device()
-
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_simulate(self):
-        for _ in range(self.num_frames):
-            self.example.step()
-        wp.synchronize_device()
 
 
 class FastMetricsExampleQuadrupedXPBD(_SimulationMetricTracksUnparameterized):
@@ -84,7 +64,6 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
-        "FastExampleQuadrupedXPBD": FastExampleQuadrupedXPBD,
         "FastMetricsExampleQuadrupedXPBD": FastMetricsExampleQuadrupedXPBD,
     }
 

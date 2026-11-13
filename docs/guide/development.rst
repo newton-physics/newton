@@ -875,10 +875,9 @@ Simulation benchmark metrics
 
 The nightly robot and policy simulation benchmarks publish several metrics from one cached benchmark run. This
 includes the batched MuJoCo and Kamino KPI workloads, the non-policy DR Legs workload, the pretrained Anymal
-workload, and the XPBD quadruped workload. Companion ``FastMetrics*`` classes reuse the exact factories, scenes,
-solvers, and frame counts of existing aggregate benchmarks. Rendering, IK, inverse dynamics, CPU-backend
-regression, material/contact microbenchmarks, and startup benchmarks are not experience-collection workloads and
-are outside this metric set.
+workload, and the XPBD quadruped workload. Rendering, IK, inverse dynamics, CPU-backend regression,
+material/contact microbenchmarks, and startup benchmarks are not experience-collection workloads and are outside
+this metric set.
 
 Let ``F`` be the number of measured frames across all samples, ``S`` the number of physics substeps per frame,
 ``W`` the world count, ``dt`` the physics timestep in seconds, ``T`` the synchronized complete-step wall time in
@@ -892,12 +891,11 @@ seconds, and ``T_physics`` the workload's synchronized internal physics time. Th
 * steady-state GPU memory in ``MiB``; and
 * mean and maximum MuJoCo solver iteration counts across worlds at the final frame of each measured sample.
 
-The existing KPI mean world-step series keeps its ``track_simulate`` name and definition, and existing
-``time_simulate`` aggregate series remain unchanged. ``world_count`` remains an ASV parameter where applicable,
-while ``sim_dt`` and ``sim_substeps`` are also recorded as tracked values so dashboard results retain the
-configuration needed to interpret throughput and real-time factor. The existing KPI mean series continues to use
-each workload's internal physics timer. Throughput, real-time factor, and p95 metrics time and synchronize the
-complete ``step()`` operation, including any policy or control work it performs.
+The existing KPI mean world-step series keeps its ``track_simulate`` name and definition. ``world_count`` remains
+an ASV parameter where applicable, while ``sim_dt`` and ``sim_substeps`` are also recorded as tracked values so
+dashboard results retain the configuration needed to interpret throughput and real-time factor. The existing KPI
+mean series continues to use each workload's internal physics timer. Throughput, real-time factor, and p95 metrics
+time and synchronize the complete ``step()`` operation, including any policy or control work it performs.
 
 GPU memory is the decrease in ``Device.free_memory`` between a baseline immediately before the first finalized
 workload is created and a measurement after initialization, CUDA graph capture, and the first complete measured
