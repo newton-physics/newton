@@ -5,16 +5,15 @@
 
 from __future__ import annotations
 
-import warnings
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
 
-from ...exceptions import NewtonDeprecationWarning
 from ...geometry import ParticleFlags
 from ...sim import BodyFlags, JointType, Model
+from ...utils.deprecation import warn_deprecation
 
 if TYPE_CHECKING:
     from ...sim import Control, State
@@ -61,7 +60,7 @@ class _AttributeNamespaceView(Model.AttributeNamespace):
     def __getattr__(self, name: str):
         if name in self._deprecated_aliases:
             getter, message = self._deprecated_aliases[name]
-            warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
+            warn_deprecation(message)
             return getter()
         try:
             return super().__getattr__(name)

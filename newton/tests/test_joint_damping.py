@@ -7,7 +7,13 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 
 class TestJointDamping(unittest.TestCase):
@@ -202,7 +208,7 @@ def test_steel_ball_joint_damping_matches_featherstone(test: TestJointDamping, d
     """Decay Steel ball-joint speed with joint damping, as SolverFeatherstone does."""
 
     def solver_fn(model):
-        return newton.solvers.SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split")
+        return newton.solvers.SolverSteel(model)
 
     def featherstone_fn(model):
         return newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
@@ -246,11 +252,7 @@ solvers = {
     "featherstone": (lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0), False),
     "semi_implicit": (lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0), True),
     "kamino": (newton.solvers.SolverKamino, False),
-    # The matrix-free solve is CUDA-only; split is the CPU route.
-    "steel": (
-        lambda model: newton.solvers.SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split"),
-        False,
-    ),
+    "steel": (newton.solvers.SolverSteel, False),
 }
 
 for device in devices:
@@ -296,7 +298,9 @@ for device in get_cuda_test_devices():
         "test_revolute_joint_damping_decays_velocity_mujoco_warp",
         test_revolute_joint_damping_decays_velocity,
         devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
+        solver_fn=requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+        ),
         sync_joint_qd=False,
     )
 

@@ -12,7 +12,6 @@ newton
 - :doc:`newton.actuators <newton_actuators>`
 - :doc:`newton.config <newton_config>`
 - :doc:`newton.controllers <newton_controllers>`
-- :doc:`newton.exceptions <newton_exceptions>`
 - :doc:`newton.geometry <newton_geometry>`
 - :doc:`newton.ik <newton_ik>`
 - :doc:`newton.math <newton_math>`
@@ -44,6 +43,8 @@ newton
    Model
    ModelBuilder
    ModelFlags
+   NewtonDeprecationWarning
+   NewtonWarning
    ParticleFlags
    Rod
    SDF
@@ -82,4 +83,4 @@ newton
    * - ``MAXVAL``
      - ``10000000000.0``
    * - ``__version__``
-     - ``1.8.0.dev0``
+     - ``1.9.0.dev0``

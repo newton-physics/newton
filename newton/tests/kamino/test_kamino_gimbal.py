@@ -14,7 +14,6 @@ import warp as wp
 
 import newton
 from newton import Contacts
-from newton._src.sim import JointType
 from newton._src.solvers.kamino._src.core.joints import JointDoFType
 from newton._src.solvers.kamino._src.kinematics.joints import (
     gimbal_reciprocal_axes,
@@ -25,6 +24,7 @@ from newton._src.solvers.kamino._src.kinematics.joints import (
 from newton.solvers import SolverKamino, SolverMuJoCo
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_cts_jacobians, extract_dofs_jacobians
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 _RH_AXES = (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
 _LH_AXES = (newton.Axis.X, newton.Axis.Z, newton.Axis.Y)
@@ -301,24 +301,46 @@ class TestGimbal(unittest.TestCase):
         axes[qd_start + 1] = [1.0, 0.0, 0.0]
         model.joint_axis.assign(axes)
 
-        with self.assertRaisesRegex(ValueError, "universal and gimbal axes must be unit length and orthogonal"):
+        with self.assertRaisesRegex(
+            ValueError, "universal, Cartesian, and gimbal axes must be unit length and orthogonal"
+        ):
             SolverKamino(model)
 
-    def test_from_newton_derives_gimbal_handedness(self):
-        """Derive the gimbal type from the orientation of its three axes."""
-        limits = np.zeros(3, dtype=np.float32)
-        right_handed = JointDoFType.from_newton(JointType.D6, 3, 3, (0, 3), limits, limits, np.eye(3, dtype=np.float32))
-        left_handed = JointDoFType.from_newton(
-            JointType.D6,
-            3,
-            3,
-            (0, 3),
-            limits,
-            limits,
-            np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]], dtype=np.float32),
-        )
-        self.assertEqual(right_handed, JointDoFType.GIMBAL)
-        self.assertEqual(left_handed, JointDoFType.GIMBAL_LEFT_HANDED)
+    def test_cartesian_rejects_invalid_axes(self):
+        """Reject three translational axes that are not orthonormal or form a left-handed set."""
+        cases = {
+            "right-handed": (1.0, None),
+            "left-handed": (-1.0, "three translational axes must form a right-handed set"),
+            "not orthogonal": (1.0, "Cartesian, and gimbal axes must be unit length and orthogonal"),
+        }
+        for name, (sign, error) in cases.items():
+            with self.subTest(name):
+                builder = newton.ModelBuilder()
+                inertia = wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+                parent = builder.add_link(mass=1.0, inertia=inertia)
+                child = builder.add_link(mass=1.0, inertia=inertia)
+                root = builder.add_joint_fixed(-1, parent)
+                cartesian = builder.add_joint_d6(
+                    parent,
+                    child,
+                    linear_axes=[
+                        newton.ModelBuilder.JointDofConfig(axis=tuple(sign * c for c in axis))
+                        for axis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+                    ],
+                )
+                builder.add_articulation([root, cartesian])
+                model = builder.finalize(device=self.default_device)
+                if name == "not orthogonal":
+                    qd_start = model.joint_qd_start.numpy()[cartesian]
+                    axes = model.joint_axis.numpy()
+                    axes[qd_start + 2] = axes[qd_start]
+                    model.joint_axis.assign(axes)
+                if error is None:
+                    solver = SolverKamino(model)
+                    self.assertEqual(solver._model_kamino.joints.dof_type.numpy()[cartesian], JointDoFType.CARTESIAN)
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        SolverKamino(model)
 
     def test_chart_selects_nearest_equivalent_branch(self):
         """Select the equivalent Euler branch nearest the authored reference."""
@@ -427,8 +449,8 @@ class TestGimbal(unittest.TestCase):
         state = model.state()
         q_start = model.joint_q_start.numpy()[d6]
         qd_start = model.joint_qd_start.numpy()[d6]
-        q = state.joint_q.numpy()
-        qd = state.joint_qd.numpy()
+        q = state.joint_q.numpy().copy()
+        qd = state.joint_qd.numpy().copy()
         q[q_start : q_start + 3] = [0.2, -0.3, 0.4]
         qd[qd_start : qd_start + 3] = [-0.1, 0.15, -0.2]
         state.joint_q.assign(q)
@@ -477,6 +499,7 @@ class TestGimbal(unittest.TestCase):
 
 
 @unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")
+@requires(*MUJOCO_MODULES)
 class TestGimbalMJWarp(unittest.TestCase):
     """Compare Kamino and MJWarp through the public Newton state layout."""
 

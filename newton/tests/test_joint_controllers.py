@@ -8,7 +8,7 @@ import warp as wp
 
 import newton
 from newton._src.utils.import_mjcf import parse_mjcf
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 class TestJointController(unittest.TestCase):
@@ -589,16 +589,19 @@ def test_free_joint_qfrc_actuator_frame(
 
 
 def _steel(model):
-    # The matrix-free solve is CUDA-only; split is the CPU route.
-    return newton.solvers.SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split")
+    return newton.solvers.SolverSteel(model)
 
 
 devices = get_test_devices()
 # Steel drives act on PRISMATIC, REVOLUTE and D6 DOFs, so it runs the revolute controller tests only.
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
+    "mujoco_cpu": requires(*MUJOCO_MODULES)(
+        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+    ),
+    "mujoco_warp": requires(*MUJOCO_MODULES)(
+        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+    ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0, iterations=5),
     # "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
     "kamino": newton.solvers.SolverKamino,

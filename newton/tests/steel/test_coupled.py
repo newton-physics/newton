@@ -18,13 +18,19 @@ from newton.solvers.experimental.coupled import (
     SolverCoupledProxy,
 )
 from newton.tests.steel._fixtures import set_torsion_radius
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 DT = 1.0 / 480.0
 
 
 def _steel(view, **kwargs):
-    return SolverSteel(view, solve_mode="matrix_free", **kwargs)
+    return SolverSteel(view, **kwargs)
 
 
 def _build_box_cloth(
@@ -279,6 +285,7 @@ def test_contact_feedback_is_consumed_exactly(test, device):
     test.assertLess(float(rollout.state_0.particle_qd.numpy()[:, 2].mean()), -0.05)
 
 
+@requires(*MUJOCO_MODULES)
 def test_box_lands_on_cloth_like_mujoco(test, device):
     """Land a box on a pinned cloth within 2 mm of the MuJoCo source."""
     final = {}
@@ -438,7 +445,7 @@ def _undamped(solver):
 def test_articulated_graph_capture_matches_eager(test, device):
     """Match eager stepping with graph replay of an articulated source across proxy iterations and friction models."""
     options = {
-        "solve_mode": "matrix_free",
+        "solve_mode": "serial",
         "articulated_contact_response": "immediate",
         "iterations": 16,
         "articulation_constraint_max": 32,
@@ -557,6 +564,7 @@ def test_articulated_effective_mass(test, device):
     np.testing.assert_allclose(out_inertia.numpy()[0], model.body_inertia.numpy()[link] * scale, rtol=1.0e-4)
 
 
+@requires(*MUJOCO_MODULES)
 def test_effective_mass_offset_com(test, device):
     """Measure endpoints from an offset COM, match MuJoCo at the COM, and treat an immobile point as free."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -885,7 +893,7 @@ def test_effective_mass_ignores_loop_closures(test, device):
                     bodies.append(body)
                 builder.add_articulation(joints)
                 if closure:
-                    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "Parallel joints"):
+                    with test.assertWarnsRegex(newton.NewtonWarning, "Parallel joints"):
                         builder.add_joint_ball(-1, bodies[0], enabled=False)
             model = builder.finalize(device=device)
             solver = _steel(model)
@@ -986,7 +994,7 @@ def test_split_articulation_gets_free_root(test, device):
     """Step a split arm subtree on its view's FREE root like the same arm built on a FREE root."""
 
     def steel(view):
-        return SolverSteel(view, solve_mode="split")
+        return SolverSteel(view)
 
     world_count = 2
     model, bodies_per_world, joints_per_world = _build_split_arm(device, base=True, world_count=world_count)

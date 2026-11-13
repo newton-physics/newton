@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
 import time
 import unittest
 from enum import Enum
@@ -13,6 +14,7 @@ from newton._src.geometry.contact_reduction_hydroelastic import (
     FIXED_EXP_NONE,
     SPECULATIVE_BIN_OFFSET,
     _fixed_mantissa_bits,
+    _fixed_shift,
     _from_fixed,
     _to_fixed,
 )
@@ -29,9 +31,12 @@ from newton._src.geometry.sdf_mc import _get_marching_cubes_class, get_triangle_
 from newton._src.geometry.utils import _scan_scratch_size, scan_with_total
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
     add_function_test,
+    capture_with_cuda_driver,
     get_selected_cuda_test_devices,
     get_test_devices,
+    requires,
 )
 
 # --- Configuration ---
@@ -62,14 +67,16 @@ cuda_devices = get_selected_cuda_test_devices()
 scan_devices = get_test_devices()
 
 solvers = {
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
-        model,
-        use_mujoco_cpu=False,
-        use_mujoco_contacts=False,
-        njmax=500,
-        nconmax=200,
-        solver="newton",
-        ls_iterations=100,
+    "mujoco_warp": requires(*MUJOCO_MODULES)(
+        lambda model: newton.solvers.SolverMuJoCo(
+            model,
+            use_mujoco_cpu=False,
+            use_mujoco_contacts=False,
+            njmax=500,
+            nconmax=200,
+            solver="newton",
+            ls_iterations=100,
+        )
     ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
 }
@@ -82,11 +89,13 @@ def _test_fixed_point_extreme_exponents(
     mantissa_bits: int,
     fixed_values: wp.array[wp.int64],
     roundtrip_values: wp.array[wp.float32],
+    shifts: wp.array[wp.float64],
 ):
     """Convert sentinel and high finite pressure contributions in fixed point."""
     tid = wp.tid()
     fixed_values[tid] = _to_fixed(values[tid], exponents[tid], mantissa_bits)
     roundtrip_values[tid] = _from_fixed(fixed_values[tid], exponents[tid], mantissa_bits)
+    shifts[tid] = _fixed_shift(exponents[tid], mantissa_bits)
 
 
 @wp.kernel
@@ -225,37 +234,89 @@ def test_mc_corner_pair_selection(test, device):
 
 
 def test_scan_with_total_boundaries(test, device):
-    """Match hydroelastic count scans at empty, partial, clamped, and multi-chunk sizes."""
-    capacity = 4099
-    counts_np = (np.arange(capacity, dtype=np.int32) % 7) + 1
+    """Match hydroelastic count scans at empty, partial, clamped, single-tile and multi-tile sizes."""
+    for capacity in (2048, 4099):
+        counts_np = (np.arange(capacity, dtype=np.int32) % 7) + 1
+        for case, active_count in (
+            ("empty", 0),
+            ("partial", 37),
+            ("clamped", capacity + 19),
+            ("full", capacity),
+        ):
+            with test.subTest(capacity=capacity, case=case):
+                counts = wp.array(counts_np, dtype=wp.int32, device=device)
+                num_elements = wp.array([active_count], dtype=wp.int32, device=device)
+                fallback_prefix = wp.full(capacity, -1, dtype=wp.int32, device=device)
+                scratch_prefix = wp.full(capacity, -1, dtype=wp.int32, device=device)
+                fallback_total = wp.full(1, -1, dtype=wp.int32, device=device)
+                scratch_total = wp.full(1, -1, dtype=wp.int32, device=device)
+                scratch = wp.zeros(_scan_scratch_size(capacity, device), dtype=wp.int64, device=device)
 
-    for case, active_count in (
-        ("empty", 0),
-        ("partial", 37),
-        ("clamped", capacity + 19),
-        ("multi_chunk", capacity),
-    ):
-        with test.subTest(case=case):
-            counts = wp.array(counts_np, dtype=wp.int32, device=device)
-            num_elements = wp.array([active_count], dtype=wp.int32, device=device)
-            fallback_prefix = wp.full(capacity, -1, dtype=wp.int32, device=device)
-            scratch_prefix = wp.full(capacity, -1, dtype=wp.int32, device=device)
-            fallback_total = wp.full(1, -1, dtype=wp.int32, device=device)
-            scratch_total = wp.full(1, -1, dtype=wp.int32, device=device)
-            scratch = wp.zeros(_scan_scratch_size(capacity, device), dtype=wp.int32, device=device)
+                scan_with_total(counts, fallback_prefix, num_elements, fallback_total)
+                scan_with_total(counts, scratch_prefix, num_elements, scratch_total, scratch=scratch)
 
-            scan_with_total(counts, fallback_prefix, num_elements, fallback_total)
-            scan_with_total(counts, scratch_prefix, num_elements, scratch_total, scratch=scratch)
+                count = min(max(active_count, 0), capacity)
+                expected_prefix = np.zeros(count, dtype=np.int32)
+                if count > 1:
+                    expected_prefix[1:] = np.cumsum(counts_np[: count - 1], dtype=np.int32)
+                scratch_prefix_np = scratch_prefix.numpy()
+                np.testing.assert_array_equal(scratch_prefix_np[:count], expected_prefix)
+                np.testing.assert_array_equal(scratch_prefix_np[:count], fallback_prefix.numpy()[:count])
+                np.testing.assert_array_equal(scratch_prefix_np[count:], -1)
+                test.assertEqual(int(scratch_total.numpy()[0]), int(counts_np[:count].sum()))
+                test.assertEqual(int(scratch_total.numpy()[0]), int(fallback_total.numpy()[0]))
+                # The scan leaves its scratch zeroed for the next one.
+                test.assertFalse(scratch.numpy().any())
 
-            count = min(max(active_count, 0), capacity)
-            expected_prefix = np.zeros(count, dtype=np.int32)
-            if count > 1:
-                expected_prefix[1:] = np.cumsum(counts_np[: count - 1], dtype=np.int32)
-            scratch_prefix_np = scratch_prefix.numpy()[:count]
-            np.testing.assert_array_equal(scratch_prefix_np, expected_prefix)
-            np.testing.assert_array_equal(scratch_prefix_np, fallback_prefix.numpy()[:count])
-            test.assertEqual(int(scratch_total.numpy()[0]), int(counts_np[:count].sum()))
-            test.assertEqual(int(scratch_total.numpy()[0]), int(fallback_total.numpy()[0]))
+
+def test_scan_with_total_under_captures(test, device):
+    """Replay the scratch scan bitwise like ``array_scan`` in a Warp capture, a conditional body and a driver capture."""
+    # More tiles than scan blocks, so blocks loop over tiles.
+    capacity = 2 * wp.get_device(device).sm_count * 8 * 1024 + 1
+    counts_np = np.random.default_rng(3).integers(0, 9, capacity).astype(np.int32)
+    counts = wp.array(counts_np, dtype=wp.int32, device=device)
+    expected = wp.zeros(capacity, dtype=wp.int32, device=device)
+    wp.utils.array_scan(counts, expected, inclusive=False)
+    expected_np = expected.numpy()
+    num_elements = wp.zeros(1, dtype=wp.int32, device=device)
+    prefix = wp.zeros(capacity, dtype=wp.int32, device=device)
+    total = wp.zeros(1, dtype=wp.int32, device=device)
+    scratch = wp.zeros(_scan_scratch_size(capacity, device), dtype=wp.int64, device=device)
+    condition = wp.zeros(1, dtype=wp.int32, device=device)
+
+    def scan():
+        scan_with_total(counts, prefix, num_elements, total, scratch=scratch)
+
+    def scan_once():
+        scan()
+        condition.zero_()
+
+    captures = {}
+    with wp.ScopedCapture(device=device) as capture:
+        scan()
+    captures["warp"] = lambda graph=capture.graph: wp.capture_launch(graph)
+    if wp.is_conditional_graph_supported():
+        with wp.ScopedCapture(device=device) as capture:
+            wp.capture_while(condition, scan_once)
+        captures["capture_while"] = lambda graph=capture.graph: (condition.fill_(1), wp.capture_launch(graph))
+    if sys.platform.startswith("linux"):
+        captures["driver"], release = capture_with_cuda_driver(device, scan)
+    try:
+        for name, replay in captures.items():
+            with test.subTest(capture=name):
+                # The same scratch serves every replay, whatever the active count.
+                for active in (capacity, 37, 0, capacity // 3, 1, capacity) * 3:
+                    num_elements.fill_(active)
+                    prefix.zero_()
+                    replay()
+                    prefix_np = prefix.numpy()
+                    np.testing.assert_array_equal(prefix_np[:active], expected_np[:active])
+                    np.testing.assert_array_equal(prefix_np[active:], 0)
+                    test.assertEqual(int(total.numpy()[0]), int(counts_np[:active].sum()))
+                    test.assertFalse(scratch.numpy().any())
+    finally:
+        if sys.platform.startswith("linux"):
+            release()
 
 
 # --- Helper functions ---
@@ -1351,6 +1412,7 @@ def test_hydroelastic_margin_contact_area_is_deprecated(test, device, reduce_con
     )
 
 
+@requires(*MUJOCO_MODULES)
 def test_mujoco_warp_hydroelastic_speculative_activation(test, device):
     """Keep speculative contacts inactive until they enter the margin band."""
     model, state_0, body_b = _build_margin_gap_boxes(device)
@@ -2200,6 +2262,7 @@ def test_exported_margin_stiffness_matches_shape_series_combination(test, device
     )
 
 
+@requires(*MUJOCO_MODULES)
 def test_mujoco_hydroelastic_penetration_depth(test, device):
     """Test that hydroelastic penetration depth matches expectation.
 
@@ -2549,20 +2612,22 @@ def test_scalar_sdf_texture_hydroelastic_contacts(test, device):
 
 
 def test_fixed_point_extreme_exponents(test, device):
-    """Handle sentinel and high finite pressure contributions without overflow."""
+    """Use exact binary scales across finite float32 exponents without overflow."""
     mantissa_bits = _fixed_mantissa_bits(1024)
     high_value = np.finfo(np.float32).max
-    values_np = np.array([0.0, high_value, -high_value], dtype=np.float32)
-    exponents_np = np.array([int(FIXED_EXP_NONE), 127, 127], dtype=np.int32)
+    binary_exponents = np.arange(-149, 128, dtype=np.int32)
+    values_np = np.concatenate(([0.0, high_value, -high_value], np.ldexp(1.0, binary_exponents))).astype(np.float32)
+    exponents_np = np.concatenate(([int(FIXED_EXP_NONE), 127, 127], binary_exponents)).astype(np.int32)
     values = wp.array(values_np, dtype=wp.float32, device=device)
     exponents = wp.array(exponents_np, dtype=wp.int32, device=device)
     fixed_values = wp.empty(len(values_np), dtype=wp.int64, device=device)
     roundtrip_values = wp.empty(len(values_np), dtype=wp.float32, device=device)
+    shifts = wp.empty(len(values_np), dtype=wp.float64, device=device)
 
     wp.launch(
         _test_fixed_point_extreme_exponents,
         dim=len(values_np),
-        inputs=[values, exponents, mantissa_bits, fixed_values, roundtrip_values],
+        inputs=[values, exponents, mantissa_bits, fixed_values, roundtrip_values, shifts],
         device=device,
     )
 
@@ -2572,6 +2637,9 @@ def test_fixed_point_extreme_exponents(test, device):
     test.assertEqual(roundtrip_np[0], 0.0)
     test.assertTrue(np.all(np.abs(fixed_np[1:]) < np.iinfo(np.int64).max))
     np.testing.assert_array_equal(roundtrip_np[1:], values_np[1:])
+    expected_shifts = np.zeros(len(values_np), dtype=np.float64)
+    expected_shifts[1:] = np.ldexp(1.0, mantissa_bits - exponents_np[1:])
+    np.testing.assert_array_equal(shifts.numpy(), expected_shifts)
 
 
 # --- Test class ---
@@ -2804,6 +2872,14 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
+    "test_stacked_mesh_cubes_hydroelastic_xpbd",
+    test_stacked_mesh_cubes_hydroelastic,
+    devices=cuda_devices,
+    solver_fn=solvers["xpbd"],
+)
+
+add_function_test(
+    TestHydroelastic,
     "test_stacked_small_mesh_cubes_hydroelastic_xpbd",
     test_stacked_small_mesh_cubes_hydroelastic,
     devices=cuda_devices,
@@ -2970,6 +3046,13 @@ add_function_test(
     "test_scan_with_total_boundaries",
     test_scan_with_total_boundaries,
     devices=scan_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_scan_with_total_under_captures",
+    test_scan_with_total_under_captures,
+    devices=cuda_devices,
 )
 
 add_function_test(

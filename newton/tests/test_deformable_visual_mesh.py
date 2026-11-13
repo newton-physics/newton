@@ -4,7 +4,6 @@
 """Test deformable visual mesh data, evaluation, and viewer rendering."""
 
 import contextlib
-import importlib.util
 import math
 import os
 import tempfile
@@ -17,10 +16,10 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonWarning
 from newton._src.viewer.viewer_file import HAS_CBOR2, transfer_to_model
-from newton.exceptions import NewtonWarning
 from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
-from newton.tests.unittest_utils import assert_np_equal, get_test_devices
+from newton.tests.unittest_utils import assert_np_equal, get_test_devices, requires
 from newton.viewer import ViewerFile, ViewerNull, ViewerUSD
 
 
@@ -833,6 +832,7 @@ class TestDeformableVisualViewer(unittest.TestCase):
         viewer.log_state(model.state())
         offsets = viewer.world_offsets.numpy()
         self.assertEqual(model.deformable_visual_mesh_count, 2)
+        displayed_points = []
         for i, mesh in enumerate(model.deformable_visual_meshes):
             self.assertEqual(mesh.world, i)
             self.assertEqual(mesh.label, "skin")
@@ -843,6 +843,13 @@ class TestDeformableVisualViewer(unittest.TestCase):
             vertices = viewer.objects[name].vertices.numpy()
             expected = np.asarray(source.particle_q) + offsets[i] + (0, 0, 3)
             np.testing.assert_allclose(vertices["pos"], expected)
+            displayed_points.append(expected)
+        points = np.vstack(displayed_points)
+        bounds = viewer._get_scene_bounds()
+        self.assertIsNotNone(bounds)
+        np.testing.assert_allclose(bounds, (points.min(axis=0), points.max(axis=0)))
+        viewer.show_deformable_visual_meshes = False
+        self.assertIsNone(viewer._get_scene_bounds())
 
     def test_non_rendering_backends_ignore_skins(self):
         """Let Null and File ignore the option like their other display flags."""
@@ -944,6 +951,7 @@ class TestDeformableVisualGLTextures(unittest.TestCase):
             after = viewer.get_frame().numpy()
             self.assertFalse(np.array_equal(before, after), "The rendered mesh must follow its moved particle")
 
+    @requires("PIL")
     def test_gl_reuses_skinned_textures_but_updates_regular_meshes(self):
         """Reuse visual textures untinted by default; preserve explicit colors and ordinary uploads."""
         from newton._src.utils.texture import load_texture  # noqa: PLC0415
@@ -1083,21 +1091,21 @@ class TestDeformableVisualGLTextures(unittest.TestCase):
                         self.assertGreater(pixel[2], pixel[0] + 30)
 
 
-@unittest.skipUnless(importlib.util.find_spec("pxr"), "USD is not installed")
+@requires("pxr.Usd")
 class TestDeformableVisualUSD(unittest.TestCase):
-    def test_viewer_usd_accepts_deformable_visual_mesh_name(self):
-        """Export deformed points and bounds without hidden geometry updates."""
-        from pxr import UsdGeom
+    @requires("PIL")
+    def test_viewer_usd_exports_skinned_mesh_and_textures(self):
+        """Export deformed geometry and replacement textures, skipping hidden updates."""
+        from PIL import Image
+        from pxr import UsdGeom, UsdShade
 
         builder = _particle_mesh()
-        _attach(builder, label="123 bad/skin!")
+        _attach(builder, label="123 bad/skin!", uvs=[[0, 0], [1, 0], [0, 1]])
         model = builder.finalize("cpu")
-
-        with tempfile.NamedTemporaryFile(suffix=".usd", delete=False) as tmp:
-            file_path = tmp.name
-
-        try:
-            viewer = ViewerUSD(file_path, num_frames=4)
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            contextlib.closing(ViewerUSD(os.path.join(directory, "scene.usda"), num_frames=6)) as viewer,
+        ):
             viewer.set_model(model)
             state = model.state()
             mesh = model.deformable_visual_meshes[0]
@@ -1123,10 +1131,63 @@ class TestDeformableVisualUSD(unittest.TestCase):
             np.testing.assert_allclose(
                 np.asarray(prim.GetPointsAttr().Get(3)), state.particle_q.numpy()[mesh.parent.numpy()]
             )
-            viewer.close()
-        finally:
-            if os.path.exists(file_path):
-                os.remove(file_path)
+            for color in ((255, 0, 0), (0, 255, 0)):
+                mesh.texture = np.full((2, 2, 3), color, dtype=np.uint8)
+                exported = None
+                for _ in range(2):
+                    viewer.begin_frame(1.0)
+                    viewer.log_state(state)
+                    viewer.end_frame()
+                    material, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+                    shader = UsdShade.Shader(material.GetPrim().GetChild("DiffuseTexture"))
+                    texture_path = shader.GetInput("file").Get().path
+                    with Image.open(texture_path) as image:
+                        np.testing.assert_array_equal(np.asarray(image)[0, 0], color)
+                    stat = os.stat(texture_path)
+                    if exported is not None:
+                        self.assertEqual((stat.st_ino, stat.st_mtime_ns), exported)
+                    exported = (stat.st_ino, stat.st_mtime_ns)
+            mesh.texture = None
+            viewer.log_state(state)
+            material, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+            surface = UsdShade.Shader(material.GetPrim().GetChild("PreviewSurface"))
+            self.assertFalse(surface.GetInput("diffuseColor").HasConnectedSource())
+            # An ordinary mesh follows the same rule: omitting the texture on a later call removes it,
+            # and a new array with the same pixels reuses the exported file.
+            image = np.full((2, 2, 3), (0, 0, 255), dtype=np.uint8)
+            uvs = wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2)
+            viewer.log_mesh("/plain", mesh.rest_vertices, mesh.indices, uvs=uvs, texture=image, roughness=0.1)
+            viewer.log_instances(
+                "/copies",
+                "/plain",
+                wp.array([wp.transform_identity()], dtype=wp.transform),
+                None,
+                wp.array([[1, 1, 1]], dtype=wp.vec3),
+                None,
+            )
+            instance = viewer.stage.GetPrimAtPath("/root/copies/instance_0")
+            plain = viewer.stage.GetPrimAtPath("/root/plain")
+            first, _ = UsdShade.MaterialBindingAPI(plain).ComputeBoundMaterial()
+            viewer.log_mesh("/plain", mesh.rest_vertices, mesh.indices, uvs=uvs, texture=image.copy())
+            second, _ = UsdShade.MaterialBindingAPI(plain).ComputeBoundMaterial()
+            self.assertEqual(first.GetPath(), second.GetPath())
+            replacement = np.full((2, 2, 3), (255, 0, 0), dtype=np.uint8)
+            viewer.log_mesh("/plain", mesh.rest_vertices, mesh.indices, uvs=uvs, texture=replacement)
+            instance_material, _ = UsdShade.MaterialBindingAPI(instance).ComputeBoundMaterial()
+            instance_texture = UsdShade.Shader(instance_material.GetPrim().GetChild("DiffuseTexture"))
+            with Image.open(instance_texture.GetInput("file").Get().path) as image:
+                np.testing.assert_array_equal(np.asarray(image), replacement)
+            viewer.log_mesh("/plain", mesh.rest_vertices, mesh.indices)
+            material, _ = UsdShade.MaterialBindingAPI(plain).ComputeBoundMaterial()
+            surface = UsdShade.Shader(material.GetPrim().GetChild("PreviewSurface"))
+            self.assertFalse(surface.GetInput("diffuseColor").HasConnectedSource())
+            self.assertAlmostEqual(surface.GetInput("roughness").Get(), 0.1)
+            instance_material, _ = UsdShade.MaterialBindingAPI(instance).ComputeBoundMaterial()
+            self.assertFalse(
+                UsdShade.Shader(instance_material.GetPrim().GetChild("PreviewSurface"))
+                .GetInput("diffuseColor")
+                .HasConnectedSource()
+            )
 
 
 if __name__ == "__main__":
