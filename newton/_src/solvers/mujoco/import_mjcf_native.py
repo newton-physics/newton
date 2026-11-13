@@ -1075,6 +1075,8 @@ def parse_mjcf(
                     native_joint_limited=int(source_joint.limited),
                     native_joint_actfrcrange=model.jnt_actfrcrange[native_joint],
                     native_joint_actfrclimited=int(source_joint.actfrclimited),
+                    native_joint_effort_baseline=builder.joint_effort_limit[dof],
+                    native_joint_effort_limited=bool(model.jnt_actfrclimited[native_joint]),
                     native_joint_dampingpoly=source_joint.damping[1:],
                     native_joint_stiffnesspoly=source_joint.stiffness[1:],
                     limit_margin=model.jnt_margin[native_joint],

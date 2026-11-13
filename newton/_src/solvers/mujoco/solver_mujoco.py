@@ -129,6 +129,7 @@ from .kernels import (
     update_kinematic_weld_reference_kernel,
     update_mimic_eq_data_and_active_kernel,
     update_model_properties_kernel,
+    update_native_joint_effort_limits_kernel,
     update_pair_properties_kernel,
     update_site_properties_kernel,
     update_solver_options_kernel,
@@ -5990,6 +5991,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.jnt_margin[:] = self.mjw_model.jnt_margin.numpy()[0]
                 self.mj_model.jnt_range[:] = self.mjw_model.jnt_range.numpy()[0]
                 self.mj_model.jnt_actfrcrange[:] = self.mjw_model.jnt_actfrcrange.numpy()[0]
+                if hasattr(getattr(self.model, "mujoco", None), "native_joint_effort_baseline"):
+                    self.mj_model.jnt_actfrclimited[:] = self.mjw_model.jnt_actfrclimited.numpy()
             if flags & ModelFlags.ACTUATOR_PROPERTIES and self.mjc_actuator_ctrl_source is not None:
                 self.mj_model.actuator_ctrlrange[:] = self.mjw_model.actuator_ctrlrange.numpy()[0]
                 # Joint-target rows are owned by the DOF force notification.
@@ -10700,7 +10703,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.jnt_qposadr,
                 self.mjw_model.qpos0,
                 getattr(mujoco_attrs, "native_joint_type", None),
-                getattr(mujoco_attrs, "native_joint_actfrcrange", None),
                 getattr(mujoco_attrs, "native_joint_range", None),
             ],
             outputs=[
@@ -10713,6 +10715,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
         # Limit solref is converted after any requested inertia refresh.
+        if getattr(mujoco_attrs, "native_joint_effort_baseline", None) is not None:
+            wp.launch(
+                update_native_joint_effort_limits_kernel,
+                dim=njnt,
+                inputs=[
+                    self.mjc_jnt_to_newton_dof,
+                    self.mjw_model.jnt_type,
+                    self.model.joint_effort_limit,
+                    mujoco_attrs.native_joint_type,
+                    mujoco_attrs.native_joint_effort_baseline,
+                    mujoco_attrs.native_joint_effort_limited,
+                    mujoco_attrs.native_joint_actfrcrange,
+                ],
+                outputs=[self.mjw_model.jnt_actfrclimited, self.mjw_model.jnt_actfrcrange],
+                device=self.model.device,
+            )
 
     def _update_joint_dof_configuration_properties(self):
         """Refresh reference poses and shift existing limit ranges by the reference change."""

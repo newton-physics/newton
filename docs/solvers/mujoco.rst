@@ -919,6 +919,14 @@ Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general 
 :attr:`~newton.Model.joint_effort_limit` is forwarded as ``actfrcrange`` on the joint
 (prismatic, revolute, and D6) or as ``forcerange`` on the actuator (ball).
 
+Native MJCF scalar joints retain their imported asymmetric or disabled force
+limits while ``joint_effort_limit`` equals its imported value. A different value
+selects a symmetric limit, including a zero-force clamp for zero. This applies
+to builder edits, solver construction, and ``JOINT_DOF_FORCE_PROPERTIES``
+notifications. Restoring the imported value restores the source limit. Each
+replicated world retains its own choice; untouched unlimited worlds stay
+unlimited when another world enables a limit.
+
 For native MJCF scalar position-only drives with ``dampratio`` and unit gear,
 :meth:`~newton.ModelBuilder.finalize` resolves :attr:`~newton.Model.joint_target_kd`
 from the composed articulation's reference-pose inertia, joint armature, and

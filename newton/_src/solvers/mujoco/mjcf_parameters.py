@@ -146,6 +146,8 @@ def _register_native_attributes(builder: ModelBuilder) -> None:
         ("native_actuator_inheritrange_bounds", "mujoco:actuator", wp.vec2, (0.0, 0.0), None),
         ("native_joint_range", Model.AttributeFrequency.JOINT_DOF, wp.vec2, (0.0, 0.0), None),
         ("native_joint_gain_baseline", Model.AttributeFrequency.JOINT_DOF, wp.vec2, (-1.0, -1.0), None),
+        ("native_joint_effort_baseline", Model.AttributeFrequency.JOINT_DOF, wp.float32, -1.0, None),
+        ("native_joint_effort_limited", Model.AttributeFrequency.JOINT_DOF, wp.bool, False, None),
         ("native_target_kd_override", Model.AttributeFrequency.JOINT_DOF, wp.bool, False, None),
     ):
         builder.add_custom_attribute(
@@ -337,6 +339,8 @@ def _apply_native_joint_parameters(model: Model, spec: mujoco.MjSpec, dof_to_joi
     fields = {name: getattr(attrs, f"native_joint_{name}").numpy() for name in _NATIVE_JOINT_FIELDS}
     ranges = attrs.native_joint_range.numpy()
     stiffness = model.joint_stiffness.numpy()
+    effort = model.joint_effort_limit.numpy()
+    effort_baseline = attrs.native_joint_effort_baseline.numpy()
     actgravcomp = attrs.jnt_actgravcomp.numpy()
     damping, armature, friction = (
         model.joint_damping.numpy(),
@@ -360,6 +364,10 @@ def _apply_native_joint_parameters(model: Model, spec: mujoco.MjSpec, dof_to_joi
         joint.actgravcomp = bool(actgravcomp[dof])
         joint.actfrclimited = int(fields["actfrclimited"][dof])
         joint.actfrcrange[:] = fields["actfrcrange"][dof]
+        if int(joint.type) >= 2 and effort[dof] != effort_baseline[dof]:
+            # MuJoCo rejects an enabled zero range; initial publication enables its clamp.
+            joint.actfrclimited = bool(effort[dof])
+            joint.actfrcrange[:] = (-effort[dof], effort[dof])
         joint.solref_friction[:] = constraint_fields["solreffriction"][dof]
         joint.solimp_friction[:] = constraint_fields["solimpfriction"][dof]
         if joint.type in (mujoco.mjtJoint.mjJNT_BALL, mujoco.mjtJoint.mjJNT_FREE):

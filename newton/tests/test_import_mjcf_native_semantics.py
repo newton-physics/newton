@@ -1007,6 +1007,65 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                         ):
                             np.testing.assert_allclose(getattr(solver.mj_model, field), getattr(reference, field))
 
+    def test_joint_effort_limit_overrides(self):
+        """Honor core effort edits while preserving untouched asymmetric and disabled limits."""
+        xml = """<mujoco><option gravity="0 0 0"/><worldbody>
+            <body><joint name="h" actuatorfrcrange="-1.2 2.3"/><geom size=".1" mass="1"/></body>
+            <body><joint name="s" type="slide" actuatorfrclimited="false" actuatorfrcrange="-4 5"/>
+            <geom size=".1" mass="1"/></body></worldbody>
+            <actuator><motor joint="h"/><motor joint="s"/></actuator></mujoco>"""
+        for cpu in (False, True):
+            with self.subTest(cpu=cpu):
+                asset = newton.ModelBuilder()
+                asset.add_mjcf_native(xml, ctrl_direct=True)
+                baseline = np.array(asset.joint_effort_limit, dtype=np.float32)
+                worlds = 1 if cpu else 3
+                builder = newton.ModelBuilder()
+                builder.replicate(asset, worlds)
+                if not cpu:
+                    builder.joint_effort_limit[2] = 0.5
+                model = builder.finalize()
+                if not cpu:
+                    limits = model.joint_effort_limit.numpy().copy()
+                    limits[5] = 0.25
+                    model.joint_effort_limit.assign(limits)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+
+                def assert_forces(solver, lower, upper):
+                    model = solver.model
+                    control = model.control()
+                    observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
+                    for command, expected in ((-10, lower), (10, upper)):
+                        control.mujoco.ctrl.fill_(command)
+                        state = model.state()
+                        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                        solver.step(state, model.state(), control, None, dt=0.001, observables=observables)
+                        np.testing.assert_allclose(
+                            observables.qfrc_actuator.numpy().reshape(-1, 2), expected, atol=1e-6
+                        )
+
+                lower = [[-1.2, -10]] if cpu else [[-1.2, -10], [-0.5, -10], [-1.2, -0.25]]
+                upper = [[2.3, 10]] if cpu else [[2.3, 10], [0.5, 10], [2.3, 0.25]]
+                assert_forces(solver, lower, upper)
+
+                edited = [[0, 0.125]] if cpu else [[0, 0.125], [0.75, 1e6], [2.3, 0.25]]
+                model.joint_effort_limit.assign(np.array(edited, dtype=np.float32).reshape(-1))
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                if not cpu and model.device.is_cuda:
+                    with wp.ScopedCapture(device=model.device) as capture:
+                        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                    wp.capture_launch(capture.graph)
+                lower = [[0, -0.125]] if cpu else [[0, -0.125], [-0.75, -10], [-1.2, -0.25]]
+                upper = [[0, 0.125]] if cpu else [[0, 0.125], [0.75, 10], [2.3, 0.25]]
+                assert_forces(solver, lower, upper)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                assert_forces(solver, lower, upper)
+
+                model.joint_effort_limit.assign(np.tile(baseline, worlds))
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                np.testing.assert_array_equal(solver.mjw_model.jnt_actfrclimited.numpy(), [True, False])
+                assert_forces(solver, np.tile([-1.2, -10], (worlds, 1)), np.tile([2.3, 10], (worlds, 1)))
+
     def test_joint_limit_defaults(self):
         """Preserve active limits and native ball ranges through solver notifications."""
         import mujoco

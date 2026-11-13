@@ -2303,7 +2303,6 @@ def update_jnt_properties_kernel(
     jnt_qposadr: wp.array[int],
     qpos0: wp.array2d[float],
     native_joint_type: wp.array[int],
-    native_joint_actfrcrange: wp.array[wp.vec2],
     native_joint_range: wp.array[wp.vec2],
     # outputs
     jnt_solimp: wp.array2d[vec5],
@@ -2352,7 +2351,53 @@ def update_jnt_properties_kernel(
     if native_joint_type and native_joint_type[newton_dof] == jnt_type[mjc_jnt]:
         if jnt_type[mjc_jnt] < 2:
             jnt_range[world, mjc_jnt] = native_joint_range[newton_dof]
-        jnt_actfrcrange[world, mjc_jnt] = native_joint_actfrcrange[newton_dof]
+
+
+@wp.kernel
+def update_native_joint_effort_limits_kernel(
+    mjc_jnt_to_newton_dof: wp.array2d[int],
+    jnt_type: wp.array[int],
+    joint_effort_limit: wp.array[float],
+    native_joint_type: wp.array[int],
+    native_joint_effort_baseline: wp.array[float],
+    native_joint_effort_limited: wp.array[wp.bool],
+    native_joint_actfrcrange: wp.array[wp.vec2],
+    jnt_actfrclimited: wp.array[wp.bool],
+    jnt_actfrcrange: wp.array2d[wp.vec2],
+):
+    """Preserve source limits until core effort values change, independently per world."""
+    joint = wp.tid()
+    native = bool(False)
+    limited = bool(False)
+    for world in range(mjc_jnt_to_newton_dof.shape[0]):
+        dof = mjc_jnt_to_newton_dof[world, joint]
+        if dof < 0:
+            continue
+        if native_joint_type[dof] == jnt_type[joint]:
+            native = True
+            limited = (
+                limited
+                or native_joint_effort_limited[dof]
+                or joint_effort_limit[dof] != native_joint_effort_baseline[dof]
+            )
+        else:
+            limited = True
+    if not native:
+        return
+    # MuJoCo shares this flag across worlds; unlimited worlds need unbounded ranges.
+    if jnt_type[joint] >= 2:
+        jnt_actfrclimited[joint] = limited
+    for world in range(mjc_jnt_to_newton_dof.shape[0]):
+        dof = mjc_jnt_to_newton_dof[world, joint]
+        if dof < 0 or native_joint_type[dof] != jnt_type[joint]:
+            continue
+        if jnt_type[joint] < 2:
+            jnt_actfrcrange[world, joint] = native_joint_actfrcrange[dof]
+        elif joint_effort_limit[dof] == native_joint_effort_baseline[dof]:
+            if native_joint_effort_limited[dof] or not limited:
+                jnt_actfrcrange[world, joint] = native_joint_actfrcrange[dof]
+            else:
+                jnt_actfrcrange[world, joint] = wp.vec2(-wp.inf, wp.inf)
 
 
 @wp.kernel
