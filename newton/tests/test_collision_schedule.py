@@ -915,5 +915,80 @@ add_function_test(
 )
 
 
+def _box_mesh(half: float) -> newton.Mesh:
+    corners = np.array(
+        [[x, y, z] for x in (-half, half) for y in (-half, half) for z in (-half, half)], dtype=np.float32
+    )
+    faces = np.array(
+        [
+            [0, 1, 3],
+            [0, 3, 2],
+            [4, 6, 7],
+            [4, 7, 5],
+            [0, 4, 5],
+            [0, 5, 1],
+            [2, 3, 7],
+            [2, 7, 6],
+            [0, 2, 6],
+            [0, 6, 4],
+            [1, 5, 7],
+            [1, 7, 3],
+        ],
+        dtype=np.int32,
+    )
+    mesh = newton.Mesh(corners, faces.flatten())
+    mesh.build_sdf(max_resolution=32, narrow_band_range=(-0.02, 0.05), margin=0.01)
+    return mesh
+
+
+def test_collision_schedule_captures_mesh_mesh_sdf(test, device):
+    """Record a schedule whose collision pass runs mesh-mesh SDF contacts in a conditional body.
+
+    Conditional graph bodies cannot allocate memory, so the mesh-mesh block-offset scans must use
+    preallocated scratch. The recorded frame must find the same contacts as an eager one.
+    """
+    mesh = _box_mesh(0.05)
+    counts = []
+    for capture in (False, True):
+        builder = newton.ModelBuilder(gravity=wp.vec3(0.0, 0.0, -9.81))
+        cfg = newton.ModelBuilder.ShapeConfig(gap=0.002)
+        builder.add_shape_mesh(-1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.05)), mesh=mesh, cfg=cfg)
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.151)))
+        builder.add_shape_mesh(body, mesh=mesh, cfg=cfg)
+        model = builder.finalize(device=device)
+        states = (model.state(), model.state())
+        pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=0.05)
+        contacts = pipeline.contacts()
+        solver = SolverXPBD(model, iterations=4)
+
+        def collide(state, horizon, pipeline=pipeline, contacts=contacts):
+            pipeline.collide(state, contacts, dt=horizon)
+
+        def step(state_in, state_out, dt, solver=solver, contacts=contacts):
+            state_in.clear_forces()
+            solver.step(state_in, state_out, None, contacts, dt)
+
+        schedule = newton.CollisionSubstepScheduler(
+            pipeline, states, collision_callback=collide, substep_callback=step, frame_dt=1.0 / 60.0, substeps=2
+        )
+        if capture:
+            with wp.ScopedCapture(device=device) as recording:
+                schedule.step()
+            wp.capture_launch(recording.graph)
+        else:
+            schedule.step()
+        counts.append(int(contacts.rigid_contact_count.numpy()[0]))
+    test.assertGreater(counts[0], 0)
+    test.assertEqual(counts[1], counts[0])
+
+
+add_function_test(
+    TestCollisionSchedule,
+    "test_collision_schedule_captures_mesh_mesh_sdf",
+    test_collision_schedule_captures_mesh_mesh_sdf,
+    devices=get_cuda_test_devices(),
+)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

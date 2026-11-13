@@ -27,6 +27,7 @@ from .contact_reduction_global import (
 from .flags import MeshSignMethod
 from .kernels import mesh_query_point_sign, resolve_mesh_sign_method, triangle_closest_point
 from .sdf_planar_recovery import MeshRecoveryData, pair_was_recovered
+from .utils import scan_with_total
 
 # Upper bound (mesh-local units) on the closest-point search for the mesh sign
 # queries below. It is not a physical contact range: culling uses the tight
@@ -1233,6 +1234,45 @@ def compute_block_counts_from_weights(
         block_counts[i] = wp.int32(blocks)
 
 
+@wp.kernel(enable_backward=False)
+def store_block_offsets_total(
+    pair_count_arr: wp.array[int],
+    max_pairs: int,
+    total: wp.array[int],
+    block_offsets: wp.array[wp.int32],
+):
+    """Store the block total after the active pairs' offsets, where the contact kernels look it up."""
+    block_offsets[wp.max(wp.min(pair_count_arr[0], max_pairs), 0)] = wp.int32(total[0])
+
+
+def scan_block_counts(
+    pair_count_arr: wp.array[int],
+    block_counts: wp.array[wp.int32],
+    block_offsets: wp.array[wp.int32],
+    scan_scratch: wp.array[wp.int64],
+    scan_total: wp.array[int],
+    device: str | None = None,
+    record_tape: bool = True,
+) -> None:
+    """Exclusively scan the active pairs' block counts into ``block_offsets``, total included.
+
+    The scan allocates nothing, so it can run inside any CUDA graph capture, including the
+    conditional bodies of a collision schedule.
+    """
+    max_pairs = block_counts.shape[0] - 1
+    scan_with_total(
+        block_counts[:max_pairs], block_offsets[:max_pairs], pair_count_arr, scan_total, scratch=scan_scratch
+    )
+    wp.launch(
+        store_block_offsets_total,
+        dim=1,
+        inputs=[pair_count_arr, max_pairs, scan_total],
+        outputs=[block_offsets],
+        device=device,
+        record_tape=record_tape,
+    )
+
+
 def compute_mesh_mesh_block_offsets_scan(
     shape_pairs_mesh_mesh: wp.array[wp.vec2i],
     shape_pairs_mesh_mesh_count: wp.array[int],
@@ -1244,14 +1284,16 @@ def compute_mesh_mesh_block_offsets_scan(
     block_counts: wp.array[wp.int32],
     total_edge_count: wp.array[wp.int32],
     total_num_threads: int,
+    scan_scratch: wp.array[wp.int64],
+    scan_total: wp.array[int],
     device: str | None = None,
     record_tape: bool = True,
 ) -> None:
-    """Compute mesh-mesh block offsets using parallel kernels and array_scan.
+    """Compute mesh-mesh block offsets using parallel kernels and an allocation-free scan.
 
     Runs a three-stage parallel pipeline: per-pair edge counts and scalar
     accumulation, adaptive block counts, then an exclusive scan into
-    ``block_offsets``.
+    ``block_offsets`` (see :func:`scan_block_counts`).
     """
     n = block_counts.shape[0]
     launch_threads = min(n, total_num_threads)
@@ -1282,14 +1324,16 @@ def compute_mesh_mesh_block_offsets_scan(
             shape_pairs_mesh_mesh_count,
             shape_pairs_mesh_mesh.shape[0],
             target_blocks,
-            block_offsets,  # reuse as temp for block counts
+            block_counts,  # each pair's block count replaces its edge count
             launch_threads,
         ],
         device=device,
         record_tape=record_tape,
     )
     # Step 3: exclusive scan of block counts → block_offsets
-    wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
+    scan_block_counts(
+        shape_pairs_mesh_mesh_count, block_counts, block_offsets, scan_scratch, scan_total, device, record_tape
+    )
 
 
 @lru_cache

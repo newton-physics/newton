@@ -76,6 +76,7 @@ from ..geometry.sdf_contact import (
     compute_block_counts_from_weights,
     compute_mesh_mesh_block_offsets_scan,
     create_narrow_phase_process_mesh_mesh_contacts_kernel,
+    scan_block_counts,
 )
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.sdf_planar_recovery import (
@@ -97,6 +98,7 @@ from ..geometry.support_function import (
     support_map_lean_accelerated,
 )
 from ..geometry.types import GeoType
+from ..geometry.utils import _scan_scratch_size
 from ..utils.heightfield import (
     HeightfieldData,
     get_triangle_shape_from_heightfield,
@@ -2199,10 +2201,12 @@ def compute_mesh_plane_block_offsets_scan(
     block_counts: wp.array[wp.int32],
     total_vert_count: wp.array[wp.int32],
     total_num_threads: int,
+    scan_scratch: wp.array[wp.int64],
+    scan_total: wp.array[int],
     device: str | None = None,
     record_tape: bool = True,
 ):
-    """Compute mesh-plane block offsets using parallel kernels and array_scan."""
+    """Compute mesh-plane block offsets using parallel kernels and an allocation-free scan."""
     n = block_counts.shape[0]
     launch_threads = min(n, total_num_threads)
     # Step 1: compute per-pair vertex counts in parallel
@@ -2230,14 +2234,16 @@ def compute_mesh_plane_block_offsets_scan(
             shape_pairs_mesh_plane_count,
             shape_pairs_mesh_plane.shape[0],
             target_blocks,
-            block_offsets,  # reuse as temp for block counts
+            block_counts,  # each pair's block count replaces its vert count
             launch_threads,
         ],
         device=device,
         record_tape=record_tape,
     )
     # Step 3: exclusive scan of block counts → block_offsets
-    wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
+    scan_block_counts(
+        shape_pairs_mesh_plane_count, block_counts, block_offsets, scan_scratch, scan_total, device, record_tape
+    )
 
 
 @lru_cache
@@ -3238,12 +3244,20 @@ class NarrowPhase:
             mesh_mesh_scan_size = self.max_mesh_mesh_pairs + 1
             self.mesh_mesh_block_offsets = wp.zeros(mesh_mesh_scan_size, dtype=wp.int32, device=device)
             self.mesh_mesh_block_counts = wp.zeros(mesh_mesh_scan_size, dtype=wp.int32, device=device)
+            self.mesh_mesh_scan_scratch = wp.zeros(
+                _scan_scratch_size(self.max_mesh_mesh_pairs, device), dtype=wp.int64, device=device
+            )
+            self.mesh_mesh_scan_total = wp.zeros(1, dtype=int, device=device)
             # Mesh-plane
             self.num_mesh_plane_blocks = target_blocks
             self.mesh_plane_target_blocks = target_blocks
             mesh_plane_scan_size = self.max_mesh_plane_pairs + 1
             self.mesh_plane_block_offsets = wp.zeros(mesh_plane_scan_size, dtype=wp.int32, device=device)
             self.mesh_plane_block_counts = wp.zeros(mesh_plane_scan_size, dtype=wp.int32, device=device)
+            self.mesh_plane_scan_scratch = wp.zeros(
+                _scan_scratch_size(self.max_mesh_plane_pairs, device), dtype=wp.int64, device=device
+            )
+            self.mesh_plane_scan_total = wp.zeros(1, dtype=int, device=device)
         else:
             self.num_mesh_mesh_blocks = self.num_tile_blocks
             self.mesh_mesh_target_blocks = self.num_tile_blocks
@@ -3854,6 +3868,8 @@ class NarrowPhase:
                         block_counts=self.mesh_plane_block_counts,
                         total_vert_count=self.mesh_plane_total_weight,
                         total_num_threads=self.total_num_threads,
+                        scan_scratch=self.mesh_plane_scan_scratch,
+                        scan_total=self.mesh_plane_scan_total,
                         device=device,
                         record_tape=False,
                     )
@@ -4044,6 +4060,8 @@ class NarrowPhase:
                         block_counts=self.mesh_mesh_block_counts,
                         total_edge_count=self.mesh_mesh_total_weight,
                         total_num_threads=self.total_num_threads,
+                        scan_scratch=self.mesh_mesh_scan_scratch,
+                        scan_total=self.mesh_mesh_scan_total,
                         device=device,
                         record_tape=False,
                     )
