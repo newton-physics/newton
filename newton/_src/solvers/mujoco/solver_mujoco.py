@@ -5972,13 +5972,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.jnt_actfrcrange[:] = self.mjw_model.jnt_actfrcrange.numpy()[0]
             if flags & ModelFlags.ACTUATOR_PROPERTIES and self.mjc_actuator_ctrl_source is not None:
                 self.mj_model.actuator_ctrlrange[:] = self.mjw_model.actuator_ctrlrange.numpy()[0]
-                # Joint-target rows are owned by the DOF force notification.
+                self.mj_model.actuator_forcerange[:] = self.mjw_model.actuator_forcerange.numpy()[0]
+                # Joint-target gains are owned by the DOF force notification.
                 ctrl_direct = self.mjc_actuator_ctrl_source.numpy() == SolverMuJoCo.CtrlSource.CTRL_DIRECT
                 for name in (
                     "actuator_gainprm",
                     "actuator_biasprm",
                     "actuator_dynprm",
-                    "actuator_forcerange",
                     "actuator_actrange",
                     "actuator_gear",
                     "actuator_cranklength",
@@ -11545,8 +11545,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _update_actuator_properties(self):
         """Update actuator properties in the MuJoCo model.
 
-        JOINT_TARGET actuators take gains from joint target arrays, but their control ranges still come from the
-        corresponding MuJoCo actuator custom attributes.
+        JOINT_TARGET gains come from joint arrays; control and authored force ranges come from actuator attributes.
         """
         if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_actuator_idx is None:
             return
@@ -11596,6 +11595,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 actuator_dynprm,
                 actuator_ctrlrange,
                 actuator_forcerange,
+                getattr(mujoco_attrs, "actuator_has_forcerange", None),
                 actuator_actrange,
                 actuator_gear,
                 actuator_cranklength,
