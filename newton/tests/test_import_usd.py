@@ -7013,7 +7013,8 @@ def Xform "Articulation" (
 
         OpenUSD 26.11 treats ``physics:rigidBodyEnabled = false`` as if ``RigidBodyAPI`` were
         not applied, so a disabled body's colliders move to the nearest enabled ancestor body or
-        become static. Every loaded body must then own exactly the colliders its mass comes from.
+        become static. Its visuals and sites must follow its colliders, and every loaded body
+        must own exactly the colliders its mass comes from.
         """
         from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -7021,57 +7022,96 @@ def Xform "Articulation" (
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
-        def define_body(path, enabled, collider_mass=None):
+        def define_body(path, enabled, collider_mass=None, *, visual_and_site=False):
             body = UsdGeom.Xform.Define(stage, path)
             UsdPhysics.RigidBodyAPI.Apply(body.GetPrim()).CreateRigidBodyEnabledAttr().Set(enabled)
-            if collider_mass is None:
-                return
-            collider = UsdGeom.Cube.Define(stage, f"{path}/Collider")
-            collider.CreateSizeAttr().Set(0.2)
-            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
-            UsdPhysics.MassAPI.Apply(collider.GetPrim()).CreateMassAttr().Set(collider_mass)
+            if collider_mass is not None:
+                collider = UsdGeom.Cube.Define(stage, f"{path}/Collider")
+                collider.CreateSizeAttr().Set(0.2)
+                UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+                UsdPhysics.MassAPI.Apply(collider.GetPrim()).CreateMassAttr().Set(collider_mass)
+            if visual_and_site:
+                UsdGeom.Cube.Define(stage, f"{path}/Visual").CreateSizeAttr().Set(0.1)
+                site = UsdGeom.Sphere.Define(stage, f"{path}/Site")
+                site.CreateRadiusAttr().Set(0.01)
+                site.GetPrim().AddAppliedSchema("NewtonSiteAPI")
 
-        define_body("/World/Disabled", False, 1.0)
+        define_body("/World/Disabled", False, 1.0, visual_and_site=True)
         define_body("/World/Outer", True, 2.0)
-        define_body("/World/Outer/Inner", False, 3.0)
+        define_body("/World/Outer/Inner", False, 3.0, visual_and_site=True)
         define_body("/World/Empty", True)
         define_body("/World/Empty/Inner", False, 4.0)
 
+        def owned_by(owner, *paths):
+            return dict.fromkeys(paths, owner)
+
         if Usd.GetVersion() >= (0, 26, 11):
-            ancestor_owned = {
-                "/World/Outer": (5.0, {"/World/Outer/Collider", "/World/Outer/Inner/Collider"}),
-                "/World/Empty": (4.0, {"/World/Empty/Inner/Collider"}),
-            }
+            ancestor_owned = (
+                {"/World/Outer": 5.0, "/World/Empty": 4.0},
+                {
+                    **owned_by(None, "/World/Disabled/Collider", "/World/Disabled/Visual", "/World/Disabled/Site"),
+                    **owned_by(
+                        "/World/Outer",
+                        "/World/Outer/Collider",
+                        "/World/Outer/Inner/Collider",
+                        "/World/Outer/Inner/Visual",
+                        "/World/Outer/Inner/Site",
+                    ),
+                    **owned_by("/World/Empty", "/World/Empty/Inner/Collider"),
+                },
+            )
             expected = {False: ancestor_owned, True: ancestor_owned}
         else:
             expected = {
-                False: {
-                    "/World/Disabled": (1.0, {"/World/Disabled/Collider"}),
-                    "/World/Outer": (2.0, {"/World/Outer/Collider"}),
-                    "/World/Outer/Inner": (3.0, {"/World/Outer/Inner/Collider"}),
-                    "/World/Empty": (0.0, set()),
-                    "/World/Empty/Inner": (4.0, {"/World/Empty/Inner/Collider"}),
-                },
-                True: {
-                    "/World/Outer": (2.0, {"/World/Outer/Collider"}),
-                    "/World/Empty": (0.0, set()),
-                },
+                False: (
+                    {
+                        "/World/Disabled": 1.0,
+                        "/World/Outer": 2.0,
+                        "/World/Outer/Inner": 3.0,
+                        "/World/Empty": 0.0,
+                        "/World/Empty/Inner": 4.0,
+                    },
+                    {
+                        **owned_by(
+                            "/World/Disabled",
+                            "/World/Disabled/Collider",
+                            "/World/Disabled/Visual",
+                            "/World/Disabled/Site",
+                        ),
+                        **owned_by("/World/Outer", "/World/Outer/Collider"),
+                        **owned_by(
+                            "/World/Outer/Inner",
+                            "/World/Outer/Inner/Collider",
+                            "/World/Outer/Inner/Visual",
+                            "/World/Outer/Inner/Site",
+                        ),
+                        **owned_by("/World/Empty/Inner", "/World/Empty/Inner/Collider"),
+                    },
+                ),
+                # Skipped bodies keep their colliders as static shapes but not their visuals or sites.
+                True: (
+                    {"/World/Outer": 2.0, "/World/Empty": 0.0},
+                    {
+                        **owned_by(None, "/World/Disabled/Collider", "/World/Outer/Inner/Collider"),
+                        **owned_by(None, "/World/Empty/Inner/Collider"),
+                        **owned_by("/World/Outer", "/World/Outer/Collider"),
+                    },
+                ),
             }
 
-        for only_enabled, expected_bodies in expected.items():
+        for only_enabled, (expected_masses, expected_owners) in expected.items():
             with self.subTest(only_load_enabled_rigid_bodies=only_enabled):
                 builder = newton.ModelBuilder()
                 result = builder.add_usd(stage, only_load_enabled_rigid_bodies=only_enabled)
-                self.assertEqual(set(result["path_body_map"]), set(expected_bodies))
-                for body_path, (mass, collider_paths) in expected_bodies.items():
-                    body_idx = result["path_body_map"][body_path]
-                    self.assertAlmostEqual(builder.body_mass[body_idx], mass, places=5)
-                    owned = {
-                        path
-                        for path, shape in result["path_shape_map"].items()
-                        if builder.shape_body[shape] == body_idx
-                    }
-                    self.assertEqual(owned, collider_paths)
+                masses = {path: builder.body_mass[body] for path, body in result["path_body_map"].items()}
+                self.assertEqual(set(masses), set(expected_masses))
+                for path, mass in expected_masses.items():
+                    self.assertAlmostEqual(masses[path], mass, places=5, msg=path)
+                owners = {
+                    label: builder.body_label[body] if body >= 0 else None
+                    for label, body in zip(builder.shape_label, builder.shape_body, strict=True)
+                }
+                self.assertEqual(owners, expected_owners)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collider_massapi_aggregates_material_density_sibling(self):
@@ -7996,6 +8036,41 @@ def Xform "Articulation" (
             np.testing.assert_allclose(
                 np.diag(inertia), [expected_i] * 3, atol=1e-5, rtol=1e-5, err_msg=f"Body {name} inertia"
             )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_authored_mass_scales_recorded_collider_inertia(self):
+        """Scale recorded collider inertia from the recorded mass when only body mass is authored.
+
+        A disabled collider with MassAPI routes the body through the recorded-collider fallback.
+        Its inertia reflects the enabled 0.2 [m] cube's authored 2 [kg], not the 8 [kg] that
+        default density gives the shape, so the authored 10 [kg] must rescale it from 2 [kg].
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr().Set(10.0)
+        for name, mass, enabled in (("Collider", 2.0, True), ("DisabledCollider", 1.0, False)):
+            collider = UsdGeom.Cube.Define(stage, f"/World/Body/{name}")
+            collider.CreateSizeAttr().Set(0.2)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim()).CreateCollisionEnabledAttr().Set(enabled)
+            UsdPhysics.MassAPI.Apply(collider.GetPrim()).CreateMassAttr().Set(mass)
+            if not enabled:
+                collider.AddTranslateOp().Set(Gf.Vec3d(0.4, 0.0, 0.0))
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        body_idx = result["path_body_map"]["/World/Body"]
+
+        self.assertAlmostEqual(builder.body_mass[body_idx], 10.0, places=5)
+        inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+        expected_i = (1.0 / 6.0) * 10.0 * 0.2**2
+        np.testing.assert_allclose(inertia, np.diag([expected_i] * 3), atol=1e-6, rtol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_partial_body_applies_axis_rotation_in_compute_callback(self):

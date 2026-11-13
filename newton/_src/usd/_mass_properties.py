@@ -41,8 +41,8 @@ def _is_disabled_rigid_body(prim: Usd.Prim) -> bool:
     return UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Get() is False
 
 
-def _owns_descendant_colliders(prim: Usd.Prim) -> bool:
-    """Whether the native physics parser assigns colliders below ``prim`` to ``prim``'s rigid body."""
+def _owns_descendants(prim: Usd.Prim) -> bool:
+    """Whether geometry below ``prim`` belongs to ``prim``'s rigid body, as the native physics parser assigns colliders."""
     from pxr import UsdPhysics
 
     if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
@@ -154,7 +154,7 @@ class _UsdMassProperties:
             return True
         it = iter(Usd.PrimRange(body_prim, Usd.TraverseInstanceProxies()))
         for prim in it:
-            if prim != body_prim and _owns_descendant_colliders(prim):
+            if prim != body_prim and _owns_descendants(prim):
                 if _is_disabled_rigid_body(prim):
                     # Before OpenUSD 26.11, ComputeMassProperties may count a nested disabled
                     # body's colliders toward this body although the parser assigns them to
