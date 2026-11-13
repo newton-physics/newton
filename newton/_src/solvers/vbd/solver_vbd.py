@@ -3092,6 +3092,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._mid_step_detection(
                 state_in, state_out, contacts, dt, rigid_due=rigid_due, soft_due=soft_due, preserve_history=True
             )
+            # A refreshed angular rho is for later sweeps; the last sweep's dual update keeps the rho it solved with.
+            if iter_num == self.iterations - 1:
+                self._refresh_contact_angular_conditioning = False
             # Material can redistribute between fixed guides even without any rigid bodies.
             if self.tendon_segment_lambda is not None and not self.integrate_with_external_rigid_solver:
                 self._update_tendon_routing(state_in, dt, False)

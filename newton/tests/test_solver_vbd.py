@@ -5734,6 +5734,19 @@ def _torsional_friction_holds_against_stiff_drive(test, device):
     test.assertLess(torque_recovery, 1.2)
     test.assertLess(torsional_torque, mu_angular * normal_load)
 
+    # A refreshed rho is for later sweeps. On single-sweep steps the dual update must keep the rho its
+    # body solve used, or the stored couple overshoots and the next step swings the body back.
+    solver.iterations = 1
+    targets[target_index] = 2.0 * target_angle
+    control.joint_target_q.assign(targets)
+    yaw = []
+    for _ in range(2):
+        state_in, state_out = state_out, state_in
+        state_in.clear_forces()
+        solver.step(state_in, state_out, control, contacts, dt)
+        yaw.append(abs(float(state_out.body_qd.numpy()[body, 5])))
+    test.assertLess(yaw[1], 0.1 * yaw[0])
+
 
 def _collect_rigid_contact_forces_reports_solved_angular_reaction(test, device):
     """Verify reporting preserves solved angular reactions only on active rows."""
