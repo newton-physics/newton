@@ -371,18 +371,18 @@ supported_solvers = {
     "featherstone": (SolverFeatherstone, False),
     "steel": (SolverSteel, False),
     "mujoco_warp": (lambda model: SolverMuJoCo(model, use_mujoco_cpu=False), True),
-    # One MuJoCo world holding every body, so bodies of the second and global worlds see another world's gravity.
+    # One MuJoCo world holding the bodies of world 0 and the global world.
     "mujoco_warp_shared": (lambda model: SolverMuJoCo(model, use_mujoco_cpu=False, separate_worlds=False), True),
     "mujoco_cpu": (lambda model: SolverMuJoCo(model, use_mujoco_cpu=True), True),
 }
 # Separate MuJoCo worlds cannot hold global bodies, a shared MuJoCo world holds one Newton world and native
-# MuJoCo holds one world. In the shared world, the global bodies see the local world's non-collinear gravity.
+# MuJoCo holds one world. A MuJoCo world has one gravity, so the shared world's local gravity is the global one.
 two_worlds = ((0.0, 0.0, -5.0), (1.0, 0.0, -3.0))
 free_body_scenes = {
     "featherstone": {"worlds": two_worlds, "global_scales": SCALES},
     "steel": {"worlds": two_worlds, "global_scales": SCALES},
     "mujoco_warp": {"worlds": two_worlds, "global_scales": ()},
-    "mujoco_warp_shared": {"worlds": two_worlds[1:], "global_scales": SCALES},
+    "mujoco_warp_shared": {"worlds": ((0.0, 0.0, -2.0),), "global_scales": SCALES},
     "mujoco_cpu": {"worlds": (), "global_scales": ()},
 }
 

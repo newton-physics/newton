@@ -15622,20 +15622,14 @@ class TestMuJoCoBodyGravityScale(unittest.TestCase):
         )
 
     def test_scale_gravcomp_matrix(self):
-        """Accelerate at s * (1 - gravcomp) * g for same, different and non-collinear world gravity."""
-        world_gravity = (0.0, 0.0, -5.0)
-        # Global bodies sit in the one MuJoCo world, whose gravity is the local world's.
-        cases = {
-            "same": (world_gravity, False),
-            "different": ((0.0, 0.0, -2.0), True),
-            "non_collinear": ((1.0, 0.0, -3.0), True),
-        }
-        for case, (body_gravity, global_bodies) in cases.items():
-            with self.subTest(case=case):
-                builder = self._builder(body_gravity)
+        """Accelerate at s * (1 - gravcomp) * g, also for global bodies that share world 0's MuJoCo world."""
+        gravity = (0.0, 0.0, -5.0)
+        for global_bodies in (False, True):
+            with self.subTest(global_bodies=global_bodies):
+                builder = self._builder(gravity)
                 if global_bodies:
                     bodies = [self._add_free_body(builder, *pair, x=2.0 * i) for i, pair in enumerate(self.PAIRS)]
-                builder.begin_world(gravity=world_gravity)
+                builder.begin_world(gravity=gravity)
                 local = [self._add_free_body(builder, *pair, x=2.0 * i) for i, pair in enumerate(self.PAIRS)]
                 builder.end_world()
                 if not global_bodies:
@@ -15651,13 +15645,31 @@ class TestMuJoCoBodyGravityScale(unittest.TestCase):
                 scale, gravcomp = (
                     np.array(column, dtype=np.float32)[:, None] for column in zip(*self.PAIRS, strict=True)
                 )
-                acceleration = scale * (1.0 - gravcomp) * np.array(body_gravity)
+                acceleration = scale * (1.0 - gravcomp) * np.array(gravity)
                 np.testing.assert_allclose(state_1.body_qd.numpy()[bodies, :3], acceleration * self.DT, atol=1.0e-5)
                 np.testing.assert_allclose(hook.numpy()[bodies], acceleration, atol=1.0e-5)
-                # MuJoCo's native compensation 1 - s * (1 - gravcomp), along its world's gravity, passes through the
-                # free joint, so the reaction keeps the removed weight.
-                native = -(1.0 - scale * (1.0 - gravcomp)) * np.array(world_gravity)
+                # MuJoCo's native compensation 1 - s * (1 - gravcomp) passes through the free joint, so the reaction
+                # keeps the removed weight.
+                native = -(1.0 - scale * (1.0 - gravcomp)) * np.array(gravity)
                 np.testing.assert_allclose(observables.body_parent_f.numpy()[bodies, :3], native, atol=1.0e-4)
+
+    def test_shared_world_global_gravity_as_scale(self):
+        """Reject a global gravity different from world 0's in one MuJoCo world; a gravity scale reproduces s * g."""
+        builder = self._builder((0.0, 0.0, -2.0))
+        self._add_free_body(builder, 1.0, 0.5)
+        builder.begin_world(gravity=(0.0, 0.0, -5.0))
+        self._add_free_body(builder, 1.0, 0.5, x=2.0)
+        builder.end_world()
+        model = builder.finalize()
+        with self.assertRaisesRegex(ValueError, "has one gravity"):
+            SolverMuJoCo(model, separate_worlds=False)
+
+        model.set_gravity((0.0, 0.0, -5.0), world=-1)
+        model.body_gravity_scale.assign([0.4, 1.0])
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        state_0, state_1 = model.state(), model.state()
+        solver.step(state_0, state_1, model.control(), None, self.DT)
+        np.testing.assert_allclose(state_1.body_qd.numpy()[:, 2], [-1.0 * self.DT, -2.5 * self.DT], atol=1.0e-5)
 
     def test_scale_changes_refresh_native_gravcomp(self):
         """Refresh native gravcomp on scale changes, also in a model compiled without gravcomp."""
