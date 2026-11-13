@@ -120,6 +120,9 @@ Special cases:
 - **Hollow shapes** (``ShapeConfig.is_solid=False``) compute shell inertia
   by subtracting the inner volume's contribution from the outer, using
   :attr:`ShapeConfig.margin <newton.ModelBuilder.ShapeConfig.margin>` as shell thickness.
+  Hollow meshes instead extrude each triangle by ``margin`` to both sides of the
+  surface, so their shell is ``2 * margin`` thick. A hollow shape with zero
+  ``margin`` (the default) has zero mass and emits a warning.
 - Cylinder mass properties include the circular side profile selected by
   ``barrel_radius``.
 
@@ -338,8 +341,9 @@ is positive.  For the full inertia tensor expressions, see
      - Semi-axes.
    * - Mesh
      - Integrated from triangles
-     - Cached on :class:`~newton.Mesh` when available; recomputed from
-       vertices otherwise.  Supports solid and hollow.
+     - Solid: cached on :class:`~newton.Mesh` when available, recomputed
+       from vertices otherwise.  Hollow: always recomputed with the
+       requested shell thickness.
    * - Plane
      - Always 0
      - Regardless of density.

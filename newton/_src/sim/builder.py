@@ -9471,6 +9471,12 @@ class ModelBuilder:
             resolved_opacity = 1.0
         resolved_opacity = _validate_opacity(resolved_opacity, "Shape opacity")
 
+        # Compute mass properties before mutating the builder so that an invalid shell
+        # thickness raises without leaving a partially added shape behind.
+        shape_mass_props = None
+        if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
+            shape_mass_props = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
+
         self.shape_body.append(body)
         shape = self.shape_count
         self.body_shapes[body].append(shape)
@@ -9521,8 +9527,8 @@ class ModelBuilder:
         if cfg.has_shape_collision and cfg.collision_filter_parent:
             self._add_joint_collision_filter_pairs(shape, body)
 
-        if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
-            (m, c, inertia) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
+        if shape_mass_props is not None:
+            m, c, inertia = shape_mass_props
             com_body = wp.transform_point(xform, c)
             self._update_body_mass(body, m, inertia, com_body, xform.q)
 
