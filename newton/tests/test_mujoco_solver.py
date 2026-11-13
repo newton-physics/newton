@@ -14914,6 +14914,7 @@ class TestActuatorTypes(unittest.TestCase):
                 assert_np_equal(mj_model.actuator_gaintype, native.actuator_gaintype)
                 assert_np_equal(mj_model.actuator_biastype, native.actuator_biastype)
 
+    @requires(*MUJOCO_MODULES)
     def test_geared_position_velocity_actuators_match_native(self):
         """Fold a scalar gear into the joint-target drive; keep a zero gear direct (it cannot be folded)."""
         builder = newton.ModelBuilder()
