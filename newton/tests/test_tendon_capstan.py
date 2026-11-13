@@ -1835,7 +1835,7 @@ def _advance_grazing_route(solver, state, output, winding, target, dt, graphs):
     return output, state
 
 
-def test_dynamic_route_signed_arc_inventory(test, device):
+def test_dynamic_route_signed_arc_inventory(test, device, *, direct=False):
     """Conserve material through repeated negative-wrap activation and deactivation."""
     dt = 1.0 / 1200.0
     for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
@@ -1843,7 +1843,7 @@ def test_dynamic_route_signed_arc_inventory(test, device):
             for capture in (False, True) if wp.get_device(device).is_cuda else (False,):
                 with test.subTest(solver=solver_type.__name__, winding=winding, capture=capture):
                     model, _ = _build_grazing_route(device, winding)
-                    solver = solver_type(model, iterations=1)
+                    solver = solver_type(model, iterations=1, tendon_material_direct=direct)
                     state, output = model.state(), model.state()
                     control = model.control()
                     solver.step(state, output, control, None, dt)
@@ -1878,6 +1878,8 @@ def test_dynamic_route_signed_arc_inventory(test, device):
                             expected_stretch,
                             delta=1.0e-6,
                         )
+                        if direct:
+                            solver.check_tendon_material(state)
 
 
 def test_dynamic_route_deactivation_signed_arc(test, device):

@@ -151,20 +151,41 @@ def test_vbd_spin_reaction_matches_capstan_projection(test, device):
         (2.0, [4, 3], np.pi / 4, 0.0, 1.0),
         (2.0, [0.004, 0.003], 0.0, 0.0, 1.0e-6),
     ]
-    for rho, tensions, angle_l, angle_r, radius in cases:
-        with test.subTest(rho=rho, tensions=tensions, angle_l=angle_l, angle_r=angle_r, radius=radius):
+    cases = [(*case, [0, 0], [0, 0]) for case in cases]
+    # Neighbor damping can change either side from sliding to sticking.
+    cases.extend(
+        [
+            (2.0, [9, 1], 0.0, 0.0, 1.0, [0, 4], [0, 1]),
+            (2.0, [1, 9], 0.0, 0.0, 1.0, [4, 0], [1, 0]),
+            (2.0, [9, 5], 0.0, 0.0, 1.0, [0, 4], [0, -1]),
+        ]
+    )
+    for rho, material, angle_l, angle_r, radius, damping, length_rates in cases:
+        with test.subTest(rho=rho, material=material, angle_l=angle_l, angle_r=angle_r, radius=radius, damping=damping):
             center = np.array([0.5, 0, 0]) if radius > 1.0e-4 else np.zeros(3)
             contact_l, contact_r = center + np.array([0, radius, 0]), center + np.array([radius, 0, 0])
             direction_l = np.array([np.cos(angle_l), np.sin(angle_l), 0])
             direction_r = np.array([np.sin(angle_r), -np.cos(angle_r), 0])
-            rest = 1.0 - 0.01 * np.array(tensions, dtype=np.float32)
+            rest = 1.0 - 0.01 * np.array(material, dtype=np.float32)
+            tensions = np.maximum(np.array(material) + np.array(damping) * length_rates, 0.0)
+            poses = [wp.transform_identity()]
+            previous_poses = [wp.transform(wp.vec3(0.03, -0.04, 0.0))]
+            guide_bodies = [-1, 0, -1]
+            if any(damping):
+                poses = [wp.transform_identity()] * 3
+                previous_poses = [
+                    wp.transform_identity(),
+                    wp.transform(wp.vec3(direction_l * length_rates[0] / 60.0)),
+                    wp.transform(wp.vec3(-direction_r * length_rates[1] / 60.0)),
+                ]
+                guide_bodies = [1, 0, 2]
             output = wp.zeros(2, dtype=wp.vec3, device=device)
             inputs = [
-                wp.array([wp.transform_identity()], dtype=wp.transform, device=device),
-                wp.array([wp.transform(wp.vec3(0.03, -0.04, 0.0))], dtype=wp.transform, device=device),
-                wp.zeros(1, dtype=wp.vec3, device=device),
+                wp.array(poses, dtype=wp.transform, device=device),
+                wp.array(previous_poses, dtype=wp.transform, device=device),
+                wp.zeros(len(poses), dtype=wp.vec3, device=device),
                 adjacency,
-                wp.array([-1, 0, -1], dtype=int, device=device),
+                wp.array(guide_bodies, dtype=int, device=device),
                 wp.array(
                     [int(TendonGuideType.ANCHOR), int(TendonGuideType.ROLLER), int(TendonGuideType.ANCHOR)],
                     dtype=int,
@@ -179,7 +200,7 @@ def test_vbd_spin_reaction_matches_capstan_projection(test, device):
                 wp.array([contact_l - direction_l, contact_r], dtype=wp.vec3, device=device),
                 wp.array([contact_l, contact_r + direction_r], dtype=wp.vec3, device=device),
                 wp.full(2, 0.01, device=device),
-                wp.zeros(2, device=device),
+                wp.array(damping, dtype=float, device=device),
                 wp.ones(2, dtype=int, device=device),
                 wp.array([0, 1], dtype=int, device=device),
                 wp.array([1, 2], dtype=int, device=device),
