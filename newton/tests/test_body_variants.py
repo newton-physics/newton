@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import importlib.util
 import unittest
 from dataclasses import replace
 
@@ -9,10 +8,16 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 
-def _variant(kind: str, mu: float = 1.0, tag: int = 0) -> newton.ModelBuilder:
+def _variant(kind: str, mu: float = 1.0, mu_static: float | None = None, tag: int = 0) -> newton.ModelBuilder:
     """Build a single-body variant: a 125 kg cube, the same cube as a mesh, or two small offset spheres."""
     builder = newton.ModelBuilder()
     builder.rigid_gap = 0.01
@@ -22,7 +27,7 @@ def _variant(kind: str, mu: float = 1.0, tag: int = 0) -> newton.ModelBuilder:
         )
     )
     body = builder.add_body(label=kind)
-    cfg = newton.ModelBuilder.ShapeConfig(mu=mu)
+    cfg = newton.ModelBuilder.ShapeConfig(mu=mu, mu_static=mu_static)
     attributes = {"test:tag": tag}
     if kind == "cube":
         builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, cfg=cfg, custom_attributes=attributes)
@@ -86,7 +91,7 @@ class TestBodyVariants(unittest.TestCase):
     def test_select_body_variants(self):
         env = newton.ModelBuilder()
         body = env.add_body(xform=wp.transform((0.0, 0.0, 0.2), wp.quat_identity()), label="object")
-        spheres = _variant("spheres", mu=0.2, tag=2)
+        spheres = _variant("spheres", mu=0.2, mu_static=0.6, tag=2)
         spheres.shape_opacity[:] = [0.5, 0.5]
         env.add_body_variants(body, [_variant("cube", mu=0.9, tag=1), spheres])
         scene = newton.ModelBuilder()
@@ -107,8 +112,10 @@ class TestBodyVariants(unittest.TestCase):
         # The cube leaves the second row empty: it neither collides nor renders.
         live = int(newton.ShapeFlags.VISIBLE | newton.ShapeFlags.COLLIDE_SHAPES)
         np.testing.assert_array_equal(model.shape_flags.numpy()[[1, 3, 5]] & live, [live, 0, 0])
-        # Materials, opacity, and shape custom attributes follow the variant.
+        # Materials, opacity, and shape custom attributes follow the variant; the cube's unset
+        # mu_static resolved to its mu.
         np.testing.assert_allclose(model.shape_material_mu.numpy()[:3], [0.2, 0.2, 0.9])
+        np.testing.assert_allclose(model.shape_material_mu_static.numpy()[:3], [0.6, 0.6, 0.9])
         np.testing.assert_allclose(model.shape_opacity.numpy()[:3], [0.5, 0.5, 1.0])
         np.testing.assert_array_equal(model.test.tag.numpy()[:3], [2, 2, 1])
         self.assertLess(model.body_mass.numpy()[0], initial_mass[0])
@@ -310,7 +317,7 @@ class TestBodyVariants(unittest.TestCase):
         viewer.notify_model_changed(_select(model, [1], bodies=[1]))
         self.assertEqual(rendered_shapes(), [0, 2, 3, 4])
 
-    @unittest.skipUnless(importlib.util.find_spec("viser"), "Requires viser")
+    @requires("viser")
     def test_viser_follows_selection(self):
         """Batches that lose all their rows stay valid in ViewerViser."""
         model = _scene(2).finalize(device="cpu")
@@ -498,18 +505,26 @@ def test_steel_torsion_covers_variants(test, device):
 
 devices = get_test_devices()
 add_function_test(TestBodyVariants, "test_contacts_follow_selection", test_contacts_follow_selection, devices=devices)
-add_function_test(TestBodyVariants, "test_rows_keep_their_role", test_rows_keep_their_role, devices=devices)
+add_function_test(
+    TestBodyVariants,
+    "test_rows_keep_their_role",
+    test_rows_keep_their_role,
+    devices=devices,
+    requires=MUJOCO_MODULES,
+)
 add_function_test(
     TestBodyVariants,
     "test_selection_replays_from_cuda_graph",
     test_selection_replays_from_cuda_graph,
     devices=get_cuda_test_devices(),
+    requires=MUJOCO_MODULES,
 )
 add_function_test(
     TestBodyVariants,
     "test_mujoco_rest_height_follows_selection",
     test_mujoco_rest_height_follows_selection,
     devices=devices,
+    requires=MUJOCO_MODULES,
 )
 add_function_test(
     TestBodyVariants,

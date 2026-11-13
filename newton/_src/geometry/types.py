@@ -256,6 +256,7 @@ class Mesh:
         self.maxhullvert = maxhullvert
         self._cached_hash = None
         self._cached_render_attribute_hash = None
+        self._local_bounds: tuple[np.ndarray, np.ndarray] | None = None
         self._texture_hash = None
         self._edges = None
         self._canonical_ids = None
@@ -1192,11 +1193,19 @@ class Mesh:
         """
         self._cached_hash = None
         self._cached_render_attribute_hash = None
+        self._local_bounds = None
         self._edges = None
         self._canonical_ids = None
         self._collision_edges = None
         self._is_watertight = None
         self._finalized_meshes = {}
+
+    def _get_local_bounds(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return the cached lower and upper corners [m] of the vertex AABB, as float64 arrays."""
+        if self._local_bounds is None:
+            vertices = np.asarray(self._vertices, dtype=np.float64)
+            self._local_bounds = (vertices.min(axis=0), vertices.max(axis=0))
+        return self._local_bounds
 
     @property
     def vertices(self):

@@ -20,7 +20,13 @@ from newton._src.solvers.solver import _set_module_options_if_changed
 from newton._src.solvers.vbd import particle_vbd_kernels, vbd_coupling_kernels
 from newton._src.solvers.xpbd import kernels as xpbd_kernels
 from newton._src.solvers.xpbd import tendon_kernels as xpbd_tendon_kernels
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, warp_version_at_least
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    requires,
+    warp_version_at_least,
+)
 
 DETERMINISTIC_MODE = wp.DeterministicMode.RUN_TO_RUN
 
@@ -327,6 +333,7 @@ class TestSolverDeterminismOptions(unittest.TestCase):
             _set_module_options_if_changed(options, module=xpbd_kernels)
         set_module_options.assert_not_called()
 
+    @requires(*MUJOCO_MODULES)
     def test_mujoco_generated_kernel_cache_tracks_determinism(self):
         from mujoco_warp._src import warp_util
 

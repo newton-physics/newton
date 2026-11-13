@@ -14,6 +14,7 @@ from newton._src.solvers.mujoco.equality import (
     MjcEqualityTargetKind,
     _add_equality_constraint,
 )
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 def _eq_value(builder, name, idx):
@@ -76,6 +77,7 @@ class TestEqualityConstraints(unittest.TestCase):
         main_builder.add_world(namespaced_builder)
         np.testing.assert_array_equal(main_builder.finalize().test.equality_index.numpy(), [0, 1])
 
+    @requires(*MUJOCO_MODULES)
     def test_multiple_constraints(self):
         self.sim_time = 0.0
         self.frame_dt = 1 / 60
@@ -184,6 +186,7 @@ class TestEqualityConstraints(unittest.TestCase):
         )
         np.testing.assert_array_equal(model.mujoco.equality_constraint_target.numpy(), [-1, -1, -1])
 
+    @requires(*MUJOCO_MODULES)
     def test_equality_constraints_not_duplicated_per_world(self):
         """Test that equality constraints are not duplicated for each world when using separate_worlds=True"""
         # Create a simple robot builder with equality constraints
@@ -439,7 +442,7 @@ class TestEqualityConstraints(unittest.TestCase):
         builder.add_shape_box(link3, hx=0.3, hy=0.3, hz=0.3)
 
         # Fixed joint between link1 and link2 - defines the merge transform
-        fixed_parent_xform = wp.transform((0.5, 0.1, 0.0), wp.quat_identity())
+        fixed_parent_xform = wp.transform((0.5, 0.1, 0.0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.4))
         fixed_child_xform = wp.transform((-0.3, 0.0, 0.0), wp.quat_identity())
 
         joint_fixed_base = builder.add_joint_fixed(
@@ -503,6 +506,23 @@ class TestEqualityConstraints(unittest.TestCase):
             relpose=original_relpose,
             label="weld_link2_link3",
         )
+        eq_connect_merged = _add_equality_constraint(
+            builder,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
+            body1=link2,
+            body2=link3,
+            anchor=original_anchor,
+            label="connect_link2_link3",
+        )
+        eq_weld_merged_body2 = _add_equality_constraint(
+            builder,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.WELD,
+            body1=link3,
+            body2=link2,
+            anchor=original_anchor,
+            relpose=original_relpose,
+            label="weld_link3_link2",
+        )
 
         # Compute expected merge transform: parent_xform * inverse(child_xform)
         merge_xform = fixed_parent_xform * wp.transform_inverse(fixed_child_xform)
@@ -512,7 +532,7 @@ class TestEqualityConstraints(unittest.TestCase):
         # Verify initial state
         self.assertEqual(builder.body_count, 4)
         self.assertEqual(builder.joint_count, 4)
-        self.assertEqual(builder._equality_constraint_count, 3)
+        self.assertEqual(builder._equality_constraint_count, 5)
 
         # Collapse fixed joints
         result = builder.collapse_fixed_joints(verbose=False)
@@ -541,6 +561,29 @@ class TestEqualityConstraints(unittest.TestCase):
         self.assertEqual(_eq_value(builder, "equality_constraint_body2", eq_connect), new_link3)
         self.assertEqual(_eq_value(builder, "equality_constraint_body1", eq_weld), new_link1)
         self.assertEqual(_eq_value(builder, "equality_constraint_body2", eq_weld), new_link3)
+        self.assertEqual(_eq_value(builder, "equality_constraint_body1", eq_connect_merged), new_link1)
+        self.assertEqual(_eq_value(builder, "equality_constraint_body2", eq_connect_merged), new_link3)
+        self.assertEqual(_eq_value(builder, "equality_constraint_body1", eq_weld_merged_body2), new_link3)
+        self.assertEqual(_eq_value(builder, "equality_constraint_body2", eq_weld_merged_body2), new_link1)
+
+        # CONNECT anchors use body1's frame; WELD anchors use body2's frame.
+        expected_merged_anchor = wp.transform_point(merge_xform, original_anchor)
+        for eq_idx in (eq_connect_merged, eq_weld_merged_body2):
+            np.testing.assert_allclose(
+                _eq_value(builder, "equality_constraint_anchor", eq_idx),
+                expected_merged_anchor,
+                rtol=1e-5,
+            )
+        # relpose.p is held in body1's frame, so merging body2 only changes relpose's rotation.
+        np.testing.assert_allclose(
+            _eq_value(builder, "equality_constraint_relpose", eq_weld_merged_body2),
+            wp.transform(
+                wp.transform_get_translation(original_relpose),
+                wp.transform_get_rotation(original_relpose) * wp.quat_inverse(wp.transform_get_rotation(merge_xform)),
+            ),
+            rtol=1e-5,
+            atol=1e-7,
+        )
 
         # Verify anchor was transformed correctly
         actual_anchor = _eq_value(builder, "equality_constraint_anchor", eq_weld)
@@ -575,7 +618,92 @@ class TestEqualityConstraints(unittest.TestCase):
         model = builder.finalize()
         self.assertEqual(model.body_count, 3)
         self.assertEqual(model.joint_count, 3)
-        self.assertEqual(model.mujoco.equality_constraint_count, 3)
+        self.assertEqual(model.mujoco.equality_constraint_count, 5)
+
+    @requires(*MUJOCO_MODULES)
+    def test_collapse_fixed_joints_keeps_a_satisfied_weld_satisfied(self):
+        """Verify a satisfied weld stays satisfied when collapse_fixed_joints merges either of its bodies."""
+
+        def weld_error(body1_pose, body2_pose, anchor, relpose):
+            # MuJoCo's weld: body1 * relpose.p == body2 * anchor and body1.q * relpose.q == body2.q
+            held = wp.transform_point(body1_pose, wp.transform_get_translation(relpose))
+            gap = float(wp.length(held - wp.transform_point(body2_pose, anchor)))
+            rel = wp.quat_inverse(wp.transform_get_rotation(body1_pose) * wp.transform_get_rotation(relpose))
+            rel = rel * wp.transform_get_rotation(body2_pose)
+            return gap, 2.0 * float(np.arcsin(min(1.0, float(wp.length(wp.vec3(rel[0], rel[1], rel[2]))))))
+
+        for merged in ("body1", "body2"):
+            with self.subTest(merged=merged):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+                # parent (free) -fixed-> child, and a separate free body; the weld joins the child and the free body.
+                parent_pose = wp.transform(
+                    (0.2, -0.1, 1.0), wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 1.0, 0.0)), 0.6)
+                )
+                fixed_parent_xform = wp.transform(
+                    (0.4, 0.1, -0.2), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.8)
+                )
+                fixed_child_xform = wp.transform(
+                    (-0.1, 0.2, 0.05), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -0.5)
+                )
+                child_pose = parent_pose * fixed_parent_xform * wp.transform_inverse(fixed_child_xform)
+                free_pose = wp.transform(
+                    (1.5, 0.8, 1.2), wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.0, 1.0, 2.0)), 1.1)
+                )
+
+                parent = builder.add_link(xform=parent_pose, mass=1.0, label="parent")
+                builder.add_shape_box(parent, hx=0.1, hy=0.1, hz=0.1)
+                child = builder.add_link(xform=child_pose, mass=1.0, label="child")
+                builder.add_shape_box(child, hx=0.1, hy=0.1, hz=0.1)
+                free = builder.add_link(xform=free_pose, mass=1.0, label="free")
+                builder.add_shape_box(free, hx=0.1, hy=0.1, hz=0.1)
+                j_parent = builder.add_joint_free(child=parent, parent_xform=parent_pose)
+                j_fixed = builder.add_joint_fixed(
+                    parent=parent, child=child, parent_xform=fixed_parent_xform, child_xform=fixed_child_xform
+                )
+                builder.add_articulation([j_parent, j_fixed])
+                builder.add_articulation([builder.add_joint_free(child=free, parent_xform=free_pose)])
+
+                body1, body2 = (child, free) if merged == "body1" else (free, child)
+                anchor = wp.vec3(0.1, -0.2, 0.15)
+                body1_pose, body2_pose = builder.body_q[body1], builder.body_q[body2]
+                relpose = wp.transform(
+                    wp.transform_point(wp.transform_inverse(body1_pose), wp.transform_point(body2_pose, anchor)),
+                    wp.quat_inverse(wp.transform_get_rotation(body1_pose)) * wp.transform_get_rotation(body2_pose),
+                )
+                eq = _add_equality_constraint(
+                    builder,
+                    constraint_type=newton.solvers.SolverMuJoCo.EqType.WELD,
+                    body1=body1,
+                    body2=body2,
+                    anchor=anchor,
+                    relpose=relpose,
+                    label="weld",
+                )
+                self.assertLess(weld_error(body1_pose, body2_pose, anchor, relpose)[0], 1.0e-6)
+
+                result = builder.collapse_fixed_joints(verbose=False)
+                self.assertEqual(result["body_merged_parent"][child], parent)
+                new_body1 = int(_eq_value(builder, "equality_constraint_body1", eq))
+                new_body2 = int(_eq_value(builder, "equality_constraint_body2", eq))
+                gap, angle = weld_error(
+                    builder.body_q[new_body1],
+                    builder.body_q[new_body2],
+                    wp.vec3(*_eq_value(builder, "equality_constraint_anchor", eq)),
+                    _eq_value(builder, "equality_constraint_relpose", eq),
+                )
+                # The bodies have not moved, so the remapped weld must still be satisfied.
+                self.assertLess(gap, 1.0e-5)
+                self.assertLess(angle, 1.0e-5)
+
+                model = builder.finalize()
+                solver = newton.solvers.SolverMuJoCo(model)
+                state_0, state_1, control = model.state(), model.state(), model.control()
+                start = state_0.body_q.numpy().copy()
+                for _ in range(50):
+                    solver.step(state_0, state_1, control, None, 1.0e-3)
+                    state_0, state_1 = state_1, state_0
+                np.testing.assert_allclose(state_0.body_q.numpy()[:, :3], start[:, :3], atol=1.0e-5)
 
     def test_collapse_fixed_joints_sparse_optional_fields(self):
         """collapse_fixed_joints must not crash when anchor/relpose are omitted (issue #3054)."""

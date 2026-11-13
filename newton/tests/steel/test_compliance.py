@@ -41,6 +41,13 @@ from newton.tests.steel._fixtures import (
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
+def _response(name: str) -> dict:
+    """Return the constructor options of a response label (``"immediate"``, ``"propagation"`` or ``"colored"``)."""
+    if name == "colored":
+        return {"solve_mode": "colored", "articulated_contact_response": "propagation"}
+    return {"articulated_contact_response": name}
+
+
 def run_native_hydro_fixture(*, device, articulated=True, response="immediate"):
     """Consume the emitted SDF hydroelastic coefficients unchanged on dense, free-body or colored sphere rows."""
     with wp.ScopedDevice(device):
@@ -95,7 +102,6 @@ def run_native_hydro_fixture(*, device, articulated=True, response="immediate"):
         for enabled in (False, True):
             solver = SolverSteel(
                 model,
-                solve_mode="matrix_free",
                 contact_compliance=enabled,
                 friction_anchor_beta=0.0,
                 iterations=128,
@@ -103,7 +109,7 @@ def run_native_hydro_fixture(*, device, articulated=True, response="immediate"):
                 articulation_constraint_max=2048,
                 free_body_constraint_max=32 if articulated else 2048,
                 baumgarte=0.05,
-                articulated_contact_response=response,
+                **_response(response),
             )
             output = model.state()
             step_input = model.state()
@@ -113,7 +119,7 @@ def run_native_hydro_fixture(*, device, articulated=True, response="immediate"):
             step_input.clear_forces()
             solver.step(step_input, output, model.control(), contacts, 0.0025)
             paths = solver._contact_path.numpy()[:count]
-            route = 2 if response == "propagation_colored" else (0 if articulated else 1)
+            route = 2 if response == "colored" else (0 if articulated else 1)
             if not np.all(paths == route):
                 raise AssertionError("Hydroelastic fixture did not use the requested contact route")
             if route == 2:
@@ -224,7 +230,7 @@ def test_compliance_opt_in_selects_point_friction(test, device):
     for articulated in (False, True):
         with test.subTest(articulated=articulated):
             options = {"articulated": articulated, "enabled": True, "steps": 20, "friction_scale": 0.4}
-            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "point friction"):
+            with test.assertWarnsRegex(newton.NewtonWarning, "point friction"):
                 actual, paths, solver, _ = run_fixture(
                     device=device, **options, solver_options={"friction_anchor_beta": None}
                 )
@@ -246,7 +252,7 @@ def test_omitted_friction_anchor_beta_keeps_patches_without_compliance(test, dev
     model = builder.finalize(device=device)
     for kwargs in ({}, {"friction_anchor_beta": None}, {"contact_compliance": False}):
         with test.subTest(**kwargs):
-            solver = SolverSteel(model, solve_mode="matrix_free", **kwargs)
+            solver = SolverSteel(model, **kwargs)
             test.assertEqual(solver.friction_anchor_beta, 0.2)
             test.assertTrue(solver._friction_anchors_enabled)
 
@@ -357,7 +363,7 @@ def test_unsupported_solver_modes_rejected(test, device):
         ("contact_friction_shared_anchor", True),
     ):
         with test.assertRaisesRegex(ValueError, key):
-            SolverSteel(model, solve_mode="matrix_free", contact_compliance=True, **{key: value})
+            SolverSteel(model, contact_compliance=True, **{key: value})
 
 
 def test_static_indentation_and_baseline_failure(test, device):
@@ -688,7 +694,7 @@ for _fn in (
     add_function_test(TestContactComplianceSafety, _fn.__name__, _fn, devices=devices)
 
 
-_COLORED = {"articulated_contact_response": "propagation_colored"}
+_COLORED = {"solve_mode": "colored", "articulated_contact_response": "propagation"}
 
 
 class _CompliantScene:
@@ -741,11 +747,20 @@ class _CompliantScene:
 
 
 def test_captured_steps_match_eager_steps(test, device):
-    """Replay a compliant step captured cold, before any eager step, bitwise like eager stepping."""
+    """Replay a compliant step captured cold, before any eager step, bitwise like eager stepping.
+
+    The compliance counts raise when read during the capture, which stays usable.
+    """
     for colored, articulated in ((False, True), (False, False), (True, True), (True, False)):
         options = _COLORED if colored else None
         eager, captured = (_CompliantScene(device, articulated=articulated, solver_options=options) for _ in range(2))
-        graph = captured.capture()
+        with wp.ScopedCapture(device=captured.model.device) as capture:
+            captured.step()
+            for name in ("compliance_contact_count", "compliance_skipped_contact_count"):
+                with test.subTest(colored=colored, articulated=articulated, name=name):
+                    with test.assertRaisesRegex(RuntimeError, "outside CUDA graph capture"):
+                        getattr(captured.solver, name)
+        graph = capture.graph
         # The capture records the step without running it.
         np.testing.assert_array_equal(captured.pose(), eager.pose())
         for step in range(40):
@@ -755,6 +770,7 @@ def test_captured_steps_match_eager_steps(test, device):
                 np.testing.assert_array_equal(captured.pose(), eager.pose())
         test.assertEqual(captured.solver.compliance_contact_count, 1)
         test.assertEqual(captured.solver.compliance_contact_count, eager.solver.compliance_contact_count)
+        test.assertEqual(captured.solver.compliance_skipped_contact_count, 0)
         captured.solver.check_constraint_capacity()
 
 
@@ -863,7 +879,6 @@ def _run_paired_fixture(device, *, hinv_jt_kernel, friction, friction_gap_max=No
                 model,
                 contact_compliance=True,
                 friction_anchor_beta=0.0,
-                solve_mode="matrix_free",
                 enable_restitution=False,
                 contact_friction_scale=1.0 if friction > 0.0 else 0.0,
                 contact_friction_gap_max=friction_gap_max,
@@ -925,7 +940,6 @@ def _run_local_owner_scene(device, *, compliance, steps=40):
         with kernel_overrides({"hinv_jt_kernel": "par_row"}):
             solver = SolverSteel(
                 model,
-                solve_mode="matrix_free",
                 contact_compliance=compliance,
                 friction_anchor_beta=0.0,
                 enable_joint_limits=True,
@@ -1037,7 +1051,7 @@ def test_colored_native_hydro_matches_immediate(test, device):
     for articulated in (True, False):
         with test.subTest(articulated=articulated):
             immediate = run_native_hydro_fixture(device=device, articulated=articulated)
-            colored = run_native_hydro_fixture(device=device, articulated=articulated, response="propagation_colored")
+            colored = run_native_hydro_fixture(device=device, articulated=articulated, response="colored")
             test.assertEqual(
                 colored["compliant"]["consumed_compliant_contacts"],
                 colored["native_material"]["positive_stiffness_contacts"],
@@ -1052,7 +1066,7 @@ def test_colored_native_hydro_matches_immediate(test, device):
 def test_colored_rising_kinematic_support_matches_immediate(test, device):
     """Carry a compliant sphere on a kinematic platform rising at 0.1 m/s on colored rows as on immediate rows."""
     traces = {}
-    for response in ("immediate", "propagation_colored"):
+    for response in ("immediate", "colored"):
         with wp.ScopedDevice(device):
             builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
             builder.rigid_gap = 0.005
@@ -1072,8 +1086,7 @@ def test_colored_rising_kinematic_support_matches_immediate(test, device):
                 setattr(contacts, name, wp.zeros(32, dtype=float))
             solver = SolverSteel(
                 model,
-                solve_mode="matrix_free",
-                articulated_contact_response=response,
+                **_response(response),
                 contact_compliance=True,
                 friction_anchor_beta=0.0,
                 iterations=8,
@@ -1098,10 +1111,10 @@ def test_colored_rising_kinematic_support_matches_immediate(test, device):
                 state, output = output, state
                 trace.append(state.body_qd.numpy()[sphere].copy())
             test.assertEqual(solver.compliance_contact_count, 1)
-            test.assertEqual(int(solver._contact_path.numpy()[0]), 2 if response == "propagation_colored" else 1)
+            test.assertEqual(int(solver._contact_path.numpy()[0]), 2 if response == "colored" else 1)
             traces[response] = np.asarray(trace)
-    np.testing.assert_allclose(traces["propagation_colored"], traces["immediate"], atol=1e-6, rtol=0)
-    test.assertAlmostEqual(float(traces["propagation_colored"][-1, 2]), 0.1, delta=1e-4)
+    np.testing.assert_allclose(traces["colored"], traces["immediate"], atol=1e-6, rtol=0)
+    test.assertAlmostEqual(float(traces["colored"][-1, 2]), 0.1, delta=1e-4)
 
 
 def test_colored_device_coefficients_match_host_law(test, device):
@@ -1226,7 +1239,7 @@ def test_colored_mixed_routes_match_immediate(test, device):
         return builder.finalize(device=device)
 
     traces = {}
-    for response, routes in (("immediate", {0, 1}), ("propagation_colored", {0, 2})):
+    for response, routes in (("immediate", {0, 1}), ("colored", {0, 2})):
         trace, paths, solver, count = _step_compliant(build(), response, 60, stiffness=3000.0, damping=20.0)
         test.assertEqual(paths, routes)
         test.assertEqual(solver.compliance_contact_count, count)
@@ -1241,7 +1254,7 @@ def test_colored_mixed_routes_match_immediate(test, device):
         )
         test.assertTrue(all(gamma[int(path)][world, slot] > 0.0 for path, world, slot in mapping))
         traces[response] = trace
-    np.testing.assert_allclose(traces["propagation_colored"], traces["immediate"], atol=1e-6, rtol=0)
+    np.testing.assert_allclose(traces["colored"], traces["immediate"], atol=1e-6, rtol=0)
 
 
 def test_colored_serial_tail_keeps_compliance(test, device):
@@ -1257,7 +1270,7 @@ def test_colored_serial_tail_keeps_compliance(test, device):
         builder.add_shape_sphere(plate, xform=xform, radius=0.01, cfg=cfg)
     model = builder.finalize(device=device)
     trace, paths, solver, count = _step_compliant(
-        model, "propagation_colored", 100, stiffness=2.0, damping=0.1, propagation_constraint_max=4096
+        model, "colored", 100, stiffness=2.0, damping=0.1, propagation_constraint_max=4096
     )
     test.assertEqual(paths, {2})
     test.assertEqual(count, 529)
@@ -1279,21 +1292,20 @@ def test_colored_replay_reports_row_capacity_loss(test, device):
 
 
 def test_colored_incompatible_options_rejected(test, device):
-    """Reject compliance on plain propagation, and sleeping or contact torsion with colored compliance."""
+    """Reject compliance on plain propagation and contact torsion with colored compliance; accept sleeping."""
     _, _, solver, _ = run_fixture(device=device, articulated=True, enabled=False, steps=0)
     model = solver.model
-    base = {"solve_mode": "matrix_free", "contact_compliance": True, "friction_anchor_beta": 0.0}
+    base = {"contact_compliance": True, "friction_anchor_beta": 0.0}
     with test.assertRaisesRegex(NotImplementedError, "contact_compliance=True.*'propagation'"):
         SolverSteel(model, **base, articulated_contact_response="propagation")
-    with test.assertRaisesRegex(NotImplementedError, "enable_sleeping=True"):
-        SolverSteel(model, **base, **_COLORED, enable_sleeping=True)
+    test.assertIsNotNone(SolverSteel(model, **base, **_COLORED, enable_sleeping=True)._sleeping)
     set_torsion_radius(model, 0.01)
-    with test.assertRaisesRegex(NotImplementedError, "^contact torsion is not supported"):
+    with test.assertRaisesRegex(NotImplementedError, "^contact torsion with contact_compliance=True is not supported"):
         SolverSteel(model, **base, **_COLORED, contact_torsion_device=True)
 
 
 class TestContactComplianceColored(unittest.TestCase):
-    """Compliant contacts on ``articulated_contact_response="propagation_colored"`` rows."""
+    """Compliant contacts on ``solve_mode="colored"`` rows."""
 
 
 for _fn in (
@@ -1324,8 +1336,7 @@ def _step_compliant(model, response, steps, *, stiffness, damping, **solver_opti
         setattr(contacts, name, wp.zeros(contact_max, dtype=float, device=model.device))
     solver = SolverSteel(
         model,
-        solve_mode="matrix_free",
-        articulated_contact_response=response,
+        **_response(response),
         contact_compliance=True,
         friction_anchor_beta=0.0,
         iterations=8,
@@ -1390,7 +1401,6 @@ def _stack_scene(device, g, velocity_iterations=2):
     )
     solver = newton.solvers.SolverSteel(
         model,
-        solve_mode="matrix_free",
         iterations=8,
         velocity_iterations=velocity_iterations,
         contact_regularization=g,
@@ -1437,9 +1447,7 @@ def _resting_box(device, g, rate, frames, articulated=False, **solver_kwargs):
         deterministic=True,
         contact_matching="latest",
     )
-    solver = newton.solvers.SolverSteel(
-        model, solve_mode="matrix_free", iterations=12, contact_regularization=g, **solver_kwargs
-    )
+    solver = newton.solvers.SolverSteel(model, iterations=12, contact_regularization=g, **solver_kwargs)
     _, zs = _run(model, pipeline, solver, frames, dt=1.0 / rate)
     return 0.05 - zs[-1]
 
@@ -1454,7 +1462,6 @@ def _scissor_step(device, g, velocity_iterations):
     model = _build_scissor_model(device)
     solver = newton.solvers.SolverSteel(
         model,
-        solve_mode="matrix_free",
         iterations=8,
         velocity_iterations=velocity_iterations,
         contact_regularization=g,
@@ -1561,7 +1568,6 @@ def test_regularization_indeterminate_split(test: unittest.TestCase, device):
     )
     solver = newton.solvers.SolverSteel(
         model,
-        solve_mode="matrix_free",
         iterations=8,
         velocity_iterations=2,
         contact_regularization=0.02,
@@ -1603,9 +1609,9 @@ def test_regularization_validation(test: unittest.TestCase, device):
     model = builder.finalize(device=device)
     for bad in (-0.1, float("nan"), float("inf"), 1.0e7):
         with test.subTest(value=bad), test.assertRaises(ValueError):
-            newton.solvers.SolverSteel(model, solve_mode="matrix_free", contact_regularization=bad)
-    newton.solvers.SolverSteel(model, solve_mode="matrix_free", contact_regularization=0.0)
-    newton.solvers.SolverSteel(model, solve_mode="matrix_free", contact_regularization=1.0e6)
+            newton.solvers.SolverSteel(model, contact_regularization=bad)
+    newton.solvers.SolverSteel(model, contact_regularization=0.0)
+    newton.solvers.SolverSteel(model, contact_regularization=1.0e6)
 
 
 def test_zero_regularization_shares_one_weight_slot(test: unittest.TestCase, device):
@@ -1615,11 +1621,11 @@ def test_zero_regularization_shares_one_weight_slot(test: unittest.TestCase, dev
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
     builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05)
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free")
+    solver = newton.solvers.SolverSteel(model)
     test.assertFalse(solver._regularization_enabled)
     test.assertEqual(solver._row_w.shape, (1, 1))
     test.assertEqual(solver._mf_row_w.shape, (1, 1))
-    regularized = newton.solvers.SolverSteel(model, solve_mode="matrix_free", contact_regularization=0.1)
+    regularized = newton.solvers.SolverSteel(model, contact_regularization=0.1)
     test.assertTrue(regularized._regularization_enabled)
     test.assertEqual(regularized._row_w.shape, regularized._impulses.shape)
     test.assertEqual(regularized._mf_row_w.shape, regularized._mf_impulses.shape)
@@ -1648,20 +1654,6 @@ def test_exact_surface_contact_is_regularized(test: unittest.TestCase, device):
     test.assertEqual(float(row_w.numpy()[0, 0]), 0.5)
 
 
-def test_compliance_parameters_removed(test: unittest.TestCase, device):
-    """Reject the dense compliance knobs as unknown keyword arguments."""
-    names = tuple(inspect.signature(newton.solvers.SolverSteel).parameters)
-    test.assertNotIn("dense_contact_compliance", names)
-    test.assertNotIn("speculative_dense_contact_compliance", names)
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
-    b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
-    builder.add_shape_box(b, hx=0.05, hy=0.05, hz=0.05)
-    model = builder.finalize(device=device)
-    with test.assertRaises(TypeError):
-        newton.solvers.SolverSteel(model, solve_mode="matrix_free", dense_contact_compliance=1.0e-4)
-
-
 def test_restitution_rows_stay_rigid(test: unittest.TestCase, device):
     """Solve a row whose rebound target fires rigidly, so the rebound is e * v_in for any regularizer.
 
@@ -1687,7 +1679,6 @@ def test_restitution_rows_stay_rigid(test: unittest.TestCase, device):
         contacts = pipeline.contacts()
         solver = newton.solvers.SolverSteel(
             model,
-            solve_mode="matrix_free",
             iterations=16,
             velocity_iterations=0,
             contact_regularization=g,
@@ -1726,7 +1717,6 @@ for _fn in (
     test_regularization_validation,
     test_zero_regularization_shares_one_weight_slot,
     test_exact_surface_contact_is_regularized,
-    test_compliance_parameters_removed,
     test_restitution_rows_stay_rigid,
 ):
     add_function_test(TestSteelRegularization, _fn.__name__, _fn, devices=devices)

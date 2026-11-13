@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import ClassVar
 
 import warp as wp
-import yaml
 
 import newton
 from newton._src.solvers.kamino._src.utils.viewer import MeshColors, ViewerConfig
@@ -227,6 +226,8 @@ def _load_drlegs_config(asset_path: Path) -> dict:
     config = dict(_DEFAULTS)
     yaml_path = asset_path / "dr_legs" / "rl_policies" / "drlegs_walk.yaml"
     if yaml_path.exists():
+        import yaml
+
         with open(yaml_path, encoding="utf-8") as file:
             config.update(yaml.safe_load(file) or {})
         logger.info("Loaded config from %s", yaml_path)

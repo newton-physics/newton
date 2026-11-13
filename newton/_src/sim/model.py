@@ -18,7 +18,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
-from ..exceptions import NewtonDeprecationWarning
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
@@ -46,6 +46,7 @@ _COLLISION_EDGE_DEPRECATION_MSG = (
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
+    from ..actuators.batteries import BatteryBase
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
 
@@ -77,6 +78,7 @@ _SHAPE_VARIANT_ATTRIBUTES = (
     "shape_material_kf",
     "shape_material_ka",
     "shape_material_mu",
+    "shape_material_mu_static",
     "shape_material_restitution",
     "shape_material_mu_torsional",
     "shape_material_mu_rolling",
@@ -378,7 +380,13 @@ class Model:
         CONSTRAINT_MIMIC = 14
         """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
         WORLD = 15
-        """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.world_count`)."""
+        """Attribute frequency follows the number of worlds plus the global world.
+
+        Arrays have shape ``(world_count + 1,)`` (see :attr:`~newton.Model.world_count`):
+        entries ``[0, world_count)`` belong to local worlds and the final entry to
+        global world ``-1``, matching per-world reset masks. Consumers without
+        global-world semantics may ignore the final entry.
+        """
         ATTACHMENT_PARTICLE_BODY = 16
         """Attribute frequency follows the number of particle-body attachments."""
         CONTACT = 17
@@ -410,7 +418,9 @@ class Model:
         """Experimental frequency for recorded deformable surfaces (see :attr:`~newton.Model.surface_count`)."""
         VOLUME = 25
         """Experimental frequency for recorded deformable volumes (see :attr:`~newton.Model.volume_count`)."""
-        CAMERA = 26
+        ACTUATOR = 26
+        """Attribute frequency follows the number of actuators (see :attr:`~newton.Model.actuator_count`)."""
+        CAMERA = 27
         """Attribute frequency follows the number of model cameras (see :attr:`~newton.Model.camera_count`)."""
 
     @dataclass(frozen=True)
@@ -581,6 +591,7 @@ class Model:
         "shape_material_kf": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_ka": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_material_mu_static": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_restitution": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu_torsional": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE),
@@ -870,6 +881,7 @@ class Model:
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
         AttributeFrequency.WORLD: "world_count",
         AttributeFrequency.ATTACHMENT_PARTICLE_BODY: "attachment_particle_body_count",
+        AttributeFrequency.ACTUATOR: "actuator_count",
         AttributeFrequency.CONTACT: "contact_max",
         AttributeFrequency.CONTACT_RIGID: "rigid_contact_max",
         AttributeFrequency.CONTACT_SOFT: "soft_contact_max",
@@ -928,7 +940,7 @@ class Model:
             aliases = self.__dict__.get("_deprecated_aliases", {})
             if name in aliases:
                 getter, message = aliases[name]
-                warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
+                warn_deprecation(message)
                 return getter()
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
@@ -940,7 +952,7 @@ class Model:
                 aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
                 if name in aliases:
                     getter, message = aliases[name]
-                    warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
+                    warn_deprecation(message)
                     target = getter()
                     if isinstance(target, wp.array):
                         target.assign(value)
@@ -1044,7 +1056,19 @@ class Model:
         self.shape_material_ka: wp.array[wp.float32] | None = None
         """Shape contact adhesion distance [m], shape [shape_count], float."""
         self.shape_material_mu: wp.array[wp.float32] | None = None
-        """Shape coefficient of friction [dimensionless], shape [shape_count], float."""
+        """Shape coefficient of friction [dimensionless], shape [shape_count], float. The dynamic (kinetic)
+        coefficient for solvers that model stick-slip friction (see :attr:`shape_material_mu_static`)."""
+        self.shape_material_mu_static: wp.array[wp.float32] | None = None
+        """Shape coefficient of static friction [dimensionless], shape [shape_count], float.
+        Always holds the effective coefficient: :meth:`ModelBuilder.finalize` resolves an unset
+        :attr:`ModelBuilder.ShapeConfig.mu_static` to the shape's final ``mu`` (direct edits of the builder's
+        ``shape_material_mu`` included) and rejects a value below it, so no entry is below
+        :attr:`shape_material_mu` at finalize. The two arrays are independent afterwards: code that edits
+        ``shape_material_mu`` at runtime and wants a single coefficient updates this array as well. Set via
+        :attr:`ModelBuilder.ShapeConfig.mu_static` or a USD ``physics:staticFriction`` above
+        ``physics:dynamicFriction``. No built-in solver models stick-slip friction yet:
+        :class:`~newton.solvers.SolverKamino` carries the value into its material tables but its contact model
+        uses the dynamic coefficient, and the other solvers read only ``shape_material_mu``."""
         self.shape_material_restitution: wp.array[wp.float32] | None = None
         """Shape coefficient of restitution [dimensionless], shape [shape_count], float."""
         self.shape_material_mu_torsional: wp.array[wp.float32] | None = None
@@ -1388,17 +1412,37 @@ class Model:
         self._deformable_visual_meshes: tuple[DeformableVisualMesh, ...] = ()
         self._deformable_visual_skin_batches: _DeformableVisualSkinBatches | None = None
         self.muscle_start: wp.array[wp.int32] | None = None
-        """Start index of the first muscle point per muscle, shape [muscle_count], int."""
+        """Start index of the first muscle point per muscle, shape [muscle_count], int.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`ModelBuilder.add_muscle`.
+        """
         self.muscle_params: wp.array2d[wp.float32] | None = None
         """Muscle parameters, shape [muscle_count, 5], float.
         Components: [0] f0 [N] (force scaling), [1] lm [m] (muscle fiber length), [2] lt [m] (tendon slack length),
-        [3] lmax [m] (max efficient length), [4] pen [dimensionless] (penalty factor)."""
+        [3] lmax [m] (max efficient length), [4] pen [dimensionless] (penalty factor).
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`ModelBuilder.add_muscle`.
+        """
         self.muscle_bodies: wp.array[wp.int32] | None = None
-        """Body indices of the muscle waypoints, int."""
+        """Body indices of the muscle waypoints, int.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`ModelBuilder.add_muscle`.
+        """
         self.muscle_points: wp.array[wp.vec3] | None = None
-        """Local body offset of the muscle waypoints, float."""
+        """Local body offset of the muscle waypoints, float.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`ModelBuilder.add_muscle`.
+        """
         self.muscle_activations: wp.array[wp.float32] | None = None
-        """Muscle activations [dimensionless, 0 to 1], shape [muscle_count], float."""
+        """Muscle activations [dimensionless, 0 to 1], shape [muscle_count], float.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`ModelBuilder.add_muscle`.
+        """
 
         self.body_q: wp.array[wp.transform] | None = None
         """Rigid body poses [m, unitless quaternion] for state initialization, shape [body_count, 7], float."""
@@ -1790,12 +1834,11 @@ class Model:
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity: wp.array[wp.vec3] | None = None
-        """Local-world and global gravity vectors [m/s²], dtype :class:`vec3`.
+        """Local-world and global gravity vectors [m/s²], shape [world_count + 1], dtype :class:`vec3`.
 
-        Models with explicit local worlds have shape [world_count + 1], where
-        the final element is the gravity for global world ``-1``. Legacy
-        implicit single-world models have shape [1], shared by world ``0``
-        and global world ``-1``.
+        Entries ``[0, world_count)`` are local-world gravities and the final
+        entry is the gravity of global world ``-1``, which is distinct from
+        world ``0`` also in models built without explicit worlds.
         """
 
         self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
@@ -1860,7 +1903,11 @@ class Model:
         self.attachment_particle_body_count: int = 0
         """Total number of rigid-body-to-particle attachments in the system."""
         self.muscle_count: int = 0
-        """Total number of muscles in the system."""
+        """Total number of muscles in the system.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`ModelBuilder.add_muscle`.
+        """
         self.articulation_count: int = 0
         """Total number of articulations in the system."""
         self.curve_count: int = 0
@@ -1934,6 +1981,10 @@ class Model:
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
+        self.actuator_count: int = 0
+        """Total number of actuators added with :meth:`ModelBuilder.add_actuator() <newton.ModelBuilder.add_actuator>`."""
+        self.batteries: list[BatteryBase] = []
+        """List of battery instances for this model."""
 
     @property
     def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:
@@ -2638,6 +2689,9 @@ class Model:
 
         if frequency == Model.AttributeFrequency.ONCE:
             return 1
+        if frequency == Model.AttributeFrequency.WORLD:
+            # Local worlds followed by the global world -1.
+            return int(self.world_count) + 1
         if frequency in (
             Model.AttributeFrequency.CONTACT,
             Model.AttributeFrequency.CONTACT_RIGID,
@@ -2692,6 +2746,11 @@ class Model:
         self._add_custom_attributes(
             c, Model.AttributeAssignment.CONTROL, requires_grad=requires_grad, clone_arrays=clone_variables
         )
+        c._attribute_frequency = {
+            name: spec.frequency
+            for name, spec in self._iter_attribute_specs()
+            if spec.assignment == Model.AttributeAssignment.CONTROL or name in vars(c)
+        }
         return c
 
     def set_gravity(
@@ -2720,6 +2779,8 @@ class Model:
                 raise ValueError("Expected single gravity vector (3,) when world is specified")
             if world < -1 or world >= self.world_count:
                 raise IndexError(f"world {world} out of range; expected -1 or [0, {self.world_count})")
+            if world == 0:
+                self._warn_global_gravity_unchanged("set_gravity(..., world=0)")
             current = self.gravity.numpy()
             current[world] = gravity_np
             self.gravity.assign(current)
@@ -2733,11 +2794,37 @@ class Model:
             if gravity_np.shape == full_shape:
                 self.gravity.assign(gravity_np)
             elif gravity_np.shape == local_shape:
+                self._warn_global_gravity_unchanged(f"set_gravity() with shape {local_shape}")
                 current = self.gravity.numpy()
                 current[: self.world_count] = gravity_np
                 self.gravity.assign(current)
             else:
                 raise ValueError(f"Expected gravity with shape {local_shape} or {full_shape}, got {gravity_np.shape}")
+
+    def _warn_global_gravity_unchanged(self, call: str) -> None:
+        """Warn when a local-world gravity update reaches no entity because only global entities are dynamic.
+
+        Models built without :meth:`ModelBuilder.begin_world` place every entity in global
+        world ``-1``, whose gravity entry is separate from world ``0``.
+        """
+        # Only single-world models can be fully global; skip the host scan for larger ones.
+        if self.world_count != 1:
+            return
+        worlds = [
+            array.numpy()
+            for array in (self.body_world, self.particle_world)
+            if array is not None and array.shape[0] > 0
+        ]
+        if not worlds:
+            return
+        worlds = np.concatenate(worlds)
+        if np.any(worlds == -1) and not np.any(worlds >= 0):
+            warnings.warn(
+                f"{call} does not affect this model's bodies or particles, which all belong to global "
+                "world -1; pass world=-1 or a single gravity vector for every world.",
+                NewtonWarning,
+                stacklevel=3,
+            )
 
     def select_body_variants(self, variants: wp.array[wp.int32], *, bodies: wp.array[wp.int32] | None = None) -> int:
         """Select the shape variant of bodies declared with

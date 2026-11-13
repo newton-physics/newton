@@ -16,8 +16,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton import ShapeFlags
-from newton.exceptions import NewtonWarning
+from newton import NewtonWarning, ShapeFlags
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
@@ -29,11 +28,11 @@ from newton.tests._usd_deformable_test_utils import (
     group_labels,
     group_range,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 from newton.usd import SchemaResolverPhysx
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUSDDeformableCloth(unittest.TestCase):
     """Surface-deformable (cloth) parsing into particles, triangle elements, and bending edges."""
 
@@ -59,6 +58,93 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertEqual(group_range(builder, "cloth", "/World/Cloth", "tri"), (0, 2))
         self.assertEqual(builder.particle_count, 4)
         self.assertAlmostEqual(sum(builder.particle_mass), 8.0, places=6)
+
+    def test_cloth_display_appearance_imports_to_triangles(self):
+        """Import cloth display color and opacity onto every generated triangle."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        mesh = _add_cloth_mesh(stage, "/World/Cloth")
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+        primvars = UsdGeom.PrimvarsAPI(mesh)
+        primvars.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1).Set(
+            [(0.2, 0.4, 0.6)]
+        )
+        primvars.CreatePrimvar("displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1).Set([0.44])
+
+        expected_color = newton.utils.color_linear_to_srgb((0.2, 0.4, 0.6))
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(builder.tri_count, 2)
+        np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (2, 1)), atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(builder.tri_opacity, np.full(2, 0.44), atol=1e-6, rtol=1e-6)
+
+    def test_cloth_material_appearance_imports_to_triangles(self):
+        """Import bound material color and opacity onto every generated triangle."""
+        from pxr import Sdf, UsdShade
+
+        stage = _deformable_stage()
+        mesh = _add_cloth_mesh(stage, "/World/Cloth")
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+        material = UsdShade.Material.Define(stage, "/World/ClothLook")
+        shader = UsdShade.Shader.Define(stage, "/World/ClothLook/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.8, 0.2, 0.1))
+        shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(0.37)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(builder.tri_count, 2)
+        expected_color = newton.utils.color_linear_to_srgb((0.8, 0.2, 0.1))
+        np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (2, 1)), atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(builder.tri_opacity, np.full(2, 0.37), atol=1e-6, rtol=1e-6)
+
+    def test_cloth_ignores_graphics_material_subsets(self):
+        """Ignore and log graphics materials bound to GeomSubsets; physics subset bindings are not reported as such."""
+        from pxr import Sdf, UsdGeom, UsdShade, Vt
+
+        def stage_with_subset_binding(purpose):
+            stage = _deformable_stage()
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+            UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+                "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
+            ).Set([(0.2, 0.4, 0.6)])
+            material = UsdShade.Material.Define(stage, "/World/SubsetLook")
+            if purpose == "physics":
+                material.GetPrim().AddAppliedSchema("PhysicsMaterialAPI")
+            else:
+                shader = UsdShade.Shader.Define(stage, "/World/SubsetLook/PreviewSurface")
+                shader.CreateIdAttr("UsdPreviewSurface")
+                shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((1.0, 0.0, 0.0))
+                material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            subset = UsdShade.MaterialBindingAPI(mesh).CreateMaterialBindSubset(
+                "Part", Vt.IntArray([0]), UsdGeom.Tokens.face
+            )
+            UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(material, materialPurpose=purpose)
+            return stage
+
+        # The subset's material never reaches the triangles; the mesh's displayColor applies to both.
+        expected_color = np.tile(newton.utils.color_linear_to_srgb((0.2, 0.4, 0.6)), (2, 1))
+        with self.subTest(binding="graphics"):
+            builder = newton.ModelBuilder()
+            with self.assertLogs("newton", level="WARNING") as caught:
+                builder.add_usd(stage_with_subset_binding(UsdShade.Tokens.allPurpose))
+            self.assertTrue(
+                any("/World/Cloth: graphics material subsets are not supported" in m for m in caught.output),
+                caught.output,
+            )
+            np.testing.assert_allclose(builder.tri_color, expected_color, atol=1e-6, rtol=1e-6)
+        with self.subTest(binding="physics"):
+            builder = newton.ModelBuilder()
+            # A per-element physics material only gets the existing physics-subset warning.
+            with self.assertWarns(NewtonWarning), self.assertNoLogs("newton", level="WARNING"):
+                builder.add_usd(stage_with_subset_binding("physics"))
+            np.testing.assert_allclose(builder.tri_color, expected_color, atol=1e-6, rtol=1e-6)
 
     def test_cloth_rest_shape_drives_material_state(self):
         """Import disjoint rest poses, thickness-weighted masses, lengths, and bend angles."""
@@ -577,7 +663,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         messages = [str(warning.message) for warning in caught]
         self.assertTrue(
             any(
-                warning.category is newton.exceptions.NewtonDeprecationWarning
+                warning.category is newton.NewtonDeprecationWarning
                 and "thicknesses" in str(warning.message)
                 and "thicknesses:elementType" in str(warning.message)
                 for warning in caught
