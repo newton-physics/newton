@@ -1179,8 +1179,11 @@ def _check_sticky_rotated_witness(test, device, *, plane_first, threshold, use_c
         fields = ("point0", "point1", "offset0", "offset1", "normal")
         previous = {field: getattr(contacts, f"rigid_contact_{field}").numpy()[:count].copy() for field in fields}
 
-        # The cylinder's geometry stays put while its material witnesses rotate.
+        # Translate the fresh-geometry case so the plane witness also moves:
+        # matching must use the cylinder's world-oriented offset, not the plane's.
         pose = state.body_q.numpy()
+        if not expect_replay:
+            pose[0, 1] += 0.01
         pose[0, 3:] = np.asarray(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1))
         state.body_q.assign(pose)
         reference = newton.CollisionPipeline(model, broad_phase="nxn", rigid_contact_max=64, deterministic=True)
@@ -1226,12 +1229,10 @@ def _check_sticky_rotated_witness(test, device, *, plane_first, threshold, use_c
         test.assertEqual(count, int(contacts.rigid_contact_count.numpy()[0]))
         match_index = contacts.rigid_contact_match_index.numpy()[:count]
         # Rotation moves the saved material witnesses even when the geometric
-        # surface stays put. Match only while each transported witness remains
-        # inside the configured radius; otherwise report the contact as broken.
-        if expect_replay:
-            test.assertTrue(np.all(match_index >= 0))
-        else:
-            np.testing.assert_array_equal(match_index, MATCH_BROKEN)
+        # surface stays put. The cylinder rolls in place, so its contacts travel
+        # with it and keep their identity. Witnesses that stay inside the
+        # configured radius are replayed; otherwise the fresh geometry is kept.
+        test.assertTrue(np.all(match_index >= 0))
         unmatched = int(np.count_nonzero(match_index < 0))
         test.assertEqual(int(contacts.rigid_contact_new_count.numpy()[0]), unmatched)
         test.assertEqual(int(contacts.rigid_contact_broken_count.numpy()[0]), unmatched)

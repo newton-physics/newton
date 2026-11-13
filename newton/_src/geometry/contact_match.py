@@ -17,7 +17,12 @@ measured in world space between the contact *midpoints*
 shape 1. In sticky mode, previous body-local witnesses are instead transformed
 with the current poses and the larger drift of the two witnesses is compared,
 so shared body motion and normal compression do not age the contact history
-while a jump to another feature of a body does. The result is a per-contact match index:
+while a jump to another feature of a body does. A sticky contact also matches
+while it travels with one body's translation, like the contact of a rolling
+wheel, which stays below the axle while it moves around the wheel: that body's
+world-oriented witness offset and the world separation of the witnesses stay.
+Such a contact keeps its identity, and replay keeps its fresh geometry. The
+result is a per-contact match index:
 
 - ``>= 0``: index of the matched contact in the previous frame's sorted buffer.
 - ``MATCH_NOT_FOUND (-1)``: shape pair has no prior contacts.
@@ -73,8 +78,9 @@ The matcher owns its previous-frame state: sorted keys and uniqueness claims
 each), 40 bytes/contact in total.  None of it aliases the
 :class:`ContactSorter` scratch buffers, so a pipeline stage that runs between
 sorting and matching (for example a pass that compacts the sorted stream) may
-reuse that scratch without corrupting the history.  Sticky mode adds the
-body-frame points and offsets (48 bytes/contact) and replays the owned normal.
+reuse that scratch without corrupting the history. Sticky mode adds body-frame
+points and offsets, world-oriented witness offsets, and witness separation
+(84 bytes/contact), and replays the owned normal when its witnesses remain close.
 The optional contact report adds one ``int32`` flag per contact.
 
 Per-frame call order (inside :class:`~newton.CollisionPipeline`)::
@@ -229,6 +235,11 @@ class _MatchData:
     prev_pos_world: wp.array[wp.vec3]
     prev_point0: wp.array[wp.vec3]
     prev_point1: wp.array[wp.vec3]
+    # Sticky mode: each witness's world-oriented offset from its body's origin,
+    # and the world-space separation of the two witnesses.
+    prev_offset_world0: wp.array[wp.vec3]
+    prev_offset_world1: wp.array[wp.vec3]
+    prev_separation: wp.array[wp.vec3]
     sticky: int
     prev_normal: wp.array[wp.vec3]
     prev_count: wp.array[wp.int32]
@@ -306,17 +317,19 @@ def _match_contacts_kernel(data: _MatchData):
 
     p0 = data.new_point0[tid]
     p1 = data.new_point1[tid]
-    new_pos_w = wp.vec3(0.0)
-    if data.sticky == 0:
-        bid0 = data.shape_body[shape0]
-        p0w = p0
-        if bid0 >= 0:
-            p0w = wp.transform_point(data.body_q[bid0], p0)
-        bid1 = data.shape_body[shape1]
-        p1w = p1
-        if bid1 >= 0:
-            p1w = wp.transform_point(data.body_q[bid1], p1)
-        new_pos_w = 0.5 * (p0w + p1w)
+    bid0 = data.shape_body[shape0]
+    p0w = p0
+    offset0 = p0
+    if bid0 >= 0:
+        p0w = wp.transform_point(data.body_q[bid0], p0)
+        offset0 = wp.quat_rotate(wp.transform_get_rotation(data.body_q[bid0]), p0)
+    bid1 = data.shape_body[shape1]
+    p1w = p1
+    offset1 = p1
+    if bid1 >= 0:
+        p1w = wp.transform_point(data.body_q[bid1], p1)
+        offset1 = wp.quat_rotate(wp.transform_get_rotation(data.body_q[bid1]), p1)
+    new_pos_w = 0.5 * (p0w + p1w)
     new_n = data.new_normal[tid]
 
     # Binary search the [range_lo, range_hi) interval of prev contacts
@@ -341,9 +354,23 @@ def _match_contacts_kernel(data: _MatchData):
     for old_idx in range(range_lo, range_hi):
         dist_sq = float(0.0)
         if data.sticky != 0:
+            # A contact stays the same while it stays put on both bodies, or while it
+            # travels with one body's translation, like the contact of a rolling wheel.
             # Rigid transforms preserve distance. Compare in each body's frame
             # to avoid world-space rounding and unnecessary transforms.
-            dist_sq = wp.max(wp.length_sq(p0 - data.prev_point0[old_idx]), wp.length_sq(p1 - data.prev_point1[old_idx]))
+            on_bodies = wp.max(
+                wp.length_sq(p0 - data.prev_point0[old_idx]), wp.length_sq(p1 - data.prev_point1[old_idx])
+            )
+            # Travelling: one body's world-oriented witness offset and the world
+            # separation of the witnesses both stay.
+            travelling = wp.max(
+                wp.length_sq(p1w - p0w - data.prev_separation[old_idx]),
+                wp.min(
+                    wp.length_sq(offset0 - data.prev_offset_world0[old_idx]),
+                    wp.length_sq(offset1 - data.prev_offset_world1[old_idx]),
+                ),
+            )
+            dist_sq = wp.min(on_bodies, travelling)
         else:
             diff = new_pos_w - data.prev_pos_world[old_idx]
             dist_sq = wp.dot(diff, diff)
@@ -440,6 +467,9 @@ class _SaveStateData:
     dst_normal: wp.array[wp.vec3]
     dst_point0_body: wp.array[wp.vec3]
     dst_point1_body: wp.array[wp.vec3]
+    dst_offset_world0: wp.array[wp.vec3]
+    dst_offset_world1: wp.array[wp.vec3]
+    dst_separation: wp.array[wp.vec3]
     dst_offset0_body: wp.array[wp.vec3]
     dst_offset1_body: wp.array[wp.vec3]
     dst_claim: wp.array[wp.int64]
@@ -494,6 +524,13 @@ def _save_sorted_state_kernel(data: _SaveStateData, reset_world_mask: wp.array[w
         if data.has_sticky != 0:
             data.dst_point0_body[i] = p0
             data.dst_point1_body[i] = p1
+            data.dst_offset_world0[i] = p0
+            if bid0 != -1:
+                data.dst_offset_world0[i] = p0w - wp.transform_get_translation(data.body_q[bid0])
+            data.dst_offset_world1[i] = p1
+            if bid1 != -1:
+                data.dst_offset_world1[i] = p1w - wp.transform_get_translation(data.body_q[bid1])
+            data.dst_separation[i] = p1w - p0w
             data.dst_offset0_body[i] = data.src_offset0[i]
             data.dst_offset1_body[i] = data.src_offset1[i]
 
@@ -542,6 +579,7 @@ class _ReplayData:
     margin1: wp.array[wp.float32]
     body_q: wp.array[wp.transform]
     shape_body: wp.array[wp.int32]
+    pos_threshold_sq: float
 
 
 @wp.kernel(enable_backward=False)
@@ -566,7 +604,14 @@ def _replay_matched_kernel(data: _ReplayData):
     if fresh_gap > wp.float32(0.0):
         return
 
-    # Sticky matching already bounds each transported witness's drift.
+    # A contact that travelled with one body keeps its identity but not its old witnesses
+    # once they left the fresh contact points on their bodies.
+    if (
+        wp.length_sq(data.prev_point0[idx] - data.point0[tid]) > data.pos_threshold_sq
+        or wp.length_sq(data.prev_point1[idx] - data.point1[tid]) > data.pos_threshold_sq
+    ):
+        return
+
     data.point0[tid] = data.prev_point0[idx]
     data.point1[tid] = data.prev_point1[idx]
     data.offset0[tid] = data.prev_offset0[idx]
@@ -635,7 +680,8 @@ class ContactMatcher:
     The matcher owns all previous-frame state: the sorted key cache, the
     per-prev claim word used by the ``atomic_min`` race that keeps new→prev
     injective, and the world-space contact midpoints and normals, 40 bytes per
-    contact in total.  It does not alias sorter scratch, so the history
+    contact for the common history. Sticky mode adds 84 bytes per contact.
+    It does not alias sorter scratch, so the history
     survives any pass that reuses that scratch between sorting and matching.
     When ``contact_report`` is disabled, the ``prev_was_matched`` flag array
     is skipped.
@@ -658,15 +704,17 @@ class ContactMatcher:
             previous and current contact midpoints
             ``0.5 * (world(point0) + world(point1))``.  Contacts whose midpoint
             moved more than this between frames are considered broken. In sticky
-            mode, the previous body-local witnesses are instead transformed by the
-            current body poses, and each must lie within this distance of its
-            fresh contact point for a match.
+            mode, match when both transported witnesses stay within this distance,
+            or when changes in one body's world-oriented witness offset and
+            the world-space witness separation stay within it. Matched contacts
+            keep fresh geometry if either transported witness exceeds this distance.
         normal_dot_threshold: Minimum dot product between old and new contact
             normals.  Below this the contact is considered broken.
         contact_report: Allocate the ``prev_was_matched`` flag array needed
             to enumerate broken contacts in :meth:`build_report`.
-        sticky: Allocate four extra per-contact ``wp.vec3`` buffers
-            (``point0``/``point1``/``offset0``/``offset1`` body-frame) used by
+        sticky: Allocate seven extra per-contact ``wp.vec3`` buffers:
+            body-frame points and offsets, world-oriented witness offsets,
+            and witness separation. These support travelling matches and
             :meth:`replay_matched`, which replays the owned previous normal.
             When ``False`` these attributes are ``None`` and no extra kernel
             launches are added.
@@ -738,11 +786,17 @@ class ContactMatcher:
             if sticky:
                 self._prev_point0 = wp.zeros(capacity, dtype=wp.vec3)
                 self._prev_point1 = wp.zeros(capacity, dtype=wp.vec3)
+                self._prev_offset_world0 = wp.zeros(capacity, dtype=wp.vec3)
+                self._prev_offset_world1 = wp.zeros(capacity, dtype=wp.vec3)
+                self._prev_separation = wp.zeros(capacity, dtype=wp.vec3)
                 self._prev_offset0 = wp.zeros(capacity, dtype=wp.vec3)
                 self._prev_offset1 = wp.zeros(capacity, dtype=wp.vec3)
             else:
                 self._prev_point0 = None
                 self._prev_point1 = None
+                self._prev_offset_world0 = None
+                self._prev_offset_world1 = None
+                self._prev_separation = None
                 self._prev_offset0 = None
                 self._prev_offset1 = None
 
@@ -836,7 +890,9 @@ class ContactMatcher:
         (``0.5 * (world(point0) + world(point1))``) so the metric is symmetric
         in shape 0 / shape 1. Sticky mode instead measures the larger distance
         from each previous body-local witness, transformed by its current body
-        pose, to its fresh contact point. This excludes shared body motion.
+        pose, to its fresh contact point. It also accepts travelling contacts
+        when changes in either body's world-oriented witness offset and in
+        the world-space witness separation stay within the threshold.
 
         Args:
             sort_keys: Current frame's sorted int64 keys (use
@@ -863,6 +919,9 @@ class ContactMatcher:
         data.prev_pos_world = self._prev_pos_world
         data.prev_point0 = self._prev_point0 if self._sticky else self._prev_pos_world
         data.prev_point1 = self._prev_point1 if self._sticky else self._prev_pos_world
+        data.prev_offset_world0 = self._prev_offset_world0 if self._sticky else self._prev_pos_world
+        data.prev_offset_world1 = self._prev_offset_world1 if self._sticky else self._prev_pos_world
+        data.prev_separation = self._prev_separation if self._sticky else self._prev_pos_world
         data.sticky = int(self._sticky)
         data.prev_normal = self._prev_normal
         data.prev_count = self._prev_count
@@ -978,6 +1037,9 @@ class ContactMatcher:
             data.src_offset1 = sorted_offset1
             data.dst_point0_body = self._prev_point0
             data.dst_point1_body = self._prev_point1
+            data.dst_offset_world0 = self._prev_offset_world0
+            data.dst_offset_world1 = self._prev_offset_world1
+            data.dst_separation = self._prev_separation
             data.dst_offset0_body = self._prev_offset0
             data.dst_offset1_body = self._prev_offset1
             data.has_sticky = 1
@@ -988,6 +1050,9 @@ class ContactMatcher:
             data.src_offset1 = sorted_point0
             data.dst_point0_body = self._prev_pos_world
             data.dst_point1_body = self._prev_pos_world
+            data.dst_offset_world0 = self._prev_pos_world
+            data.dst_offset_world1 = self._prev_pos_world
+            data.dst_separation = self._prev_pos_world
             data.dst_offset0_body = self._prev_pos_world
             data.dst_offset1_body = self._prev_pos_world
             data.has_sticky = 0
@@ -1023,8 +1088,10 @@ class ContactMatcher:
         run **after** :meth:`ContactSorter.sort_full` and **before**
         :meth:`save_sorted_state`.  Unmatched rows (``match_index < 0``) are
         left untouched so new contacts keep their fresh narrow-phase geometry.
-        Matched separated contacts also retain fresh geometry. Sticky matching
-        must already have checked the transported witnesses against ``pos_threshold``.
+        Matched separated contacts also retain fresh geometry, and so do matched
+        contacts whose saved witnesses moved more than ``pos_threshold`` from the fresh
+        ones on their bodies: a contact travelling with a rolling body keeps its
+        identity but takes its current geometry.
         Only ``point0``/``point1``/``offset0``/``offset1``/``normal`` are
         restored; other fields (``shape0``/``shape1``, margins, ...) are
         already identical for a matched contact.
@@ -1060,6 +1127,7 @@ class ContactMatcher:
         data.margin1 = margin1
         data.body_q = body_q
         data.shape_body = shape_body
+        data.pos_threshold_sq = self._pos_threshold_sq
 
         wp.launch(_replay_matched_kernel, dim=self._capacity, inputs=[data], device=device)
 
