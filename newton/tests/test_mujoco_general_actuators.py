@@ -1599,6 +1599,65 @@ class TestMuJoCoDamperActuators(unittest.TestCase):
         np.testing.assert_allclose(native_data.qfrc_actuator, [-6.0], atol=1.0e-7)
 
 
+MJCF_ADHESION_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="ceiling" pos="0 0 0.5">
+            <geom type="box" size="0.2 0.2 0.01"/>
+        </body>
+        <body name="box" pos="0 0 0.47">
+            <joint name="hinge" type="hinge"/>
+            <geom type="box" size="0.02 0.02 0.02" mass="0.1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <adhesion name="stick" {target} ctrlrange="{ctrlrange}" gain="{gain}"/>
+    </actuator>
+</mujoco>
+"""
+
+
+class TestMuJoCoAdhesionActuators(unittest.TestCase):
+    """Tests for adhesion actuator shortcuts."""
+
+    def test_adhesion_actuator_matches_native_mujoco(self):
+        """Match native MuJoCo transmission, gain, bias and control limits."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        mjcf = MJCF_ADHESION_ACTUATOR.format(target='body="ceiling"', ctrlrange="0 1", gain="5")
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+
+        builder = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        mj_model = SolverMuJoCo(builder.finalize()).mj_model
+
+        self.assertEqual(native_model.nu, 1)
+        self.assertEqual(mj_model.nu, native_model.nu)
+        np.testing.assert_array_equal(mj_model.actuator_trntype, native_model.actuator_trntype)
+        np.testing.assert_array_equal(mj_model.actuator_trnid[:, 0], native_model.actuator_trnid[:, 0])
+        np.testing.assert_allclose(mj_model.actuator_gainprm, native_model.actuator_gainprm)
+        np.testing.assert_allclose(mj_model.actuator_biasprm, native_model.actuator_biasprm)
+        np.testing.assert_array_equal(mj_model.actuator_ctrllimited, native_model.actuator_ctrllimited)
+        np.testing.assert_allclose(mj_model.actuator_ctrlrange, native_model.actuator_ctrlrange)
+
+    def test_adhesion_actuator_rejects_what_mujoco_rejects(self):
+        """Reject a joint target, a negative gain and a negative control range, as MuJoCo does."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        for target, ctrlrange, gain in (
+            ('joint="hinge"', "0 1", "5"),
+            ('body="ceiling"', "0 1", "-5"),
+            ('body="ceiling"', "-1 1", "5"),
+        ):
+            with self.subTest(target=target, ctrlrange=ctrlrange, gain=gain):
+                mjcf = MJCF_ADHESION_ACTUATOR.format(target=target, ctrlrange=ctrlrange, gain=gain)
+                with self.assertRaises(ValueError):
+                    mujoco.MjModel.from_xml_string(mjcf)
+                builder = ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                with self.assertRaises(ValueError):
+                    builder.add_mjcf(mjcf)
+
+
 class TestMuJoCoMuscleActuators(unittest.TestCase):
     """Tests for muscle actuator shortcuts."""
 
