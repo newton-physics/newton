@@ -11,10 +11,54 @@ import warp as wp
 
 from ...core import Axis
 from ...geometry import GeoType, Mesh
+from ...geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals, _DeformableVisualSkinBatches
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
-from .types import AntiAliasing, ClearData, LightType, MeshData, RenderConfig, RenderOrder, TextureData
+from .types import (
+    AntiAliasing,
+    ClearData,
+    DeformableSurfaceMode,
+    LightType,
+    MeshData,
+    RenderConfig,
+    RenderOrder,
+    TextureData,
+)
+
+# Default hemispheric ambient radiance (linear RGB) for surfaces facing up and down.
+DEFAULT_AMBIENT_SKY_COLOR = (0.2, 0.2, 0.225)
+DEFAULT_AMBIENT_GROUND_COLOR = (0.05, 0.05, 0.06)
+
+
+@wp.kernel(enable_backward=False)
+def _gather_variant_render_data(
+    row_shapes: wp.array[wp.int32],
+    shape_variant_shape: wp.array[wp.int32],
+    variant_render_type: wp.array[wp.int32],
+    variant_texture_ids: wp.array[wp.int32],
+    variant_mesh_data_ids: wp.array[wp.int32],
+    shape_texture_override: wp.array[wp.int32],
+    # outputs
+    shape_render_type: wp.array[wp.int32],
+    shape_texture_ids: wp.array[wp.int32],
+    shape_mesh_data_ids: wp.array[wp.int32],
+):
+    shape = row_shapes[wp.tid()]
+    variant_shape = shape_variant_shape[shape]
+    if variant_shape >= 0:
+        shape_render_type[shape] = variant_render_type[variant_shape]
+        shape_mesh_data_ids[shape] = variant_mesh_data_ids[variant_shape]
+        if shape_texture_override.shape[0] > 0:
+            shape_texture_ids[shape] = shape_texture_override[shape]
+        else:
+            shape_texture_ids[shape] = variant_texture_ids[variant_shape]
+
+
+def _render_types(shape_types: np.ndarray) -> np.ndarray:
+    """Shape types as rendered: heightfields and convex hulls are triangle meshes."""
+    as_mesh = np.isin(shape_types, (int(GeoType.HFIELD), int(GeoType.CONVEX_MESH)))
+    return np.where(as_mesh, int(GeoType.MESH), shape_types).astype(np.int32)
 
 
 class RenderContext:
@@ -25,6 +69,7 @@ class RenderContext:
         num_gaussians: int = 0
         has_particles: bool = False
         has_world_indices: bool = False
+        has_triangle_mesh_textures: bool = False
         render_color: bool = False
         render_depth: bool = False
         render_forward_depth: bool = False
@@ -36,7 +81,13 @@ class RenderContext:
     DEFAULT_CLEAR_DATA = ClearData()
     DEFAULT_RENDER_CONFIG = RenderConfig()
 
-    def __init__(self, model: Model, load_textures: bool = True):
+    def __init__(
+        self,
+        model: Model,
+        load_textures: bool = True,
+        *,
+        deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
+    ):
         """Create a render context for a Newton simulation model.
 
         Populates shape, triangle, and texture data from *model*. BVH
@@ -49,10 +100,12 @@ class RenderContext:
 
         Args:
             model: Newton simulation model providing shapes and particles.
-            load_textures: Load mesh textures from disk. Set False for
-                checkerboard or custom texture workflows.
+            load_textures: Load shape and visual mesh textures from file paths or in-memory images.
+            deformable_surface_mode: Which deformable surfaces to upload: the simulation triangles,
+                the visual meshes, or both.
         """
         self._model = model
+        self._deformable_surface_mode = deformable_surface_mode
         self._render_state = RenderContext.RenderState()
 
         self._kernel_cache: dict[tuple, wp.Kernel] = {}
@@ -66,6 +119,16 @@ class RenderContext:
         self._triangle_indices: wp.array[wp.int32] | None = None
         self._topology_particle_mask: wp.array[wp.bool] | None = None
 
+        # Skinned meshes need a combined point buffer: simulation particles first,
+        # then visual vertices. Without skins, retain the State's particle buffer.
+        self._triangle_particle_start = 0
+        self._triangle_particle_count = 0
+        self._skinned_vertex_count = 0
+        self._skinned_points: wp.array[wp.vec3f] | None = None
+        self._triangle_groups: wp.array[wp.int32] | None = None
+        self._triangle_mesh_uvs = wp.empty(0, dtype=wp.vec2f, device=self.device)
+        self._triangle_mesh_texture_ids = wp.empty(0, dtype=wp.int32, device=self.device)
+
         self._has_particles: bool = False
 
         self._shape_texture_ids: wp.array[wp.int32] | None = None
@@ -76,6 +139,7 @@ class RenderContext:
         self._mesh_data: wp.array[MeshData] | None = None
         self._texture_data: wp.array[TextureData] | None = None
         self._texture_data_source: list[TextureData] = []
+        self._checkerboard_texture_id: int | None = None
         self._mesh_data_source: list[MeshData] = []
 
         self._lights_active: wp.array[wp.bool] | None = None
@@ -83,6 +147,11 @@ class RenderContext:
         self._lights_cast_shadow: wp.array[wp.bool] | None = None
         self._lights_position: wp.array[wp.vec3f] | None = None
         self._lights_orientation: wp.array[wp.vec3f] | None = None
+        self._lights_color: wp.array[wp.vec3f] | None = None
+
+        self._ambient_sky_color = wp.vec3f(*DEFAULT_AMBIENT_SKY_COLOR)
+        self._ambient_ground_color = wp.vec3f(*DEFAULT_AMBIENT_GROUND_COLOR)
+        self._ambient_lighting: wp.array[wp.vec3f] | None = None
 
         # Heightfields and convex hulls are triangle meshes (their wp.Mesh lives
         # in shape_source_ptr), so the renderer treats them as meshes: it reuses
@@ -90,14 +159,33 @@ class RenderContext:
         # kernels entirely (no extra shape-type branch, so no register/occupancy
         # cost). The remapped type array is what the render kernel dispatches on;
         # model.shape_type is left untouched for collision and BVH bounds.
+        # Variant rows render the variant shape they hold; their per-shape data is gathered before each render.
+        self._variant_rows = model._variant_row_shapes if model._has_variant_rows else None
+        self._shape_texture_override: wp.array[wp.int32] | None = None
         if model.shape_type is not None:
             shape_type_np = model.shape_type.numpy()
-            as_mesh = np.isin(shape_type_np, (int(GeoType.HFIELD), int(GeoType.CONVEX_MESH)))
-            if np.any(as_mesh):
-                shape_type_np = shape_type_np.copy()
-                shape_type_np[as_mesh] = int(GeoType.MESH)
-                self._shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
+            if self._variant_rows is not None or np.any(_render_types(shape_type_np) != shape_type_np):
+                self._shape_render_type = wp.array(
+                    _render_types(shape_type_np), dtype=wp.int32, device=model.shape_type.device
+                )
 
+        # The batches name the meshes this camera uploads and skins; they are the one source for
+        # the skin topology, texture ids and per-frame skinning.
+        self._skin_batches: _DeformableVisualSkinBatches = model._get_deformable_visual_skin_batches()
+        deformable_visual_meshes = (
+            self._skin_batches.meshes if deformable_surface_mode != DeformableSurfaceMode.SIMULATION_ONLY else ()
+        )
+        has_simulation_triangles = bool(
+            deformable_surface_mode != DeformableSurfaceMode.VISUAL_ONLY and model.particle_count and model.tri_count
+        )
+        if has_simulation_triangles:
+            self._triangle_particle_count = model.particle_count
+            if deformable_visual_meshes:
+                # Copy only the triangle span into the combined buffer. Interleaved
+                # non-triangle particles inside that span are copied too.
+                tri_particles = model.tri_indices.numpy()
+                self._triangle_particle_start = int(tri_particles.min())
+                self._triangle_particle_count = int(tri_particles.max()) + 1 - self._triangle_particle_start
         if model.particle_q is not None and model.particle_q.shape[0]:
             self._has_particles = True
             self._render_state.has_particles = True
@@ -107,11 +195,8 @@ class RenderContext:
                 if indices is not None and indices.shape[0]:
                     topology_particle_mask[indices.numpy().reshape(-1)] = True
 
-            if model.tri_indices is not None and model.tri_indices.shape[0]:
-                self._set_triangle_points(model.particle_q)
-                self._set_triangle_indices(model.tri_indices.flatten())
-                # Deformable-owned vertices render through the triangle mesh; tet indices catch
-                # interior volume particles that are not referenced by boundary triangles.
+            if model.tri_count:
+                # Hiding the coarse surface must not expose its particles as spheres.
                 mask_topology_particles(model.tri_indices)
                 mask_topology_particles(model.tet_indices)
             self._topology_particle_mask = wp.array(
@@ -121,7 +206,11 @@ class RenderContext:
         if model.gaussians_data is not None:
             self._render_state.num_gaussians = model.gaussians_data.shape[0]
 
-        self._load_texture_and_mesh_data(model, load_textures)
+        skin_texture_ids = self._load_texture_and_mesh_data(model, load_textures, deformable_visual_meshes)
+        if has_simulation_triangles or deformable_visual_meshes:
+            self._init_triangle_mesh(model, deformable_visual_meshes, skin_texture_ids)
+            if self._skinned_vertex_count:
+                self._skinned_points = self._triangle_points[self._triangle_particle_count :]
 
     @property
     def model(self) -> Model:
@@ -140,20 +229,45 @@ class RenderContext:
         return Axis.from_any(self.model.up_axis)
 
     def _get_triangle_colors(self) -> wp.array[wp.vec3f]:
-        """Per-triangle display colors (sRGB) of the deformable triangle mesh; empty without ``Model.tri_color``."""
-        colors = self.model.tri_color
+        """Per-face display colors (sRGB) of the simulation triangles; empty without ``Model.tri_color``.
+
+        Simulation faces come first in the combined index buffer and the kernel shades faces
+        beyond this array white, so visual-mesh faces need no entries. With the simulation
+        surface hidden, the first faces are visual meshes and must not take its colors.
+        """
+        colors = self.model.tri_color if self._triangle_particle_count else None
         if colors is not None and colors.shape[0] == self.model.tri_count:
             return colors
         if self._empty_triangle_colors is None:
             self._empty_triangle_colors = wp.zeros(0, dtype=wp.vec3f, device=self.device)
         return self._empty_triangle_colors
 
+    def _gather_variant_render_data(self) -> None:
+        """Copy the render type, texture, and mesh data of the variant shape each variant row holds."""
+        if self._variant_rows is None:
+            return
+        override = self._shape_texture_override
+        wp.launch(
+            _gather_variant_render_data,
+            dim=self._variant_rows.shape[0],
+            inputs=[
+                self._variant_rows,
+                self.model._shape_variant_shape,
+                self._variant_render_type,
+                self._variant_texture_ids,
+                self._variant_mesh_data_ids,
+                wp.empty(0, dtype=wp.int32, device=self.device) if override is None else override,
+            ],
+            outputs=[self._shape_render_type, self._shape_texture_ids, self._shape_mesh_data_ids],
+            device=self.device,
+        )
+
     def _get_shape_render_type(self) -> wp.array[wp.int32] | None:
         if self._shape_render_type is not None:
             return self._shape_render_type
         return self.model.shape_type
 
-    def update(self, state: State):
+    def update(self, state: State, deformable_visuals: DeformableVisuals | None = None):
         """Synchronize triangle-mesh points from the current simulation state.
 
         Shape and particle BVHs are built by :meth:`~newton.ModelBuilder.finalize`
@@ -161,34 +275,118 @@ class RenderContext:
         :meth:`~newton.Model.bvh_refit_particles`.
 
         Args:
-            state: Current simulation state with particle positions.
+            state: Current simulation state with particle positions and body transforms.
+            deformable_visuals: Precomputed visual points, or ``None`` to skin from the state.
+
+        Raises:
+            ValueError: If visual points are supplied to a context that leaves the visual
+                meshes out, so a caller cannot assume they were rendered.
         """
+        if deformable_visuals is not None and self._deformable_surface_mode == DeformableSurfaceMode.SIMULATION_ONLY:
+            raise ValueError(
+                "deformable_visuals were supplied, but this camera was constructed with "
+                "DeformableSurfaceMode.SIMULATION_ONLY and does not render visual meshes"
+            )
 
         if self._has_triangle_mesh:
-            self._set_triangle_points(state.particle_q)
+            model = self.model
+            if not self._skinned_vertex_count:
+                self._set_triangle_points(state.particle_q)
+            elif self._triangle_particle_count:
+                needed = self._triangle_particle_start + self._triangle_particle_count
+                if state.particle_q is None or state.particle_q.shape[0] < needed:
+                    raise ValueError(
+                        f"State.particle_q with at least {needed} entries is required by this model's "
+                        "simulation triangles"
+                    )
+                wp.copy(
+                    self._triangle_points,
+                    state.particle_q,
+                    src_offset=self._triangle_particle_start,
+                    count=self._triangle_particle_count,
+                )
+            if self._skinned_vertex_count:
+                if deformable_visuals is None:
+                    self._skin_batches.validate_state(state, model)
+                    # The camera uses face normals, so the direct path only evaluates points.
+                    self._skin_batches.skin(state, model, self._skinned_points)
+                else:
+                    wp.copy(
+                        self._triangle_points,
+                        deformable_visuals.points,
+                        dest_offset=self._triangle_particle_count,
+                        count=self._skinned_vertex_count,
+                    )
             self._sync_triangle_mesh()
+
+    def _up_vector(self) -> wp.vec3f:
+        up = [0.0, 0.0, 0.0]
+        up[int(self.up_axis)] = 1.0
+        return wp.vec3f(*up)
+
+    def _get_ambient_lighting(self) -> wp.array[wp.vec3f]:
+        if self._ambient_lighting is None:
+            self._ambient_lighting = wp.array(
+                [self._ambient_sky_color, self._ambient_ground_color, self._up_vector()],
+                dtype=wp.vec3f,
+                device=self.device,
+            )
+        return self._ambient_lighting
+
+    def set_ambient_light(
+        self,
+        sky_color: Sequence[float] | wp.vec3f,
+        ground_color: Sequence[float] | wp.vec3f | None = None,
+    ) -> None:
+        """Set the hemispheric ambient light.
+
+        Surfaces facing the model's up axis receive *sky_color*, surfaces facing
+        away receive *ground_color*, and other orientations blend between the
+        two. The colors are linear RGB radiance and are passed to the render
+        kernel at runtime, so changing them does not recompile it.
+
+        Args:
+            sky_color: Linear RGB ambient radiance from above.
+            ground_color: Linear RGB ambient radiance from below. If ``None``,
+                *sky_color* is used, which gives uniform ambient light.
+        """
+        sky = wp.vec3f(*(float(c) for c in sky_color))
+        ground = sky if ground_color is None else wp.vec3f(*(float(c) for c in ground_color))
+        self._ambient_sky_color = sky
+        self._ambient_ground_color = ground
+        if self._ambient_lighting is not None:
+            self._ambient_lighting.assign(
+                np.array([list(sky), list(ground), list(self._up_vector())], dtype=np.float32)
+            )
 
     def create_default_light(
         self,
         enable_shadows: bool = True,
         direction: wp.vec3f | None = None,
+        color: Sequence[float] | wp.vec3f | None = None,
     ) -> None:
-        """Create a default directional light oriented at ``(-1, 1, -1)``.
+        """Create a default directional light.
 
         Args:
             enable_shadows: Enable shadow casting for this light.
             direction: Normalized light direction. If ``None``, defaults to
-                (normalized ``(-1, 1, -1)``).
+                normalized ``(-1, 1, -1)`` for a Z-up model, rotated to the
+                model's up axis otherwise, so the light always points down.
+            color: Linear RGB radiance of the light. If ``None``, defaults to
+                white ``(1, 1, 1)``.
         """
+        if direction is None:
+            direction = wp.vec3f(-0.57735026, 0.57735026, -0.57735026)
+            if self.up_axis != Axis.Z:
+                rot = Axis.Z.quat_between_axes(self.up_axis)
+                direction = wp.vec3f(wp.quat_rotate(rot, wp.vec3(direction)))
+        light_color = wp.vec3f(1.0) if color is None else wp.vec3f(*(float(c) for c in color))
         self._lights_active = wp.array([True], dtype=wp.bool, device=self.device)
         self._lights_type = wp.array([LightType.DIRECTIONAL], dtype=wp.int32, device=self.device)
         self._lights_cast_shadow = wp.array([enable_shadows], dtype=wp.bool, device=self.device)
         self._lights_position = wp.array([wp.vec3f(0.0)], dtype=wp.vec3f, device=self.device)
-        self._lights_orientation = wp.array(
-            [direction if direction is not None else wp.vec3f(-0.57735026, 0.57735026, -0.57735026)],
-            dtype=wp.vec3f,
-            device=self.device,
-        )
+        self._lights_orientation = wp.array([direction], dtype=wp.vec3f, device=self.device)
+        self._lights_color = wp.array([light_color], dtype=wp.vec3f, device=self.device)
 
     def assign_checkerboard_material(
         self,
@@ -198,6 +396,11 @@ class RenderContext:
         checker_size: int = 32,
     ) -> None:
         """Assign a gray checkerboard texture material to selected shapes.
+
+        Each call sets the whole selection: the selected shapes show the
+        checkerboard and every other shape is untextured. Skinned visual
+        meshes keep their textures, and the textures loaded at construction
+        stay resident so every texture id stays valid.
 
         Args:
             shape_indices: Shape indices that should use the checkerboard texture.
@@ -216,7 +419,9 @@ class RenderContext:
         pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32)
 
         texture_ids = np.full(self.model.shape_count, fill_value=-1, dtype=np.int32)
-        texture_ids[shape_indices] = 0
+        if self._checkerboard_texture_id is None:
+            self._checkerboard_texture_id = len(self._texture_data_source)
+        texture_ids[shape_indices] = self._checkerboard_texture_id
 
         checkerboard_data = TextureData()
         checkerboard_data.texture = wp.Texture2D(
@@ -231,9 +436,17 @@ class RenderContext:
 
         checkerboard_data.repeat = wp.vec2f(1.0, 1.0)
 
-        self._texture_data_source = [checkerboard_data]
+        # The checkerboard owns one stable slot, so shape and skinned-mesh texture ids stay valid.
+        if self._checkerboard_texture_id == len(self._texture_data_source):
+            self._texture_data_source.append(checkerboard_data)
+        else:
+            self._texture_data_source[self._checkerboard_texture_id] = checkerboard_data
         self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
         self._shape_texture_ids = wp.array(texture_ids, dtype=wp.int32, device=self.device)
+        if self._variant_rows is not None:
+            # The variant shapes' texture ids index the replaced texture table; variant rows keep
+            # the checkerboard assignment whichever variant they hold.
+            self._shape_texture_override = wp.array(texture_ids, dtype=wp.int32, device=self.device)
 
     def render(
         self,
@@ -416,6 +629,7 @@ class RenderContext:
                 tiles_y = (height + config.tile_height - 1) // config.tile_height
                 pixels_per_view = tiles_x * tiles_y * config.tile_width * config.tile_height
 
+            self._gather_variant_render_data()
             wp.launch(
                 kernel=render_kernel,
                 dim=(view_count * pixels_per_view),
@@ -435,7 +649,7 @@ class RenderContext:
                     model.bvh_shapes.id if model.bvh_shapes is not None else 0,
                     model.bvh_shapes_group_roots,
                     # Shapes
-                    model.bvh_shape_enabled,
+                    model._bvh_shape_active_leaves,
                     self._get_shape_render_type(),  # HFIELD and CONVEX_MESH remapped to MESH
                     model.shape_scale,
                     model.shape_color,
@@ -455,6 +669,8 @@ class RenderContext:
                     self._triangle_mesh.id if self._triangle_mesh is not None else 0,
                     self._triangle_mesh_group_roots,
                     self._get_triangle_colors(),
+                    self._triangle_mesh_uvs,
+                    self._triangle_mesh_texture_ids,
                     # Meshes
                     self._mesh_data,
                     # Gaussians
@@ -467,6 +683,8 @@ class RenderContext:
                     self._lights_cast_shadow,
                     self._lights_position,
                     self._lights_orientation,
+                    self._lights_color,
+                    self._get_ambient_lighting(),
                     # Outputs
                     color_image,
                     depth_image,
@@ -506,11 +724,15 @@ class RenderContext:
 
     def _sync_triangle_mesh(self):
         if self._triangle_mesh is None:
-            triangle_indices_np = self._triangle_indices.reshape((-1, 3)).numpy()
-            particle_world_np = self.model.particle_world.numpy()
-            triangle_world_np = particle_world_np[triangle_indices_np[:, 0]]
-            triangle_groups_np = np.where(triangle_world_np < 0, self.world_count, triangle_world_np).astype(np.int32)
-            triangle_groups = wp.array(triangle_groups_np, dtype=wp.int32, device=self.device)
+            triangle_groups = self._triangle_groups
+            if triangle_groups is None:
+                triangle_indices_np = self._triangle_indices.reshape((-1, 3)).numpy()
+                particle_world_np = self.model.particle_world.numpy()
+                triangle_world_np = particle_world_np[triangle_indices_np[:, 0]]
+                triangle_groups_np = np.where(triangle_world_np < 0, self.world_count, triangle_world_np).astype(
+                    np.int32
+                )
+                triangle_groups = wp.array(triangle_groups_np, dtype=wp.int32, device=self.device)
 
             self._triangle_mesh = wp.Mesh(
                 self._triangle_points, self._triangle_indices, groups=triangle_groups, bvh_constructor="sah"
@@ -530,7 +752,9 @@ class RenderContext:
         group = wp.tid()
         out_group_roots[group] = wp.mesh_get_group_root(mesh_id, group)
 
-    def _load_texture_and_mesh_data(self, model: Model, load_textures: bool):
+    def _load_texture_and_mesh_data(
+        self, model: Model, load_textures: bool, deformable_visual_meshes: Sequence[DeformableVisualMesh]
+    ) -> list[int]:
         """Load mesh UV/normal data and textures from *model*.
 
         Populates mesh data, texture data, and the
@@ -539,53 +763,57 @@ class RenderContext:
 
         Args:
             model: Newton simulation model containing shape sources.
-            load_textures: If ``True``, load image textures from disk;
-                otherwise assign ``-1`` texture IDs to all shapes.
+            load_textures: Load image textures from paths or in-memory images.
+                Otherwise leave shapes and visual meshes untextured.
+            deformable_visual_meshes: The visual meshes this camera renders, whose
+                textures are loaded like shape textures.
+
+        Returns:
+            The texture slot of each visual mesh, in the given order, or ``-1`` for an
+            untextured mesh.
         """
         self._mesh_data_source = []
         self._texture_data_source = []
-
         texture_hashes = {}
         mesh_hashes = {}
 
-        mesh_data_ids = []
-        texture_data_ids = []
+        def texture_id(texture, texture_hash):
+            if texture is None or not load_textures:
+                return -1
+            if texture_hash not in texture_hashes:
+                pixels = load_texture(texture)
+                if pixels is None:
+                    raise ValueError(f"Failed to load texture: {texture}")
+                pixels = normalize_texture(pixels, require_channels=True)
+                if pixels.shape[2] == 3:
+                    # RGB and grayscale sources need an opaque alpha channel.
+                    alpha = np.full((*pixels.shape[:2], 1), 255, dtype=np.uint8)
+                    pixels = np.concatenate((pixels, alpha), axis=2)
+                texture_hashes[texture_hash] = len(self._texture_data_source)
+                data = TextureData()
+                data.texture = wp.Texture2D(
+                    pixels,
+                    filter_mode=wp.TextureFilterMode.LINEAR,
+                    address_mode=wp.TextureAddressMode.WRAP,
+                    normalized_coords=True,
+                    dtype=wp.uint8,
+                    num_channels=4,
+                    device=self.device,
+                )
+                data.repeat = wp.vec2f(1.0, 1.0)
+                self._texture_data_source.append(data)
+            return texture_hashes[texture_hash]
 
-        shape_types = model.shape_type.numpy() if model.shape_type is not None else ()
-        for shape, shape_type in zip(model.shape_source, shape_types, strict=True):
-            if isinstance(shape, Mesh):
-                if shape.texture is not None and load_textures:
-                    if shape.texture_hash not in texture_hashes:
-                        pixels = load_texture(shape.texture)
-                        if pixels is None:
-                            raise ValueError(f"Failed to load texture: {shape.texture}")
-
-                        # Normalize texture to a uint8 array with 3 or 4 channels
-                        pixels = normalize_texture(pixels, require_channels=True)
-                        if pixels.shape[2] == 3:
-                            # In-memory RGB (and expanded grayscale) images are opaque; textures have 4 channels.
-                            alpha = np.full((*pixels.shape[:2], 1), 255, dtype=np.uint8)
-                            pixels = np.concatenate((pixels, alpha), axis=2)
-
-                        texture_hashes[shape.texture_hash] = len(self._texture_data_source)
-
-                        data = TextureData()
-                        data.texture = wp.Texture2D(
-                            pixels,
-                            filter_mode=wp.TextureFilterMode.LINEAR,
-                            address_mode=wp.TextureAddressMode.WRAP,
-                            normalized_coords=True,
-                            dtype=wp.uint8,
-                            num_channels=4,
-                            device=self.device,
-                        )
-                        data.repeat = wp.vec2f(1.0, 1.0)
-                        self._texture_data_source.append(data)
-
-                    texture_data_ids.append(texture_hashes[shape.texture_hash])
-                else:
+        def ids(sources: Sequence, shape_types: Sequence) -> tuple[list[int], list[int]]:
+            """Texture and mesh-data ids of each source, loading data that is not loaded yet."""
+            texture_data_ids = []
+            mesh_data_ids = []
+            for shape, shape_type in zip(sources, shape_types, strict=True):
+                if not isinstance(shape, Mesh):
                     texture_data_ids.append(-1)
-
+                    mesh_data_ids.append(-1)
+                    continue
+                texture_data_ids.append(texture_id(shape.texture, shape.texture_hash))
                 # A convex hull renders its collision mesh, whose vertices may be deduplicated, so
                 # the per-vertex UVs and normals of its source mesh do not match the hit faces.
                 if shape_type != GeoType.CONVEX_MESH and (shape.uvs is not None or shape.normals is not None):
@@ -605,12 +833,94 @@ class RenderContext:
                     mesh_data_ids.append(mesh_hashes[shape])
                 else:
                     mesh_data_ids.append(-1)
-            else:
-                texture_data_ids.append(-1)
-                mesh_data_ids.append(-1)
+            return texture_data_ids, mesh_data_ids
+
+        shape_types = model.shape_type.numpy() if model.shape_type is not None else ()
+        texture_data_ids, mesh_data_ids = ids(model.shape_source, shape_types)
+        if self._variant_rows is not None:
+            variant_types = model._variant_shape_geometry["shape_type"].numpy()
+            variant_texture_ids, variant_mesh_data_ids = ids(model._variant_shape_source, variant_types)
+            self._variant_render_type = wp.array(_render_types(variant_types), dtype=wp.int32, device=self.device)
+            self._variant_texture_ids = wp.array(variant_texture_ids, dtype=wp.int32, device=self.device)
+            self._variant_mesh_data_ids = wp.array(variant_mesh_data_ids, dtype=wp.int32, device=self.device)
+
+        # Sampled image hashes can miss changed channels. Keep skin keys separate
+        # from rigid-mesh hashes and share uploads only for the same source.
+        skin_texture_ids = [
+            texture_id(mesh.texture, ("skin", mesh.texture if isinstance(mesh.texture, str) else id(mesh.texture)))
+            if mesh.uvs is not None
+            else -1
+            for mesh in deformable_visual_meshes
+        ]
+        self._render_state.has_triangle_mesh_textures = any(i >= 0 for i in skin_texture_ids)
 
         self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
-        self._shape_texture_ids = wp.array(texture_data_ids, dtype=wp.int32, device=self.device)
+        self._shape_texture_ids = wp.array(
+            np.asarray(texture_data_ids, dtype=np.int32), dtype=wp.int32, device=self.device
+        )
 
         self._mesh_data = wp.array(self._mesh_data_source, dtype=MeshData, device=self.device)
         self._shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)
+        return skin_texture_ids
+
+    def _init_triangle_mesh(
+        self, model: Model, deformable_visual_meshes: Sequence[DeformableVisualMesh], skin_texture_ids: list[int]
+    ):
+        """Initialize simulation triangles and optional skinned surfaces.
+
+        Only skins need a camera-owned buffer. It holds the particle span the simulation
+        triangles reference, then visual vertices in model order for batched skinning.
+        """
+        if not deformable_visual_meshes:
+            self._set_triangle_points(model.particle_q)
+            self._set_triangle_indices(model.tri_indices.flatten())
+            return
+
+        triangle_indices: list[np.ndarray] = []
+        triangle_uvs: list[np.ndarray] = []
+        triangle_texture_ids: list[np.ndarray] = []
+        vertex_worlds: list[np.ndarray] = []
+
+        # UVs are only read back and uploaded when some visual mesh has a texture to sample.
+        textured = self._render_state.has_triangle_mesh_textures
+        if self._triangle_particle_count:
+            start, count = self._triangle_particle_start, self._triangle_particle_count
+            sim_indices = model.tri_indices.numpy().astype(np.int32, copy=False) - start
+            triangle_indices.append(sim_indices.reshape(-1))
+            if textured:
+                triangle_uvs.append(np.zeros((count, 2), dtype=np.float32))
+            triangle_texture_ids.append(np.full(sim_indices.shape[0], -1, dtype=np.int32))
+            vertex_worlds.append(model.particle_world.numpy()[start : start + count].astype(np.int32, copy=False))
+
+        # The batches already hold every mesh's triangles indexed by destination vertex; those
+        # vertices follow the simulation particles in the camera's buffer.
+        triangle_indices.append(self._skin_batches.face_indices.numpy() + self._triangle_particle_count)
+        for mesh_index, mesh in enumerate(deformable_visual_meshes):
+            start, end = self._skin_batches.mesh_ranges[mesh_index]
+            if textured:
+                if mesh.uvs is None:
+                    triangle_uvs.append(np.zeros((mesh.vertex_count, 2), dtype=np.float32))
+                else:
+                    triangle_uvs.append(mesh.uvs.numpy().astype(np.float32, copy=False).reshape(-1, 2))
+            face_count = mesh.indices.shape[0] // 3
+            triangle_texture_ids.append(np.full(face_count, skin_texture_ids[mesh_index], dtype=np.int32))
+            vertex_worlds.append(np.full(end - start, mesh.world, dtype=np.int32))
+
+        self._skinned_vertex_count = self._skin_batches.vertex_count
+        self._triangle_points = wp.empty(
+            self._triangle_particle_count + self._skinned_vertex_count, dtype=wp.vec3f, device=self.device
+        )
+        indices_np = np.concatenate(triangle_indices)
+        self._triangle_indices = wp.array(indices_np, dtype=wp.int32, device=self.device)
+        if textured:
+            self._triangle_mesh_uvs = wp.array(np.concatenate(triangle_uvs), dtype=wp.vec2f, device=self.device)
+            self._triangle_mesh_texture_ids = wp.array(
+                np.concatenate(triangle_texture_ids), dtype=wp.int32, device=self.device
+            )
+        # Each face belongs to its first vertex's world; global faces (-1) share the extra group.
+        face_world_np = np.concatenate(vertex_worlds)[indices_np.reshape(-1, 3)[:, 0]]
+        self._triangle_groups = wp.array(
+            np.where(face_world_np < 0, self.world_count, face_world_np).astype(np.int32),
+            dtype=wp.int32,
+            device=self.device,
+        )

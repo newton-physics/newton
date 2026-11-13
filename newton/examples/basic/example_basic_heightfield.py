@@ -1,17 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Heightfield
-#
-# Demonstrates heightfield terrain with objects dropped onto it.
-# Supports XPBD, MuJoCo, and Kamino DVI solvers.
-#
-# Command: uv run -m newton.examples basic_heightfield
-# MuJoCo: uv run -m newton.examples basic_heightfield --solver mujoco
-# Kamino DVI: uv run -m newton.examples basic_heightfield --solver kamino
-#
-###########################################################################
+"""Example Basic Heightfield
+
+Demonstrates heightfield terrain with objects dropped onto it.
+Supports XPBD, MuJoCo, and Kamino SCC solvers.
+
+Success criteria:
+- Five spheres start above a wavy heightfield and drop onto its surface.
+- Spheres roll along the terrain; some may roll off its edges while others come to rest on the
+  surface.
+- Spheres that come to rest on the terrain remain stable without persistent visible contact jitter;
+  other spheres may continue rolling smoothly.
+
+Runs:
+- `python -m newton.examples basic_heightfield`
+- `python -m newton.examples basic_heightfield --solver mujoco`
+- `python -m newton.examples basic_heightfield --solver kamino`
+"""
 
 import numpy as np
 import warp as wp
@@ -76,13 +82,13 @@ class Example:
         elif self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model,
-                dynamics_solver="dvi",
+                dynamics_solver="scc",
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
             solver_config.use_collision_detector = True
             solver_config.integrator = "moreau"
-            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.scc.max_alternating_iterations = 8
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
@@ -92,7 +98,9 @@ class Example:
             soft_contact_max=0,
         )
         self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

@@ -1,22 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot control via keyboard
-#
-# Shows how to control robots pretrained in IsaacLab with RL. Policies are
-# loaded from ONNX files and run with Warp-NN's Warp-backed runtime, so PyTorch
-# is not required for policy inference.
-#
-# Press "p" to reset the robot.
-# Press "i", "j", "k", "l", "u", "o" to move the robot.
-# Run this example with:
-# python -m newton.examples robot_policy --robot g1_29dof
-# python -m newton.examples robot_policy --robot g1_23dof
-# python -m newton.examples robot_policy --robot go2
-# python -m newton.examples robot_policy --robot anymal
-# python -m newton.examples robot_policy --robot anymal --physx
-###########################################################################
+"""Example Robot control via keyboard
+
+Shows how to control robots pretrained in IsaacLab with RL. Policies are
+loaded from ONNX files and run with Warp-NN's Warp-backed runtime, so PyTorch
+is not required for policy inference.
+
+Press "p" to reset the robot.
+Press "i", "j", "k", "l", "u", "o" to move the robot.
+
+Success criteria:
+- The selected robot appears on the ground and responds to forward/back, lateral, and turning
+  keyboard commands.
+- For ordinary commands the robot moves without falling; pressing P resets it.
+
+Runs:
+- `python -m newton.examples robot_policy --robot anymal`
+- `python -m newton.examples robot_policy --robot go2`
+- `python -m newton.examples robot_policy --robot go2 --physx`
+- `python -m newton.examples robot_policy --robot g1_23dof`
+- `python -m newton.examples robot_policy --robot g1_23dof --physx`
+- `python -m newton.examples robot_policy --robot g1_29dof`
+- `python -m newton.examples robot_policy --robot anymal --physx`
+"""
 
 from dataclasses import dataclass
 from typing import Any
@@ -297,7 +304,9 @@ class Example:
             self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
         )
         self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         self.viewer.set_model(self.model)
         self.viewer.vsync = True

@@ -93,7 +93,8 @@ def flatten_depth_image(
     depth = depth_image[world_id, y, x]
     if depth > 0:
         denom = wp.max(depth_range[1] - depth_range[0], 1e-6)
-        value = wp.uint8(255.0 - ((depth - depth_range[0]) / denom) * 205.0)
+        t = wp.clamp((depth - depth_range[0]) / denom, 0.0, 1.0)
+        value = wp.uint8(wp.int32((1.0 - t) * 205.0 + 50.0))
 
     buffer[py, px, 0] = value
     buffer[py, px, 1] = value
@@ -122,7 +123,10 @@ def convert_ray_depth_to_forward_depth_kernel(
         out_depth[world_index, py, px] = ray_depth
         return
 
-    out_depth[world_index, py, px] = ray_depth * wp.dot(ray_dir_world, cam_forward_world)
+    ray_origin_offset_world = wp.transform_vector(camera_transform, camera_rays[py, px, 0, 0])
+    out_depth[world_index, py, px] = wp.dot(ray_origin_offset_world, cam_forward_world) + ray_depth * wp.dot(
+        ray_dir_world, cam_forward_world
+    )
 
 
 @wp.kernel(enable_backward=False)
@@ -240,6 +244,31 @@ def _validate_rgba_out_buffer(
         raise ValueError(f"{name}: out_buffer is on {out_buffer.device} but input is on {expected_device}")
 
 
+def _resolve_depth_range(
+    image: wp.array3d[wp.float32],
+    depth_range: wp.array[wp.float32] | tuple[float, float] | None,
+) -> wp.array[wp.float32]:
+    """Resolve a shared normalization range without reading device values on the host."""
+    if depth_range is None:
+        depth_range = wp.array([MAXVAL, 0.0], dtype=wp.float32, device=image.device)
+        wp.launch(find_depth_range, image.shape, [image, depth_range], device=image.device)
+        return depth_range
+    if isinstance(depth_range, wp.array):
+        if depth_range.shape != (2,):
+            raise ValueError(f"depth_range array must have shape (2,), got {tuple(depth_range.shape)}")
+        if depth_range.dtype != wp.float32:
+            raise ValueError(f"depth_range array must have dtype float32, got {depth_range.dtype}")
+        if depth_range.device != image.device:
+            raise ValueError(f"depth_range must be on device {image.device}, got {depth_range.device}")
+        return depth_range
+    if len(depth_range) != 2:
+        raise ValueError("depth_range must contain exactly two values (near, far)")
+    near, far = float(depth_range[0]), float(depth_range[1])
+    if not (math.isfinite(near) and math.isfinite(far) and near < far):
+        raise ValueError(f"depth_range must be finite and satisfy near < far, got near={near}, far={far}")
+    return wp.array([near, far], dtype=wp.float32, device=image.device)
+
+
 class Utils:
     """Post-processing helpers for :class:`~newton.sensors.SensorCamera` render outputs.
 
@@ -268,9 +297,10 @@ class Utils:
     ) -> wp.array3d[wp.float32]:
         """Convert ray-distance depth to forward (planar) depth.
 
-        Projects each pixel's hit distance along its ray onto the camera's
-        forward axis, producing depth measured perpendicular to the image
-        plane. The forward axis is derived from each camera transform by
+        Projects each pixel's camera-space hit position, including its ray
+        origin offset, onto the camera's forward axis, producing depth measured
+        from the camera origin perpendicular to the image plane.
+        The forward axis is derived from each camera transform by
         transforming camera-space ``(0, 0, -1)`` into world space.
 
         Args:
@@ -441,8 +471,10 @@ class Utils:
             image: Depth output, shape ``(view_count, H, W)``, dtype
                 ``float32``. Non-positive values denote ray misses.
             depth_range: Optional ``(near, far)`` [m] for normalization.
-                Accepts a 2-element ``wp.array[wp.float32]`` or a Python
-                ``(near, far)`` tuple. If ``None``, the per-frame range is
+                Accepts a 2-element ``wp.array[wp.float32]`` on the image device
+                or a Python ``(near, far)`` tuple. Values must be finite with
+                ``near < far``; array values are caller-validated to avoid a
+                device-to-host transfer. If ``None``, the per-frame range is
                 computed on device from the image's positive depth values (matches
                 :meth:`flatten_depth_image_to_rgba`).
             out_buffer: Optional pre-allocated output of shape
@@ -455,18 +487,7 @@ class Utils:
         view_count, h, w = Utils._image_shape("to_rgba_from_depth", image)
         device = image.device
 
-        if depth_range is None:
-            depth_range_arr = wp.array([MAXVAL, 0.0], dtype=wp.float32, device=device)
-            wp.launch(find_depth_range, image.shape, [image, depth_range_arr], device=device)
-        elif isinstance(depth_range, wp.array):
-            if depth_range.shape != (2,):
-                raise ValueError(f"depth_range array must have shape (2,), got {tuple(depth_range.shape)}")
-            depth_range_arr = depth_range
-        else:
-            near, far = float(depth_range[0]), float(depth_range[1])
-            if not (near < far):
-                raise ValueError(f"to_rgba_from_depth: depth_range must satisfy near < far, got near={near}, far={far}")
-            depth_range_arr = wp.array([near, far], dtype=wp.float32, device=device)
+        depth_range_arr = _resolve_depth_range(image, depth_range)
 
         if out_buffer is None:
             out_buffer = wp.empty((view_count, h, w, 4), dtype=wp.uint8, device=device)
@@ -590,7 +611,7 @@ class Utils:
         *,
         out_buffer: wp.array3d[wp.uint8] | None = None,
         views_per_row: int | None = None,
-        depth_range: wp.array[wp.float32] | None = None,
+        depth_range: wp.array[wp.float32] | tuple[float, float] | None = None,
     ) -> wp.array3d[wp.uint8]:
         """Flatten rendered depth image to a tiled RGBA buffer.
 
@@ -602,18 +623,21 @@ class Utils:
             image: Depth output from :meth:`~newton.sensors.SensorCamera.update`, shape ``(view_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             views_per_row: Views per row in the grid. If None, picks a square-ish layout.
-            depth_range: Depth range to normalize to, shape ``(2,)`` ``[near, far]``. If None, computes from *image*.
+            depth_range: Optional ``(near, far)`` [m] for normalization.
+                Accepts a 2-element ``wp.array[wp.float32]`` on the image device
+                or a Python ``(near, far)`` tuple. Values must be finite with
+                ``near < far``; array values are caller-validated to avoid a
+                device-to-host transfer. If ``None``, the per-frame range is
+                computed on device from the image's positive depth values (matches
+                :meth:`to_rgba_from_depth`).
         """
         view_count, height, width = Utils._image_shape("flatten_depth_image_to_rgba", image)
         device = image.device
+        depth_range = _resolve_depth_range(image, depth_range)
 
         out_buffer, views_per_row = Utils._reshape_buffer_for_flatten(
             view_count, device, width, height, out_buffer, views_per_row
         )
-
-        if depth_range is None:
-            depth_range = wp.array([MAXVAL, 0.0], dtype=wp.float32, device=device)
-            wp.launch(find_depth_range, image.shape, [image, depth_range], device=device)
 
         wp.launch(
             flatten_depth_image,

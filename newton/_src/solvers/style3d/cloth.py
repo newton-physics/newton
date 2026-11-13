@@ -13,6 +13,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import Vec2, Vec3
+from ...exceptions import NewtonWarning
 from ...geometry.flags import ParticleFlags
 from ...geometry.kernels import compute_edge_aabbs
 from ...utils.mesh import MeshAdjacency
@@ -287,7 +288,7 @@ def add_cloth_mesh(
     panel_inv_D_all, panel_areas_all = _compute_panel_triangles(panel_verts_np, panel_indices_np)
     valid_inds = (panel_areas_all > 0.0).nonzero()[0]
     if len(valid_inds) < len(panel_areas_all):
-        warnings.warn("Inverted or degenerate triangle elements detected.", stacklevel=2)
+        warnings.warn("Inverted or degenerate triangle elements detected.", NewtonWarning, stacklevel=2)
     tri_indices_valid = tri_indices_np[valid_inds]
     panel_indices_valid = panel_indices_np[valid_inds]
 

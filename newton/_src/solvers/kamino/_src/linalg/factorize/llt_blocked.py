@@ -3,11 +3,11 @@
 
 """KAMINO: Linear Algebra: Blocked LLT (i.e. Cholesky) factorization using Warp's Tile API."""
 
-from ctypes import sizeof
 from functools import cache
 
 import warp as wp
 
+from ._array_ptr import get_float32_array_offset_ptr
 from ._tile_builtins import (
     HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
     HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
@@ -20,12 +20,14 @@ from ._tile_builtins import (
 ###
 
 __all__ = [
+    "flag_failed_llt_factors",
     "llt_blocked_factorize",
     "llt_blocked_solve",
     "llt_blocked_solve_inplace",
     "make_llt_blocked_factorize_kernel",
     "make_llt_blocked_solve_inplace_kernel",
     "make_llt_blocked_solve_kernel",
+    "shift_failed_llt_factors",
 ]
 
 
@@ -39,31 +41,6 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ###
 # Functions
 ###
-
-get_array_ptr_cpp = """return (uint64_t)arr.data;"""
-"""A native C++ function to get the raw pointer of a warp array."""
-
-
-def make_get_array_offset_ptr_func(dtype):
-    """Creates a function to get the offset pointer of a warp array."""
-
-    # Define a Warp wrapper around a native C++ function to get the raw pointer of a warp array
-    @wp.func_native(get_array_ptr_cpp)
-    def get_dtype_array_ptr(arr: wp.array[dtype]) -> wp.uint64: ...
-
-    # Define a Warp function to get the raw pointer of a warp array with an offset
-    @wp.func
-    def get_dtype_array_offset_ptr(arr: wp.array[dtype], start_index: int) -> wp.uint64:
-        return get_dtype_array_ptr(arr) + wp.uint64(start_index) * wp.uint64(wp.static(sizeof(dtype._type_)))
-
-    return get_dtype_array_offset_ptr
-
-
-get_int32_array_offset_ptr = make_get_array_offset_ptr_func(wp.int32)
-"""A Warp function to get the offset pointer of a wp.int32 warp array."""
-
-get_float32_array_offset_ptr = make_get_array_offset_ptr_func(wp.float32)
-"""A Warp function to get the offset pointer of a wp.float32 warp array."""
 
 
 # @wp.func
@@ -103,9 +80,42 @@ get_float32_array_offset_ptr = make_get_array_offset_ptr_func(wp.float32)
 ###
 
 
+@wp.kernel
+def flag_failed_llt_factors(
+    dim: wp.array[wp.int32],
+    ld: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    L: wp.array[wp.float32],
+    retry_dim: wp.array[wp.int32],
+):
+    """Select blocks with a non-finite pivot for refactorization.
+
+    Sets ``retry_dim`` to the dimension of each such block and leaves it unchanged for the
+    others, which should start at zero. Launch with shape ``(num_blocks, max_dim)``.
+    """
+    world, row = wp.tid()
+    n = dim[world]
+    if row < n and not wp.isfinite(L[mio[world] + row * ld[world] + row]):
+        retry_dim[world] = n
+
+
+@wp.kernel
+def shift_failed_llt_factors(
+    ld: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    retry_dim: wp.array[wp.int32],
+    shift: wp.float32,
+    A: wp.array[wp.float32],
+):
+    """Add ``shift`` to the diagonal of the blocks selected by :func:`flag_failed_llt_factors`."""
+    world, row = wp.tid()
+    if row < retry_dim[world]:
+        A[mio[world] + row * ld[world] + row] += shift
+
+
 @cache
 def make_llt_blocked_factorize_kernel(block_size: int):
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def llt_blocked_factorize_kernel(
         # Inputs:
         dim: wp.array[wp.int32],
@@ -316,7 +326,7 @@ def make_llt_blocked_solve_func(block_size: int):
 def make_llt_blocked_solve_kernel(block_size: int):
     solve = make_llt_blocked_solve_func(block_size)
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def llt_blocked_solve_kernel(
         # Inputs:
         dim: wp.array[wp.int32],
@@ -338,7 +348,7 @@ def make_llt_blocked_solve_kernel(block_size: int):
 def make_llt_blocked_solve_inplace_kernel(block_size: int):
     solve = make_llt_blocked_solve_func(block_size)
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def llt_blocked_solve_inplace_kernel(
         # Inputs:
         dim: wp.array[wp.int32],

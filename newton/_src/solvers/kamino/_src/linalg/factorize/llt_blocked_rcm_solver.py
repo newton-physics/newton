@@ -24,6 +24,7 @@ for debugging/introspection.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -34,6 +35,7 @@ from ...core.types import FloatType, to_warp_int32_array
 from ..core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from ..linear import DirectSolver
 from . import rcm_batch as _rcm_batch
+from .llt_blocked import flag_failed_llt_factors, shift_failed_llt_factors
 from .llt_blocked_rcm import (
     llt_blocked_rcm_factorize,
     llt_blocked_rcm_factorize_parallel,
@@ -83,34 +85,6 @@ def _mark_structural_tiles(
     col = inverse[vio[world] + pair_col[pair]] / block_size
     tiles = (dim[world] + block_size - 1) / block_size
     wp.atomic_max(pattern, tpo[world] + wp.max(row, col) * tiles + wp.min(row, col), 1)
-
-
-@wp.kernel
-def _flag_failed_factors(
-    dim: wp.array[wp.int32],
-    ld: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
-    L: wp.array[wp.float32],
-    retry_dim: wp.array[wp.int32],
-):
-    """Select blocks with a non-finite pivot for refactoring."""
-    world, row = wp.tid()
-    n = dim[world]
-    if row < n and not wp.isfinite(L[mio[world] + row * ld[world] + row]):
-        retry_dim[world] = n
-
-
-@wp.kernel
-def _shift_failed_factors(
-    ld: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
-    retry_dim: wp.array[wp.int32],
-    shift: wp.float32,
-    A: wp.array[wp.float32],
-):
-    world, row = wp.tid()
-    if row < retry_dim[world]:
-        A[mio[world] + row * ld[world] + row] += shift
 
 
 PARALLEL_FACTORIZATION_MAX_BLOCKS_PER_SM = 2
@@ -186,7 +160,8 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
                 pattern is still rebuilt each time. Defaults to ``True``.
             failed_pivot_shift: diagonal shift added to blocks whose
                 factorization produced a non-finite pivot before they are
-                refactored. Zero disables the retry. Defaults to ``0.0``.
+                refactorized. Zero disables the retry. Must be non-negative.
+                Defaults to ``0.0``.
             capacity_stride: whether each block is stored with its capacity
                 (maximum dimension) as row stride instead of its active
                 dimension. Capacities rounded up to ``block_size`` keep all
@@ -239,6 +214,8 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._rcm_max_bfs_iters = rcm_max_bfs_iters
         self._reuse_permutation = reuse_permutation
         self._parallel_factorization = parallel_factorization
+        if failed_pivot_shift < 0.0 or not math.isfinite(failed_pivot_shift):
+            raise ValueError(f"failed_pivot_shift must be non-negative and finite, got {failed_pivot_shift}.")
         self._failed_pivot_shift = failed_pivot_shift
         self._capacity_stride = capacity_stride
 
@@ -644,18 +621,18 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
                 clear_skipped=clear_skipped,
             )
         if self._failed_pivot_shift > 0.0:
-            # Round-off can break near-singular blocks; refactor only those,
+            # Round-off can break near-singular blocks; refactorize only those,
             # since the per-block kernel exits immediately for zero dimensions.
             self._retry_dim.zero_()
             retry_shape = (num_blocks, self._max_dim)
             wp.launch(
-                _flag_failed_factors,
+                flag_failed_llt_factors,
                 dim=retry_shape,
                 inputs=[info.dim, self._stride(), info.mio, self._L, self._retry_dim],
                 device=self._device,
             )
             wp.launch(
-                _shift_failed_factors,
+                shift_failed_llt_factors,
                 dim=retry_shape,
                 inputs=[self._stride(), info.mio, self._retry_dim, self._failed_pivot_shift, self._A_hat],
                 device=self._device,

@@ -1,15 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Selection Multiple Articulations
-#
-# Shows how to control multiple articulation per world in a single ArticulationView.
-#
-# Command: python -m newton.examples selection_multiple
-#          python -m newton.examples selection_multiple --solver kamino
-#
-###########################################################################
+"""Example Selection Multiple Articulations
+
+Shows how to control multiple articulation per world in a single ArticulationView.
+
+Success criteria:
+- Replicated setups appear consisting of a floating stack of 3 Ants.
+- The ants are rotating around the Z axis at different speeds and drop on the ground plane.
+- They are then reset to their initial position.
+- All setups behave differently and their behavior differs at every reset.
+
+Runs:
+- `python -m newton.examples selection_multiple --world-count 8`
+  - 8 stacks of 3 Ants appear.
+- `python -m newton.examples selection_multiple`
+- `python -m newton.examples selection_multiple --solver kamino`
+"""
 
 from __future__ import annotations
 
@@ -82,7 +89,6 @@ def random_forces_kernel(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -114,16 +120,16 @@ class Example:
         scene = newton.ModelBuilder()
         scene.default_shape_cfg.gap = 0.0
         scene.add_ground_plane()
-        scene.replicate(world, world_count=self.world_count)
+        scene.replicate(world, copy_count=self.world_count)
 
         # finalize model
         self.model = scene.finalize()
 
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
-            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.scc.max_alternating_iterations = 8
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, nconmax=70)

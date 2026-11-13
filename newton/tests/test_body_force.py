@@ -21,7 +21,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 class TestBodyForce(unittest.TestCase):
@@ -200,13 +200,22 @@ def test_descendant_free_joint_f_world_force_under_rotated_parent(
     test.assertAlmostEqual(child_qd[5], 0.0, delta=1.0e-6)
 
 
+def _steel(model):
+    return newton.solvers.SolverSteel(model)
+
+
 devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
+    "mujoco_cpu": requires(*MUJOCO_MODULES)(
+        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+    ),
+    "mujoco_warp": requires(*MUJOCO_MODULES)(
+        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+    ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
+    "steel": _steel,
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
@@ -467,13 +476,21 @@ def test_combined_force_torque(test, device, solver_fn, use_control=False):
 com_solvers = {
     "mujoco_cpu": (
         # Use RK4 integrator to reduce numerical drift
-        lambda model: newton.solvers.SolverMuJoCo(model, integrator="rk4", use_mujoco_cpu=True, disable_contacts=True),
+        requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(
+                model, integrator="rk4", use_mujoco_cpu=True, disable_contacts=True
+            )
+        ),
         1e-3,
         True,
     ),
     "mujoco_warp": (
         # Use RK4 integrator to reduce numerical drift
-        lambda model: newton.solvers.SolverMuJoCo(model, integrator="rk4", use_mujoco_cpu=False, disable_contacts=True),
+        requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(
+                model, integrator="rk4", use_mujoco_cpu=False, disable_contacts=True
+            )
+        ),
         1e-3,
         True,
     ),
@@ -497,6 +514,7 @@ com_solvers = {
         1e-3,
         True,
     ),
+    "steel": (_steel, 1e-3, True),
 }
 
 # Test configurations for non-zero CoM tests
@@ -538,6 +556,7 @@ for device in devices:
                     use_control=use_control,
                 )
 
+# Steel supports FREE joints only at articulation roots.
 for device in devices:
     for solver_name in ("xpbd", "featherstone"):
         add_function_test(

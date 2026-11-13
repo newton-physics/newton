@@ -13,7 +13,9 @@ from typing import Any, ClassVar
 import numpy as np
 import warp as wp
 
-from ..utils import _require_onnx, load_metadata
+from ...utils.onnx import require_onnx
+from ..space import DriveOutputSpace
+from ..utils import load_metadata
 from .base import DriveBase
 
 _FEATURE_POSITION = 0
@@ -237,7 +239,7 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
     if os.path.splitext(model_path)[1].lower() != ".onnx":
         raise ValueError(f"DriveNeuralGRU requires an ONNX checkpoint; got '{model_path}'")
 
-    onnx = _require_onnx()
+    onnx = require_onnx()
     model = onnx.load(model_path)
     initializers = {item.name: onnx.numpy_helper.to_array(item) for item in model.graph.initializer}
     constants: dict[str, np.ndarray] = {}
@@ -479,7 +481,7 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
 
 
 class DriveNeuralGRU(DriveBase):
-    """Stateful GRU actuator drive using Warp-NN.
+    """Stateful gated recurrent unit (GRU) actuator drive using Warp-NN.
 
     The network and its weights are read from an ONNX checkpoint and evaluated
     with Warp-NN. Hidden state is kept across timesteps through the
@@ -547,7 +549,7 @@ class DriveNeuralGRU(DriveBase):
         inputs it declares may change without the normal deprecation period.
     """
 
-    SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"model_path", "output_space"}
 
     @dataclass
     class State(DriveBase.State):
@@ -592,14 +594,20 @@ class DriveNeuralGRU(DriveBase):
         model_path = args["model_path"]
         if not model_path:
             raise ValueError("DriveNeuralGRU requires a non-empty 'model_path'")
-        return {"model_path": model_path}
+        return {
+            "model_path": model_path,
+            "output_space": DriveOutputSpace(args.get("output_space", DriveOutputSpace.EFFORT)),
+        }
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, *, output_space: DriveOutputSpace = DriveOutputSpace.EFFORT):
         """Initialize the drive from an ONNX GRU network.
 
         Args:
             model_path: Local path to an ONNX checkpoint.
+            output_space: Interpretation of checkpoint outputs, EFFORT or DUTY.
+                The checkpoint must be trained for these units.
         """
+        self.output_space = DriveOutputSpace(output_space)
         self.model_path = os.fspath(model_path)
         """Local path to the ONNX checkpoint."""
         self._description = _load_network_description(self.model_path)
@@ -766,7 +774,7 @@ class DriveNeuralGRU(DriveBase):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        forces: wp.array[float],
+        output: wp.array[float],
         state: DriveNeuralGRU.State,
         dt: float,
         device: wp.Device | None = None,
@@ -833,26 +841,26 @@ class DriveNeuralGRU(DriveBase):
             device=runtime_device,
         )
 
-        output = self._net_input
+        net_output = self._net_input
         next_hidden = []
         for layer_index, layer in enumerate(self._gru_layers):
-            output = layer(output, state.hidden[layer_index])
-            next_hidden.append(output)
+            net_output = layer(net_output, state.hidden[layer_index])
+            next_hidden.append(net_output)
         self._next_hidden = next_hidden
 
-        output = self._head(output)
+        net_output = self._head(net_output)
         if self._activation is not None:
-            output = self._activation(output)
+            net_output = self._activation(net_output)
         wp.launch(
             _write_effort_kernel,
             dim=self._num_actuators,
             inputs=[
-                output,
+                net_output,
                 self._description.output_scale,
                 self._effort_mean,
                 self._effort_std,
             ],
-            outputs=[forces],
+            outputs=[output],
             device=runtime_device,
         )
 

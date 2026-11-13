@@ -22,12 +22,12 @@ def quat_between_vectors_robust(from_vec: wp.vec3, to_vec: wp.vec3, eps: float =
     Returns:
         wp.quat: Rotation quaternion q such that q * from_vec = to_vec.
     """
-    d = wp.dot(from_vec, to_vec)
+    distance_sq_tolerance = 2.0 * eps
 
-    if d >= 1.0 - eps:
+    if wp.length_sq(from_vec - to_vec) <= distance_sq_tolerance:
         return wp.quat_identity()
 
-    if d <= -1.0 + eps:
+    if wp.length_sq(from_vec + to_vec) <= distance_sq_tolerance:
         # Deterministic axis orthogonal to from_vec.
         # Prefer cross with X, fallback to Y if nearly parallel.
         helper = wp.vec3(1.0, 0.0, 0.0)

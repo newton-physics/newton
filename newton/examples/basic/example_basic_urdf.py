@@ -1,19 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic URDF
-#
-# Shows how to set up a simulation of a rigid-body quadruped articulation
-# from a URDF using the newton.ModelBuilder().
-# Note this example does not include a trained policy.
-#
-# Users can pick bodies by right-clicking and dragging with the mouse.
-#
-# Command: python -m newton.examples basic_urdf
-# Kamino DVI: python -m newton.examples basic_urdf --solver kamino
-#
-###########################################################################
+"""Example Basic URDF
+
+Shows how to set up a simulation of a rigid-body quadruped articulation
+from a URDF using the newton.ModelBuilder().
+Note this example does not include a trained policy.
+
+Users can pick bodies by right-clicking and dragging with the mouse.
+
+Success criteria:
+- Quadrupeds drop onto the plane and remain supported on their four legs.
+- The resting robots stay stable without sustained jitter or falling through the ground.
+
+Runs:
+- `python -m newton.examples basic_urdf --world-count 16`
+  - Sixteen quadrupeds appear.
+- `python -m newton.examples basic_urdf`
+- `python -m newton.examples basic_urdf --solver kamino`
+"""
 
 import numpy as np
 import warp as wp
@@ -61,13 +66,8 @@ class Example:
             floating=True,
             enable_self_collisions=False,
             ignore_inertial_definitions=True,  # Use geometry-based inertia for stability
+            joint_damping_mode="drive",
         )
-
-        # Preserve the drive damping used before URDF damping became passive damping.
-        for joint_idx, label in enumerate(quadruped.joint_label):
-            if label.endswith(("_HFE", "_KFE")):
-                dof = quadruped.joint_qd_start[joint_idx]
-                quadruped.joint_target_kd[dof] = 0.0
 
         # apply additional inertia to the bodies for better stability
         body_armature = 0.01
@@ -104,15 +104,15 @@ class Example:
             self.update_step_interval = 1
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model,
-                dynamics_solver="dvi",
+                dynamics_solver="scc",
                 sparse_dynamics=False,
                 sparse_jacobian=True,
             )
             solver_config.use_collision_detector = True
             solver_config.integrator = "moreau"
-            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
-            solver_config.dvi.max_alternating_iterations = 8
-            solver_config.dvi.use_schur_complement = True
+            solver_config.scc.bilateral_solver_type = "LLTBRCM"
+            solver_config.scc.max_alternating_iterations = 8
+            solver_config.scc.use_schur_complement = True
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.update_step_interval = 1
@@ -129,7 +129,9 @@ class Example:
         self.contact_state.body_q = wp.clone(self.state_0.body_q)
         self.contact_state.body_qd = wp.clone(self.state_0.body_qd)
         if self.solver_type == "kamino":
-            self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+            self.solver_observables = self.solver.observables(
+                contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+            )
 
         self.viewer.set_model(self.model)
 

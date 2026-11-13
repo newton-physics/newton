@@ -10,6 +10,7 @@ newton
 .. rubric:: Submodules
 
 - :doc:`newton.actuators <newton_actuators>`
+- :doc:`newton.config <newton_config>`
 - :doc:`newton.controllers <newton_controllers>`
 - :doc:`newton.geometry <newton_geometry>`
 - :doc:`newton.ik <newton_ik>`
@@ -30,6 +31,7 @@ newton
    Axis
    BodyFlags
    CollisionPipeline
+   CollisionSubstepScheduler
    Contacts
    Control
    Gaussian
@@ -41,12 +43,17 @@ newton
    Model
    ModelBuilder
    ModelFlags
+   NewtonDeprecationWarning
+   NewtonWarning
    ParticleFlags
    Rod
    SDF
    ShapeFlags
    State
    StateFlags
+   TendonGuide
+   TendonGuideFlags
+   TendonGuideType
    TetMesh
 
 .. rubric:: Functions
@@ -76,6 +83,4 @@ newton
    * - ``MAXVAL``
      - ``10000000000.0``
    * - ``__version__``
-     - ``1.8.0.dev0``
-   * - ``use_coord_layout_targets``
-     - ``True``
+     - ``1.9.0.dev0``

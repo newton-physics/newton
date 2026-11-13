@@ -5,6 +5,7 @@
 Unit tests for the :class:`ModelKamino` class, model conversion, and related functionality.
 """
 
+import logging
 import unittest
 
 import numpy as np
@@ -18,7 +19,6 @@ from newton._src.solvers.kamino._src.core.bodies import convert_body_com_to_orig
 from newton._src.solvers.kamino._src.core.conversions import (
     compute_material_first_shape,
     convert_model_materials,
-    convert_target_coords_to_target_dofs,
 )
 from newton._src.solvers.kamino._src.core.joints import (
     JOINT_TAUMAX,
@@ -26,11 +26,12 @@ from newton._src.solvers.kamino._src.core.joints import (
     JointActuationType,
 )
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests import get_kamino_basics_asset
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils import print as print_utils
+from newton.tests.unittest_utils import requires
 from newton.tests.utils.basics import (
     build_box_pendulum,
     build_boxes_fourbar,
@@ -38,6 +39,8 @@ from newton.tests.utils.basics import (
     build_boxes_nunchaku,
     make_basics_heterogeneous_builder,
 )
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -53,15 +56,15 @@ class TestModel(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_single_model(self):
         # Create a model builder
@@ -69,15 +72,13 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
 
         # Create a model state
         state = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(state)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(state)
 
         # Check the model info entries
         self.assertEqual(model.size.sum_of_num_bodies, builder.body_count)
@@ -100,15 +101,13 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder1.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
 
         # Create a model state
         data = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(data)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(data)
 
         # Check the model info entries
         self.assertEqual(model.size.sum_of_num_bodies, total_nb)
@@ -121,19 +120,17 @@ class TestModel(unittest.TestCase):
 
         # Create a model builder
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_hinged(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_hinged(), copy_count=num_worlds)
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
 
         # Create a model state
         state = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(state)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(state)
 
         # Check the model info entries
         self.assertEqual(model.size.sum_of_num_bodies, num_worlds * 2)
@@ -148,19 +145,17 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
-            print("")  # Add a newline for better readability
-            print_utils.print_model_bodies(model)
-            print("")  # Add a newline for better readability
-            print_utils.print_model_joints(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_bodies(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_joints(model)
 
         # Create a model state
         state = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(state)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(state)
 
         # Check the model info entries
         self.assertEqual(model.info.num_worlds, num_worlds)
@@ -175,15 +170,15 @@ class TestModelConversions(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)  # TODO @nvtw: set this to DEBUG when investigating noted issues
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_model_conversions_consistency_fourbar_from_builder(self):
         """
@@ -208,7 +203,7 @@ class TestModelConversions(unittest.TestCase):
 
         builder_newton: ModelBuilder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder_newton)
-        builder_newton.replicate(builder=builder_single, world_count=2)
+        builder_newton.replicate(builder=builder_single, copy_count=2)
 
         model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
         model_kamino: ModelKamino = ModelKamino.from_newton(model_newton)
@@ -253,6 +248,7 @@ class TestModelConversions(unittest.TestCase):
         test_util_checks.assert_model_conversion_consistency(self, model_newton, model_kamino)
         test_util_checks.assert_model_info_size_consistency(self, model_kamino)
 
+    @requires("pxr.Usd")
     def test_03_model_conversions_consistency_fourbar_from_usd(self):
         """
         Test that the Newton to Kamino model conversion of a fourbar model
@@ -280,6 +276,7 @@ class TestModelConversions(unittest.TestCase):
         test_util_checks.assert_model_conversion_consistency(self, model_newton, model_kamino)
         test_util_checks.assert_model_info_size_consistency(self, model_kamino)
 
+    @requires("pxr.Usd")
     def test_04_model_conversions_consistency_box_on_plane_materials_from_usd(self):
         """
         Test that the Newton to Kamino model conversion of a box-on-plane model
@@ -302,7 +299,7 @@ class TestModelConversions(unittest.TestCase):
 
         builder_newton: ModelBuilder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder_newton)
-        builder_newton.replicate(builder=builder_single, world_count=2)
+        builder_newton.replicate(builder=builder_single, copy_count=2)
 
         model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
         model_kamino: ModelKamino = ModelKamino.from_newton(model_newton)
@@ -1087,15 +1084,15 @@ class TestStateControlConversions(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)  # TODO @nvtw: set this to DEBUG when investigating noted issues
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_state_conversions(self):
         """
@@ -1117,7 +1114,7 @@ class TestStateControlConversions(unittest.TestCase):
         )
         builder_newton: ModelBuilder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder_newton)
-        builder_newton.replicate(builder=builder_single, world_count=2)
+        builder_newton.replicate(builder=builder_single, copy_count=2)
 
         # Create models from the builders and conversion operations, and check for consistency
         model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
@@ -1192,7 +1189,7 @@ class TestStateControlConversions(unittest.TestCase):
         )
         builder_newton: ModelBuilder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder_newton)
-        builder_newton.replicate(builder=builder_single, world_count=2)
+        builder_newton.replicate(builder=builder_single, copy_count=2)
 
         # Create models from the builders and conversion operations, and check for consistency
         model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
@@ -1200,12 +1197,7 @@ class TestStateControlConversions(unittest.TestCase):
 
         # Create a Newton control container
         control_newton: Control = model_newton.control()
-        if newton.use_coord_layout_targets:
-            control_newton.joint_target_q = wp.clone(model_newton.joint_q, device=self.default_device)
-        else:
-            joint_target_q_dof_space = wp.zeros_like(control_newton.joint_target_q, device=self.default_device)
-            convert_target_coords_to_target_dofs(model_newton.joint_q, joint_target_q_dof_space, model_kamino)
-            control_newton.joint_target_q = joint_target_q_dof_space
+        control_newton.joint_target_q = wp.clone(model_newton.joint_q, device=self.default_device)
         # TODO: remove above lines if joint_target_q in newton gets updated to take into account
         # initial pose like joint_q does (cf issue #3380 in newton)
         self.assertIsInstance(control_newton.joint_f, wp.array)
@@ -1217,10 +1209,11 @@ class TestStateControlConversions(unittest.TestCase):
         self.assertEqual(control_kamino.tau_j.size, model_kamino.size.sum_of_num_joint_dofs)
 
         control_kamino_converted = ControlKamino()
-        control_kamino_converted.finalize(model_kamino)
-        control_kamino_converted.from_newton(control_newton, model_kamino)
+        control_kamino_converted.from_newton(control_newton)
         self.assertIsInstance(control_kamino_converted.tau_j, wp.array)
         self.assertIs(control_kamino_converted.tau_j, control_newton.joint_f)
+        self.assertIs(control_kamino_converted.q_j_ref, control_newton.joint_target_q)
+        self.assertIs(control_kamino_converted.dq_j_ref, control_newton.joint_target_qd)
         self.assertEqual(control_kamino_converted.tau_j.size, model_newton.joint_dof_count)
         self.assertIsNone(control_kamino_converted.tau_j_ref)
         test_util_checks.assert_control_equal(self, control_kamino_converted, control_kamino, excluded=["tau_j_ref"])
@@ -1229,9 +1222,11 @@ class TestStateControlConversions(unittest.TestCase):
         control_newton.joint_act.fill_(42.0)
         control_newton_converted: Control = model_newton.control()
         joint_act_before = control_newton_converted.joint_act.numpy().copy()
-        control_kamino_converted.to_newton(control_newton_converted, model_kamino)
+        control_kamino_converted.to_newton(control_newton_converted)
         self.assertIsInstance(control_newton_converted.joint_f, wp.array)
         self.assertIs(control_newton_converted.joint_f, control_kamino_converted.tau_j)
+        self.assertIs(control_newton_converted.joint_target_q, control_kamino_converted.q_j_ref)
+        self.assertIs(control_newton_converted.joint_target_qd, control_kamino_converted.dq_j_ref)
         self.assertEqual(control_newton_converted.joint_f.size, model_newton.joint_dof_count)
         np.testing.assert_array_equal(control_newton_converted.joint_act.numpy(), joint_act_before)
         test_util_checks.assert_array_attributes_equal(
@@ -1315,6 +1310,7 @@ class TestConvertModelMaterials(unittest.TestCase):
         mu_np[2] = 0.8
         restitution_np[2] = 0.9
         model.shape_material_mu.assign(mu_np)
+        model.shape_material_mu_static.assign(mu_np)
         model.shape_material_restitution.assign(restitution_np)
 
         convert_model_materials(model, model_kamino, first_shape, conflict)

@@ -8,11 +8,16 @@ import warp as wp
 
 import newton
 from newton._src.core import quat_between_axes
+from newton._src.geometry.contact_data import ContactData, contact_passes_gap_check
+from newton._src.sim.collide import ContactWriterData, write_contact, write_contact_speculative
+from newton._src.solvers.semi_implicit.kernels_contact import eval_body_contact_forces
 from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
     add_function_test,
     assert_np_equal,
     get_selected_cuda_test_devices,
     get_test_devices,
+    requires,
 )
 
 
@@ -156,14 +161,12 @@ def test_shapes_on_plane(test, device, solver_fn):
         solver = newton.solvers.SolverFeatherstone(
             model,
             angular_damping=0.15,  # Increased for more rotational stability
-            friction_smoothing=2.0,  # Increased from default 1.0 for smoother friction
         )
     elif isinstance(temp_solver, newton.solvers.SolverSemiImplicit):
         # Recreate with stability parameters for SemiImplicit
         solver = newton.solvers.SolverSemiImplicit(
             model,
             angular_damping=0.15,  # Increased from default 0.05 for more rotational stability
-            friction_smoothing=2.0,  # Increased from default 1.0 for smoother friction
         )
     else:
         solver = temp_solver
@@ -599,6 +602,7 @@ def test_mesh_box_on_ground(test, device):
         )
 
 
+@requires(*MUJOCO_MODULES)
 def test_mujoco_warp_newton_contacts(test, device):
     """Test that MuJoCo Warp solver correctly handles contact transfer from Newton's collision pipeline.
 
@@ -769,6 +773,117 @@ def test_mujoco_convex_on_convex(test, device, solver_fn):
     test.assertLess(abs(final_vel_z), 0.5)
 
 
+def _make_penalty_friction_model(device, *, requires_grad=False):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.default_shape_cfg.ke = 1.0e5
+    builder.default_shape_cfg.kd = 1.0e3
+    builder.default_shape_cfg.kf = 1.0e3
+    builder.default_shape_cfg.mu = 0.5
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform((2.0, 3.0, 0.099), wp.quat_identity()))
+    builder.add_shape_sphere(body, radius=0.1)
+    return builder.finalize(device=device, requires_grad=requires_grad)
+
+
+def test_penalty_friction_force_and_gradient(test, device):
+    """Bound rigid friction by Coulomb and differentiate the viscous response at rest."""
+    model = _make_penalty_friction_model(device, requires_grad=True)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
+    seed = wp.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=wp.spatial_vector, device=device)
+    direction = np.array([0.6, 0.8])
+
+    # Reuse one contact for both branches, damping, and disabled friction.
+    cases = [(speed, 0.5, 1000.0, 0.0) for speed in (0.0, 1.0e-8, 0.01, 0.049, 0.051, 0.5, 5.0)]
+    cases += [(0.5, 0.5, 1000.0, -0.1), (0.5, 0.0, 1000.0, 0.0), (0.0, 0.0, 1000.0, 0.0)]
+    cases += [(0.5, 0.5, 0.0, 0.0), (0.0, 0.5, 0.0, 0.0)]
+    for speed, mu, kf, normal_speed in cases:
+        with test.subTest(speed=speed, mu=mu, kf=kf, normal_speed=normal_speed):
+            model.shape_material_mu.fill_(mu)
+            model.shape_material_kf.fill_(kf)
+            velocity = np.zeros((1, 6), dtype=np.float32)
+            velocity[0, :2] = speed * direction
+            velocity[0, 2] = normal_speed
+            state.body_qd.assign(velocity)
+            state.clear_forces()
+            with wp.Tape() as tape:
+                eval_body_contact_forces(model, state, contacts)
+            force = state.body_f.numpy()[0].copy()
+            limit = mu * force[2]
+            test.assertGreater(force[2], 0.0)
+            np.testing.assert_allclose(force[:2], -direction * min(kf * speed, limit), atol=2.0e-5, rtol=2.0e-5)
+            test.assertLessEqual(np.linalg.norm(force[:2]), limit + 2.0e-5)
+
+            tape.backward(grads={state.body_f: seed})
+            gradient = state.body_qd.grad.numpy()[0, :2].copy()
+            if mu == 0.0 or kf == 0.0:
+                expected_gradient = np.zeros(2)
+            elif kf * speed < limit:
+                expected_gradient = np.array([-kf, 0.0])
+            else:
+                expected_gradient = -limit / speed * (np.array([1.0, 0.0]) - direction[0] * direction)
+            np.testing.assert_allclose(gradient, expected_gradient, atol=2.0e-3, rtol=2.0e-5)
+            tape.zero()
+
+            # Numerical checks at rest and in each friction regime complement the
+            # analytical checks above without repeating them for every edge case.
+            if (mu, kf, normal_speed) != (0.5, 1000.0, 0.0) or speed not in (0.0, 0.01, 0.5):
+                continue
+
+            # Compare the full contact kernel's derivative to perturbed velocities.
+            finite_difference = np.zeros(2)
+            epsilon = 1.0e-4
+            for axis in range(2):
+                forces = []
+                for sign in (-1.0, 1.0):
+                    perturbed = velocity.copy()
+                    perturbed[0, axis] += sign * epsilon
+                    state.body_qd.assign(perturbed)
+                    state.clear_forces()
+                    eval_body_contact_forces(model, state, contacts)
+                    forces.append(float(state.body_f.numpy()[0, 0]))
+                finite_difference[axis] = (forces[1] - forces[0]) / (2.0 * epsilon)
+            np.testing.assert_allclose(gradient, finite_difference, atol=0.1, rtol=3.0e-3)
+
+
+def test_penalty_friction_solver_step(test, device):
+    """Apply Coulomb-limited friction through both penalty solvers and legacy options."""
+    model = _make_penalty_friction_model(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+    velocity = np.array([0.3, 0.4, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    state_in.joint_qd.assign(velocity)
+    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+    pipeline.collide(state_in, contacts)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
+    dt = 1.0e-4
+    for solver_type in (newton.solvers.SolverSemiImplicit, newton.solvers.SolverFeatherstone):
+        for smoothing in (None, 0.1):
+            with test.subTest(solver=solver_type.__name__, friction_smoothing=smoothing):
+                if smoothing is None:
+                    solver = solver_type(model)
+                else:
+                    with test.assertWarnsRegex(newton.NewtonDeprecationWarning, "friction_smoothing"):
+                        solver = solver_type(model, friction_smoothing=smoothing)
+                with test.assertWarnsRegex(newton.NewtonDeprecationWarning, "friction_smoothing") as warning:
+                    test.assertEqual(solver.friction_smoothing, 1.0 if smoothing is None else smoothing)
+                test.assertEqual(warning.filename, __file__)
+                with test.assertWarnsRegex(newton.NewtonDeprecationWarning, "friction_smoothing") as warning:
+                    solver.friction_smoothing = 2.0
+                test.assertEqual(warning.filename, __file__)
+                with test.assertWarnsRegex(newton.NewtonDeprecationWarning, "friction_smoothing"):
+                    test.assertEqual(solver.friction_smoothing, 2.0)
+                state_in.clear_forces()
+                solver.step(state_in, state_out, None, contacts, dt)
+                delta_v = state_out.body_qd.numpy()[0, :3] - velocity[:3]
+                test.assertGreater(delta_v[2], 0.0)
+                np.testing.assert_allclose(delta_v[:2], -0.5 * delta_v[2] * np.array([0.6, 0.8]), atol=2.0e-6)
+
+
 def test_box_drop(test, device, solver_fn):
     """Test that dropping boxes are properly constrained by contacts.
     Verifies velocity never exceeds what's possible from the system's potential energy.
@@ -843,16 +958,115 @@ cuda_devices = get_selected_cuda_test_devices()
 
 solvers = {
     "featherstone": newton.solvers.SolverFeatherstone,
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
+    "mujoco_cpu": requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True)),
+    "mujoco_warp": requires(*MUJOCO_MODULES)(
+        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150)
+    ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
     "semi_implicit": newton.solvers.SolverSemiImplicit,
     "kamino": newton.solvers.SolverKamino,
+    "steel": newton.solvers.SolverSteel,
 }
 
 
+@wp.kernel
+def _write_translated_contacts(writer: ContactWriterData, admission: wp.array[int], reserve: bool, speculative: bool):
+    """Write contacts on either side of the fixed gap at each translation."""
+    i = wp.tid()
+    contact = ContactData()
+    contact.shape_a = 2 * i
+    contact.shape_b = 2 * i + 1
+    contact.contact_point_center = wp.transform_get_translation(writer.body_q[2 * i]) + wp.vec3(0.03125, 0.015625, 0.0)
+    contact.contact_normal_a_to_b = wp.vec3(2.0, 1.0, 2.0) / 3.0
+    contact.contact_distance = wp.where(i % 2 == 0, 0.0027499, 0.0027501)
+    contact.radius_eff_a = 0.012
+    contact.radius_eff_b = 0.017
+    contact.margin_a = 0.0005
+    contact.margin_b = 0.00025
+    contact.gap_sum = 0.002
+    admission[i] = int(contact_passes_gap_check(contact))
+    index = wp.where(reserve, i, -1)
+    if speculative:
+        write_contact_speculative(contact, writer, index)
+    else:
+        write_contact(contact, writer, index)
+
+
 class TestRigidContact(unittest.TestCase):
-    pass
+    def test_translated_contact_writer(self):
+        """Preserve local anchors and gap decisions under a common translation."""
+        device = "cpu"
+        q = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+        poses = [
+            wp.transform(wp.vec3(origin + offset, origin, 0.25), q)
+            for origin in (0.0, 32.0, 64.0)
+            for _ in range(2)
+            for offset in (0.0, 0.0625)
+        ]
+        contacts = newton.Contacts(6, 0, device=device)
+        writer = ContactWriterData()
+        writer.contact_max = contacts.rigid_contact_max
+        writer.body_q = wp.array(poses, dtype=wp.transform, device=device)
+        writer.shape_body = wp.array(np.arange(len(poses)), dtype=int, device=device)
+        writer.shape_gap = wp.full(len(poses), 0.001, dtype=float, device=device)
+        writer.contact_count = contacts.rigid_contact_count
+        for field in (
+            "shape0",
+            "shape1",
+            "point0",
+            "point1",
+            "offset0",
+            "offset1",
+            "normal",
+            "margin0",
+            "margin1",
+            "tids",
+        ):
+            setattr(writer, f"out_{field}", getattr(contacts, f"rigid_contact_{field}"))
+        writer.shape_transform = writer.body_q
+        writer.shape_linear_velocity = wp.zeros(len(poses), dtype=wp.vec3, device=device)
+        writer.shape_angular_velocity = writer.shape_linear_velocity
+        admission = wp.empty(6, dtype=int, device=device)
+        for speculative in (False, True):
+            with self.subTest(speculative=speculative, reserve=True):
+                wp.launch(_write_translated_contacts, 6, [writer, admission, True, speculative], device=device)
+                for points in (contacts.rigid_contact_point0, contacts.rigid_contact_point1):
+                    local = points.numpy().reshape(3, 2, 3)
+                    np.testing.assert_allclose(local, np.broadcast_to(local[:1], local.shape), rtol=0, atol=1e-7)
+            with self.subTest(speculative=speculative, reserve=False):
+                writer.contact_count.zero_()
+                wp.launch(_write_translated_contacts, 6, [writer, admission, False, speculative], device=device)
+                count = int(writer.contact_count.numpy()[0])
+                self.assertEqual(sorted(writer.out_shape0.numpy()[:count].tolist()), [0, 4, 8])
+                np.testing.assert_array_equal(admission.numpy(), [1, 0, 1, 0, 1, 0])
+
+        with self.subTest(speculative=True, closing_motion=True):
+            # Let closing motion reach the candidates just outside the fixed gap.
+            writer.shape_linear_velocity = wp.array(
+                [wp.vec3(0.4, 0.0, 0.0), wp.vec3(0.0)] * (len(poses) // 2), dtype=wp.vec3, device=device
+            )
+            writer.collision_update_dt = 0.01
+            writer.max_speculative_extension = 0.002001
+            writer.contact_count.zero_()
+            wp.launch(_write_translated_contacts, 6, [writer, admission, False, True], device=device)
+            count = int(writer.contact_count.numpy()[0])
+            shape0 = writer.out_shape0.numpy()[:count]
+            order = np.argsort(shape0)
+            np.testing.assert_array_equal(shape0[order], np.arange(0, len(poses), 2))
+            for points in (contacts.rigid_contact_point0, contacts.rigid_contact_point1):
+                local = points.numpy()[order].reshape(3, 2, 3)
+                np.testing.assert_allclose(local, np.broadcast_to(local[:1], local.shape), rtol=0, atol=1e-7)
+
+
+add_function_test(
+    TestRigidContact,
+    "test_penalty_friction_force_and_gradient",
+    test_penalty_friction_force_and_gradient,
+    devices=devices,
+)
+add_function_test(
+    TestRigidContact, "test_penalty_friction_solver_step", test_penalty_friction_solver_step, devices=devices
+)
 
 
 for device in devices:
@@ -897,7 +1111,7 @@ add_function_test(
 # Register box drop tests for MuJoCo and XPBD solvers
 for device in devices:
     for solver_name, solver_fn in solvers.items():
-        if solver_name not in ("mujoco_cpu", "mujoco_warp", "xpbd"):
+        if solver_name not in ("mujoco_cpu", "mujoco_warp", "xpbd", "steel"):
             continue
         if device.is_cpu and solver_name == "mujoco_warp":
             continue

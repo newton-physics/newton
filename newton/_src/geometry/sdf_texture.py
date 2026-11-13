@@ -341,7 +341,7 @@ def _create_source_kernels(source_kind: int, sign_mode: int):
         ) -> float:
             return get_distance_to_mesh(mesh, point, max_dist, winding_threshold)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def check_subgrid_occupied_kernel(
         mesh: wp.uint64,
         shape_type: wp.int32,
@@ -370,7 +370,7 @@ def _create_source_kernels(source_kind: int, sign_mode: int):
         else:
             subgrid_required[tid] = 0
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def accumulate_subgrid_linearity_error_kernel(
         mesh: wp.uint64,
         shape_type: wp.int32,
@@ -450,7 +450,7 @@ def _create_source_kernels(source_kind: int, sign_mode: int):
 
         wp.atomic_max(linearity_errors, subgrid_idx, wp.abs(sdf_value - coarse_val))
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def build_coarse_sdf_kernel(
         mesh: wp.uint64,
         shape_type: wp.int32,
@@ -484,7 +484,7 @@ def _create_source_kernels(source_kind: int, sign_mode: int):
 
         background_sdf[tid] = query_sdf(mesh, shape_type, shape_scale, pos, 10000.0, winding_threshold)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def populate_subgrid_texture_float32_kernel(
         mesh: wp.uint64,
         shape_type: wp.int32,
@@ -551,7 +551,7 @@ def _create_source_kernels(source_kind: int, sign_mode: int):
         )
         subgrid_texture[tex_idx] = sdf_val
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def populate_subgrid_texture_uint16_kernel(
         mesh: wp.uint64,
         shape_type: wp.int32,
@@ -621,7 +621,7 @@ def _create_source_kernels(source_kind: int, sign_mode: int):
         v_normalized = wp.clamp((sdf_val - sdf_min) * sdf_range_inv, 0.0, 1.0)
         subgrid_texture[tex_idx] = wp.uint16(v_normalized * 65535.0)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def populate_subgrid_texture_uint8_kernel(
         mesh: wp.uint64,
         shape_type: wp.int32,

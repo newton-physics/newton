@@ -52,6 +52,8 @@ API
     launch()  # one zero-arg callable; CUDA-graph capturable
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from functools import cache
 
@@ -177,7 +179,7 @@ def _make_rcm_batch_kernels(dtype):
         for j in range(n_b):
             if j == i:
                 continue
-            av = wp.abs(A[base + j])
+            av = dtype(wp.abs(A[base + j]))
             if av > tol:
                 d += int(1)
         degree[vb + i] = d
@@ -263,7 +265,7 @@ def _make_rcm_batch_kernels(dtype):
         for j in range(n_b):
             if j == i:
                 continue
-            av = wp.abs(A[base + j])
+            av = dtype(wp.abs(A[base + j]))
             if av > tol:
                 if level[vb + j] == int(-1):
                     old = wp.atomic_cas(level, vb + j, int(-1), next_lvl)
@@ -366,7 +368,7 @@ def _make_rcm_batch_kernels(dtype):
                 base = mb + source * ld[b]
                 j = lane
                 while j < n_b:
-                    if j != source and wp.abs(A[base + j]) > tol:
+                    if j != source and dtype(wp.abs(A[base + j])) > tol:
                         wp.atomic_cas(level, vb + j, int(-1), next_level)
                     j += block_dim
                 pos += int(1)

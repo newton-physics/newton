@@ -1,16 +1,31 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Panda Hydro
-#
-# Shows how to set up a pick-and-place manipulation simulation using a
-# Franka Panda arm with SDF hydroelastic contacts and inverse kinematics.
-# Supports different scene configurations: pen or cube.
-#
-# Command: python -m newton.examples panda_hydro --scene pen --world-count 1
-#
-###########################################################################
+"""Example Panda Hydro
+
+Shows how to set up a pick-and-place manipulation simulation using a
+Franka Panda arm with SDF hydroelastic contacts and inverse kinematics.
+Supports different scene configurations: pen or cube.
+
+Success criteria:
+- Each world shows a Franka arm, a support box, a cup, and the selected grasp object.
+- The arm lifts and transports the object while the cup remains upright.
+- The pen stays within 20 degrees of horizontal during the first lift and transport,
+  until the grip starts loosening above the cup.
+
+Runs:
+- `python -m newton.examples robot_panda_hydro --world-count 2 --scene cube`
+  - The arm grasps the cube and releases it on top of the cup.
+  - Two worlds appear.
+- `python -m newton.examples robot_panda_hydro --world-count 2 --scene pen`
+  - The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate
+    downward, then drops it inside the cup.
+  - Two worlds appear.
+- `python -m newton.examples robot_panda_hydro --scene pen --world-count 1`
+  - One world appears.
+  - The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate
+    downward, then drops it inside the cup.
+"""
 
 import argparse
 import copy
@@ -101,6 +116,7 @@ class Example:
             xform=wp.transform((-0.5, -0.5, 0.05), wp.quat_identity()),
             enable_self_collisions=False,
             parse_visuals_as_colliders=True,
+            joint_damping_mode="passive",
         )
 
         def find_body(name):
@@ -146,16 +162,16 @@ class Example:
             2.3922248e00,
             7.8549200e-01,
         ]
-        builder.joint_q[:9] = [*init_q, 0.05, 0.05]
-        builder.joint_target_q[:9] = [*init_q, 1.0, 1.0]
+        builder.joint_q[:9] = [*init_q, 0.04, 0.04]
+        builder.joint_target_q[:9] = builder.joint_q[:9]
 
         # Compliant finger drives avoid releasing stored squeeze energy into lightweight objects.
         builder.joint_target_ke[:7] = [650.0] * 7
-        builder.joint_target_ke[7:9] = [100.0] * 2
+        builder.joint_target_ke[7:9] = [400.0] * 2
         builder.joint_target_kd[:7] = [100.0] * 7
         builder.joint_target_kd[7:9] = [20.0] * 2
         builder.joint_effort_limit[:7] = [80.0] * 7
-        builder.joint_effort_limit[7:9] = [5.0] * 2
+        builder.joint_effort_limit[7:9] = [10.0] * 2
         builder.joint_armature[:7] = [0.1] * 7
         builder.joint_armature[7:9] = [0.5] * 2
 
@@ -342,7 +358,6 @@ class Example:
         self.control = self.model.control()
         self.joint_target_shape = self.control.joint_target_q.reshape((self.world_count, -1)).shape
         self.joint_targets_2d = wp.zeros(self.joint_target_shape, dtype=wp.float32)
-        wp.copy(self.control.joint_target_q[:9], self.model.joint_q[:9])
 
         # Track maximum object height for testing (only in test mode)
         self.object_max_z = [self.object_pos[2]] * self.world_count if self.test_mode else None
@@ -372,7 +387,7 @@ class Example:
 
         # Broadcast single IK solution to all worlds
         t_gripper = self.waypoints[self.current_waypoint][2] * (1 - t) + self.waypoints[next_waypoint][2] * t
-        gripper_value = 0.06 * (1 - t_gripper)
+        gripper_value = wp.clamp(0.06 * (1 - t_gripper), 0.0, 0.04)
         wp.launch(
             broadcast_ik_solution_kernel,
             dim=self.world_count,
@@ -415,13 +430,28 @@ class Example:
 
         self.sim_time += self.frame_dt
 
+    def test_post_step(self):
+        """Check pen orientation before release and track lift height."""
         # Track maximum object height for testing (only in test mode)
-        if self.test_mode:
-            body_q = self.state_0.body_q.numpy()
-            for world_idx in range(self.world_count):
-                object_body_idx = world_idx * self.bodies_per_world + self.object_body_local
-                z_pos = float(body_q[object_body_idx][2])
-                self.object_max_z[world_idx] = max(self.object_max_z[world_idx], z_pos)
+        body_q = self.state_0.body_q.numpy()
+        check_pen_grip = (
+            self.scene == SceneType.PEN and self.first_lift_start <= self.sim_time < self.first_release_start
+        )
+        max_axis_z = np.sin(np.deg2rad(20.0))
+
+        for world_idx in range(self.world_count):
+            object_body_idx = world_idx * self.bodies_per_world + self.object_body_local
+            object_pose = body_q[object_body_idx]
+            self.object_max_z[world_idx] = max(self.object_max_z[world_idx], float(object_pose[2]))
+
+            if check_pen_grip:
+                qx, qy = object_pose[3:5]
+                pen_axis_z = abs(1.0 - 2.0 * (qx**2 + qy**2))
+                assert pen_axis_z < max_axis_z, (
+                    f"World {world_idx}: Pen rotated before the grip loosened above the cup. "
+                    f"Time={self.sim_time:.3f}, vertical axis component={pen_axis_z:.3f} "
+                    f"(expected < {max_axis_z:.3f}, within 20 degrees of horizontal)"
+                )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -534,9 +564,15 @@ class Example:
         self.waypoints = [
             [resting_pos, 1.0, no_grasp_pos, rot_hand],
             [grasping_pos, 1.0, no_grasp_pos, rot_hand],
-            [grasping_pos, 1.0, grasp_pos, rot_hand],
-            [resting_pos, 1.0, grasp_pos, rot_hand],
         ]
+        self.first_lift_start = sum(waypoint[1] for waypoint in self.waypoints)
+        self.waypoints.extend(
+            [
+                [grasping_pos, 1.0, grasp_pos, rot_hand],
+                [resting_pos, 1.0, grasp_pos, rot_hand],
+            ]
+        )
+        self.first_release_start = sum(waypoint[1] for waypoint in self.waypoints)
 
         if self.put_in_cup:
             loose_pos = 0.69

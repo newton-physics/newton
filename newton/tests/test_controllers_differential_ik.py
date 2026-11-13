@@ -49,7 +49,7 @@ from newton._src.controllers.impl.differential_ik._common import (
     _qd_from_y_kernel,
     _qd_in_singular_basis_damped_kernel,
     _qd_in_singular_basis_truncated_kernel,
-    _svd_one_sided_jacobi_kernel,
+    get_svd_one_sided_jacobi_kernel,
 )
 from newton._src.controllers.impl.differential_ik.model_based import ControllerDifferentialIK
 from newton._src.controllers.impl.differential_ik.model_free import ControllerDifferentialIKModelFree
@@ -59,7 +59,7 @@ devices = get_test_devices()
 
 
 def _solve_dls_svd(jacobian_np, error_np, damping_val, dof_counts, bandwidth_np, device, task_dim_val=6):
-    """Run the SVD-based solve end to end (_svd_one_sided_jacobi_kernel + _qd_in_singular_basis_damped_kernel +
+    """Run the SVD-based solve end to end (get_svd_one_sided_jacobi_kernel + _qd_in_singular_basis_damped_kernel +
     _qd_from_singular_basis_kernel), returning ``joint_qd_target`` as numpy.
 
     ``jacobian_np`` is already ``J_w`` (every test in this section uses
@@ -88,7 +88,7 @@ def _solve_dls_svd(jacobian_np, error_np, damping_val, dof_counts, bandwidth_np,
     s = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
     v = wp.zeros((robot_count, max_dofs, max_dofs), dtype=wp.float32, device=device)
     wp.launch(
-        _svd_one_sided_jacobi_kernel,
+        get_svd_one_sided_jacobi_kernel(6, max_dofs),
         dim=robot_count,
         inputs=[jacobian.view(mat_j).reshape((robot_count,)), dof_count, 1.0e-6, 30],
         outputs=[
@@ -153,7 +153,7 @@ def _solve_truncated_svd(jacobian_np, error_np, threshold_val, dof_counts, bandw
     s = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
     v = wp.zeros((robot_count, max_dofs, max_dofs), dtype=wp.float32, device=device)
     wp.launch(
-        _svd_one_sided_jacobi_kernel,
+        get_svd_one_sided_jacobi_kernel(6, max_dofs),
         dim=robot_count,
         inputs=[jacobian.view(mat_j).reshape((robot_count,)), dof_count, 1.0e-6, 30],
         outputs=[
@@ -267,7 +267,7 @@ def test_qd_from_y_ignores_garbage_in_ys_padding_slots(test: unittest.TestCase, 
 
 
 # ---------------------------------------------------------------------------
-# The SVD-based solve: _svd_one_sided_jacobi_kernel + _qd_in_singular_basis_damped_kernel
+# The SVD-based solve: get_svd_one_sided_jacobi_kernel + _qd_in_singular_basis_damped_kernel
 # + _qd_from_singular_basis_kernel (see _solve_dls_svd above) -- see the
 # section comment above _svd_one_sided_jacobi in _common.py for why it's SVD-based.
 # ---------------------------------------------------------------------------

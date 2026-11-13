@@ -13,6 +13,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Vec3
+from ..exceptions import NewtonWarning
 from .inertia import compute_inertia_mesh
 from .types import (
     GeoType,
@@ -93,10 +94,15 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
         # body frame).  Using the AABB diagonal gives a tighter and
         # always-correct enclosing radius regardless of where the
         # authoring origin sits relative to the geometry.
-        verts = np.asarray(src.vertices, dtype=np.float64) * np.asarray(scale, dtype=np.float64)
-        aabb_lo = verts.min(axis=0)
-        aabb_hi = verts.max(axis=0)
-        return float(0.5 * np.linalg.norm(aabb_hi - aabb_lo))
+        # Scaling a box only scales its extents, so shapes sharing a mesh reuse its cached bounds.
+        get_local_bounds = getattr(src, "_get_local_bounds", None)
+        if get_local_bounds is not None:
+            aabb_lo, aabb_hi = get_local_bounds()
+        else:
+            vertices = np.asarray(src.vertices, dtype=np.float64)
+            aabb_lo, aabb_hi = vertices.min(axis=0), vertices.max(axis=0)
+        extent = (aabb_hi - aabb_lo) * np.abs(np.asarray(scale, dtype=np.float64))
+        return float(0.5 * np.linalg.norm(extent))
     elif geo_type == GeoType.PLANE:
         # Use magnitudes for the finite-vs-infinite check so that legacy callers that
         # pass negative components still classify correctly. The infinite-plane sentinel
@@ -174,11 +180,28 @@ def compute_inertia_box_mesh(
         indices=np.asarray(indices).flatten().tolist(),
         is_solid=is_solid,
     )
+    return compute_inertia_box(volume, com, inertia_tensor)
 
+
+def compute_inertia_box(
+    volume: float, com: np.ndarray | wp.vec3, inertia: np.ndarray | wp.mat33
+) -> tuple[wp.vec3, wp.vec3, wp.quat]:
+    """Compute the equivalent inertia box of a body from its unit-density mass properties.
+
+    See :func:`compute_inertia_box_mesh` for the half-size formula.
+
+    Args:
+        volume: Volume [m^3], or the surface area [m^2] of a shell: the mass at unit density.
+        com: Center of mass [m].
+        inertia: Inertia tensor about the center of mass at unit density, shape ``(3, 3)``.
+
+    Returns:
+        Tuple of ``(center, half_extents, rotation)`` as returned by :func:`compute_inertia_box_mesh`.
+    """
     if volume < 1e-12:
         return wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()
 
-    inertia = np.array(inertia_tensor).reshape(3, 3)
+    inertia = np.array(inertia).reshape(3, 3)
     eigvals, eigvecs = np.linalg.eigh(inertia)
 
     # Sort eigenvalues (and eigenvectors) in ascending order.
@@ -197,9 +220,9 @@ def compute_inertia_box_mesh(
         arg = 6.0 * (eigvals[j] + eigvals[k] - eigvals[i]) / volume
         half_extents[i] = 0.5 * np.sqrt(max(arg, 0.0))
 
-    # Convert the eigenvector matrix (columns = principal axes in mesh frame)
-    # to a quaternion.
-    rotation = wp.quat_from_matrix(wp.mat33(*eigvecs.T.flatten().tolist()))
+    # The eigenvector matrix (columns = principal axes in mesh frame) rotates the
+    # principal-axis frame to the mesh frame; wp.mat33 takes its values row by row.
+    rotation = wp.quat_from_matrix(wp.mat33(*eigvecs.flatten().tolist()))
 
     return wp.vec3(*np.array(com)), wp.vec3(*half_extents), rotation
 
@@ -403,18 +426,11 @@ def load_mesh(filename: str, method: str | None = None):
 
             m = trimesh.load(filename)
             if hasattr(m, "geometry"):
-                # multiple meshes are contained in a scene; combine to one mesh
-                mesh_points = []
-                mesh_indices = []
-                index_offset = 0
-                for geom in m.geometry.values():
-                    vertices = np.array(geom.vertices, dtype=np.float32)
-                    faces = np.array(geom.faces.flatten(), dtype=np.int32)
-                    mesh_points.append(vertices)
-                    mesh_indices.append(faces + index_offset)
-                    index_offset += len(vertices)
-                mesh_points = np.concatenate(mesh_points, axis=0)
-                mesh_indices = np.concatenate(mesh_indices)
+                # Combine scene parts with their node transforms applied;
+                # raw vertices are in node-local space.
+                combined = m.to_mesh()
+                mesh_points = np.array(combined.vertices, dtype=np.float32)
+                mesh_indices = np.array(combined.faces.flatten(), dtype=np.int32)
             else:
                 # a single mesh
                 mesh_points = np.array(m.vertices, dtype=np.float32)
@@ -575,7 +591,9 @@ def remesh_ftetwild(
 
     if len(new_vertices) == 0 or len(new_faces) == 0:
         warnings.warn(
-            "Remeshing failed, the optimized mesh has no vertices or faces; return previous mesh.", stacklevel=2
+            "Remeshing failed, the optimized mesh has no vertices or faces; return previous mesh.",
+            NewtonWarning,
+            stacklevel=2,
         )
         return vertices, faces
 
@@ -727,8 +745,8 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
           well-formed ``(verts, faces)`` pair with ``M >= 3`` and ``K >= 2``.
         - ``verts`` is always a subset of the true convex hull's vertex set.
         - For full-rank (rank-3) inputs, the output is a closed 3D convex hull
-          with outward-facing triangle windings, unchanged from the pre-degeneracy
-          behavior.
+          with outward-facing triangle windings, including hulls capped by
+          ``maxhullvert``.
 
     Degenerate outputs (rank < 3):
         - **Coplanar (rank 2):** a flat, zero-volume triangle soup covering the
@@ -787,7 +805,7 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
             f"remesh_convex_hull: input point cloud is {rank}; returning a "
             "zero-volume fallback mesh. Downstream inertia computations will "
             "produce zero mass / COM / inertia.",
-            UserWarning,
+            NewtonWarning,
             stacklevel=2,
         )
 
@@ -875,20 +893,15 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
     verts = vertices.astype(np.float32)
     faces = hull.simplices.astype(np.int32)
 
-    # fix winding order of faces
-    centre_f = verts.mean(0)
-    for i, tri in enumerate(faces):
-        a, b, c = verts[tri]
-        normal = np.cross(b - a, c - a)
-        if np.dot(normal, a - centre_f) < 0:
-            faces[i] = tri[[0, 2, 1]]
+    # Qhull leaves simplex winding arbitrary; flip faces whose normal opposes their facet's outward normal.
+    a, b, c = vertices[faces[:, 0]], vertices[faces[:, 1]], vertices[faces[:, 2]]
+    inward = np.einsum("ij,ij->i", np.cross(b - a, c - a), hull.equations[:, :3]) < 0
+    faces[inward] = faces[inward][:, [0, 2, 1]]
 
     # trim vertices to only those that are used in the faces
-    unique_verts = np.unique(faces.flatten())
+    unique_verts, faces_flat = np.unique(faces, return_inverse=True)
     verts = verts[unique_verts]
-    # update face indices to use the new vertex indices
-    mapping = {v: i for i, v in enumerate(unique_verts)}
-    faces = np.array([mapping[v] for v in faces.flatten()], dtype=np.int32).reshape(faces.shape)
+    faces = faces_flat.reshape(faces.shape).astype(np.int32)
 
     return verts, faces
 
@@ -1008,24 +1021,39 @@ def get_total_kernel(
     total[0] = prefix_sums[final_idx] + counts[final_idx]
 
 
-# Device-count-aware scan geometry. Each block handles chunks of
-# ``block_dim * SCAN_ITEMS_PER_THREAD`` consecutive counts; ``wp.launch_tiled``
-# clamps ``block_dim`` to one on CPU, so the chunk size is derived from
-# ``wp.block_dim()`` inside the kernels.
+# On CUDA each tile of ``block_dim * SCAN_ITEMS_PER_THREAD`` consecutive counts takes its offset
+# from the tiles before it, so the scan is a single launch.
+SCAN_ITEMS_PER_THREAD = 4
 SCAN_BLOCK_DIM = 256
-SCAN_ITEMS_PER_THREAD = 8
+# A capacity that fits one tile of this block size scans without any look-back.
+SCAN_SINGLE_TILE_BLOCK_DIM = 512
+SCAN_BLOCKS_PER_SM = 8
+# Above this capacity look-back reads fewer earlier tiles per pass, which contend less on their status words.
+SCAN_WIDE_LOOKBACK_MAX_CAPACITY = 1 << 19
+SCAN_NARROW_LOOKBACK = 64
+
+# Tile status words in the scratch: the flag sits above a 32-bit tile value.
+_SCAN_TILE_SUM = wp.constant(wp.int64(1 << 32))
+_SCAN_TILE_PREFIX = wp.constant(wp.int64(2 << 32))
 
 
-def _scan_chunk_size(device) -> int:
-    """Return the number of counts each scan chunk covers on ``device``."""
-    block_dim = 1 if wp.get_device(device).is_cpu else SCAN_BLOCK_DIM
-    return block_dim * SCAN_ITEMS_PER_THREAD
+def _scan_block_dim(capacity: int) -> int:
+    """Return the CUDA scan's block size for ``capacity`` counts."""
+    if capacity <= SCAN_SINGLE_TILE_BLOCK_DIM * SCAN_ITEMS_PER_THREAD:
+        return SCAN_SINGLE_TILE_BLOCK_DIM
+    return SCAN_BLOCK_DIM
+
+
+def _scan_tile_count(capacity: int) -> int:
+    tile_size = _scan_block_dim(capacity) * SCAN_ITEMS_PER_THREAD
+    return max((capacity + tile_size - 1) // tile_size, 1)
 
 
 def _scan_scratch_size(capacity: int, device) -> int:
-    """Return the scratch length :func:`scan_with_total` needs for ``capacity`` counts on ``device``."""
-    chunk_size = _scan_chunk_size(device)
-    return (capacity + chunk_size - 1) // chunk_size + 1
+    """Return the ``int64`` scratch length :func:`scan_with_total` needs for ``capacity`` counts on ``device``."""
+    if wp.get_device(device).is_cpu:
+        return 1
+    return _scan_tile_count(capacity) + 2
 
 
 @wp.func
@@ -1033,86 +1061,136 @@ def _scan_active_count(num_elements: wp.array[int], max_elements: int) -> int:
     return wp.max(wp.min(num_elements[0], max_elements), 0)
 
 
-@wp.kernel(enable_backward=False)
-def _scan_chunk_sums_kernel(
+@wp.func
+def _scan_tile_value(status: wp.int64) -> int:
+    return int(wp.int32(status & wp.int64(0xFFFFFFFF)))
+
+
+@wp.func
+def _scan_tile_status(flag: wp.int64, value: int) -> wp.int64:
+    return flag | (wp.int64(value) & wp.int64(0xFFFFFFFF))
+
+
+@wp.func_native("""
+#if defined(__CUDA_ARCH__)
+__threadfence();
+#endif
+""")
+def _scan_thread_fence(): ...
+
+
+# Its own module, outside Warp's deterministic lowering: the integer scan is exact, and its atomics only hand out
+# tiles and publish tile statuses.
+@wp.kernel(
+    enable_backward=False,
+    module="unique",
+    module_options={"deterministic": wp.DeterministicMode.NOT_GUARANTEED},
+)
+def _scan_tiles_kernel(
     counts: wp.array[int],
     num_elements: wp.array[int],
     max_elements: int,
-    num_blocks: int,
-    chunk_sums: wp.array[int],
-):
-    """Sum each chunk of active counts."""
-    block_id, t = wp.tid()
-    n = _scan_active_count(num_elements, max_elements)
-    chunk_size = wp.block_dim() * SCAN_ITEMS_PER_THREAD
-    num_chunks = (n + chunk_size - 1) // chunk_size
-    for chunk in range(block_id, num_chunks, num_blocks):
-        base = chunk * chunk_size + t * SCAN_ITEMS_PER_THREAD
-        thread_sum = int(0)
-        for i in range(SCAN_ITEMS_PER_THREAD):
-            idx = base + i
-            if idx < n:
-                thread_sum += counts[idx]
-        chunk_total = wp.tile_sum(wp.tile(thread_sum))
-        if t == 0:
-            chunk_sums[chunk] = wp.tile_extract(chunk_total, 0)
-
-
-@wp.kernel(enable_backward=False)
-def _scan_chunk_offsets_kernel(
-    chunk_sums: wp.array[int],
-    num_elements: wp.array[int],
-    max_elements: int,
-    chunk_offsets: wp.array[int],
+    block_count: int,
+    lookback: int,
+    scratch: wp.array[wp.int64],
+    prefix_sums: wp.array[int],
     total: wp.array[int],
 ):
-    """Exclusively scan the chunk sums with a single block and emit the grand total."""
-    _block_id, t = wp.tid()
-    n = _scan_active_count(num_elements, max_elements)
+    """Exclusively scan the active counts with decoupled look-back over the tiles.
+
+    ``scratch`` holds a tile ticket, a finished-block count and one status word per tile; the
+    last block to finish zeroes them for the next scan.
+    """
+    _block, t = wp.tid()
     block_dim = wp.block_dim()
-    chunk_size = block_dim * SCAN_ITEMS_PER_THREAD
-    num_chunks = (n + chunk_size - 1) // chunk_size
-    carry = int(0)
-    for start in range(0, num_chunks, block_dim):
-        idx = start + t
-        value = int(0)
-        if idx < num_chunks:
-            value = chunk_sums[idx]
-        inclusive = wp.tile_scan_inclusive(wp.tile(value))
-        if idx < num_chunks:
-            chunk_offsets[idx] = carry + wp.untile(inclusive) - value
-        carry += wp.tile_extract(inclusive, block_dim - 1)
+    tile_size = block_dim * SCAN_ITEMS_PER_THREAD
+    n = _scan_active_count(num_elements, max_elements)
+    active_tiles = wp.max((n + tile_size - 1) // tile_size, 1)
+    working = bool(True)
+    while working:
+        # Tiles are taken in the order blocks reach them, so a block only waits on running blocks.
+        ticket = wp.int64(0)
+        if t == 0:
+            ticket = wp.atomic_add(scratch, 0, wp.int64(1))
+        tile = int(wp.tile_extract(wp.tile(ticket), 0))
+        working = tile < active_tiles
+        if working:
+            base = tile * tile_size + t * SCAN_ITEMS_PER_THREAD
+            thread_sum = int(0)
+            for i in range(SCAN_ITEMS_PER_THREAD):
+                idx = base + i
+                if idx < n:
+                    thread_sum += counts[idx]
+            thread_sums = wp.tile(thread_sum)
+            running = wp.untile(wp.tile_scan_exclusive(thread_sums))
+            tile_sum = wp.tile_extract(wp.tile_sum(thread_sums), 0)
+            prefix = int(0)
+            if tile == 0:
+                if t == 0:
+                    wp.atomic_exch(scratch, 2, _scan_tile_status(_SCAN_TILE_PREFIX, tile_sum))
+            else:
+                if t == 0:
+                    wp.atomic_exch(scratch, 2 + tile, _scan_tile_status(_SCAN_TILE_SUM, tile_sum))
+                # The first ``lookback`` threads each read one earlier tile's status; sum back to the nearest prefix.
+                window_end = tile - 1
+                searching = bool(True)
+                while searching:
+                    status = _SCAN_TILE_PREFIX
+                    j = window_end - t
+                    if t >= lookback:
+                        status = _SCAN_TILE_SUM
+                    elif j >= 0:
+                        status = wp.atomic_add(scratch, 2 + j, wp.int64(0))
+                        while status == wp.int64(0):
+                            status = wp.atomic_add(scratch, 2 + j, wp.int64(0))
+                    lane = block_dim
+                    if status >= _SCAN_TILE_PREFIX:
+                        lane = t
+                    nearest = wp.tile_extract(wp.tile_min(wp.tile(lane)), 0)
+                    value = int(0)
+                    if t <= nearest:
+                        value = _scan_tile_value(status)
+                    prefix += wp.tile_extract(wp.tile_sum(wp.tile(value)), 0)
+                    searching = nearest >= lookback
+                    window_end -= lookback
+                if t == 0:
+                    wp.atomic_exch(scratch, 2 + tile, _scan_tile_status(_SCAN_TILE_PREFIX, prefix + tile_sum))
+            running += prefix
+            for i in range(SCAN_ITEMS_PER_THREAD):
+                idx = base + i
+                if idx < n:
+                    prefix_sums[idx] = running
+                    running += counts[idx]
+            if t == 0 and tile == active_tiles - 1:
+                total[0] = prefix + tile_sum
+            # The blocks' first tickets cover every tile when there are no more tiles than blocks.
+            working = active_tiles > block_count
+    finished = wp.int64(0)
     if t == 0:
-        total[0] = carry
+        # Fenced so this block's tickets and statuses land before the last block zeroes them.
+        _scan_thread_fence()
+        finished = wp.atomic_add(scratch, 1, wp.int64(1))
+        _scan_thread_fence()
+    if int(wp.tile_extract(wp.tile(finished), 0)) == block_count - 1:
+        for k in range(t, active_tiles + 2, block_dim):
+            scratch[k] = wp.int64(0)
 
 
 @wp.kernel(enable_backward=False)
-def _scan_apply_kernel(
+def _scan_serial_kernel(
     counts: wp.array[int],
     num_elements: wp.array[int],
     max_elements: int,
-    num_blocks: int,
-    chunk_offsets: wp.array[int],
     prefix_sums: wp.array[int],
+    total: wp.array[int],
 ):
-    """Write the exclusive prefix of every active count from its chunk offset."""
-    block_id, t = wp.tid()
+    """Exclusively scan the active counts in order on one thread."""
     n = _scan_active_count(num_elements, max_elements)
-    chunk_size = wp.block_dim() * SCAN_ITEMS_PER_THREAD
-    num_chunks = (n + chunk_size - 1) // chunk_size
-    for chunk in range(block_id, num_chunks, num_blocks):
-        base = chunk * chunk_size + t * SCAN_ITEMS_PER_THREAD
-        thread_sum = int(0)
-        for i in range(SCAN_ITEMS_PER_THREAD):
-            idx = base + i
-            if idx < n:
-                thread_sum += counts[idx]
-        running = chunk_offsets[chunk] + wp.untile(wp.tile_scan_exclusive(wp.tile(thread_sum)))
-        for i in range(SCAN_ITEMS_PER_THREAD):
-            idx = base + i
-            if idx < n:
-                prefix_sums[idx] = running
-                running += counts[idx]
+    running = int(0)
+    for i in range(n):
+        prefix_sums[i] = running
+        running += counts[i]
+    total[0] = running
 
 
 def scan_with_total(
@@ -1120,23 +1198,23 @@ def scan_with_total(
     prefix_sums: wp.array[int],
     num_elements: wp.array[int],
     total: wp.array[int],
-    scratch: wp.array[int] | None = None,
+    scratch: wp.array[wp.int64] | None = None,
 ):
     """
     Computes an exclusive prefix sum and total of a counts array.
 
-    Only the first ``num_elements[0]`` entries are read and written, so the cost
-    scales with the active element count rather than the buffer capacity. Pass
-    ``scratch`` (at least ``_scan_scratch_size(counts.shape[0], device)``
-    entries, allocated once by the caller so the scan stays CUDA-graph safe) to
-    enable that path; without it the whole buffer is scanned.
+    Pass ``scratch`` (a zeroed ``int64`` array of at least ``_scan_scratch_size(counts.shape[0], device)``
+    entries, allocated once by the caller) to read and write only the first ``num_elements[0]`` entries in
+    one launch with no allocation, which any CUDA graph capture can record. Scans sharing a scratch must
+    run one at a time; each leaves it zeroed. Without it the whole buffer is scanned with
+    :func:`warp.utils.array_scan`.
 
     Args:
         counts: Input array of per-element counts.
         prefix_sums: Output array for exclusive prefix sums (same size as counts).
         num_elements: Single-element array containing the number of valid elements in counts.
         total: Single-element output array that will contain the sum of all counts.
-        scratch: Optional integer scratch buffer for the count-aware scan.
+        scratch: Optional scratch for the single-launch scan.
     """
     device = counts.device
     capacity = counts.shape[0]
@@ -1154,31 +1232,26 @@ def scan_with_total(
     scratch_size = _scan_scratch_size(capacity, device)
     if scratch.shape[0] < scratch_size:
         raise ValueError(f"scan_with_total scratch needs at least {scratch_size} entries, got {scratch.shape[0]}")
-    num_blocks = wp.get_device(device).sm_count * 8 if device.is_cuda else 64
+    if device.is_cpu:
+        wp.launch(
+            _scan_serial_kernel,
+            dim=1,
+            inputs=[counts, num_elements, capacity],
+            outputs=[prefix_sums, total],
+            device=device,
+            record_tape=False,
+        )
+        return
+    # Blocks loop over tiles, so a sparse scan of a large capacity launches no more than this.
+    block_count = min(_scan_tile_count(capacity), wp.get_device(device).sm_count * SCAN_BLOCKS_PER_SM)
+    block_dim = _scan_block_dim(capacity)
+    lookback = block_dim if capacity <= SCAN_WIDE_LOOKBACK_MAX_CAPACITY else SCAN_NARROW_LOOKBACK
     wp.launch_tiled(
-        _scan_chunk_sums_kernel,
-        dim=(num_blocks,),
-        inputs=[counts, num_elements, capacity, num_blocks],
-        outputs=[scratch],
-        block_dim=SCAN_BLOCK_DIM,
-        device=device,
-        record_tape=False,
-    )
-    wp.launch_tiled(
-        _scan_chunk_offsets_kernel,
-        dim=(1,),
-        inputs=[scratch, num_elements, capacity],
-        outputs=[scratch, total],
-        block_dim=SCAN_BLOCK_DIM,
-        device=device,
-        record_tape=False,
-    )
-    wp.launch_tiled(
-        _scan_apply_kernel,
-        dim=(num_blocks,),
-        inputs=[counts, num_elements, capacity, num_blocks, scratch],
-        outputs=[prefix_sums],
-        block_dim=SCAN_BLOCK_DIM,
+        _scan_tiles_kernel,
+        dim=(block_count,),
+        inputs=[counts, num_elements, capacity, block_count, lookback, scratch],
+        outputs=[prefix_sums, total],
+        block_dim=block_dim,
         device=device,
         record_tape=False,
     )

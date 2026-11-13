@@ -27,6 +27,7 @@ def _make_contacts(
     condim=3,
     gravity=0.0,
     hydroelastic_force_space=True,
+    use_speculative_contacts=False,
     integrator=None,
 ):
     """Build a planar hydroelastic patch with prescribed quadrature weights."""
@@ -59,6 +60,7 @@ def _make_contacts(
     solver = newton.solvers.SolverMuJoCo(
         model,
         use_mujoco_contacts=False,
+        use_speculative_contacts=use_speculative_contacts,
         **({} if hydroelastic_force_space is None else {"hydroelastic_force_space": hydroelastic_force_space}),
         nconmax=max(count, 16),
         njmax=max(count * 4, 64),
@@ -143,7 +145,10 @@ class TestMuJoCoHydroelastic(unittest.TestCase):
         """Reject RK4 in the opt-in instead of silently changing its integrator."""
         with self.assertRaisesRegex(ValueError, "hydroelastic_force_space=True.*RK4"):
             _make_contacts(1, integrator="rk4")
-        _, solver, contacts, state_in, state_out = _make_contacts(1, integrator="rk4", hydroelastic_force_space=False)
+        with self.assertWarnsRegex(newton.NewtonWarning, "RK4"):
+            _, solver, contacts, state_in, state_out = _make_contacts(
+                1, integrator="rk4", hydroelastic_force_space=False
+            )
         solver.step(state_in, state_out, None, contacts, 0.002)
         self.assertTrue(np.isfinite(state_out.body_qd.numpy()).all())
         _, solver, contacts, state_in, state_out = _make_contacts(1)
@@ -409,6 +414,41 @@ class TestMuJoCoHydroelastic(unittest.TestCase):
                 solver.step(state_in, state_out, None, contacts, dt)
                 expected = dt * 1.0e4 * 0.0001 / (0.01 + dt * dt * 1.0e4)
                 self.assertAlmostEqual(float(state_out.body_qd.numpy()[0, 2]), expected, delta=2.0e-5)
+        np.testing.assert_allclose(velocities[1], velocities[0], atol=1.0e-6, rtol=1.0e-5)
+
+    def test_force_space_with_speculative_contact_braking(self):
+        """Preserve speculative braking when a cached pressure contact separates."""
+        velocities = []
+        for enabled in (False, True):
+            model, solver, contacts, state_in, state_out = _make_contacts(
+                1, hydroelastic_force_space=enabled, use_speculative_contacts=True
+            )
+            dt = 0.006
+            solver.step(state_in, state_out, None, contacts, dt)
+            if enabled:
+                expected = (-0.1 + dt * 50.0) / (1.0 + dt * dt * 1.0e4)
+                self.assertAlmostEqual(float(state_out.body_qd.numpy()[0, 2]), expected, delta=2.0e-5)
+
+            # Reuse the pressure contact after moving apart, with enough closing
+            # velocity that the speculative normal constraint must brake it.
+            q = state_in.joint_q.numpy()
+            q[2] = 0.105
+            state_in.joint_q.assign(q)
+            qd = state_in.joint_qd.numpy()
+            qd[2] = -2.0
+            state_in.joint_qd.assign(qd)
+            newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+            samples = []
+            for dt in (0.006, 0.003):
+                solver.step(state_in, state_out, None, contacts, dt)
+                with wp.ScopedCapture() as capture:
+                    solver.step(state_in, state_out, None, contacts, dt)
+                wp.capture_launch(capture.graph)
+                samples.append(float(state_out.body_qd.numpy()[0, 2]))
+                self.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), 1)
+                self.assertEqual(int(solver.mjw_data.contact.dim.numpy()[0]), 1)
+                self.assertEqual(int(solver._contact_count.numpy()[0]), 0)
+            velocities.append(samples)
         np.testing.assert_allclose(velocities[1], velocities[0], atol=1.0e-6, rtol=1.0e-5)
 
     def test_cached_timestep_changes_and_graph_replay(self):

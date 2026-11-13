@@ -9,7 +9,7 @@ See the :mod:`newton._src.solvers.kamino._src.solvers.fk` module for a detailed 
 
 from __future__ import annotations
 
-import sys
+import logging
 
 import numpy as np
 import warp as wp
@@ -29,7 +29,6 @@ from ...linalg.conjugate import BatchedLinearOperator, CGSolver
 from ...linalg.factorize.llt_blocked_semi_sparse import SemiSparseBlockCholeskySolverBatched
 from ...linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ...linalg.sparse_operator import BlockSparseLinearOperators
-from ...utils import logger as msg
 from ...utils.tile import get_block_dim, get_num_tiles, get_tile_size
 from ...utils.world_equivalence import DiscreteSignature, compute_equivalence_classes
 from .kernels import (
@@ -74,6 +73,8 @@ from .types import (
     ForwardKinematicsPreconditionerType,
     ForwardKinematicsStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -231,17 +232,21 @@ class ForwardKinematicsSolver:
         joint_act_type_prev = resolved_act_type.numpy()
         joint_dof_start = self.model.joints.dofs_offset.numpy()
         joint_dof_act_types = self.model.joints.dof_act_types.numpy()
-        base_joint_ids_input = self.model.info.base_joint_index.numpy().tolist()
-        base_joint_id_set = {joint_id for joint_id in base_joint_ids_input if joint_id >= 0}
-        for joint in range(self.model.size.sum_of_num_joints):
-            if joint in base_joint_id_set:
-                continue
-            dof_actuation = joint_dof_act_types[joint_dof_start[joint] : joint_dof_start[joint + 1]]
-            passive = dof_actuation == JointActuationType.PASSIVE
-            if np.any(passive) and not np.all(passive):
-                raise ValueError(
-                    f"Invalid FK actuation for joint {joint}: all DoFs must be passive or all must be actuated."
-                )
+        base_joint_index_np = self.model.info.base_joint_index.numpy()
+        base_joint_ids_input = base_joint_index_np.tolist()
+        passive_dofs = joint_dof_act_types == JointActuationType.PASSIVE
+        passive_prefix = np.concatenate(([0], np.cumsum(passive_dofs, dtype=np.intp)))
+        # Prefix differences count passive DoFs within each joint's range.
+        passive_count = passive_prefix[joint_dof_start[1:]] - passive_prefix[joint_dof_start[:-1]]
+        dof_count = np.diff(joint_dof_start)
+        mixed_actuation = (passive_count > 0) & (passive_count < dof_count)
+        mixed_actuation[base_joint_index_np[base_joint_index_np >= 0]] = False
+        invalid = np.flatnonzero(mixed_actuation)
+        if invalid.size > 0:
+            joint = int(invalid[0])
+            raise ValueError(
+                f"Invalid FK actuation for joint {joint}: all DoFs must be passive or all must be actuated."
+            )
         # Indexed by model joint: 0 is passive, 1 is actuated, and -1 skips
         # validation for an explicit base joint that FK replaces.
         built_fk_actuated = (joint_act_type_prev != JointActuationType.PASSIVE).astype(np.int32)
@@ -2556,7 +2561,7 @@ class ForwardKinematicsSolver:
 
         # Warn if any world does not have an assigned base body when base attributes are provided.
         if (base_q is not None or base_u is not None) and self.model.info.has_world_without_base_body:
-            msg.warning(
+            logger.warning(
                 "Some worlds have no free-floating base body assigned, possibly due to a non-free articulation root (fixed-base system). "
                 "Base pose/velocity updates for forward kinematics will have no effect for those worlds."
             )
@@ -2578,9 +2583,13 @@ class ForwardKinematicsSolver:
             max_residual = self.data.gauss_newton.max_residual.numpy().copy()
             num_active_worlds = self.model.size.num_worlds if world_mask is None else world_mask.numpy().sum()
             if verbose:
-                sys.__stdout__.write(f"Newton success for {success.sum()}/{num_active_worlds} worlds; ")
-                sys.__stdout__.write(f"num iterations={iterations.max()}; ")
-                sys.__stdout__.write(f"max residual={max_residual.max()}\n")
+                logger.info(
+                    "Newton success for %s/%s worlds; num iterations=%s; max residual=%s",
+                    success.sum(),
+                    num_active_worlds,
+                    iterations.max(),
+                    max_residual.max(),
+                )
 
         # Return solver status
         if return_status:

@@ -23,6 +23,7 @@ from newton._src.sim.builder import (
     _convex_hull_adjacency,
     _deduplicate_convex_collision_mesh,
 )
+from newton.tests.unittest_utils import requires
 
 
 @wp.kernel
@@ -98,6 +99,7 @@ class TestConvexSupportAcceleration(unittest.TestCase):
                     )
                     self.assertEqual(_convex_hull_adjacency(source) is not None, valid)
 
+    @requires("scipy")
     def test_hull_validation_does_not_weld_away_a_missing_small_face(self):
         """Keep a narrow opening visible when validating a nearly closed source mesh."""
         from scipy.spatial import ConvexHull
@@ -193,8 +195,9 @@ class TestConvexSupportAcceleration(unittest.TestCase):
             vertices=mesh.vertices,
             indices=np.delete(np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3), 1, axis=0),
         )
-        with self.assertWarnsRegex(RuntimeWarning, "complete closed hull topology"):
+        with self.assertLogs("newton", level="WARNING") as logs:
             self.assertIsNone(_build_convex_support_acceleration(incomplete))
+        self.assertIn("complete closed hull topology", logs.output[0])
 
     def test_small_hulls_do_not_allocate_acceleration(self):
         """Skip support acceleration for small convex hulls."""

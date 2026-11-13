@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import math
 import os
 import tempfile
 import warnings
@@ -15,6 +17,7 @@ import warp as wp
 import newton
 
 from ..core.types import override
+from ..exceptions import NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 
 try:
@@ -24,6 +27,8 @@ except ImportError:
 
 from .utils import promote_to_clamped_float_array
 from .viewer import _DEFAULT_LAYER_ID, ViewerBase
+
+logger = logging.getLogger(__name__)
 
 
 # transforms a cylinder such that it connects the two points pos0, pos1
@@ -79,6 +84,8 @@ class ViewerUSD(ViewerBase):
     """
 
     _root_path = "/root"
+    _export_gprims = True
+    _supports_deformable_visual_meshes = True
 
     def __init__(
         self,
@@ -163,9 +170,9 @@ class ViewerUSD(ViewerBase):
         layer._instancers = {}  # instancer_name -> UsdGeom.PointInstancer
         layer._points = {}  # point_name -> UsdGeom.Points
         layer._preview_materials: dict[tuple, Any] = {}  # material key -> UsdShade.Material
-        layer._texture_paths: dict[str, str] = {}
+        layer._texture_paths: dict[str, tuple[Any, str, str]] = {}  # mesh -> (texture object, digest, file)
         layer._mesh_appearance: dict[str, dict[str, Any]] = {}
-        layer._instance_appearance: dict[str, dict[str, np.ndarray]] = {}
+        layer._instance_appearance: dict[str, dict[str, Any]] = {}
 
     def _reset_stage(self):
         self.stage.GetRootLayer().Clear()
@@ -239,7 +246,8 @@ class ViewerUSD(ViewerBase):
             time: The simulation time for the new frame.
         """
         super().begin_frame(time)
-        self._frame_index = int(time * self.fps)
+        # Floor with a tolerance so accumulated float time just below a frame boundary maps to that frame.
+        self._frame_index = math.floor(time * self.fps + 1.0e-4)
         self._frame_count += 1
 
         # Update stage end time if needed
@@ -278,7 +286,7 @@ class ViewerUSD(ViewerBase):
         self.stage = None
 
         if self.output_path:
-            print(f"USD output saved in: {os.path.abspath(self.output_path)}")
+            logger.info("USD output saved in: %s", os.path.abspath(self.output_path))
 
     def _get_path(self, name):
         # Handle both absolute and relative paths correctly
@@ -286,6 +294,15 @@ class ViewerUSD(ViewerBase):
             return self._root_path + name
         else:
             return f"{self._root_path}/{name}"
+
+    @override
+    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, **kwargs):
+        name = self._qualify(name)
+        existing = self._meshes.get(name)
+        if hidden and existing is not None:
+            existing.GetVisibilityAttr().Set("invisible", self._frame_index)
+            return
+        self.log_mesh(name, points, indices, hidden=hidden, **kwargs)
 
     @override
     def log_mesh(
@@ -312,6 +329,14 @@ class ViewerUSD(ViewerBase):
         matching the smooth default of the OpenGL viewer. Source subdivision
         control surfaces are not reconstructed from the triangles.
 
+        Texture arrays are cached by object identity; a new array with the same
+        pixels reuses the exported file after decoding and hashing it. Reuse the
+        same array for unchanged frames to avoid that work. Pass a new array or
+        path to replace an image; in-place edits are not detected. A call that omits ``texture`` or
+        ``uvs`` removes a texture bound by an earlier call, as in ViewerGL, while
+        omitted colors and material values persist. Material bindings are not
+        time-sampled, so a replacement applies to the whole export.
+
         Args:
             name: Mesh name or Sdf.Path string.
             points: Vertex positions as a warp array of wp.vec3.
@@ -332,6 +357,7 @@ class ViewerUSD(ViewerBase):
         """
 
         name = self._qualify(name)
+        self._remove_retyped_prototype(name, UsdGeom.Mesh)
 
         # Convert warp arrays to numpy
         points_np = points.numpy().astype(np.float32)
@@ -355,15 +381,19 @@ class ViewerUSD(ViewerBase):
         # honors the supplied shading normals on polygonal meshes.
         mesh_prim.GetSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
         mesh_prim.GetPointsAttr().Set(points_np, self._frame_index)
+        mesh_prim.GetExtentAttr().Set(UsdGeom.Mesh.ComputeExtent(points_np), self._frame_index)
 
         valid_texture = texture is not None and uvs is not None
-        self._mesh_appearance[name] = {
-            "texture": texture if valid_texture else None,
-            "color": color,
-            "roughness": roughness,
-            "metallic": metallic,
-            "opacity": opacity,
-        }
+        previous_texture = self._mesh_appearance.get(name, {}).get("texture")
+        appearance = self._mesh_appearance.setdefault(name, {})
+        for key, value in (("color", color), ("roughness", roughness), ("metallic", metallic), ("opacity", opacity)):
+            if value is not None:
+                appearance[key] = value
+        appearance["texture"] = texture if valid_texture else None
+        appearance["texture_path"] = self._resolve_texture_path(name, texture) if valid_texture else None
+        color, roughness, metallic, opacity = (
+            appearance.get(key) for key in ("color", "roughness", "metallic", "opacity")
+        )
 
         normals_np = (
             normals.numpy().astype(np.float32) if normals is not None else compute_vertex_normals(points_np, indices_np)
@@ -382,12 +412,18 @@ class ViewerUSD(ViewerBase):
         if valid_texture:
             material = self._get_preview_surface_material(
                 name,
-                texture=texture,
+                texture=appearance["texture_path"],
                 opacity=opacity,
                 roughness=roughness,
                 metallic=metallic,
             )
-        elif color is not None or roughness is not None or metallic is not None or opacity is not None:
+        elif (
+            color is not None
+            or roughness is not None
+            or metallic is not None
+            or opacity is not None
+            or previous_texture is not None
+        ):
             material = self._get_preview_surface_material(
                 name,
                 color=color,
@@ -400,6 +436,10 @@ class ViewerUSD(ViewerBase):
 
         if material is not None:
             self._bind_material(mesh_prim.GetPrim(), material)
+            material_path = str(material.GetPath())
+            if material_path != appearance.get("material_path"):
+                appearance["material_path"] = material_path
+                self._refresh_mesh_instance_materials(name)
 
         # how to hide the prototype mesh but not the instances in USD?
         mesh_prim.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
@@ -413,13 +453,110 @@ class ViewerUSD(ViewerBase):
                 )
             display_opacity.Set([float(np.clip(opacity, 0.0, 1.0))], self._frame_index)
 
+    @override
+    def log_geo(
+        self,
+        name: str,
+        geo_type: int,
+        geo_scale: tuple[float, ...],
+        geo_thickness: float,
+        geo_is_solid: bool,
+        geo_src: newton.Mesh | newton.Heightfield | None = None,
+        hidden: bool = False,
+    ):
+        """
+        Log a geometry prototype, as a native USD Gprim where one exists.
+
+        Spheres, capsules, cylinders, cones, boxes, and ellipsoids become
+        ``UsdGeom`` Gprims; other types are tessellated via :meth:`log_mesh`.
+
+        Args:
+            name: Unique path/name used to register the geometry.
+            geo_type: Geometry type value from :class:`newton.GeoType`.
+            geo_scale: Geometry scale tuple, interpreted per geometry type.
+            geo_thickness: Shell thickness for non-solid mesh generation.
+            geo_is_solid: Whether to render mesh geometry as a solid.
+            geo_src: Source mesh or heightfield for mesh-based ``geo_type`` values.
+            hidden: Whether the geometry should be hidden.
+        """
+        if self._export_gprims and self._log_gprim(self._qualify(name), int(geo_type), geo_scale, hidden):
+            return
+        super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src=geo_src, hidden=hidden)
+
+    def _log_gprim(self, name: str, geo_type: int, geo_scale: tuple[float, ...], hidden: bool) -> bool:
+        """Define a Gprim prototype; return False if ``geo_type`` needs a mesh."""
+        schema = {
+            newton.GeoType.SPHERE: UsdGeom.Sphere,
+            newton.GeoType.CAPSULE: UsdGeom.Capsule,
+            newton.GeoType.CYLINDER: UsdGeom.Cylinder,
+            newton.GeoType.CONE: UsdGeom.Cone,
+            newton.GeoType.BOX: UsdGeom.Cube,
+            newton.GeoType.ELLIPSOID: UsdGeom.Sphere,
+        }.get(geo_type)
+        scale = [float(v) for v in geo_scale]
+        if schema is None or (geo_type == newton.GeoType.CYLINDER and len(scale) > 2 and scale[2] != 0.0):
+            return False
+        if geo_type == newton.GeoType.ELLIPSOID and not scale:
+            scale = [1.0]
+
+        is_scaled = geo_type in (newton.GeoType.BOX, newton.GeoType.ELLIPSOID)
+        if is_scaled:
+            self._remove_retyped_prototype(name, UsdGeom.Xform, child_type=schema)
+        else:
+            self._remove_retyped_prototype(name, schema)
+        path = self._get_path(name)
+        self._ensure_scopes_for_path(self.stage, path)
+        # Time-sample the size so re-logging a prototype animates it, like mesh points.
+        time = self._frame_index
+        if is_scaled:
+            # Instances override the prototype's xformOps, so scale a child
+            # Gprim whose schema fallbacks give it unit half-extents.
+            root = UsdGeom.Xform.Define(self.stage, path)
+            gprim = schema.Define(self.stage, f"{path}/geom")
+            UsdGeom.XformCommonAPI(gprim).SetScale(Gf.Vec3f(*(scale + scale[:1] * 2)[:3]), time)
+        else:
+            # Schema fallback axis is Z, matching Newton's shape convention.
+            root = gprim = schema.Define(self.stage, path)
+            gprim.GetRadiusAttr().Set(scale[0], time)
+            if geo_type != newton.GeoType.SPHERE:
+                gprim.GetHeightAttr().Set(2.0 * scale[1], time)
+
+        gprim.GetExtentAttr().Set(UsdGeom.Boundable.ComputeExtentFromPlugins(gprim, time), time)
+        root.GetVisibilityAttr().Set("invisible" if hidden else "inherited", time)
+        self._meshes[name] = root
+        return True
+
+    def _remove_retyped_prototype(self, name: str, prim_type: type, child_type: type | None = None) -> None:
+        # A prim's type cannot vary over time, and redefining it in place would
+        # keep a stale /geom child or hand log_mesh a non-mesh prim.
+        existing = self._meshes.get(name)
+        if existing is None:
+            return
+        prim = existing.GetPrim()
+        child = prim.GetChild("geom")
+        if prim.IsA(prim_type) and (child_type is None or child.IsA(child_type)):
+            return
+        old_type = f"{prim.GetTypeName()}/{child.GetTypeName()}" if child else prim.GetTypeName()
+        new_type = f"{prim_type.__name__}/{child_type.__name__}" if child_type else prim_type.__name__
+        warnings.warn(
+            f"ViewerUSD: prototype '{name}' changed from {old_type} to {new_type}; "
+            "replacing it discards its earlier time samples.",
+            NewtonWarning,
+            stacklevel=3,
+        )
+        self.stage.RemovePrim(existing.GetPath())
+        del self._meshes[name]
+        # A Gprim replacement bypasses log_mesh, which would otherwise reset this.
+        self._mesh_appearance.pop(name, None)
+
     def _resolve_texture_path(self, mesh_name: str, texture) -> str | None:
         """Resolve a texture path or export an image array next to the USD file."""
         if isinstance(texture, str):
             return os.path.abspath(texture)
 
-        if mesh_name in self._texture_paths:
-            return self._texture_paths[mesh_name]
+        cached = self._texture_paths.get(mesh_name)
+        if cached is not None and cached[0] is texture:
+            return cached[2]
 
         from ..utils.texture import load_texture  # noqa: PLC0415
 
@@ -429,17 +566,24 @@ class ViewerUSD(ViewerBase):
 
         tex_dir = os.path.dirname(self.output_path)
         safe_name = mesh_name.replace("/", "_").replace("\\", "_")
-        tex_path = os.path.join(tex_dir, f"_tex_{safe_name}.png")
-        try:
-            self._save_texture_atomic(tex_array, tex_path)
-        except Exception as exc:
-            warnings.warn(
-                f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. Mesh will render without texture.",
-                stacklevel=2,
-            )
-            return None
+        # Renderers cache images by path. Do not overwrite an earlier texture
+        # when its replacement needs to be loaded by an already-open scene.
+        digest = hashlib.blake2s(str(tex_array.shape).encode() + tex_array.tobytes(), digest_size=8).hexdigest()
+        tex_path = os.path.join(tex_dir, f"_tex_{safe_name}_{digest}.png")
+        if (cached is None or cached[1] != digest) and not os.path.exists(tex_path):
+            try:
+                self._save_texture_atomic(tex_array, tex_path)
+            except Exception as exc:
+                warnings.warn(
+                    f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. "
+                    "Mesh will render without texture.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+                return None
 
-        self._texture_paths[mesh_name] = tex_path
+        # A new array object with the same pixels keeps its export.
+        self._texture_paths[mesh_name] = (texture, digest, tex_path)
         return tex_path
 
     @staticmethod
@@ -555,6 +699,14 @@ class ViewerUSD(ViewerBase):
         safe = mesh_name.replace("/", "_").lstrip("_")
         return f"{self._root_path}/Materials/mat_{safe}"
 
+    @override
+    def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
+        if flags & newton.ModelFlags.SHAPE_TYPE_AND_SOURCE and self._shape_geometry_changed():
+            raise NotImplementedError(
+                "ViewerUSD does not support shape geometry changes such as body variant selection."
+            )
+        super().notify_model_changed(flags)
+
     # log a set of instances as individual mesh prims, slower but makes it easier
     # to do post-editing of instance materials etc. default for Newton shapes
     @override
@@ -617,6 +769,8 @@ class ViewerUSD(ViewerBase):
 
         appearance_changed = colors is not None or materials is not None or opacities is not None
         appearance = self._instance_appearance.setdefault(name, {})
+        appearance["mesh"] = mesh
+        appearance["count"] = len(xforms)
         if colors is not None:
             appearance["colors"] = np.asarray(colors, dtype=np.float32)
         if materials is not None:
@@ -638,7 +792,7 @@ class ViewerUSD(ViewerBase):
             cached_opacities = None
 
         mesh_appearance = self._mesh_appearance.get(mesh, {})
-        mesh_texture = mesh_appearance.get("texture")
+        mesh_texture = mesh_appearance.get("texture_path")
         mesh_opacity = mesh_appearance.get("opacity")
 
         for i in range(len(xforms)):
@@ -706,6 +860,47 @@ class ViewerUSD(ViewerBase):
                     metallic=metallic,
                 )
                 self._bind_material(instance, material)
+
+    def _refresh_mesh_instance_materials(self, mesh: str) -> list[tuple[str, int, str]]:
+        """Refresh local instance overrides after the prototype material changes."""
+        updated = []
+        base = self._mesh_appearance[mesh]
+        mesh_path = Sdf.Path(self._get_path(mesh))
+        for name, appearance in self._instance_appearance.items():
+            if appearance.get("mesh") != mesh:
+                continue
+            for i in range(appearance["count"]):
+                instance = self.stage.GetPrimAtPath(self._get_path(name) + f"/instance_{i}")
+                if not instance or not instance.GetRelationship("material:binding").HasAuthoredTargets():
+                    continue
+                # Reusing a USD group name can leave instances on its previous prototype.
+                references = instance.GetMetadata("references")
+                if not references or not any(ref.primPath == mesh_path for ref in references.GetAppliedItems()):
+                    continue
+                # A binding inherited through the prototype needs no local override.
+                binding_path = instance.GetPath().AppendProperty("material:binding")
+                if not self.stage.GetRootLayer().GetRelationshipAtPath(binding_path):
+                    updated.append((name, i, base["material_path"]))
+                    continue
+                colors = appearance.get("colors")
+                params = appearance.get("materials")
+                opacities = appearance.get("opacities")
+                color = colors[i] if colors is not None else base.get("color")
+                material_params = params[i] if params is not None else None
+                use_texture = base.get("texture_path") is not None and (
+                    material_params is None or material_params[3] > 0.5
+                )
+                material = self._get_preview_surface_material(
+                    mesh,
+                    texture=base.get("texture_path") if use_texture else None,
+                    color=None if use_texture else color,
+                    roughness=float(material_params[0]) if material_params is not None else None,
+                    metallic=float(material_params[1]) if material_params is not None else None,
+                    opacity=float(opacities[i]) if opacities is not None else base.get("opacity"),
+                )
+                self._bind_material(instance, material)
+                updated.append((name, i, str(material.GetPath())))
+        return updated
 
     # log a set of instances as a point instancer, faster but less flexible
     def log_instances_point_instancer(

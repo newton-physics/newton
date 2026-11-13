@@ -203,7 +203,10 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
 
         result.hit = wp.bool(True)
         if wp.static(state.render_forward_depth):
-            result.forward_depth = closest_hit.distance * wp.dot(ray_dir_world, forward_axis)
+            ray_origin_offset_world = wp.transform_vector(camera_transform, camera_ray_origin)
+            result.forward_depth = wp.dot(ray_origin_offset_world, forward_axis) + closest_hit.distance * wp.dot(
+                ray_dir_world, forward_axis
+            )
         return result
 
     @wp.func
@@ -231,6 +234,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         triangle_mesh_id: wp.uint64,
         triangle_mesh_group_roots: wp.array[wp.int32],
         triangle_colors: wp.array[wp.vec3f],
+        triangle_mesh_uvs: wp.array[wp.vec2f],
+        triangle_mesh_texture_ids: wp.array[wp.int32],
         mesh_data: wp.array[MeshData],
         texture_data: wp.array[TextureData],
         light_active: wp.array[wp.bool],
@@ -238,6 +243,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         light_cast_shadow: wp.array[wp.bool],
         light_positions: wp.array[wp.vec3f],
         light_orientations: wp.array[wp.vec3f],
+        light_colors: wp.array[wp.vec3f],
+        ambient_lighting: wp.array[wp.vec3f],
     ) -> ShadeResult:
         result = ShadeResult()
         result.albedo = wp.vec3f(0.0)
@@ -278,6 +285,22 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                         closest_hit.face_idx,
                     )
                     albedo_color = wp.cw_mul(albedo_color, srgb_to_linear_wp(tex_color))
+            elif (
+                wp.static(config.enable_textures and state.has_triangle_mesh_textures)
+                and closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID
+            ):
+                if closest_hit.face_idx >= 0 and closest_hit.face_idx < triangle_mesh_texture_ids.shape[0]:
+                    texture_index = triangle_mesh_texture_ids[closest_hit.face_idx]
+                    if texture_index >= 0 and texture_index < texture_data.shape[0] and triangle_mesh_uvs.shape[0] > 0:
+                        tex_color = textures.sample_texture_mesh_uvs(
+                            closest_hit.bary_u,
+                            closest_hit.bary_v,
+                            closest_hit.face_idx,
+                            triangle_mesh_id,
+                            triangle_mesh_uvs,
+                            texture_data[texture_index],
+                        )
+                        albedo_color = wp.cw_mul(albedo_color, srgb_to_linear_wp(tex_color))
 
         result.albedo = albedo_color
         if not wp.static(state.render_color) and not wp.static(state.render_hdr_color):
@@ -286,15 +309,16 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         shaded_color = closest_hit.color
         if not is_gaussian:
             if wp.static(config.enable_ambient_lighting):
-                up = wp.vec3f(0.0, 0.0, 1.0)
+                # ambient_lighting holds (sky radiance, ground radiance, up vector).
+                sky = ambient_lighting[0]
+                ground = ambient_lighting[1]
+                up = ambient_lighting[2]
                 len_n = wp.length(closest_hit.normal)
                 n = closest_hit.normal if len_n > 0.0 else up
                 n = wp.normalize(n)
                 hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
-                sky = wp.vec3f(0.4, 0.4, 0.45)
-                ground = wp.vec3f(0.1, 0.1, 0.12)
                 ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
-                shaded_color = wp.cw_mul(albedo_color, ambient_color * 0.5)
+                shaded_color = wp.cw_mul(albedo_color, ambient_color)
 
             for light_index in range(light_count):
                 light_contribution = compute_lighting(
@@ -323,7 +347,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     closest_hit.normal,
                     hit_point,
                 )
-                shaded_color = shaded_color + albedo_color * light_contribution
+                shaded_color = shaded_color + wp.cw_mul(albedo_color, light_colors[light_index]) * light_contribution
 
         result.color = shaded_color
         return result
@@ -357,6 +381,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         triangle_mesh_id: wp.uint64,
         triangle_mesh_group_roots: wp.array[wp.int32],
         triangle_colors: wp.array[wp.vec3f],
+        triangle_mesh_uvs: wp.array[wp.vec2f],
+        triangle_mesh_texture_ids: wp.array[wp.int32],
         mesh_data: wp.array[MeshData],
         gaussians_data: wp.array[Gaussian.Data],
         texture_data: wp.array[TextureData],
@@ -365,6 +391,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         light_cast_shadow: wp.array[wp.bool],
         light_positions: wp.array[wp.vec3f],
         light_orientations: wp.array[wp.vec3f],
+        light_colors: wp.array[wp.vec3f],
+        ambient_lighting: wp.array[wp.vec3f],
     ) -> RenderSample:
         result = RenderSample()
         result.hit = wp.bool(False)
@@ -443,6 +471,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             triangle_mesh_id,
             triangle_mesh_group_roots,
             triangle_colors,
+            triangle_mesh_uvs,
+            triangle_mesh_texture_ids,
             mesh_data,
             texture_data,
             light_active,
@@ -450,6 +480,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             light_cast_shadow,
             light_positions,
             light_orientations,
+            light_colors,
+            ambient_lighting,
         )
         result.albedo = shade.albedo
         result.color = shade.color
@@ -492,6 +524,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         triangle_mesh_id: wp.uint64,
         triangle_mesh_group_roots: wp.array[wp.int32],
         triangle_colors: wp.array[wp.vec3f],
+        triangle_mesh_uvs: wp.array[wp.vec2f],
+        triangle_mesh_texture_ids: wp.array[wp.int32],
         # Meshes
         mesh_data: wp.array[MeshData],
         # Gaussians
@@ -504,6 +538,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         light_cast_shadow: wp.array[wp.bool],
         light_positions: wp.array[wp.vec3f],
         light_orientations: wp.array[wp.vec3f],
+        light_colors: wp.array[wp.vec3f],
+        ambient_lighting: wp.array[wp.vec3f],
         # Outputs
         out_color: wp.array[wp.uint32],
         out_depth: wp.array[wp.float32],
@@ -596,6 +632,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                 triangle_mesh_id,
                 triangle_mesh_group_roots,
                 triangle_colors,
+                triangle_mesh_uvs,
+                triangle_mesh_texture_ids,
                 mesh_data,
                 gaussians_data,
                 texture_data,
@@ -604,6 +642,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                 light_cast_shadow,
                 light_positions,
                 light_orientations,
+                light_colors,
+                ambient_lighting,
             )
             if not sample.hit:
                 write_clear_outputs(
@@ -695,6 +735,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     triangle_mesh_id,
                     triangle_mesh_group_roots,
                     triangle_colors,
+                    triangle_mesh_uvs,
+                    triangle_mesh_texture_ids,
                     mesh_data,
                     gaussians_data,
                     texture_data,
@@ -703,6 +745,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     light_cast_shadow,
                     light_positions,
                     light_orientations,
+                    light_colors,
+                    ambient_lighting,
                 )
                 if not sample.hit:
                     if wp.static(state.render_color):
@@ -876,6 +920,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                             triangle_mesh_id,
                             triangle_mesh_group_roots,
                             triangle_colors,
+                            triangle_mesh_uvs,
+                            triangle_mesh_texture_ids,
                             mesh_data,
                             texture_data,
                             light_active,
@@ -883,6 +929,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                             light_cast_shadow,
                             light_positions,
                             light_orientations,
+                            light_colors,
+                            ambient_lighting,
                         )
                         sample_color = shade.color
                         sample_albedo = shade.albedo

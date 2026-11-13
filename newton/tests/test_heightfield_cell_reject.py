@@ -23,7 +23,7 @@ from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 def _create_heightfield_midphase(*, upstream_default):
     """Exercise the upstream call contract or an unculled reference at the launch boundary."""
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def midphase(
         shape_types: wp.array[int],
         shape_transform: wp.array[wp.transform],
@@ -33,6 +33,7 @@ def _create_heightfield_midphase(*, upstream_default):
         shape_collision_radius: wp.array[float],
         shape_collision_aabb_lower: wp.array[wp.vec3],
         shape_collision_aabb_upper: wp.array[wp.vec3],
+        shape_interior_point: wp.array[wp.vec3],
         shape_heightfield_index: wp.array[wp.int32],
         heightfield_data: wp.array[HeightfieldData],
         heightfield_elevations: wp.array[wp.float32],
@@ -345,11 +346,19 @@ def test_explicit_mesh_stage_capacity(test, device):
         test.assertTrue(np.any(np.all(shapes == sorted(pair), axis=1)), pair)
 
 
-def _explicit_box_pair_distances(device, *, b_collides, b_scale, reverse, reduce_contacts, generic=False):
+def _explicit_box_pair_distances(
+    device, *, b_collides, b_scale, reverse, reduce_contacts, b_particle_collides=True, generic=False
+):
     """Return mesh SDF specialization flags and contact distances for one listed box pair."""
     builder = newton.ModelBuilder()
     cfg = builder.ShapeConfig(margin=0.01, gap=0.01)
-    b_cfg = builder.ShapeConfig(margin=0.01, gap=0.01, density=0.0, has_shape_collision=b_collides)
+    b_cfg = builder.ShapeConfig(
+        margin=0.01,
+        gap=0.01,
+        density=0.0,
+        has_shape_collision=b_collides,
+        has_particle_collision=b_particle_collides,
+    )
     mesh_a = newton.Mesh.create_box(0.5, compute_inertia=False)
     mesh_a.build_sdf(device=device, max_resolution=16)
     mesh_b = newton.Mesh.create_box(0.2, 0.2, 0.1, compute_inertia=False)
@@ -390,18 +399,33 @@ def _explicit_box_pair_distances(device, *, b_collides, b_scale, reverse, reduce
 
 
 def test_explicit_disabled_mesh_sdf_specialization(test, device):
-    """Match the generic mesh kernel when a listed collision-disabled mesh has no texture SDF."""
-    for b_scale in ((1.0, 1.0, 1.0), (2.0, 2.0, 2.0)):
+    """Match generic mesh contacts for listed meshes with shape collisions disabled."""
+    # Fully disabled meshes have no texture; particle-only meshes retain their prebuilt SDF.
+    for b_scale, b_particle_collides, texture_only in (
+        ((1.0, 1.0, 1.0), False, False),
+        ((2.0, 2.0, 2.0), False, False),
+        ((2.0, 2.0, 2.0), True, True),
+    ):
         for reverse in (False, True):
             for reduce_contacts in (True, False):
-                with test.subTest(b_scale=b_scale, reverse=reverse, reduce_contacts=reduce_contacts):
-                    kwargs = {"b_scale": b_scale, "reverse": reverse, "reduce_contacts": reduce_contacts}
+                with test.subTest(
+                    b_scale=b_scale,
+                    b_particle_collides=b_particle_collides,
+                    reverse=reverse,
+                    reduce_contacts=reduce_contacts,
+                ):
+                    kwargs = {
+                        "b_scale": b_scale,
+                        "b_particle_collides": b_particle_collides,
+                        "reverse": reverse,
+                        "reduce_contacts": reduce_contacts,
+                    }
                     flags, distances = _explicit_box_pair_distances(device, b_collides=False, **kwargs)
                     _, expected = _explicit_box_pair_distances(device, b_collides=False, generic=True, **kwargs)
                     test.assertGreater(len(expected), 0)
                     np.testing.assert_allclose(expected, -0.04 - 0.1 * (b_scale[2] - 1.0), atol=1.0e-4)
                     np.testing.assert_allclose(distances, expected, atol=1.0e-5)
-                    test.assertEqual(flags, (False, False))
+                    test.assertEqual(flags, (texture_only, False))
     flags, _ = _explicit_box_pair_distances(
         device, b_collides=True, b_scale=(2.0, 2.0, 2.0), reverse=False, reduce_contacts=True
     )
@@ -488,8 +512,9 @@ def test_speculative_search_gap(test, device):
 
 
 def test_sphere_contacts_at_gap_boundary(test, device):
-    """Keep sphere contacts the narrow phase admits just above the cell's highest corner."""
-    for delta in (1.0e-5, 5.0e-5, 9.0e-5):
+    """Keep the sphere contacts the narrow phase admits just inside the flat cells' margin + gap search bound, and
+    admit none just outside it, with and without cell rejection."""
+    for delta in (-9.0e-5, -5.0e-5, -1.0e-5, 1.0e-5, 5.0e-5, 9.0e-5):
         with test.subTest(delta=delta):
             builder = newton.ModelBuilder()
             cfg = builder.ShapeConfig(margin=0.01, gap=0.01)
@@ -501,7 +526,7 @@ def test_sphere_contacts_at_gap_boundary(test, device):
                 xform=terrain_pose,
                 cfg=cfg,
             )
-            # Sphere bottom sits delta above the margin + gap search bound of the flat cells.
+            # Sphere bottom sits delta above (delta > 0) or below the margin + gap search bound of the flat cells.
             body = builder.add_body(
                 xform=terrain_pose * wp.transform((0.1, 0.1, 0.035 + 0.04 + delta), wp.quat_identity())
             )
@@ -509,6 +534,10 @@ def test_sphere_contacts_at_gap_boundary(test, device):
             model = builder.finalize(device=device)
             _, a = _collide(model, legacy=True)
             _, b = _collide(model)
+            if delta > 0.0:
+                test.assertEqual(len(a[0]), 0)
+                test.assertEqual(len(b[0]), 0)
+                continue
             test.assertGreater(len(a[0]), 0)
             _assert_geometry_equal(test, a, b)
 

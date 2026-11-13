@@ -17,6 +17,8 @@ uv run -m newton.examples basic_pendulum
 
 ## Tests
 
+Follow the canonical [test organization and runtime guidelines](CODING_GUIDELINES.rst#test-organization-and-runtime) when changing or reviewing tests.
+
 ```bash
 uv run --extra dev -m newton.tests
 uv run --extra dev -m newton.tests -k test_viewer_log_shapes           # specific test
@@ -41,3 +43,4 @@ uvx --with virtualenv asv run --launch-method spawn main^!
   - Implement `test_final()` or `test_post_step()`; an example may implement both.
   - In test mode, `test_post_step()` runs after each simulation step and `test_final()` runs after the example completes.
 - Register the example in `README.md` with its `python -m newton.examples <name>` command and a 320x320 JPEG screenshot.
+- Include a module docstring with a general description, success criteria, and run commands, as described in `docs/guide/development.rst` (Embedded success criteria). CI checks every registered example.

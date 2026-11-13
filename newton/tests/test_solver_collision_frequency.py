@@ -185,7 +185,7 @@ def test_vbd_rigid_none_refreshes_external_contacts(test, device):
             collision_frequency_type={Slot.RIGID: Frequency.NONE, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
         )
     state_a, state_b = model.state(), model.state()
-    observables = solver.observables(set())
+    observables = solver.observables(kinds=set())
 
     pipeline.collide(state_a, solver.contacts)
     with patch.object(solver, "validate_observables", wraps=solver.validate_observables) as validate:

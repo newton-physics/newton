@@ -39,11 +39,23 @@ def sample_texture_mesh(
     mesh_data: MeshData,
     texture_data: TextureData,
 ) -> wp.vec3f:
+    return sample_texture_mesh_uvs(bary_u, bary_v, face_id, mesh_id, mesh_data.uvs, texture_data)
+
+
+@wp.func
+def sample_texture_mesh_uvs(
+    bary_u: wp.float32,
+    bary_v: wp.float32,
+    face_id: wp.int32,
+    mesh_id: wp.uint64,
+    uvs: wp.array[wp.vec2f],
+    texture_data: TextureData,
+) -> wp.vec3f:
     bary_w = 1.0 - bary_u - bary_v
     uv0 = wp.mesh_get_index(mesh_id, face_id * 3 + 0)
     uv1 = wp.mesh_get_index(mesh_id, face_id * 3 + 1)
     uv2 = wp.mesh_get_index(mesh_id, face_id * 3 + 2)
-    uv = mesh_data.uvs[uv0] * bary_u + mesh_data.uvs[uv1] * bary_v + mesh_data.uvs[uv2] * bary_w
+    uv = uvs[uv0] * bary_u + uvs[uv1] * bary_v + uvs[uv2] * bary_w
     return sample_texture_2d(flip_v(wp.cw_mul(uv, texture_data.repeat)), texture_data)
 
 

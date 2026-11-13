@@ -12,10 +12,12 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
+from ..geometry.deformable_visual import DeformableVisuals
 from .sensor_camera_render import Utils
 from .sensor_camera_render.types import (
     AntiAliasing,
     ClearData,
+    DeformableSurfaceMode,
     GaussianRenderMode,
     RenderConfig,
     RenderOrder,
@@ -83,8 +85,23 @@ class SensorCamera:
 
     Deformable triangle surfaces use :attr:`Model.tri_color` as sRGB albedo,
     like shape colors, and fall back to white when triangle colors are
-    unavailable. Set :attr:`RenderConfig.enable_backface_culling` to ``False``
-    to render both sides with camera-facing normals.
+    unavailable. Deformable visual meshes are skinned from the state each
+    frame and render white, or with their UV texture when
+    :attr:`RenderConfig.enable_textures` is set. Set
+    :attr:`RenderConfig.enable_backface_culling` to ``False`` to render both
+    sides with camera-facing normals.
+
+    The scene is lit by the light from :meth:`create_default_light`, if any,
+    plus hemispheric ambient light (see :meth:`set_ambient_light`) when
+    :attr:`RenderConfig.enable_ambient_lighting` is set.
+
+    .. experimental::
+
+        Rendering of lights authored on the model, and how they combine with
+        the sensor's own lights, may change without a formal deprecation
+        cycle. Future releases are expected to import lights authored in USD
+        and MJCF into the model and render them, which changes the color
+        output of scenes that author lights.
 
     The render configuration types are exposed as nested attributes (e.g.
     ``SensorCamera.RenderConfig``, ``SensorCamera.ClearData``,
@@ -103,13 +120,14 @@ class SensorCamera:
         width, height = 640, 480
         camera_rays = SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=1.0, device=model.device)
         camera_transforms = wp.array([wp.transform_identity()], dtype=wp.transformf, device=model.device)
-        color = camera.create_color_image_output(camera_transforms.shape[0], width, height)
+        color = camera.allocate_image_color(camera_transforms.shape[0], width, height)
 
         camera.update(state, camera_transforms, camera_rays, color_image=color)
     """
 
     AntiAliasing = AntiAliasing
     ClearData = ClearData
+    DeformableSurfaceMode = DeformableSurfaceMode
     GaussianRenderMode = GaussianRenderMode
     RenderConfig = RenderConfig
     RenderOrder = RenderOrder
@@ -124,6 +142,7 @@ class SensorCamera:
         default_clear_data: ClearData | None = None,
         default_render_config: RenderConfig | None = None,
         load_textures: bool = True,
+        deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Construct a camera sensor for a model.
 
@@ -135,9 +154,26 @@ class SensorCamera:
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
                 ``RenderConfig()``.
-            load_textures: Load mesh textures from disk. Set ``False`` for
-                checkerboard or custom-texture workflows (see
-                :meth:`assign_checkerboard_material`).
+            load_textures: Load the textures of shape meshes and deformable visual
+                meshes from file paths or in-memory images. A texture that cannot
+                be loaded raises ``ValueError`` here, so pass ``False`` for
+                depth-only use, for example when replaying a recording whose
+                texture files are elsewhere; it leaves all of them untextured.
+            deformable_surface_mode: Which deformable surfaces the sensor uploads
+                and renders: :attr:`DeformableSurfaceMode.BOTH` renders the
+                simulation triangles and the visual meshes, as the viewers do;
+                :attr:`DeformableSurfaceMode.SIMULATION_ONLY` leaves the visual
+                meshes out; :attr:`DeformableSurfaceMode.VISUAL_ONLY` leaves every
+                simulation triangle out, including surfaces without a visual
+                mesh, and their particles stay hidden. Like ``load_textures``,
+                this is decided at construction and cannot change later;
+                per-render switches live on :class:`RenderConfig`. See
+                :ref:`deformable-visual-camera-output` for how visual meshes
+                relate to the simulation surface.
+
+                .. experimental::
+                    This deformable-visual option may change without a formal
+                    deprecation cycle.
         """
         self.default_clear_data: ClearData = default_clear_data if default_clear_data is not None else ClearData()
         """Clear values used by :meth:`update` when its ``clear_data`` argument is ``None``."""
@@ -148,15 +184,19 @@ class SensorCamera:
 
         from .sensor_camera_render.render_context import RenderContext  # noqa: PLC0415
 
-        self._render_context = RenderContext(model, load_textures=load_textures)
+        self._render_context = RenderContext(
+            model,
+            load_textures=load_textures,
+            deformable_surface_mode=DeformableSurfaceMode(deformable_surface_mode),
+        )
 
     @property
     def device(self) -> wp.Device:
         """Device of the model this sensor renders."""
         return self._render_context.model.device
 
-    def create_image_output(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array[Any]:
-        """Create a zeroed output image array on the model device.
+    def allocate_image(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array[Any]:
+        """Allocate a zeroed output image array on the model device.
 
         Args:
             view_count: Number of views (the array's leading dimension).
@@ -171,8 +211,8 @@ class SensorCamera:
         """
         return wp.zeros((int(view_count), int(height), int(width)), dtype=dtype, device=self.device)
 
-    def create_color_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
-        """Create an RGBA color output array (packed ``uint32``).
+    def allocate_image_color(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+        """Allocate an RGBA color output array (packed ``uint32``).
 
         Args:
             view_count: Number of views (the array's leading dimension).
@@ -182,10 +222,10 @@ class SensorCamera:
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
         """
-        return self.create_image_output(view_count, width, height, wp.uint32)
+        return self.allocate_image(view_count, width, height, wp.uint32)
 
-    def create_depth_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
-        """Create a ray-distance depth output array [m].
+    def allocate_image_depth(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
+        """Allocate a ray-distance depth output array [m].
 
         Args:
             view_count: Number of views (the array's leading dimension).
@@ -195,10 +235,10 @@ class SensorCamera:
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``float32``.
         """
-        return self.create_image_output(view_count, width, height, wp.float32)
+        return self.allocate_image(view_count, width, height, wp.float32)
 
-    def create_forward_depth_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
-        """Create a forward (planar) depth output array [m].
+    def allocate_image_depth_forward(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
+        """Allocate a forward (planar) depth output array [m].
 
         Args:
             view_count: Number of views (the array's leading dimension).
@@ -208,36 +248,10 @@ class SensorCamera:
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``float32``.
         """
-        return self.create_depth_image_output(view_count, width, height)
+        return self.allocate_image_depth(view_count, width, height)
 
-    def create_shape_index_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
-        """Create a shape-index output array.
-
-        Args:
-            view_count: Number of views (the array's leading dimension).
-            width: Image width [px].
-            height: Image height [px].
-
-        Returns:
-            Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
-        """
-        return self.create_image_output(view_count, width, height, wp.uint32)
-
-    def create_normal_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
-        """Create a world-space surface-normal output array (``vec3f``).
-
-        Args:
-            view_count: Number of views (the array's leading dimension).
-            width: Image width [px].
-            height: Image height [px].
-
-        Returns:
-            Zeroed array of shape ``(view_count, height, width)``, dtype ``vec3f``.
-        """
-        return self.create_image_output(view_count, width, height, wp.vec3f)
-
-    def create_albedo_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
-        """Create an RGBA albedo output array (packed ``uint32``).
+    def allocate_image_shape_index(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+        """Allocate a shape-index output array.
 
         Args:
             view_count: Number of views (the array's leading dimension).
@@ -247,10 +261,10 @@ class SensorCamera:
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
         """
-        return self.create_image_output(view_count, width, height, wp.uint32)
+        return self.allocate_image(view_count, width, height, wp.uint32)
 
-    def create_hdr_color_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
-        """Create a linear HDR color output array (``vec3f``).
+    def allocate_image_normal(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
+        """Allocate a world-space surface-normal output array (``vec3f``).
 
         Args:
             view_count: Number of views (the array's leading dimension).
@@ -260,7 +274,33 @@ class SensorCamera:
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``vec3f``.
         """
-        return self.create_image_output(view_count, width, height, wp.vec3f)
+        return self.allocate_image(view_count, width, height, wp.vec3f)
+
+    def allocate_image_albedo(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+        """Allocate an RGBA albedo output array (packed ``uint32``).
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+            width: Image width [px].
+            height: Image height [px].
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
+        """
+        return self.allocate_image(view_count, width, height, wp.uint32)
+
+    def allocate_image_color_hdr(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
+        """Allocate a linear HDR color output array (``vec3f``).
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+            width: Image width [px].
+            height: Image height [px].
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)``, dtype ``vec3f``.
+        """
+        return self.allocate_image(view_count, width, height, wp.vec3f)
 
     @staticmethod
     def compute_camera_rays_pinhole(
@@ -358,7 +398,7 @@ class SensorCamera:
         return out_rays
 
     @staticmethod
-    def compute_camera_rays_usd_pinhole(
+    def compute_camera_rays_pinhole_usd(
         width: int,
         height: int,
         camera: Any,
@@ -396,7 +436,7 @@ class SensorCamera:
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
         )
-        camera_utils.compute_camera_rays_usd_pinhole(
+        camera_utils.compute_camera_rays_pinhole_usd(
             width,
             height,
             camera,
@@ -812,8 +852,16 @@ class SensorCamera:
             xform=xform,
         )
 
-    def create_default_light(self, *, enable_shadows: bool = True, direction: wp.vec3f | None = None) -> None:
+    def create_default_light(
+        self,
+        *,
+        enable_shadows: bool = True,
+        direction: wp.vec3f | None = None,
+        color: Sequence[float] | wp.vec3f | None = None,
+    ) -> None:
         """Create a default directional light for the rendered scene.
+
+        This light replaces any light created before.
 
         Args:
             enable_shadows: Enable shadow casting for this light. Shadows are
@@ -822,9 +870,48 @@ class SensorCamera:
                 ``render_config.enable_shadows=True`` (the latter defaults to
                 ``False``); both switches must be set.
             direction: Normalized light direction. If ``None``, defaults to
-                normalized ``(-1, 1, -1)``.
+                normalized ``(-1, 1, -1)`` for a Z-up model, rotated to the
+                model's up axis otherwise, so the light always points down.
+            color: Linear RGB radiance of the light. If ``None``, defaults to
+                white ``(1, 1, 1)``. Changing it does not recompile the render
+                kernel.
+
+                .. experimental::
+
+                    The ``color`` argument may change, for example to separate
+                    color from intensity, without a formal deprecation cycle.
+
+        .. experimental::
+
+            How this light combines with lights authored on the model may
+            change without a formal deprecation cycle.
         """
-        self._render_context.create_default_light(enable_shadows=enable_shadows, direction=direction)
+        self._render_context.create_default_light(enable_shadows=enable_shadows, direction=direction, color=color)
+
+    def set_ambient_light(
+        self,
+        sky_color: Sequence[float] | wp.vec3f,
+        ground_color: Sequence[float] | wp.vec3f | None = None,
+    ) -> None:
+        """Set the hemispheric ambient light used when ambient lighting is enabled.
+
+        Surfaces facing the model's up axis receive *sky_color*, surfaces facing
+        away receive *ground_color*, and other orientations blend between the
+        two. The defaults are ``(0.2, 0.2, 0.225)`` and ``(0.05, 0.05, 0.06)``.
+        Changing the colors does not recompile the render kernel.
+
+        Args:
+            sky_color: Linear RGB ambient radiance from above.
+            ground_color: Linear RGB ambient radiance from below. If ``None``,
+                *sky_color* is used, which gives uniform ambient light.
+
+        .. experimental::
+
+            This method, its defaults, and how it combines with ambient light
+            authored on the model may change without a formal deprecation
+            cycle.
+        """
+        self._render_context.set_ambient_light(sky_color, ground_color)
 
     def assign_checkerboard_material(
         self,
@@ -835,6 +922,10 @@ class SensorCamera:
     ) -> None:
         """Assign a gray checkerboard texture material to selected shapes.
 
+        Each call sets the whole selection: the selected shapes show the
+        checkerboard and every other shape is untextured. Skinned visual
+        meshes keep their textures.
+
         Args:
             shape_indices: Shape indices that should use the checkerboard texture.
             resolution: Texture resolution [px] (square texture).
@@ -844,20 +935,45 @@ class SensorCamera:
             shape_indices=shape_indices, resolution=resolution, checker_size=checker_size
         )
 
-    def sync_deformable_meshes(self, state: State) -> None:
+    def sync_deformable_meshes(self, state: State, *, deformable_visuals: DeformableVisuals | None = None) -> None:
         """Synchronize render-only deformable triangle-mesh points from *state*.
 
         :meth:`update` calls this by default (pass ``sync_deformables=False`` to
         skip it when you already synced). Call it explicitly only when you opt
-        out of the automatic sync. It syncs deformable mesh points (rigid-only
-        scenes are a no-op) but does not touch transforms; shape and particle
-        BVHs are refit separately via :meth:`~newton.Model.bvh_refit_shapes` and
-        :meth:`~newton.Model.bvh_refit_particles`.
+        out of the automatic sync. Scenes without simulation triangles or visual
+        meshes are a no-op. Shape and particle BVHs are refit separately via
+        :meth:`~newton.Model.bvh_refit_shapes` and :meth:`~newton.Model.bvh_refit_particles`.
+        Deformable visual meshes are skinned from *state* in at most four launches,
+        however many worlds were replicated. Supplied visual buffers are consumed as-is;
+        update or replay them before this call. Their source state and freshness
+        are not checked.
 
         Args:
-            state: Current simulation state with particle positions.
+            state: Current particle positions and body transforms.
+            deformable_visuals: Experimental precomputed visual buffers for this
+                model. Share these with a viewer to avoid skinning twice. If
+                omitted, skin directly into the camera's reusable point buffer.
+
+        Raises:
+            TypeError: If ``deformable_visuals`` is not :class:`~newton.geometry.DeformableVisuals`.
+            ValueError: If the buffers belong to another model, or if this camera
+                was constructed with :attr:`DeformableSurfaceMode.SIMULATION_ONLY`
+                and cannot render them.
+            RuntimeError: If supplied visual buffers have never been updated.
+
+        .. experimental::
+
+            The ``deformable_visuals`` argument is experimental.
         """
-        self._render_context.update(state)
+        if deformable_visuals is not None:
+            if not isinstance(deformable_visuals, DeformableVisuals):
+                raise TypeError(
+                    f"deformable_visuals must be DeformableVisuals, got {type(deformable_visuals).__name__}"
+                )
+            if deformable_visuals.model is not self._render_context.model:
+                raise ValueError("DeformableVisuals was created for another model.")
+            deformable_visuals.wait()
+        self._render_context.update(state, deformable_visuals)
 
     @staticmethod
     def _validate_render_array(name: str, array: Any, dtype: Any, device: wp.Device) -> None:
@@ -885,6 +1001,7 @@ class SensorCamera:
         clear_data: ClearData | None = None,
         render_config: RenderConfig | None = None,
         sync_deformables: bool = True,
+        deformable_visuals: DeformableVisuals | None = None,
     ) -> None:
         """Render this camera sensor.
 
@@ -914,8 +1031,9 @@ class SensorCamera:
                 ``render_config.anti_aliasing`` to be :attr:`AntiAliasing.SSAA`
                 or :attr:`AntiAliasing.MSAA`.
             color_image: Output RGBA color buffer (packed ``uint32``).
-            depth_image: Output depth buffer [m].
-            forward_depth_image: Output forward-depth buffer [m].
+            depth_image: Output ray-distance depth from each ray origin [m].
+            forward_depth_image: Output depth measured from the camera origin
+                along its forward axis [m], including per-ray origin offsets.
             shape_index_image: Output shape-index buffer.
             normal_image: Output world-space surface normals.
             albedo_image: Output albedo buffer (packed ``uint32``).
@@ -933,15 +1051,34 @@ class SensorCamera:
                 :attr:`default_clear_data`.
             render_config: Render settings for this call. Defaults to
                 :attr:`default_render_config`.
-            sync_deformables: Sync deformable triangle-mesh points from *state*
-                before rendering (a no-op for rigid-only scenes). Set ``False``
-                if you already called :meth:`sync_deformable_meshes` this frame.
+            sync_deformables: Sync simulation surfaces and visual mesh points
+                from *state* before rendering. Set ``False`` if you already
+                called :meth:`sync_deformable_meshes` this frame.
+            deformable_visuals: Experimental precomputed visual buffers for this
+                model. If omitted, skin directly into the camera's point buffer.
+                Requires ``sync_deformables=True``; otherwise pass the buffers
+                to :meth:`sync_deformable_meshes` explicitly. Update or replay
+                supplied buffers before rendering; their freshness is not checked.
+
+        Raises:
+            ValueError: If ``deformable_visuals`` is given with
+                ``sync_deformables=False``, plus the :meth:`sync_deformable_meshes`
+                errors when it syncs.
+            TypeError: If supplied visual buffers have the wrong type.
+            RuntimeError: If supplied visual buffers have never been updated.
+
+        .. experimental::
+
+            The ``deformable_visuals`` argument is experimental. Other camera
+            arguments retain their existing API status.
         """
         render_context = self._render_context
         model = render_context.model
 
+        if not sync_deformables and deformable_visuals is not None:
+            raise ValueError("deformable_visuals requires sync_deformables=True")
         if sync_deformables:
-            render_context.update(state)
+            self.sync_deformable_meshes(state, deformable_visuals=deformable_visuals)
 
         self._validate_render_array("camera_transforms", camera_transforms, wp.transformf, model.device)
         if camera_transforms.ndim != 1 or camera_transforms.shape[0] <= 0:

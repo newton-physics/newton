@@ -73,22 +73,24 @@ if __name__ == "__main__":
 
     # Kamino tests live in two locations: internal (private helpers) and under newton/tests/kamino
     # (public-facing / integration).
-    this_file = Path(__file__).resolve()
-    repo_root = Path(newton.__file__).resolve().parent
-    test_folder_internal = this_file.parent
-    test_folder_newton = repo_root / "tests" / "kamino"
+    newton_pkg_dir = Path(newton.__file__).resolve().parent
+    test_folder_internal = Path(__file__).resolve().parent
+    test_folder_newton = newton_pkg_dir / "tests" / "kamino"
 
-    # Discover unit tests from both folders
-    # Note: use repo root as top_level_dir as discovery doesn't allow moving up in the folder hierarchy
+    # Discover unit tests from both folders.
+    # Use the parent of the ``newton`` package as ``top_level_dir`` so discovered modules are named
+    # ``newton._src.solvers.kamino.tests.*`` / ``newton.tests.kamino.*``; relative imports inside the
+    # ``newton`` package (e.g. ``from ... import config``) then resolve correctly.
+    top_level_dir = str(newton_pkg_dir.parent)
     tests_internal = unittest.TestLoader().discover(
         start_dir=str(test_folder_internal),
         pattern="test_*.py",
-        top_level_dir=str(repo_root),
+        top_level_dir=top_level_dir,
     )
     tests_newton = unittest.TestLoader().discover(
         start_dir=str(test_folder_newton),
         pattern="test_*.py",
-        top_level_dir=str(repo_root),
+        top_level_dir=top_level_dir,
     )
 
     # Run tests

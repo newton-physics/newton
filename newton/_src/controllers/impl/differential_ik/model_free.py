@@ -83,8 +83,8 @@ from ._common import (
     _qd_in_singular_basis_damped_kernel,
     _qd_in_singular_basis_truncated_kernel,
     _scatter_pinv_transpose_by_axis_kernel,
-    _svd_one_sided_jacobi_kernel,
     _svd_reconstruct_scaled_kernel,
+    get_svd_one_sided_jacobi_kernel,
 )
 
 _CANONICAL_TASK_AXIS_COUNT = 6
@@ -806,7 +806,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         )
 
         # Matrix/vector types for .view()-ing the plain wp.array3d[float]/
-        # array2d[float] storage below into the shapes _svd_one_sided_jacobi_kernel
+        # array2d[float] storage below into the shapes the SVD kernel
         # needs -- a zero-copy reinterpret, not a separate allocation/layout
         # (see the section comment above _svd_one_sided_jacobi in _common.py).
         # Reused for both the primary task solve's SVD and (when enabled)
@@ -816,6 +816,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         svd_mat_j = wp.types.matrix(shape=(6, max_controlled_dofs), dtype=wp.float32)
         svd_mat_v = wp.types.matrix(shape=(max_controlled_dofs, max_controlled_dofs), dtype=wp.float32)
         svd_vec_s = wp.types.vector(length=max_controlled_dofs, dtype=wp.float32)
+        self._svd_kernel = get_svd_one_sided_jacobi_kernel(6, max_controlled_dofs)
 
         # Primary task solve: J_w = diag(w) @ J is gathered+weighted into
         # compact slot order, then decomposed once per step; every
@@ -1241,7 +1242,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 device=self._device,
             )
             wp.launch(
-                _svd_one_sided_jacobi_kernel,
+                self._svd_kernel,
                 dim=controlled_robot_count,
                 inputs=[
                     self._jacobian_weighted_view,
@@ -1339,7 +1340,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 device=self._device,
             )
             wp.launch(
-                _svd_one_sided_jacobi_kernel,
+                self._svd_kernel,
                 dim=controlled_robot_count,
                 inputs=[
                     self._jacobian_active_view,

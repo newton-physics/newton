@@ -5,6 +5,7 @@
 Unit tests for `dynamics/wrenches.py`.
 """
 
+import logging
 import unittest
 
 import numpy as np
@@ -21,7 +22,7 @@ from newton._src.solvers.kamino._src.dynamics.wrenches import (
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
     extract_active_constraint_vectors,
@@ -37,6 +38,8 @@ from newton.tests.kamino.utils.make import (
     update_containers,
 )
 from newton.tests.utils.testing import build_unary_revolute_joint_test
+
+logger = logging.getLogger(__name__)
 
 ###
 # Constants
@@ -125,9 +128,6 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
     w_l_i_sparse_np = data.bodies.w_l_i.numpy().copy()
     w_c_i_sparse_np = data.bodies.w_c_i.numpy().copy()
 
-    # TODO
-    np.set_printoptions(precision=12, suppress=True, linewidth=20000, threshold=20000)
-
     # Extract the number of bodies and constraints for each world
     num_bodies_np = model.info.num_bodies.numpy().astype(int).tolist()
     num_bilateral_joint_cts_np = model.info.num_joint_bilateral_cts.numpy().astype(int).tolist()
@@ -136,13 +136,14 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
     num_limit_cts_np = data.info.num_limit_cts.numpy().astype(int).tolist()
     num_contact_cts_np = data.info.num_contact_cts.numpy().astype(int).tolist()
     num_total_cts_np = data.info.num_total_cts.numpy().astype(int).tolist()
-    msg.info("num_bodies_np: %s", num_bodies_np)
-    msg.info("num_bilateral_joint_cts_np: %s", num_bilateral_joint_cts_np)
-    msg.info("num_friction_joint_cts_np: %s", num_friction_joint_cts_np)
-    msg.info("num_effort_joint_cts_np: %s", num_effort_joint_cts_np)
-    msg.info("num_limit_cts_np: %s", num_limit_cts_np)
-    msg.info("num_contact_cts_np: %s", num_contact_cts_np)
-    msg.info("num_total_cts_np: %s\n", num_total_cts_np)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("num_bodies_np: %s", num_bodies_np)
+        logger.debug("num_bilateral_joint_cts_np: %s", num_bilateral_joint_cts_np)
+        logger.debug("num_friction_joint_cts_np: %s", num_friction_joint_cts_np)
+        logger.debug("num_effort_joint_cts_np: %s", num_effort_joint_cts_np)
+        logger.debug("num_limit_cts_np: %s", num_limit_cts_np)
+        logger.debug("num_contact_cts_np: %s", num_contact_cts_np)
+        logger.debug("num_total_cts_np: %s\n", num_total_cts_np)
 
     # Extract the Jacobians and constraint multipliers as lists of numpy arrays (i.e. per world)
     J_cts_dense = extract_cts_jacobians(model, limits, contacts, jacobians_dense, only_active_cts=True)
@@ -151,13 +152,14 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
     J_dofs_sparse = jacobians_sparse._J_dofs.bsm.numpy()
     lambdas_np = extract_active_constraint_vectors(model, data, lambdas)
     tau_j_np = extract_actuation_forces(model, data)
-    for w in range(model.size.num_worlds):
-        msg.info("[world='%d']: J_cts_dense:\n%s", w, J_cts_dense[w])
-        msg.info("[world='%d']: J_cts_sparse:\n%s\n", w, J_cts_sparse[w])
-        msg.info("[world='%d']: lambdas_np:\n%s\n\n", w, lambdas_np[w])
-        msg.info("[world='%d']: J_dofs_dense:\n%s", w, J_dofs_dense[w])
-        msg.info("[world='%d']: J_dofs_sparse:\n%s\n", w, J_dofs_sparse[w])
-        msg.info("[world='%d']: tau_j_np:\n%s\n", w, tau_j_np[w])
+    if logger.isEnabledFor(logging.DEBUG):
+        for w in range(model.size.num_worlds):
+            logger.debug("[world='%d']: J_cts_dense:\n%s", w, J_cts_dense[w])
+            logger.debug("[world='%d']: J_cts_sparse:\n%s\n", w, J_cts_sparse[w])
+            logger.debug("[world='%d']: lambdas_np:\n%s\n\n", w, lambdas_np[w])
+            logger.debug("[world='%d']: J_dofs_dense:\n%s", w, J_dofs_dense[w])
+            logger.debug("[world='%d']: J_dofs_sparse:\n%s\n", w, J_dofs_sparse[w])
+            logger.debug("[world='%d']: tau_j_np:\n%s\n", w, tau_j_np[w])
 
     # Compute the wrenches manually using the extracted Jacobians and multipliers/forces for additional verification
     inv_dt_np = model.time.inv_dt.numpy().tolist()
@@ -201,21 +203,22 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
     w_c_i_ref_np = wp.array(np.concatenate(w_c_i_ref_np, axis=0), device="cpu")
 
     # Debug output
-    msg.info("w_a_i_ref_np:\n%s", w_a_i_ref_np)
-    msg.info("w_a_i_dense_np:\n%s", w_a_i_dense_np)
-    msg.info("w_a_i_sparse_np:\n%s\n", w_a_i_sparse_np)
-    msg.info("w_j_i_ref_np:\n%s", w_j_i_ref_np)
-    msg.info("w_j_i_dense_np:\n%s", w_j_i_dense_np)
-    msg.info("w_j_i_sparse_np:\n%s\n", w_j_i_sparse_np)
-    msg.info("w_f_i_ref_np:\n%s", w_f_i_ref_np)
-    msg.info("w_f_i_dense_np:\n%s", w_f_i_dense_np)
-    msg.info("w_f_i_sparse_np:\n%s\n", w_f_i_sparse_np)
-    msg.info("w_l_i_ref_np:\n%s", w_l_i_ref_np)
-    msg.info("w_l_i_dense_np:\n%s", w_l_i_dense_np)
-    msg.info("w_l_i_sparse_np:\n%s\n", w_l_i_sparse_np)
-    msg.info("w_c_i_ref_np:\n%s", w_c_i_ref_np)
-    msg.info("w_c_i_dense_np:\n%s", w_c_i_dense_np)
-    msg.info("w_c_i_sparse_np:\n%s\n\n", w_c_i_sparse_np)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("w_a_i_ref_np:\n%s", w_a_i_ref_np)
+        logger.debug("w_a_i_dense_np:\n%s", w_a_i_dense_np)
+        logger.debug("w_a_i_sparse_np:\n%s\n", w_a_i_sparse_np)
+        logger.debug("w_j_i_ref_np:\n%s", w_j_i_ref_np)
+        logger.debug("w_j_i_dense_np:\n%s", w_j_i_dense_np)
+        logger.debug("w_j_i_sparse_np:\n%s\n", w_j_i_sparse_np)
+        logger.debug("w_f_i_ref_np:\n%s", w_f_i_ref_np)
+        logger.debug("w_f_i_dense_np:\n%s", w_f_i_dense_np)
+        logger.debug("w_f_i_sparse_np:\n%s\n", w_f_i_sparse_np)
+        logger.debug("w_l_i_ref_np:\n%s", w_l_i_ref_np)
+        logger.debug("w_l_i_dense_np:\n%s", w_l_i_dense_np)
+        logger.debug("w_l_i_sparse_np:\n%s\n", w_l_i_sparse_np)
+        logger.debug("w_c_i_ref_np:\n%s", w_c_i_ref_np)
+        logger.debug("w_c_i_dense_np:\n%s", w_c_i_dense_np)
+        logger.debug("w_c_i_sparse_np:\n%s\n\n", w_c_i_sparse_np)
 
     # Check that the Jacobians computed using the dense and sparse implementations are close
     for w in range(model.size.num_worlds):
@@ -252,15 +255,15 @@ class TestDynamicsWrenches(unittest.TestCase):
 
         # Set info-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_compute_wrenches_for_single_fourbar_with_limits_and_contacts(self):
         # Construct the test problem
@@ -271,7 +274,6 @@ class TestDynamicsWrenches(unittest.TestCase):
             with_limits=True,
             with_contacts=True,
             with_implicit_joints=False,
-            verbose=False,  # TODO
         )
 
         # Compute and compare the wrenches using the dense and sparse Jacobians
@@ -291,7 +293,6 @@ class TestDynamicsWrenches(unittest.TestCase):
             with_limits=True,
             with_contacts=True,
             with_implicit_joints=False,
-            verbose=False,
         )
 
         # Compute and compare the wrenches using the dense and sparse Jacobians
@@ -310,7 +311,6 @@ class TestDynamicsWrenches(unittest.TestCase):
             with_limits=True,
             with_contacts=True,
             with_implicit_joints=False,
-            verbose=False,
         )
 
         # Compute and compare the wrenches using the dense and sparse Jacobians

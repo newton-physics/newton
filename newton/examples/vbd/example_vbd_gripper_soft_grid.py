@@ -1,24 +1,32 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example VBD Gripper — Soft 1x1 Grid (water-tight EDGE contact)
-#
-# A parallel-jaw gripper with CUBE finger pads clamps a horizontal soft 1x1
-# grid (a single quad split by one diagonal edge -> two triangles) at its
-# centre, then lifts and holds it in the air.
-#
-# The grid's four corner vertices sit far out in x (outside the jaws), so the
-# only mesh feature crossing the pinch centre is the interior DIAGONAL edge.
-# The legacy per-particle path finds no vertex between the jaws, so the grid is
-# gripped (and lifted) only with ``enable_rigid_soft_full_surface_contact=True``
-# via the water-tight soft-EDGE pass. With the flag off the grid slips out and
-# falls.
-#
-# Command: python -m newton.examples vbd_gripper_soft_grid
-###########################################################################
+"""Example VBD Gripper — Soft 1x1 Grid (water-tight EDGE contact)
+
+A parallel-jaw gripper with CUBE finger pads clamps a horizontal soft 1x1
+grid (a single quad split by one diagonal edge -> two triangles) at its
+centre, then lifts and holds it in the air.
+
+The grid's four corner vertices sit far out in x (outside the jaws), so the
+only mesh feature crossing the pinch centre is the interior DIAGONAL edge.
+The legacy per-particle path finds no vertex between the jaws, so the grid is
+gripped (and lifted) only with ``enable_rigid_soft_full_surface_contact=True``
+via the water-tight soft-EDGE pass. With the flag off the grid slips out and
+falls.
+
+Success criteria:
+- Cube finger pads close across the interior diagonal edge of a two-triangle grid whose corner
+  vertices lie outside the jaws.
+- The grid lifts with the gripper and remains held in the air during the hold phase, without
+  slipping through the fingers.
+
+Runs:
+- `python -m newton.examples vbd_gripper_soft_grid`
+"""
 
 from __future__ import annotations
+
+import argparse
 
 import numpy as np
 import warp as wp
@@ -117,7 +125,7 @@ PARAMS = {
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
-        self.params = PARAMS
+        self.params = {**PARAMS, "finger_mesh": getattr(args, "finger_mesh", PARAMS["finger_mesh"])}
         self.sim_time = 0.0
         self.fps = self.params["fps"]
         self.frame_dt = 1.0 / self.fps
@@ -176,6 +184,8 @@ class Example:
         if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = self.params["camera_fov"]
 
+        self.capture()
+
     # ── model construction ──────────────────────────────────────────────
 
     def _build_gripper(self, builder):
@@ -221,7 +231,7 @@ class Example:
             axis=wp.vec3(0.0, 0.0, 1.0),
             target_ke=p["gantry_drive_ke"],
             target_kd=p["gantry_drive_kd"],
-            target_pos=grab_z,
+            target_q=grab_z,
             label="gantry_z_joint",
         )
         j_x = builder.add_joint_prismatic(
@@ -230,7 +240,7 @@ class Example:
             axis=wp.vec3(1.0, 0.0, 0.0),
             target_ke=p["gantry_drive_ke"],
             target_kd=p["gantry_drive_kd"],
-            target_pos=0.0,
+            target_q=0.0,
             label="gantry_x_joint",
         )
         j_left = builder.add_joint_prismatic(
@@ -240,7 +250,7 @@ class Example:
             child_xform=wp.transform(wp.vec3(0.0, 0.0, p["finger_z_offset"]), wp.quat_identity()),
             target_ke=p["finger_drive_ke"],
             target_kd=p["finger_drive_kd"],
-            target_pos=p["open_half_gap"],
+            target_q=p["open_half_gap"],
             label="left_finger_joint",
         )
         j_right = builder.add_joint_prismatic(
@@ -250,7 +260,7 @@ class Example:
             child_xform=wp.transform(wp.vec3(0.0, 0.0, p["finger_z_offset"]), wp.quat_identity()),
             target_ke=p["finger_drive_ke"],
             target_kd=p["finger_drive_kd"],
-            target_pos=p["open_half_gap"],
+            target_q=p["open_half_gap"],
             label="right_finger_joint",
         )
         builder.add_articulation([j_z, j_x, j_left, j_right], label="gripper")
@@ -322,6 +332,13 @@ class Example:
 
     # ── simulation loop ─────────────────────────────────────────────────
 
+    def capture(self):
+        self.graph = None
+        if self.model.device.is_cpu or not wp.config.verify_cuda:
+            with wp.ScopedCapture(device=self.model.device) as capture:
+                self.simulate()
+            self.graph = capture.graph
+
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -333,7 +350,10 @@ class Example:
     def step(self):
         self.frame += 1
         self._advance_waypoint()
-        self.simulate()
+        if self.graph is not None:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
 
     def render(self):
@@ -353,6 +373,12 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.set_defaults(num_frames=PARAMS["num_frames"])
+        parser.add_argument(
+            "--finger-mesh",
+            action=argparse.BooleanOptionalAction,
+            default=PARAMS["finger_mesh"],
+            help="Use triangulated cube finger pads instead of analytic boxes.",
+        )
         return parser
 
 

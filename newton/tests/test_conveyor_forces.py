@@ -16,7 +16,14 @@ import warp as wp
 
 import newton
 from newton.examples.basic.example_basic_conveyor_forces import ConveyorForceModel
-from newton.tests.unittest_utils import NewtonTestCase, add_function_test, get_test_devices
+from newton.tests.unittest_utils import (
+    MODULE_LOAD_OUTPUT_RE,
+    MUJOCO_MODULES,
+    NewtonTestCase,
+    add_function_test,
+    get_test_devices,
+    requires,
+)
 
 BELT_HALF_X = 1.5
 BELT_HALF_Y = 6.0
@@ -25,13 +32,6 @@ BELT_TOP_Z = 0.5
 BOX_HALF = 0.2
 CONTACT_FRICTION = 2.0e-5
 BELT_FRICTION = 0.5
-
-_MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?"
-_MUJOCO_LS_ITERATIONS_OUTPUT_RE = (
-    r"^linesearch iterations limit reached - please increase ls_iterations \w+ \d+\n?"
-    r"(?:^To disable the print warning: m\.opt\.warn_overflow &= ~mjw\.OverflowType\.LS_ITERATIONS"
-    r" \(or = 0 for all\)\n?)?"
-)
 
 
 def _make_solver(solver_name, model):
@@ -117,7 +117,9 @@ def run_conveyor(
         model, rigid_contact_max=solver.get_max_contact_count() if solver_name == "mujoco" else None
     )
     contacts = collision_pipeline.contacts()
-    solver_observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+    solver_observables = solver.observables(
+        contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+    )
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     conveyor = ConveyorForceModel(model, solver_type=solver_name)
@@ -237,7 +239,9 @@ def run_multi_belt(device, solver_name, belts, box_xy, *, box_half=(0.45, 0.2, 0
         model, rigid_contact_max=solver.get_max_contact_count() if solver_name == "mujoco" else None
     )
     contacts = collision_pipeline.contacts()
-    solver_observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+    solver_observables = solver.observables(
+        contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+    )
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     conveyor = ConveyorForceModel(model, solver_type=solver_name)
@@ -461,14 +465,14 @@ def test_backend_parity(test, device, _solver_name):
     test.assertLess(spread, 0.6, f"backends disagree on transport distance: {ys}")
 
 
+@requires(*MUJOCO_MODULES)
 class TestConveyorForces(NewtonTestCase):
     """Scenario matrix for the force-based conveyor model."""
 
     def setUp(self):
-        """Allow the lazy module-load and MuJoCo linesearch messages these scenes emit."""
+        """Allow the lazy module-load messages these scenes emit."""
         super().setUp()
-        self.allowOutputRegex(_MODULE_LOAD_OUTPUT_RE, stream="stdout")
-        self.allowOutputRegex(_MUJOCO_LS_ITERATIONS_OUTPUT_RE, stream="stdout")
+        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
 
 
 _devices = get_test_devices()

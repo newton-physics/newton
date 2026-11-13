@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ``_svd_one_sided_jacobi``/``_svd_one_sided_jacobi_kernel``."""
+"""Tests for ``_svd_one_sided_jacobi``/``get_svd_one_sided_jacobi_kernel``."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.controllers.impl.differential_ik._common import _svd_one_sided_jacobi_kernel
+from newton._src.controllers.impl.differential_ik._common import get_svd_one_sided_jacobi_kernel
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices()
 
 
 def _run_svd(a_np, n_columns_vals, device, max_sweeps=30, tol=1.0e-8):
-    """Launch _svd_one_sided_jacobi_kernel on a batch of (m, n) matrices, returning numpy U, S, V."""
+    """Launch the SVD kernel on a batch of (m, n) matrices, returning numpy U, S, V."""
     batch, m, n = a_np.shape
     matrix = wp.array3d(a_np, dtype=wp.float32, device=device).view(wp.types.matrix(shape=(m, n), dtype=wp.float32))
     n_columns = wp.array(n_columns_vals, dtype=wp.int32, device=device)
@@ -25,7 +25,7 @@ def _run_svd(a_np, n_columns_vals, device, max_sweeps=30, tol=1.0e-8):
     s = wp.zeros((batch, n), dtype=wp.float32, device=device).view(wp.types.vector(length=n, dtype=wp.float32))
     v = wp.zeros((batch, n, n), dtype=wp.float32, device=device).view(wp.types.matrix(shape=(n, n), dtype=wp.float32))
     wp.launch(
-        _svd_one_sided_jacobi_kernel,
+        get_svd_one_sided_jacobi_kernel(m, n),
         dim=batch,
         inputs=[matrix, n_columns, tol, max_sweeps],
         outputs=[u, s, v],
