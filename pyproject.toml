@@ -121,6 +121,7 @@ docs = [
     "newton[importers]",    # include import dependencies
     "myst-parser>=3.0.1",
     "sphinx>=7.4.7",
+    "sphinx-markdown-builder==0.6.11",  # MIT; resolved-documents Markdown output
     "pydata_sphinx_theme>=0.16.1",
     "sphinxcontrib-mermaid>=1.0.0",
     "sphinx-copybutton>=0.5.0",
