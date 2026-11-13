@@ -1,0 +1,1 @@
+Warn at `SolverSteel` construction and in `notify_model_changed()` about nonzero `Model.joint_stiffness` on joints other than tree PRISMATIC, REVOLUTE and D6 joints, including loop-closing BALL joints, whose passive springs Steel ignores.
