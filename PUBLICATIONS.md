@@ -48,6 +48,8 @@ published citation when available and retain an accessible preprint link.
 
 - **FlashNeRD: Performance-First Contact-Rich Neural Robot Dynamics**. *M. Ataei, M. A. Nabian, J. Xu, M. Macklin, Y. Narang, E. Heiden, O. Zhang, Y. Guo, R. D'Sa, O. Hennigh, G. State, S. Choudhry*. October 2026. [arXiv:2610.09130](https://arxiv.org/abs/2610.09130)
 
+- **Divide and Truncate: A Penetration and Inversion Free Framework for Coupled Multi-physics System**. *A. H. Chen, J. Hsu, Y. Ayman, M. Macklin*. ACM SIGGRAPH 2026 Conference Papers, July 2026. [DOI:10.1145/3799902.3811143](https://doi.org/10.1145/3799902.3811143), [arXiv:2604.15513](https://arxiv.org/abs/2604.15513)
+
 - **GaP: A Graph-as-Policy Multi-Agent Self-Learning Harness For Variational Automation Tasks**. *K. Chen, S. Xie, L. Fu, J. Yu, W. Pacini, S. Bajamahal, H. Kim, J. Drake, D. Kim, H. Xue, J. Francis, C. Juette, P. Schaldenbrand, M. Y. Seker, R. Wickramarachchi, U. Yoo, G. Wang, A. Murali, B. Sundaralingam, S. S. Sastry, Y. Zhu, L. Fan, S. Huang, K. Goldberg*. July 2026. [arXiv:2607.05369](https://arxiv.org/abs/2607.05369)
 
 - **RoboSimStudio: An Interactive Toolkit for Rapid Real2Sim of Robot Manipulation Tasks**. *K. Chen, S. Xie, U. Yoo, X. Zhu, C. Magner, A. Zhu, D. Kim, E. Heiden, E. Coumans, M. Macklin, S. Huang, K. Goldberg*. October 2026. [arXiv:2610.18835](https://arxiv.org/abs/2610.18835)
@@ -82,13 +84,17 @@ published citation when available and retain an accessible preprint link.
 
 - **PersistGS: Differentiable Physics for Object Permanence in 4D Gaussian Splatting**. *A. Ramlal, J. S. Zelek*. CVPR Workshops, 2026. [arXiv:2606.03479](https://arxiv.org/abs/2606.03479)
 
+- **GPU-Accelerated Hydroelastic Contact via Signed Distance Fields**. *L. Röstel, Y. Liu, J. Yin, M. Zamora, M. Macklin, P. Reist, T. Widmer*. ICRA Workshop on the Path Towards Generalizable Contact-Rich Robotics: Control and Representation, June 2026. [paper](https://openreview.net/pdf/8a06fabef4b32ce3018bcf0178352b189a3ec97b.pdf)
+
 - **Informationally Decoupled Trajectory Design for Sim-to-Real System Identification**. *S. Shin, A. Anilkumar, R. Gao, J. P. Hanna*. October 2026. [arXiv:2610.10905](https://arxiv.org/abs/2610.10905)
 
 - **DefFlow: Goal-Conditioned Deformable Object Manipulation using 3D Point Flows**. *G. Singh, S. Orozco, R. Duong, M. T. Akbulut, G. Konidaris, S. Sridhar*. October 2026. [arXiv:2610.22827](https://arxiv.org/abs/2610.22827)
 
 - **A Splitting Architecture for Exact Reduced Coulomb Friction**. *H. Song, Y. Fan, U. M. Ascher, D. K. Pai*. Computer Graphics Forum 45(8), 2026. [DOI:10.1111/cgf.70576](https://doi.org/10.1111/cgf.70576), [arXiv:2607.19599](https://arxiv.org/abs/2607.19599)
 
-- **Kamino: GPU-based Massively Parallel Simulation of Multi-Body Systems with Challenging Topologies**. *V. Tsounis, G. Maloisel, C. Schumacher, R. Grandia, A. Serifi, D. Müller, C. Amevor, T. Widmer, M. Bächer*. March 2026. [arXiv:2603.16536](https://arxiv.org/abs/2603.16536)
+- **Kamino: GPU-based Simulation of Rigid Multi-Body Physics with Kinematic Loops**. *V. Tsounis, G. Maloisel, C. Schumacher, R. Grandia, A. Serifi, D. Müller, C. Amevor, T. Widmer, M. Bächer*. 10th Annual Conference on Robot Learning, 2026. [arXiv:2603.16536](https://arxiv.org/abs/2603.16536)
+
+- **WorldParticle: Unified World Simulation of Lagrangian Particle Dynamics via Transformer**. *C. Wang, M. Guo, S. Chen, H. Zhang, M. Wang, X. Ni, H. Sun, K. Wang, Z. Pan, K. Wu, L. Liu, Y. Yang, C. Jiang, T. Komura, W. Matusik, P. Y. Chen*. May 2026. [arXiv:2605.15305](https://arxiv.org/abs/2605.15305)
 
 - **GAUGE: A Measurement-Grounded Benchmark for Physical Fidelity in Simulation Engines and Video World Models**. *S. Wang, Y. Feng, X. Jiang, S. Tian, N. Yan, X. Shen, C. Lyu, H. Wang, Y. Zhou, H. Wang, J. Pang, Y. Xiang, X. Gao, C. Shen, W. Zhang*. August 2026. [arXiv:2608.05948](https://arxiv.org/abs/2608.05948)
 
@@ -111,6 +117,16 @@ published citation when available and retain an accessible preprint link.
 - **SIM1: Physics-Aligned Simulator as Zero-Shot Data Scaler in Deformable Worlds**. *Y. Zhou, H. Liu, X. Jiang, X. Shen, Y. Zhou, H. Wang, B. Fang, Y. Tian, M. Yu, Q. Yu, L. Ma, H. Li, H. Wang, J. Zeng, J. Pang*. April 2026. [arXiv:2604.08544](https://arxiv.org/abs/2604.08544)
 
 - **SceneFactory-3D: Lifting 2D Traffic Scenes into 3D Physical Counterfactuals for Scalable Physically Grounded Safety Evaluation**. *Y. Zhu, L. Tian, T. Zhao, Y. Chen, F. Zuo, T. Li, Z. Bian*. October 2026. [arXiv:2610.02874](https://arxiv.org/abs/2610.02874)
+
+### 2025
+
+- **Offset Geometric Contact**. *A. H. Chen, J. Hsu, Z. Liu, M. Macklin, Y. Yang, C. Yuksel*. ACM Transactions on Graphics 44(4), July 2025. [DOI:10.1145/3731205](https://doi.org/10.1145/3731205)
+
+- **Augmented Vertex Block Descent**. *C. Giles, E. Diaz, C. Yuksel*. ACM Transactions on Graphics 44(4), July 2025. [DOI:10.1145/3731195](https://doi.org/10.1145/3731195)
+
+### 2024
+
+- **Vertex Block Descent**. *A. H. Chen, Z. Liu, Y. Yang, C. Yuksel*. ACM Transactions on Graphics 43(4), July 2024. [DOI:10.1145/3658179](https://doi.org/10.1145/3658179), [arXiv:2403.06321](https://arxiv.org/abs/2403.06321)
 
 ## Newton used solely as a comparison baseline
 

@@ -61,6 +61,7 @@ from .particle_vbd_kernels import (
     reset_particle_state,
     scatter_particle_body_contact_force_and_hessian,
     solve_elasticity,
+    step_particle_body_attachment_lambda_rho,
     update_velocity,
 )
 from .rigid_vbd_kernels import (
@@ -90,6 +91,7 @@ from .rigid_vbd_kernels import (
     init_rod_rest_bend_twist,
     refresh_body_structural_k,
     refresh_joint_material_params,
+    reset_particle_body_attachment_state,
     reset_rigid_state,
     select_variant_bounding_radius,
     snapshot_body_body_contact_history,
@@ -99,6 +101,7 @@ from .rigid_vbd_kernels import (
     update_duals_body_body_contacts,
     update_duals_body_particle_contacts,
     update_duals_joint,
+    update_duals_particle_body_attachments,
     update_rod_dahl_state,
 )
 from .tendon_kernels import (
@@ -210,11 +213,30 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     .. experimental::
         SolverVBD's public API and behavior may change without prior notice.
 
+    Tuning guide: :ref:`Tuning VBD`
+    (https://newton-physics.github.io/newton/stable/concepts/simulation_tuning_vbd.html)
+    covers cloth, soft bodies, rigid bodies, cables, and their contacts:
+
+    - Parameter effects: the constructor arguments that matter most for tuning,
+      the model parameters, and the time step, substeps and iterations.
+    - Contact handling: interaction distance, detection slack, query radius and motion
+      budget; what DAT does to motion; how to set margin and gap.
+    - A debug protocol: the jitter pipeline and the explosion checklist, each in order.
+    - Special topics with symptom, cause and fix: the stiffness ratio (contact against
+      elasticity, membrane against bending), a fine mesh converging slowly, DAT damping,
+      bad assets, a smaller time step making things worse, self-contact tunneling.
+    - Parameter combinations from the shipped examples, and rules of thumb.
+    - Rigid bodies and cables: joint gains, cable materials, contact history and
+      capacity, model updates, and reset.
+
+    The math behind the advice (step objective, block solve, rigid bodies and joints, the
+    energy terms, DAT) is on the solver page :doc:`/solvers/vbd`.
+
     This unified solver supports:
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
         - Rigid body simulation (joints, contacts) using the AVBD algorithm
         - Coupled particle-rigid body systems
-        - Compliant rigid-body-to-particle attachments
+        - Compliant and hard rigid-body-to-particle attachments
 
     For rigid bodies, two paths are supported:
 
@@ -282,8 +304,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     Particle-body attachment limitations:
         - Attachments are translational and constrain one particle to a body-local point.
-        - The constraint is compliant: ``stiffness`` and ``damping`` enter a quadratic
-          penalty, so a loaded attachment keeps a small offset. There is no rigid mode.
+        - Attachments are compliant-ALM rows with a limit-row penalty: a finite
+          ``stiffness`` keeps its physical spring offset under load, while infinite
+          stiffness is the hard limit of the same row and ignores ``damping``.
+          Multipliers are retained across steps with ``rigid_avbd_gamma``. Finite
+          iterations can leave residual error, especially for conflicting constraints.
         - Both endpoints must be integrated by this solver. Attachments are not supported
           with ``integrate_with_external_rigid_solver=True``.
 
@@ -322,6 +347,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
           https://doi.org/10.1145/3658179
         - Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block Descent. ACM Trans. Graph. 44, 4, Article 90 (August 2025), 12 pages.
           https://doi.org/10.1145/3731195
+        - Anka H. Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide and Truncate: A Penetration and Inversion Free Framework for Coupled Multi-physics System. In ACM SIGGRAPH 2026 Conference Papers.
+          https://doi.org/10.1145/3799902.3811143
+        - Anka He Chen, Jerry Hsu, Ziheng Liu, Miles Macklin, Yin Yang, and Cem Yuksel. 2025. Offset Geometric Contact. ACM Trans. Graph. 44, 4.
+          https://doi.org/10.1145/3731205
 
     Note:
         `SolverVBD` requires coloring for each system it solves:
@@ -388,6 +417,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         and apply only to :attr:`~newton.JointType.ROD`. Only structural
         slots are named here; per-DOF drive/limit slots (slot 2+ on non-rod
         joints) are not.
+
+        These are solver constraint slots, not offsets into
+        :attr:`newton.Model.joint_target_ke` or
+        :attr:`newton.Model.joint_target_kd`. Rod material coefficients start at
+        :attr:`newton.Model.joint_qd_start` in the order
+        ``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``; see
+        :ref:`Rod joints`.
         """
 
         # Non-rod structural slots.
@@ -405,8 +441,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         model: Model,
         *,
         # Common parameters
-        iterations: int = 10,
+        iterations: int | None = None,
         friction_epsilon: float = 1e-2,
+        soft_contact_damping_bidirectional: bool = True,
         dat_conservative_bound_relaxation: float = 0.85,
         integrate_with_external_rigid_solver: bool = False,
         # Particle parameters
@@ -437,6 +474,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_contact_hard: bool | None = None,  # Legacy body-body contact hard/soft mode
         rigid_contact_history: bool | None = None,  # Body-body contact numeric warm-start
         rigid_contact_k_start: float | None = None,  # Legacy AVBD contact penalty ramp seed
+        rigid_contact_damping_bidirectional: bool = False,  # Body-body contact damping also while separating
         rigid_body_contact_buffer_size: int = 64,  # Per-body body-body contact list capacity
         rigid_body_particle_contact_buffer_size: int = 256,  # Per-body soft-contact list capacity (particle + edge/face)
         rigid_soft_contact_use_log_barrier: bool = False,  # Use particle-style normal log barrier
@@ -450,6 +488,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Tendons
         tendon_max_sweeps: int = 256,
         tendon_settle_tol: float = 1.0e-3,
+        tendon_settle_atol: float = 1.0e-6,
         tendon_activation_tol: float = 2.0e-3,
         # Rigid body - penetration-free DAT truncation
         rigid_soft_enable_dat: bool = False,  # Truncate rigid pose updates against per-contact division planes
@@ -465,9 +504,22 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             model: The `Model` object used to initialize the integrator. Must be identical to the `Model` object passed
                 to the `step` function.
 
-            iterations: Number of VBD iterations per step.
+            iterations: Number of VBD iterations per step. If ``None``, use the registered
+                ``newton:maxSolverIterations`` scene value, or ``10`` if absent or ``-1``.
+                Explicit values override the scene.
             friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
                 and rigid body contacts).
+            soft_contact_damping_bidirectional: Whether the damping of soft contacts (soft self-contact, driven
+                by ``Model.soft_contact_kd``, and rigid-soft contacts, driven by the mean of
+                ``Model.soft_contact_kd`` and the shape's ``Model.shape_material_kd``) also acts while a
+                contact separates. With the default ``True`` the normal damper and its Hessian act while the
+                gap closes and while it opens, for every contact that is still within its contact radius.
+                The self-contact damper acts on the change of the contact distance over the substep, so a
+                rigid motion of a contact pair gives no damping force.
+                With ``False`` the damper acts only while the gap closes and leaves the rebound undamped; in
+                the card stack of ``example_cloth_poker_cards`` (issue #3494) that stack kept bouncing, and a
+                larger ``soft_contact_kd`` made it worse. Two-sided damping also opposes the opening motion,
+                so it can delay release, and a large ``soft_contact_kd`` can hold a separating pair briefly.
             dat_conservative_bound_relaxation: Relaxation factor in (0, 1) shared by every Divide-and-Truncate
                 (DAT) truncation: soft self-contact (``particle_enable_self_contact``) and rigid-soft
                 (``rigid_soft_enable_dat``). It scales every truncation scalar, and each side's motion
@@ -534,12 +586,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 Values must be finite and representable in float32; infinity is unsupported.
 
                 Explicit non-``None`` values for deprecated beta, hard-contact, or
-                penalty-seed controls emit a :class:`~newton.exceptions.NewtonDeprecationWarning`.
+                penalty-seed controls emit a :class:`~newton.NewtonDeprecationWarning`.
 
                 .. deprecated:: 1.6
                     The legacy path selected by ``False`` will be removed in a future
                     release. Explicit ``False`` emits a
-                    :class:`~newton.exceptions.NewtonDeprecationWarning` for all models.
+                    :class:`~newton.NewtonDeprecationWarning` for all models.
                     Use the default compliant ALM path instead.
             rigid_avbd_alpha: C0 stabilization strength (``C_stab = C - alpha * C0``). Range: [0, 1].
                 Controls both joints and body-body contacts when neither class-specific
@@ -582,9 +634,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     Penalty ramping is deprecated. Keep the effective beta at ``0`` (the
                     default behavior) and author fixed material stiffness instead.
             rigid_avbd_gamma: Per-step decay factor for penalty k and persisted lambda.
-                Compliant ALM joints and validated contacts retain lambda by ``gamma``;
-                the legacy path retains lambda by ``alpha * gamma``. Lower values
-                discard history faster.
+                Compliant ALM joints, particle-body attachments, and validated contacts
+                retain lambda by ``gamma``; the legacy path retains joint and contact
+                lambda by ``alpha * gamma``. Lower values discard history faster.
             rigid_contact_hard: Legacy body-body contact hard/soft mode. With
                 ``rigid_compliant_alm=True``, contacts use the ALM path. With
                 ``rigid_compliant_alm=False``, ``True`` selects legacy hard AVBD contact
@@ -623,6 +675,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     Penalty ramping is deprecated for all uses. Body-particle contacts
                     continue to honor this control during migration; keep the effective beta
                     at ``0`` (the default behavior) and author fixed contact stiffness instead.
+            rigid_contact_damping_bidirectional: Whether body-body contact damping, whose coefficient is the
+                mean of the two shapes' ``kd``, also acts while the bodies separate. The default ``False``
+                keeps the closing-only damping of rigid contacts (while the row carries load). ``True`` also
+                damps the rebound, so rigid contacts return less of the approach speed.
             rigid_body_contact_buffer_size: Max body-body contacts per rigid body for per-body contact lists.
             rigid_body_particle_contact_buffer_size: Capacity of the per-body soft-contact adjacency
                 list, including currently ineligible mesh candidates. If a body's list overflows, force
@@ -723,7 +779,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 (approximate division and square root). Results change at the
                 floating-point rounding level. Ignored on CPU.
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per VBD iteration.
-            tendon_settle_tol: Relative tension-change tolerance for stopping capstan material relaxation.
+            tendon_settle_tol: Relative final capstan-force residual tolerance [dimensionless].
+                Zero disables early-out; must be finite and nonnegative.
+            tendon_settle_atol: Absolute final capstan-force residual tolerance [N].
+                Combined with the relative tolerance; must be finite and nonnegative.
+                Ignored when ``tendon_settle_tol`` is zero.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
 
             collision_pipeline: Optional :class:`~newton.CollisionPipeline`
@@ -780,6 +840,17 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     f"Fix the scene value or pass {name}= explicitly to SolverVBD."
                 )
             return value, True
+
+        if iterations is None:
+            scene_iterations = getattr(vbd_attrs, "max_solver_iterations", None)
+            iterations = int(scene_iterations.numpy()[0]) if scene_iterations is not None else -1
+            if iterations == -1:
+                iterations = 10
+            elif iterations <= 0:
+                raise ValueError(
+                    "Scene-authored newton:maxSolverIterations must be positive or -1 (use the default), "
+                    f"got {iterations}. Fix the scene value or pass iterations= explicitly to SolverVBD."
+                )
 
         rigid_contact_history, history_from_scene = resolve_scene_attribute(
             "rigid_contact_history", rigid_contact_history
@@ -1038,11 +1109,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Common parameters
         self.iterations = iterations
         self.friction_epsilon = friction_epsilon
+        self.soft_contact_damping_bidirectional = bool(soft_contact_damping_bidirectional)
+        self.rigid_contact_damping_bidirectional = bool(rigid_contact_damping_bidirectional)
         self.rigid_soft_contact_use_log_barrier = bool(rigid_soft_contact_use_log_barrier)
         self._joint_mode_deprecation_warned = False
 
         self.tendon_max_sweeps = tendon_max_sweeps
         self.tendon_settle_tol = tendon_settle_tol
+        self.tendon_settle_atol = tendon_settle_atol
         self.tendon_activation_tol = tendon_activation_tol
         # Rigid integration mode: when True, rigid bodies are integrated by an external
         # solver (one-way coupling). SolverVBD will not move rigid bodies, but can still
@@ -1094,6 +1168,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             rigid_joint_linear_kd,
             rigid_joint_angular_kd,
         )
+
+        attachment_count = model.attachment_particle_body_count
+        self._attachment_particle_body_lambda = wp.zeros(attachment_count, dtype=wp.vec3, device=self.device)
+        self._attachment_particle_body_rho = wp.zeros(attachment_count, dtype=float, device=self.device)
 
         self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(model, "SolverVBD")
         self._mimic_body_deltas = None
@@ -1758,6 +1836,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.model.body_com,
                     float(self.friction_epsilon),
                     self.rigid_soft_contact_use_log_barrier,
+                    self.soft_contact_damping_bidirectional,
                     self.body_particle_contact_penalty_k,
                     self.body_particle_contact_material_kd,
                     self.body_particle_contact_material_mu,
@@ -1839,6 +1918,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     int(ParticleFlags.PROXY),
                     self.friction_epsilon,
                     self.rigid_soft_contact_use_log_barrier,
+                    self.soft_contact_damping_bidirectional,
                     self.model.particle_radius,
                     contacts.soft_contact_count,
                     _make_soft_contact_filter_data(self.model, contacts, state_out.particle_q, body_q_for_particles),
@@ -1885,6 +1965,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.model.soft_contact_kd,
                     self.model.soft_contact_mu,
                     self.friction_epsilon,
+                    self.soft_contact_damping_bidirectional,
                     self._self_contact_edge_edge_parallel_epsilon,
                     out_particle_f,
                 ],
@@ -2479,6 +2560,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """Register SolverVBD custom Model attributes.
 
         Currently registers:
+          - ``vbd:max_solver_iterations`` for ``NewtonSceneAPI.newton:maxSolverIterations``.
           - ``vbd:rigid_contact_history``, ``vbd:rigid_joint_linear_ke``, ``vbd:rigid_joint_angular_ke``,
             ``vbd:rigid_joint_linear_kd`` and ``vbd:rigid_joint_angular_kd`` for the ``NewtonVbdSceneAPI``
             solver settings, authored in USD as ``newton:vbd:rigid:contactHistory``,
@@ -2500,6 +2582,18 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         Args:
             builder: Model builder to register attributes on.
         """
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="max_solver_iterations",
+                frequency=Model.AttributeFrequency.ONCE,
+                assignment=Model.AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                namespace="vbd",
+                usd_attribute_name="newton:maxSolverIterations",
+            )
+        )
+
         for name, (dtype, default, usd_attribute_name) in _SCENE_ATTRIBUTES.items():
             builder.add_custom_attribute(
                 ModelBuilder.CustomAttribute(
@@ -2663,6 +2757,45 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     # Main Solver Methods
     # =====================================================
 
+    def _initialize_particle_body_attachments(self, state: State, dt: float) -> None:
+        """Refresh attachment ALM metrics and retain multipliers once per step."""
+        model = self.model
+        wp.launch(
+            kernel=step_particle_body_attachment_lambda_rho,
+            dim=model.attachment_particle_body_count,
+            inputs=[
+                dt,
+                self.rigid_avbd_gamma,
+                model.attachment_particle_body_body,
+                model.attachment_particle_body_particle,
+                model.attachment_particle_body_stiffness,
+                model.attachment_particle_body_enabled,
+                state.particle_q,
+                self.particle_q_prev,
+                model.particle_inv_mass,
+                model.particle_flags,
+                self.body_inv_mass_effective,
+                self.particle_adjacency,
+                model.tri_indices,
+                model.tri_poses,
+                model.tri_areas,
+                model.tri_materials,
+                model.edge_indices,
+                model.edge_rest_angle,
+                model.edge_rest_length,
+                model.edge_bending_properties,
+                model.tet_indices,
+                model.tet_poses,
+                model.tet_materials,
+                model.spring_indices,
+                model.spring_rest_length,
+                model.spring_stiffness,
+                model.spring_damping,
+            ],
+            outputs=[self._attachment_particle_body_rho, self._attachment_particle_body_lambda],
+            device=self.device,
+        )
+
     def set_rigid_history_update(self, update: bool):
         """Set whether the next step() should update rigid solver history.
 
@@ -2672,8 +2805,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         is enabled (from each contact's own state when ``Contacts`` was not
         collided since the previous step, otherwise through
         ``Contacts.rigid_contact_match_index``).
-        When False, the step reuses the current rigid contact lists and contact
-        state. In that mode, the caller must pass the same contact result/buffers
+        When False, the step reuses the current rigid contact lists and records
+        without reinitializing them. Pass the same contact result/buffers
         used by the previous refresh; do not run collision into the contacts
         buffer between refreshes. Passing newly collided contacts while update is
         disabled can mismatch stale per-body contact lists with current contact
@@ -2689,6 +2822,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         automatic rho refresh) runs every step regardless of this flag via
         step_joint_C0_lambda_rho().
         Rigid contact history snapshotting also runs every step when enabled.
+        Per-step contact maintenance (C0, conditioning, penalty, and lambda
+        retention) also runs on the reused contact records.
 
         This setting applies only to the next call to :meth:`step` and is then
         reset to True.  Useful for substepping where collision detection frequency
@@ -2829,6 +2964,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """
         contacts = self._resolve_step_contacts(contacts)
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         self._apply_module_options()
         update_rigid = self._update_rigid_history
         self._update_rigid_history = True
@@ -2865,6 +3001,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         self._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid)
         self._initialize_particles(state_in, state_out, contacts, dt)
+        if self.model.attachment_particle_body_count > 0:
+            self._initialize_particle_body_attachments(state_in, dt)
 
         rigid_due, soft_due = self._collision_detection_due((_Frequency.PRE_POST_INIT,))
         # With contact history, the post-initialization pass carries the state just
@@ -2891,6 +3029,23 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self._update_tendon_routing(state_in, dt, False)
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt)
+            if self.model.attachment_particle_body_count > 0:
+                wp.launch(
+                    kernel=update_duals_particle_body_attachments,
+                    dim=self.model.attachment_particle_body_count,
+                    inputs=[
+                        self.model.attachment_particle_body_body,
+                        self.model.attachment_particle_body_particle,
+                        self.model.attachment_particle_body_body_point,
+                        self.model.attachment_particle_body_stiffness,
+                        self.model.attachment_particle_body_enabled,
+                        state_in.particle_q,
+                        state_in.body_q,
+                        self._attachment_particle_body_rho,
+                    ],
+                    outputs=[self._attachment_particle_body_lambda],
+                    device=self.device,
+                )
 
         update_tendon_diagnostics = (
             self.iterations > 0
@@ -2901,9 +3056,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # The final body update changes tendon geometry after the last
             # in-iteration material solve. Accept its route state before
             # reporting tension or carrying rest lengths into the next step.
-            # This accepted state is also where the unsupported-wrap
-            # diagnostic is meaningful (mid-iteration predictor overshoot is
-            # not), so report it here.
+            # Report wrap and material-budget errors at the accepted pose;
+            # mid-iteration predictor overshoot can still recover.
             self._update_tendon_routing(state_in, dt, True)
             self._snapshot_tendon_segment_length_reference(state_in.body_q, dt)
 
@@ -2962,7 +3116,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         volumetric (tet) soft bodies, and it runs even when an external solver
         integrates the bodies or the model has none. A requested particle field is
         skipped if its *state* array is ``None``. Particle and body-particle solver
-        history is intentionally left untouched: ``particle_q_prev`` is rebaselined
+        history is intentionally left untouched except for retained attachment
+        multipliers, which are cleared in selected worlds.
+        ``particle_q_prev`` is rebaselined
         from the incoming state at the start of the next :meth:`step`, self-contact
         and body-particle contacts rebuild per step, and tet/cloth elasticity is
         stateless, so no particle history cold-start is required. Reset does not
@@ -3067,6 +3223,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 )
 
         self._reset_tendon_state(state, world_mask)
+
+        if model.attachment_particle_body_count > 0:
+            wp.launch(
+                kernel=reset_particle_body_attachment_state,
+                dim=model.attachment_particle_body_count,
+                inputs=[world_mask, world_mask is None, model.world_count, model.attachment_particle_body_world],
+                outputs=[self._attachment_particle_body_lambda],
+                device=self.device,
+            )
 
         if not self._integrates_rigid_bodies:
             return
@@ -4190,6 +4355,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.attachment_particle_body_stiffness,
                         model.attachment_particle_body_damping,
                         model.attachment_particle_body_enabled,
+                        self._attachment_particle_body_rho,
+                        self._attachment_particle_body_lambda,
                     ],
                     outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
@@ -4225,6 +4392,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             state_in.particle_q,
                             self.friction_epsilon,
                             self.rigid_soft_contact_use_log_barrier,
+                            self.soft_contact_damping_bidirectional,
                             model.particle_radius,
                             contacts.soft_contact_indices,
                             self._particle_contact_head,
@@ -4252,6 +4420,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             self.model.particle_colors,
                             self.friction_epsilon,
                             self.rigid_soft_contact_use_log_barrier,
+                            self.soft_contact_damping_bidirectional,
                             model.particle_radius,
                             contacts.soft_contact_indices,
                             contacts.soft_contact_count,
@@ -4306,6 +4475,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.model.soft_contact_kd,
                         self.model.soft_contact_mu,
                         self.friction_epsilon,
+                        self.soft_contact_damping_bidirectional,
                         self._self_contact_edge_edge_parallel_epsilon,
                     ],
                     outputs=[self.particle_forces, self.particle_hessians],
@@ -4384,7 +4554,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         wp.copy(state_out.particle_q, state_in.particle_q)
 
-    def _update_tendon_routing(self, state_in: State, dt: float, report_unsupported_wrap: bool) -> None:
+    def _update_tendon_routing(self, state_in: State, dt: float, report_diagnostics: bool) -> None:
         """Update VBD routed-tendon geometry and rolling rest transfer for this iteration."""
         model = self.model
         if model.tendon_segment_count == 0:
@@ -4425,7 +4595,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             device=self.device,
         )
 
-        self._update_tendon_cone_rows(model, state_in.body_q, report_unsupported_wrap)
+        self._update_tendon_cone_rows(model, state_in.body_q, report_diagnostics)
 
         wp.launch(
             kernel=solve_tendon_material,
@@ -4439,6 +4609,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 model.tendon_guide_body,
                 model.tendon_guide_type,
                 model.tendon_guide_radius,
+                model.tendon_guide_orientation,
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
                 self.tendon_segment_rest_length,
@@ -4453,7 +4624,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.tendon_segment_active_damping,
                 self.tendon_guide_active,
                 self.tendon_guide_active_step,
-                self.tendon_guide_route_rest_length,
                 self.tendon_segment_attachment_l,
                 self.tendon_segment_attachment_r,
                 self.tendon_segment_length,
@@ -4472,6 +4642,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 1,
                 self.tendon_max_sweeps,
                 self.tendon_settle_tol,
+                self.tendon_settle_atol,
+                int(report_diagnostics),
+                self._tendon_guide_material_transfer,
             ],
             device=self.device,
         )
@@ -4618,6 +4791,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.attachment_particle_body_stiffness,
                         model.attachment_particle_body_damping,
                         model.attachment_particle_body_enabled,
+                        self._attachment_particle_body_rho,
+                        self._attachment_particle_body_lambda,
                         self.body_particle_attachment_offsets,
                         self.body_particle_attachment_indices,
                     ],
@@ -4651,6 +4826,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.shape_body,
                         self.friction_epsilon,
                         self.rigid_soft_contact_use_log_barrier,
+                        self.soft_contact_damping_bidirectional,
                         self.body_particle_contact_penalty_k,
                         self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
@@ -4692,6 +4868,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.body_com,
                         self.body_inv_mass_effective,
                         self.friction_epsilon,
+                        self.rigid_contact_damping_bidirectional,
                         self.body_body_contact_penalty_k,
                         self.body_body_contact_normal_rho,
                         self.body_body_contact_material_ke,
@@ -4791,12 +4968,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.tendon_adjacency,
                     model.tendon_guide_body,
                     model.tendon_guide_type,
-                    model.tendon_guide_radius,
-                    model.tendon_guide_mu,
                     model.tendon_guide_offset,
                     model.tendon_guide_axis,
                     self.tendon_guide_cone_seg_l,
                     self.tendon_guide_cone_seg_r,
+                    self.tendon_guide_cap_ratio,
                     self.tendon_segment_rest_length,
                     self.tendon_segment_attachment_l_local,
                     self.tendon_segment_attachment_r_local,
@@ -5001,6 +5177,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.rigid_contact_hard,
                 self.rigid_compliant_alm,
                 float(self.friction_epsilon),
+                self.rigid_contact_damping_bidirectional,
             ],
             outputs=[contact_f],
             device=self.device,
@@ -5039,6 +5216,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 model.body_com,
                 self.friction_epsilon,
                 self.rigid_soft_contact_use_log_barrier,
+                self.soft_contact_damping_bidirectional,
                 self.body_particle_contact_penalty_k,
                 self.body_particle_contact_material_kd,
                 self.body_particle_contact_material_mu,
@@ -5187,6 +5365,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.rigid_contact_hard,
                 self.rigid_compliant_alm,
                 float(self.friction_epsilon),
+                self.rigid_contact_damping_bidirectional,
             ],
             outputs=[
                 self._rigid_contact_body0,

@@ -16,7 +16,6 @@ from .....sim import JointTargetMode
 from .....sim.model import Model
 from .....sim.shape_contact_pairs import _shape_contact_pair_override, _shape_contact_pair_topology
 from ....coupled.model_view import ModelView
-from ..utils import logger as msg
 from .bodies import (
     RigidBodiesModel,
     convert_body_origin_to_com,
@@ -43,6 +42,9 @@ from .types import mat63f, to_warp_int32_array, vec6f
 
 if TYPE_CHECKING:
     from ..core.model import ModelKamino, ModelKaminoInfo
+import logging
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -80,6 +82,7 @@ class StructuralUpdateViolation(IntEnum):
     IMMOVABILITY_FLIP = 6
     FRICTION_CTS = 7
     EFFORT_CTS = 8
+    CARTESIAN_HANDEDNESS = 9
 
 
 ###
@@ -218,6 +221,7 @@ def material_first_shape_kernel(
 @wp.kernel
 def validate_material_update_kernel(
     shape_friction: wp.array[wp.float32],
+    shape_static_friction: wp.array[wp.float32],
     shape_restitution: wp.array[wp.float32],
     geom_material: wp.array[wp.int32],
     first_shape: wp.array[wp.int32],
@@ -231,6 +235,7 @@ def validate_material_update_kernel(
     representative = first_shape[material]
     if (
         shape_friction[shape] != shape_friction[representative]
+        or shape_static_friction[shape] != shape_static_friction[representative]
         or shape_restitution[shape] != shape_restitution[representative]
     ):
         wp.atomic_min(conflict_material, 0, material)
@@ -240,6 +245,7 @@ def validate_material_update_kernel(
 def update_materials_kernel(
     # Inputs:
     shape_friction: wp.array[wp.float32],
+    shape_static_friction: wp.array[wp.float32],
     shape_restitution: wp.array[wp.float32],
     first_shape: wp.array[wp.int32],
     shape_count: int,
@@ -259,12 +265,13 @@ def update_materials_kernel(
     shape = first_shape[material]
     if shape < shape_count:
         friction = shape_friction[shape]
+        friction_static = shape_static_friction[shape]
         restitution[material] = shape_restitution[shape]
-        static_friction[material] = friction
+        static_friction[material] = friction_static
         dynamic_friction[material] = friction
         if material == 0:
             pair_restitution[0] = shape_restitution[shape]
-            pair_static_friction[0] = friction
+            pair_static_friction[0] = friction_static
             pair_dynamic_friction[0] = friction
 
 
@@ -381,12 +388,13 @@ def validate_joint_axes_kernel(
     # Outputs:
     violations: wp.array[wp.int32],
 ):
-    """Find the first universal or gimbal joint with invalid axis configuration."""
+    """Find the first universal, gimbal, or Cartesian joint with invalid axis configuration."""
     joint = wp.tid()
     dof_type = joint_dof_type[joint]
     is_universal = dof_type == JointDoFType.UNIVERSAL
     is_gimbal = dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED
-    if not is_universal and not is_gimbal:
+    is_cartesian = dof_type == JointDoFType.CARTESIAN
+    if not is_universal and not is_gimbal and not is_cartesian:
         return
 
     dof_start = joint_qd_start[joint]
@@ -403,7 +411,7 @@ def validate_joint_axes_kernel(
         and wp.abs(wp.dot(axis_1, axis_1) - 1.0) <= 1.0e-6
         and wp.abs(wp.dot(axis_0, axis_1)) <= 1.0e-6
     )
-    if is_gimbal:
+    if is_gimbal or is_cartesian:
         axis_2 = joint_axis[dof_start + 2]
         valid = (
             valid
@@ -416,8 +424,12 @@ def validate_joint_axes_kernel(
         )
         if valid:
             left_handed = wp.dot(wp.cross(axis_0, axis_1), axis_2) < 0.0
-            expected_left_handed = dof_type == JointDoFType.GIMBAL_LEFT_HANDED
-            if left_handed != expected_left_handed:
+            if is_cartesian:
+                # The Cartesian joint frame is built from the three axes, so they must form a rotation.
+                if left_handed:
+                    wp.atomic_min(violations, StructuralUpdateViolation.CARTESIAN_HANDEDNESS, joint)
+                    return
+            elif left_handed != (dof_type == JointDoFType.GIMBAL_LEFT_HANDED):
                 wp.atomic_min(violations, StructuralUpdateViolation.GIMBAL_HANDEDNESS, joint)
                 return
     if not valid:
@@ -519,8 +531,6 @@ def rigid_bodies_indexing_kernel(
 @wp.kernel
 def joint_conversion_kernel(
     # Inputs:
-    model_joint_world: wp.array[wp.int32],
-    model_joint_world_start: wp.array[wp.int32],
     model_joint_parent: wp.array[wp.int32],
     model_joint_child: wp.array[wp.int32],
     model_joint_type: wp.array[wp.int32],
@@ -539,7 +549,6 @@ def joint_conversion_kernel(
     joint_limit_upper: wp.array[wp.float32],
     body_is_immovable: wp.array[wp.int32],
     # Outputs:
-    joint_jid: wp.array[wp.int32],
     joint_dof_type: wp.array[wp.int32],
     joint_act_type: wp.array[wp.int32],
     joint_dof_act_types: wp.array[wp.int32],
@@ -555,9 +564,6 @@ def joint_conversion_kernel(
 ):
     # Retrieve the joint index
     joint_id = wp.tid()
-
-    world_id = model_joint_world[joint_id]
-    joint_jid[joint_id] = joint_id - model_joint_world_start[world_id]
 
     # Determine Kamino joint type
     type_j = model_joint_type[joint_id]
@@ -1121,11 +1127,12 @@ def validate_model_structural_updates(
     - :attr:`StructuralUpdateViolation.LIMIT_FINITE`: finite-limit state changed
     - :attr:`StructuralUpdateViolation.ACTUATION_PARTITION`: passive/actuated partition changed
     - :attr:`StructuralUpdateViolation.INVALID_TARGET_MODE`: unsupported target-mode combination
-    - :attr:`StructuralUpdateViolation.NONORTHONORMAL_AXES`: nonorthonormal universal/gimbal axes
+    - :attr:`StructuralUpdateViolation.NONORTHONORMAL_AXES`: nonorthonormal universal/Cartesian/gimbal axes
     - :attr:`StructuralUpdateViolation.GIMBAL_HANDEDNESS`: gimbal axis handedness changed
     - :attr:`StructuralUpdateViolation.IMMOVABILITY_FLIP`: a body's Kamino immovability status changed
     - :attr:`StructuralUpdateViolation.FRICTION_CTS`: joint friction constraint topology changed
     - :attr:`StructuralUpdateViolation.EFFORT_CTS`: effort-row topology changed
+    - :attr:`StructuralUpdateViolation.CARTESIAN_HANDEDNESS`: left-handed Cartesian axes
 
     An entry equal to the maximum of the body, joint, and DoF counts indicates that no
     violation of that type was found.
@@ -1264,7 +1271,7 @@ def _validate_joint_axes(
     joint_dof_type: wp.array[wp.int32],
     violations: wp.array[wp.int32],
 ) -> None:
-    """Validate universal and gimbal axes before Warp frame conversion."""
+    """Validate universal, gimbal, and Cartesian axes before Warp frame conversion."""
     violations.fill_(model.joint_count)
     if model.joint_count > 0:
         wp.launch(
@@ -1286,7 +1293,7 @@ def _validate_joint_axes(
         raise ValueError(
             f"Invalid joint configuration for SolverKamino:\n"
             f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
-            "universal and gimbal axes must be unit length and orthogonal"
+            "universal, Cartesian, and gimbal axes must be unit length and orthogonal"
         )
     invalid_joint = int(violations_np[StructuralUpdateViolation.GIMBAL_HANDEDNESS])
     if invalid_joint < model.joint_count:
@@ -1294,6 +1301,14 @@ def _validate_joint_axes(
             f"Invalid joint configuration for SolverKamino:\n"
             f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
             "gimbal axes must preserve the solver's original handedness"
+        )
+    invalid_joint = int(violations_np[StructuralUpdateViolation.CARTESIAN_HANDEDNESS])
+    if invalid_joint < model.joint_count:
+        raise ValueError(
+            f"Invalid joint configuration for SolverKamino:\n"
+            f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
+            "three translational axes must form a right-handed set, unlike those of a USD D6 joint "
+            "whose physics:body1 is the world"
         )
 
 
@@ -1376,7 +1391,8 @@ def convert_model_materials(
     """Update Kamino's material properties in place from Newton shape materials.
 
     Recomputes per-material friction and restitution from
-    ``model.shape_material_mu`` and ``model.shape_material_restitution`` while
+    ``model.shape_material_mu``, ``model.shape_material_mu_static`` and
+    ``model.shape_material_restitution`` while
     preserving the material arrays referenced by Kamino's collision detector.
 
     Args:
@@ -1399,6 +1415,7 @@ def convert_model_materials(
         inputs=[
             # Inputs:
             model.shape_material_mu,
+            model.shape_material_mu_static,
             model.shape_material_restitution,
             model_kamino.geoms.material,
             first_shape,
@@ -1422,6 +1439,7 @@ def convert_model_materials(
         inputs=[
             # Inputs:
             model.shape_material_mu,
+            model.shape_material_mu_static,
             model.shape_material_restitution,
             first_shape,
             model.shape_count,
@@ -1582,7 +1600,7 @@ def _warn_ignored_free_joint_friction(
         > positive_friction_prefix[qd_start_np[free_joint_ids]]
     )
     for jid in free_joint_ids[free_joint_has_friction].tolist():
-        msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
+        logger.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
 
 
 def _validate_model_joint_pd_gains(model: Model | ModelView) -> None:
@@ -1629,7 +1647,6 @@ def convert_joints(
 
     # Create joint property arrays
     with wp.ScopedDevice(model.device):
-        joint_jid = wp.empty(shape=(model.joint_count,), dtype=wp.int32)
         joint_dof_type = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_act_type = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_dof_act_types = wp.zeros(shape=(model.joint_dof_count,), dtype=wp.int32)
@@ -1656,8 +1673,6 @@ def convert_joints(
         dim=model.joint_count,
         inputs=[
             # Inputs:
-            model.joint_world,
-            model.joint_world_start,
             model.joint_parent,
             model.joint_child,
             model.joint_type,
@@ -1676,7 +1691,6 @@ def convert_joints(
             model.joint_limit_upper,
             model_bodies.is_immovable,
             # Outputs:
-            joint_jid,
             joint_dof_type,
             joint_act_type,
             joint_dof_act_types,
@@ -2085,7 +2099,6 @@ def convert_joints(
         num_joints=model.joint_count,
         label=model.joint_label,
         wid=model.joint_world,
-        jid=joint_jid,  # TODO: Remove
         dof_type=joint_dof_type,
         act_type=joint_act_type,
         dof_act_types=joint_dof_act_types,
@@ -2149,17 +2162,19 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
         NumPy array of material indices for each geom.
     """
     # Set up material parameter dictionary
-    material_param_indices: dict[tuple[float, float], int] = {}
+    material_param_indices: dict[tuple[float, float, float], int] = {}
     for i, material in enumerate(materials_manager.materials):
         # Adding already existing (default) materials from material manager, making sure the values
         # undergo the same transformation as any material parameters in the Newton model (conversion
         # to np.float32)
-        mu = float(np.float32(material.static_friction))
+        mu = float(np.float32(material.dynamic_friction))
+        mu_static = float(np.float32(material.static_friction))
         restitution = float(np.float32(material.restitution))
-        material_param_indices[(mu, restitution)] = i
+        material_param_indices[(mu, mu_static, restitution)] = i
 
     # Newton material parameters
     shape_friction = model.shape_material_mu.numpy().tolist()
+    shape_static_friction = model.shape_material_mu_static.numpy().tolist()
     shape_restitution = model.shape_material_restitution.numpy().tolist()
     # Mapping from geom to material index
     geom_material = np.zeros((model.shape_count,), dtype=int)
@@ -2168,14 +2183,14 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
 
     for s in range(model.shape_count):
         # Check if material with these parameters already exists
-        material_desc = (shape_friction[s], shape_restitution[s])
+        material_desc = (shape_friction[s], shape_static_friction[s], shape_restitution[s])
         if material_desc in material_param_indices:
             material_id = material_param_indices[material_desc]
         else:
             material = MaterialDescriptor(
                 name=f"{model.shape_label[s]}_material",
                 restitution=shape_restitution[s],
-                static_friction=shape_friction[s],
+                static_friction=shape_static_friction[s],
                 dynamic_friction=shape_friction[s],
                 # wid=shape_world_np[s],
             )

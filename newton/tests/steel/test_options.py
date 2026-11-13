@@ -81,14 +81,9 @@ def _spin(model, state):
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
 
-def _split_or_default(device):
-    return {} if device.is_cuda else {"solve_mode": "split"}
-
-
 def test_angular_damping_defaults_to_the_featherstone_value(test, device):
     """Damp free roots by 0.05 without the attribute, exactly as a registered attribute of that value."""
-    mode = _split_or_default(device)
-    run = {"init": _spin, "steps": 20, **mode}
+    run = {"init": _spin, "steps": 20}
     default = _run(_build_spinning_model(device), **run)
     registered = _run(_build_spinning_model(device, register=True, damping=0.05), **run)
     _assert_bitwise(test, default, registered, "unregistered vs 0.05 attribute")
@@ -104,7 +99,6 @@ def test_angular_damping_decays_free_root_spin_analytically(test, device):
         _build_spinning_model(device, register=True, damping=damping),
         init=_spin,
         steps=steps,
-        **_split_or_default(device),
     )
     test.assertAlmostEqual(float(joint_qd[5]), 4.0 * (1.0 - damping * DT) ** steps, delta=1.0e-5)
 
@@ -112,12 +106,16 @@ def test_angular_damping_decays_free_root_spin_analytically(test, device):
 def test_angular_damping_follows_in_place_edits(test, device):
     """Apply an in-place edit of the attribute on the next step, as on the per-body path."""
     model = _build_spinning_model(device, register=True, damping=0.3)
-    solver = SolverSteel(model, **_split_or_default(device))
+    solver = SolverSteel(model)
     state_in, state_out = model.state(), model.state()
     _spin(model, state_in)
     model.steel.rigid_body_angular_damping.fill_(0.0)
     solver.step(state_in, state_out, model.control(), None, DT)
     test.assertAlmostEqual(float(state_out.joint_qd.numpy()[5]), 4.0, delta=1.0e-5)
+    # A damping beyond 1 / dt stops the spin rather than reversing it.
+    model.steel.rigid_body_angular_damping.fill_(2.0 / DT)
+    solver.step(state_out, state_in, model.control(), None, DT)
+    test.assertEqual(float(state_in.joint_qd.numpy()[5]), 0.0)
 
 
 def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
@@ -136,6 +134,7 @@ def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(1.0)
     for name, value in (
         ("physxRigidBody:angularDamping", 0.3),
+        ("physxRigidBody:linearDamping", 0.2),
         ("physxRigidBody:maxLinearVelocity", 2.0),
         ("physxRigidBody:maxAngularVelocity", 90.0),
         ("physxRigidBody:maxDepenetrationVelocity", 1.5),
@@ -147,6 +146,7 @@ def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     builder.add_usd(stage)
     model = builder.finalize(device=device)
     np.testing.assert_allclose(model.steel.rigid_body_angular_damping.numpy(), [0.3])
+    np.testing.assert_allclose(model.steel.rigid_body_linear_damping.numpy(), [0.2])
     np.testing.assert_allclose(model.steel.rigid_body_max_linear_velocity.numpy(), [2.0])
     np.testing.assert_allclose(model.steel.rigid_body_max_angular_velocity.numpy(), [0.5 * np.pi], rtol=1.0e-6)
     np.testing.assert_allclose(model.steel.rigid_body_max_depenetration_velocity.numpy(), [1.5])
@@ -154,16 +154,19 @@ def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     # Contact torsion is CUDA-only; this check covers the body attributes.
     model.steel.min_torsional_patch_radius.zero_()
 
-    solver = SolverSteel(model, **_split_or_default(device))
+    solver = SolverSteel(model)
     model.steel.rigid_body_angular_damping = wp.zeros(1, dtype=wp.float32, device=device)
+    model.steel.rigid_body_linear_damping = wp.zeros(1, dtype=wp.float32, device=device)
     model.steel.rigid_body_max_angular_velocity = wp.full(1, 100.0, dtype=wp.float32, device=device)
     state_in, state_out = model.state(), model.state()
     joint_qd = state_in.joint_qd.numpy()
+    joint_qd[0] = 1.0
     joint_qd[5] = 4.0
     state_in.joint_qd.assign(joint_qd)
     newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
     solver.step(state_in, state_out, model.control(), None, DT)
     # The replaced arrays apply: no damping and no clamp at the imported 90 deg/s.
+    test.assertAlmostEqual(float(state_out.joint_qd.numpy()[0]), 1.0, delta=1.0e-5)
     test.assertAlmostEqual(float(state_out.joint_qd.numpy()[5]), 4.0, delta=1.0e-5)
 
 
@@ -178,17 +181,130 @@ def test_angular_damping_survives_graph_capture(test, device):
     )
 
 
+def _build_sliding_model(device, *, register=True, damping=None):
+    """Slide a damped free box, an undamped free box and a hinged floating base on frictionless ground."""
+    builder = newton.ModelBuilder()
+    if register:
+        SolverSteel.register_custom_attributes(builder)
+    damped = None if damping is None else {"steel:rigid_body_linear_damping": damping}
+    undamped = None if damping is None else {"steel:rigid_body_linear_damping": 0.0}
+    cfg = newton.ModelBuilder.ShapeConfig(mu=0.0)
+    for y, attributes in ((0.0, damped), (1.0, undamped)):
+        box = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, y, 0.1), wp.quat_identity()), custom_attributes=attributes
+        )
+        builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+    base = builder.add_link(xform=wp.transform(wp.vec3(0.0, 2.0, 0.1), wp.quat_identity()), custom_attributes=damped)
+    builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+    arm = builder.add_link(xform=wp.transform(wp.vec3(0.3, 2.0, 0.1), wp.quat_identity()))
+    builder.add_shape_box(arm, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+    builder.add_articulation(
+        [
+            builder.add_joint_free(parent=-1, child=base),
+            builder.add_joint_revolute(
+                parent=base,
+                child=arm,
+                axis=wp.vec3(0.0, 0.0, 1.0),
+                parent_xform=wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity()),
+            ),
+        ]
+    )
+    builder.add_ground_plane(cfg=cfg)
+    return builder.finalize(device=device)
+
+
+def _slide(model, state):
+    """Give the three free roots the same horizontal velocity."""
+    joint_qd = state.joint_qd.numpy()
+    for root in range(3):
+        joint_qd[6 * root : 6 * root + 2] = (1.0, 0.5)
+    state.joint_qd.assign(joint_qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+
+def _root_velocities(joint_qd):
+    """Return the horizontal COM velocity of the damped box, the undamped box and the floating base."""
+    return np.array([joint_qd[6 * root : 6 * root + 2] for root in range(3)])
+
+
+_LINEAR_DAMPING_SOLVES = {
+    "serial": {},
+    "propagation": {"articulated_contact_response": "propagation"},
+    "colored": {"solve_mode": "colored", "articulated_contact_response": "propagation"},
+    "velocity_post_pass": {"velocity_iterations": 2},
+    "propagation_velocity_post_pass": {"articulated_contact_response": "propagation", "velocity_iterations": 2},
+}
+
+
+def test_linear_damping_decays_free_root_com_velocity(test, device):
+    """Scale free roots' COM velocity by ``1 - d dt`` per step on every solve and leave undamped bodies alone."""
+    damping, steps = 2.0, 24
+    solves = _LINEAR_DAMPING_SOLVES.items() if device.is_cuda else [("serial", _LINEAR_DAMPING_SOLVES["serial"])]
+    expected = np.array((1.0, 0.5)) * (1.0 - damping * DT) ** steps
+    for label, options in solves:
+        with test.subTest(solve=label):
+            _, _, joint_qd, _ = _run(
+                _build_sliding_model(device, damping=damping), init=_slide, steps=steps, iterations=8, **options
+            )
+            damped_box, undamped_box, floating_base = _root_velocities(joint_qd)
+            np.testing.assert_allclose(damped_box, expected, rtol=1.0e-3, err_msg=f"{label}: damped box")
+            np.testing.assert_allclose(undamped_box, (1.0, 0.5), rtol=1.0e-4, err_msg=f"{label}: undamped box")
+            np.testing.assert_allclose(floating_base, expected, rtol=1.0e-3, err_msg=f"{label}: floating base")
+
+
+def test_linear_damping_defaults_to_zero(test, device):
+    """Step a model without the attribute exactly like one whose linear damping is 0."""
+    run = {"init": _slide, "steps": 12}
+    _assert_bitwise(
+        test,
+        _run(_build_sliding_model(device, register=False), **run),
+        _run(_build_sliding_model(device, damping=0.0), **run),
+        "unregistered vs 0 attribute",
+    )
+
+
+def test_linear_damping_follows_in_place_edits(test, device):
+    """Apply an in-place edit of the linear damping on the next step, and stop the body for a damping beyond 1 / dt."""
+    model = _build_sliding_model(device, damping=0.0)
+    solver = SolverSteel(model)
+    state_in, state_out = model.state(), model.state()
+    _slide(model, state_in)
+    control = model.control()
+    for damping, scale in ((0.0, 1.0), (2.0, 1.0 - 2.0 * DT), (0.0, 1.0 - 2.0 * DT), (2.0 / DT, 0.0)):
+        model.steel.rigid_body_linear_damping.fill_(damping)
+        solver.step(state_in, state_out, control, None, DT)
+        state_in, state_out = state_out, state_in
+        test.assertAlmostEqual(float(state_in.joint_qd.numpy()[0]), scale, delta=1.0e-5)
+
+
+def test_linear_damping_survives_graph_capture(test, device):
+    """Replay a captured step exactly like eager steps while the linear damping changes between steps."""
+    schedule = (2.0, 0.0, 5.0, 0.0, 2.0, 5.0)
+
+    def edit(model, index):
+        model.steel.rigid_body_linear_damping.fill_(schedule[index])
+
+    for options in ({}, {"velocity_iterations": 2}):
+        with test.subTest(**options):
+            run = {"init": _slide, "steps": len(schedule), "before_step": edit, **options}
+            _assert_bitwise(
+                test,
+                _run(_build_sliding_model(device, damping=2.0), capture=True, **run),
+                _run(_build_sliding_model(device, damping=2.0), **run),
+                "captured",
+            )
+
+
 _SOLVES = {
-    "matrix_free": {},
+    "serial": {},
     "phased": {"row_schedule": "phased"},
     "propagation": {"articulated_contact_response": "propagation"},
-    "propagation_colored": {"articulated_contact_response": "propagation_colored"},
-    "split": {"solve_mode": "split"},
+    "colored": {"solve_mode": "colored", "articulated_contact_response": "propagation"},
 }
 
 
 def _solves(device):
-    return _SOLVES.items() if device.is_cuda else [("split", _SOLVES["split"])]
+    return _SOLVES.items() if device.is_cuda else [("serial", _SOLVES["serial"])]
 
 
 def test_zero_friction_matches_normal_rows_only(test, device):
@@ -222,7 +338,7 @@ def test_contact_friction_scale_matches_scaled_materials(test, device):
 def test_contact_friction_scale_applies_to_notified_materials(test, device):
     """Rescale the solver's friction copy whenever SHAPE_PROPERTIES publishes new coefficients."""
     model = _build_contact_scene(device)
-    solver = SolverSteel(model, contact_friction_scale=0.25, **_split_or_default(device))
+    solver = SolverSteel(model, contact_friction_scale=0.25)
     np.testing.assert_allclose(solver._shape_mu.numpy()[: model.shape_count], 0.25 * 0.6, rtol=1.0e-7)
     model.shape_material_mu = wp.full(model.shape_count, 0.8, dtype=float, device=device)
     solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
@@ -233,10 +349,9 @@ def test_contact_friction_scale_applies_to_notified_materials(test, device):
 def test_friction_switches_validate_their_values(test, device):
     """Reject invalid friction scales."""
     model = _build_contact_scene(device)
-    mode = _split_or_default(device)
     for value in (-0.5, float("nan"), float("inf")):
         with test.subTest(scale=value), test.assertRaisesRegex(ValueError, "contact_friction_scale"):
-            SolverSteel(model, contact_friction_scale=value, **mode)
+            SolverSteel(model, contact_friction_scale=value)
 
 
 def _friction_start_runs(device):
@@ -245,12 +360,6 @@ def _friction_start_runs(device):
         yield label, lambda: _build_contact_scene(device), {"init": _set_box_velocities, **options}, None
     if not device.is_cuda:
         return
-    yield (
-        "split-loop",
-        lambda: _build_contact_scene(device),
-        {"init": _set_box_velocities, "solve_mode": "split", "overrides": {"pgs_kernel": "loop"}},
-        None,
-    )
     mixed = {
         "dof_count": 13,
         "friction": 0.7,
@@ -356,9 +465,8 @@ def test_friction_position_iterations_survive_graph_capture(test, device):
 def test_friction_position_iterations_validate_their_value(test, device):
     """Reject values below -1 and the options whose friction state the gate cannot hold."""
     model = _build_contact_scene(device)
-    mode = _split_or_default(device)
     with test.assertRaisesRegex(ValueError, "contact_friction_position_iterations"):
-        SolverSteel(model, contact_friction_position_iterations=-2, **mode)
+        SolverSteel(model, contact_friction_position_iterations=-2)
     if device.is_cuda:
         with test.assertRaisesRegex(NotImplementedError, "contact_warmstart"):
             SolverSteel(model, contact_friction_position_iterations=2, contact_warmstart=True)
@@ -404,21 +512,6 @@ def test_disabled_restitution_matches_inelastic_materials(test, device):
     )
 
 
-def test_disabled_restitution_lets_split_accept_restitution(test, device):
-    """Construct and notify a split solve with positive shape restitution once restitution is disabled."""
-    model = _build_contact_scene(device, restitution=0.5)
-    with test.assertRaisesRegex(NotImplementedError, "restitution"):
-        SolverSteel(model, solve_mode="split")
-    # A huge threshold is a physical parameter, not a second off switch.
-    with test.assertRaisesRegex(NotImplementedError, "restitution"):
-        SolverSteel(model, solve_mode="split", restitution_velocity_threshold=float(np.finfo(np.float32).max))
-    disabled = _run(model, init=_set_box_velocities, solve_mode="split", enable_restitution=False)
-    inelastic = _run(_build_contact_scene(device), init=_set_box_velocities, solve_mode="split")
-    _assert_bitwise(test, disabled, inelastic, "split")
-    model.shape_material_restitution.fill_(0.9)
-    disabled[0].notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
-
-
 def test_disabled_restitution_lets_compliance_accept_restitution(test, device):
     """Run compliant contacts on shapes with positive restitution once restitution is disabled."""
     options = {"solver_options": {"enable_restitution": False}, "articulated": True, "enabled": True, "steps": 20}
@@ -427,7 +520,15 @@ def test_disabled_restitution_lets_compliance_accept_restitution(test, device):
     np.testing.assert_array_equal(trace, reference)
 
 
+# solve_mode="colored" on CPU warns that it runs the serial propagation sweep.
+_CPU_COLORED_WARNING = "SolverSteel: solve_mode='colored' runs"
+
+
 class TestSteelAngularDamping(unittest.TestCase):
+    pass
+
+
+class TestSteelLinearDamping(unittest.TestCase):
     pass
 
 
@@ -445,6 +546,10 @@ for _cls, _fn, _devices in (
     (TestSteelAngularDamping, test_angular_damping_follows_in_place_edits, get_test_devices()),
     (TestSteelAngularDamping, test_physx_attributes_import_from_usd_and_are_read_every_step, get_test_devices()),
     (TestSteelAngularDamping, test_angular_damping_survives_graph_capture, get_cuda_test_devices()),
+    (TestSteelLinearDamping, test_linear_damping_decays_free_root_com_velocity, get_test_devices()),
+    (TestSteelLinearDamping, test_linear_damping_defaults_to_zero, get_test_devices()),
+    (TestSteelLinearDamping, test_linear_damping_follows_in_place_edits, get_test_devices()),
+    (TestSteelLinearDamping, test_linear_damping_survives_graph_capture, get_cuda_test_devices()),
     (TestSteelFrictionOptions, test_zero_friction_matches_normal_rows_only, get_test_devices()),
     (TestSteelFrictionOptions, test_contact_friction_scale_matches_scaled_materials, get_test_devices()),
     (TestSteelFrictionOptions, test_contact_friction_scale_applies_to_notified_materials, get_test_devices()),
@@ -453,8 +558,7 @@ for _cls, _fn, _devices in (
     (TestSteelFrictionOptions, test_friction_position_iterations_validate_their_value, get_test_devices()),
     (TestSteelFrictionOptions, test_velocity_iterations_always_solve_friction, get_cuda_test_devices()),
     (TestSteelFrictionOptions, test_friction_position_iterations_survive_graph_capture, get_cuda_test_devices()),
-    (TestSteelRestitutionOptions, test_disabled_restitution_lets_split_accept_restitution, get_test_devices()),
-    (TestSteelRestitutionOptions, test_disabled_restitution_matches_inelastic_materials, get_cuda_test_devices()),
+    (TestSteelRestitutionOptions, test_disabled_restitution_matches_inelastic_materials, get_test_devices()),
     (
         TestSteelRestitutionOptions,
         test_disabled_restitution_lets_compliance_accept_restitution,
@@ -512,7 +616,7 @@ def _step_once(model, solver, floor_velocity=0.0, box_velocity=-1.0):
     return output.body_qd.numpy()[:, 2], contacts
 
 
-def test_global_kinematic_floor_supports_every_world(test, device, solve_mode="matrix_free", response="immediate"):
+def test_global_kinematic_floor_supports_every_world(test, device, solve_mode="serial", response="immediate"):
     """Stop the boxes of every world on a global kinematic floor exactly as on world geometry."""
     static_model = _floor_model(device, "static")
     static_v = _step_once(
@@ -556,7 +660,7 @@ def test_global_kinematic_floor_supports_every_world(test, device, solve_mode="m
     np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [False, False, False])
 
 
-def test_global_kinematic_floor_capture_replay(test, device, solve_mode="matrix_free", response="immediate"):
+def test_global_kinematic_floor_capture_replay(test, device, solve_mode="serial", response="immediate"):
     """Match eager stepping for both worlds on a global kinematic floor with captured collide and step."""
     model = _floor_model(device, "kinematic")
     pipeline = newton.CollisionPipeline(model)
@@ -620,7 +724,7 @@ def _construct(test, model, expect_warning, **kwargs):
     """Construct the solver, requiring exactly the unsolvable-global-contact warning or no warning."""
     if expect_warning:
         return _expect_one_warning(
-            test, newton.exceptions.NewtonWarning, _UNSOLVABLE_GLOBAL_WARNING, lambda: SolverSteel(model, **kwargs)
+            test, newton.NewtonWarning, _UNSOLVABLE_GLOBAL_WARNING, lambda: SolverSteel(model, **kwargs)
         )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -640,9 +744,7 @@ def _expect_one_warning(test, category, pattern, call):
     return result
 
 
-def test_jointed_global_kinematic_flags_other_world_contacts(
-    test, device, solve_mode="matrix_free", response="immediate"
-):
+def test_jointed_global_kinematic_flags_other_world_contacts(test, device, solve_mode="serial", response="immediate"):
     """Solve a jointed kinematic global articulation in world 0 and flag its other-world contacts."""
     model = _jointed_kinematic_floor_model(device)
     solver = _construct(
@@ -670,9 +772,7 @@ def test_jointed_global_kinematic_flags_other_world_contacts(
         solver.check_constraint_capacity()
 
 
-def test_construction_warns_about_unsolvable_global_contacts(
-    test, device, solve_mode="matrix_free", response="immediate"
-):
+def test_construction_warns_about_unsolvable_global_contacts(test, device, solve_mode="serial", response="immediate"):
     """Warn once at construction when shapes allow contacts coupling a global articulation with another world."""
     kwargs = {"solve_mode": solve_mode, "articulated_contact_response": response}
     # Dynamic global bodies and jointed kinematic global articulations warn.
@@ -710,7 +810,7 @@ def _lift_box(model, world):
     model.joint_q.assign(joint_q)
 
 
-def test_dynamic_global_body_flags_other_world_contacts(test, device, solve_mode="matrix_free", response="immediate"):
+def test_dynamic_global_body_flags_other_world_contacts(test, device, solve_mode="serial", response="immediate"):
     """Let a dynamic global body interact with world 0, and drop and flag its contacts with another world."""
     # Only world 1's box touches the global dynamic floor.
     model = _floor_model(device, "dynamic")
@@ -769,7 +869,7 @@ def _place(model, state, z):
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
 
-def test_global_overflow_has_its_own_reset_slot(test, device, solve_mode="matrix_free", response="immediate"):
+def test_global_overflow_has_its_own_reset_slot(test, device, solve_mode="serial", response="immediate"):
     """Latch global row loss in the global entry, and clear only its own status with each reset-mask entry."""
     model = _global_overflow_model(device)
     # One contact's rows fit; the propagation response holds every contact row in a family
@@ -938,7 +1038,7 @@ def _check_global_slot_reset(test, device, model, z_contact, z_free, solve_mode,
     test.assertEqual(solver.constraint_overflow.numpy().tolist(), clear)
 
 
-def test_global_slot_reset_with_few_articulations(test, device, solve_mode="matrix_free", response="immediate"):
+def test_global_slot_reset_with_few_articulations(test, device, solve_mode="serial", response="immediate"):
     """Clear the global entry on every reset mask, even when articulations do not outnumber the status entries."""
     for name, model, z_contact, z_free in _few_articulation_models(device):
         with test.subTest(model=name):
@@ -968,9 +1068,8 @@ for _name, _func in (
     ("test_global_overflow_has_its_own_reset_slot", test_global_overflow_has_its_own_reset_slot),
     ("test_global_slot_reset_with_few_articulations", test_global_slot_reset_with_few_articulations),
 ):
-    add_function_test(TestSteelGlobalWorld, _name, _func, devices=devices)
-    split_devices = devices if _name == "test_global_kinematic_floor_capture_replay" else get_test_devices()
-    add_function_test(TestSteelGlobalWorld, f"{_name}_split", _func, devices=split_devices, solve_mode="split")
+    serial_devices = devices if _name == "test_global_kinematic_floor_capture_replay" else get_test_devices()
+    add_function_test(TestSteelGlobalWorld, _name, _func, devices=serial_devices)
     # The propagation response moves these free-body contacts to its body-space rows.
     add_function_test(TestSteelGlobalWorld, f"{_name}_propagation", _func, devices=devices, response="propagation")
 
@@ -995,7 +1094,7 @@ def _floating_base_arm():
     return builder.finalize(), hinge
 
 
-def test_floating_base_drive_reads_its_own_target(test, device, drive_mode, solve_mode="matrix_free"):
+def test_floating_base_drive_reads_its_own_target(test, device, drive_mode, solve_mode="serial"):
     """Read the target of a revolute drive after a free joint at joint_target_q_start, not its DOF index."""
     with wp.ScopedDevice(device):
         model, hinge = _floating_base_arm()
@@ -1021,19 +1120,9 @@ for _drive_mode in ("augmented", "rows"):
         TestSteelTargetLayout,
         f"test_floating_base_drive_reads_its_own_target_{_drive_mode}",
         test_floating_base_drive_reads_its_own_target,
-        devices=get_cuda_test_devices(),
+        devices=get_test_devices() if _drive_mode == "augmented" else get_cuda_test_devices(),
         drive_mode=_drive_mode,
     )
-
-
-add_function_test(
-    TestSteelTargetLayout,
-    "test_floating_base_drive_reads_its_own_target_split",
-    test_floating_base_drive_reads_its_own_target,
-    devices=get_test_devices(),
-    drive_mode="augmented",
-    solve_mode="split",
-)
 
 
 _PACKAGE_DIR = Path(__file__).parents[2] / "_src" / "solvers" / "steel"
@@ -1054,12 +1143,6 @@ _KERNEL_FACTORIES = (
     "_get_hinv_jt_kernel",
     "_get_hinv_jt_plain_kernel",
     "_get_joint_limit_warp_kernel",
-    "_get_hinv_jt_fused_kernel",
-    "_get_delassus_kernel",
-    "_get_pgs_solve_tiled_row_kernel",
-    "_get_pgs_solve_tiled_contact_kernel",
-    "_get_pgs_solve_streaming_kernel",
-    "_get_pgs_solve_mf_kernel",
     "_get_pgs_solve_propagation_contact_kernel",
     "_get_factor_propagation_tree_revolute_kernel",
     "_get_propagation_tree_body_response_revolute_kernel",
@@ -1076,6 +1159,77 @@ _KERNEL_FACTORIES = (
     "_get_pgs_solve_propagation_colored_warp_kernel",
     "_get_pgs_solve_propagation_colored_block_kernel",
 )
+
+
+class TestSteelSolveModeOptions(unittest.TestCase):
+    """Construction-only checks of the solve modes; they run on CPU, where Steel needs no CUDA device."""
+
+    def test_deprecated_spellings_map_to_the_new_options(self):
+        """Map each 1.8-prerelease spelling with a deprecation warning attributed to the caller."""
+        model, _ = _build_plane_model("cpu", separation=0.0, restitution=0.0)
+        deprecated = (
+            ({"solve_mode": "split"}, "solve_mode='serial'", ("serial", "immediate")),
+            ({"solve_mode": "matrix_free"}, "solve_mode='serial'", ("serial", "immediate")),
+            (
+                {"articulated_contact_response": "propagation_colored"},
+                "solve_mode='colored' with articulated_contact_response='propagation'",
+                ("colored", "propagation"),
+            ),
+            (
+                {"solve_mode": "matrix_free", "articulated_contact_response": "propagation"},
+                "solve_mode='serial'",
+                ("serial", "propagation"),
+            ),
+        )
+        for kwargs, message, expected in deprecated:
+            with self.subTest(**kwargs):
+                with self.assertWarnsRegex(newton.NewtonDeprecationWarning, re.escape(message)) as caught:
+                    warnings.filterwarnings("ignore", message=_CPU_COLORED_WARNING, category=newton.NewtonWarning)
+                    solver = SolverSteel(model, **kwargs)
+                self.assertEqual(Path(caught.filename).resolve(), Path(__file__).resolve())
+                self.assertEqual((solver.solve_mode, solver.articulated_contact_response), expected)
+
+    def test_new_spellings_are_accepted_and_invalid_ones_rejected(self):
+        """Expose the normalized pair without warnings and reject unknown values and an unsupported pair."""
+        model, _ = _build_plane_model("cpu", separation=0.0, restitution=0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", newton.NewtonDeprecationWarning)
+            warnings.filterwarnings("ignore", message=_CPU_COLORED_WARNING, category=newton.NewtonWarning)
+            solver = SolverSteel(model)
+            self.assertEqual((solver.solve_mode, solver.articulated_contact_response), ("serial", "immediate"))
+            solver = SolverSteel(model, solve_mode="colored", articulated_contact_response="propagation")
+            self.assertEqual((solver.solve_mode, solver.articulated_contact_response), ("colored", "propagation"))
+        with self.assertRaisesRegex(ValueError, re.escape("requires articulated_contact_response='propagation'")):
+            SolverSteel(model, solve_mode="colored", articulated_contact_response="immediate")
+        with self.assertRaisesRegex(ValueError, "solve_mode must be 'serial' or 'colored'"):
+            SolverSteel(model, solve_mode="dense")
+        with self.assertRaisesRegex(ValueError, "articulated_contact_response must be 'immediate' or 'propagation'"):
+            SolverSteel(model, articulated_contact_response="colored")
+
+    def test_nesterov_momentum_is_an_opt_in_serial_immediate_option(self):
+        """Offer nesterov_momentum off by default, read-only, and only with the serial immediate interleaved sweep."""
+        parameter = inspect.signature(SolverSteel.__init__).parameters["nesterov_momentum"]
+        self.assertIs(parameter.default, False)
+        self.assertIsInstance(SolverSteel.nesterov_momentum, _ConstructionOption)
+        model, _ = _build_plane_model("cpu", separation=0.0, restitution=0.0)
+        solver = SolverSteel(model)
+        self.assertFalse(solver.nesterov_momentum)
+        with self.assertRaises(AttributeError):
+            solver.nesterov_momentum = True
+        for options in (
+            {"articulated_contact_response": "propagation"},
+            {"row_schedule": "contact_then_internal"},
+            {"row_schedule": "phased"},
+        ):
+            with self.subTest(**options), self.assertRaisesRegex(ValueError, "nesterov_momentum requires"):
+                SolverSteel(model, nesterov_momentum=True, **options)
+
+    def test_colored_sleeping_requires_cuda(self):
+        """On CPU the colored mode runs the serial propagation sweep, so sleeping with it names CUDA, not the mode."""
+        model = _floor_model("cpu", "static")
+        with warnings.catch_warnings(), self.assertRaisesRegex(NotImplementedError, "requires CUDA"):
+            warnings.filterwarnings("ignore", message=_CPU_COLORED_WARNING, category=newton.NewtonWarning)
+            SolverSteel(model, solve_mode="colored", articulated_contact_response="propagation", enable_sleeping=True)
 
 
 class TestSteelPrivateApi(unittest.TestCase):
@@ -1133,11 +1287,13 @@ class TestSteelPrivateApi(unittest.TestCase):
         self.assertNotIn("angular_damping", parameters)
 
     def test_pgs_mode_selects_only_the_supported_solves(self):
-        """Offer exactly the matrix-free and split solves, with the matrix-free solve as the default."""
-        parameter = inspect.signature(SolverSteel.__init__).parameters["solve_mode"]
-        self.assertEqual(parameter.default, "matrix_free")
-        self.assertEqual(typing.get_args(parameter.annotation), ("matrix_free", "split"))
+        """Offer the serial and colored sweeps and the immediate and propagation responses, serial/immediate by default."""
         parameters = inspect.signature(SolverSteel.__init__).parameters
+        self.assertEqual(parameters["solve_mode"].default, "serial")
+        self.assertEqual(typing.get_args(parameters["solve_mode"].annotation), ("serial", "colored"))
+        response = parameters["articulated_contact_response"]
+        self.assertEqual(response.default, "immediate")
+        self.assertEqual(typing.get_args(response.annotation), ("immediate", "propagation"))
         self.assertNotIn("delassus_kernel", parameters)
         self.assertNotIn("pgs_kernel", parameters)
         self.assertNotIn("pgs_chunk_size", parameters)
@@ -1179,34 +1335,32 @@ class TestSteelPrivateApi(unittest.TestCase):
         )
         saved = wp.config.deterministic
         try:
-            self.assertEqual(SolverSteel(model, solve_mode="split").deterministic, mode.NOT_GUARANTEED)
+            self.assertEqual(SolverSteel(model).deterministic, mode.NOT_GUARANTEED)
             wp.config.deterministic = mode.RUN_TO_RUN
-            self.assertEqual(SolverSteel(model, solve_mode="split").deterministic, mode.RUN_TO_RUN)
+            self.assertEqual(SolverSteel(model).deterministic, mode.RUN_TO_RUN)
             self.assertEqual(
-                SolverSteel(model, solve_mode="split", deterministic=mode.NOT_GUARANTEED).deterministic,
+                SolverSteel(model, deterministic=mode.NOT_GUARANTEED).deterministic,
                 mode.NOT_GUARANTEED,
             )
             wp.config.deterministic = mode.GPU_TO_GPU
-            with self.assertWarnsRegex(
-                newton.exceptions.NewtonWarning, "is GPU_TO_GPU; .* supports at most RUN_TO_RUN"
-            ):
-                self.assertEqual(SolverSteel(model, solve_mode="split").deterministic, mode.RUN_TO_RUN)
+            with self.assertWarnsRegex(newton.NewtonWarning, "is GPU_TO_GPU; .* supports at most RUN_TO_RUN"):
+                self.assertEqual(SolverSteel(model).deterministic, mode.RUN_TO_RUN)
             if cuda_model is not None:
                 wp.config.deterministic = mode.RUN_TO_RUN
-                for response in ("propagation", "propagation_colored"):
-                    solver = SolverSteel(cuda_model, articulated_contact_response=response)
+                for solve_mode in ("serial", "colored"):
+                    solver = SolverSteel(cuda_model, solve_mode=solve_mode, articulated_contact_response="propagation")
                     self.assertEqual(solver.deterministic, mode.RUN_TO_RUN)
         finally:
             wp.config.deterministic = saved
         with self.assertRaisesRegex(ValueError, "GPU_TO_GPU"):
-            SolverSteel(model, solve_mode="split", deterministic=mode.GPU_TO_GPU)
+            SolverSteel(model, deterministic=mode.GPU_TO_GPU)
         with self.assertRaises(TypeError):
-            SolverSteel(model, solve_mode="split", deterministic=True)
+            SolverSteel(model, deterministic=True)
 
     def test_step_option_assignment_validates_like_the_constructor(self):
         """Reject invalid step-option assignments, keep the previous value, and normalize valid ones."""
         model, _ = _build_plane_model("cpu", separation=0.0, restitution=0.0)
-        solver = SolverSteel(model, solve_mode="split")
+        solver = SolverSteel(model)
         invalid = {
             "velocity_drive_mode": "frozen",
             "contact_warmstart_decay": -1.0,
@@ -1232,7 +1386,7 @@ class TestSteelPrivateApi(unittest.TestCase):
         self.assertIs(type(solver.baumgarte), float)
         self.assertIs(solver.warn_constraint_overflow, False)
         with self.assertRaisesRegex(ValueError, "velocity_drive_mode must be 'freeze' or 'active'"):
-            SolverSteel(model, solve_mode="split", velocity_drive_mode="frozen")
+            SolverSteel(model, velocity_drive_mode="frozen")
 
     def test_solver_reads_no_environment_variables(self):
         """Configure the solver only through its constructor; the environment only enables profiling ranges."""
@@ -1241,15 +1395,6 @@ class TestSteelPrivateApi(unittest.TestCase):
         for path in sorted(_PACKAGE_DIR.glob("*.py")):
             with self.subTest(file=path.name):
                 self.assertIsNone(pattern.search(path.read_text(encoding="utf-8").replace(profiling, "")))
-
-    def test_prescribed_response_is_not_a_public_execution_knob(self):
-        """Select the kinematic-body response internally, not through a constructor option."""
-        init_method = self.solver_methods["__init__"]
-        parameters = {
-            argument.arg
-            for argument in [*init_method.args.posonlyargs, *init_method.args.args, *init_method.args.kwonlyargs]
-        }
-        self.assertNotIn("exclude_fully_kinematic_free_articulations", parameters)
 
     def test_kernel_factories_are_private_cached_functions(self):
         """Keep the size-specialized kernel factories private, cached and keyed by device architecture."""
@@ -1305,6 +1450,37 @@ class TestSteelPrivateApi(unittest.TestCase):
                 self.assertIn(helper_name, calls)
                 if first_continue is not None:
                     self.assertLess(calls[helper_name], first_continue)
+
+
+def test_reuse_kinematics_defaults_off_and_publishes_eval_fk_state(test, device):
+    """Leave the kinematics carry off by default, publish eval_fk's body state bitwise, and report what runs."""
+    model = _build_spinning_model(device)
+    solver = SolverSteel(model)
+    test.assertFalse(solver.reuse_kinematics)
+    test.assertFalse(solver._reuse_kinematics_enabled)
+    state_in, state_out = model.state(), model.state()
+    _spin(model, state_in)
+    solver.step(state_in, state_out, model.control(), None, 1.0 / 240.0)
+    expected = model.state()
+    newton.eval_fk(model, state_out.joint_q, state_out.joint_qd, expected)
+    np.testing.assert_array_equal(state_out.body_q.numpy(), expected.body_q.numpy())
+    np.testing.assert_array_equal(state_out.body_qd.numpy(), expected.body_qd.numpy())
+    # The attribute reports whether the carry runs: joint velocity limits keep it off, and so does a CPU device.
+    limited = SolverSteel(model, reuse_kinematics=True, enable_joint_velocity_limits=True)
+    test.assertFalse(limited.reuse_kinematics)
+    test.assertEqual(SolverSteel(model, reuse_kinematics=True).reuse_kinematics, wp.get_device(device).is_cuda)
+
+
+class TestSteelReuseKinematicsOption(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestSteelReuseKinematicsOption,
+    "test_reuse_kinematics_defaults_off_and_publishes_eval_fk_state",
+    test_reuse_kinematics_defaults_off_and_publishes_eval_fk_state,
+    devices=get_test_devices(),
+)
 
 
 if __name__ == "__main__":

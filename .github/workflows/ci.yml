@@ -48,8 +48,6 @@ jobs:
       - name: Check deprecation allowlists
         run: uv run --no-project --with packaging==26.2 scripts/ci/check_deprecation_allowlists.py
 
-      - name: Python compatibility (Python 3.10)
-        run: uv run --python 3.10 python -m unittest newton.tests.test_python_compatibility
       - name: Python compatibility (Python 3.11)
         run: uv run --python 3.11 python -m unittest newton.tests.test_python_compatibility
       - name: Python compatibility (Python 3.12)
@@ -85,8 +83,6 @@ jobs:
         with:
           version: "0.13.5"
           prune-cache: true
-      - name: Test dependency resolution (Python 3.10)
-        run: uv sync --dry-run --python 3.10 --extra dev
       - name: Test dependency resolution (Python 3.11)
         run: uv sync --dry-run --python 3.11 --extra dev
       - name: Test dependency resolution (Python 3.12)
@@ -117,11 +113,6 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
-      - name: Install system dependencies (Ubuntu ARM)
-        if: matrix.os == 'ubuntu-24.04-arm'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
       - name: Install uv
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
         with:

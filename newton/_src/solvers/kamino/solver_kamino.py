@@ -8,6 +8,7 @@ simulating constrained multi-body systems for arbitrary mechanical assemblies.
 
 from __future__ import annotations
 
+import logging
 import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -51,6 +52,8 @@ if TYPE_CHECKING:
         MaterialManagerConfig,
         PADMMSolverConfig,
     )
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -1198,6 +1201,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 retain these input poses.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
             wp.copy(self._contact_observable_state.body_q, state_in.body_q)
         # Interface the input state containers to Kamino's equivalents
@@ -1368,7 +1372,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         )
         unsupported = int(flags) & ~int(handled)
         if unsupported:
-            self._kamino.msg.warning(
+            logger.warning(
                 "SolverKamino.notify_model_changed: flags 0x%x not yet supported",
                 unsupported,
             )
@@ -1708,6 +1712,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         invalid_joint = violations[self._kamino.StructuralUpdateViolation.INVALID_TARGET_MODE]
         axis_joint = violations[self._kamino.StructuralUpdateViolation.NONORTHONORMAL_AXES]
         gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
+        cartesian_handedness_joint = violations[self._kamino.StructuralUpdateViolation.CARTESIAN_HANDEDNESS]
         immovability_flip_body = violations[self._kamino.StructuralUpdateViolation.IMMOVABILITY_FLIP]
         friction_joint = violations[self._kamino.StructuralUpdateViolation.FRICTION_CTS]
         effort_joint = violations[self._kamino.StructuralUpdateViolation.EFFORT_CTS]
@@ -1759,7 +1764,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             raise ValueError(
                 f"Invalid joint configuration for SolverKamino:\n"
                 f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
-                "universal and gimbal axes must be unit length and orthogonal"
+                "universal, Cartesian, and gimbal axes must be unit length and orthogonal"
             )
 
         if gimbal_handedness_joint != sentinel:
@@ -1768,6 +1773,15 @@ class SolverKamino(SolverBase, CouplingInterface):
                 f"Invalid joint configuration for SolverKamino:\n"
                 f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
                 "gimbal axes must preserve the solver's original handedness"
+            )
+
+        if cartesian_handedness_joint != sentinel:
+            joint = int(cartesian_handedness_joint)
+            raise ValueError(
+                f"Invalid joint configuration for SolverKamino:\n"
+                f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
+                "three translational axes must form a right-handed set, unlike those of a USD D6 joint "
+                "whose physics:body1 is the world"
             )
 
         if immovability_flip_body != sentinel:

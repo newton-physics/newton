@@ -1168,6 +1168,9 @@ class TestMenagerieUSD(TestMenagerieBase):
         "tendon_invweight0",
         # stat.meaninertia is derived from body mass/inertia (which may differ for some USD models)
         "stat",
+        # Body ordering differs, so the (body, type) matching in
+        # compare_geom_fields_unordered does not apply -> compared via _compare_geoms
+        "geom_",
         # Broadphase collision data depends on geom ordering
         "nxn_",
         # Contact pairs not imported from USD

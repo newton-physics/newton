@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 import warp as wp
 
 from ...utils.onnx import require_onnx
+from ..space import DriveOutputSpace
 from ..utils import load_checkpoint, load_metadata
 from ._linearization import (
     IMPLICIT_JACOBIAN_MARGIN,
@@ -328,7 +329,7 @@ class DriveNeuralGRU(DriveBase):
         inputs it declares may change without the normal deprecation period.
     """
 
-    SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"model_path", "output_space"}
 
     @dataclass
     class State(DriveBase.State):
@@ -373,14 +374,20 @@ class DriveNeuralGRU(DriveBase):
         model_path = args["model_path"]
         if not model_path:
             raise ValueError("DriveNeuralGRU requires a non-empty 'model_path'")
-        return {"model_path": model_path}
+        return {
+            "model_path": model_path,
+            "output_space": DriveOutputSpace(args.get("output_space", DriveOutputSpace.EFFORT)),
+        }
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, *, output_space: DriveOutputSpace = DriveOutputSpace.EFFORT):
         """Initialize the drive from an ONNX GRU network.
 
         Args:
             model_path: Local path to an ONNX checkpoint.
+            output_space: Interpretation of checkpoint outputs, EFFORT or DUTY.
+                The checkpoint must be trained for these units.
         """
+        self.output_space = DriveOutputSpace(output_space)
         self.model_path = os.fspath(model_path)
         """Local path to the ONNX checkpoint."""
         self._graph = _read_graph_interface(self.model_path)
@@ -651,7 +658,7 @@ class DriveNeuralGRU(DriveBase):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        forces: wp.array[float],
+        output: wp.array[float],
         state: DriveNeuralGRU.State,
         dt: float,
         device: wp.Device | None = None,
@@ -674,16 +681,16 @@ class DriveNeuralGRU(DriveBase):
             runtime_device,
             custom_inputs,
         )
-        output = self._forward(state.hidden)
+        net_output = self._forward(state.hidden)
         wp.launch(
             _write_effort_kernel,
             dim=self._num_actuators,
             inputs=[
-                output,
+                net_output,
                 self._effort_mean,
                 self._effort_std,
             ],
-            outputs=[forces],
+            outputs=[output],
             device=runtime_device,
         )
 

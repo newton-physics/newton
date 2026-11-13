@@ -145,9 +145,29 @@ listed below. :meth:`ModelBuilder.add_usd` can bind graphics meshes to imported
 deformables; see :ref:`usd-deformable-visual-import`.
 
 Pass per-vertex ``uvs`` and an image array or path as ``texture`` when adding a
-visual mesh. Replace the texture value to change it; editing pixels in place
-is not supported for these cached assets. Ordinary ``log_mesh()`` image updates
-keep their existing behavior. Skinned meshes keep their topology fixed.
+visual mesh. GL, USD, RTX, and Rerun viewers pick up a new ``mesh.texture``
+array or path when the mesh is next logged; set it to ``None`` to remove the
+texture. Editing an image in place or changing a file at the same path is not
+supported for these cached assets. :class:`~newton.viewer.ViewerFile` records
+the texture it sees when the model is recorded, and
+:class:`~newton.sensors.SensorCamera` loads textures once at construction. For
+ordinary ``log_mesh()`` meshes, GL, USD, and RTX remove a previously bound
+texture when a later call omits ``texture`` or ``uvs``. Skinned meshes keep
+their topology fixed.
+
+USD exports replacement image arrays to separate files. Unchanged arrays reuse
+their existing file. Material bindings are not time-sampled: the export uses
+the last assigned texture, not a texture animation. RTX updates the material
+binding after any in-flight render finishes, without replacing mesh geometry.
+RTX applies UVs supplied with a replacement image, including to its instances.
+Changing only UVs while reusing the same image object or file path is not
+supported.
+These updates are intended for occasional appearance changes, not video textures.
+Distinct image contents create separate PNG files. USD keeps those files next
+to the exported stage. RTX keeps them in its private temporary directory until
+the viewer closes, so many unique replacements can use substantial disk space
+during a session. Reuse a fixed set of image arrays or file paths for bounded
+texture variation.
 
 :class:`~newton.viewer.ViewerFile` records deformable visual meshes and
 simulation state without evaluating them. JSON and binary recordings rebuild
@@ -170,7 +190,8 @@ recordings still load into a compatible model with meshes.
        Each mesh copy uploads its own texture.
    * - USD
      - Exports
-     - Writes time-sampled meshes and one texture per mesh.
+     - Writes time-sampled geometry. Texture replacement updates the material
+       for the whole recording.
    * - RTX
      - Draws
      - Uses USD meshes and textures. When borrowing a stage, overlays start
@@ -761,12 +782,13 @@ and cone heads; their ``width`` specifies the shaft radius in meters.
 This installs ``ovrtx`` 0.5.1.385782 or newer (the NVIDIA OVRTX renderer), ``ovstage`` 0.2.1.385922 or newer
 for runtime scene management, and ``usd-core``, in addition to ``pyglet`` for the window.
 
-ViewerRTX has been validated with the following renderer configuration:
+ViewerRTX has been validated with the following renderer configurations:
 
-- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency and GPU CI; Isaac Lab 3.0)
+- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency CI; Isaac Lab 3.0)
+- ``ovrtx==0.6.0.1791947691`` with ``ovstage==0.3.0.1791986420`` (locked GPU CI configuration)
 
-Only the exact configuration above is part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
-together; OVRTX 0.5.1 fails to start with OVStage 0.2.0.
+Only the exact pairs above are part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
+together to one of these pairs. Mixed release pairs are unvalidated; OVRTX 0.5.1 fails to start with OVStage 0.2.0.
 
 .. code-block:: python
 

@@ -261,6 +261,7 @@ def eval_mujoco_coupling_gravity_acceleration_kernel(
     body_world: wp.array[wp.int32],
     mjc_body_to_newton: wp.array2d[wp.int32],
     body_gravcomp: wp.array2d[float],
+    option_world: int,
     out: wp.array[wp.vec3],
 ):
     body = wp.tid()
@@ -269,8 +270,12 @@ def eval_mujoco_coupling_gravity_acceleration_kernel(
         gravity_world = body_world[body]
 
     mujoco_world = int(0)
-    if body_gravcomp.shape[0] > 1 and gravity_world >= 0:
-        mujoco_world = gravity_world
+    if body_gravcomp.shape[0] > 1:
+        if gravity_world >= 0:
+            mujoco_world = gravity_world
+    else:
+        # A single MuJoCo world applies one gravity to all its bodies; see update_model_properties_kernel.
+        gravity_world = option_world
 
     g = wp.vec3(0.0, 0.0, 0.0)
     if gravity_world >= -1 and gravity_world < gravity.shape[0]:
@@ -459,16 +464,13 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
-    # Values to clear - see _zero_collision_arrays kernel from mujoco_warp
-    nworld_in: int,
-    ncollision_out: wp.array[int],
     # Fast-path generation tracking
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
     tid_to_cid: wp.array[wp.int32],
 ):
-    # nacon_out must be zeroed before this kernel is launched so that
-    # wp.atomic_add below produces the correct compacted count.
+    # nacon_out is scratch storage, initialized to zero by the solver and
+    # reset by _sync_nacon_count after each pass.
     #
     # When the contact set hasn't changed since the last full pass
     # (contact_generation == last_contact_generation), the kernel takes a
@@ -497,7 +499,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     count,
                     naconmax,
                 )
-            ncollision_out[0] = 0
 
         if count > naconmax:
             count = naconmax
@@ -729,10 +730,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
         # and is invariant across substeps.  The fast path is only correct
         # when collide() has not been called since the last full pass.
 
-        # _sync_nacon_count restores nacon_out from the full pass.
-        if tid == 0:
-            ncollision_out[0] = 0
-
         cid = tid_to_cid[tid]
         # Defensive bounds check: a stale tid_to_cid (e.g. cached from a
         # previous mjw_data with larger naconmax) could otherwise produce
@@ -782,17 +779,22 @@ def convert_newton_contacts_to_mjwarp_kernel(
 @wp.kernel(enable_backward=False)
 def _sync_nacon_count(
     nacon: wp.array[wp.int32],
+    contact_count: wp.array[wp.int32],
+    ncollision: wp.array[wp.int32],
     last_nacon_count: wp.array[wp.int32],
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
 ):
-    """Snapshot nacon after a full conversion pass, or restore it after a fast pass."""
+    """Publish the compacted count and reset scratch storage for the next pass."""
     gen = contact_generation[0]
     if gen == last_contact_generation[0]:
         nacon[0] = last_nacon_count[0]
     else:
-        last_nacon_count[0] = nacon[0]
+        nacon[0] = contact_count[0]
+        last_nacon_count[0] = contact_count[0]
         last_contact_generation[0] = gen
+    contact_count[0] = 0
+    ncollision[0] = 0
 
 
 @wp.kernel
@@ -1637,18 +1639,13 @@ def apply_mjc_body_f_kernel(
     mjc_body_to_newton: wp.array2d[wp.int32],
     body_flags: wp.array[wp.int32],
     body_f: wp.array[wp.spatial_vector],
-    body_mass: wp.array[float],
-    body_world: wp.array[wp.int32],
-    gravity: wp.array[wp.vec3],
-    body_gravcomp: wp.array2d[float],
     # outputs
     xfrc_applied: wp.array2d[wp.spatial_vector],
 ):
     """Apply Newton body forces to MuJoCo xfrc_applied array.
 
     Iterates over MuJoCo bodies [world, mjc_body], looks up the Newton body
-    index, copies its force, and corrects for body-specific gravity when a
-    MuJoCo world contains both local and global bodies.
+    index, and copies its force.
     """
     world, mjc_body = wp.tid()
     newton_body = mjc_body_to_newton[world, mjc_body]
@@ -1656,16 +1653,7 @@ def apply_mjc_body_f_kernel(
         xfrc_applied[world, mjc_body] = wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0))
         return
 
-    f = body_f[newton_body]
-    v = wp.vec3(f[0], f[1], f[2])
-    w = wp.vec3(f[3], f[4], f[5])
-
-    gravity_world = body_world[newton_body]
-    if gravity_world >= -1 and gravity_world < gravity.shape[0]:
-        gravcomp = body_gravcomp[world, mjc_body]
-        v += body_mass[newton_body] * (1.0 - gravcomp) * (gravity[gravity_world] - gravity[world])
-
-    xfrc_applied[world, mjc_body] = wp.spatial_vector(v, w)
+    xfrc_applied[world, mjc_body] = body_f[newton_body]
 
 
 @wp.kernel
@@ -2421,11 +2409,13 @@ def update_joint_transforms_kernel(
 def update_model_properties_kernel(
     # Newton model properties
     gravity_src: wp.array[wp.vec3],
+    option_world: int,
     # MuJoCo model properties
     gravity_dst: wp.array[wp.vec3f],
 ):
     world_idx = wp.tid()
-    gravity_dst[world_idx] = gravity_src[world_idx]
+    # A single MuJoCo world that simulates global world -1 (option_world < 0) uses its gravity.
+    gravity_dst[world_idx] = gravity_src[wp.where(option_world < 0, option_world, world_idx)]
 
 
 @wp.kernel

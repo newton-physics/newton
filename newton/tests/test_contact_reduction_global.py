@@ -1427,10 +1427,22 @@ class TestMakeContactSortKey(unittest.TestCase):
 
 
 def test_sort_key_shape_index_bits(test, device):
-    """Use only the shape-index bits required by the model."""
+    """Use only the shape-index bits required by the model, up to what the sub-key leaves free."""
     del device
-    for shape_count, expected in ((0, 1), (2, 1), (3, 2), (256, 8), (32768, 15), (1 << 20, 20), (1 << 21, 20)):
-        test.assertEqual(contact_sort_shape_index_bits(shape_count), expected)
+    for shape_count, sub_key_bits, expected in (
+        (0, 23, 1),
+        (2, 23, 1),
+        (3, 23, 2),
+        (256, 23, 8),
+        (32768, 23, 15),
+        (1 << 20, 23, 20),
+        ((1 << 20) + 1, 3, 21),
+        (1 << 30, 3, 30),
+    ):
+        test.assertEqual(contact_sort_shape_index_bits(shape_count, sub_key_bits), expected)
+    for shape_count, sub_key_bits in (((1 << 20) + 1, 23), ((1 << 30) + 1, 3)):
+        with test.assertRaises(ValueError):
+            contact_sort_shape_index_bits(shape_count, sub_key_bits)
 
 
 @wp.kernel(enable_backward=False)
@@ -1640,9 +1652,6 @@ def test_deterministic_identical_across_runs(test, device):
     fingerprint) rather than buffer contact IDs, since IDs are assigned by
     atomic_add and vary between runs.
     """
-    if str(device) == "cpu":
-        return  # Deterministic mode is primarily for GPU
-
     num_runs = 5
     all_contact_sets = []
 
@@ -1844,7 +1853,7 @@ add_function_test(
     TestDeterministicEndToEnd,
     "test_deterministic_identical_across_runs",
     test_deterministic_identical_across_runs,
-    devices=devices,
+    devices=[device for device in devices if device.is_cuda],  # deterministic mode targets CUDA
 )
 
 
