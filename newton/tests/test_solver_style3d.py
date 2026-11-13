@@ -820,6 +820,253 @@ def test_affine_body_linear_system(test, device):
                 np.testing.assert_array_equal(product.numpy(), 0.0)
 
 
+def test_rigid_contact_linear_system(test, device):
+    """Match contact forces and the split tangent against a dense affine Jacobian."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.4)
+    for i in range(2):
+        body = builder.add_link(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.8 * i), rotation),
+            com=wp.vec3(0.1, -0.2, 0.05),
+            mass=2.0,
+            inertia=wp.mat33(np.eye(3) * 0.4),
+        )
+        builder.add_shape_sphere(
+            body, radius=0.5, cfg=newton.ModelBuilder.ShapeConfig(density=0.0, ke=200.0, kd=4.0, kf=40.0, mu=0.5)
+        )
+    model = builder.finalize(device=device)
+    config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0, affine_alpha=0.0)
+    solver = newton.solvers.SolverStyle3D(
+        model, config=config, dynamics=newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY
+    )
+    state_in, state_out = model.state(), model.state()
+    contacts = newton.Contacts(
+        2, 0, device=device, per_contact_shape_properties=True, rigid_contact_surface_velocity=True
+    )
+    contacts.rigid_contact_count.fill_(2)
+    contacts.rigid_contact_shape0.fill_(0)
+    contacts.rigid_contact_shape1.fill_(1)
+    contacts.rigid_contact_normal.fill_(wp.vec3(0.0, 0.0, 1.0))
+    contacts.rigid_contact_margin0.fill_(0.03)
+    contacts.rigid_contact_margin1.fill_(0.02)
+    points = []
+    for body in range(2):
+        inverse = wp.transform_inverse(builder.body_q[body])
+        points.append(
+            np.array(
+                [wp.transform_point(inverse, wp.vec3(0.2 + 0.1 * i, -0.1, 0.45 - 0.1 * body)) for i in range(2)],
+                dtype=np.float32,
+            )
+        )
+    contacts.rigid_contact_point0.assign(points[0])
+    contacts.rigid_contact_point1.assign(points[1])
+    offsets = (np.array([0.0, 0.03, 0.02]), np.array([0.01, 0.0, -0.02]))
+    contacts.rigid_contact_offset0.fill_(wp.vec3(*offsets[0]))
+    contacts.rigid_contact_offset1.fill_(wp.vec3(*offsets[1]))
+    com = model.body_com.numpy()
+    probe = np.random.default_rng(427).standard_normal((8, 3)).astype(np.float32)
+    probe_wp = wp.array(probe, dtype=wp.vec3, device=device)
+    dt = 0.05
+    mass = np.kron(np.diag([2.0, 0.2, 0.2, 0.2] * 2), np.eye(3)) / dt**2
+    n = np.array([0.0, 0.0, 1.0])
+    projector = np.eye(3) - np.outer(n, n)
+
+    for mode in ("normal", "stick", "slip", "prescribed"):
+        with test.subTest(mode=mode):
+            model.shape_material_mu.fill_(0.0 if mode == "normal" else 0.5)
+            ke, kd, mu = 200.0, 4.0, 0.0 if mode == "normal" else 0.5
+            if mode == "slip":
+                contacts.rigid_contact_stiffness.fill_(320.0)
+                contacts.rigid_contact_damping.fill_(7.0)
+                contacts.rigid_contact_friction.fill_(2.0)
+                ke, kd, mu = 320.0, 7.0, 1.0
+            else:
+                contacts.rigid_contact_stiffness.zero_()
+                contacts.rigid_contact_damping.zero_()
+                contacts.rigid_contact_friction.zero_()
+            surface = np.array([5.0 if mode == "slip" else 0.01, 0.0, -0.2])
+            contacts.rigid_contact_surface_velocity.fill_(wp.vec3(*surface))
+            if mode == "prescribed":
+                model.body_flags.assign(
+                    np.array([newton.BodyFlags.DYNAMIC, newton.BodyFlags.KINEMATIC], dtype=np.int32)
+                )
+                state_in.body_qd.assign(np.array([[0.0] * 6, [0.1, 0.0, -0.3, 0.0, 0.0, 0.0]], dtype=np.float32))
+                state_out.body_q.assign(state_in.body_q)
+                state_out.body_qd.assign(state_in.body_qd)
+            config.linear_iterations = 0
+            solver.step(state_in, state_out, None, contacts, dt)
+            initial = solver._x.numpy().astype(np.float64)
+            target = solver._x_inertia.numpy().astype(np.float64)
+            current = initial.copy()
+            if mode == "prescribed":
+                current[4:] = target[4:]
+            expected_rhs = (mass @ (target - initial).reshape(-1)).reshape(8, 3)
+            hessian = np.zeros((24, 24))
+            for contact in range(2):
+                weights = [np.r_[1.0, points[b][contact] - com[b]] for b in range(2)]
+                anchors = [np.r_[1.0, points[b][contact] + offsets[b] - com[b]] for b in range(2)]
+                w = np.r_[-weights[0], weights[1]]
+                t = np.r_[-anchors[0], anchors[1]]
+                gap = n @ (w @ current) - 0.05
+                vn = n @ (w @ (current - initial) / dt)
+                gn = (ke * gap + kd * min(vn, 0.0)) * n
+                hn = (ke + (kd / dt if vn < 0.0 else 0.0)) * np.outer(n, n)
+                vt = projector @ (t @ (current - initial) / dt + surface)
+                speed = np.linalg.norm(vt)
+                limit = mu * -gn[2]
+                gt, ht = np.zeros(3), np.zeros((3, 3))
+                if limit > 0.0:
+                    if 40.0 * speed <= limit:
+                        gt, ht = 40.0 * vt, 40.0 / dt * projector
+                    else:
+                        direction = vt / speed
+                        gt = limit * direction
+                        ht = limit / (dt * speed) * projector
+                expected_rhs -= w[:, None] * gn + t[:, None] * gt
+                hessian += np.kron(np.outer(w, w), hn) + np.kron(np.outer(t, t), ht)
+            matrix = mass + hessian
+            np.testing.assert_allclose(solver._rhs.numpy(), expected_rhs, rtol=3e-6, atol=5e-5)
+            for row in range(8):
+                block = matrix[3 * row : 3 * row + 3, 3 * row : 3 * row + 3]
+                np.testing.assert_allclose(solver._A_diag.numpy()[row], block, rtol=3e-6, atol=5e-5)
+            solver._matrix_free_Ax.fill_(wp.vec3(17.0))
+            product = solver._matrix_free_multiply(probe_wp)
+            solver._linear_solver.p.assign(probe_wp)
+            solver._linear_solver.step5_update_Ap(solver._pd_off_diag, solver._A_diag, product)
+            np.testing.assert_allclose(
+                solver._linear_solver.Ap.numpy().reshape(-1), matrix @ probe.reshape(-1), rtol=3e-6, atol=5e-4
+            )
+            # One Newton solve verifies that the same tangent reaches the actual PCG solve.
+            config.linear_iterations = 32
+            solver.step(state_in, state_out, None, contacts, dt)
+            active_size = 12 if mode == "prescribed" else 24
+            expected = initial.reshape(-1).copy()
+            expected[:active_size] += np.linalg.solve(
+                matrix[:active_size, :active_size], expected_rhs.reshape(-1)[:active_size]
+            )
+            np.testing.assert_allclose(solver._x.numpy().reshape(-1), expected, atol=3e-6)
+            if mode == "prescribed":
+                np.testing.assert_array_equal(state_out.body_q.numpy()[1], state_in.body_q.numpy()[1])
+                np.testing.assert_array_equal(state_out.body_qd.numpy()[1], state_in.body_qd.numpy()[1])
+                np.testing.assert_array_equal(solver._inv_A_diag.numpy()[4:], 0.0)
+
+    # Captured contact counts are device data: removing contacts must clear every cached tangent.
+    config.linear_iterations = 0
+    graph = None
+    if wp.get_device(device).is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            solver.step(state_in, state_out, None, contacts, dt)
+            solver._matrix_free_multiply(probe_wp)
+        graph = capture.graph
+    contacts.rigid_contact_count.zero_()
+    if graph is None:
+        solver.step(state_in, state_out, None, contacts, dt)
+        solver._matrix_free_multiply(probe_wp)
+    else:
+        wp.capture_launch(graph)
+    np.testing.assert_array_equal(solver._matrix_free_Ax.numpy(), 0.0)
+    np.testing.assert_allclose(
+        solver._A_diag.numpy(), solver._A_diag_base.numpy()[:, None, None] * np.eye(3), atol=1e-5
+    )
+    contacts.rigid_contact_count.fill_(2)
+    solver.step(state_in, state_out, None, contacts, dt)
+    test.assertGreater(np.linalg.norm(solver._matrix_free_multiply(probe_wp).numpy()), 1.0)
+    solver.step(state_in, state_out, None, None, dt)
+    np.testing.assert_array_equal(solver._matrix_free_multiply(probe_wp).numpy(), 0.0)
+    contacts.rigid_contact_point1.assign(points[1] + np.array([0.0, 0.0, 2.0], dtype=np.float32))
+    solver.step(state_in, state_out, None, contacts, dt)
+    np.testing.assert_array_equal(solver._matrix_free_multiply(probe_wp).numpy(), 0.0)
+    contacts.rigid_contact_point1.assign(points[1])
+    solver.step(state_in, state_out, None, contacts, dt)
+    # A smaller buffer must also clear tangents outside the new capacity.
+    solver.step(state_in, state_out, None, newton.Contacts(1, 0, device=device), dt)
+    np.testing.assert_array_equal(solver._matrix_free_multiply(probe_wp).numpy(), 0.0)
+
+
+def test_rigid_contact_stacking(test, device):
+    """Support two spheres through generated body-body and body-ground contacts."""
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, ke=5.0e5, kd=500.0, kf=0.0, mu=0.0)
+    for height in (0.5, 1.5):
+        body = builder.add_link(
+            xform=wp.transform(wp.vec3(0.0, 0.0, height), wp.quat_identity()),
+            mass=2.0,
+            inertia=wp.mat33(np.eye(3) * 0.2),
+        )
+        builder.add_shape_sphere(body, radius=0.5, cfg=cfg)
+    builder.add_ground_plane(cfg=cfg)
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverStyle3D(
+        model,
+        config=newton.solvers.SolverStyle3D.Config(iterations=4, linear_iterations=16),
+        dynamics=newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY,
+    )
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+    for frame in range(40):
+        if frame == 0 and wp.get_device(device).is_cuda:
+            # The first captured step must be able to allocate the contact cache.
+            with wp.ScopedCapture(device=device) as capture:
+                pipeline.collide(state_in, contacts)
+                solver.step(state_in, state_out, None, contacts, 0.01)
+            wp.capture_launch(capture.graph)
+        else:
+            pipeline.collide(state_in, contacts)
+            solver.step(state_in, state_out, None, contacts, 0.01)
+        state_in, state_out = state_out, state_in
+    np.testing.assert_allclose(state_in.body_q.numpy()[:, 2], [0.5, 1.5], atol=1e-3)
+    np.testing.assert_allclose(state_in.body_qd.numpy(), 0.0, atol=2e-3)
+
+
+def test_rigid_contact_friction_stability(test, device):
+    """Topple thin boxes without injecting energy when contact slip reverses."""
+    builder = newton.ModelBuilder()
+    builder.rigid_gap = 0.001
+    cfg = newton.ModelBuilder.ShapeConfig(density=580.0, ke=1.0e5, kd=0.0, kf=1.0e3, mu=1.0)
+    builder.add_ground_plane(cfg=cfg)
+    for i in range(3):
+        rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -np.pi / 12.0 if i == 0 else 0.0)
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.12 * i, 0.18), rotation))
+        builder.add_shape_box(body, hx=0.06, hy=0.016, hz=0.18, cfg=cfg)
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverStyle3D(model, dynamics=newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+    mass = model.body_mass.numpy()
+    inertia = model.body_inertia.numpy()
+    initial_energy = float(np.sum(mass * 9.81 * 0.18))
+
+    def advance():
+        """Advance a frame with the same two substeps used by domino_spiral."""
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, None, contacts, 1.0 / 120.0)
+        pipeline.collide(state_out, contacts)
+        solver.step(state_out, state_in, None, contacts, 1.0 / 120.0)
+
+    graph = None
+    if wp.get_device(device).is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            advance()
+        graph = capture.graph
+    for frame in range(60):
+        if graph is None:
+            advance()
+        else:
+            wp.capture_launch(graph)
+        poses, velocities = state_in.body_q.numpy(), state_in.body_qd.numpy()
+        test.assertTrue(np.isfinite(poses).all() and np.isfinite(velocities).all(), msg=f"frame {frame}")
+        energy = float(np.sum(mass * (0.5 * np.sum(velocities[:, :3] ** 2, axis=1) + 9.81 * poses[:, 2])))
+        for body in range(3):
+            omega = np.array(wp.quat_rotate_inv(wp.quat(*poses[body, 3:]), wp.vec3(*velocities[body, 3:])))
+            energy += 0.5 * omega @ inertia[body] @ omega
+        test.assertLess(energy, initial_energy * 1.1, msg=f"frame {frame}")
+        test.assertGreater(float(poses[:, 2].min()), 0.0, msg=f"frame {frame}")
+    # Stability must still allow contact-driven motion to reach the last box.
+    test.assertLess(float(poses[-1, 2]), 0.12)
+
+
 def test_affine_body_state_conversion(test, device):
     """Recover integrated rigid states and fit deformed affine configurations."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -969,6 +1216,25 @@ def test_affine_body_state_conversion(test, device):
 
 
 devices = get_test_devices()
+
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_rigid_contact_linear_system",
+    test_rigid_contact_linear_system,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestSolverStyle3D, "test_rigid_contact_stacking", test_rigid_contact_stacking, devices=devices, check_output=False
+)
+add_function_test(
+    TestSolverStyle3D,
+    "test_rigid_contact_friction_stability",
+    test_rigid_contact_friction_stability,
+    devices=devices,
+    check_output=False,
+)
 
 
 add_function_test(

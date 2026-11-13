@@ -17,6 +17,7 @@ from ..solver import SolverBase
 from .affine_body import AffineBody
 from .builder import PDMatrixBuilder, _compute_max_neighbors
 from .collision import Collision
+from .contact import Contact
 from .kernels import (
     accumulate_dragging_pd_diag_kernel,
     compute_solver_flags_kernel,
@@ -59,6 +60,13 @@ def _warn_legacy_attribute(name: str, config_name: str) -> None:
 
 class SolverStyle3D(SolverBase):
     r"""Projective dynamics based cloth solver.
+
+    With affine body dynamics enabled, rigid contacts use a normal penalty,
+    closing-only damping, and Coulomb-limited viscous friction. The contact
+    tangent holds the normal load and friction gain fixed to remain symmetric
+    positive semidefinite and resist slip reversal overshoot. Contact candidates
+    and normals come from the supplied :class:`~newton.Contacts` and remain
+    fixed during each step.
 
     References:
         1. Baraff, D. & Witkin, A. "Large Steps in Cloth Simulation."
@@ -163,7 +171,7 @@ class SolverStyle3D(SolverBase):
         linear_iterations: int = 10
         """Number of PCG iterations per non-linear iteration, capped by PCG capacity (999 by default)."""
 
-        affine_alpha: float = 1.0
+        affine_alpha: float = 1e1
         """SO(3) penalty scale in k = affine_alpha * body_mass / dt^2; zero disables the penalty."""
 
         drag_spring_stiff: float = 1e2
@@ -333,6 +341,7 @@ class SolverStyle3D(SolverBase):
         self._dof_block_count = self._particle_count + self._affine_body_count * 4
         self._affine_body = AffineBody(model) if enable_affine_body else None
         self._linear_solver = PcgSolver(self._dof_block_count, self.device)
+        self._contact = Contact(model) if enable_affine_body else None
 
         # ParticleFlags for every particle and affine block, separate from model flags.
         self._particle_flags = wp.zeros(self._dof_block_count, dtype=int, device=self.device)
@@ -352,7 +361,7 @@ class SolverStyle3D(SolverBase):
 
         # Per-step scalar mass/PD diagonal, excluding nonlinear contributions.
         self._A_diag_base = wp.zeros(self._dof_block_count, dtype=float, device=self.device)
-        # Assembled diagonal blocks, including affine orthogonality but excluding cloth contacts.
+        # Assembled diagonal blocks, including rigid constraints but excluding cloth contacts.
         self._A_diag = wp.zeros(self._dof_block_count, dtype=wp.mat33, device=self.device)
         # Per-body (S_01, S_02, S_12) / dt^2, refreshed alongside the mass diagonal.
         self._affine_mass_off_diag = wp.zeros(self._affine_body_count, dtype=wp.vec3, device=self.device)
@@ -534,6 +543,18 @@ class SolverStyle3D(SolverBase):
                     dt,
                 )
 
+            if self._contact is not None:
+                self._contact.eval_contacts(
+                    contacts,
+                    self._x[self._particle_count :],
+                    self._x_prev[self._particle_count :],
+                    self._x_inertia[self._particle_count :],
+                    self._particle_flags[self._particle_count :],
+                    self._rhs[self._particle_count :],
+                    self._A_diag[self._particle_count :],
+                    dt,
+                )
+
             wp.launch(
                 prepare_jacobi_preconditioner_kernel,
                 dim=self._dof_block_count,
@@ -592,6 +613,8 @@ class SolverStyle3D(SolverBase):
             self._affine_body.off_diag_multiply(
                 x[self._particle_count :], self._affine_mass_off_diag, self._matrix_free_Ax[self._particle_count :]
             )
+        if self._contact is not None:
+            self._contact.off_diag_multiply(x[self._particle_count :], self._matrix_free_Ax[self._particle_count :])
         return self._matrix_free_Ax
 
     def rebuild_bvh(self, state: State):

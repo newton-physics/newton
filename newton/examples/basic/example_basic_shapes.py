@@ -5,17 +5,18 @@
 
 Shows how to programmatically create a variety of
 collision shapes using the newton.ModelBuilder() API.
-Supports XPBD (default), VBD, and Kamino DVI solvers.
+Supports XPBD (default), VBD, Style3D, and Kamino DVI solvers.
 
 Success criteria:
 - Seven shapes appear: ellipsoid, cylinder, sphere, capsule, box, bunny, and cone.
 - The shapes fall onto the ground and settle without explosive motion or persistent visible jitter.
 
 Runs:
+- `python -m newton.examples basic_shapes`
 - `python -m newton.examples basic_shapes --solver xpbd`
 - `python -m newton.examples basic_shapes --solver vbd`
-- `python -m newton.examples basic_shapes`
 - `python -m newton.examples basic_shapes --solver kamino`
+- `python -m newton.examples basic_shapes --solver style3d`
 """
 
 import warp as wp
@@ -24,6 +25,13 @@ from pxr import Usd
 import newton
 import newton.examples
 import newton.usd
+
+SUBSTEPS = {
+    "vbd": 5,
+    "xpbd": 5,
+    "kamino": 6,
+    "style3d": 2,
+}
 
 
 class Example:
@@ -35,7 +43,7 @@ class Example:
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 6 if self.solver_type == "kamino" else 5
+        self.sim_substeps = SUBSTEPS[self.solver_type]
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         builder = newton.ModelBuilder()
@@ -44,7 +52,7 @@ class Example:
 
         builder.default_shape_cfg.mu = 1.0  # Friction coefficient
 
-        if self.solver_type == "vbd":
+        if self.solver_type in ("vbd", "style3d"):
             builder.default_shape_cfg.ke = 1.0e8
             builder.default_shape_cfg.kd = 5.0e5
         else:
@@ -122,6 +130,10 @@ class Example:
             solver_config.dynamics.cull_speculative_contacts = False
             solver_config.dvi.max_alternating_iterations = 2
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        elif self.solver_type == "style3d":
+            self.solver = newton.solvers.SolverStyle3D(
+                self.model, dynamics=newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY
+            )
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=5)
 
@@ -283,8 +295,8 @@ if __name__ == "__main__":
         "--solver",
         type=str,
         default="xpbd",
-        choices=["vbd", "xpbd", "kamino"],
-        help="Solver type: xpbd (default), vbd, or kamino",
+        choices=["vbd", "xpbd", "kamino", "style3d"],
+        help="Solver type: xpbd (default), vbd, kamino, or style3d",
     )
 
     viewer, args = newton.examples.init(parser)
