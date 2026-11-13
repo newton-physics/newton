@@ -1,0 +1,1 @@
+Fix `ModelBuilder.add_triangle` and `add_edge` raising an error on particles created by `add_cloth_grid`, `add_cloth_mesh` or `add_particle_grid` (or added as tuples, lists or NumPy arrays), and the cloth, particle-grid and soft-body helpers (including `newton.solvers.style3d.add_cloth_mesh`) raising an error for a tuple, list or NumPy `rot`.

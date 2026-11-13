@@ -272,7 +272,7 @@ def add_cloth_mesh(
             this cloth.
     """
     vertices_np = np.array(vertices, dtype=float) * scale
-    rot_mat = np.array(wp.quat_to_matrix(rot), dtype=np.float32).reshape(3, 3)
+    rot_mat = np.array(wp.quat_to_matrix(wp.quat(*rot)), dtype=np.float32).reshape(3, 3)
     verts_3d = np.dot(vertices_np, rot_mat.T) + np.array(pos, dtype=float)
 
     panel_verts_np = np.array(panel_verts, dtype=float) * scale if panel_verts is not None else vertices_np[:, :2]
