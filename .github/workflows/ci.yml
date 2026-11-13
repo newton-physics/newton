@@ -162,7 +162,8 @@ jobs:
           EOF
       # Post-submit (push) runs start cold to catch stale-cache issues without
       # slowing the merge queue.
-      - name: Restore Warp kernel cache
+      - &restore-warp-cache
+        name: Restore Warp kernel cache
         id: restore-warp-cache
         if: github.event_name != 'push'
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
@@ -200,7 +201,8 @@ jobs:
           --junit-report-xml asv-rspec.xml
       # Merge queue caches are scoped to throwaway gh-readonly-queue refs.
       # Cache keys are immutable, so cold runs only save when the key is new.
-      - name: Save Warp kernel cache
+      - &save-warp-cache
+        name: Save Warp kernel cache
         if: github.event_name != 'merge_group' && steps.restore-warp-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
@@ -209,7 +211,8 @@ jobs:
             ~/Library/Caches/warp
             ~\AppData\Local\NVIDIA\warp\Cache
           key: ${{ steps.warp-cache-key.outputs.prefix }}${{ hashFiles('uv.lock', 'newton/**/*.py') }}
-      - name: Test Summary
+      - &test-summary
+        name: Test Summary
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:
           # A failed Newton test step skips ASV, so match only reports that exist.
@@ -266,6 +269,71 @@ jobs:
       OS: ${{ matrix.os }}
     steps: *unittest-steps
 
+  # Tests must skip, not fail, when optional dependencies are unavailable.
+  newton-unittests-reduced-deps:
+    needs: dependency-install-test
+    name: newton-unittests (${{ matrix.profile.name }}, shard ${{ matrix.shard-index }}/${{ matrix.shard-count }})
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - name: ubuntu-latest, minimal dependencies
+            os: ubuntu-latest
+            install: uv sync --locked --no-dev
+            cache: minimal
+        shard-index: [0, 1]
+        shard-count: [2]
+    runs-on: ${{ matrix.profile.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          version: "0.13.5"
+          prune-cache: true
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version-file: ".python-version"
+      # --no-dev skips the default dev group (asv), which tests do not need.
+      - name: Install Newton
+        run: ${{ matrix.profile.install }}
+      - name: Compute Warp kernel cache key
+        id: warp-cache-key
+        shell: bash
+        env:
+          PROFILE: ${{ matrix.profile.cache }}-shard${{ matrix.shard-index }}of${{ matrix.shard-count }}
+        run: |
+          uv run --no-sync python - <<'EOF'
+          import os
+          import warp as wp
+
+          prefix = f"warp-kernels-{wp.get_cpu_kernel_cache_key()}-{os.environ['PROFILE']}-"
+          print(f"Warp kernel cache key prefix: {prefix}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"prefix={prefix}\n")
+          EOF
+      - *restore-warp-cache
+      # --no-sync keeps uv run from installing what the install step left out.
+      - name: Run Tests
+        run: >
+          uv run --no-sync -m newton.tests
+          --strict-warnings
+          --parallel-timeout 3300
+          --no-cache-clear
+          --shard-count ${{ matrix.shard-count }}
+          --shard-index ${{ matrix.shard-index }}
+          --junit-report-xml rspec.xml
+      - *save-warp-cache
+      - *test-summary
+
   # Report the unsharded check names that branch protection requires.
   newton-unittests-ubuntu-gate:
     needs: newton-unittests-ubuntu
@@ -279,6 +347,21 @@ jobs:
         run: |
           if [ "$RESULT" != "success" ]; then
             echo "::error::Ubuntu unit test shards finished with result '$RESULT'."
+            exit 1
+          fi
+
+  newton-unittests-reduced-deps-gate:
+    needs: newton-unittests-reduced-deps
+    if: ${{ always() && (github.event_name != 'push' || github.repository == 'newton-physics/newton') }}
+    name: newton-unittests (reduced dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check shard results
+        env:
+          RESULT: ${{ needs.newton-unittests-reduced-deps.result }}
+        run: |
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::Reduced-dependency unit test shards finished with result '$RESULT'."
             exit 1
           fi
 

@@ -206,6 +206,7 @@ select = [
     "PLW", # pylint warning
     "UP",  # pyupgrade
     "RUF",  # ruff-specific rules
+    "TID251",  # banned APIs
     "TID253",  # banned module-level imports
     "T201",  # print; library code logs instead
 ]
@@ -236,6 +237,11 @@ extend-immutable-calls = ["newton.solvers.SolverBase.Observables.field"]
 "!newton/_src/**/*" = ["T201"]
 "newton/_src/**/tests/**/*" = ["T201"]
 "newton/_src/solvers/kamino/examples/**/*" = ["T201"]
+# TID251 (banned APIs) only applies to tests
+"!newton/tests/**/*" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"importlib.util.find_spec".msg = "Declare optional test dependencies with newton.tests.unittest_utils.requires() or has_module(), which also catch broken installs."
 
 [tool.ruff.lint.flake8-tidy-imports]
 banned-module-level-imports = [
@@ -266,6 +272,7 @@ banned-module-level-imports = [
     "torch",
     "trimesh",
     "viser",
+    "yaml",
 ]
 
 [tool.ruff.lint.pydocstyle]

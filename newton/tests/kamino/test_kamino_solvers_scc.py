@@ -72,7 +72,7 @@ from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, te
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
 from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector
 from newton.tests.kamino.utils.make import make_containers, make_test_problem_fourbar, update_containers
-from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
+from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase, requires
 from newton.tests.utils import basics, testing
 
 
@@ -3261,6 +3261,7 @@ class TestSCCSolver(NewtonTestCase):
                 # Coulomb friction only opposes sliding, so the speed never rises.
                 self.assertLessEqual(float(np.max(np.diff(speeds))), 1.0e-5)
 
+    @requires("git", "pxr.Usd")
     def test_08b_dr_legs_contact_capacity_scales_with_world_count(self):
         if not self.device.is_cuda:
             self.skipTest("Dr Legs multi-world capacity regression uses the CUDA graph path")
@@ -3283,6 +3284,7 @@ class TestSCCSolver(NewtonTestCase):
         self.assertEqual(example.contacts.rigid_contact_max, expected_capacity)
         self.assertEqual(example.collision_pipeline.rigid_contact_max, expected_capacity)
 
+    @requires("git", "pxr.Usd")
     def test_09_dr_legs_scc_first_contact_remains_finite(self):
         if not self.device.is_cuda:
             self.skipTest("Dr Legs SCC first-contact regression uses the CUDA graph path")
@@ -3335,6 +3337,7 @@ class TestSCCSolver(NewtonTestCase):
         self.assertTrue(contact_seen)
         self.assertTrue(color_checked)
 
+    @requires("git", "pxr.Usd")
     def test_10_dr_legs_scc_tipped_contact_does_not_creep(self):
         """Keep tipped contacts stable and release the reset example's graph safely."""
         if not self.device.is_cuda:
@@ -3394,6 +3397,7 @@ class TestSCCSolver(NewtonTestCase):
         values = wp.array([[1.0, 2.0], [3.0, 4.0]], dtype=wp.float32, device=self.device)
         np.testing.assert_array_equal(wp.clone(values[:, 0]).numpy(), [1.0, 3.0])
 
+    @requires("git", "pxr.Usd")
     def test_11_dr_legs_scc_contact_force_balances_weight(self):
         if not self.device.is_cuda:
             self.skipTest("Dr Legs SCC contact-force regression uses the CUDA graph path")

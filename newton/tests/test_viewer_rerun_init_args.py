@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import importlib.util
 import unittest
 import warnings
 from unittest.mock import Mock, patch
+
+from newton.tests.unittest_utils import requires
 
 # ruff: noqa: PLC0415
 
@@ -297,10 +298,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
                     self.assertIsNone(viewer.rec_id)
 
 
-@unittest.skipUnless(
-    importlib.util.find_spec("rerun") and importlib.util.find_spec("rerun_notebook"),
-    "Requires newton[notebook]",
-)
+@requires("rerun", "rerun_notebook")
 class TestViewerRerunNotebook(unittest.TestCase):
     def test_record_model_and_create_widget(self):
         """Serialize Newton geometry through Arrow and expose its recording in a notebook widget."""

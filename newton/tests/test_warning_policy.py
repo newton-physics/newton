@@ -34,6 +34,7 @@ class TestWarningPolicy(unittest.TestCase):
         self.assertEqual([str(item.message) for item in emitted], [allowed_message])
 
     @unittest.skipUnless(sys.version_info >= (3, 14), "Requires Python 3.14 ctypes layout warnings")
+    @newton.tests.unittest_utils.requires("warp._src.apic.types")
     def test_warp_ctypes_layout_warnings(self):
         """Import real packed Warp structs while keeping other deprecations fatal."""
         with mock.patch.object(newton.tests.unittest_utils, "strict_warnings", True):
@@ -82,6 +83,7 @@ class TestWarningPolicy(unittest.TestCase):
                 self._check_dependency_warning_output(result.stderr)
 
     @unittest.skipUnless(sys.platform == "win32" and sys.version_info >= (3, 14), "Requires Windows Python 3.14")
+    @newton.tests.unittest_utils.requires("pyglet")
     def test_pyglet_ctypes_pointer_warning(self):
         """Import real Windows COM types without permitting other pointer-cache deprecations."""
         with mock.patch.object(newton.tests.unittest_utils, "strict_warnings", True):
