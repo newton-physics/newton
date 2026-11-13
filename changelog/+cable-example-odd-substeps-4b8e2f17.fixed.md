@@ -1,0 +1,1 @@
+Fix the `franka_cable_ik_pick_place`, `mujoco_franka_vbd_cable_admm_solver` and `xpbd_mpm_coupled_solver` examples replaying the cable, payload or particles from a stale state under CUDA graph capture with an odd `--substeps` count.
