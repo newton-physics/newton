@@ -45,7 +45,7 @@ Kamino provides three forward-dynamics backends:
 * ``"padmm"`` (default): proximal ADMM, dense Jacobians/dynamics, and the Euler
   integrator. It is the slower, more robust option because it solves equality
   and inequality constraints together.
-* ``"scc"`` (opt-in): Split Constraint Coupling (SCC), with projected dual
+* ``"scc"`` (opt-in): Split Constraint Coupling (SCC), formerly known as DVI, with projected dual
   iterations, sparse Jacobians, dense dynamics
   with the RCM-reordered blocked LLT solver, and the Euler integrator. It is
   generally faster, but approximates the coupled problem by alternating between
@@ -65,6 +65,13 @@ initialize consistently:
 
    config = newton.solvers.SolverKamino.Config(dynamics_solver="scc")
    solver = newton.solvers.SolverKamino(model, config=config)
+
+.. deprecated:: 1.9
+
+   ``dynamics_solver="dvi"`` and ``config.dvi`` remain supported aliases for
+   ``dynamics_solver="scc"`` and ``config.scc`` for at least one full minor
+   release cycle. Using either alias emits :class:`~newton.NewtonDeprecationWarning`.
+   They are eligible for removal in Newton 1.10.
 
 SCC is best suited to performance-sensitive rigid mechanisms with relatively
 few active contacts; PADMM remains the safer and more broadly validated choice.

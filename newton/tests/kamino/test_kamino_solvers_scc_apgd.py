@@ -579,7 +579,7 @@ class TestSCCAPGD(unittest.TestCase):
                     solver.solve(problem)
 
                 solve()
-                eager_status = solver.owner.data.status.numpy()
+                eager_status = solver.owner.data.status.numpy().copy()
                 graph = None
                 if solver.device.is_cuda:
                     with wp.ScopedCapture(device=device) as capture:
@@ -693,8 +693,8 @@ class TestSCCAPGD(unittest.TestCase):
                         solve()
                     graph = capture.graph
                     wp.capture_launch(graph)
-                impulses = solver.owner.data.solution.lambdas.numpy()
-                info = solver.owner.data.status.numpy()
+                impulses = solver.owner.data.solution.lambdas.numpy().copy()
+                info = solver.owner.data.status.numpy().copy()
                 np.testing.assert_array_equal(info["iterations"], [0, 1, 9, 2, 2, 8, 2, 1, 0, 10])
                 np.testing.assert_array_equal(info["apgd_corrections"], [0, 1, 1, 1, 1, 8, 2, 1, 0, 10])
                 np.testing.assert_array_equal(info["apgd_backtracks"], [0, 0, 0, 0, 0, 0, 0, 2, 2, 0])
@@ -714,7 +714,7 @@ class TestSCCAPGD(unittest.TestCase):
 
                 # Reuse the same captured graph with no active constraints,
                 # then restore them to check that masks and counters reset.
-                dimensions = problem.data.dim.numpy()
+                dimensions = problem.data.dim.numpy().copy()
                 for active in (False, True):
                     problem.data.dim.assign(dimensions if active else np.zeros_like(dimensions))
                     if graph is None:

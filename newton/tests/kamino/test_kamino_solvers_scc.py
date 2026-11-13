@@ -523,6 +523,34 @@ class TestSCCSolver(NewtonTestCase):
         )
         self.assertEqual(kamino_config.SCCSolverConfig.from_model(model_with_attrs).max_alternating_iterations, 37)
 
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                with self.assertWarnsRegex(newton.NewtonDeprecationWarning, 'dynamics_solver="scc"') as warning:
+                    legacy_config = SolverKamino.Config(dynamics_solver="dvi", sparse_dynamics=sparse)
+                self.assertEqual(warning.filename, __file__)
+                canonical_config = SolverKamino.Config(dynamics_solver="scc", sparse_dynamics=sparse)
+                self.assertEqual(legacy_config, canonical_config)
+                with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "config.scc") as warning:
+                    legacy_settings = legacy_config.dvi
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(legacy_settings, legacy_config.scc)
+                legacy_settings.max_alternating_iterations = 31
+                self.assertEqual(legacy_config.scc.max_alternating_iterations, 31)
+                replacement = kamino_config.SCCSolverConfig(max_alternating_iterations=17)
+                with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "config.scc"):
+                    legacy_config.dvi = replacement
+                self.assertIs(legacy_config.scc, replacement)
+
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        model = builder.finalize(device=self.device)
+        replacement = kamino_config.SCCSolverConfig(max_alternating_iterations=17)
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            imported_config = SolverKamino.Config.from_model(model, dynamics_solver="dvi", scc=replacement)
+        self.assertEqual(imported_config.dynamics_solver, "scc")
+        self.assertEqual(imported_config.scc.max_alternating_iterations, 17)
+        self.assertFalse(imported_config.dynamics.preconditioning)
+
     def test_00_schur_ignores_bilateral_solve_interval(self):
         """Do not fall back to bilateral alternation after Schur elimination."""
         configs = [
@@ -775,15 +803,14 @@ class TestSCCSolver(NewtonTestCase):
         builder.end_world()
         model = builder.finalize(device=self.device)
 
-        config = SolverKamino.Config(
-            dynamics_solver="scc",
-            scc=kamino_config.SCCSolverConfig(
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            config = SolverKamino.Config(dynamics_solver="dvi", collect_solver_info=True)
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            config.dvi = kamino_config.SCCSolverConfig(
                 max_alternating_iterations=500,
                 inequality_sweeps_per_iteration=1,
                 tolerance=1e-5,
-            ),
-            collect_solver_info=True,
-        )
+            )
         solver = SolverKamino(model, config=config)
         state_in = model.state()
         state_out = model.state()
@@ -809,7 +836,7 @@ class TestSCCSolver(NewtonTestCase):
         solver = SolverKamino(model)
         state = model.state()
 
-        body_q = state.body_q.numpy()
+        body_q = state.body_q.numpy().copy()
         body_q[:, 0] += 1.0
         state.body_q.assign(body_q)
         solver.reset(
@@ -1112,7 +1139,7 @@ class TestSCCSolver(NewtonTestCase):
         """Decay copied tangential warmstarts without mutating cached reactions."""
         model, problem, setup = self._make_box_on_plane_setup()
         contact_count = int(setup.contacts.model_active_contacts.numpy()[0])
-        reactions = setup.contacts.reaction.numpy()
+        reactions = setup.contacts.reaction.numpy().copy()
         reactions[:contact_count] = np.array([2.0, -4.0, 3.0], dtype=np.float32)
         setup.contacts.reaction.assign(reactions)
 

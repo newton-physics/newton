@@ -37,6 +37,7 @@ from ...sim.collide import (
     _RIGID_CONTACTS_PER_PRIMITIVE_PAIR,
     _estimate_rigid_contact_max,
 )
+from ...utils.deprecation import warn_deprecation
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 
@@ -270,6 +271,21 @@ class SolverKamino(SolverBase, CouplingInterface):
         If `None`, default values will be used.
         """
 
+        @property
+        def dvi(self) -> SCCSolverConfig:
+            """Deprecated alias for :attr:`scc`.
+
+            .. deprecated:: 1.9
+                Use ``config.scc`` instead. Removal is eligible in Newton 1.10.
+            """
+            warn_deprecation("config.dvi is deprecated in Newton 1.9; use config.scc instead.")
+            return self.scc
+
+        @dvi.setter
+        def dvi(self, value: SCCSolverConfig) -> None:
+            warn_deprecation("config.dvi is deprecated in Newton 1.9; use config.scc instead.")
+            self.scc = value
+
         lox: LOXSolverConfig | None = None
         """
         Configurations for the LOX dynamics solver.\n
@@ -312,11 +328,15 @@ class SolverKamino(SolverBase, CouplingInterface):
         Defaults to `"euler"`.
         """
 
-        dynamics_solver: Literal["padmm", "scc", "lox"] = "padmm"
+        dynamics_solver: Literal["padmm", "scc", "lox", "dvi"] = "padmm"
         """
         The forward dynamics solver to use. Construct the config with this value
         so solver-dependent defaults are initialized consistently. Defaults to
         `"padmm"`.
+
+        .. deprecated:: 1.9
+            The ``"dvi"`` spelling is an alias for ``"scc"``. Use ``"scc"`` instead.
+            Removal is eligible in Newton 1.10.
 
         .. experimental::
 
@@ -544,6 +564,12 @@ class SolverKamino(SolverBase, CouplingInterface):
             """
             # Import here to avoid module-level imports and circular dependencies
             from . import config  # noqa: PLC0415
+
+            if self.dynamics_solver == "dvi":
+                warn_deprecation(
+                    'dynamics_solver="dvi" is deprecated in Newton 1.9; use dynamics_solver="scc" instead.'
+                )
+                self.dynamics_solver = "scc"
 
             if self.sparse_jacobian is None:
                 self.sparse_jacobian = self.dynamics_solver in {"scc", "lox"}
