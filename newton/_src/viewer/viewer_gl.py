@@ -2257,6 +2257,8 @@ class ViewerGL(ViewerBase):
         if self._image_logger is not None:
             self._image_logger.clear()
         self._destroy_render_geometry()
+        if self.ui is not None:
+            self.ui.shutdown()
         self.renderer.close()
 
     @property
