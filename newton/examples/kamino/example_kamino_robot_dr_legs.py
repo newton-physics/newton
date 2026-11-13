@@ -95,6 +95,12 @@ class Example:
             # stability of the implicit joint-space PD controller
             robot_builder.joint_armature = [0.011] * robot_builder.joint_dof_count
             robot_builder.joint_damping = [0.044] * robot_builder.joint_dof_count
+            if self.dynamics_solver == "padmm":
+                # Keep the passive DoFs of the leg linkages light, with damping below their link inertias
+                for dof, mode in enumerate(robot_builder.joint_target_mode):
+                    if mode == newton.JointTargetMode.NONE:
+                        robot_builder.joint_armature[dof] = 0.0
+                        robot_builder.joint_damping[dof] = 1e-3
             robot_builder.joint_target_ke = [
                 10.0 if mode != newton.JointTargetMode.NONE else 0.0 for mode in robot_builder.joint_target_mode
             ]
@@ -138,6 +144,11 @@ class Example:
         self.config.padmm.dual_tolerance = 1e-4
         self.config.padmm.compl_tolerance = 1e-4
         self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", None) is not False
+        if self.dynamics_solver == "padmm":
+            # Handle the redundant constraints of the closed leg linkages
+            self.config.padmm.redundant_joint_tolerance = 1e-5
+            self.config.padmm.joint_rho_scale = 0.0
+            self.config.padmm.dual_residual_mode = "delassus"
         if self.dynamics_solver == "scc":
             self.config.use_fk_solver = False
             if self.use_kamino_contacts:
