@@ -14,7 +14,7 @@ import warp as wp
 wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
-from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
+from asv_runner.benchmarks.mark import skip_benchmark_if
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -138,22 +138,18 @@ class _RealtimePhysicsBenchmark:
     physics_hz = 200
     num_steps = 300
     warmup_steps = 60
-    repeat = 3
-    number = 1
-    rounds = 2
-    timeout = 600
+    nconmax = None
 
-    def setup(self):
+    def setup_cache(self):
+        """Measure the step durations [s] once; every metric derives from them."""
         if wp.get_cuda_device_count() == 0:
-            raise SkipNotImplemented
+            return None
 
         from benchmark_mujoco import Example  # noqa: PLC0415
 
         with wp.ScopedDevice("cuda:0"):
-            if not wp.is_mempool_enabled(wp.get_device()):
-                raise SkipNotImplemented
             builder = Example.create_model_builder(self.robot, 1, randomize=True, seed=123)
-            self.example = Example(
+            example = Example(
                 stage_path=None,
                 robot=self.robot,
                 randomize=True,
@@ -163,49 +159,58 @@ class _RealtimePhysicsBenchmark:
                 builder=builder,
                 fps=self.physics_hz,
                 sim_substeps=1,
+                nconmax=self.nconmax,
             )
+            if example.graph is None:
+                raise RuntimeError("Realtime benchmark requires CUDA graph capture")
             for _ in range(self.warmup_steps):
-                self.example.step()
+                example.step()
+            durations = []
+            for _ in range(self.num_steps):
+                start = time.perf_counter()
+                example.step()
+                durations.append(time.perf_counter() - start)
 
-    def track_mean_step_ms(self) -> float:
-        return 1000.0 * self._mean(self._measure_step_durations())
+            example.test_final()
+            data = example.solver.mjw_data
+            contact_count = int(data.nacon.numpy()[0])
+            if not 0 < contact_count <= data.naconmax:
+                raise RuntimeError(f"Expected ground contacts within capacity {data.naconmax}, got {contact_count}")
+        return durations
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_mean_step_ms(self, durations) -> float:
+        return 1000.0 * self._mean(durations)
 
     track_mean_step_ms.unit = "ms/step"
 
-    def track_p95_step_ms(self) -> float:
-        durations = sorted(self._measure_step_durations())
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_p95_step_ms(self, durations) -> float:
+        durations = sorted(durations)
         p95_index = min(len(durations) - 1, int(math.ceil(0.95 * len(durations))) - 1)
         return 1000.0 * durations[p95_index]
 
     track_p95_step_ms.unit = "ms/step"
 
-    def track_step_rate_hz(self) -> float:
-        return 1.0 / self._mean(self._measure_step_durations())
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_step_rate_hz(self, durations) -> float:
+        return 1.0 / self._mean(durations)
 
     track_step_rate_hz.unit = "Hz"
 
-    def track_step_time_cv_pct(self) -> float:
-        durations = self._measure_step_durations()
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_step_time_cv_pct(self, durations) -> float:
         mean = self._mean(durations)
         variance = sum((duration - mean) ** 2 for duration in durations) / len(durations)
         return 100.0 * math.sqrt(variance) / mean
 
     track_step_time_cv_pct.unit = "%"
 
-    def track_real_time_factor(self) -> float:
-        mean_step_s = self._mean(self._measure_step_durations())
-        return self.example.sim_dt / mean_step_s
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_real_time_factor(self, durations) -> float:
+        return 1.0 / (self.physics_hz * self._mean(durations))
 
     track_real_time_factor.unit = "x"
-
-    def _measure_step_durations(self) -> list[float]:
-        durations = []
-        with wp.ScopedDevice("cuda:0"):
-            for _ in range(self.num_steps):
-                start = time.perf_counter()
-                self.example.step()
-                durations.append(time.perf_counter() - start)
-        return durations
 
     @staticmethod
     def _mean(values: list[float]) -> float:
@@ -315,6 +320,7 @@ class RealtimeHumanoidPhysics(_RealtimePhysicsBenchmark):
     """Single highly articulated humanoid in physics-only mode."""
 
     robot = "humanoid"
+    nconmax = 50  # The landed humanoid peaks at 30 contacts.
 
 
 class FastNewtonOverheadHumanoid(_NewtonOverheadBenchmark):

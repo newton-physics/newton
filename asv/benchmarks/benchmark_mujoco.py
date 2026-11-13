@@ -501,7 +501,11 @@ class Example:
                 )
             else:
                 self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            # Graph replay reads state_0, so an odd last substep copies instead of swapping.
+            if substep == self.sim_substeps - 1 and self.sim_substeps % 2 == 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
         if self.sensor_contact is not None:
             self.sensor_contact.update(self.state_0, self.contacts, observables=self.solver_observables)
 
