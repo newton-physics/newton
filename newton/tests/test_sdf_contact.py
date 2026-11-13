@@ -10,11 +10,96 @@ import warp as wp
 
 import newton
 from newton._src.geometry.sdf_contact import (
+    _create_sdf_contact_funcs,
     _sdf_rsqrt_rn,
     compute_block_counts_from_weights,
     mesh_sdf_contact_search_precision,
 )
+from newton._src.geometry.sdf_texture import TextureSDFData
+from newton._src.utils.heightfield import HeightfieldData
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+
+
+@wp.func
+def _two_sphere_distance(sdf: TextureSDFData, p: wp.vec3) -> float:
+    scale = sdf.voxel_radius
+    return wp.min(wp.length(p) - 0.2 * scale, wp.length(p - wp.vec3(0.55 * scale, 0.0, 0.0)) - 0.05 * scale)
+
+
+@wp.func
+def _two_sphere_pair(sdf: TextureSDFData, p: wp.vec3, q: wp.vec3) -> wp.vec2:
+    return wp.vec2(_two_sphere_distance(sdf, p), _two_sphere_distance(sdf, q))
+
+
+def _make_nonconvex_edge_kernel(paired):
+    search = _create_sdf_contact_funcs(False, paired, _two_sphere_distance, _two_sphere_pair)
+
+    @wp.kernel(enable_backward=False)
+    def kernel(
+        scales: wp.array[float],
+        distances: wp.array[float],
+        endpoints: wp.array[int],
+        boundary: wp.array[wp.uint8],
+        elevation: wp.array[float],
+    ):
+        i = wp.tid()
+        scale = scales[i // 2]
+        a = wp.vec3(0.0)
+        b = wp.vec3(scale, 0.0, 0.0)
+        if i % 2 == 1:
+            a, b = b, a
+        sdf = TextureSDFData()
+        sdf.voxel_radius = scale
+        distance, _point, endpoint = search(
+            sdf,
+            wp.uint64(0),
+            a,
+            b,
+            _two_sphere_distance(sdf, (a + b) * 0.5),
+            False,
+            0,
+            boundary,
+            -1,
+            False,
+            HeightfieldData(),
+            elevation,
+            0.0,
+        )
+        distances[i] = distance
+        endpoints[i] = endpoint
+
+    return kernel
+
+
+_nonconvex_edge_scalar = _make_nonconvex_edge_kernel(False)
+_nonconvex_edge_paired = _make_nonconvex_edge_kernel(True)
+
+
+def test_mesh_mesh_contained_bvh_contacts(test, device):
+    """A bounded closest-point miss must not cull edges wholly inside a solid."""
+    with wp.ScopedDevice(device):
+        outer = newton.Mesh.create_box(1.0, 1.0, 1.0)
+        inner = newton.Mesh.create_box(0.02, 0.02, 0.02)
+        for scale in (0.01, 1.0, 100.0):
+            builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+            cfg = newton.ModelBuilder.ShapeConfig(density=0.0, margin=0.0, gap=0.0)
+            builder.add_shape_mesh(-1, mesh=outer, scale=(scale, scale, scale), cfg=cfg)
+            body = builder.add_body(
+                xform=wp.transform(wp.vec3(0.2 * scale, 0.0, 0.0)), mass=1.0, inertia=wp.mat33(np.eye(3))
+            )
+            builder.add_shape_mesh(body, mesh=inner, scale=(scale, scale, scale), cfg=cfg)
+            model = builder.finalize()
+            for reduced in (False, True):
+                with test.subTest(scale=scale, reduced=reduced):
+                    pipeline = newton.CollisionPipeline(model, reduce_contacts=reduced)
+                    contacts = pipeline.contacts()
+                    pipeline.collide(model.state(), contacts)
+                    count = int(contacts.rigid_contact_count.numpy()[0])
+                    test.assertGreater(count, 0)
+                    # The +x surface is the nearest exit, about 0.8 scaled units away.
+                    normals = contacts.rigid_contact_normal.numpy()[:count]
+                    test.assertTrue(np.all(np.isfinite(normals)))
+                    test.assertGreater(float(np.max(np.abs(normals[:, 0]))), 0.99)
 
 
 @wp.kernel(enable_backward=False)
@@ -100,6 +185,29 @@ def test_mesh_mesh_sdf_surface_witnesses(test, device, box_sdf, *, probe_sdf=Fal
 
 
 class TestSDFContact(unittest.TestCase):
+    def test_nonconvex_edge_keeps_endpoint_minima(self):
+        """A shallower interior well cannot exclude a deeper endpoint well."""
+        for device in get_test_devices():
+            for kernel in (_nonconvex_edge_scalar, _nonconvex_edge_paired):
+                with self.subTest(device=device, kernel=kernel.key):
+                    scales = wp.array([0.001, 1.0, 1000.0], dtype=float, device=device)
+                    distances = wp.empty(6, dtype=float, device=device)
+                    endpoints = wp.empty(6, dtype=int, device=device)
+                    wp.launch(
+                        kernel,
+                        dim=6,
+                        inputs=[
+                            scales,
+                            distances,
+                            endpoints,
+                            wp.empty(0, dtype=wp.uint8, device=device),
+                            wp.empty(0, dtype=float, device=device),
+                        ],
+                        device=device,
+                    )
+                    np.testing.assert_allclose(distances.numpy(), np.repeat(-0.2 * scales.numpy(), 2), rtol=1e-6)
+                    np.testing.assert_array_equal(endpoints.numpy(), [1, 2, 1, 2, 1, 2])
+
     def test_block_count_scan_ignores_inactive_tail(self) -> None:
         """Keep active block offsets independent of stale inactive slots."""
         for device in get_test_devices():
@@ -151,6 +259,13 @@ class TestSDFContact(unittest.TestCase):
 
                 np.testing.assert_allclose(result.numpy(), expected, rtol=np.finfo(np.float32).eps, atol=0.0)
 
+
+add_function_test(
+    TestSDFContact,
+    "test_mesh_mesh_contained_bvh_contacts",
+    test_mesh_mesh_contained_bvh_contacts,
+    devices=get_test_devices(),
+)
 
 add_function_test(
     TestSDFContact,
