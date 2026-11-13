@@ -2278,7 +2278,7 @@ class ModelBuilder:
         """Parent body indices accumulated for :attr:`Model.camera_body`."""
         self.camera_transform: list[Transform] = []
         """Camera mount transforms accumulated for :attr:`Model.camera_transform`."""
-        self.camera_lens_type: list[int] = []
+        self.camera_lens_type: list[CameraLensType] = []
         """Lens types accumulated for :attr:`Model.camera_lens_type`."""
         self.camera_focal_length: list[float] = []
         """Focal lengths [m] accumulated for :attr:`Model.camera_focal_length`."""
@@ -10403,8 +10403,9 @@ class ModelBuilder:
             vertical_aperture_offset: Vertical principal-point offset [m].
             clipping_range: Near and far clip distance [m]. For ``PINHOLE`` cameras
                 they are depths along the camera's ``-Z`` axis (planar clipping, as in
-                USD and MJCF); for ``CUSTOM`` cameras they are distances along each
-                ray. Hits outside the range are misses.
+                USD and MJCF); for ``CUSTOM`` cameras, and pinhole cameras a sensor
+                gives explicit rays, they are distances along each ray. Hits outside
+                the range are misses.
             resolution: Image size ``(width, height)`` [px] that the apertures map
                 onto exactly. When both apertures are set, it also fixes the pixel
                 aspect ratio kept at other image sizes. It is the default ``width``
@@ -10479,7 +10480,7 @@ class ModelBuilder:
         self.camera_world.append(self.body_world[body] if body >= 0 else self.current_world)
         self.camera_body.append(body)
         self.camera_transform.append(camera_xform)
-        self.camera_lens_type.append(int(lens_type))
+        self.camera_lens_type.append(lens_type)
         self.camera_focal_length.append(focal_length)
         self.camera_aperture.append((horizontal, vertical))
         self.camera_aperture_offset.append(aperture_offset)

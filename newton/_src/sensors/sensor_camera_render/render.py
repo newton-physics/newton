@@ -10,7 +10,7 @@ import warp as wp
 from ...geometry import Gaussian, GeoType
 from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
-from .camera_utils import _pinhole_pixel_ray
+from .camera_utils import pinhole_pixel_ray
 from .types import (
     AntiAliasing,
     ClearData,
@@ -126,7 +126,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             if bundle >= 0:
                 row = bundle * img_height + py
                 return camera_rays[row, px, sample_index, 0], camera_rays[row, px, sample_index, 1]
-            direction = _pinhole_pixel_ray(
+            direction = pinhole_pixel_ray(
                 px, py, sample_index, sample_count, img_width, img_height, view_pinhole[view_index]
             )
             return wp.vec3f(0.0), direction

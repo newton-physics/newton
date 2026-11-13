@@ -310,7 +310,7 @@ def _multisample_offset(sample_index: int, sample_count: int):
 
 
 @wp.func
-def _pinhole_pixel_ray(
+def pinhole_pixel_ray(
     px: int, py: int, sample_index: int, sample_count: int, width: int, height: int, pinhole: wp.vec4f
 ) -> wp.vec3f:
     """Return the unit camera-space direction of a pixel sample through a pinhole lens.
@@ -358,7 +358,7 @@ def compute_camera_rays_pinhole_from_aperture_kernel(
     py, px, sample_index = wp.tid()
     pinhole = wp.vec4f(horizontal_aperture, vertical_aperture, horizontal_aperture_offset, vertical_aperture_offset)
     out_rays[py, px, sample_index, 0] = wp.vec3f(0.0)
-    out_rays[py, px, sample_index, 1] = _pinhole_pixel_ray(
+    out_rays[py, px, sample_index, 1] = pinhole_pixel_ray(
         px, py, sample_index, sample_count, width, height, pinhole / focal_length
     )
 

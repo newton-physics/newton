@@ -1119,13 +1119,15 @@ class TestSensorCamera(unittest.TestCase):
                 camera.update(model.state(), depth_image=depth)
                 self.assertAlmostEqual(float(depth.numpy()[0, height // 2, width // 2]), 2.0, delta=0.05)
 
-    def test_bound_pinhole_follows_intrinsics(self) -> None:
-        """Verify pinhole views store no rays and follow intrinsics changes, also in a captured graph."""
+    def test_bound_pinhole_follows_model_and_state(self) -> None:
+        """Verify bound views follow intrinsics changes and body poses, also in a captured graph."""
         # A 1 m quad 2 m in front of the camera: a 60-degree corner ray misses it, a 4x longer lens hits it.
         world = newton.ModelBuilder(up_axis=newton.Axis.Z)
         quad = np.array([[-0.5, -0.5, -2.0], [0.5, -0.5, -2.0], [0.5, 0.5, -2.0], [-0.5, 0.5, -2.0]])
         world.add_shape_mesh(-1, mesh=newton.Mesh(quad.astype(np.float32), [0, 1, 2, 0, 2, 3]))
         world.add_camera(-1, fov=math.radians(60.0), label="pinhole")
+        body = world.add_body(xform=wp.transform_identity(), label="body")
+        world.add_camera(body, xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()), label="mounted")
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.replicate(world, 1)
         corner = (0, 0)
@@ -1153,6 +1155,15 @@ class TestSensorCamera(unittest.TestCase):
                     model.camera_focal_length.assign(focal * 4.0)
                     wp.capture_launch(capture.graph)
                     self.assertGreater(float(depth.numpy()[0][corner]), 2.0)
+
+                # A camera on a body follows the body pose in the state.
+                mounted = SensorCamera(model, cameras="mounted", width=8, height=8)
+                depth = mounted.allocate_image_depth()
+                center = (4, 4)
+                for height in (0.0, 1.0):
+                    state.body_q.assign([wp.transform((0.0, 0.0, height), wp.quat_identity())])
+                    mounted.update(state, depth_image=depth)
+                    self.assertAlmostEqual(float(depth.numpy()[0][center]), 2.5 + height, delta=0.05)
 
     def test_camera_aperture_follows_image_aspect(self) -> None:
         """Verify apertures keep the camera's pixel aspect ratio at any image aspect ratio."""
@@ -1259,6 +1270,16 @@ class TestSensorCamera(unittest.TestCase):
                 self.assertEqual(float(depth_np[custom_view][corner]), 0.0)
                 self.assertAlmostEqual(float(depth_np[custom_view][center]), 2.0, delta=0.05)
 
+                # A pinhole camera given explicit rays, by set_camera_rays() or for one update() call,
+                # clips along those rays like a custom camera.
+                override = camera.allocate_image_depth()
+                camera.update(state, camera_rays=rays, depth_image=override)
+                camera.set_camera_rays(rays, cameras="pinhole")
+                camera.update(state, depth_image=depth)
+                for image in (override.numpy(), depth.numpy()):
+                    self.assertEqual(float(image[pinhole_view][corner]), 0.0)
+                    self.assertAlmostEqual(float(image[pinhole_view][center]), 2.0, delta=0.05)
+
     def test_bound_camera_rejects_invalid_arrays(self) -> None:
         """Verify bound sensors validate caller arrays and define their attributes when unbound."""
         world = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -1275,9 +1296,9 @@ class TestSensorCamera(unittest.TestCase):
         camera = SensorCamera(model, cameras="cam", width=4, height=4)
         depth = camera.allocate_image_depth()
         with self.assertRaises(ValueError):
-            camera.compute_view_transforms(state, wp.zeros(1, dtype=wp.transformf, device="cpu"))
+            camera.compute_view_transforms(state, out=wp.zeros(1, dtype=wp.transformf, device="cpu"))
         with self.assertRaises(ValueError):
-            camera.compute_view_transforms(state, wp.zeros(2, dtype=wp.vec3f, device="cpu"))
+            camera.compute_view_transforms(state, out=wp.zeros(2, dtype=wp.vec3f, device="cpu"))
         with self.assertRaises(ValueError):
             camera.update(state, wp.zeros(2, dtype=wp.vec3f, device="cpu"), depth_image=depth)
         with self.assertRaises(ValueError):
