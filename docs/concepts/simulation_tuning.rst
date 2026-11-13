@@ -102,6 +102,70 @@ failure evidence points to an interaction, test the smallest justified
 combination in a scripted reproduction and keep it only if the target metric and
 guardrails improve.
 
+.. _tuning-adaptive-collision-detection:
+
+Tunneling and Adaptive Collision Detection
+------------------------------------------
+
+If fast objects pass through thin geometry, first reduce the solver timestep
+and refresh collisions every substep. Increasing solver iterations cannot
+recover a collision that was never detected. Once this baseline works,
+consider **speculative contacts with conditional collision
+refreshes** as a practical alternative to full continuous collision detection
+(CCD) for rigid contacts.
+
+Newton can keep possible contacts between nearby objects before they touch.
+The experimental :class:`CollisionSubstepScheduler` reuses this information for
+several solver steps, checking again as the objects move. This can reduce
+collision-detection work while keeping the solver timestep small, including
+for falling and thrown objects.
+
+Tune these three controls together:
+
+* ``substeps``: how many solver steps run per frame. Increase this to resolve
+  faster motion and abrupt acceleration.
+* ``CollisionPipeline(speculative_contact_gap_max=...)``: how far ahead to look,
+  in meters. A larger positive distance can allow longer intervals between
+  collision checks, but can also create more contacts.
+* ``collision_dt_max``: the longest allowed time between collision checks.
+  Lower this cap if contacts need more frequent updates.
+
+Ordinary velocity-adapted detection keeps possible contacts that current motion
+could close before the next check, up to the configured distance limit. Supply
+that time as ``pipeline.collide(..., dt=collision_dt)``. During scheduled checks,
+the pipeline instead keeps possible contacts throughout that distance, including
+between objects currently moving apart. This distance reserve lets the scheduler
+reuse contacts through small velocity changes without checking again immediately.
+See :ref:`speculative-contacts` for callback setup, CUDA graph requirements,
+refresh rules, and supported geometry.
+
+Choose a solver that uses these contacts:
+
+* **XPBD** checks retained contacts after predicting body positions; no extra
+  speculative-response option is needed.
+* **MuJoCo Warp** requires ``use_mujoco_contacts=False`` and the experimental
+  ``use_speculative_contacts=True`` with Euler or implicitfast integration.
+  See :doc:`/solvers/mujoco` for response and capacity requirements.
+* **Steel** supports separated contacts by default. ``contact_speculative_scale``
+  controls how much of the gap may close per step; ``contact_gap_gate`` can
+  discard farther contacts. See :class:`~newton.solvers.SolverSteel`.
+* **Kamino LOX** keeps separated contacts by default; other Kamino modes cull
+  them by default. See :doc:`/solvers/kamino` and
+  ``config.dynamics.cull_speculative_contacts``.
+
+Measure total runtime as well as collision-check counts at the fastest expected
+motion. Fast scenes may still check every substep and incur scheduling overhead;
+larger distances can increase contact-buffer and solver costs. Read
+``schedule.interval_overflow.numpy()[0]`` occasionally after a frame, outside
+CUDA graph capture; this synchronizes CUDA. If set, increase ``substeps`` or the
+speculative distance limit. Keep penetration and contact/constraint capacity
+within the task's bounds.
+
+This remains a tunneling mitigation, not full CCD. It does not compute a time of
+impact, and abrupt motion within one substep can still cross thin geometry.
+Choose the solver timestep accordingly; see :ref:`speculative-contacts` for the
+full limitations.
+
 Solver and Backend Changes
 --------------------------
 
@@ -142,6 +206,12 @@ Symptom Table
        limits or armature when physically justified; reduce mass and inertia
        ratios.
      - Fidelity
+   * - Fast objects tunnel through geometry
+     - Reduce ``dt``; refresh collisions every substep; verify collision geometry.
+     - Use :ref:`speculative contacts and conditional refreshes
+       <tuning-adaptive-collision-detection>` with a solver that acts on separated
+       contacts; monitor travel overflow.
+     - Collision and solver runtime
    * - Weak grasp or object slip
      - Check friction coefficients, contact locations, contact count, and
        gripper force limits.

@@ -16,13 +16,24 @@ SHAPE_PAIR_INDEX_MASK = wp.int32((1 << 30) - 1)
 CONTACT_SORT_SUB_KEY_BITS = 23
 # Primitive contacts use sub-keys 0..3 and generic convex manifolds use 0..4.
 CONTACT_SORT_CONVEX_SUB_KEY_BITS = 3
-CONTACT_SORT_MAX_SHAPE_INDEX_BITS = 20
+# Shape-index width when the shape count is unknown at construction.
+CONTACT_SORT_DEFAULT_SHAPE_INDEX_BITS = 20
 
 
-def contact_sort_shape_index_bits(shape_count: int) -> int:
-    """Return the bounded bit width needed for a contact shape index."""
+def contact_sort_shape_index_bits(shape_count: int, sub_key_bits: int) -> int:
+    """Return the shape-index bit width of a contact sort key for ``shape_count`` shapes.
+
+    Raises:
+        ValueError: If two shape indices and a ``sub_key_bits`` sub-key don't fit in 63 bits.
+    """
     required_bits = max(max(int(shape_count) - 1, 0).bit_length(), 1)
-    return min(required_bits, CONTACT_SORT_MAX_SHAPE_INDEX_BITS)
+    max_bits = (63 - sub_key_bits) // 2
+    if required_bits > max_bits:
+        raise ValueError(
+            f"Deterministic contacts (deterministic=True or contact matching) support at most {1 << max_bits} shapes "
+            f"for this model's shape types, got {shape_count}; disable both or split the worlds into smaller models."
+        )
+    return required_bits
 
 
 @wp.struct
@@ -103,8 +114,8 @@ def make_contact_sort_key(shape_a: int, shape_b: int, sort_sub_key: int, shape_i
         [22 + b:23]      shape_b      (b bits)
         [22:0]           sort_sub_key (23 bits, max 8,388,607)
 
-    ``b`` is at most 20, retaining the existing limit of 1,048,575 shape
-    indices. Values exceeding these bit widths are silently masked. The effective
+    With the 23-bit sub-key, ``b`` is at most 20 (1,048,576 shapes).
+    Values exceeding these bit widths are silently masked. The effective
     limits depend on upstream bit consumption in each contact path:
 
     - Mesh-triangle contacts: ``(tri_idx << 1) | 1`` — 22 effective bits
@@ -176,24 +187,10 @@ def compute_contact_predictive_score(
 
 
 @wp.func
-def _contact_passes_gap_check_precomputed(
-    contact_data: ContactData,
-    contact_normal_a_to_b: wp.vec3,
-    total_separation_needed: float,
-) -> bool:
-    """Check a contact gap using manifold-invariant precomputed values."""
-    a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
-    )
-    b_contact_world = contact_data.contact_point_center + contact_normal_a_to_b * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
-    )
-
-    diff = b_contact_world - a_contact_world
-    distance = wp.dot(diff, contact_normal_a_to_b)
-    d = distance - total_separation_needed
-
-    return d <= contact_data.gap_sum
+def contact_separation(contact_data: ContactData) -> float:
+    """Return the signed surface separation after margins [m]."""
+    # The effective radii in the endpoint displacement and offsets cancel.
+    return contact_data.contact_distance - (contact_data.margin_a + contact_data.margin_b)
 
 
 @wp.func
@@ -209,18 +206,7 @@ def contact_passes_gap_check(
     Returns:
         True if the contact distance is within the contact gap threshold, False otherwise
     """
-    total_separation_needed = (
-        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.margin_a + contact_data.margin_b
-    )
-
-    # Distance calculation matching box_plane_collision
-    contact_normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
-
-    return _contact_passes_gap_check_precomputed(
-        contact_data,
-        contact_normal_a_to_b,
-        total_separation_needed,
-    )
+    return contact_separation(contact_data) <= contact_data.gap_sum
 
 
 @wp.func
@@ -233,11 +219,7 @@ def prepare_speculative_contact(contact_data: ContactData) -> tuple[wp.vec3, wp.
     point_b = contact_data.contact_point_center + normal * (
         0.5 * contact_data.contact_distance + contact_data.radius_eff_b
     )
-    total_separation_needed = (
-        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.margin_a + contact_data.margin_b
-    )
-    separation = wp.dot(point_b - point_a, normal) - total_separation_needed
-    return normal, point_a, point_b, separation
+    return normal, point_a, point_b, contact_separation(contact_data)
 
 
 @wp.func

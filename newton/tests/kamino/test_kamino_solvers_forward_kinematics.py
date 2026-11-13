@@ -30,6 +30,7 @@ from newton.tests.kamino.utils.sampling import (
     sample_body_poses,
     sample_world_mask,
 )
+from newton.tests.unittest_utils import requires
 from newton.tests.utils.basics import build_boxes_fourbar, build_cartpole
 from newton.tests.utils.testing import (
     build_all_joints_test,
@@ -339,6 +340,7 @@ class TestJacobianAssembly(unittest.TestCase):
     def tearDown(self):
         self.default_device = None
 
+    @requires("pxr.Usd")
     def test_finite_differences_single_joint(self):
         """Match analytic and finite-difference Jacobians on every single-joint fixture."""
         test_name = "Forward Kinematics Jacobian check"
@@ -379,6 +381,7 @@ class TestJacobianAssembly(unittest.TestCase):
         success = run_test_single_joint_examples(test_function, test_name, device=self.default_device)
         self.assertTrue(success)
 
+    @requires("pxr.Usd")
     def test_sparse_matches_dense_single_joint(self):
         """Match dense and sparse Jacobians for every single-joint fixture."""
         test_name = "Single-joint sparse Jacobian assembly check"
@@ -403,6 +406,7 @@ class TestJacobianAssembly(unittest.TestCase):
         success = run_test_single_joint_examples(test_function, test_name, device=self.default_device)
         self.assertTrue(success)
 
+    @requires("git", "pxr.Usd")
     def test_sparse_matches_dense_heterogenous(self):
         """Match dense and sparse Jacobians on a heterogenous (TestMech + DR Legs) model."""
         test_name = "Heterogenous model (test mechanism + dr_legs) sparse Jacobian assembly check"
@@ -542,7 +546,7 @@ class TestPassiveUniversalJointFrame(unittest.TestCase):
         np.testing.assert_allclose(constraints, 0.0, atol=1.0e-6)
 
         # Validate jacobian with finite differences
-        body_q_np = body_q.numpy().reshape(-1)
+        body_q_np = body_q.numpy().reshape(-1).copy()
         jacobian = solver.eval_kinematic_constraints_jacobian(body_q, target_transforms).numpy()[0]
 
         def eval_constraints(body_q_stepped_np):
@@ -590,6 +594,7 @@ class TestRandomPoses(unittest.TestCase):
         kwargs.update(overrides)
         return partial(solve_and_check_fk_random_poses, model, num_poses, rng, **kwargs)
 
+    @requires("git", "pxr.Usd")
     def test_dr_testmech_random_poses(self):
         """Validate FK on random poses for the DR Test mechanism"""
         rng = np.random.default_rng(rng_seed_from_string("Test mechanism FK random poses check"))
@@ -610,6 +615,7 @@ class TestRandomPoses(unittest.TestCase):
         self.assertTrue(solve_and_check_fn(use_sparsity=False))
         self.assertTrue(solve_and_check_fn(use_sparsity=True))
 
+    @requires("git", "pxr.Usd")
     def test_dr_legs_random_poses(self):
         """Validate FK on random poses for DR Legs"""
         rng = np.random.default_rng(rng_seed_from_string("FK random poses check for dr_legs model"))
@@ -637,6 +643,7 @@ class TestRandomPoses(unittest.TestCase):
         self.assertTrue(solve_and_check_fn(use_sparsity=False))
         self.assertTrue(solve_and_check_fn(use_sparsity=True))
 
+    @requires("git", "pxr.Usd")
     def test_heterogenous_dr_testmech_and_legs_random_poses(self):
         """Validate FK on random poses for a heterogenous model (DR TestMechanism + DR Legs)"""
         rng = np.random.default_rng(

@@ -543,7 +543,7 @@ Actuator damping is preserved on both backends. MuJoCo-Warp 3.15 folds it into
 joint and tendon damping; Newton retains that contribution when publishing
 joint or tendon property updates. Actuator armature is preserved only on the
 native MuJoCo CPU backend (``use_mujoco_cpu=True``); the Warp backend emits a
-:class:`~newton.exceptions.NewtonWarning` when it is nonzero. This limitation applies to all actuator
+:class:`~newton.NewtonWarning` when it is nonzero. This limitation applies to all actuator
 types, not only DC motors. MJCF ``damping`` accepts one, two, or three coefficients:
 the first is stored in ``mujoco:actuator_damping`` and the remaining two in
 ``mujoco:actuator_dampingpoly``. Partial overrides retain inherited trailing
@@ -1011,6 +1011,17 @@ MuJoCo solver parameters follow a three-level resolution priority:
    used, with one Newton-opinionated exception: ``integrator`` defaults
    to ``implicitfast`` (MuJoCo's default is ``euler``) for better
    stability on stiff systems.
+
+Per-world options use the ``WORLD`` layout, shape ``(world_count + 1,)``,
+whose final entry belongs to global world ``-1`` (see :ref:`Per-world attributes`).
+Separate MuJoCo worlds read the entry of their Newton world. A single MuJoCo world
+reads world ``0`` when that world owns bodies and the global entry otherwise, as in
+models built without :meth:`~newton.ModelBuilder.begin_world`, where importers store
+options in the global entry. :attr:`~newton.Model.gravity` follows the same rule;
+a MuJoCo world has one gravity, so dynamic global bodies that share it with world ``0``
+bodies must have the same gravity, or construction raises :class:`ValueError`.
+Later changes to either gravity entry or to a body's kinematic flag are not checked;
+such a MuJoCo world follows world ``0``.
 
 These values are read once during :class:`~newton.solvers.SolverMuJoCo`
 construction. Editing ``model.mujoco.<option>`` afterwards has no

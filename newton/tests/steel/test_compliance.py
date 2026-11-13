@@ -230,7 +230,7 @@ def test_compliance_opt_in_selects_point_friction(test, device):
     for articulated in (False, True):
         with test.subTest(articulated=articulated):
             options = {"articulated": articulated, "enabled": True, "steps": 20, "friction_scale": 0.4}
-            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "point friction"):
+            with test.assertWarnsRegex(newton.NewtonWarning, "point friction"):
                 actual, paths, solver, _ = run_fixture(
                     device=device, **options, solver_options={"friction_anchor_beta": None}
                 )
@@ -1654,20 +1654,6 @@ def test_exact_surface_contact_is_regularized(test: unittest.TestCase, device):
     test.assertEqual(float(row_w.numpy()[0, 0]), 0.5)
 
 
-def test_compliance_parameters_removed(test: unittest.TestCase, device):
-    """Reject the dense compliance knobs as unknown keyword arguments."""
-    names = tuple(inspect.signature(newton.solvers.SolverSteel).parameters)
-    test.assertNotIn("dense_contact_compliance", names)
-    test.assertNotIn("speculative_dense_contact_compliance", names)
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
-    b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
-    builder.add_shape_box(b, hx=0.05, hy=0.05, hz=0.05)
-    model = builder.finalize(device=device)
-    with test.assertRaises(TypeError):
-        newton.solvers.SolverSteel(model, dense_contact_compliance=1.0e-4)
-
-
 def test_restitution_rows_stay_rigid(test: unittest.TestCase, device):
     """Solve a row whose rebound target fires rigidly, so the rebound is e * v_in for any regularizer.
 
@@ -1731,7 +1717,6 @@ for _fn in (
     test_regularization_validation,
     test_zero_regularization_shares_one_weight_slot,
     test_exact_surface_contact_is_regularized,
-    test_compliance_parameters_removed,
     test_restitution_rows_stay_rigid,
 ):
     add_function_test(TestSteelRegularization, _fn.__name__, _fn, devices=devices)

@@ -31,7 +31,12 @@ from newton._src.solvers.steel.kernels import (
 )
 from newton._src.solvers.steel.solver_steel import _get_joint_limit_warp_kernel, _use_resident_mfgs_metadata
 from newton.solvers import SolverBase, SolverSteel
-from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 
 def _built_rows(device, q: float, *, gap: float, lower: float = -1.0, upper: float = 1.0, scalar_builder=False):
@@ -1216,7 +1221,7 @@ def test_drive_rows_precede_limit_rows_and_count_against_capacity(test, device):
     test.assertFalse(np.any(solver.constraint_overflow.numpy()))
 
     with test.assertWarnsRegex(
-        newton.exceptions.NewtonWarning, r"need at least 6 dense rows .* articulation_constraint_max=2"
+        newton.NewtonWarning, r"need at least 6 dense rows .* articulation_constraint_max=2"
     ) as caught:
         small = SolverSteel(
             model,
@@ -1935,15 +1940,13 @@ class TestSteelJointFriction(unittest.TestCase):
     def test_dense_row_overflow_is_reported(self):
         """Warn at construction when friction rows exceed the capacity in every step, and flag the worlds."""
         model = _two_link_model(length=0.4, mass=2.0, friction=(FRICTION, FRICTION))
-        with self.assertWarnsRegex(
-            newton.exceptions.NewtonWarning, r"need at least 2 dense rows .* friction"
-        ) as caught:
+        with self.assertWarnsRegex(newton.NewtonWarning, r"need at least 2 dense rows .* friction") as caught:
             solver = _friction_solver(model, articulation_constraint_max=1, warn_constraint_overflow=False)
         self.assertNotIn("limit", str(caught.warning))
         # Limit and friction rows together name both causes and both remedies.
         limited = _single_dof_model("revolute", limit=(-1.0, 1.0))
         with self.assertWarnsRegex(
-            newton.exceptions.NewtonWarning,
+            newton.NewtonWarning,
             r"3 dense rows .* position limits and positive joint friction .* joint_limit_activation_gap"
             r".* set joint_friction to zero",
         ):
@@ -2397,7 +2400,7 @@ class TestSteelJointFrictionLoad(unittest.TestCase):
         _advance_hinge(solver, model, 0.2, 2)
         solver.check_constraint_capacity()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_usd_reads_only_the_steel_coefficient(self):
         """Import the authored Steel coefficient and leave physxJoint:jointFriction unmapped."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics

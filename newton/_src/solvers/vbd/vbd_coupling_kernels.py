@@ -161,6 +161,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     body_com: wp.array[wp.vec3],
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
@@ -254,6 +255,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
             shape_margin,
             dt,
             rigid_body_particle_contact_use_log_barrier,
+            contact_damping_bidirectional,
         )
 
         force_on_body = -force_on_particle
@@ -339,6 +341,7 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
     proxy_particle_flag: int,
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
     particle_radius: wp.array[float],
     body_particle_contact_count: wp.array[int],
     contact_filter: _SoftContactFilterData,
@@ -405,6 +408,7 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
         shape_margin,
         dt,
         rigid_body_particle_contact_use_log_barrier,
+        contact_damping_bidirectional,
     )
     _vbd_add_proxy_particle_force(particle_idx, body_contact_force, particle_local_to_proxy_global, out_particle_f)
 
@@ -427,6 +431,7 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
     soft_contact_kd: float,
     soft_contact_mu: float,
     friction_epsilon: float,
+    contact_damping_bidirectional: bool,
     edge_edge_parallel_epsilon: float,
     out_particle_f: wp.array[wp.vec3],
 ):
@@ -474,6 +479,7 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
                             friction_epsilon,
                             dt,
                             edge_edge_parallel_epsilon,
+                            contact_damping_bidirectional,
                         )
                     )
 
@@ -553,6 +559,7 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
                         soft_contact_mu,
                         friction_epsilon,
                         dt,
+                        contact_damping_bidirectional,
                     )
 
                     if has_contact:

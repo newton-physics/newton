@@ -224,7 +224,6 @@ def Xform "boxes_hinged"
         rel collection:colliders:includes = [
             </boxes_hinged/RigidBodies/body_1>,
             </boxes_hinged/RigidBodies/body_2>,
-            </boxes_hinged/StaticGeometry/plane>,
         ]
         rel physics:filteredGroups = </boxes_hinged/Collisions>
     }

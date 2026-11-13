@@ -6,7 +6,7 @@ class NewtonWarning(UserWarning):
     """Category for Newton warnings other than deprecations.
 
     Filter on this category to control these warnings at once, for example
-    ``warnings.filterwarnings("error", category=newton.exceptions.NewtonWarning)``.
+    ``warnings.filterwarnings("error", category=newton.NewtonWarning)``.
     Deprecations use :class:`NewtonDeprecationWarning` instead.
     """
 
