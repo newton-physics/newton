@@ -321,14 +321,17 @@ class CollisionSubstepScheduler:
         self._travel_estimate = wp.zeros(1, dtype=wp.float32, device=device)
         self._previous_shape_velocity = wp.zeros(model.shape_count, dtype=wp.spatial_vector, device=device)
         self._motion_changed = wp.zeros(1, dtype=wp.int32, device=device)
-        self._explicit_shape_pairs = (
-            collision_pipeline.shape_pairs_filtered if collision_pipeline.broad_phase_mode == "explicit" else None
-        )
-        self._motion_shape_flags = (
-            wp.zeros(model.shape_count, dtype=wp.int32, device=device)
-            if self._explicit_shape_pairs is not None
-            else model.shape_flags
-        )
+        self._motion_shape_flags = model.shape_flags
+        if collision_pipeline.broad_phase_mode == "explicit":
+            # Pair lists are fixed for the pipeline's lifetime, like its routing.
+            pairs = collision_pipeline.shape_pairs_filtered
+            self._motion_shape_flags = wp.zeros(model.shape_count, dtype=wp.int32, device=device)
+            wp.launch(
+                _mark_explicit_motion_shapes,
+                dim=len(pairs),
+                inputs=[pairs, self._motion_shape_flags],
+                device=device,
+            )
         self.interval_overflow = wp.zeros(1, dtype=wp.int32, device=device)
         """Device scalar set when observed per-substep or accumulated travel exceeds the budget."""
 
@@ -365,15 +368,6 @@ class CollisionSubstepScheduler:
     def step(self) -> None:
         """Execute or record one complete fixed-substep frame."""
         model = self._model
-        if self._explicit_shape_pairs is not None:
-            # Rebuild on device so updates to the pair array also work in graphs.
-            self._motion_shape_flags.zero_()
-            wp.launch(
-                _mark_explicit_motion_shapes,
-                dim=len(self._explicit_shape_pairs),
-                inputs=[self._explicit_shape_pairs, self._motion_shape_flags],
-                device=model.device,
-            )
         for substep_index in range(self._substeps):
             state_in = substep_index % 2
             state = self._states[state_in]
