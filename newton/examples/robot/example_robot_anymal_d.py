@@ -99,12 +99,12 @@ class Example:
         use_mujoco_contacts = self.solver_type == "mujoco" and args.use_mujoco_contacts
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
             # Eliminate bilateral rows once before the projected inequality sweeps.
-            solver_config.dvi.max_alternating_iterations = 32
-            solver_config.dvi.use_schur_complement = True
-            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
+            solver_config.scc.max_alternating_iterations = 32
+            solver_config.scc.use_schur_complement = True
+            solver_config.scc.bilateral_solver_type = "LLTBRCM"
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(

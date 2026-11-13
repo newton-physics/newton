@@ -396,14 +396,14 @@ def test_friction_stopping_distance(
 # --- Solver matrix ---
 
 
-def _make_kamino_dvi_solver(model, *, unilateral_solver, sparse):
-    """Exercise DVI friction through the public solver with Newton contacts."""
+def _make_kamino_scc_solver(model, *, unilateral_solver, sparse):
+    """Exercise SCC friction through the public solver with Newton contacts."""
     config = newton.solvers.SolverKamino.Config(
-        dynamics_solver="dvi",
+        dynamics_solver="scc",
         sparse_jacobian=sparse,
         sparse_dynamics=sparse,
     )
-    config.dvi.unilateral_solver = unilateral_solver
+    config.scc.unilateral_solver = unilateral_solver
     return newton.solvers.SolverKamino(model, config=config)
 
 
@@ -514,10 +514,10 @@ _SOLVERS = {
 
 for _backend in ("pgs", "apgd"):
     for _sparse in (False, True):
-        _name = f"kamino_dvi_{_backend}_{'sparse' if _sparse else 'dense'}"
+        _name = f"kamino_scc_{_backend}_{'sparse' if _sparse else 'dense'}"
         _SOLVERS[_name] = {
             **_SOLVERS["kamino"],
-            "factory": partial(_make_kamino_dvi_solver, unilateral_solver=_backend, sparse=_sparse),
+            "factory": partial(_make_kamino_scc_solver, unilateral_solver=_backend, sparse=_sparse),
         }
 
 

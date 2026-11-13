@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Sparse Warp kernels for the Kamino DVI solver."""
+"""Sparse Warp kernels for the Kamino SCC solver."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from .projections import (
 from .projections import (
     project_contact_tangent_update as _project_contact_tangent_update,
 )
-from .types import DVIConfigStruct, DVIStatus
+from .types import SCCConfigStruct, SCCStatus
 
 wp.set_module_options({"enable_backward": False})
 
@@ -645,7 +645,7 @@ def _lowest_set_color(mask: wp.int64) -> wp.int32:
 
 
 @wp.kernel
-def _color_mapped_dvi_inequalities(
+def _color_mapped_scc_inequalities(
     problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
@@ -712,7 +712,7 @@ def _color_mapped_dvi_inequalities(
 
 
 @wp.kernel
-def _group_mapped_dvi_inequalities(
+def _group_mapped_scc_inequalities(
     problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
@@ -1005,7 +1005,7 @@ def _select_parallel_contact_colors(
 
 
 @wp.kernel
-def _solve_dvi_sparse_contacts_pgs(
+def _solve_scc_sparse_contacts_pgs(
     bsm_nzb_values: wp.array[vec6f],
     jacobian_nzb_values: wp.array[vec6f],
     bsm_row_start: wp.array[int32],
@@ -1037,7 +1037,7 @@ def _solve_dvi_sparse_contacts_pgs(
     parallel_group_stride: int32,
     parallel_group_width: int32,
     block_iteration: int32,
-    solver_config: wp.array[DVIConfigStruct],
+    solver_config: wp.array[SCCConfigStruct],
     body_space: wp.array[float32],
     solution_lambdas: wp.array[float32],
 ):
@@ -1273,7 +1273,7 @@ def _solve_dvi_sparse_contacts_pgs(
 
 # Limit register pressure so more independent worlds can remain resident.
 @wp.kernel(cuda_max_registers=80)
-def _solve_dvi_sparse_inequalities_pgs(
+def _solve_scc_sparse_inequalities_pgs(
     bsm_num_nzb: wp.array[int32],
     bsm_nzb_start: wp.array[int32],
     bsm_nzb_coords: wp.array2d[int32],
@@ -1320,7 +1320,7 @@ def _solve_dvi_sparse_inequalities_pgs(
     inequality_group_starts: wp.array[int32],
     inequality_tangent_cross: wp.array[float32],
     block_iteration: int32,
-    solver_config: wp.array[DVIConfigStruct],
+    solver_config: wp.array[SCCConfigStruct],
     body_space: wp.array[float32],
     solution_lambdas: wp.array[float32],
     transpose_num_nzb: wp.array[int32],
@@ -2021,7 +2021,7 @@ def _cooperative_sparse_bounded_update(
     col_start: int32,
     matrix_end: int32,
     bilateral_value: float32,
-    cfg: DVIConfigStruct,
+    cfg: SCCConfigStruct,
     bsm_nzb_coords: wp.array2d[int32],
     bsm_nzb_values: wp.array[vec6f],
     jacobian_nzb_values: wp.array[vec6f],
@@ -2077,7 +2077,7 @@ def _cooperative_sparse_limit_update(
     col_start: int32,
     matrix_end: int32,
     bilateral_value: float32,
-    cfg: DVIConfigStruct,
+    cfg: SCCConfigStruct,
     bsm_nzb_coords: wp.array2d[int32],
     bsm_nzb_values: wp.array[vec6f],
     jacobian_nzb_values: wp.array[vec6f],
@@ -2129,7 +2129,7 @@ def _cooperative_sparse_contact_normal_update(
     col_start: int32,
     matrix_end: int32,
     bilateral_value: float32,
-    cfg: DVIConfigStruct,
+    cfg: SCCConfigStruct,
     bsm_nzb_coords: wp.array2d[int32],
     bsm_nzb_values: wp.array[vec6f],
     jacobian_nzb_values: wp.array[vec6f],
@@ -2189,7 +2189,7 @@ def _cooperative_sparse_contact_tangent_update(
     first_tangent_sweep: bool,
     uio: int32,
     cio: int32,
-    cfg: DVIConfigStruct,
+    cfg: SCCConfigStruct,
     bsm_nzb_coords: wp.array2d[int32],
     bsm_nzb_values: wp.array[vec6f],
     jacobian_nzb_values: wp.array[vec6f],
@@ -2413,7 +2413,7 @@ def _prepare_full_sparse_unilateral_schur(
 
 
 @wp.kernel
-def _solve_dvi_sparse_inequalities_pgs_cooperative(
+def _solve_scc_sparse_inequalities_pgs_cooperative(
     bsm_num_nzb: wp.array[int32],
     bsm_nzb_start: wp.array[int32],
     bsm_nzb_coords: wp.array2d[int32],
@@ -2462,8 +2462,8 @@ def _solve_dvi_sparse_inequalities_pgs_cooperative(
     inequality_group_starts: wp.array[int32],
     inequality_tangent_cross: wp.array[float32],
     block_iteration: int32,
-    solver_config: wp.array[DVIConfigStruct],
-    solver_status: wp.array[DVIStatus],
+    solver_config: wp.array[SCCConfigStruct],
+    solver_status: wp.array[SCCStatus],
     body_space: wp.array[float32],
     solution_lambdas: wp.array[float32],
 ):
@@ -3046,14 +3046,14 @@ def make_compact_schur_pgs_kernel(max_rows: int):
         inequality_ids_by_color: wp.array[int32],
         inequality_color_starts: wp.array[int32],
         inequality_group_starts: wp.array[int32],
-        solver_config: wp.array[DVIConfigStruct],
-        solver_status: wp.array[DVIStatus],
+        solver_config: wp.array[SCCConfigStruct],
+        solver_status: wp.array[SCCStatus],
         solution_lambdas: wp.array[float32],
     ):
         """Sweep one world's dense compact Schur system per warp.
 
         Handles the fused-bilateral schedule for worlds with contacts whose compact
-        operator fits in the selected row range; ``_solve_dvi_sparse_inequalities_pgs_cooperative``
+        operator fits in the selected row range; ``_solve_scc_sparse_inequalities_pgs_cooperative``
         covers the remaining worlds. Each lane keeps its velocity rows,
         impulses, and projection inputs in registers. Warp shuffles gather them
         for the ordered projections; only the reversed schedule is shared.
@@ -3517,7 +3517,7 @@ def _set_sparse_bilateral_diagonal(
 
 
 @wp.kernel
-def _compute_dvi_sparse_solution_vectors(
+def _compute_scc_sparse_solution_vectors(
     # Inputs:
     problem_dim: wp.array[int32],
     problem_vio: wp.array[int32],

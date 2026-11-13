@@ -311,14 +311,14 @@ class ContactsKaminoData:
 
     Shape of ``(model_max_contacts_host,)``. Positive per-contact
     ``rigid_contact_stiffness`` takes precedence when compliance is enabled.
-    Zero selects shape-material fallback on PADMM/DVI and hard contact on LOX.
+    Zero selects shape-material fallback on PADMM/SCC and hard contact on LOX.
     """
 
     damping: wp.array[wp.float32] | None = None
     """Normal damping of each active contact [N s/m]; used with a positive :attr:`stiffness`.
 
     Shape of ``(model_max_contacts_host,)``. Transported from Newton's per-contact
-    ``rigid_contact_damping``; used by compliant PADMM, DVI, and LOX contacts.
+    ``rigid_contact_damping``; used by compliant PADMM, SCC, and LOX contacts.
     """
 
     margins: wp.array[wp.vec2f] | None = None
@@ -763,7 +763,7 @@ class ContactsKamino:
 
     @property
     def stiffness(self) -> wp.array[wp.float32]:
-        """Return normal stiffness [N/m]; zero inherits shape gains on PADMM/DVI and stays hard on LOX."""
+        """Return normal stiffness [N/m]; zero inherits shape gains on PADMM/SCC and stays hard on LOX."""
         self._assert_has_data()
         return self._data.stiffness
 
