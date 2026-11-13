@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ...geometry.soft_contact_match import SoftContactAnchors
 from ...geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionInfo,
@@ -23,7 +24,6 @@ from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
     _eval_body_particle_contact,
     _eval_soft_ef_contact,
-    _kept_normal_force,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -149,8 +149,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     body_com: wp.array[wp.vec3],
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
-    rigid_body_particle_contact_anchored_friction: bool,
-    soft_contact_normal_force: wp.array[float],
+    soft_contact_anchors: SoftContactAnchors,
     contact_damping_bidirectional: bool,
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
@@ -245,8 +244,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
             shape_margin,
             dt,
             rigid_body_particle_contact_use_log_barrier,
-            rigid_body_particle_contact_anchored_friction,
-            _kept_normal_force(rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, contact_idx),
+            soft_contact_anchors,
             contact_damping_bidirectional,
         )
 
@@ -333,8 +331,7 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
     proxy_particle_flag: int,
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
-    rigid_body_particle_contact_anchored_friction: bool,
-    soft_contact_normal_force: wp.array[float],
+    soft_contact_anchors: SoftContactAnchors,
     contact_damping_bidirectional: bool,
     particle_radius: wp.array[float],
     body_particle_contact_count: wp.array[int],
@@ -402,8 +399,7 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
         shape_margin,
         dt,
         rigid_body_particle_contact_use_log_barrier,
-        rigid_body_particle_contact_anchored_friction,
-        _kept_normal_force(rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, contact_idx),
+        soft_contact_anchors,
         contact_damping_bidirectional,
     )
     _vbd_add_proxy_particle_force(particle_idx, body_contact_force, particle_local_to_proxy_global, out_particle_f)

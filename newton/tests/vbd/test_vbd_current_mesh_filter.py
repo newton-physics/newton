@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton._src.geometry import soft_contacts_mesh
+from newton._src.geometry.soft_contact_match import SoftContactAnchors
 from newton._src.geometry.soft_contacts_mesh import _make_soft_contact_filter_data
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     gather_particle_body_contact_force_and_hessian,
@@ -133,8 +134,7 @@ def _evaluate(solver, state, contacts, gather, buffers):
                     state.particle_q,
                     solver.friction_epsilon,
                     False,
-                    False,
-                    contacts._soft_contact_normal_force,
+                    SoftContactAnchors(),
                     False,
                     model.particle_radius,
                     contacts.soft_contact_indices,
@@ -158,8 +158,7 @@ def _evaluate(solver, state, contacts, gather, buffers):
                     model.particle_colors,
                     solver.friction_epsilon,
                     False,
-                    False,
-                    contacts._soft_contact_normal_force,
+                    SoftContactAnchors(),
                     False,
                     model.particle_radius,
                     contacts.soft_contact_indices,
@@ -190,8 +189,7 @@ def _evaluate(solver, state, contacts, gather, buffers):
             model.shape_body,
             solver.friction_epsilon,
             False,
-            False,
-            contacts._soft_contact_normal_force,
+            SoftContactAnchors(),
             False,
             solver.body_particle_contact_penalty_k,
             solver.body_particle_contact_material_ke,

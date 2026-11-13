@@ -32,7 +32,7 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL
 from newton._src.geometry.kernels import triangle_closest_point
-from newton._src.geometry.soft_contact_match import _soft_point, _soft_radius
+from newton._src.geometry.soft_contact_match import SoftContactAnchors, _soft_point, _soft_radius
 from newton._src.geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from newton._src.math import orthonormal_basis, quat_velocity
 from newton._src.sim import JointType
@@ -1658,25 +1658,28 @@ def _evaluate_rigid_soft_contact_force_norm(
 
 
 @wp.func
-def _body_particle_friction_translation(
-    anchored: bool, relative_translation: wp.vec3, x: wp.vec3, bx: wp.vec3, surface_velocity: wp.vec3
+def _friction_slip(
+    anchors: SoftContactAnchors,
+    x: wp.vec3,
+    bx: wp.vec3,
+    surface_velocity: wp.vec3,
+    relative_translation: wp.vec3,
 ):
     """Friction slip of a body-particle contact.
 
-    Unanchored, it is this step's relative motion. Anchored (records whose contact points persist
-    across collision passes), it is the drift of the soft point ``x`` from its body point ``bx``.
-    Records on a moving surface keep no anchor, so they always use this step's motion.
+    With anchors, ``x`` and ``bx`` are the anchor points, and the slip is their drift since the record was
+    first seen. Without anchors, or on a moving surface, it is this step's motion.
     """
-    if anchored and wp.length_sq(surface_velocity) == 0.0:
+    if anchors.body_pos and wp.length_sq(surface_velocity) == 0.0:
         return x - bx
     return relative_translation
 
 
 @wp.func
-def _kept_normal_force(anchored: bool, contact_normal_force: wp.array[float], contact_index: int):
-    """Normal force a persistent record carried at the end of the previous step, or -1 without one."""
-    if anchored:
-        return contact_normal_force[contact_index]
+def _kept_normal_force(anchors: SoftContactAnchors, contact_index: int):
+    """Normal force an anchored record carried at the end of the previous step, or -1 without one."""
+    if anchors.normal_force:
+        return anchors.normal_force[contact_index]
     return -1.0
 
 
@@ -1690,39 +1693,35 @@ def relax_body_particle_contact_anchors(
     soft_contact_count: wp.array[int],
     soft_contact_max: int,
     soft_contact_indices: wp.array[wp.vec3i],
-    soft_contact_barycentric: wp.array[wp.vec3],
     soft_contact_shape: wp.array[int],
     soft_contact_normal: wp.array[wp.vec3],
     soft_contact_body_vel: wp.array[wp.vec3],
+    anchor_barycentric: wp.array[wp.vec3],
     # in/out
-    soft_contact_body_pos: wp.array[wp.vec3],
+    anchor_body_pos: wp.array[wp.vec3],
 ):
-    """Drag each kept body point along so its soft point is at most ``max_slip`` away tangentially.
+    """Drag each body anchor point along so its soft anchor point is at most ``max_slip`` away tangentially.
 
     Drift beyond the friction regularization length within a step is sliding. Kept, it would pull a
-    body back once it stops; the collision pipeline replays the dragged point instead.
+    body back once it stops; the collision pipeline replays the dragged anchor instead.
     """
     for i in range(wp.tid(), wp.min(soft_contact_count[0], soft_contact_max), worker_count):
         corners = soft_contact_indices[i]
         if corners[0] < 0 or wp.length_sq(soft_contact_body_vel[i]) > 0.0:
             continue
-        bary = soft_contact_barycentric[i]
-        x = bary[0] * particle_q[corners[0]]
-        for k in range(1, 3):
-            if corners[k] >= 0:
-                x += bary[k] * particle_q[corners[k]]
+        x = _soft_point(corners, anchor_barycentric[i], particle_q)
         X_wb = wp.transform_identity()
         body = shape_body[soft_contact_shape[i]]
         if body >= 0:
             X_wb = body_q[body]
-        bx = wp.transform_point(X_wb, soft_contact_body_pos[i])
+        bx = wp.transform_point(X_wb, anchor_body_pos[i])
         n = soft_contact_normal[i]
         d = x - bx
         slip = d - wp.dot(d, n) * n
         slip_length = wp.length(slip)
         if slip_length > max_slip:
             bx += slip * (1.0 - max_slip / slip_length)
-            soft_contact_body_pos[i] = wp.transform_point(wp.transform_inverse(X_wb), bx)
+            anchor_body_pos[i] = wp.transform_point(wp.transform_inverse(X_wb), bx)
 
 
 @wp.kernel(enable_backward=False)
@@ -1752,7 +1751,7 @@ def record_body_particle_contact_normal_forces(
     use_log_barrier: bool,
     contact_damping_bidirectional: bool,
     # out
-    soft_contact_normal_force: wp.array[float],
+    anchor_normal_force: wp.array[float],
 ):
     """Store each record's elastic and damping load at the end of the step for the next step's friction cone.
 
@@ -1764,7 +1763,7 @@ def record_body_particle_contact_normal_forces(
     for i in range(wp.tid(), wp.min(soft_contact_count[0], soft_contact_max), worker_count):
         corners = soft_contact_indices[i]
         if corners[0] < 0 or not _soft_contact_force_enabled(i, contact_filter):
-            soft_contact_normal_force[i] = -1.0
+            anchor_normal_force[i] = -1.0
             continue
         shape = soft_contact_shape[i]
         X_wb = wp.transform_identity()
@@ -1776,7 +1775,7 @@ def record_body_particle_contact_normal_forces(
         surface = wp.transform_point(X_wb, soft_contact_body_pos[i])
         x = _soft_point(corners, soft_contact_barycentric[i], particle_q)
         if wp.dot(soft_contact_normal[i], x - surface) >= contact_distance:
-            soft_contact_normal_force[i] = -1.0
+            anchor_normal_force[i] = -1.0
             continue
         normal_force, _hessian, _bx = _eval_soft_ef_contact(
             i,
@@ -1801,11 +1800,10 @@ def record_body_particle_contact_normal_forces(
             shape_margin,
             dt,
             use_log_barrier,
-            False,
-            -1.0,
+            SoftContactAnchors(),
             contact_damping_bidirectional,
         )
-        soft_contact_normal_force[i] = wp.max(wp.dot(normal_force, soft_contact_normal[i]), 0.0)
+        anchor_normal_force[i] = wp.max(wp.dot(normal_force, soft_contact_normal[i]), 0.0)
 
 
 @wp.func
@@ -1882,8 +1880,7 @@ def _eval_body_particle_contact(
     shape_margin: wp.array[float],
     dt: float,
     use_log_barrier: bool,
-    anchored: bool,
-    kept_normal_force: float,
+    anchors: SoftContactAnchors,
     contact_damping_bidirectional: bool,
 ):
     """Particle-rigid contact force/Hessian - resolves geometry from arrays then
@@ -1927,12 +1924,12 @@ def _eval_body_particle_contact(
             bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])
 
         relative_translation = dx - bv * dt
-        friction_translation = _body_particle_friction_translation(
-            anchored,
-            relative_translation,
+        friction_translation = _friction_slip(
+            anchors,
             particle_pos,
             bx,
             wp.transform_vector(X_wb, contact_body_vel[contact_index]),
+            relative_translation,
         )
 
         return _compute_body_particle_contact_force(
@@ -1941,7 +1938,7 @@ def _eval_body_particle_contact(
             n,
             relative_translation,
             friction_translation,
-            kept_normal_force,
+            _kept_normal_force(anchors, contact_index),
             body_particle_contact_ke,
             body_particle_contact_kd,
             friction_mu,
@@ -1978,8 +1975,7 @@ def _eval_soft_ef_contact(
     shape_margin: wp.array[float],
     dt: float,
     use_log_barrier: bool,
-    anchored: bool,
-    kept_normal_force: float,
+    anchors: SoftContactAnchors,
     contact_damping_bidirectional: bool,
 ):
     """Soft-contact force/Hessian at a barycentric contact point over a record's soft particles.
@@ -2048,12 +2044,12 @@ def _eval_soft_ef_contact(
             bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])
 
         relative_translation = dx - bv * dt
-        friction_translation = _body_particle_friction_translation(
-            anchored,
-            relative_translation,
+        friction_translation = _friction_slip(
+            anchors,
             x,
             bx,
             wp.transform_vector(X_wb, contact_body_vel[contact_index]),
+            relative_translation,
         )
 
         # contact_ke/kd/mu are the per-contact AVBD values (ramped penalty + pre-mixed material,
@@ -2064,7 +2060,7 @@ def _eval_soft_ef_contact(
             n,
             relative_translation,
             friction_translation,
-            kept_normal_force,
+            _kept_normal_force(anchors, contact_index),
             contact_ke,
             contact_kd,
             contact_mu,
@@ -2131,8 +2127,7 @@ def _eval_body_particle_contact_mixed_mu(
         shape_margin,
         dt,
         False,
-        False,  # unanchored friction for per-shape mu callers
-        -1.0,
+        SoftContactAnchors(),  # unanchored friction for per-shape mu callers
         contact_damping_bidirectional,
     )
 
@@ -5740,8 +5735,7 @@ def accumulate_body_particle_contacts_per_body(
     # AVBD body-particle soft contact penalties and material properties
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
-    rigid_body_particle_contact_anchored_friction: bool,
-    soft_contact_normal_force: wp.array[float],
+    soft_contact_anchors: SoftContactAnchors,
     contact_damping_bidirectional: bool,
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_ke: wp.array[float],
@@ -5859,12 +5853,12 @@ def accumulate_body_particle_contacts_per_body(
             bv = (cp_world - bx_prev) / dt + wp.transform_vector(X_wb, body_particle_contact_body_vel[contact_idx])
             dx = particle_pos - particle_q_prev[particle_idx]
             relative_translation = dx - bv * dt
-            friction_translation = _body_particle_friction_translation(
-                rigid_body_particle_contact_anchored_friction,
-                relative_translation,
+            friction_translation = _friction_slip(
+                soft_contact_anchors,
                 particle_pos,
                 cp_world,
                 wp.transform_vector(X_wb, body_particle_contact_body_vel[contact_idx]),
+                relative_translation,
             )
 
             f_soft, h_soft = _compute_body_particle_contact_force(
@@ -5873,9 +5867,7 @@ def accumulate_body_particle_contacts_per_body(
                 n,
                 relative_translation,
                 friction_translation,
-                _kept_normal_force(
-                    rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, contact_idx
-                ),
+                _kept_normal_force(soft_contact_anchors, contact_idx),
                 body_particle_contact_penalty_k[contact_idx],
                 body_particle_contact_material_kd[contact_idx],
                 body_particle_contact_material_mu[contact_idx],
@@ -5911,10 +5903,7 @@ def accumulate_body_particle_contacts_per_body(
                 shape_margin,
                 dt,
                 rigid_body_particle_contact_use_log_barrier,
-                rigid_body_particle_contact_anchored_friction,
-                _kept_normal_force(
-                    rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, contact_idx
-                ),
+                soft_contact_anchors,
                 contact_damping_bidirectional,
             )
 
@@ -5952,8 +5941,7 @@ def compute_body_particle_contact_forces(
     # AVBD body-particle soft contact penalties and material properties
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
-    rigid_body_particle_contact_anchored_friction: bool,
-    soft_contact_normal_force: wp.array[float],
+    soft_contact_anchors: SoftContactAnchors,
     contact_damping_bidirectional: bool,
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
@@ -6030,8 +6018,7 @@ def compute_body_particle_contact_forces(
             shape_margin,
             dt,
             rigid_body_particle_contact_use_log_barrier,
-            rigid_body_particle_contact_anchored_friction,
-            _kept_normal_force(rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, tid),
+            soft_contact_anchors,
             contact_damping_bidirectional,
         )
         cp_world = wp.transform_point(X_wb, body_particle_contact_body_pos[tid])
@@ -6060,8 +6047,7 @@ def compute_body_particle_contact_forces(
             shape_margin,
             dt,
             rigid_body_particle_contact_use_log_barrier,
-            rigid_body_particle_contact_anchored_friction,
-            _kept_normal_force(rigid_body_particle_contact_anchored_friction, soft_contact_normal_force, tid),
+            soft_contact_anchors,
             contact_damping_bidirectional,
         )
 

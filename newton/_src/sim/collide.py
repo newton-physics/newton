@@ -1783,6 +1783,7 @@ class CollisionPipeline:
         contact_matching_pos_threshold: float = 0.0005,
         contact_matching_normal_dot_threshold: float = 0.995,
         contact_report: bool = False,
+        soft_contact_matching: bool = False,
         verify_buffers: bool = True,
         contact_reduction_hashtable_size_factor: float = 0.25,
         speculative_contact_gap_max: float | None = None,
@@ -1916,13 +1917,6 @@ class CollisionPipeline:
                 non-disabled mode implies ``deterministic=True``, including
                 its shape-count limit, and populates
                 :attr:`Contacts.rigid_contact_match_index`.
-                ``"sticky"`` also keeps each rigid-soft contact's soft-side and
-                body-side points while they touch the same surface and have
-                slipped apart by at most ``contact_matching_pos_threshold``,
-                unless the surface moves
-                (``Contacts.soft_contact_body_vel``); :class:`~newton.solvers.SolverVBD`
-                then measures body-particle friction slip from them. Not applied with
-                ``requires_grad``.
                 Defaults to ``"disabled"``.
 
                 .. experimental::
@@ -1935,9 +1929,9 @@ class CollisionPipeline:
                 instead compare each saved body-local witness, transformed by the
                 current body pose, with its fresh contact point. The contact is
                 broken if either witness moves farther than this distance.
-                For rigid-soft contacts, use fresh points once the saved soft and
-                body points have slipped apart tangentially by more than this.
-                Defaults to ``0.0005``.
+                With ``soft_contact_matching``, a rigid-soft anchor restarts once
+                its soft and body points have slipped apart tangentially by more
+                than this. Defaults to ``0.0005``.
             contact_matching_normal_dot_threshold: Minimum dot product between
                 old and new contact normals for a match.
             contact_report: Allocate ``rigid_contact_new_indices`` /
@@ -1945,6 +1939,22 @@ class CollisionPipeline:
                 / ``rigid_contact_broken_count`` on the :class:`Contacts`
                 container, populated each frame.  Requires a non-disabled
                 ``contact_matching`` mode.
+            soft_contact_matching: Anchor each rigid-soft contact at the soft-side
+                and body-side points where it touched down, and keep the anchor
+                across collision passes while both points touch the same surface
+                and have slipped apart by at most ``contact_matching_pos_threshold``,
+                unless the surface moves (``Contacts.soft_contact_body_vel``).
+                :class:`~newton.solvers.SolverVBD` solves anchored records at the
+                anchors, so a tangential load inside the friction cone holds still.
+                Independent of ``contact_matching``; the contact points in
+                :class:`Contacts` stay fresh. Buffers not created by :meth:`contacts`
+                get their anchors on their first :meth:`collide`, which must run
+                outside CUDA graph capture. Not supported with ``requires_grad``.
+                Defaults to ``False``.
+
+                .. experimental::
+
+                    May change without prior notice.
             verify_buffers: Run a ``dim=[1]`` diagnostic kernel at the end of
                 the narrow phase that prints warnings on any intermediate
                 candidate-pair or final rigid contact buffer overflow; see
@@ -2070,6 +2080,8 @@ class CollisionPipeline:
             raise ValueError("max_triangle_pairs must be > 0 or None")
         if requires_grad is None:
             requires_grad = model.requires_grad
+        if soft_contact_matching and requires_grad:
+            raise ValueError("soft_contact_matching is not supported with requires_grad=True")
 
         shape_world = getattr(model, "shape_world", None)
         shape_flags = getattr(model, "shape_flags", None)
@@ -2687,10 +2699,10 @@ class CollisionPipeline:
             )
         else:
             self._contact_matcher = None
-        # Contact history kept per Contacts buffer is stamped with these.
-        self._world_resets = WorldResetEpochs(model.world_count, device=device) if matching_sticky else None
         self._soft_contact_history_id = next(_soft_contact_history_ids)
-        if matching_sticky and not requires_grad and model.particle_count > 0 and soft_contact_max > 0:
+        if soft_contact_matching and model.particle_count > 0 and soft_contact_max > 0:
+            # Anchors kept per Contacts buffer are stamped with these.
+            self._world_resets = WorldResetEpochs(model.world_count, device=device)
             self._soft_contact_matcher = SoftContactMatcher(
                 soft_contact_max,
                 model.particle_count,
@@ -2701,6 +2713,7 @@ class CollisionPipeline:
                 device=device,
             )
         else:
+            self._world_resets = None
             self._soft_contact_matcher = None
 
         if body_pair_reduction is not None:
@@ -2855,7 +2868,6 @@ class CollisionPipeline:
             rigid_contact_surface_velocity=self._rigid_contact_surface_velocity,
         )
         contacts._contact_matching_mode = self.contact_matching
-        contacts._soft_contact_points_persist = self._soft_contact_matcher is not None
         if self._soft_contact_matcher is not None:
             contacts._allocate_soft_contact_history()
         contacts._rigid_contact_body_pair_reduced = self._reduces_body_pairs
@@ -3054,7 +3066,7 @@ class CollisionPipeline:
         """Clear all or reset-selected previous-frame contact history.
 
         Masked selections accumulate until the next :meth:`collide` call
-        consumes them. Sticky rigid-soft contact points restart in every
+        consumes them. Rigid-soft contact anchors restart in every
         :class:`~newton.Contacts` buffer, on that buffer's next pass.
 
         .. experimental::
@@ -3154,13 +3166,15 @@ class CollisionPipeline:
         # ignore them. Mirrors the assignment in CollisionPipeline.contacts().
         contacts._enable_rigid_soft_full_surface_contact = self.enable_rigid_soft_full_surface_contact
 
-        # Sticky mode: remember the buffer's soft records as the solver left them, before this pass
-        # rewrites them.
+        history = contacts._soft_contact_history
         if self._soft_contact_matcher is not None:
-            contacts._allocate_soft_contact_history()
+            history = contacts._allocate_soft_contact_history()
+            # Remember the buffer's anchors as the solver left them, before this pass rewrites its records.
             self._soft_contact_matcher.save(contacts)
-        # Any pass that rewrites the soft records makes them its own history.
-        contacts._soft_contact_history_owner.fill_(self._soft_contact_history_id)
+        if history is not None:
+            # Any pass that rewrites the soft records makes them its own history.
+            history.owner.fill_(self._soft_contact_history_id)
+            history.replayed = False
 
         # A reused buffer can retain mesh tags from a full-surface pipeline. The mesh pass
         # resets them itself; without that pass, replacement particle rows need invalid tags.
@@ -3708,14 +3722,12 @@ class CollisionPipeline:
                     data=self._soft_mesh_contact_data,
                 )
 
-        # Sticky mode: keep matched soft records on the contact points they had, once every soft
-        # producer has written its records.
+        # Anchor the soft records once every soft producer has written them.
         if self._soft_contact_matcher is not None and state.particle_q:
             self._soft_contact_matcher.replay(model, state, contacts)
 
         # Preserve the previous provenance if validation or collision setup fails.
         contacts._contact_matching_mode = self.contact_matching
-        contacts._soft_contact_points_persist = self._soft_contact_matcher is not None
 
         # Soft (cloth) self-contact detection (opt-in per call; results land in
         # contacts.soft_self_contact_data).

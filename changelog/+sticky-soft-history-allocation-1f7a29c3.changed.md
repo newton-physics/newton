@@ -1,1 +1,0 @@
-Allocate rigid-soft sticky history only for contact buffers used with sticky matching, and retain only normal loads in coupled-solver filtered copies. Before CUDA graph capture, run one collision pass with externally constructed buffers to initialize their sticky history; buffers returned by the sticky pipeline's `contacts()` are prepared automatically.

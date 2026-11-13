@@ -13,6 +13,7 @@ import warp as wp
 
 import newton
 from newton._src.geometry.flags import ParticleFlags, ShapeFlags
+from newton._src.geometry.soft_contact_match import SoftContactAnchors
 from newton._src.solvers.coupled.interface import CouplingEndpointKind, CouplingInterface
 from newton._src.solvers.coupled.solver_coupled import _filter_soft_contacts_global_shape_ids_kernel
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
@@ -5036,7 +5037,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
             wp.array([wp.vec3i(3, 4, 5)], dtype=wp.vec3i, device=device),  # src_rigid_indices
             wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device),  # src_barycentric
             None,  # mesh feature records
-            wp.zeros(1, dtype=float, device=device),  # src_normal_force
+            SoftContactAnchors(),  # src_anchors
             wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),  # shape_flags
             wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),  # particle_flags
             int(ShapeFlags.COLLIDE_PARTICLES),
@@ -5052,7 +5053,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
             dst_rigid_indices,
             dst_barycentric,
             None,  # mesh feature records
-            wp.zeros(1, dtype=float, device=device),  # dst_normal_force
+            SoftContactAnchors(),  # dst_anchors
             wp.full(1, -1, dtype=wp.int32, device=device),  # src_to_dst
         ],
         device=device,
@@ -5076,9 +5077,9 @@ add_function_test(
 
 
 def _coupled_vbd_keeps_relaxed_soft_contact_points(test, device):
-    """A VBD entry's dragged body points reach the caller's sticky contacts, so a stopped block stays put.
+    """A VBD entry's dragged body anchors reach the caller's contacts, so a stopped block stays put.
 
-    The coupled solver hands VBD a filtered copy of the contacts. VBD drags the kept body points of a
+    The coupled solver hands VBD a filtered copy of the contacts. VBD drags the body anchors of a
     sliding contact along after each step; unless they are copied back, the pipeline replays the old
     ones and friction pulls the block back up to 0.3 mm once it stops.
     """
@@ -5113,7 +5114,7 @@ def _coupled_vbd_keeps_relaxed_soft_contact_points(test, device):
         model.soft_contact_mu = mu
         model.shape_material_mu.fill_(mu)
         set_load(model, 1.5)
-        pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="sticky")
+        pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, soft_contact_matching=True)
         coupled = SolverCoupled(
             model,
             (
@@ -5135,9 +5136,10 @@ def _coupled_vbd_keeps_relaxed_soft_contact_points(test, device):
     xs = np.array(xs)
     test.assertLess(xs.max() - xs[-1], 1.0e-4)
     filtered = coupled.entry_contacts("vbd", contacts)
-    test.assertEqual(filtered._soft_contact_normal_force.size, contacts.soft_contact_max)
-    test.assertEqual(filtered._soft_contact_reset_stamp.size, 0)
-    test.assertEqual(filtered._soft_contact_normal_body.size, 0)
+    history = filtered._soft_contact_history
+    test.assertEqual(history.anchors.normal_force.size, contacts.soft_contact_max)
+    test.assertEqual(history.reset_stamp.size, 0)
+    test.assertEqual(history.normal_body.size, 0)
 
 
 add_function_test(

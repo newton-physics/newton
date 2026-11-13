@@ -1,31 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Frame-to-frame sticky replay for rigid-soft contacts.
+"""Frame-to-frame anchors for rigid-soft contacts.
 
 A soft contact record is identified by its soft feature (``soft_contact_indices``), its shape, and,
 for full-surface mesh records, its mesh feature pair. Unlike rigid contacts, this key is exact, so
 no sort or nearest search is needed: each record looks up the previous record with the same key
 through a few short lists per first corner.
 
-Sticky replay keeps a matched record's contact points where they were: the soft-side material point
-(``soft_contact_barycentric``) and the body-frame surface point (``soft_contact_body_pos``). A record
-keeps them while they still touch and have slipped apart tangentially by at most the matching
-position threshold, and while the body point lies within that threshold of this pass's contact plane,
-so a record that moves to an opposing wall of the same mesh starts over. Opposing body-frame normals
-also restart a record, even when a thin wall's two faces fit within the position threshold. Records
-on a moving surface (nonzero ``soft_contact_body_vel``) keep fresh points, since the surface material moves away from any
-body-frame point. The fresh normal is kept, so a rotating body still pushes along its current surface
-normal. Consumers can then measure tangential slip as the drift between the two replayed points, which
-persists across collision passes, rather than as the motion since the last one. A kept record also keeps
-the normal load its consumer left on it (``Contacts._soft_contact_normal_force``); every other record
-starts without one.
+Each record carries an anchor (:class:`SoftContactAnchors`) beside its fresh contact points: a soft-side
+material point and a body-frame surface point. A matched record keeps its previous anchor while the two
+points still touch and have slipped apart tangentially by at most the matching position threshold, and
+while the body point lies within that threshold of this pass's contact plane, so a record that moves to
+an opposing wall of the same mesh starts over. Opposing body-frame normals also restart a record, even
+when a thin wall's two faces fit within the position threshold. Records on a moving surface (nonzero
+``soft_contact_body_vel``) anchor at their fresh points, since the surface material moves away from any
+body-frame point. Consumers can then measure tangential slip as the drift between the two anchor points,
+which persists across collision passes, rather than as the motion since the last one. A kept anchor also
+keeps the normal load its consumer left on it; every other record starts without one. The fresh contact
+points are never changed.
 
-The matcher saves a buffer's records as the consumers left them, so a solver may move the kept points
-between passes; VBD drags them along once a contact slides. Each buffer therefore replays its own
-records, and only those its pipeline wrote (``Contacts._soft_contact_history_owner``) since the last
-reset of the record's worlds (``Contacts._soft_contact_reset_stamp``). Call order (inside
-:class:`~newton.CollisionPipeline`)::
+The matcher saves a buffer's anchors as the consumers left them, so a solver may move them between
+passes; VBD drags them along once a contact slides. Each buffer therefore replays its own anchors, and
+only those its pipeline wrote (:attr:`SoftContactHistory.owner`) since the last reset of the record's
+worlds (:attr:`SoftContactHistory.reset_stamp`). Call order (inside :class:`~newton.CollisionPipeline`)::
 
     matcher.save(...)  # before the pass rewrites the buffer's records
     matcher.replay(...)  # after all soft records are written
@@ -43,6 +41,45 @@ if TYPE_CHECKING:
     from ..sim.contacts import Contacts
     from ..sim.model import Model
     from ..sim.state import State
+
+
+@wp.struct
+class SoftContactAnchors:
+    """Contact points each rigid-soft record keeps across collision passes; null arrays when none are kept."""
+
+    barycentric: wp.array[wp.vec3]
+    """Soft-side material point, as weights over the record's soft particles [unitless]."""
+    body_pos: wp.array[wp.vec3]
+    """Body-frame surface point [m]."""
+    normal_force: wp.array[float]
+    """Normal load [N] the record carried at the end of the previous step, -1 without one."""
+
+
+class SoftContactHistory:
+    """Per-buffer state of soft contact matching: the anchors and what is needed to replay them.
+
+    Args:
+        capacity: Number of soft contact records (``soft_contact_max``).
+        device: Device to allocate on.
+        replayable: Whether a collision pass replays the anchors into this buffer. Copies that only
+            carry anchors to a solver, such as coupled-solver filtered buffers, skip the replay state.
+    """
+
+    def __init__(self, capacity: int, device=None, replayable: bool = True):
+        replay_capacity = capacity if replayable else 0
+        with wp.ScopedDevice(device):
+            self.anchors = SoftContactAnchors()
+            self.anchors.barycentric = wp.zeros(capacity, dtype=wp.vec3)
+            self.anchors.body_pos = wp.zeros(capacity, dtype=wp.vec3)
+            self.anchors.normal_force = wp.full(capacity, -1.0, dtype=float)
+            # Body-frame normals let replay tell opposing faces apart even after the body rotates.
+            self.normal_body = wp.zeros(replay_capacity, dtype=wp.vec3)
+            self.reset_stamp = wp.zeros(replay_capacity, dtype=wp.int32)
+            """World reset epochs each record was written at."""
+            self.owner = wp.full(1, -1, dtype=wp.int32)
+            """History id of the pipeline that last wrote the buffer's records."""
+        self.replayed = False
+        """Whether the last collision pass replayed the anchors, so they describe its records."""
 
 
 @wp.func
@@ -116,6 +153,8 @@ def _replay_soft_contacts_kernel(
     contact_indices: wp.array[wp.vec3i],
     contact_shape: wp.array[int],
     contact_features: wp.array[wp.vec3i],
+    contact_barycentric: wp.array[wp.vec3],
+    contact_body_pos: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     reset_epochs: wp.array[wp.int32],
@@ -129,13 +168,12 @@ def _replay_soft_contacts_kernel(
     prev_body_pos: wp.array[wp.vec3],
     prev_normal_body: wp.array[wp.vec3],
     prev_normal_force: wp.array[float],
-    # out: every record's reset stamp and kept normal load
+    # out: every record's reset stamp, body-frame normal, and anchor
     contact_reset_stamp: wp.array[wp.int32],
     contact_normal_body: wp.array[wp.vec3],
-    contact_normal_force: wp.array[float],
-    # in/out: matched rows are overwritten with the previous contact points
-    contact_barycentric: wp.array[wp.vec3],
-    contact_body_pos: wp.array[wp.vec3],
+    anchor_barycentric: wp.array[wp.vec3],
+    anchor_body_pos: wp.array[wp.vec3],
+    anchor_normal_force: wp.array[float],
 ):
     for i in range(wp.tid(), wp.min(contact_count[0], contact_max), thread_count):
         corners = contact_indices[i]
@@ -151,7 +189,9 @@ def _replay_soft_contacts_kernel(
         n = contact_normal[i]
         normal_body = wp.transform_vector(wp.transform_inverse(X_wb), n)
         contact_normal_body[i] = normal_body
-        contact_normal_force[i] = -1.0
+        anchor_barycentric[i] = contact_barycentric[i]
+        anchor_body_pos[i] = contact_body_pos[i]
+        anchor_normal_force[i] = -1.0
         # A moving surface (conveyor) carries its material away from any point fixed in the body frame.
         if wp.length_sq(contact_body_vel[i]) > 0.0:
             continue
@@ -192,9 +232,9 @@ def _replay_soft_contacts_kernel(
             node = prev_next[node]
 
         if best >= 0:
-            contact_barycentric[i] = prev_barycentric[best]
-            contact_body_pos[i] = prev_body_pos[best]
-            contact_normal_force[i] = prev_normal_force[best]
+            anchor_barycentric[i] = prev_barycentric[best]
+            anchor_body_pos[i] = prev_body_pos[best]
+            anchor_normal_force[i] = prev_normal_force[best]
 
 
 @wp.kernel(enable_backward=False)
@@ -208,10 +248,10 @@ def _save_soft_contacts_kernel(
     contact_shape: wp.array[int],
     contact_features: wp.array[wp.vec3i],
     contact_reset_stamp: wp.array[wp.int32],
-    contact_barycentric: wp.array[wp.vec3],
-    contact_body_pos: wp.array[wp.vec3],
+    anchor_barycentric: wp.array[wp.vec3],
+    anchor_body_pos: wp.array[wp.vec3],
     contact_normal_body: wp.array[wp.vec3],
-    contact_normal_force: wp.array[float],
+    anchor_normal_force: wp.array[float],
     prev_head: wp.array[wp.int32],
     prev_next: wp.array[wp.int32],
     prev_indices: wp.array[wp.vec3i],
@@ -232,20 +272,20 @@ def _save_soft_contacts_kernel(
         if prev_features.shape[0] > 0:
             prev_features[i] = _record_feature(contact_features, i)
         prev_reset_stamp[i] = contact_reset_stamp[i]
-        prev_barycentric[i] = contact_barycentric[i]
-        prev_body_pos[i] = contact_body_pos[i]
+        prev_barycentric[i] = anchor_barycentric[i]
+        prev_body_pos[i] = anchor_body_pos[i]
         prev_normal_body[i] = contact_normal_body[i]
-        prev_normal_force[i] = contact_normal_force[i]
+        prev_normal_force[i] = anchor_normal_force[i]
         slot = _key_slot(corners, contact_shape[i], _record_feature(contact_features, i))
         prev_next[i] = wp.atomic_exch(prev_head, slot, wp.int32(i))
 
 
 class SoftContactMatcher:
-    """Sticky replay of rigid-soft contact points across collision passes.
+    """Replay of rigid-soft contact anchors across collision passes.
 
-    Internal helper owned by :class:`~newton.CollisionPipeline` in ``contact_matching="sticky"``
-    mode. It owns the saved records; its buffers are allocated at construction. Contact-buffer
-    history must also be allocated before capture (automatically for the pipeline's own buffers).
+    Internal helper owned by :class:`~newton.CollisionPipeline` with ``soft_contact_matching=True``.
+    It owns the saved records; its buffers are allocated at construction. Contact-buffer anchors
+    must also be allocated before capture (automatically for the pipeline's own buffers).
 
     Args:
         capacity: Maximum number of soft contacts (``soft_contact_max``).
@@ -297,10 +337,11 @@ class SoftContactMatcher:
         return features
 
     def save(self, contacts: Contacts) -> None:
-        """Save the buffer's records as its consumers left them, before a pass rewrites them.
+        """Save the buffer's anchors as its consumers left them, before a pass rewrites its records.
 
         Records another pipeline wrote are not this pipeline's history, so none are saved.
         """
+        history = contacts._soft_contact_history
         self._prev_head.fill_(-1)
         wp.launch(
             _save_soft_contacts_kernel,
@@ -308,17 +349,17 @@ class SoftContactMatcher:
             inputs=[
                 self._thread_count,
                 self._owner,
-                contacts._soft_contact_history_owner,
+                history.owner,
                 contacts.soft_contact_count,
                 self._capacity,
                 contacts.soft_contact_indices,
                 contacts.soft_contact_shape,
                 self._features(contacts),
-                contacts._soft_contact_reset_stamp,
-                contacts.soft_contact_barycentric,
-                contacts.soft_contact_body_pos,
-                contacts._soft_contact_normal_body,
-                contacts._soft_contact_normal_force,
+                history.reset_stamp,
+                history.anchors.barycentric,
+                history.anchors.body_pos,
+                history.normal_body,
+                history.anchors.normal_force,
             ],
             outputs=[
                 self._prev_head,
@@ -336,7 +377,8 @@ class SoftContactMatcher:
         )
 
     def replay(self, model: Model, state: State, contacts: Contacts) -> None:
-        """Replay the saved contact points onto this pass's matched records and stamp every record."""
+        """Anchor this pass's records, at their saved anchors where matched, and stamp every record."""
+        history = contacts._soft_contact_history
         wp.launch(
             _replay_soft_contacts_kernel,
             dim=self._thread_count,
@@ -356,6 +398,8 @@ class SoftContactMatcher:
                 contacts.soft_contact_indices,
                 contacts.soft_contact_shape,
                 self._features(contacts),
+                contacts.soft_contact_barycentric,
+                contacts.soft_contact_body_pos,
                 contacts.soft_contact_normal,
                 contacts.soft_contact_body_vel,
                 self._resets.epochs,
@@ -371,11 +415,12 @@ class SoftContactMatcher:
                 self._prev_normal_force,
             ],
             outputs=[
-                contacts._soft_contact_reset_stamp,
-                contacts._soft_contact_normal_body,
-                contacts._soft_contact_normal_force,
-                contacts.soft_contact_barycentric,
-                contacts.soft_contact_body_pos,
+                history.reset_stamp,
+                history.normal_body,
+                history.anchors.barycentric,
+                history.anchors.body_pos,
+                history.anchors.normal_force,
             ],
             device=contacts.soft_contact_count.device,
         )
+        history.replayed = True

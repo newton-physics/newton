@@ -15,6 +15,7 @@ import newton
 import newton.solvers
 from newton._src.geometry import soft_contacts_mesh
 from newton._src.geometry.sdf_texture import SLOT_LINEAR, TextureSDFData
+from newton._src.geometry.soft_contact_match import SoftContactAnchors
 from newton._src.geometry.soft_contacts_sdf import (
     _closest_edge_plane,
     _closest_face_plane,
@@ -1966,8 +1967,7 @@ def test_mesh_vertex_fallback_sign(test, device):
                 model.body_com,
                 0.01,
                 False,
-                False,
-                contacts._soft_contact_normal_force,
+                SoftContactAnchors(),
                 False,
                 penalty,
                 zero_material,

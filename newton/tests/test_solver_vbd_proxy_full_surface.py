@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.soft_contact_match import SoftContactAnchors
 from newton._src.geometry.soft_contacts_mesh import _SoftContactFilterData
 from newton._src.solvers.vbd.rigid_vbd_kernels import _NUM_CONTACT_THREADS_PER_BODY
 from newton._src.solvers.vbd.vbd_coupling_kernels import (
@@ -79,8 +80,7 @@ def _run_proxy_harvest(device, corners, bary):
             model.body_com,
             1.0,  # friction_epsilon
             False,  # rigid_body_particle_contact_use_log_barrier
-            False,  # rigid_body_particle_contact_anchored_friction
-            wp.empty(0, dtype=float, device=device),  # soft_contact_normal_force, unread when unanchored
+            SoftContactAnchors(),
             False,  # contact_damping_bidirectional
             wp.full(smax, _KE, dtype=float, device=device),
             wp.zeros(smax, dtype=float, device=device),  # material_kd

@@ -10,6 +10,7 @@ import warp as wp
 from warp import DeviceLike as Devicelike
 
 from ..exceptions import NewtonDeprecationWarning
+from ..geometry.soft_contact_match import SoftContactHistory
 from ..geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
 
 GENERATION_SENTINEL = -1
@@ -245,8 +246,8 @@ class Contacts:
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
         self._contact_matching_mode: Literal["disabled", "latest", "sticky"] = "disabled"
-        # Whether the producing pipeline keeps rigid-soft contact points across passes (sticky soft matching).
-        self._soft_contact_points_persist = False
+        # Rigid-soft contact anchors, attached by a pipeline with soft contact matching.
+        self._soft_contact_history: SoftContactHistory | None = None
         with wp.ScopedDevice(device):
             # Two contact counts, [0] rigid and [1] soft, plus overflow flags:
             # [2] global contact reduction and [3] a coupled source's soft-contact buffer.
@@ -445,31 +446,17 @@ class Contacts:
             The particle-only view of :attr:`soft_contact_indices`; use ``soft_contact_indices`` for
             full-surface (edge/face) contacts."""
             self.soft_contact_barycentric = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-            """Barycentric weights of the contact point on the soft feature's particles [unitless], shape (soft_contact_max,), dtype :class:`vec3`.
-
-            With ``CollisionPipeline(contact_matching="sticky")``, a matched record keeps its previous
-            weights while its contact points touch and have not slipped apart."""
+            """Barycentric weights of the contact point on the soft feature's particles [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact position on body [m], shape (soft_contact_max,), dtype :class:`vec3`.
 
             Point on the raw (un-inflated) shape surface; per-shape ``shape_margin`` is
-            applied analytically by consumers rather than baked into this point. With
-            ``CollisionPipeline(contact_matching="sticky")``, a matched record keeps its previous
-            point while its contact points touch and have not slipped apart."""
+            applied analytically by consumers rather than baked into this point."""
             self.soft_contact_body_vel = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact velocity on body [m/s], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact normal direction [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
-            # Sticky soft matching replays only history that the replaying pipeline wrote (owner) since
-            # the last reset of the record's worlds (stamp).
-            self._soft_contact_history_owner = wp.full(1, -1, dtype=wp.int32)
-            self._soft_contact_reset_stamp = wp.empty(0, dtype=wp.int32)
-            # Keep normals in the body frame so replay can distinguish opposing faces even after rotation.
-            self._soft_contact_normal_body = wp.empty(0, dtype=wp.vec3)
-            # Normal load each kept record carried at the end of the previous step (-1 without one); VBD
-            # bounds its friction by it.
-            self._soft_contact_normal_force = wp.empty(0, dtype=float)
             # Replay index array for differentiable backward: recorded per launch *thread*, not per
             # contact, so it must span the full particle+edge+face candidate-pair space -- which can
             # exceed soft_contact_max when the caller overrides that capacity. Sized independently so a
@@ -542,20 +529,17 @@ class Contacts:
         self.soft_contact_max = soft_contact_max
         self._rigid_contact_body_pair_reduced = False
 
-    def _allocate_soft_contact_history(self) -> None:
-        """Allocate sticky history on first use, before capture for external buffers."""
-        if self._soft_contact_reset_stamp.size == self.soft_contact_max:
-            return
-        if wp.get_device(self.device).is_capturing:
-            raise RuntimeError(
-                "Sticky soft-contact history must be initialized before CUDA graph capture. "
-                "Call pipeline.collide() once outside capture with this buffer, "
-                "or create it with pipeline.contacts()."
-            )
-        with wp.ScopedDevice(self.device):
-            self._soft_contact_reset_stamp = wp.zeros(self.soft_contact_max, dtype=wp.int32)
-            self._soft_contact_normal_body = wp.zeros(self.soft_contact_max, dtype=wp.vec3)
-            self._soft_contact_normal_force = wp.full(self.soft_contact_max, -1.0, dtype=float)
+    def _allocate_soft_contact_history(self) -> SoftContactHistory:
+        """Allocate soft contact anchors on first use, before capture for external buffers."""
+        if self._soft_contact_history is None:
+            if wp.get_device(self.device).is_capturing:
+                raise RuntimeError(
+                    "Soft contact anchors must be allocated before CUDA graph capture. "
+                    "Call pipeline.collide() once outside capture with this buffer, "
+                    "or create it with pipeline.contacts()."
+                )
+            self._soft_contact_history = SoftContactHistory(self.soft_contact_max, device=self.device)
+        return self._soft_contact_history
 
     def clear(self, bump_generation: bool = True):
         """
@@ -713,10 +697,7 @@ class Contacts:
 
     @property
     def contact_matching_mode(self) -> Literal["disabled", "latest", "sticky"]:
-        """Frame-to-frame contact matching mode associated with this buffer.
-
-        ``"sticky"`` also means matched rigid-soft records keep their previous contact points,
-        which :class:`~newton.solvers.SolverVBD` uses to measure body-particle friction slip.
+        """Frame-to-frame rigid-contact matching mode associated with this buffer.
 
         This read-only value is set by :meth:`newton.CollisionPipeline.contacts` and
         refreshed by :meth:`newton.CollisionPipeline.collide` when a buffer is reused.

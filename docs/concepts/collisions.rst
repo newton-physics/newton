@@ -2642,8 +2642,7 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
   contact — no extra state is kept for them.  Unmatched contacts pass
   through with their fresh narrow-phase geometry.  Useful for stacking
   scenarios where small frame-to-frame geometric jitter on persistent
-  contacts degrades stability.  Sticky mode also keeps rigid-soft contact
-  points; see :ref:`Sticky rigid-soft contacts <sticky-soft-contacts>`.
+  contacts degrades stability.
 
   .. experimental::
 
@@ -2710,8 +2709,8 @@ surface. Both metrics are symmetric in shape 0 and shape 1.
   that moved more than this between frames are considered broken.  In sticky
   mode, each saved witness, transformed by its current body pose, must instead
   lie within this distance of its fresh contact point for a match.
-  For rigid-soft contacts, this bounds the tangential slip between a record's
-  saved soft and body points.
+  With ``soft_contact_matching``, this also bounds the tangential slip between
+  a rigid-soft record's soft and body anchor points.
   Defaults to ``0.0005`` m.
 - ``contact_matching_normal_dot_threshold`` — minimum dot product between old
   and new contact normals.  Below this the contact is reported as broken even
@@ -2734,71 +2733,74 @@ per-contact buffers (four ``vec3`` columns for the body-frame points and
 offsets) are only allocated when the mode is ``"sticky"``; ``"latest"`` and
 ``"disabled"`` pay zero additional memory and launch no additional kernels.
 
-.. _sticky-soft-contacts:
+.. _soft-contact-anchors:
 
-**Sticky rigid-soft contacts**
+**Rigid-soft contact anchors**
 
-In sticky mode the pipeline also matches each rigid-soft record to the previous
-pass's record with the same key: its soft feature
-(:attr:`Contacts.soft_contact_indices`), its shape, and, for full-surface mesh
-records, its mesh feature pair.  A matched record keeps its previous soft-side
-material point (:attr:`Contacts.soft_contact_barycentric`) and body-frame point
-(:attr:`Contacts.soft_contact_body_pos`) while the two still touch and have
-slipped apart tangentially by at most ``contact_matching_pos_threshold``, and
-the body point lies within that distance of the fresh contact plane.  Its previous
-and fresh normals must also point into the same hemisphere in the body's local
-frame, so moving to the opposite face of a thin wall restarts the record even
-when both faces lie within the distance threshold.  Rigid rotation does not
-change this comparison.  Along
-the surface the test compares the saved points with each other rather than with
-the fresh ones, because a soft edge or face lying flat on a surface has no
-unique closest point.
-The normal stays fresh.  Records on a surface with surface velocity, and all
-records of a pipeline with ``requires_grad``, keep fresh points.  The pipeline
-saves a buffer's records as its consumers left them before the next pass, so
-each :class:`~newton.Contacts` buffer replays its own records.  It replays only
-records that it wrote itself, so a buffer last filled by another pipeline starts
+``soft_contact_matching=True`` on :class:`~CollisionPipeline` anchors each
+rigid-soft record, independently of ``contact_matching``: it needs no
+deterministic sort and changes no rigid contact.  The anchor is a soft-side
+material point and a body-frame point, kept beside the record's fresh contact
+points, which stay as the narrow phase found them.
+
+The pipeline matches each record to the previous pass's record with the same
+key: its soft feature (:attr:`Contacts.soft_contact_indices`), its shape, and,
+for full-surface mesh records, its mesh feature pair.  A matched record keeps
+its previous anchor while the two points still touch and have slipped apart
+tangentially by at most ``contact_matching_pos_threshold``, and the body point
+lies within that distance of the fresh contact plane.  Its previous and fresh
+normals must also point into the same hemisphere in the body's local frame, so
+moving to the opposite face of a thin wall restarts the anchor even when both
+faces lie within the distance threshold.  Rigid rotation does not change this
+comparison.  Along the surface the test compares the anchor points with each
+other rather than with the fresh ones, because a soft edge or face lying flat on
+a surface has no unique closest point.  Every other record, and every record on a
+surface with surface velocity, anchors at its fresh points.  The pipeline saves
+a buffer's anchors as its consumers left them before the next pass, so each
+:class:`~newton.Contacts` buffer replays its own anchors.  It replays only
+anchors that it wrote itself, so a buffer last filled by another pipeline starts
 from fresh points.  A reset that selects the world of the particle or of the
-shape restarts the record in every buffer.
+shape restarts the anchor in every buffer.  The option requires a buffer from
+:meth:`~CollisionPipeline.contacts` and is not supported with ``requires_grad``.
 
-Buffers returned by the sticky pipeline's :meth:`CollisionPipeline.contacts`
-allocate their history at construction.  For an externally constructed buffer,
-including one from another pipeline, call :meth:`CollisionPipeline.collide` once
-outside CUDA graph capture to allocate its sticky history before capturing.
+Buffers returned by the pipeline's :meth:`CollisionPipeline.contacts` allocate
+their anchors at construction.  For an externally constructed buffer, including
+one from another pipeline, call :meth:`CollisionPipeline.collide` once outside
+CUDA graph capture to allocate its anchors before capturing.
 
-:class:`~newton.solvers.SolverVBD` measures body-particle friction slip as the
-drift between the kept points, so soft bodies hold static tangential loads that
-the regularized friction law would otherwise let them creep under.  After each
-step it drags the kept body points to within ``friction_epsilon * dt`` of their
-soft points: drift beyond that within a step is sliding, and friction then does
-not pull a body back once it stops.  It bounds the friction of a kept record by
-the normal load the record carried at the end of the previous step, elastic and
+:class:`~newton.solvers.SolverVBD` solves each anchored record at its anchor
+points and measures friction slip as their drift, so soft bodies hold static
+tangential loads that the regularized friction law would otherwise let them
+creep under.  The record's fresh contact points in :class:`~newton.Contacts`
+are left for other consumers.  After each step it drags the body
+anchor points to within ``friction_epsilon * dt`` of their soft anchor points:
+drift beyond that within a step is sliding, and friction then does not pull a
+body back once it stops.  It bounds the friction of an anchored record by the
+normal load the record carried at the end of the previous step, elastic and
 damping together, so the damping mode does not change how far a contact slides;
-a record without one, such as a new contact, uses its elastic force.  Other solvers
-read the kept points as contact geometry; their contact point may then lag the
-closest point by up to the threshold.
+a record without one, such as a new contact, uses its elastic force.  Other
+solvers ignore the anchors.
 
 For static holding, choose ``contact_matching_pos_threshold`` at least as large
 as ``SolverVBD.friction_epsilon * dt``, using the solver's substep duration for
 ``dt`` and allowing margin for motion between collision passes.  Friction builds
-over that displacement scale.  A smaller matching
-threshold can release an anchor before it supports the tangential load, causing
-creep even with sticky matching.  This is a tuning constraint, not an automatic
-adjustment of either parameter.
+over that displacement scale.  A smaller matching threshold can release an anchor
+before it supports the tangential load, causing creep even with anchors.  This is
+a tuning constraint, not an automatic adjustment of either parameter.
 
 **Memory**
 
 Both enabled modes keep the previous frame's sorted keys, uniqueness claims,
 contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
 ``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
-``contact_report=True`` adds 4.  With particles, ``"sticky"`` also keeps 64 bytes
-per ``soft_contact_max`` slot (76 with full-surface mesh records) and 16 bytes per
-particle for rigid-soft records.  A :class:`~newton.Contacts` buffer used for sticky
-rigid-soft matching also carries 20 bytes per ``soft_contact_max`` slot for the
-reset stamp, body-frame normal, and kept normal load of its records.  Coupled-solver
-filtered copies allocate only the 4-byte normal load per slot when soft points
-persist.  Buffers never used for sticky rigid-soft matching allocate neither.
-``"disabled"`` allocates no matching history.
+``contact_report=True`` adds 4.  ``"disabled"`` allocates no matching history.
+With particles, ``soft_contact_matching=True`` keeps 64 bytes per
+``soft_contact_max`` slot (76 with full-surface mesh records) and 16 bytes per
+particle in the pipeline.  Each :class:`~newton.Contacts` buffer it collides into
+carries 44 bytes per ``soft_contact_max`` slot for the anchors, reset stamp, and
+body-frame normal of its records.  Coupled-solver filtered copies for entries with
+particles carry only the 28-byte anchors.  Buffers never used for soft contact
+matching carry no anchors.
 
 The deterministic pipeline's sorter omits the unused simple-layout scratch,
 saving 48 bytes per ``rigid_contact_max`` slot. This more than offsets the

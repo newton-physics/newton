@@ -15,6 +15,7 @@ import warp as wp
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
 from ...geometry import ParticleFlags
+from ...geometry.soft_contact_match import SoftContactAnchors, SoftContactHistory
 from ...geometry.soft_contacts_mesh import _make_soft_contact_filter_data
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionDetector,
@@ -209,13 +210,28 @@ def _rigid_lambda_retention(alpha: float, gamma: float, use_compliant_alm: bool)
     return gamma if use_compliant_alm else alpha * gamma
 
 
-def _anchored_soft_contacts(contacts: Contacts) -> bool:
-    """Whether soft contact records keep their contact points across collision passes.
+def _replayed_soft_contact_history(contacts: Contacts | None) -> SoftContactHistory | None:
+    """History whose anchors describe the buffer's current soft records, if the last collision pass replayed them."""
+    history = contacts._soft_contact_history if contacts is not None else None
+    return history if history is not None and history.replayed else None
 
-    Sticky contact matching replays a matched record's soft and body points, so friction can act
-    on their drift and hold a static tangential load.
-    """
-    return contacts._soft_contact_points_persist
+
+def _soft_contact_anchors(contacts: Contacts) -> SoftContactAnchors:
+    """Anchors friction acts on, so it can hold a static tangential load; null without soft contact matching."""
+    history = _replayed_soft_contact_history(contacts)
+    return history.anchors if history is not None else SoftContactAnchors()
+
+
+def _soft_contact_barycentric(contacts: Contacts) -> wp.array:
+    """Soft-side contact points VBD solves at: the anchors when the records were replayed, else this pass's points."""
+    history = _replayed_soft_contact_history(contacts)
+    return history.anchors.barycentric if history is not None else contacts.soft_contact_barycentric
+
+
+def _soft_contact_body_pos(contacts: Contacts) -> wp.array:
+    """Body-side contact points VBD solves at: the anchors when the records were replayed, else this pass's points."""
+    history = _replayed_soft_contact_history(contacts)
+    return history.anchors.body_pos if history is not None else contacts.soft_contact_body_pos
 
 
 class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
@@ -1856,17 +1872,16 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.model.body_com,
                     float(self.friction_epsilon),
                     self.rigid_soft_contact_use_log_barrier,
-                    _anchored_soft_contacts(contacts),
-                    contacts._soft_contact_normal_force,
+                    _soft_contact_anchors(contacts),
                     self.soft_contact_damping_bidirectional,
                     self.body_particle_contact_penalty_k,
                     self.body_particle_contact_material_kd,
                     self.body_particle_contact_material_mu,
                     contacts.soft_contact_count,
                     contacts.soft_contact_indices,
-                    contacts.soft_contact_barycentric,
+                    _soft_contact_barycentric(contacts),
                     contacts.soft_contact_shape,
-                    contacts.soft_contact_body_pos,
+                    _soft_contact_body_pos(contacts),
                     contacts.soft_contact_body_vel,
                     contacts.soft_contact_normal,
                     self.model.shape_margin,
@@ -1940,8 +1955,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     int(ParticleFlags.PROXY),
                     self.friction_epsilon,
                     self.rigid_soft_contact_use_log_barrier,
-                    _anchored_soft_contacts(contacts),
-                    contacts._soft_contact_normal_force,
+                    _soft_contact_anchors(contacts),
                     self.soft_contact_damping_bidirectional,
                     self.model.particle_radius,
                     contacts.soft_contact_count,
@@ -1959,7 +1973,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     body_qd_for_particles,
                     self.model.body_com,
                     contacts.soft_contact_shape,
-                    contacts.soft_contact_body_pos,
+                    _soft_contact_body_pos(contacts),
                     contacts.soft_contact_body_vel,
                     contacts.soft_contact_normal,
                     self.model.shape_margin,
@@ -3110,8 +3124,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     def _record_body_particle_contact_normal_forces(
         self, state_in: State, state_out: State, contacts: Contacts | None, dt: float
     ):
-        """Store each persistent record's final normal load, the friction cone of its next step."""
-        if contacts is None or not _anchored_soft_contacts(contacts) or self._particle_contact_worker_count == 0:
+        """Store each anchored record's final normal load, the friction cone of its next step."""
+        history = _replayed_soft_contact_history(contacts)
+        if history is None or self._particle_contact_worker_count == 0:
             return
         body_q, body_q_prev, body_qd = self._body_poses_for_particles(state_in, state_out)
         wp.launch(
@@ -3132,9 +3147,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 contacts.soft_contact_max,
                 _make_soft_contact_filter_data(self.model, contacts, state_in.particle_q, body_q),
                 contacts.soft_contact_indices,
-                contacts.soft_contact_barycentric,
+                _soft_contact_barycentric(contacts),
                 contacts.soft_contact_shape,
-                contacts.soft_contact_body_pos,
+                _soft_contact_body_pos(contacts),
                 contacts.soft_contact_body_vel,
                 contacts.soft_contact_normal,
                 self.model.shape_margin,
@@ -3143,13 +3158,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.rigid_soft_contact_use_log_barrier,
                 self.soft_contact_damping_bidirectional,
             ],
-            outputs=[contacts._soft_contact_normal_force],
+            outputs=[history.anchors.normal_force],
             device=self.device,
         )
 
     def _relax_body_particle_contact_anchors(self, state_out: State, contacts: Contacts | None, dt: float):
-        """Keep persistent body-particle contact points within the friction regularization length."""
-        if contacts is None or not _anchored_soft_contacts(contacts) or self._particle_contact_worker_count == 0:
+        """Keep body-particle contact anchors within the friction regularization length."""
+        history = _replayed_soft_contact_history(contacts)
+        if history is None or self._particle_contact_worker_count == 0:
             return
         wp.launch(
             relax_body_particle_contact_anchors,
@@ -3163,12 +3179,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 contacts.soft_contact_count,
                 contacts.soft_contact_max,
                 contacts.soft_contact_indices,
-                contacts.soft_contact_barycentric,
                 contacts.soft_contact_shape,
                 contacts.soft_contact_normal,
                 contacts.soft_contact_body_vel,
+                history.anchors.barycentric,
             ],
-            outputs=[contacts.soft_contact_body_pos],
+            outputs=[history.anchors.body_pos],
             device=self.device,
         )
 
@@ -3665,9 +3681,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     contacts.soft_contact_count,
                     contacts.soft_contact_indices,
                     contacts.soft_contact_shape,
-                    contacts.soft_contact_body_pos,
+                    _soft_contact_body_pos(contacts),
                     contacts.soft_contact_normal,
-                    contacts.soft_contact_barycentric,
+                    _soft_contact_barycentric(contacts),
                     contacts.soft_contact_rigid_indices,
                     self.model.shape_body,
                     self.model.shape_transform,
@@ -3783,9 +3799,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     contacts.soft_contact_count,
                     contacts.soft_contact_indices,
                     contacts.soft_contact_shape,
-                    contacts.soft_contact_body_pos,
+                    _soft_contact_body_pos(contacts),
                     contacts.soft_contact_normal,
-                    contacts.soft_contact_barycentric,
+                    _soft_contact_barycentric(contacts),
                     contacts.soft_contact_rigid_indices,
                     self.model.shape_body,
                     self.model.shape_transform,
@@ -4462,11 +4478,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     body_qd_for_particles,
                     model.body_com,
                     contacts.soft_contact_shape,
-                    contacts.soft_contact_body_pos,
+                    _soft_contact_body_pos(contacts),
                     contacts.soft_contact_body_vel,
                     contacts.soft_contact_normal,
                     model.shape_margin,
-                    contacts.soft_contact_barycentric,
+                    _soft_contact_barycentric(contacts),
                 ]
                 if self._particle_contact_use_gather:
                     # Deterministic modes: one thread per colored particle, no output atomics.
@@ -4481,8 +4497,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             state_in.particle_q,
                             self.friction_epsilon,
                             self.rigid_soft_contact_use_log_barrier,
-                            _anchored_soft_contacts(contacts),
-                            contacts._soft_contact_normal_force,
+                            _soft_contact_anchors(contacts),
                             self.soft_contact_damping_bidirectional,
                             model.particle_radius,
                             contacts.soft_contact_indices,
@@ -4511,8 +4526,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             self.model.particle_colors,
                             self.friction_epsilon,
                             self.rigid_soft_contact_use_log_barrier,
-                            _anchored_soft_contacts(contacts),
-                            contacts._soft_contact_normal_force,
+                            _soft_contact_anchors(contacts),
                             self.soft_contact_damping_bidirectional,
                             model.particle_radius,
                             contacts.soft_contact_indices,
@@ -4840,9 +4854,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         contact_filter,
                         contacts.soft_contact_indices,
                         contacts.soft_contact_shape,
-                        contacts.soft_contact_body_pos,
+                        _soft_contact_body_pos(contacts),
                         contacts.soft_contact_normal,
-                        contacts.soft_contact_barycentric,
+                        _soft_contact_barycentric(contacts),
                         state_in.particle_q,
                         model.particle_radius,
                         model.shape_body,
@@ -4919,8 +4933,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.shape_body,
                         self.friction_epsilon,
                         self.rigid_soft_contact_use_log_barrier,
-                        _anchored_soft_contacts(contacts),
-                        contacts._soft_contact_normal_force,
+                        _soft_contact_anchors(contacts),
                         self.soft_contact_damping_bidirectional,
                         self.body_particle_contact_penalty_k,
                         self.body_particle_contact_material_ke,
@@ -4929,10 +4942,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         contacts.soft_contact_count,
                         contacts.soft_contact_indices,
                         contacts.soft_contact_shape,
-                        contacts.soft_contact_body_pos,
+                        _soft_contact_body_pos(contacts),
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
-                        contacts.soft_contact_barycentric,
+                        _soft_contact_barycentric(contacts),
                         model.shape_margin,
                         self.body_particle_contact_buffer_pre_alloc,
                         self.body_particle_contact_counts,
@@ -5142,9 +5155,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     contact_filter,
                     contacts.soft_contact_indices,
                     contacts.soft_contact_shape,
-                    contacts.soft_contact_body_pos,
+                    _soft_contact_body_pos(contacts),
                     contacts.soft_contact_normal,
-                    contacts.soft_contact_barycentric,
+                    _soft_contact_barycentric(contacts),
                     state_in.particle_q,
                     model.particle_radius,
                     model.shape_body,
@@ -5303,8 +5316,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 model.body_com,
                 self.friction_epsilon,
                 self.rigid_soft_contact_use_log_barrier,
-                _anchored_soft_contacts(contacts),
-                contacts._soft_contact_normal_force,
+                _soft_contact_anchors(contacts),
                 self.soft_contact_damping_bidirectional,
                 self.body_particle_contact_penalty_k,
                 self.body_particle_contact_material_kd,
@@ -5313,10 +5325,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 _make_soft_contact_filter_data(model, contacts, state_in.particle_q, body_q),
                 contacts.soft_contact_indices,
                 contacts.soft_contact_shape,
-                contacts.soft_contact_body_pos,
+                _soft_contact_body_pos(contacts),
                 contacts.soft_contact_body_vel,
                 contacts.soft_contact_normal,
-                contacts.soft_contact_barycentric,
+                _soft_contact_barycentric(contacts),
                 model.shape_margin,
             ],
             outputs=[contact_f],
