@@ -1,0 +1,6 @@
+﻿newton.utils.bourke\_color\_map
+===============================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: bourke_color_map

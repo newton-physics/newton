@@ -1,0 +1,8 @@
+﻿newton.actuators.InputProcessorBase
+===================================
+
+.. autoclass:: newton.actuators.InputProcessorBase
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

@@ -1,0 +1,48 @@
+﻿newton.selection.DeformableVolumeView
+=====================================
+
+.. currentmodule:: newton.selection
+
+.. autoclass:: DeformableVolumeView
+   :members:
+   :inherited-members:
+   :member-order: groupwise
+   
+   
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+   
+      ~DeformableVolumeView.__init__
+      ~DeformableVolumeView.deformable_object_ranges
+      ~DeformableVolumeView.element_count
+      ~DeformableVolumeView.get_particle_flags
+      ~DeformableVolumeView.get_particle_inv_masses
+      ~DeformableVolumeView.get_particle_positions
+      ~DeformableVolumeView.get_particle_velocities
+      ~DeformableVolumeView.ranges
+      ~DeformableVolumeView.set_mask_from_indices
+      ~DeformableVolumeView.set_particle_positions
+      ~DeformableVolumeView.set_particle_velocities
+      ~DeformableVolumeView.starts
+   
+   
+
+   
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+   
+      ~DeformableVolumeView.particle_count
+      ~DeformableVolumeView.count
+      ~DeformableVolumeView.count_per_world
+      ~DeformableVolumeView.family
+      ~DeformableVolumeView.labels
+      ~DeformableVolumeView.worlds
+      ~DeformableVolumeView.deformable_object_boundaries
+      ~DeformableVolumeView.worlds_device
+   
+   

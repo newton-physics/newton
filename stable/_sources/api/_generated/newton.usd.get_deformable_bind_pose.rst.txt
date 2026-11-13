@@ -1,0 +1,6 @@
+﻿newton.usd.get\_deformable\_bind\_pose
+======================================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: get_deformable_bind_pose

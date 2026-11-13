@@ -1,0 +1,6 @@
+﻿newton.actuators.parse\_actuator\_prim
+======================================
+
+.. currentmodule:: newton.actuators
+
+.. autofunction:: parse_actuator_prim

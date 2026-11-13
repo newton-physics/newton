@@ -1,0 +1,8 @@
+﻿newton.TendonGuideFlags
+=======================
+
+.. autoclass:: newton.TendonGuideFlags
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

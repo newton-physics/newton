@@ -1,0 +1,6 @@
+﻿newton.NewtonWarning
+====================
+
+.. currentmodule:: newton
+
+.. autoexception:: NewtonWarning

@@ -1,0 +1,8 @@
+﻿newton.actuators.BatteryConstantResistance
+==========================================
+
+.. autoclass:: newton.actuators.BatteryConstantResistance
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

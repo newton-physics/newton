@@ -1,0 +1,2219 @@
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Actuators &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=57292b40" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=64cc4de3f052d77215f0"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0" />
+
+    <script src="../_static/documentation_options.js?v=4cc04674"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/actuators';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.22.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/mermaid-nbsphinx.js?v=613f558e"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Solvers" href="../solvers/index.html" />
+    <link rel="prev" title="Coupled Solvers" href="coupling.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button type="button" class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.9.0.dev0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/diagnostics.html">
+    Logging and Warnings
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="deformable_objects.html">
+    Deformable Objects
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="selection.html">
+    Selection API
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="deformable_selection.html">
+    Deformable Selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="solver_observables.html">
+    Solver Observables
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="determinism.html">
+    Deterministic Simulation
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#" aria-current="page">
+    Actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="simulation_tuning.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="simulation_tuning_solvers.html">
+    Solver Reference
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="simulation_tuning_mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="simulation_tuning_vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_config.html">
+    newton.config
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../tendons.html">
+    Massless Routed Tendons
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md">
+     Publications
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button type="button" class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/diagnostics.html">
+    Logging and Warnings
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="deformable_objects.html">
+    Deformable Objects
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="selection.html">
+    Selection API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="deformable_selection.html">
+    Deformable Selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="solver_observables.html">
+    Solver Observables
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="determinism.html">
+    Deterministic Simulation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#" aria-current="page">
+    Actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="simulation_tuning.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="simulation_tuning_solvers.html">
+    Solver Reference
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="simulation_tuning_mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="simulation_tuning_vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_config.html">
+    newton.config
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tendons.html">
+    Massless Routed Tendons
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md">
+     Publications
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/compatibility.html">Compatibility and Support</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Viewers and Debugging</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/diagnostics.html">Logging and Warnings</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/source_code_guidelines.html">Source Code Guidelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/review_guidelines.html">Review Guidelines</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="deformable_objects.html">Deformable Objects</a></li>
+<li class="toctree-l1"><a class="reference internal" href="selection.html">Selection API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="deformable_selection.html">Deformable Selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="solver_observables.html">Solver Observables</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="determinism.html">Deterministic Simulation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="coupling.html">Coupled Solvers</a></li>
+<li class="toctree-l1 current active"><a aria-current="page" class="current reference internal" href="#">Actuators</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Solvers</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../solvers/index.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/mujoco.html">MuJoCo</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/kamino.html">Kamino</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/vbd.html">VBD</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Simulation Tuning</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="simulation_tuning.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="simulation_tuning_solvers.html">Solver Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="simulation_tuning_mujoco.html">MuJoCo</a></li>
+<li class="toctree-l1"><a class="reference internal" href="simulation_tuning_vbd.html">VBD</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_actuators.html">newton.actuators</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_config.html">newton.config</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_controllers.html">newton.controllers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../tendons.html">Massless Routed Tendons</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lab/isaac-lab.html">Isaac Lab</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md"> Publications</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Actuators</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="actuators">
+<h1>Actuators<a class="headerlink" href="#actuators" title="Link to this heading">#</a></h1>
+<div class="experimental admonition">
+<p class="admonition-title">Experimental</p>
+<p>The actuator API may change without prior notice. Feedback is welcome —
+please file issues or discussion threads.</p>
+</div>
+<p>Actuators provide composable implementations that read physics simulation
+state, compute effort, and <strong>accumulate</strong> (scatter-add) the effort into
+control arrays for application to the simulation.  The caller must zero the
+output array before stepping actuators each frame.  The simulator does not
+need to be part of Newton: actuators can be used in any simulator that
+provides the state arrays and applies the computed effort.</p>
+<p>Each <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator" title="newton.actuators.Actuator"><code class="xref py py-class docutils literal notranslate"><span class="pre">Actuator</span></code></a> instance is <strong>vectorized</strong>: a single actuator object
+operates on a batch of DOF indices in global state and control arrays, allowing
+efficient integration into RL workflows with many parallel environments.</p>
+<p>The goal is to provide canonical actuator models with support for
+<strong>differentiability</strong> and <strong>graphable execution</strong>.  Actuators are designed to be easy to
+customize and extend for specific actuator models.</p>
+<section id="architecture">
+<h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">#</a></h2>
+<p>An actuator is composed of four building blocks, applied in this order:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Actuator
+├── InputProcessor[]  (optional: transforms state and command inputs)
+│   ├── InputProcessorDelay       (delays command inputs by N actuator timesteps)
+│   └── InputProcessorEncoder     (position encoder, e.g. behind an output joint)
+├── Drive      (control law that computes raw effort, or the motor command)
+├── Clamping[]  (bounds the drive output in its declared space)
+│   ├── ClampingMaxEffort       (±max_effort symmetric clamp; EFFORT only)
+│   ├── ClampingCurrentDuty     (current estimate and duty limits; DUTY only)
+│   ├── ClampingDCMotor         (velocity-dependent saturation; EFFORT only)
+│   └── ClampingPositionBased   (position-dependent lookup table; EFFORT only)
+└── Motor       (optional: converts motor voltage into joint effort)
+    └── MotorDC                 (DC motor, optionally on a battery)
+</pre></div>
+</div>
+<dl>
+<dt><strong>Input processor</strong></dt><dd><p>Transforms the inputs to the drive: the simulation state (positions,
+velocities) and the control targets (positions, velocities, feedforward
+effort).  Examples include a command delay and a position encoder, e.g.
+behind an output joint.  Multiple input processors can be combined on a single
+actuator.  See the individual input processor class
+documentation for details.</p>
+</dd>
+<dt><strong>Drive</strong></dt><dd><p>Computes raw actuator effort [N or N·m] or dimensionless duty from the
+simulation state and control targets.  This is the actuator’s control law.  Examples include PD,
+PID and neural-network-based control.  See the individual drive class
+documentation for the control-law equations.</p>
+<p>Drives select <code class="docutils literal notranslate"><span class="pre">output_space=DriveOutputSpace.EFFORT</span></code> (the default) or
+<code class="docutils literal notranslate"><span class="pre">DUTY</span></code>. A motor (e.g. <a class="reference internal" href="../api/_generated/newton.actuators.MotorDC.html#newton.actuators.MotorDC" title="newton.actuators.MotorDC"><code class="xref py py-class docutils literal notranslate"><span class="pre">MotorDC</span></code></a>) requires DUTY; EFFORT drives require
+no motor. Gains, bias and feedforward must use the selected units; the flag
+does not convert them.</p>
+</dd>
+<dt><strong>Clamping</strong></dt><dd><p>Clamps the drive output. The actuator applies its clamps in list order, but
+a USD import does not preserve their order, so a model should not depend on
+it. Each clamp’s <code class="docutils literal notranslate"><span class="pre">input_space</span></code> must match the drive’s <code class="docutils literal notranslate"><span class="pre">output_space</span></code>.
+Effort clamps cannot be combined with a motor. There are no post-motor
+effort clamps. Current limiting uses firmware estimates of the motor
+parameters, by default the motor’s own.</p>
+</dd>
+<dt><strong>Motor</strong></dt><dd><p>Provides the supply voltage, and turns the motor voltage into the effort a
+motor produces at the joint velocity, e.g. with back-EMF.  A motor may draw
+from a battery (see <a class="reference internal" href="#actuator-battery"><span class="std std-ref">Battery</span></a>).  At most one motor per
+actuator.</p>
+<p>Before the motor runs, the actuator bounds duty to <code class="docutils literal notranslate"><span class="pre">[-1,</span> <span class="pre">1]</span></code> even without
+a clamp, then multiplies it by the actual fixed or battery supply voltage.</p>
+</dd>
+</dl>
+<p>The per-step pipeline is:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Input processors → Supply voltage → Drive → Clamping → Motor (optional) → Scatter-add → Drive state update
+</pre></div>
+</div>
+<p>Drives, clamping objects, and input processors are pluggable: implement the
+<a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase" title="newton.actuators.DriveBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveBase</span></code></a>, <a class="reference internal" href="../api/_generated/newton.actuators.ClampingBase.html#newton.actuators.ClampingBase" title="newton.actuators.ClampingBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingBase</span></code></a> or <a class="reference internal" href="../api/_generated/newton.actuators.InputProcessorBase.html#newton.actuators.InputProcessorBase" title="newton.actuators.InputProcessorBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">InputProcessorBase</span></code></a> class
+to add new models.</p>
+<div class="deprecated">
+<p><span class="versionmodified deprecated">Deprecated since version 1.9: </span><code class="docutils literal notranslate"><span class="pre">Delay</span></code> is renamed <a class="reference internal" href="../api/_generated/newton.actuators.InputProcessorDelay.html#newton.actuators.InputProcessorDelay" title="newton.actuators.InputProcessorDelay"><code class="xref py py-class docutils literal notranslate"><span class="pre">InputProcessorDelay</span></code></a>.  The <code class="docutils literal notranslate"><span class="pre">delay</span></code>
+argument of <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator" title="newton.actuators.Actuator"><code class="xref py py-class docutils literal notranslate"><span class="pre">Actuator</span></code></a>, the <code class="docutils literal notranslate"><span class="pre">delay_steps</span></code> argument of
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_actuator" title="newton.ModelBuilder.add_actuator"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_actuator()</span></code></a>, <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.delay" title="newton.actuators.Actuator.delay"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Actuator.delay</span></code></a>,
+<code class="xref py py-attr docutils literal notranslate"><span class="pre">Actuator.State.delay_state</span></code>, <code class="docutils literal notranslate"><span class="pre">ModelBuilder.ActuatorEntry.delay_args</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ComponentKind.DELAY</span></code>, and the
+<code class="docutils literal notranslate"><span class="pre">update_state(target_pos,</span> <span class="pre">target_vel,</span> <span class="pre">feedforward,</span> <span class="pre">pos_indices,</span>
+<span class="pre">vel_indices,</span> <span class="pre">current_state,</span> <span class="pre">next_state)</span></code> form of the delay are
+deprecated.  Pass the delay in <code class="docutils literal notranslate"><span class="pre">input_processors</span></code> and read its state
+from <code class="xref py py-attr docutils literal notranslate"><span class="pre">Actuator.State.input_processor_states</span></code>.</p>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>Current limitations:</strong> the first version does not include a transmission
+model (gear ratios / linkage transforms), supports only one DOF per
+actuator, and does not model
+actuator dynamics (inertia, friction, thermal effects).</p>
+</div>
+</section>
+<section id="usage">
+<h2>Usage<a class="headerlink" href="#usage" title="Link to this heading">#</a></h2>
+<p>Actuators are registered during model construction with
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_actuator" title="newton.ModelBuilder.add_actuator"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_actuator()</span></code></a> and are instantiated automatically
+when the model is finalized:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span><span class="o">.</span><span class="n">add_actuator</span><span class="p">(</span>
+    <span class="n">DrivePD</span><span class="p">,</span>
+    <span class="n">index</span><span class="o">=</span><span class="n">dof_index</span><span class="p">,</span>
+    <span class="n">kp</span><span class="o">=</span><span class="mf">100.0</span><span class="p">,</span>
+    <span class="n">kd</span><span class="o">=</span><span class="mf">10.0</span><span class="p">,</span>
+    <span class="n">input_processors</span><span class="o">=</span><span class="p">[(</span><span class="n">InputProcessorDelay</span><span class="p">,</span> <span class="p">{</span><span class="s2">"delay_steps"</span><span class="p">:</span> <span class="mi">5</span><span class="p">})],</span>
+    <span class="n">clamping</span><span class="o">=</span><span class="p">[(</span><span class="n">ClampingMaxEffort</span><span class="p">,</span> <span class="p">{</span><span class="s2">"max_effort"</span><span class="p">:</span> <span class="mf">50.0</span><span class="p">})],</span>
+<span class="p">)</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>For manual construction (outside of <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a>), compose the
+components directly:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">indices</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">uint32</span><span class="p">)</span>
+<span class="n">kp</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">100.0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<span class="n">kd</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">10.0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<span class="n">max_e</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">50.0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+
+<span class="n">actuator</span> <span class="o">=</span> <span class="n">Actuator</span><span class="p">(</span>
+    <span class="n">indices</span><span class="p">,</span>
+    <span class="n">drive</span><span class="o">=</span><span class="n">DrivePD</span><span class="p">(</span><span class="n">kp</span><span class="o">=</span><span class="n">kp</span><span class="p">,</span> <span class="n">kd</span><span class="o">=</span><span class="n">kd</span><span class="p">),</span>
+    <span class="n">clamping</span><span class="o">=</span><span class="p">[</span><span class="n">ClampingMaxEffort</span><span class="p">(</span><span class="n">max_effort</span><span class="o">=</span><span class="n">max_e</span><span class="p">)],</span>
+    <span class="n">control_target_pos_attr</span><span class="o">=</span><span class="s2">"joint_target_q"</span><span class="p">,</span>
+    <span class="n">control_target_vel_attr</span><span class="o">=</span><span class="s2">"joint_target_qd"</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>Step an actuator with the <a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.State</span></code></a> and <a class="reference internal" href="../api/_generated/newton.Control.html#newton.Control" title="newton.Control"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.Control</span></code></a>
+of the model:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">control</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">control</span><span class="p">()</span>
+<span class="n">control</span><span class="o">.</span><span class="n">joint_f</span><span class="o">.</span><span class="n">zero_</span><span class="p">()</span>
+<span class="n">actuator</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The simulation state and control objects do not need to be a full
+<a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.State</span></code></a> / <a class="reference internal" href="../api/_generated/newton.Control.html#newton.Control" title="newton.Control"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.Control</span></code></a>: any objects exposing joint
+positions, velocities, control targets and an output effort array can be
+used.  The attribute names are set in the <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator" title="newton.actuators.Actuator"><code class="xref py py-class docutils literal notranslate"><span class="pre">Actuator</span></code></a> constructor with
+<code class="docutils literal notranslate"><span class="pre">state_pos_attr</span></code>, <code class="docutils literal notranslate"><span class="pre">state_vel_attr</span></code>, <code class="docutils literal notranslate"><span class="pre">control_target_pos_attr</span></code>,
+<code class="docutils literal notranslate"><span class="pre">control_target_vel_attr</span></code>, <code class="docutils literal notranslate"><span class="pre">control_feedforward_attr</span></code> and
+<code class="docutils literal notranslate"><span class="pre">control_output_attr</span></code>.  This makes actuators reusable from a custom
+simulator or test harness:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">types</span>
+
+<span class="n">actuator</span> <span class="o">=</span> <span class="n">Actuator</span><span class="p">(</span>
+    <span class="n">indices</span><span class="p">,</span>
+    <span class="n">drive</span><span class="o">=</span><span class="n">DrivePD</span><span class="p">(</span><span class="n">kp</span><span class="o">=</span><span class="n">kp</span><span class="p">,</span> <span class="n">kd</span><span class="o">=</span><span class="n">kd</span><span class="p">),</span>
+    <span class="n">clamping</span><span class="o">=</span><span class="p">[</span><span class="n">ClampingMaxEffort</span><span class="p">(</span><span class="n">max_effort</span><span class="o">=</span><span class="n">max_e</span><span class="p">)],</span>
+    <span class="n">state_pos_attr</span><span class="o">=</span><span class="s2">"q"</span><span class="p">,</span>
+    <span class="n">state_vel_attr</span><span class="o">=</span><span class="s2">"qd"</span><span class="p">,</span>
+    <span class="n">control_target_pos_attr</span><span class="o">=</span><span class="s2">"q_target"</span><span class="p">,</span>
+    <span class="n">control_target_vel_attr</span><span class="o">=</span><span class="s2">"qd_target"</span><span class="p">,</span>
+    <span class="n">control_feedforward_attr</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+    <span class="n">control_output_attr</span><span class="o">=</span><span class="s2">"effort"</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">sim_state</span> <span class="o">=</span> <span class="n">types</span><span class="o">.</span><span class="n">SimpleNamespace</span><span class="p">(</span>
+    <span class="n">q</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span>
+    <span class="n">qd</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span>
+<span class="p">)</span>
+<span class="n">sim_control</span> <span class="o">=</span> <span class="n">types</span><span class="o">.</span><span class="n">SimpleNamespace</span><span class="p">(</span>
+    <span class="n">q_target</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">1.0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span>
+    <span class="n">qd_target</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span>
+    <span class="n">effort</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span>
+<span class="p">)</span>
+
+<span class="n">sim_control</span><span class="o">.</span><span class="n">effort</span><span class="o">.</span><span class="n">zero_</span><span class="p">()</span>
+<span class="n">actuator</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">sim_state</span><span class="p">,</span> <span class="n">sim_control</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="stateful-actuators">
+<span id="id1"></span><h2>Stateful Actuators<a class="headerlink" href="#stateful-actuators" title="Link to this heading">#</a></h2>
+<p>An actuator whose drive or input processors keep internal state requires
+explicit double-buffered state management.  Stateful drives are, e.g.,
+<a class="reference internal" href="../api/_generated/newton.actuators.DrivePID.html#newton.actuators.DrivePID" title="newton.actuators.DrivePID"><code class="xref py py-class docutils literal notranslate"><span class="pre">DrivePID</span></code></a> with an integral accumulator, <a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralGRU.html#newton.actuators.DriveNeuralGRU" title="newton.actuators.DriveNeuralGRU"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralGRU</span></code></a> with
+hidden state, and <a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralLSTM.html#newton.actuators.DriveNeuralLSTM" title="newton.actuators.DriveNeuralLSTM"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralLSTM</span></code></a> with hidden/cell state; a stateful
+input processor is, e.g., <a class="reference internal" href="../api/_generated/newton.actuators.InputProcessorDelay.html#newton.actuators.InputProcessorDelay" title="newton.actuators.InputProcessorDelay"><code class="xref py py-class docutils literal notranslate"><span class="pre">InputProcessorDelay</span></code></a>.  Create two state
+objects with <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.state" title="newton.actuators.Actuator.state"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.state()</span></code></a> and swap them after each step:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">state_0</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">actuators</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">state_1</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">actuators</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">control</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">control</span><span class="p">()</span>
+
+<span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">):</span>
+    <span class="n">control</span><span class="o">.</span><span class="n">joint_f</span><span class="o">.</span><span class="n">zero_</span><span class="p">()</span>  <span class="c1"># zero output before stepping actuators</span>
+    <span class="n">model</span><span class="o">.</span><span class="n">actuators</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span>
+    <span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span> <span class="o">=</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">state_0</span>
+</pre></div>
+</div>
+<p>For gradients over several steps, use one state per step instead; see
+<a class="reference internal" href="#actuator-taped-rollouts"><span class="std std-ref">Differentiability and Graph Capture</span></a>.</p>
+<p>The swap rebinds Python names, while a CUDA graph records fixed buffer
+addresses. A captured region with an odd number of actuator steps therefore
+cannot carry its final state into the next replay through the ordinary swap. A
+single-step region updates its destination buffer, but does not advance state
+across replays. Even-length regions end with the original buffer orientation
+and need no special handling.</p>
+<p>For an odd-length region, choose between assigning the state at the region
+boundary or alternating graphs for the two buffer orientations.</p>
+<section id="boundary-assignment">
+<h3>Boundary assignment<a class="headerlink" href="#boundary-assignment" title="Link to this heading">#</a></h3>
+<p>Call <code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.State.assign()</span></code> in place of the final swap. This uses one
+graph and copies the actuator state once at the boundary of each replay.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">with</span> <span class="n">wp</span><span class="o">.</span><span class="n">ScopedCapture</span><span class="p">()</span> <span class="k">as</span> <span class="n">capture</span><span class="p">:</span>
+    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">steps</span><span class="p">):</span>
+        <span class="n">control</span><span class="o">.</span><span class="n">joint_f</span><span class="o">.</span><span class="n">zero_</span><span class="p">()</span>
+        <span class="n">model</span><span class="o">.</span><span class="n">actuators</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">steps</span> <span class="o">%</span> <span class="mi">2</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">i</span> <span class="o">==</span> <span class="n">steps</span> <span class="o">-</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">state_0</span><span class="o">.</span><span class="n">assign</span><span class="p">(</span><span class="n">state_1</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span> <span class="o">=</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">state_0</span>
+</pre></div>
+</div>
+</section>
+<section id="alternating-graphs">
+<h3>Alternating graphs<a class="headerlink" href="#alternating-graphs" title="Link to this heading">#</a></h3>
+<p>Key captured graphs by the current state buffer and alternate between them.
+This avoids the boundary copy and keeps at most two graphs.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">graphs</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">replays</span><span class="p">):</span>
+    <span class="n">key</span> <span class="o">=</span> <span class="nb">id</span><span class="p">(</span><span class="n">state_0</span><span class="p">)</span>  <span class="c1"># one entry per buffer orientation</span>
+    <span class="k">if</span> <span class="n">key</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">graphs</span><span class="p">:</span>
+        <span class="k">with</span> <span class="n">wp</span><span class="o">.</span><span class="n">ScopedCapture</span><span class="p">()</span> <span class="k">as</span> <span class="n">capture</span><span class="p">:</span>
+            <span class="n">after</span> <span class="o">=</span> <span class="n">run_region</span><span class="p">(</span><span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span><span class="p">)</span>  <span class="c1"># ordinary swapping inside</span>
+        <span class="n">graphs</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="n">capture</span><span class="o">.</span><span class="n">graph</span><span class="p">,</span> <span class="n">after</span><span class="p">)</span>
+    <span class="n">graph</span><span class="p">,</span> <span class="p">(</span><span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span><span class="p">)</span> <span class="o">=</span> <span class="n">graphs</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">capture_launch</span><span class="p">(</span><span class="n">graph</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Stateless actuators (e.g. a plain PD drive without delay) do not require
+state objects — simply omit them:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Build a stateless actuator (no delay, stateless drive)</span>
+<span class="n">b2</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">lk</span> <span class="o">=</span> <span class="n">b2</span><span class="o">.</span><span class="n">add_link</span><span class="p">()</span>
+<span class="n">jt</span> <span class="o">=</span> <span class="n">b2</span><span class="o">.</span><span class="n">add_joint_revolute</span><span class="p">(</span><span class="n">parent</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">lk</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="n">newton</span><span class="o">.</span><span class="n">Axis</span><span class="o">.</span><span class="n">Z</span><span class="p">)</span>
+<span class="n">b2</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">jt</span><span class="p">])</span>
+<span class="n">b2</span><span class="o">.</span><span class="n">add_actuator</span><span class="p">(</span><span class="n">DrivePD</span><span class="p">,</span> <span class="n">index</span><span class="o">=</span><span class="n">b2</span><span class="o">.</span><span class="n">joint_qd_start</span><span class="p">[</span><span class="n">jt</span><span class="p">],</span> <span class="n">kp</span><span class="o">=</span><span class="mf">50.0</span><span class="p">)</span>
+<span class="n">m2</span> <span class="o">=</span> <span class="n">b2</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="n">m2</span><span class="o">.</span><span class="n">actuators</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">m2</span><span class="o">.</span><span class="n">state</span><span class="p">(),</span> <span class="n">m2</span><span class="o">.</span><span class="n">control</span><span class="p">())</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="custom-drive-inputs">
+<span id="id2"></span><h2>Custom Drive Inputs<a class="headerlink" href="#custom-drive-inputs" title="Link to this heading">#</a></h2>
+<p>A drive can read extra arrays from <code class="docutils literal notranslate"><span class="pre">sim_control</span></code> beyond the positions,
+velocities and targets the actuator already reads, e.g. an estimated load.  It lists
+the array names in <a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.custom_inputs" title="newton.actuators.DriveBase.custom_inputs"><code class="xref py py-attr docutils literal notranslate"><span class="pre">DriveBase.custom_inputs</span></code></a>; each array has one entry
+per DOF.</p>
+<p>For actuators created by <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a>, the declared arrays are
+registered on <a class="reference internal" href="../api/_generated/newton.Control.html#newton.Control" title="newton.Control"><code class="xref py py-class docutils literal notranslate"><span class="pre">Control</span></code></a> automatically.  The caller writes them
+before each <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.step" title="newton.actuators.Actuator.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.step()</span></code></a>; registration does not fill or clear them.</p>
+<p>Users of another simulation engine pass their own arrays instead: any object
+or mapping that provides the same-named arrays works as <code class="docutils literal notranslate"><span class="pre">sim_state</span></code> and
+<code class="docutils literal notranslate"><span class="pre">sim_control</span></code> in <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.step" title="newton.actuators.Actuator.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.step()</span></code></a>.  To see which names an actuator
+needs, use <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.sim_state" title="newton.actuators.Actuator.sim_state"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.sim_state()</span></code></a> and <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.sim_control" title="newton.actuators.Actuator.sim_control"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.sim_control()</span></code></a>: they
+return empty containers with exactly the fields the actuator reads, including
+all declared custom inputs, ready to be filled with the engine’s arrays.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p><code class="docutils literal notranslate"><span class="pre">sim_state</span></code> holds references. The simulation loop swaps <code class="docutils literal notranslate"><span class="pre">state_0</span></code> and
+<code class="docutils literal notranslate"><span class="pre">state_1</span></code> each step, so a <code class="docutils literal notranslate"><span class="pre">sim_state</span></code> built once from <code class="docutils literal notranslate"><span class="pre">state_0</span></code> still
+points at that buffer after the swap and the actuator reads stale positions
+and velocities. Re-point its fields every step.</p>
+</div>
+<p>See <a class="reference internal" href="custom_attributes.html#custom-attributes"><span class="std std-ref">Custom Attributes</span></a> for custom attributes in general.</p>
+<p>In the loop below the drive declares one array named <code class="docutils literal notranslate"><span class="pre">extra_input</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">sim_state</span> <span class="o">=</span> <span class="n">actuator</span><span class="o">.</span><span class="n">sim_state</span><span class="p">()</span>
+<span class="n">sim_control</span> <span class="o">=</span> <span class="n">actuator</span><span class="o">.</span><span class="n">sim_control</span><span class="p">()</span>
+<span class="n">sim_control</span><span class="o">.</span><span class="n">joint_target_q</span> <span class="o">=</span> <span class="n">target_positions</span>
+<span class="n">sim_control</span><span class="o">.</span><span class="n">joint_target_qd</span> <span class="o">=</span> <span class="n">target_velocities</span>
+<span class="n">sim_control</span><span class="o">.</span><span class="n">joint_f</span> <span class="o">=</span> <span class="n">control</span><span class="o">.</span><span class="n">joint_f</span>
+
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_steps</span><span class="p">):</span>
+    <span class="n">sim_state</span><span class="o">.</span><span class="n">joint_q</span> <span class="o">=</span> <span class="n">state_0</span><span class="o">.</span><span class="n">joint_q</span>
+    <span class="n">sim_state</span><span class="o">.</span><span class="n">joint_qd</span> <span class="o">=</span> <span class="n">state_0</span><span class="o">.</span><span class="n">joint_qd</span>
+    <span class="n">sim_control</span><span class="o">.</span><span class="n">extra_input</span> <span class="o">=</span> <span class="n">compute_extra_input</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">state_0</span><span class="p">)</span>
+
+    <span class="n">control</span><span class="o">.</span><span class="n">joint_f</span><span class="o">.</span><span class="n">zero_</span><span class="p">()</span>
+    <span class="n">actuator</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">sim_state</span><span class="p">,</span> <span class="n">sim_control</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="n">dt</span><span class="p">)</span>
+
+    <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
+    <span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span> <span class="o">=</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">state_0</span>
+</pre></div>
+</div>
+</section>
+<section id="neural-network-checkpoints">
+<span id="id3"></span><h2>Neural-Network Checkpoints<a class="headerlink" href="#neural-network-checkpoints" title="Link to this heading">#</a></h2>
+<p>Neural-network drives load <a class="reference external" href="https://onnx.ai/">ONNX</a> (<code class="docutils literal notranslate"><span class="pre">.onnx</span></code>)
+checkpoints, which Warp-NN runs with its own Warp kernels.
+<a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralMLP.html#newton.actuators.DriveNeuralMLP" title="newton.actuators.DriveNeuralMLP"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralMLP</span></code></a> and <a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralLSTM.html#newton.actuators.DriveNeuralLSTM" title="newton.actuators.DriveNeuralLSTM"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralLSTM</span></code></a> also load Torch
+checkpoints, which are deprecated (see <a class="reference internal" href="#torch-checkpoints"><span class="std std-ref">Torch checkpoints</span></a>).
+<a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralGRU.html#newton.actuators.DriveNeuralGRU" title="newton.actuators.DriveNeuralGRU"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralGRU</span></code></a> loads ONNX only.</p>
+<section id="onnx-checkpoints">
+<h3>ONNX checkpoints<a class="headerlink" href="#onnx-checkpoints" title="Link to this heading">#</a></h3>
+<p>An ONNX checkpoint stores the Newton metadata as one JSON string in the
+<code class="docutils literal notranslate"><span class="pre">metadata</span></code> property of the ONNX model. Set <code class="docutils literal notranslate"><span class="pre">model_type</span></code> to <code class="docutils literal notranslate"><span class="pre">&quot;mlp&quot;</span></code>,
+<code class="docutils literal notranslate"><span class="pre">&quot;lstm&quot;</span></code>, or <code class="docutils literal notranslate"><span class="pre">&quot;gru&quot;</span></code> so that USD import can choose the drive. The drives
+read these keys:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralMLP.html#newton.actuators.DriveNeuralMLP" title="newton.actuators.DriveNeuralMLP"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralMLP</span></code></a>: optional <code class="docutils literal notranslate"><span class="pre">input_order</span></code>, <code class="docutils literal notranslate"><span class="pre">input_idx</span></code>,
+<code class="docutils literal notranslate"><span class="pre">pos_scale</span></code>, <code class="docutils literal notranslate"><span class="pre">vel_scale</span></code>, and <code class="docutils literal notranslate"><span class="pre">effort_scale</span></code>. Missing keys fall back to
+their defaults without an error.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralLSTM.html#newton.actuators.DriveNeuralLSTM" title="newton.actuators.DriveNeuralLSTM"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralLSTM</span></code></a>: <code class="docutils literal notranslate"><span class="pre">num_layers</span></code>, <code class="docutils literal notranslate"><span class="pre">hidden_size</span></code>, and the graph
+input and output names <code class="docutils literal notranslate"><span class="pre">input_name</span></code>, <code class="docutils literal notranslate"><span class="pre">hidden_in_name</span></code>, <code class="docutils literal notranslate"><span class="pre">cell_in_name</span></code>,
+<code class="docutils literal notranslate"><span class="pre">output_name</span></code>, <code class="docutils literal notranslate"><span class="pre">hidden_out_name</span></code>, and <code class="docutils literal notranslate"><span class="pre">cell_out_name</span></code>.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralGRU.html#newton.actuators.DriveNeuralGRU" title="newton.actuators.DriveNeuralGRU"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralGRU</span></code></a>: <code class="docutils literal notranslate"><span class="pre">input_columns</span></code>, <code class="docutils literal notranslate"><span class="pre">normalization</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">sample_dt_s</span></code>, plus an optional <code class="docutils literal notranslate"><span class="pre">custom_inputs</span></code> that marks one column of
+<code class="docutils literal notranslate"><span class="pre">input_columns</span></code> as an array the application supplies each step.</p></li>
+</ul>
+<p>Export the network with dynamic batch axes: axis 0 of the MLP input, and
+axis 1 of the LSTM input, hidden state, and cell state. Existing fixed-batch
+exports still load, because Newton adapts these input declarations. It does
+not rewrite batch sizes embedded in graph operations such as <code class="docutils literal notranslate"><span class="pre">Reshape</span></code>;
+re-export those models with dynamic batch axes to run a different number of
+actuators.</p>
+<p>With an ONNX checkpoint, the LSTM <code class="docutils literal notranslate"><span class="pre">State.hidden</span></code> and <code class="docutils literal notranslate"><span class="pre">State.cell</span></code> are Warp
+arrays instead of Torch tensors. In USD, point <code class="docutils literal notranslate"><span class="pre">newton:modelPath</span></code> at the
+<code class="docutils literal notranslate"><span class="pre">.onnx</span></code> file.</p>
+</section>
+<section id="migrating-torch-checkpoints-to-onnx">
+<h3>Migrating Torch checkpoints to ONNX<a class="headerlink" href="#migrating-torch-checkpoints-to-onnx" title="Link to this heading">#</a></h3>
+<p>Export the network with <code class="docutils literal notranslate"><span class="pre">torch.onnx.export</span></code>, which needs the <code class="docutils literal notranslate"><span class="pre">onnxscript</span></code>
+package in recent PyTorch versions, and copy every metadata key from the Torch
+checkpoint into the ONNX metadata. For an MLP:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">onnx</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+
+<span class="n">torch</span><span class="o">.</span><span class="n">onnx</span><span class="o">.</span><span class="n">export</span><span class="p">(</span>
+    <span class="n">net</span><span class="p">,</span>
+    <span class="n">example_inputs</span><span class="p">,</span>
+    <span class="s2">"policy.onnx"</span><span class="p">,</span>
+    <span class="n">input_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"input"</span><span class="p">],</span>
+    <span class="n">output_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"effort"</span><span class="p">],</span>
+    <span class="n">dynamic_axes</span><span class="o">=</span><span class="p">{</span><span class="s2">"input"</span><span class="p">:</span> <span class="p">{</span><span class="mi">0</span><span class="p">:</span> <span class="s2">"batch"</span><span class="p">},</span> <span class="s2">"effort"</span><span class="p">:</span> <span class="p">{</span><span class="mi">0</span><span class="p">:</span> <span class="s2">"batch"</span><span class="p">}},</span>
+<span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">onnx</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"policy.onnx"</span><span class="p">)</span>
+<span class="n">metadata</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"model_type"</span><span class="p">:</span> <span class="s2">"mlp"</span><span class="p">,</span> <span class="s2">"effort_scale"</span><span class="p">:</span> <span class="mf">2.0</span><span class="p">}</span>
+<span class="n">onnx</span><span class="o">.</span><span class="n">helper</span><span class="o">.</span><span class="n">set_model_props</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="p">{</span><span class="s2">"metadata"</span><span class="p">:</span> <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">metadata</span><span class="p">)})</span>
+<span class="n">onnx</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"policy.onnx"</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>An LSTM takes the input, hidden state, and cell state as three graph inputs
+and returns the effort, hidden state, and cell state as three graph outputs.
+The input has shape <code class="docutils literal notranslate"><span class="pre">(1,</span> <span class="pre">batch,</span> <span class="pre">features)</span></code> and the effort has shape
+<code class="docutils literal notranslate"><span class="pre">(batch,</span> <span class="pre">1)</span></code>. Warp-NN runs only the <code class="docutils literal notranslate"><span class="pre">LSTM</span></code>, <code class="docutils literal notranslate"><span class="pre">Squeeze</span></code>, and <code class="docutils literal notranslate"><span class="pre">Gemm</span></code>
+operators of such a network, so wrap the network as below and export with
+<code class="docutils literal notranslate"><span class="pre">dynamo=False</span></code>. For a Torch network with a one-layer <code class="docutils literal notranslate"><span class="pre">batch_first</span></code> LSTM
+<code class="docutils literal notranslate"><span class="pre">net.lstm</span></code> and a linear head <code class="docutils literal notranslate"><span class="pre">net.dec</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">OnnxLSTM</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">net</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">lstm</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">LSTM</span><span class="p">(</span><span class="n">net</span><span class="o">.</span><span class="n">lstm</span><span class="o">.</span><span class="n">input_size</span><span class="p">,</span> <span class="n">net</span><span class="o">.</span><span class="n">lstm</span><span class="o">.</span><span class="n">hidden_size</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">lstm</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">net</span><span class="o">.</span><span class="n">lstm</span><span class="o">.</span><span class="n">state_dict</span><span class="p">())</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">dec</span> <span class="o">=</span> <span class="n">net</span><span class="o">.</span><span class="n">dec</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">,</span> <span class="n">h</span><span class="p">,</span> <span class="n">c</span><span class="p">):</span>
+        <span class="n">y</span><span class="p">,</span> <span class="p">(</span><span class="n">h</span><span class="p">,</span> <span class="n">c</span><span class="p">)</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">lstm</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="p">(</span><span class="n">h</span><span class="p">,</span> <span class="n">c</span><span class="p">))</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">dec</span><span class="p">(</span><span class="n">y</span><span class="o">.</span><span class="n">squeeze</span><span class="p">(</span><span class="mi">0</span><span class="p">)),</span> <span class="n">h</span><span class="p">,</span> <span class="n">c</span>
+
+
+<span class="n">hidden_size</span> <span class="o">=</span> <span class="n">net</span><span class="o">.</span><span class="n">lstm</span><span class="o">.</span><span class="n">hidden_size</span>
+<span class="n">example_inputs</span> <span class="o">=</span> <span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="n">hidden_size</span><span class="p">),</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="n">hidden_size</span><span class="p">))</span>
+<span class="n">torch</span><span class="o">.</span><span class="n">onnx</span><span class="o">.</span><span class="n">export</span><span class="p">(</span>
+    <span class="n">OnnxLSTM</span><span class="p">(</span><span class="n">net</span><span class="p">)</span><span class="o">.</span><span class="n">eval</span><span class="p">(),</span>
+    <span class="n">example_inputs</span><span class="p">,</span>
+    <span class="s2">"policy.onnx"</span><span class="p">,</span>
+    <span class="n">dynamo</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+    <span class="n">input_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"input"</span><span class="p">,</span> <span class="s2">"h_in"</span><span class="p">,</span> <span class="s2">"c_in"</span><span class="p">],</span>
+    <span class="n">output_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"effort"</span><span class="p">,</span> <span class="s2">"h_out"</span><span class="p">,</span> <span class="s2">"c_out"</span><span class="p">],</span>
+    <span class="n">dynamic_axes</span><span class="o">=</span><span class="p">{</span>
+        <span class="s2">"input"</span><span class="p">:</span> <span class="p">{</span><span class="mi">1</span><span class="p">:</span> <span class="s2">"batch"</span><span class="p">},</span>
+        <span class="s2">"h_in"</span><span class="p">:</span> <span class="p">{</span><span class="mi">1</span><span class="p">:</span> <span class="s2">"batch"</span><span class="p">},</span>
+        <span class="s2">"c_in"</span><span class="p">:</span> <span class="p">{</span><span class="mi">1</span><span class="p">:</span> <span class="s2">"batch"</span><span class="p">},</span>
+        <span class="s2">"effort"</span><span class="p">:</span> <span class="p">{</span><span class="mi">0</span><span class="p">:</span> <span class="s2">"batch"</span><span class="p">},</span>
+        <span class="s2">"h_out"</span><span class="p">:</span> <span class="p">{</span><span class="mi">1</span><span class="p">:</span> <span class="s2">"batch"</span><span class="p">},</span>
+        <span class="s2">"c_out"</span><span class="p">:</span> <span class="p">{</span><span class="mi">1</span><span class="p">:</span> <span class="s2">"batch"</span><span class="p">},</span>
+    <span class="p">},</span>
+<span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">onnx</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"policy.onnx"</span><span class="p">)</span>
+<span class="n">metadata</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">"model_type"</span><span class="p">:</span> <span class="s2">"lstm"</span><span class="p">,</span>
+    <span class="s2">"effort_scale"</span><span class="p">:</span> <span class="mf">2.0</span><span class="p">,</span>
+    <span class="s2">"num_layers"</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span>
+    <span class="s2">"hidden_size"</span><span class="p">:</span> <span class="n">hidden_size</span><span class="p">,</span>
+    <span class="s2">"input_name"</span><span class="p">:</span> <span class="s2">"input"</span><span class="p">,</span>
+    <span class="s2">"hidden_in_name"</span><span class="p">:</span> <span class="s2">"h_in"</span><span class="p">,</span>
+    <span class="s2">"cell_in_name"</span><span class="p">:</span> <span class="s2">"c_in"</span><span class="p">,</span>
+    <span class="s2">"output_name"</span><span class="p">:</span> <span class="s2">"effort"</span><span class="p">,</span>
+    <span class="s2">"hidden_out_name"</span><span class="p">:</span> <span class="s2">"h_out"</span><span class="p">,</span>
+    <span class="s2">"cell_out_name"</span><span class="p">:</span> <span class="s2">"c_out"</span><span class="p">,</span>
+<span class="p">}</span>
+<span class="n">onnx</span><span class="o">.</span><span class="n">helper</span><span class="o">.</span><span class="n">set_model_props</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="p">{</span><span class="s2">"metadata"</span><span class="p">:</span> <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">metadata</span><span class="p">)})</span>
+<span class="n">onnx</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"policy.onnx"</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Multi-layer LSTMs cannot be migrated yet: their export splits and joins the
+stacked hidden and cell state with <code class="docutils literal notranslate"><span class="pre">Slice</span></code> and <code class="docutils literal notranslate"><span class="pre">Concat</span></code>, which Warp-NN
+does not support.</p>
+</section>
+<section id="torch-checkpoints">
+<span id="id4"></span><h3>Torch checkpoints<a class="headerlink" href="#torch-checkpoints" title="Link to this heading">#</a></h3>
+<div class="deprecated">
+<p><span class="versionmodified deprecated">Deprecated since version 1.8: </span>Torch checkpoints and <code class="docutils literal notranslate"><span class="pre">allow_unsafe_torch_checkpoints</span></code> are deprecated and
+will be removed in a future release. Export the network to ONNX instead.</p>
+</div>
+<p>Torch checkpoints must be pt2 archives saved with <code class="docutils literal notranslate"><span class="pre">torch.export.save</span></code>. Use
+the <code class="docutils literal notranslate"><span class="pre">.pt2</span></code> extension; <code class="docutils literal notranslate"><span class="pre">.pt</span></code> and <code class="docutils literal notranslate"><span class="pre">.pth</span></code> are also accepted for these
+archives. The metadata is stored as a JSON extra file, with the same keys as
+for ONNX:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+
+<span class="n">exported</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">export</span><span class="o">.</span><span class="n">export</span><span class="p">(</span><span class="n">net</span><span class="p">,</span> <span class="n">example_inputs</span><span class="p">)</span>
+<span class="n">metadata</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"model_type"</span><span class="p">:</span> <span class="s2">"lstm"</span><span class="p">,</span> <span class="s2">"effort_scale"</span><span class="p">:</span> <span class="mf">2.0</span><span class="p">,</span> <span class="s2">"num_layers"</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">"hidden_size"</span><span class="p">:</span> <span class="mi">8</span><span class="p">}</span>
+<span class="n">torch</span><span class="o">.</span><span class="n">export</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">exported</span><span class="p">,</span> <span class="s2">"policy.pt2"</span><span class="p">,</span> <span class="n">extra_files</span><span class="o">=</span><span class="p">{</span><span class="s2">"metadata.json"</span><span class="p">:</span> <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">metadata</span><span class="p">)})</span>
+</pre></div>
+</div>
+<p>A USD neural actuator may reference a checkpoint through
+<code class="docutils literal notranslate"><span class="pre">newton:modelPath</span></code>. USD import rejects Torch checkpoints (<code class="docutils literal notranslate"><span class="pre">.pt2</span></code>, <code class="docutils literal notranslate"><span class="pre">.pt</span></code>,
+or <code class="docutils literal notranslate"><span class="pre">.pth</span></code>) by default, because <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">finalize()</span></code></a> would
+load them with <code class="docutils literal notranslate"><span class="pre">torch.export.load</span></code>, which can execute code from an untrusted
+checkpoint. For a trusted USD asset and checkpoint, pass
+<code class="docutils literal notranslate"><span class="pre">allow_unsafe_torch_checkpoints=True</span></code> to <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_usd()</span></code></a>.
+Constructing a neural drive from a checkpoint path in code is the caller’s
+own trust decision.</p>
+</section>
+</section>
+<section id="effort-modes">
+<span id="id5"></span><h2>Effort Modes<a class="headerlink" href="#effort-modes" title="Link to this heading">#</a></h2>
+<p>By default an actuator computes effort <strong>explicitly</strong>: the control law is
+evaluated at the current state and held constant over the step (zero-order
+hold). At stiff gains and large timesteps this can overshoot or go unstable.</p>
+<p>The <strong>implicit</strong> effort mode instead solves the control law against the
+predicted end-of-step state (a Stable-PD style solve). A key advantage of this
+formulation over the explicit effort mode is that it stays stable at higher
+gains.</p>
+<p>That stability comes at a cost: the solve reaches it by applying less effort
+than the control law nominally asks for. The trade-off is between stability at
+large timesteps with the implicit mode, and fidelity to the requested gains at
+small timesteps with the explicit mode.</p>
+<p>The implicit effort mode necessarily requires the joint-space inverse mass
+matrix. This is supplied by a <a class="reference internal" href="../api/_generated/newton.actuators.JointSpaceResponse.html#newton.actuators.JointSpaceResponse" title="newton.actuators.JointSpaceResponse"><code class="xref py py-class docutils literal notranslate"><span class="pre">JointSpaceResponse</span></code></a>, which
+is refreshed once per step at the current pose:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton.actuators</span><span class="w"> </span><span class="kn">import</span> <span class="n">JointSpaceResponse</span>
+
+<span class="n">response</span> <span class="o">=</span> <span class="n">JointSpaceResponse</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">actuator</span><span class="o">.</span><span class="n">set_effort_mode_implicit</span><span class="p">(</span><span class="n">response</span><span class="o">=</span><span class="n">response</span><span class="p">)</span>
+
+<span class="c1"># Simulation loop</span>
+<span class="n">response</span><span class="o">.</span><span class="n">refresh</span><span class="p">(</span><span class="n">sim_state</span><span class="p">)</span>
+<span class="n">sim_control</span><span class="o">.</span><span class="n">joint_f</span><span class="o">.</span><span class="n">zero_</span><span class="p">()</span>
+<span class="n">actuator</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">sim_state</span><span class="p">,</span> <span class="n">sim_control</span><span class="p">,</span> <span class="n">state_a</span><span class="p">,</span> <span class="n">state_b</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span>
+<span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">sim_state</span><span class="p">,</span> <span class="n">next_sim_state</span><span class="p">,</span> <span class="n">sim_control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>By default the predicted state accounts only for the actuator’s own impulse.
+Gravity, Coriolis forces and every other force the step applies are absent
+from it. The drive still pushes back once those forces have moved the joint,
+but it cannot anticipate them. For a single joint under a constant load <code class="docutils literal notranslate"><span class="pre">g</span></code>
+with <code class="docutils literal notranslate"><span class="pre">kd</span> <span class="pre">=</span> <span class="pre">kp</span> <span class="pre">dt</span></code>, this leaves a steady error of <code class="docutils literal notranslate"><span class="pre">g</span> <span class="pre">/</span> <span class="pre">kp</span> <span class="pre">+</span> <span class="pre">2</span> <span class="pre">dt^2</span> <span class="pre">A</span> <span class="pre">g</span></code>: the
+first part shrinks as the gain grows, the second part does not. Pass the forces
+as a <em>bias force</em> to include them in the prediction. The bias force uses the
+sign convention of the manipulator equation <code class="docutils literal notranslate"><span class="pre">tau</span> <span class="pre">=</span> <span class="pre">M</span> <span class="pre">qdd</span> <span class="pre">+</span> <span class="pre">C</span> <span class="pre">qd</span> <span class="pre">+</span> <span class="pre">g</span></code>: it is
+<code class="docutils literal notranslate"><span class="pre">C</span> <span class="pre">qd</span> <span class="pre">+</span> <span class="pre">g</span></code>, indexed like <code class="docutils literal notranslate"><span class="pre">joint_qd</span></code>, and the step itself applies its
+negative. The predicted end-of-step velocity
+then becomes <code class="docutils literal notranslate"><span class="pre">qd</span> <span class="pre">+</span> <span class="pre">A</span> <span class="pre">(p</span> <span class="pre">-</span> <span class="pre">dt</span> <span class="pre">bias_force)</span></code> instead of <code class="docutils literal notranslate"><span class="pre">qd</span> <span class="pre">+</span> <span class="pre">A</span> <span class="pre">p</span></code>, where
+<code class="docutils literal notranslate"><span class="pre">A</span></code> is the inverse mass matrix (see below) and <code class="docutils literal notranslate"><span class="pre">p</span></code> the actuator’s impulse.</p>
+<p><a class="reference internal" href="../api/_generated/newton.eval_inverse_dynamics_passive.html#newton.eval_inverse_dynamics_passive" title="newton.eval_inverse_dynamics_passive"><code class="xref py py-func docutils literal notranslate"><span class="pre">eval_inverse_dynamics_passive()</span></code></a> returns the two parts,
+<code class="docutils literal notranslate"><span class="pre">gravity_force</span></code> <code class="docutils literal notranslate"><span class="pre">g(q)</span></code> and <code class="docutils literal notranslate"><span class="pre">coriolis_force</span></code> <code class="docutils literal notranslate"><span class="pre">C(q,</span> <span class="pre">qd)</span> <span class="pre">qd</span></code>, so the bias
+force is their sum. The function reads <code class="docutils literal notranslate"><span class="pre">body_q</span></code>, which must match
+<code class="docutils literal notranslate"><span class="pre">joint_q</span></code>; call <a class="reference internal" href="../api/_generated/newton.eval_fk.html#newton.eval_fk" title="newton.eval_fk"><code class="xref py py-func docutils literal notranslate"><span class="pre">eval_fk()</span></code></a> first if it may not.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@wp</span><span class="o">.</span><span class="n">kernel</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">bias_force_kernel</span><span class="p">(</span>
+    <span class="n">gravity_force</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="nb">float</span><span class="p">],</span>
+    <span class="n">coriolis_force</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="nb">float</span><span class="p">],</span>
+    <span class="n">bias_force</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="nb">float</span><span class="p">],</span>
+<span class="p">):</span>
+    <span class="n">i</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">tid</span><span class="p">()</span>
+    <span class="n">bias_force</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">gravity_force</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">+</span> <span class="n">coriolis_force</span><span class="p">[</span><span class="n">i</span><span class="p">]</span>
+
+
+<span class="n">dt</span> <span class="o">=</span> <span class="mf">0.01</span>
+<span class="n">n</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">joint_dof_count</span>
+<span class="n">gravity_force</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+<span class="n">coriolis_force</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+<span class="n">bias_force</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+
+<span class="c1"># Simulation loop</span>
+<span class="n">response</span><span class="o">.</span><span class="n">refresh</span><span class="p">(</span><span class="n">sim_state</span><span class="p">)</span>
+<span class="n">newton</span><span class="o">.</span><span class="n">eval_inverse_dynamics_passive</span><span class="p">(</span>
+    <span class="n">model</span><span class="p">,</span> <span class="n">sim_state</span><span class="p">,</span> <span class="n">gravity_force</span><span class="o">=</span><span class="n">gravity_force</span><span class="p">,</span> <span class="n">coriolis_force</span><span class="o">=</span><span class="n">coriolis_force</span>
+<span class="p">)</span>
+<span class="n">wp</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+    <span class="n">bias_force_kernel</span><span class="p">,</span>
+    <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
+    <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">gravity_force</span><span class="p">,</span> <span class="n">coriolis_force</span><span class="p">],</span>
+    <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">bias_force</span><span class="p">],</span>
+    <span class="n">device</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">sim_control</span><span class="o">.</span><span class="n">joint_f</span><span class="o">.</span><span class="n">zero_</span><span class="p">()</span>
+<span class="n">actuator</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">sim_state</span><span class="p">,</span> <span class="n">sim_control</span><span class="p">,</span> <span class="n">state_a</span><span class="p">,</span> <span class="n">state_b</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="n">dt</span><span class="p">,</span> <span class="n">bias_force</span><span class="o">=</span><span class="n">bias_force</span><span class="p">)</span>
+<span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">sim_state</span><span class="p">,</span> <span class="n">next_sim_state</span><span class="p">,</span> <span class="n">sim_control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="n">dt</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>These are the forces at the start of the step. A solver that holds them
+constant over the step, such as <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> with its
+default <code class="docutils literal notranslate"><span class="pre">implicitfast</span></code> integrator, applies the same values, so the
+prediction matches its step up to the approximations of the response described
+below. This bias force does not include contacts, joint limits, joint damping,
+other actuators, or joint force applied without the actuator, such as other
+writes to <code class="docutils literal notranslate"><span class="pre">joint_f</span></code>. Contact and limit forces depend on the actuator’s own
+effort and cannot be computed before it.
+<a class="reference internal" href="../api/_generated/newton.eval_inverse_dynamics_passive.html#newton.eval_inverse_dynamics_passive" title="newton.eval_inverse_dynamics_passive"><code class="xref py py-func docutils literal notranslate"><span class="pre">eval_inverse_dynamics_passive()</span></code></a> allocates scratch memory on every
+call, so capturing it in a CUDA graph needs the device’s memory pool. The
+explicit effort mode ignores the bias force.</p>
+<p>In this mode <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.step" title="newton.actuators.Actuator.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.step</span></code></a> evaluates
+the joint force for each actuated DOF. A force on one DOF changes the velocity
+of every DOF in its articulation, so an articulation’s actuated DOFs are solved
+together as one coupled system.</p>
+<p>The inverse mass matrix, called <em>the response</em> below, is computed for a whole
+articulation. The actuator then reads only the entries for the DOFs it drives.
+<a class="reference internal" href="../api/_generated/newton.actuators.JointSpaceResponse.html#newton.actuators.JointSpaceResponse" title="newton.actuators.JointSpaceResponse"><code class="xref py py-class docutils literal notranslate"><span class="pre">JointSpaceResponse</span></code></a> is responsible for providing that
+matrix, and there are two ways to obtain it: compute it from scratch
+(<a class="reference internal" href="../api/_generated/newton.actuators.JointSpaceResponse.html#newton.actuators.JointSpaceResponse.refresh" title="newton.actuators.JointSpaceResponse.refresh"><code class="xref py py-meth docutils literal notranslate"><span class="pre">JointSpaceResponse.refresh</span></code></a>), or
+reuse what the solver already has (<a class="reference internal" href="../api/_generated/newton.actuators.JointSpaceResponse.html#newton.actuators.JointSpaceResponse.refresh_from_solve" title="newton.actuators.JointSpaceResponse.refresh_from_solve"><code class="xref py py-meth docutils literal notranslate"><span class="pre">JointSpaceResponse.refresh_from_solve</span></code></a>).</p>
+<p><a class="reference internal" href="../api/_generated/newton.actuators.JointSpaceResponse.html#newton.actuators.JointSpaceResponse.refresh" title="newton.actuators.JointSpaceResponse.refresh"><code class="xref py py-meth docutils literal notranslate"><span class="pre">refresh()</span></code></a> builds the mass matrix itself,
+from <a class="reference internal" href="../api/_generated/newton.eval_mass_matrix.html#newton.eval_mass_matrix" title="newton.eval_mass_matrix"><code class="xref py py-func docutils literal notranslate"><span class="pre">eval_mass_matrix()</span></code></a> and joint armature. This comes with
+approximations. First, joint damping, joint limits, friction, contacts and
+constraint regularization are absent. All of those resist motion, so the
+response comes out larger than anticipated. A larger response further divides
+the control law and so yields a smaller effort than would have been evaluated
+without the simplifications listed above. Second, kinematic loop closures are
+also ignored.</p>
+<p>The approximations inherent in <a class="reference internal" href="../api/_generated/newton.actuators.JointSpaceResponse.html#newton.actuators.JointSpaceResponse.refresh" title="newton.actuators.JointSpaceResponse.refresh"><code class="xref py py-meth docutils literal notranslate"><span class="pre">JointSpaceResponse.refresh</span></code></a> may be avoided when working with a
+solver that is able to evaluate the inverse mass matrix more directly, with the
+exception of loop closure effects. To this end,
+<a class="reference internal" href="../api/_generated/newton.actuators.JointSpaceResponse.html#newton.actuators.JointSpaceResponse.refresh_from_solve" title="newton.actuators.JointSpaceResponse.refresh_from_solve"><code class="xref py py-meth docutils literal notranslate"><span class="pre">JointSpaceResponse.refresh_from_solve</span></code></a> takes a callable that
+computes <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">=</span> <span class="pre">M^-1</span> <span class="pre">y</span></code>. The response recovers the matrix one column at a time,
+by passing unit vectors through that callable. MuJoCo is currently the only
+Newton solver that provides one. MuJoCo’s free and ball joints use different
+coordinates from Newton’s, so pass the state as well; the response then
+converts them at that pose.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">solve_inverse</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">):</span>
+    <span class="c1"># x = M^-1 y, using the factorization the solver already built</span>
+    <span class="n">mujoco_warp</span><span class="o">.</span><span class="n">solve_m</span><span class="p">(</span><span class="n">solver</span><span class="o">.</span><span class="n">mjw_model</span><span class="p">,</span> <span class="n">solver</span><span class="o">.</span><span class="n">mjw_data</span><span class="p">,</span> <span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">)</span>
+
+<span class="c1"># Simulation loop, in place of response.refresh(sim_state)</span>
+<span class="n">response</span><span class="o">.</span><span class="n">refresh_from_solve</span><span class="p">(</span><span class="n">solve_inverse</span><span class="p">,</span> <span class="n">dof_map</span><span class="o">=</span><span class="n">solver</span><span class="o">.</span><span class="n">mjc_dof_to_newton_dof</span><span class="p">,</span> <span class="n">state</span><span class="o">=</span><span class="n">sim_state</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Both refresh paths launch only kernels, so the actuator, the solver step and the
+response update can be captured in one CUDA graph.</p>
+<p><a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.set_effort_mode_explicit" title="newton.actuators.Actuator.set_effort_mode_explicit"><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_effort_mode_explicit()</span></code></a> switches back to
+explicit mode. <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.ImplicitOptions" title="newton.actuators.Actuator.ImplicitOptions"><code class="xref py py-class docutils literal notranslate"><span class="pre">ImplicitOptions</span></code></a> sets the
+solve’s iteration count, line-search length and convergence tolerances.</p>
+<p>The following built-in drives support the implicit mode:
+<a class="reference internal" href="../api/_generated/newton.actuators.DrivePD.html#newton.actuators.DrivePD" title="newton.actuators.DrivePD"><code class="xref py py-class docutils literal notranslate"><span class="pre">DrivePD</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.actuators.DrivePID.html#newton.actuators.DrivePID" title="newton.actuators.DrivePID"><code class="xref py py-class docutils literal notranslate"><span class="pre">DrivePID</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralMLP.html#newton.actuators.DriveNeuralMLP" title="newton.actuators.DriveNeuralMLP"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralMLP</span></code></a> and
+<a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralLSTM.html#newton.actuators.DriveNeuralLSTM" title="newton.actuators.DriveNeuralLSTM"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralLSTM</span></code></a>.
+The neural drives enter the solve as a per-step linearization of the
+network, whose slopes come from a Warp autodiff pass over the loaded network.</p>
+<p>Limitations of the implicit mode.  In the cases marked <em>error</em>,
+<a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.set_effort_mode_implicit" title="newton.actuators.Actuator.set_effort_mode_implicit"><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_effort_mode_implicit()</span></code></a> raises
+<code class="docutils literal notranslate"><span class="pre">NotImplementedError</span></code> instead of falling back silently:</p>
+<ul class="simple">
+<li><p><strong>Other drives</strong> (error), e.g. <a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralGRU.html#newton.actuators.DriveNeuralGRU" title="newton.actuators.DriveNeuralGRU"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralGRU</span></code></a>:
+they define no <a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.evaluate_force" title="newton.actuators.DriveBase.evaluate_force"><code class="xref py py-attr docutils literal notranslate"><span class="pre">evaluate_force</span></code></a> law for
+the solve.</p></li>
+<li><p><strong>Motors</strong> (error): the solve does not model the motor stage, e.g.
+<a class="reference internal" href="../api/_generated/newton.actuators.MotorDC.html#newton.actuators.MotorDC" title="newton.actuators.MotorDC"><code class="xref py py-class docutils literal notranslate"><span class="pre">MotorDC</span></code></a>.</p></li>
+<li><p><strong>Torch neural checkpoints</strong> (error): the linearization needs Warp autodiff
+over the network, which only the ONNX backend provides (see
+<a class="reference internal" href="#neural-network-checkpoints"><span class="std std-ref">Neural-Network Checkpoints</span></a>).
+<a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralMLP.html#newton.actuators.DriveNeuralMLP" title="newton.actuators.DriveNeuralMLP"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralMLP</span></code></a> also needs a single-step input
+history (<code class="docutils literal notranslate"><span class="pre">input_idx</span> <span class="pre">==</span> <span class="pre">[0]</span></code>).</p></li>
+<li><p><strong>Differentiable actuators</strong> (error): an actuator built with
+<code class="docutils literal notranslate"><span class="pre">requires_grad=True</span></code> cannot be solved implicitly, because the solve has no
+adjoint.</p></li>
+<li><p><strong>Custom inputs without</strong> <a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.prepare_implicit" title="newton.actuators.DriveBase.prepare_implicit"><code class="xref py py-meth docutils literal notranslate"><span class="pre">prepare_implicit()</span></code></a>
+(error): a drive that declares
+<a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.custom_inputs" title="newton.actuators.DriveBase.custom_inputs"><code class="xref py py-attr docutils literal notranslate"><span class="pre">custom_inputs</span></code></a> must pass them to the
+solve, or the solve would ignore them.</p></li>
+<li><p><strong>Encoders</strong> (warning): an actuator with an
+<a class="reference internal" href="../api/_generated/newton.actuators.InputProcessorEncoder.html#newton.actuators.InputProcessorEncoder" title="newton.actuators.InputProcessorEncoder"><code class="xref py py-class docutils literal notranslate"><span class="pre">InputProcessorEncoder</span></code></a> is accepted with a
+<a class="reference internal" href="../api/_generated/newton.NewtonWarning.html#newton.NewtonWarning" title="newton.NewtonWarning"><code class="xref py py-class docutils literal notranslate"><span class="pre">NewtonWarning</span></code></a>, because the result is only
+approximate.  The drive reads the encoder behind the output joint, while the
+solve predicts the end-of-step state from the response of the actuated joint
+alone.  While the output joint is not at its limit, the motor’s effort does
+not reach the link, yet the solve assumes it does, so it applies less effort
+than needed to bring the output joint to its limit.</p></li>
+</ul>
+</section>
+<section id="differentiability-and-graph-capture">
+<h2>Differentiability and Graph Capture<a class="headerlink" href="#differentiability-and-graph-capture" title="Link to this heading">#</a></h2>
+<p>Whether an actuator supports differentiability and CUDA graph capture depends on
+its components.  All built-in input processors, clamps, motors and drives are
+graphable, except neural-network drives with a Torch checkpoint, due to
+framework interop overhead; with an ONNX checkpoint they are graphable.
+Implicit mode is not differentiable.  <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.is_graphable" title="newton.actuators.Actuator.is_graphable"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.is_graphable()</span></code></a> returns
+<code class="docutils literal notranslate"><span class="pre">True</span></code> when all components can be captured in a CUDA graph.</p>
+<p id="actuator-taped-rollouts">To differentiate several steps on one <a class="reference external" href="https://nvidia.github.io/warp/stable/api_reference/_generated/warp.Tape.html#warp.Tape" title="(in Warp v1.19.0)"><code class="xref py py-class docutils literal notranslate"><span class="pre">warp.Tape</span></code></a>, finalize the model
+with <code class="docutils literal notranslate"><span class="pre">requires_grad=True</span></code> and, as the differentiable-simulation examples do
+for <code class="docutils literal notranslate"><span class="pre">State</span></code>, give each step its own <code class="docutils literal notranslate"><span class="pre">Control</span></code> and actuator state instead of
+swapping two.  Actuators write <code class="docutils literal notranslate"><span class="pre">joint_f</span></code> into <code class="docutils literal notranslate"><span class="pre">Control</span></code> on every step, so
+reusing one would overwrite values that earlier steps need in the backward
+pass.  Neural-network drives support one step per tape.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">states</span> <span class="o">=</span> <span class="p">[</span><span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_steps</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)]</span>
+<span class="n">controls</span> <span class="o">=</span> <span class="p">[</span><span class="n">model</span><span class="o">.</span><span class="n">control</span><span class="p">()</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_steps</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)]</span>
+<span class="n">act_states</span> <span class="o">=</span> <span class="p">[[</span><span class="n">actuator</span><span class="o">.</span><span class="n">state</span><span class="p">()</span> <span class="k">for</span> <span class="n">actuator</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">actuators</span><span class="p">]</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_steps</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)]</span>
+<span class="k">with</span> <span class="n">wp</span><span class="o">.</span><span class="n">Tape</span><span class="p">()</span> <span class="k">as</span> <span class="n">tape</span><span class="p">:</span>
+    <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_steps</span><span class="p">):</span>
+        <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">actuator</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">actuators</span><span class="p">):</span>
+            <span class="n">actuator</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">states</span><span class="p">[</span><span class="n">k</span><span class="p">],</span> <span class="n">controls</span><span class="p">[</span><span class="n">k</span><span class="p">],</span> <span class="n">act_states</span><span class="p">[</span><span class="n">k</span><span class="p">][</span><span class="n">i</span><span class="p">],</span> <span class="n">act_states</span><span class="p">[</span><span class="n">k</span> <span class="o">+</span> <span class="mi">1</span><span class="p">][</span><span class="n">i</span><span class="p">],</span> <span class="n">dt</span><span class="o">=</span><span class="n">dt</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">battery</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">batteries</span><span class="p">:</span>
+            <span class="n">battery</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">controls</span><span class="p">[</span><span class="n">k</span><span class="p">],</span> <span class="n">controls</span><span class="p">[</span><span class="n">k</span> <span class="o">+</span> <span class="mi">1</span><span class="p">])</span>
+        <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">states</span><span class="p">[</span><span class="n">k</span><span class="p">],</span> <span class="n">states</span><span class="p">[</span><span class="n">k</span> <span class="o">+</span> <span class="mi">1</span><span class="p">],</span> <span class="n">controls</span><span class="p">[</span><span class="n">k</span><span class="p">],</span> <span class="kc">None</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Each step then allocates fresh intermediate buffers, so capturing such steps in
+a CUDA graph needs Warp’s memory pool; <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.is_graphable" title="newton.actuators.Actuator.is_graphable"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.is_graphable()</span></code></a> returns
+<code class="docutils literal notranslate"><span class="pre">False</span></code> otherwise.</p>
+<p><a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.is_graphable" title="newton.actuators.Actuator.is_graphable"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.is_graphable()</span></code></a> describes the components, not the captured region.
+A stateful actuator also needs the region’s state exchange to be graph-safe.  See
+<a class="reference internal" href="#stateful-actuators"><span class="std std-ref">Stateful Actuators</span></a> for the two patterns that keep an odd-length region
+correct. Torch-backed neural drives are not graphable and cannot be used in a
+captured region.</p>
+</section>
+<section id="available-components">
+<h2>Available Components<a class="headerlink" href="#available-components" title="Link to this heading">#</a></h2>
+<section id="input-processors">
+<h3>Input processors<a class="headerlink" href="#input-processors" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.InputProcessorDelay.html#newton.actuators.InputProcessorDelay" title="newton.actuators.InputProcessorDelay"><code class="xref py py-class docutils literal notranslate"><span class="pre">InputProcessorDelay</span></code></a> — circular-buffer delay for control targets (stateful).</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.InputProcessorEncoder.html#newton.actuators.InputProcessorEncoder" title="newton.actuators.InputProcessorEncoder"><code class="xref py py-class docutils literal notranslate"><span class="pre">InputProcessorEncoder</span></code></a> — position encoder, e.g. behind an output
+joint (stateless).</p></li>
+</ul>
+<p>Multiple input processors can be stacked on a single actuator; they are applied
+in sequence.</p>
+</section>
+<section id="drives">
+<h3>Drives<a class="headerlink" href="#drives" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.DrivePD.html#newton.actuators.DrivePD" title="newton.actuators.DrivePD"><code class="xref py py-class docutils literal notranslate"><span class="pre">DrivePD</span></code></a> — proportional-derivative control law (stateless).</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.DrivePID.html#newton.actuators.DrivePID" title="newton.actuators.DrivePID"><code class="xref py py-class docutils literal notranslate"><span class="pre">DrivePID</span></code></a> — proportional-integral-derivative control law
+(stateful: integral accumulator with anti-windup clamp).</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralGRU.html#newton.actuators.DriveNeuralGRU" title="newton.actuators.DriveNeuralGRU"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralGRU</span></code></a> — GRU neural-network drive
+(stateful: hidden state; explicit Warp-NN inference).</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralMLP.html#newton.actuators.DriveNeuralMLP" title="newton.actuators.DriveNeuralMLP"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralMLP</span></code></a> — MLP neural-network drive
+(stateful: position/velocity history buffers).</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.DriveNeuralLSTM.html#newton.actuators.DriveNeuralLSTM" title="newton.actuators.DriveNeuralLSTM"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveNeuralLSTM</span></code></a> — LSTM neural-network drive
+(stateful: hidden/cell state).</p></li>
+</ul>
+<p>See the API documentation for each drive’s control-law equations.</p>
+</section>
+<section id="clamping">
+<h3>Clamping<a class="headerlink" href="#clamping" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.ClampingMaxEffort.html#newton.actuators.ClampingMaxEffort" title="newton.actuators.ClampingMaxEffort"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingMaxEffort</span></code></a> — symmetric clamp to ±max_effort per actuator.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.ClampingDCMotor.html#newton.actuators.ClampingDCMotor" title="newton.actuators.ClampingDCMotor"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingDCMotor</span></code></a> — velocity-dependent effort saturation using the DC
+motor effort-speed characteristic.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.ClampingPositionBased.html#newton.actuators.ClampingPositionBased" title="newton.actuators.ClampingPositionBased"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingPositionBased</span></code></a> — position-dependent effort limits via
+interpolated lookup table (e.g. for linkage-driven joints).</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.ClampingCurrentDuty.html#newton.actuators.ClampingCurrentDuty" title="newton.actuators.ClampingCurrentDuty"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingCurrentDuty</span></code></a> — attempts current limiting, then bounds duty
+to <code class="docutils literal notranslate"><span class="pre">[-max_duty,</span> <span class="pre">max_duty]</span></code>. The duty bound takes precedence, so current is
+not guaranteed to remain within the limit.</p></li>
+</ul>
+<p>Multiple clamping objects can be stacked on a single actuator; each must match
+its drive’s output space.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ClampingCurrentDuty.voltage_source</span></code> selects <code class="docutils literal notranslate"><span class="pre">VoltageSource.INPUT</span></code> (the
+supplied voltage, by default) or <code class="docutils literal notranslate"><span class="pre">NOMINAL</span></code> (requiring <code class="docutils literal notranslate"><span class="pre">nominal_voltage</span></code>).
+The nominal estimate is independent of actual motor voltage, including when
+using a battery. See <a class="reference internal" href="../api/_generated/newton.actuators.ClampingCurrentDuty.html#newton.actuators.ClampingCurrentDuty" title="newton.actuators.ClampingCurrentDuty"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingCurrentDuty</span></code></a> for the limiting equations
+and voltage threshold.</p>
+</section>
+<section id="motors">
+<h3>Motors<a class="headerlink" href="#motors" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.MotorDC.html#newton.actuators.MotorDC" title="newton.actuators.MotorDC"><code class="xref py py-class docutils literal notranslate"><span class="pre">MotorDC</span></code></a> — DC motor driven by the average terminal voltage
+<code class="docutils literal notranslate"><span class="pre">duty</span> <span class="pre">*</span> <span class="pre">V</span></code>, as in <a class="reference external" href="https://github.com/Rhoban/bam">BAM (Better Actuator Models)</a>: models the back-EMF, optionally on a
+battery.  It models the back-EMF itself, so it cannot be combined with
+<a class="reference internal" href="../api/_generated/newton.actuators.ClampingDCMotor.html#newton.actuators.ClampingDCMotor" title="newton.actuators.ClampingDCMotor"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingDCMotor</span></code></a>.</p></li>
+</ul>
+<p>A voltage-controlled servo identified with BAM maps onto these components:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.DrivePD.html#newton.actuators.DrivePD" title="newton.actuators.DrivePD"><code class="xref py py-class docutils literal notranslate"><span class="pre">DrivePD</span></code></a> with <code class="docutils literal notranslate"><span class="pre">output_space=DriveOutputSpace.DUTY</span></code>, <code class="docutils literal notranslate"><span class="pre">kp</span></code> set to
+the firmware gain times the error gain of the servo, and <code class="docutils literal notranslate"><span class="pre">kd</span> <span class="pre">=</span> <span class="pre">0</span></code>;</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.ClampingCurrentDuty.html#newton.actuators.ClampingCurrentDuty" title="newton.actuators.ClampingCurrentDuty"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingCurrentDuty</span></code></a> with the firmware <code class="docutils literal notranslate"><span class="pre">max_current</span></code> and
+<code class="docutils literal notranslate"><span class="pre">max_duty</span></code> of the servo;</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.MotorDC.html#newton.actuators.MotorDC" title="newton.actuators.MotorDC"><code class="xref py py-class docutils literal notranslate"><span class="pre">MotorDC</span></code></a> with the fit’s <code class="docutils literal notranslate"><span class="pre">kt</span></code> and <code class="docutils literal notranslate"><span class="pre">R</span></code> as <code class="docutils literal notranslate"><span class="pre">kt</span></code> and
+<code class="docutils literal notranslate"><span class="pre">resistance</span></code>, and the supply voltage of the servo as <code class="docutils literal notranslate"><span class="pre">vin</span></code>;</p></li>
+<li><p>the fit’s armature as <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_armature" title="newton.Model.joint_armature"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_armature</span></code></a>, and its command
+delay as <a class="reference internal" href="../api/_generated/newton.actuators.InputProcessorDelay.html#newton.actuators.InputProcessorDelay" title="newton.actuators.InputProcessorDelay"><code class="xref py py-class docutils literal notranslate"><span class="pre">InputProcessorDelay</span></code></a>.</p></li>
+</ul>
+<p>BAM also identifies friction models of a servo, which the actuator does not
+model.  Model Coulomb friction with the joint’s
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_friction" title="newton.Model.joint_friction"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_friction</span></code></a>, viscous friction with
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_damping" title="newton.Model.joint_damping"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_damping</span></code></a>, and the rotor inertia with
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_armature" title="newton.Model.joint_armature"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_armature</span></code></a>.  Stribeck, load-dependent, directional
+and quadratic friction are not supported yet (see
+<a class="reference external" href="https://github.com/newton-physics/newton/issues/5220">newton#5220</a>).</p>
+</section>
+</section>
+<section id="battery">
+<span id="actuator-battery"></span><h2>Battery<a class="headerlink" href="#battery" title="Link to this heading">#</a></h2>
+<p>A battery powers the motors of one or more actuators.  Battery models subclass
+<a class="reference internal" href="../api/_generated/newton.actuators.BatteryBase.html#newton.actuators.BatteryBase" title="newton.actuators.BatteryBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">BatteryBase</span></code></a>.  See the individual battery class documentation for the
+model equations.</p>
+<p>A battery reads one array and writes one array on <code class="docutils literal notranslate"><span class="pre">control</span></code>, each with one
+entry per actuator of the model
+(<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.AttributeFrequency.ACTUATOR" title="newton.Model.AttributeFrequency.ACTUATOR"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.AttributeFrequency.ACTUATOR</span></code></a>):</p>
+<ul class="simple">
+<li><p>input <code class="docutils literal notranslate"><span class="pre">control.actuator_supply_current</span></code>: the current each motor draws
+from its battery, written by the motor in <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.step" title="newton.actuators.Actuator.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.step()</span></code></a>;</p></li>
+<li><p>output <code class="docutils literal notranslate"><span class="pre">control.actuator_supply_voltage</span></code>: the supply voltage of each
+motor, read by the motor in the next <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.step" title="newton.actuators.Actuator.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.step()</span></code></a>.  With one
+<code class="docutils literal notranslate"><span class="pre">Control</span></code> per step, <a class="reference internal" href="../api/_generated/newton.actuators.BatteryBase.html#newton.actuators.BatteryBase.step" title="newton.actuators.BatteryBase.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">BatteryBase.step()</span></code></a> writes it to the next one.</p></li>
+</ul>
+<p>To set up and run batteries:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_actuator" title="newton.ModelBuilder.add_actuator"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_actuator()</span></code></a> returns the index of the actuator
+in per-actuator arrays.  <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_battery" title="newton.ModelBuilder.add_battery"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_battery()</span></code></a> takes a
+battery class, these indices and the battery parameters, and adds a battery
+for those actuators in the current world.
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.replicate" title="newton.ModelBuilder.replicate"><code class="xref py py-meth docutils literal notranslate"><span class="pre">replicate()</span></code></a> copies the batteries into every
+world.  <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">finalize()</span></code></a> creates one object per battery
+class in <code class="docutils literal notranslate"><span class="pre">model.batteries</span></code>, holding all batteries of that class.  Its
+parameter arrays have one entry per battery, and <a class="reference internal" href="../api/_generated/newton.actuators.BatteryBase.html#newton.actuators.BatteryBase.world" title="newton.actuators.BatteryBase.world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">BatteryBase.world</span></code></a>
+maps each battery to its world, e.g. to randomize the parameters per world.
+<a class="reference internal" href="../api/_generated/newton.actuators.BatteryBase.html#newton.actuators.BatteryBase.actuators" title="newton.actuators.BatteryBase.actuators"><code class="xref py py-attr docutils literal notranslate"><span class="pre">BatteryBase.actuators</span></code></a> and <a class="reference internal" href="../api/_generated/newton.actuators.BatteryBase.html#newton.actuators.BatteryBase.actuator_start" title="newton.actuators.BatteryBase.actuator_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">BatteryBase.actuator_start</span></code></a> give
+the actuators of each battery.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.BatteryBase.html#newton.actuators.BatteryBase.step" title="newton.actuators.BatteryBase.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">BatteryBase.step()</span></code></a> updates the supply voltage from the current.  Call
+it once per step after the actuators.  The motors read the supply voltage in
+the next <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.step" title="newton.actuators.Actuator.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.step()</span></code></a>, so a change of a battery parameter, e.g. a
+randomized <code class="docutils literal notranslate"><span class="pre">nominal_voltage</span></code> after <a class="reference internal" href="../api/_generated/newton.actuators.BatteryBase.html#newton.actuators.BatteryBase.reset" title="newton.actuators.BatteryBase.reset"><code class="xref py py-meth docutils literal notranslate"><span class="pre">BatteryBase.reset()</span></code></a>, reaches the
+motors one step later, after the next <a class="reference internal" href="../api/_generated/newton.actuators.BatteryBase.html#newton.actuators.BatteryBase.step" title="newton.actuators.BatteryBase.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">BatteryBase.step()</span></code></a>.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.BatteryBase.html#newton.actuators.BatteryBase.reset" title="newton.actuators.BatteryBase.reset"><code class="xref py py-meth docutils literal notranslate"><span class="pre">BatteryBase.reset()</span></code></a> resets all batteries or the batteries in the worlds
+of a mask.  Call it after resetting worlds.  As in <a class="reference internal" href="../api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.reset" title="newton.solvers.SolverBase.reset"><code class="xref py py-meth docutils literal notranslate"><span class="pre">SolverBase.reset()</span></code></a>,
+the mask has <code class="docutils literal notranslate"><span class="pre">world_count</span> <span class="pre">+</span> <span class="pre">1</span></code> entries, and the last one selects batteries
+outside any world.</p></li>
+</ul>
+<p>Below, the hip and knee share one battery and the ankle draws from another:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.actuators</span><span class="w"> </span><span class="kn">import</span> <span class="n">DriveOutputSpace</span><span class="p">,</span> <span class="n">BatteryConstantResistance</span><span class="p">,</span> <span class="n">ClampingCurrentDuty</span><span class="p">,</span> <span class="n">DrivePD</span><span class="p">,</span> <span class="n">MotorDC</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">actuators</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"hip"</span><span class="p">,</span> <span class="s2">"knee"</span><span class="p">,</span> <span class="s2">"ankle"</span><span class="p">):</span>
+    <span class="n">link</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">()</span>
+    <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">link</span><span class="p">,</span> <span class="n">hx</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">0.02</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.02</span><span class="p">)</span>
+    <span class="n">joint</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_revolute</span><span class="p">(</span><span class="n">parent</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">link</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="n">newton</span><span class="o">.</span><span class="n">Axis</span><span class="o">.</span><span class="n">Z</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="n">name</span><span class="p">)</span>
+    <span class="n">builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">joint</span><span class="p">])</span>
+    <span class="n">actuator</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_actuator</span><span class="p">(</span>
+        <span class="n">DrivePD</span><span class="p">,</span>
+        <span class="n">output_space</span><span class="o">=</span><span class="n">DriveOutputSpace</span><span class="o">.</span><span class="n">DUTY</span><span class="p">,</span>
+        <span class="n">index</span><span class="o">=</span><span class="n">builder</span><span class="o">.</span><span class="n">joint_qd_start</span><span class="p">[</span><span class="n">joint</span><span class="p">],</span>
+        <span class="n">kp</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
+        <span class="n">clamping</span><span class="o">=</span><span class="p">[(</span><span class="n">ClampingCurrentDuty</span><span class="p">,</span> <span class="p">{</span><span class="s2">"max_current"</span><span class="p">:</span> <span class="mf">2.0</span><span class="p">})],</span>
+        <span class="n">motor</span><span class="o">=</span><span class="p">(</span><span class="n">MotorDC</span><span class="p">,</span> <span class="p">{</span><span class="s2">"kt"</span><span class="p">:</span> <span class="mf">0.5</span><span class="p">,</span> <span class="s2">"resistance"</span><span class="p">:</span> <span class="mf">2.0</span><span class="p">,</span> <span class="s2">"vin"</span><span class="p">:</span> <span class="mf">12.0</span><span class="p">,</span> <span class="s2">"supply_from_battery"</span><span class="p">:</span> <span class="kc">True</span><span class="p">}),</span>
+    <span class="p">)</span>
+    <span class="n">actuators</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">actuator</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_battery</span><span class="p">(</span><span class="n">BatteryConstantResistance</span><span class="p">,</span> <span class="n">actuators</span><span class="p">[:</span><span class="mi">2</span><span class="p">],</span> <span class="n">nominal_voltage</span><span class="o">=</span><span class="mf">12.0</span><span class="p">,</span> <span class="n">resistance</span><span class="o">=</span><span class="mf">0.2</span><span class="p">,</span> <span class="n">min_voltage</span><span class="o">=</span><span class="mf">9.0</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_battery</span><span class="p">(</span><span class="n">BatteryConstantResistance</span><span class="p">,</span> <span class="n">actuators</span><span class="p">[</span><span class="mi">2</span><span class="p">:],</span> <span class="n">nominal_voltage</span><span class="o">=</span><span class="mf">12.0</span><span class="p">,</span> <span class="n">resistance</span><span class="o">=</span><span class="mf">0.2</span><span class="p">,</span> <span class="n">min_voltage</span><span class="o">=</span><span class="mf">9.0</span><span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverFeatherstone</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">(),</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">control</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">control</span><span class="p">()</span>
+<span class="n">control</span><span class="o">.</span><span class="n">joint_target_q</span><span class="o">.</span><span class="n">fill_</span><span class="p">(</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">dt</span> <span class="o">=</span> <span class="mf">0.01</span>
+
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">10</span><span class="p">):</span>
+    <span class="n">control</span><span class="o">.</span><span class="n">joint_f</span><span class="o">.</span><span class="n">zero_</span><span class="p">()</span>
+    <span class="k">for</span> <span class="n">actuator</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">actuators</span><span class="p">:</span>
+        <span class="n">actuator</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_0</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="n">dt</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">battery</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">batteries</span><span class="p">:</span>
+        <span class="n">battery</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">control</span><span class="p">)</span>
+    <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
+    <span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span> <span class="o">=</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">state_0</span>
+</pre></div>
+</div>
+</section>
+<section id="usd">
+<h2>USD<a class="headerlink" href="#usd" title="Link to this heading">#</a></h2>
+<p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_usd()</span></code></a> imports <code class="docutils literal notranslate"><span class="pre">NewtonActuator</span></code> prims from
+the <a class="reference external" href="https://github.com/newton-physics/newton-usd-schemas">newton-usd-schemas</a>
+package.  Each applied API schema becomes one component:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>USD</p></th>
+<th class="head"><p>Newton</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">NewtonPDControlAPI</span></code>, <code class="docutils literal notranslate"><span class="pre">NewtonPIDControlAPI</span></code>, <code class="docutils literal notranslate"><span class="pre">NewtonNeuralControlAPI</span></code></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.actuators.DrivePD.html#newton.actuators.DrivePD" title="newton.actuators.DrivePD"><code class="xref py py-class docutils literal notranslate"><span class="pre">DrivePD</span></code></a>, <a class="reference internal" href="../api/_generated/newton.actuators.DrivePID.html#newton.actuators.DrivePID" title="newton.actuators.DrivePID"><code class="xref py py-class docutils literal notranslate"><span class="pre">DrivePID</span></code></a>, a neural drive; <code class="docutils literal notranslate"><span class="pre">newton:outputSpace</span></code>
+sets <code class="docutils literal notranslate"><span class="pre">output_space</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">NewtonMaxEffortClampingAPI</span></code>, <code class="docutils literal notranslate"><span class="pre">NewtonDCMotorClampingAPI</span></code>,
+<code class="docutils literal notranslate"><span class="pre">NewtonPositionBasedClampingAPI</span></code></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.actuators.ClampingMaxEffort.html#newton.actuators.ClampingMaxEffort" title="newton.actuators.ClampingMaxEffort"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingMaxEffort</span></code></a>, <a class="reference internal" href="../api/_generated/newton.actuators.ClampingDCMotor.html#newton.actuators.ClampingDCMotor" title="newton.actuators.ClampingDCMotor"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingDCMotor</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.actuators.ClampingPositionBased.html#newton.actuators.ClampingPositionBased" title="newton.actuators.ClampingPositionBased"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingPositionBased</span></code></a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">NewtonCurrentDutyClampingAPI</span></code></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.actuators.ClampingCurrentDuty.html#newton.actuators.ClampingCurrentDuty" title="newton.actuators.ClampingCurrentDuty"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingCurrentDuty</span></code></a></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">NewtonDCMotorAPI</span></code></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.actuators.MotorDC.html#newton.actuators.MotorDC" title="newton.actuators.MotorDC"><code class="xref py py-class docutils literal notranslate"><span class="pre">MotorDC</span></code></a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">NewtonActuatorDelayAPI</span></code>, <code class="docutils literal notranslate"><span class="pre">NewtonActuatorEncoderAPI</span></code> with <code class="docutils literal notranslate"><span class="pre">newton:outputJoint</span></code></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.actuators.InputProcessorDelay.html#newton.actuators.InputProcessorDelay" title="newton.actuators.InputProcessorDelay"><code class="xref py py-class docutils literal notranslate"><span class="pre">InputProcessorDelay</span></code></a>, <a class="reference internal" href="../api/_generated/newton.actuators.InputProcessorEncoder.html#newton.actuators.InputProcessorEncoder" title="newton.actuators.InputProcessorEncoder"><code class="xref py py-class docutils literal notranslate"><span class="pre">InputProcessorEncoder</span></code></a></p></td>
+</tr>
+<tr class="row-odd"><td><p>A <code class="docutils literal notranslate"><span class="pre">NewtonConstantResistanceBattery</span></code> prim, targeted by the actuator’s
+<code class="docutils literal notranslate"><span class="pre">newton:battery</span></code> relationship</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.actuators.BatteryConstantResistance.html#newton.actuators.BatteryConstantResistance" title="newton.actuators.BatteryConstantResistance"><code class="xref py py-class docutils literal notranslate"><span class="pre">BatteryConstantResistance</span></code></a>, added with
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_battery" title="newton.ModelBuilder.add_battery"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_battery()</span></code></a></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A clamping schema’s <code class="docutils literal notranslate"><span class="pre">newton:inputSpace</span></code> must be the space its class bounds
+(<code class="docutils literal notranslate"><span class="pre">&quot;effort&quot;</span></code>, or <code class="docutils literal notranslate"><span class="pre">&quot;duty&quot;</span></code> for <code class="docutils literal notranslate"><span class="pre">NewtonCurrentDutyClampingAPI</span></code>), and the
+import raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code> otherwise.</p>
+<p><a class="reference internal" href="../api/_generated/newton.actuators.parse_actuator_prim.html#newton.actuators.parse_actuator_prim" title="newton.actuators.parse_actuator_prim"><code class="xref py py-func docutils literal notranslate"><span class="pre">parse_actuator_prim()</span></code></a> and <a class="reference internal" href="../api/_generated/newton.actuators.parse_battery_prim.html#newton.actuators.parse_battery_prim" title="newton.actuators.parse_battery_prim"><code class="xref py py-func docutils literal notranslate"><span class="pre">parse_battery_prim()</span></code></a> return the parsed
+classes and arguments without building a model.  Register further schemas
+with <a class="reference internal" href="../api/_generated/newton.actuators.register_actuator_component.html#newton.actuators.register_actuator_component" title="newton.actuators.register_actuator_component"><code class="xref py py-func docutils literal notranslate"><span class="pre">register_actuator_component()</span></code></a>.</p>
+</section>
+<section id="customization">
+<h2>Customization<a class="headerlink" href="#customization" title="Link to this heading">#</a></h2>
+<p>Any actuator can be assembled from the existing building blocks — mix and
+match drives, clamping stages, input processors and motors to fit a specific use case.
+When the built-in components are not sufficient, implement new ones by
+subclassing <a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase" title="newton.actuators.DriveBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">DriveBase</span></code></a>, <a class="reference internal" href="../api/_generated/newton.actuators.ClampingBase.html#newton.actuators.ClampingBase" title="newton.actuators.ClampingBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingBase</span></code></a> or <a class="reference internal" href="../api/_generated/newton.actuators.InputProcessorBase.html#newton.actuators.InputProcessorBase" title="newton.actuators.InputProcessorBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">InputProcessorBase</span></code></a>.</p>
+<p>For example, a custom drive needs to implement
+<a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.compute" title="newton.actuators.DriveBase.compute"><code class="xref py py-meth docutils literal notranslate"><span class="pre">compute()</span></code></a>, <a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.resolve_arguments" title="newton.actuators.DriveBase.resolve_arguments"><code class="xref py py-meth docutils literal notranslate"><span class="pre">resolve_arguments()</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.is_stateful" title="newton.actuators.DriveBase.is_stateful"><code class="xref py py-meth docutils literal notranslate"><span class="pre">is_stateful()</span></code></a>, and <a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.is_graphable" title="newton.actuators.DriveBase.is_graphable"><code class="xref py py-meth docutils literal notranslate"><span class="pre">is_graphable()</span></code></a>:</p>
+<div class="literal-block-wrapper docutils container" id="id6">
+<div class="code-block-caption"><span class="caption-text">Skeleton — the <code class="docutils literal notranslate"><span class="pre">compute</span></code> body is omitted; see existing
+drives for complete examples.</span><a class="headerlink" href="#id6" title="Link to this code">#</a></div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.actuators</span><span class="w"> </span><span class="kn">import</span> <span class="n">DriveBase</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyDrive</span><span class="p">(</span><span class="n">DriveBase</span><span class="p">):</span>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">resolve_arguments</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">"gain"</span><span class="p">:</span> <span class="n">args</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"gain"</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)}</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">gain</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">gain</span> <span class="o">=</span> <span class="n">gain</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_stateful</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="kc">False</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_graphable</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="kc">True</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">compute</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">positions</span><span class="p">,</span> <span class="n">velocities</span><span class="p">,</span> <span class="n">target_pos</span><span class="p">,</span> <span class="n">target_vel</span><span class="p">,</span>
+                <span class="n">feedforward</span><span class="p">,</span> <span class="n">pos_indices</span><span class="p">,</span> <span class="n">vel_indices</span><span class="p">,</span>
+                <span class="n">target_pos_indices</span><span class="p">,</span> <span class="n">target_vel_indices</span><span class="p">,</span>
+                <span class="n">output</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">dt</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">custom_inputs</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+        <span class="c1"># Launch a Warp kernel that writes effort into `output`</span>
+        <span class="o">...</span>
+</pre></div>
+</div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">resolve_arguments</span></code> maps user-provided keyword arguments (from
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_actuator" title="newton.ModelBuilder.add_actuator"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_actuator()</span></code></a> or USD schemas) to constructor
+parameters, filling in defaults where needed.</p>
+<p>A stateful custom drive also defines a dataclass subclass of
+<code class="xref py py-class docutils literal notranslate"><span class="pre">DriveBase.State</span></code> and implements <code class="xref py py-meth docutils literal notranslate"><span class="pre">reset()</span></code>. The
+default <code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.State.assign()</span></code> behavior copies direct Warp array and
+Torch tensor fields without replacing their storage. States with other field
+types or nested storage implement <code class="docutils literal notranslate"><span class="pre">assign()</span></code> to define that copy.</p>
+<p>A drive that needs additional per-step arrays declares them through
+<a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.custom_inputs" title="newton.actuators.DriveBase.custom_inputs"><code class="xref py py-attr docutils literal notranslate"><span class="pre">DriveBase.custom_inputs</span></code></a>. They arrive in the <code class="docutils literal notranslate"><span class="pre">custom_inputs</span></code> argument
+to <a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.compute" title="newton.actuators.DriveBase.compute"><code class="xref py py-meth docutils literal notranslate"><span class="pre">compute()</span></code></a> after being read from <code class="docutils literal notranslate"><span class="pre">sim_control</span></code>; see
+<a class="reference internal" href="#custom-drive-inputs"><span class="std std-ref">Custom Drive Inputs</span></a>.</p>
+<p>A custom drive works in the explicit mode with the methods above. To also
+support the implicit mode it provides three more things, because the solve
+evaluates the control law inside its own kernel rather than calling
+<a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.compute" title="newton.actuators.DriveBase.compute"><code class="xref py py-meth docutils literal notranslate"><span class="pre">compute()</span></code></a>:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.evaluate_force" title="newton.actuators.DriveBase.evaluate_force"><code class="xref py py-attr docutils literal notranslate"><span class="pre">evaluate_force</span></code></a> — a <code class="docutils literal notranslate"><span class="pre">&#64;wp.func</span></code> holding the control law.
+The solve calls it at the predicted state, so it must read every parameter it
+needs from one packed row rather than from the drive’s own arrays.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.bind_params" title="newton.actuators.DriveBase.bind_params"><code class="xref py py-meth docutils literal notranslate"><span class="pre">bind_params()</span></code></a> — packs those parameters into an
+<code class="docutils literal notranslate"><span class="pre">(num_actuators,</span> <span class="pre">P)</span></code> array and re-points the drive’s public arrays at
+its columns, so later writes stay visible to the solve.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.prepare_implicit" title="newton.actuators.DriveBase.prepare_implicit"><code class="xref py py-meth docutils literal notranslate"><span class="pre">prepare_implicit()</span></code></a> — optional, called once per step before
+the solve. Use it for parameters that depend on the current state, such as a
+PID integral term or a network linearization. Drives with fixed
+parameters do not override it.</p></li>
+</ul>
+<div class="literal-block-wrapper docutils container" id="id7">
+<div class="code-block-caption"><span class="caption-text">Adding implicit support to <code class="docutils literal notranslate"><span class="pre">MyDrive</span></code>.</span><a class="headerlink" href="#id7" title="Link to this code">#</a></div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@wp</span><span class="o">.</span><span class="n">func</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_my_force</span><span class="p">(</span><span class="n">q</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">qd</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">target_q</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span>
+              <span class="n">target_qd</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">feedforward</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span>
+              <span class="n">params</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array2d</span><span class="p">[</span><span class="nb">float</span><span class="p">],</span> <span class="n">i</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">:</span>
+    <span class="k">return</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">(</span><span class="n">params</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="mi">0</span><span class="p">])</span> <span class="o">*</span> <span class="p">(</span><span class="n">target_q</span> <span class="o">-</span> <span class="n">q</span><span class="p">)</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyDrive</span><span class="p">(</span><span class="n">DriveBase</span><span class="p">):</span>
+    <span class="n">evaluate_force</span> <span class="o">=</span> <span class="n">_my_force</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">bind_params</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">pack</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">gain</span><span class="p">),</span> <span class="mi">1</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">gain</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">pack</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">assign</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">gain</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">gain</span> <span class="o">=</span> <span class="n">pack</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span>   <span class="c1"># writes to self.gain now reach the solve</span>
+        <span class="k">return</span> <span class="n">pack</span>
+</pre></div>
+</div>
+</div>
+<p>Returning <code class="docutils literal notranslate"><span class="pre">None</span></code> from <a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.bind_params" title="newton.actuators.DriveBase.bind_params"><code class="xref py py-meth docutils literal notranslate"><span class="pre">bind_params()</span></code></a> declares that this
+configuration cannot be solved implicitly.
+<a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.set_effort_mode_implicit" title="newton.actuators.Actuator.set_effort_mode_implicit"><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_effort_mode_implicit()</span></code></a> then raises
+<code class="docutils literal notranslate"><span class="pre">NotImplementedError</span></code> rather than falling back silently, as it does for a
+Torch-backed neural checkpoint. Leaving
+<a class="reference internal" href="../api/_generated/newton.actuators.DriveBase.html#newton.actuators.DriveBase.evaluate_force" title="newton.actuators.DriveBase.evaluate_force"><code class="xref py py-attr docutils literal notranslate"><span class="pre">evaluate_force</span></code></a> as <code class="docutils literal notranslate"><span class="pre">None</span></code> raises the same error.</p>
+<p>Similarly, a custom clamping stage subclasses <a class="reference internal" href="../api/_generated/newton.actuators.ClampingBase.html#newton.actuators.ClampingBase" title="newton.actuators.ClampingBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingBase</span></code></a> and
+implements <a class="reference internal" href="../api/_generated/newton.actuators.ClampingBase.html#newton.actuators.ClampingBase.modify_forces" title="newton.actuators.ClampingBase.modify_forces"><code class="xref py py-meth docutils literal notranslate"><span class="pre">modify_forces()</span></code></a> (which reads effort from a source
+buffer and writes bounded effort to a destination buffer). A duty clamp uses
+the same base and declares <code class="docutils literal notranslate"><span class="pre">input_space</span> <span class="pre">=</span> <span class="pre">DriveOutputSpace.DUTY</span></code>; its
+<a class="reference internal" href="../api/_generated/newton.actuators.ClampingBase.html#newton.actuators.ClampingBase.modify_forces" title="newton.actuators.ClampingBase.modify_forces"><code class="xref py py-meth docutils literal notranslate"><span class="pre">modify_forces()</span></code></a> also receives the supply voltage.</p>
+</section>
+<section id="see-also">
+<h2>See Also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/newton_actuators.html#module-newton.actuators" title="newton.actuators"><code class="xref py py-mod docutils literal notranslate"><span class="pre">newton.actuators</span></code></a> — full API reference</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_actuator" title="newton.ModelBuilder.add_actuator"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_actuator()</span></code></a> — registering actuators during
+model construction</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#architecture">Architecture</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#usage">Usage</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stateful-actuators">Stateful Actuators</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#boundary-assignment">Boundary assignment</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#alternating-graphs">Alternating graphs</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#custom-drive-inputs">Custom Drive Inputs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#neural-network-checkpoints">Neural-Network Checkpoints</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#onnx-checkpoints">ONNX checkpoints</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#migrating-torch-checkpoints-to-onnx">Migrating Torch checkpoints to ONNX</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torch-checkpoints">Torch checkpoints</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#effort-modes">Effort Modes</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#differentiability-and-graph-capture">Differentiability and Graph Capture</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#available-components">Available Components</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#input-processors">Input processors</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#drives">Drives</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#clamping">Clamping</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#motors">Motors</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#battery">Battery</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#usd">USD</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#customization">Customization</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-also">See Also</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
+      <br/>
+    
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.22.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

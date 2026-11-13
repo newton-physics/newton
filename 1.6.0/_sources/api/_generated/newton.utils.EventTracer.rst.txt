@@ -1,0 +1,8 @@
+﻿newton.utils.EventTracer
+========================
+
+.. autoclass:: newton.utils.EventTracer
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

@@ -1,0 +1,6 @@
+﻿newton.geometry.create\_empty\_sdf\_data
+========================================
+
+.. currentmodule:: newton.geometry
+
+.. autofunction:: create_empty_sdf_data

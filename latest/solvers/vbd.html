@@ -1,0 +1,2106 @@
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>VBD &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=57292b40" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=64cc4de3f052d77215f0"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0" />
+
+    <script src="../_static/documentation_options.js?v=4cc04674"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true, "packages": {"[+]": ["amsmath", "amssymb", "amsfonts"]}, "displayMath": [["$$", "$$"], ["\\[", "\\]"]], "processEnvironments": true, "tags": "ams", "macros": {"RR": "{\\mathbb{R}}", "bold": ["{\\mathbf{#1}}", 1], "vec": ["{\\mathbf{#1}}", 1]}}, "options": {"ignoreHtmlClass": "annotation", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+    <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'solvers/vbd';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.22.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/mermaid-nbsphinx.js?v=613f558e"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Simulation Tuning" href="../concepts/simulation_tuning.html" />
+    <link rel="prev" title="Kamino" href="kamino.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button type="button" class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.9.0.dev0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/diagnostics.html">
+    Logging and Warnings
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/deformable_objects.html">
+    Deformable Objects
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/selection.html">
+    Selection API
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/deformable_selection.html">
+    Deformable Selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/solver_observables.html">
+    Solver Observables
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/determinism.html">
+    Deterministic Simulation
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#" aria-current="page">
+    VBD
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/simulation_tuning.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/simulation_tuning_solvers.html">
+    Solver Reference
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/simulation_tuning_mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/simulation_tuning_vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_config.html">
+    newton.config
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../tendons.html">
+    Massless Routed Tendons
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md">
+     Publications
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button type="button" class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/diagnostics.html">
+    Logging and Warnings
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/deformable_objects.html">
+    Deformable Objects
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/selection.html">
+    Selection API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/deformable_selection.html">
+    Deformable Selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/solver_observables.html">
+    Solver Observables
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/determinism.html">
+    Deterministic Simulation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#" aria-current="page">
+    VBD
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/simulation_tuning.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/simulation_tuning_solvers.html">
+    Solver Reference
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/simulation_tuning_mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/simulation_tuning_vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_config.html">
+    newton.config
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tendons.html">
+    Massless Routed Tendons
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md">
+     Publications
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/compatibility.html">Compatibility and Support</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Viewers and Debugging</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/diagnostics.html">Logging and Warnings</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/source_code_guidelines.html">Source Code Guidelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/review_guidelines.html">Review Guidelines</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../concepts/worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/deformable_objects.html">Deformable Objects</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/selection.html">Selection API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/deformable_selection.html">Deformable Selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="../concepts/solver_observables.html">Solver Observables</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/determinism.html">Deterministic Simulation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/coupling.html">Coupled Solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/actuators.html">Actuators</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Solvers</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="index.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mujoco.html">MuJoCo</a></li>
+<li class="toctree-l1"><a class="reference internal" href="kamino.html">Kamino</a></li>
+<li class="toctree-l1 current active"><a aria-current="page" class="current reference internal" href="#">VBD</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Simulation Tuning</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../concepts/simulation_tuning.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/simulation_tuning_solvers.html">Solver Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/simulation_tuning_mujoco.html">MuJoCo</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/simulation_tuning_vbd.html">VBD</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_actuators.html">newton.actuators</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_config.html">newton.config</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_controllers.html">newton.controllers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../tendons.html">Massless Routed Tendons</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lab/isaac-lab.html">Isaac Lab</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md"> Publications</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">VBD</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="vbd">
+<h1>VBD<a class="headerlink" href="#vbd" title="Link to this heading">#</a></h1>
+<p><a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> is a unified implicit solver based on
+Vertex Block Descent (VBD): cloth, soft bodies, rigid bodies (joints,
+contacts, rods), and their interactions are all solved in one VBD loop, with
+joint and contact constraints enforced through an augmented-Lagrangian (ALM)
+extension of the method. The compliant ALM constraint path is enabled
+by default (<code class="docutils literal notranslate"><span class="pre">rigid_compliant_alm=True</span></code>). Pass <code class="docutils literal notranslate"><span class="pre">rigid_compliant_alm=False</span></code>
+explicitly to retain the deprecated legacy path during its migration period.</p>
+<div class="experimental admonition">
+<p class="admonition-title">Experimental</p>
+<p><a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> is experimental. Its public API,
+behavior, feature support, performance, and implementation may change
+without prior notice.</p>
+</div>
+<p>This page is the VBD backend guide: when to choose the solver, how to set it
+up correctly, and where to find runnable examples. For symptom-driven
+diagnosis and parameter tuning, see <a class="reference internal" href="../concepts/simulation_tuning_vbd.html#tuning-vbd"><span class="std std-ref">VBD Tuning</span></a> and the
+<a class="reference internal" href="../concepts/simulation_tuning.html#simulation-tuning"><span class="std std-ref">Simulation Tuning</span></a> landing page.</p>
+<section id="when-to-choose-vbd">
+<h2>When to Choose VBD<a class="headerlink" href="#when-to-choose-vbd" title="Link to this heading">#</a></h2>
+<p>Start from the <a class="reference internal" href="index.html#supported-features"><span class="std std-ref">Supported Features</span></a> matrix and the
+<a class="reference internal" href="index.html#joint-feature-support"><span class="std std-ref">Joint Feature Support</span></a> tables in the <a class="reference internal" href="index.html"><span class="doc">solver overview</span></a>. The underlying methods are described in the references
+cited by <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a>:</p>
+<ul class="simple">
+<li><p>Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block
+Descent. <em>ACM Trans. Graph.</em> 43, 4. <a class="reference external" href="https://doi.org/10.1145/3658179">https://doi.org/10.1145/3658179</a></p></li>
+<li><p>Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block
+Descent. <em>ACM Trans. Graph.</em> 44, 4. <a class="reference external" href="https://doi.org/10.1145/3731195">https://doi.org/10.1145/3731195</a>
+(the deprecated legacy rigid constraint path)</p></li>
+<li><p>Anka H. Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide
+and Truncate: A Penetration and Inversion Free Framework for Coupled
+Multi-physics System. In <em>ACM SIGGRAPH 2026 Conference Papers</em>.
+<a class="reference external" href="https://doi.org/10.1145/3799902.3811143">https://doi.org/10.1145/3799902.3811143</a> (penetration-free truncation, DAT)</p></li>
+<li><p>Anka He Chen, Jerry Hsu, Ziheng Liu, Miles Macklin, Yin Yang, and Cem
+Yuksel. 2025. Offset Geometric Contact. <em>ACM Trans. Graph.</em> 44, 4.
+<a class="reference external" href="https://doi.org/10.1145/3731205">https://doi.org/10.1145/3731205</a> (feature regions of full-surface mesh
+contact, OGC)</p></li>
+</ul>
+</section>
+<section id="api-explanations">
+<h2>API Explanations<a class="headerlink" href="#api-explanations" title="Link to this heading">#</a></h2>
+<section id="construction-and-stepping">
+<h3>Construction and Stepping<a class="headerlink" href="#construction-and-stepping" title="Link to this heading">#</a></h3>
+<p>Colour the model before you finalize it. <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.color" title="newton.ModelBuilder.color"><code class="xref py py-meth docutils literal notranslate"><span class="pre">color()</span></code></a>
+fills <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_color_groups" title="newton.Model.particle_color_groups"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_color_groups</span></code></a> and
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.body_color_groups" title="newton.Model.body_color_groups"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_color_groups</span></code></a>; the solver raises at construction when
+particles are present without particle colours, or when rigid bodies are
+integrated by VBD without body colours. Pass <code class="docutils literal notranslate"><span class="pre">include_bending=True</span></code> when the
+model has bending edges. Then build the collision pipeline, its contacts buffer
+and the solver, in that order:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span><span class="o">.</span><span class="n">color</span><span class="p">(</span><span class="n">include_bending</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>  <span class="c1"># the model has bending edges</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="n">collision_pipeline</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">collision_pipeline</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+<span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverVBD</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">iterations</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
+
+<span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">(),</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">control</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">control</span><span class="p">()</span>
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_steps</span><span class="p">):</span>
+    <span class="n">collision_pipeline</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
+    <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
+    <span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span> <span class="o">=</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">state_in</span>
+</pre></div>
+</div>
+<p>For rigid joints the solver captures the structural rest pose from
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.body_q" title="newton.Model.body_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_q</span></code></a> at construction, so the body transforms must match the joint
+angles when the solver is built; ROD rest bend and twist come from
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_rest_q" title="newton.Model.joint_rest_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_rest_q</span></code></a>.</p>
+<p>With a solver-owned pipeline, <code class="docutils literal notranslate"><span class="pre">SolverVBD(model,</span> <span class="pre">collision_pipeline=...)</span></code>, the
+solver allocates its own contacts buffer, seeds the pipeline’s self-contact
+configuration from the <code class="docutils literal notranslate"><span class="pre">particle_self_contact_*</span></code> arguments, runs rigid
+detection itself on the schedule of <code class="docutils literal notranslate"><span class="pre">collision_frequency_type</span></code>, and <code class="docutils literal notranslate"><span class="pre">step</span></code>
+takes <code class="docutils literal notranslate"><span class="pre">contacts=None</span></code>. Rigid-soft DAT requires this form, and so does a
+<code class="docutils literal notranslate"><span class="pre">RIGID</span></code> slot on <code class="docutils literal notranslate"><span class="pre">ITERATIONS</span></code>, which also needs contact matching in the
+pipeline (<a class="reference internal" href="#vbd-contact-matching"><span class="std std-ref">below</span></a>). The self-contact slot works in both
+forms; <a class="reference internal" href="../concepts/simulation_tuning_vbd.html#vbd-jitter-pipeline"><span class="std std-ref">Jitter: where to look first</span></a> shows the arguments that put it on the
+<code class="docutils literal notranslate"><span class="pre">ITERATIONS</span></code> schedule.</p>
+<p id="vbd-contact-matching"><strong>Contact matching between steps and between iterations.</strong> Each detection
+pass of the pipeline can label every body-body contact with the index of the
+same contact in the previous pass. <code class="docutils literal notranslate"><span class="pre">contact_matching=&quot;latest&quot;</span></code> writes the
+labels and keeps the fresh geometry; <code class="docutils literal notranslate"><span class="pre">&quot;sticky&quot;</span></code> also replays the saved
+contact points and normal (experimental); the default <code class="docutils literal notranslate"><span class="pre">&quot;disabled&quot;</span></code> writes no
+labels (<a class="reference internal" href="../concepts/collisions.html#contact-matching"><span class="std std-ref">Contact Matching</span></a>). The solver uses the labels in two places.
+Between steps, <code class="docutils literal notranslate"><span class="pre">rigid_contact_history=True</span></code> snapshots the solved state of
+every contact at the end of the step (multiplier, penalty stiffness, normal)
+and restores it onto the matched contacts at the next step’s contact refresh:
+the normal multiplier along the new normal and, with <code class="docutils literal notranslate"><span class="pre">&quot;latest&quot;</span></code> matching,
+the tangential multiplier projected onto the friction disk. Unmatched contacts
+start cold, and so does every contact when two detection passes run between
+two steps. Between iterations, a <code class="docutils literal notranslate"><span class="pre">RIGID</span></code> slot on the <code class="docutils literal notranslate"><span class="pre">ITERATIONS</span></code> schedule
+re-detects inside the iteration loop and replaces the contact set in the
+middle of the solve; the solver snapshots the in-flight state before each pass
+and restores it onto the new set in the same way, so the multipliers built up
+in the earlier iterations survive the refresh. The first use is opt-in; the
+second is not. The constructor therefore raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code> when the
+<code class="docutils literal notranslate"><span class="pre">RIGID</span></code> slot is on <code class="docutils literal notranslate"><span class="pre">ITERATIONS</span></code> and the pipeline has <code class="docutils literal notranslate"><span class="pre">&quot;disabled&quot;</span></code>
+matching, and also when <code class="docutils literal notranslate"><span class="pre">rigid_contact_history=True</span></code> meets an owned pipeline
+without matching.</p>
+<p>For CUDA graph capture keep the same order, pipeline, contacts, solver, all
+before capture. Body-body contact state is pre-sized from the pipeline’s
+published rigid contact maximum and body-particle contact state from the
+particle-shape pair count; both grow from <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> on the first step.
+During capture that growth needs Warp’s stream-ordered memory pool, otherwise
+the solver raises and asks you to pre-size. <code class="docutils literal notranslate"><span class="pre">rigid_contact_history=True</span></code>
+needs its warm-start buffers allocated before capture, on every device:
+construct the <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> before the solver, which
+publishes <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline.rigid_contact_max" title="newton.CollisionPipeline.rigid_contact_max"><code class="xref py py-attr docutils literal notranslate"><span class="pre">rigid_contact_max</span></code></a>, or run one uncaptured step first.</p>
+<p>Start at <code class="docutils literal notranslate"><span class="pre">dt</span></code> = 1/600 s with 10 iterations and adjust following
+<a class="reference internal" href="../concepts/simulation_tuning_vbd.html#vbd-rules-of-thumb"><span class="std std-ref">Rules of Thumb</span></a>. The <a class="reference internal" href="../concepts/simulation_tuning_vbd.html#tuning-vbd"><span class="std std-ref">VBD Tuning</span></a> parameter table lists the
+constructor arguments that matter most for tuning, with their
+effect and cost; the signature of <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> is the
+complete list.</p>
+</section>
+<section id="model-inputs">
+<h3>Model Inputs<a class="headerlink" href="#model-inputs" title="Link to this heading">#</a></h3>
+<p>The solver reads three systems from the <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a>:</p>
+<ul class="simple">
+<li><p><strong>Cloth</strong>: particles with triangles and bending edges, from
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_cloth_mesh" title="newton.ModelBuilder.add_cloth_mesh"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_cloth_mesh()</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_cloth_grid" title="newton.ModelBuilder.add_cloth_grid"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_cloth_grid()</span></code></a>, or
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_triangle" title="newton.ModelBuilder.add_triangle"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_triangle()</span></code></a> and
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_edge" title="newton.ModelBuilder.add_edge"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_edge()</span></code></a>. Material: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ke</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ka</span></code></a> and
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_kd</span></code></a> per triangle, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_ke</span></code></a> and <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_kd</span></code></a> per edge, and
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_radius" title="newton.Model.particle_radius"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_radius</span></code></a> per particle. <code class="docutils literal notranslate"><span class="pre">validate_mesh=True</span></code> runs the
+element-quality checker.</p></li>
+<li><p><strong>Soft bodies</strong>: particles with tetrahedra, from
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_soft_mesh" title="newton.ModelBuilder.add_soft_mesh"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_soft_mesh()</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_soft_grid" title="newton.ModelBuilder.add_soft_grid"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_soft_grid()</span></code></a> or
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_tetrahedron" title="newton.ModelBuilder.add_tetrahedron"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_tetrahedron()</span></code></a>. Material: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_mu</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_lambda</span></code></a> and <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_damp</span></code></a> per tetrahedron. The surface triangles take part
+in self-contact and rigid-soft contact.</p></li>
+<li><p><strong>Rigid bodies</strong>: <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_body" title="newton.ModelBuilder.add_body"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_body()</span></code></a> with shapes, and
+joints of type BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6 and ROD
+(<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_joint_rod" title="newton.ModelBuilder.add_joint_rod"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_joint_rod()</span></code></a> for cables). DISTANCE joints are
+not supported. Shape materials <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.ke" title="newton.ModelBuilder.ShapeConfig.ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ke</span></code></a>, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.kd" title="newton.ModelBuilder.ShapeConfig.kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">kd</span></code></a>, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.mu" title="newton.ModelBuilder.ShapeConfig.mu"><code class="xref py py-attr docutils literal notranslate"><span class="pre">mu</span></code></a> and <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.margin" title="newton.ModelBuilder.ShapeConfig.margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">margin</span></code></a> come
+from <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig" title="newton.ModelBuilder.ShapeConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">ShapeConfig</span></code></a>. Drives and limits read
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_target_ke" title="newton.Model.joint_target_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_ke</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_target_kd" title="newton.Model.joint_target_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_kd</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_limit_lower" title="newton.Model.joint_limit_lower"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_lower</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_limit_upper" title="newton.Model.joint_limit_upper"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_upper</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_limit_ke" title="newton.Model.joint_limit_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_ke</span></code></a> and <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_limit_kd" title="newton.Model.joint_limit_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_kd</span></code></a>.</p></li>
+</ul>
+<p>Springs (<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_spring" title="newton.ModelBuilder.add_spring"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_spring()</span></code></a>) and particle-body
+attachments (<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_attachment_particle_body" title="newton.ModelBuilder.add_attachment_particle_body"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_attachment_particle_body()</span></code></a>) connect
+the systems. The contact material between particles and shapes mixes
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_ke" title="newton.Model.soft_contact_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_ke</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_kd" title="newton.Model.soft_contact_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_kd</span></code></a> and <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_mu" title="newton.Model.soft_contact_mu"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_mu</span></code></a> on the Model
+with the shape values (<a class="reference internal" href="#vbd-energy-terms"><span class="std std-ref">The energy terms</span></a>). The Model Parameters table of
+<a class="reference internal" href="../concepts/simulation_tuning_vbd.html#tuning-vbd"><span class="std std-ref">VBD Tuning</span></a> gives the effect and typical values of each of these.</p>
+<p>Rigid constraint rows use the compliant ALM formulation by default
+(<code class="docutils literal notranslate"><span class="pre">rigid_compliant_alm=True</span></code>): the authored stiffness is the physical
+stiffness of the row and the solver picks the metric <span class="math notranslate nohighlight">\(\rho\)</span> itself
+(<a class="reference internal" href="#vbd-rigid-joints"><span class="std std-ref">Rigid bodies and joints</span></a>). The legacy AVBD path (<code class="docutils literal notranslate"><span class="pre">rigid_compliant_alm=False</span></code>)
+is deprecated since 1.6, together with its controls: the per-joint
+<code class="docutils literal notranslate"><span class="pre">vbd:joint_is_hard</span></code> custom attribute (<code class="docutils literal notranslate"><span class="pre">model.vbd.joint_is_hard</span></code>, declared
+by <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.register_custom_attributes" title="newton.solvers.SolverVBD.register_custom_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">register_custom_attributes()</span></code></a>) and
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.set_joint_constraint_mode" title="newton.solvers.SolverVBD.set_joint_constraint_mode"><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_joint_constraint_mode()</span></code></a>. Under compliant
+ALM they have no solver-mode effect.</p>
+<section id="scene-authored-settings">
+<h4>Scene-authored settings<a class="headerlink" href="#scene-authored-settings" title="Link to this heading">#</a></h4>
+<p>Call <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.register_custom_attributes" title="newton.solvers.SolverVBD.register_custom_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">register_custom_attributes()</span></code></a> on the
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a> before <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_usd()</span></code></a> to read
+the <code class="docutils literal notranslate"><span class="pre">NewtonVbdSceneAPI</span></code> settings and <code class="docutils literal notranslate"><span class="pre">NewtonSceneAPI.newton:maxSolverIterations</span></code>
+from a USD <code class="docutils literal notranslate"><span class="pre">PhysicsScene</span></code>. They are stored in
+<code class="docutils literal notranslate"><span class="pre">model.vbd</span></code> and used as <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> defaults:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>USD attribute</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">model.vbd</span></code> attribute</p></th>
+<th class="head"><p>Constructor argument</p></th>
+<th class="head"><p>Default</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">newton:maxSolverIterations</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">max_solver_iterations</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">iterations</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">10</span></code> (schema fallback <code class="docutils literal notranslate"><span class="pre">-1</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">newton:vbd:rigid:contactHistory</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_history</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_history</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">False</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">newton:vbd:rigid:jointLinearStiffness</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rigid_joint_linear_ke</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rigid_joint_linear_ke</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1.0e5</span></code> N/m</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">newton:vbd:rigid:jointAngularStiffness</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rigid_joint_angular_ke</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rigid_joint_angular_ke</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1.0e5</span></code> N·m/rad</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">newton:vbd:rigid:jointLinearDamping</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rigid_joint_linear_kd</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rigid_joint_linear_kd</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.0</span></code> N·s/m</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">newton:vbd:rigid:jointAngularDamping</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rigid_joint_angular_kd</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rigid_joint_angular_kd</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.0</span></code> N·m·s/rad</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Precedence is explicit constructor argument, then <code class="docutils literal notranslate"><span class="pre">model.vbd.*</span></code>, then the
+built-in default. A scene <code class="docutils literal notranslate"><span class="pre">newton:maxSolverIterations</span></code> of <code class="docutils literal notranslate"><span class="pre">-1</span></code> uses the
+default; <code class="docutils literal notranslate"><span class="pre">0</span></code> and values below <code class="docutils literal notranslate"><span class="pre">-1</span></code> raise <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>. Scene-authored
+stiffness and damping must be finite and non-negative, otherwise the constructor
+raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>. A scene-authored <code class="docutils literal notranslate"><span class="pre">contactHistory</span></code> is ignored when VBD
+does not integrate rigid bodies (no bodies, or
+<code class="docutils literal notranslate"><span class="pre">integrate_with_external_rigid_solver=True</span></code>). When VBD integrates bodies and
+is given a collision pipeline, the pipeline needs <code class="docutils literal notranslate"><span class="pre">contact_matching</span></code> other
+than <code class="docutils literal notranslate"><span class="pre">&quot;disabled&quot;</span></code>; pass <code class="docutils literal notranslate"><span class="pre">rigid_contact_history=False</span></code> to override the scene
+value.</p>
+<p>VBD runs exactly this many iterations per step, so assets authored for
+convergence-checked solvers (for example <code class="docutils literal notranslate"><span class="pre">newton:maxSolverIterations</span> <span class="pre">=</span> <span class="pre">100</span></code>)
+cost proportionally more. Pass <code class="docutils literal notranslate"><span class="pre">iterations=</span></code> to override.</p>
+<p>Scene values apply in both constraint modes: they are not skipped when the
+deprecated <code class="docutils literal notranslate"><span class="pre">rigid_compliant_alm=False</span></code> path is selected, even though the
+schema scopes them to the compliant ALM path.</p>
+</section>
+</section>
+<section id="coupling-modes">
+<h3>Coupling Modes<a class="headerlink" href="#coupling-modes" title="Link to this heading">#</a></h3>
+<p>Inside one solver no coupling setup is needed. Rigid blocks and particle
+blocks are solved in the same iteration loop, rigid blocks first, and
+rigid-soft contacts and springs connect them as ordinary energy terms, and
+particle-body attachments as compliant augmented-Lagrangian rows
+(<a class="reference internal" href="#vbd-how-solved"><span class="std std-ref">How it is solved</span></a>). Cloth between the fingers of a VBD-integrated
+gripper is the plain case.</p>
+<p>With <code class="docutils literal notranslate"><span class="pre">integrate_with_external_rigid_solver=True</span></code> the rigid bodies belong to
+another solver. SolverVBD then skips the rigid solve, reads the body poses the
+external solver wrote into the output state, and applies rigid-soft contact to
+the particles only (one-way coupling). Attachments are not supported in this
+mode. For two-way coupling through proxies, including contact forces reported
+back to the source body, see <a class="reference internal" href="../concepts/coupling.html"><span class="doc">Coupled Solvers</span></a>.</p>
+</section>
+<section id="contact-handling">
+<h3>Contact Handling<a class="headerlink" href="#contact-handling" title="Link to this heading">#</a></h3>
+<p>The contact stack has three layers.</p>
+<p><strong>Detection.</strong> Self-contact pairs come from the triangle-mesh self-contact
+detector: vertex-triangle and edge-edge candidates within
+<code class="docutils literal notranslate"><span class="pre">particle_self_contact_margin</span> <span class="pre">+</span> <span class="pre">particle_self_contact_gap</span></code>, stored in fixed
+buffers of <code class="docutils literal notranslate"><span class="pre">particle_vertex_contact_buffer_size</span></code> and
+<code class="docutils literal notranslate"><span class="pre">particle_edge_contact_buffer_size</span></code> entries, and filtered by topological
+distance (<code class="docutils literal notranslate"><span class="pre">particle_topological_contact_filter_threshold</span></code>) and rest-shape
+distance (<code class="docutils literal notranslate"><span class="pre">particle_rest_shape_contact_exclusion_radius</span></code>). It runs on the
+schedule of the <code class="docutils literal notranslate"><span class="pre">SOFT_SELF_CONTACT</span></code> collision slot, by default before and
+after the inertial step of every substep. Rigid-soft records (particles, and
+with <code class="docutils literal notranslate"><span class="pre">enable_rigid_soft_full_surface_contact</span></code> also soft edges and faces) and
+body-body records come from the <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a>, which
+detects out to its <code class="docutils literal notranslate"><span class="pre">soft_contact_gap</span></code> beyond <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_radius" title="newton.Model.particle_radius"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_radius</span></code></a> plus the
+shape <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.margin" title="newton.ModelBuilder.ShapeConfig.margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">margin</span></code></a> and carries the shape thicknesses of body-body pairs. With a
+solver-owned pipeline the rigid slot follows <code class="docutils literal notranslate"><span class="pre">collision_frequency_type</span></code> as
+well.</p>
+<p><strong>Forces.</strong> Each contact kind has its own law with friction and damping;
+self-contact, rigid-soft contact and body-body contact are given in
+<a class="reference internal" href="#vbd-energy-terms"><span class="std std-ref">The energy terms</span></a>. Full-surface mesh records normally produce force only
+when they pass the feature-region test of Offset Geometric Contact
+(<code class="docutils literal notranslate"><span class="pre">mesh_contact_valid</span></code>); recovery records and rows stored after an overflow
+bypass the test, and every stored record is kept for truncation.</p>
+<p><strong>Truncation.</strong> Divide and Truncate keeps self-contact, and with
+<code class="docutils literal notranslate"><span class="pre">rigid_soft_enable_dat</span></code> also rigid-soft contact, free of new penetrations
+between detections, through the planar and the radius truncation of
+<a class="reference internal" href="#vbd-dat"><span class="std std-ref">Penetration-free truncation (DAT)</span></a>. The guarantee holds for pairs that were separated at
+detection and found within the query radius; the rigid trajectory check is
+sampled unless <code class="docutils literal notranslate"><span class="pre">rigid_soft_dat_use_interval_arithmetic</span></code> is on.</p>
+<p>How to set the distances, and what they cost, is on the tuning page:
+<a class="reference internal" href="../concepts/simulation_tuning_vbd.html#vbd-contact-handling"><span class="std std-ref">Contact Handling</span></a> and <a class="reference internal" href="../concepts/simulation_tuning_vbd.html#vbd-margin-gap-guide"><span class="std std-ref">Setting margin and gap</span></a>. The contact
+methods are described in:</p>
+<ul class="simple">
+<li><p>Anka H. Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide
+and Truncate: A Penetration and Inversion Free Framework for Coupled
+Multi-physics System. In <em>ACM SIGGRAPH 2026 Conference Papers</em>.
+<a class="reference external" href="https://doi.org/10.1145/3799902.3811143">https://doi.org/10.1145/3799902.3811143</a></p></li>
+<li><p>Anka He Chen, Jerry Hsu, Ziheng Liu, Miles Macklin, Yin Yang, and Cem
+Yuksel. 2025. Offset Geometric Contact. <em>ACM Trans. Graph.</em> 44, 4.
+<a class="reference external" href="https://doi.org/10.1145/3731205">https://doi.org/10.1145/3731205</a></p></li>
+</ul>
+</section>
+<section id="key-constructor-parameters">
+<h3>Key Constructor Parameters<a class="headerlink" href="#key-constructor-parameters" title="Link to this heading">#</a></h3>
+<p>The constructor has three groups. Common: <code class="docutils literal notranslate"><span class="pre">iterations</span></code>, <code class="docutils literal notranslate"><span class="pre">friction_epsilon</span></code>,
+<code class="docutils literal notranslate"><span class="pre">soft_contact_damping_bidirectional</span></code>, <code class="docutils literal notranslate"><span class="pre">dat_conservative_bound_relaxation</span></code>,
+<code class="docutils literal notranslate"><span class="pre">integrate_with_external_rigid_solver</span></code>, and <code class="docutils literal notranslate"><span class="pre">collision_pipeline</span></code> with
+<code class="docutils literal notranslate"><span class="pre">collision_frequency_type</span></code> and <code class="docutils literal notranslate"><span class="pre">collision_frequency</span></code>. <code class="docutils literal notranslate"><span class="pre">particle_*</span></code>:
+self-contact on or off, margin and gap, the candidate buffer sizes, the
+topological and rest-shape filters, and the tile solve. <code class="docutils literal notranslate"><span class="pre">rigid_*</span></code>: the
+compliant ALM switch with its stabilization and retention factors, body-body
+contact history and two-sided damping (<code class="docutils literal notranslate"><span class="pre">rigid_contact_damping_bidirectional</span></code>),
+the per-body contact list capacities, the rigid-soft barrier law and DAT, and
+the structural joint stiffness and damping. Defaults and exact
+semantics are in <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a>; recommended values for
+particle systems, and effects and symptoms for rigid bodies and cables, are
+in the <a class="reference internal" href="../concepts/simulation_tuning_vbd.html#tuning-vbd"><span class="std std-ref">VBD Tuning</span></a> parameter table.</p>
+</section>
+</section>
+<section id="how-vbd-works">
+<span id="vbd-how-it-works"></span><h2>How VBD Works<a class="headerlink" href="#how-vbd-works" title="Link to this heading">#</a></h2>
+<p>VBD (Vertex Block Descent) treats every time step as one minimization and
+solves it one small block at a time. Two kinds of blocks exist. A <strong>particle</strong>
+<span class="math notranslate nohighlight">\(i\)</span> has 3 degrees of freedom, its position <span class="math notranslate nohighlight">\(\mathbf{x}_i\)</span>, and a
+mass <span class="math notranslate nohighlight">\(m_i\)</span>. A <strong>rigid body</strong> <span class="math notranslate nohighlight">\(b\)</span> has 6 degrees of freedom, its pose
+made of a centre of mass <span class="math notranslate nohighlight">\(\mathbf{c}_b\)</span> and a rotation
+<span class="math notranslate nohighlight">\(\mathbf{R}_b\)</span>, with a mass <span class="math notranslate nohighlight">\(m_b\)</span> and an inertia tensor
+<span class="math notranslate nohighlight">\(\mathbf{I}_b\)</span>. The notation follows the VBD paper cited above:
+<span class="math notranslate nohighlight">\(h\)</span> is the time step and <span class="math notranslate nohighlight">\(\mathbf{y}\)</span> the inertial prediction.
+The kernels named on this page live in <code class="docutils literal notranslate"><span class="pre">newton/_src/solvers/vbd/</span></code>
+(<code class="docutils literal notranslate"><span class="pre">solver_vbd.py</span></code>, <code class="docutils literal notranslate"><span class="pre">particle_vbd_kernels.py</span></code>, <code class="docutils literal notranslate"><span class="pre">rigid_vbd_kernels.py</span></code>);
+they are internal and can change without notice.</p>
+<section id="step-objective">
+<span id="vbd-step-objective"></span><h3>Step objective<a class="headerlink" href="#step-objective" title="Link to this heading">#</a></h3>
+<p>Every time step is one minimization, solved one block at a time. With the
+blocks and notation above, the step finds the positions and poses that
+minimize</p>
+<div class="math notranslate nohighlight">
+\[G = \sum_i \frac{m_i}{2h^2}\,\lVert \mathbf{x}_i - \mathbf{y}_i \rVert^2
+  + \sum_b \left[ \frac{m_b}{2h^2}\,\lVert \mathbf{c}_b - \mathbf{c}_b^* \rVert^2
+  + \frac{1}{2h^2}\,\boldsymbol{\theta}_b^{\mathsf T} \mathbf{I}_b\, \boldsymbol{\theta}_b \right]
+  + \sum_e E_e .\]</div>
+<p>The first sum is the particle inertia. Its target is the inertial prediction</p>
+<div class="math notranslate nohighlight">
+\[\mathbf{y}_i = \mathbf{x}_i + h\left(\mathbf{v}_i + h\left(\mathbf{g} + \mathbf{f}^{\text{ext}}_i / m_i\right)\right),\]</div>
+<p>computed by the <code class="docutils literal notranslate"><span class="pre">forward_step</span></code> kernel from the current velocity, gravity and
+external forces. The second sum is the rigid inertia. Its target pose
+<span class="math notranslate nohighlight">\((\mathbf{c}_b^*, \mathbf{R}_b^*)\)</span> comes from forward integration
+(<code class="docutils literal notranslate"><span class="pre">forward_step_rigid_bodies</span></code>), and <span class="math notranslate nohighlight">\(\boldsymbol{\theta}_b\)</span> is the
+rotation vector from the current rotation to the target rotation
+(<code class="docutils literal notranslate"><span class="pre">solve_rigid_body</span></code>). The last sum is every energy term in the scene:
+membrane, bending and volumetric elasticity, self-contact and rigid-soft
+contact with friction and damping, springs, and the compliant
+augmented-Lagrangian rows of joints, body-body contacts and particle-body
+attachments.</p>
+</section>
+<section id="how-it-is-solved">
+<span id="vbd-how-solved"></span><h3>How it is solved<a class="headerlink" href="#how-it-is-solved" title="Link to this heading">#</a></h3>
+<p>The solver never forms the full system. In each iteration it visits every block
+once, with the neighbours frozen at their current values. For a block it
+assembles the gradient <span class="math notranslate nohighlight">\(\mathbf{g}_i\)</span> and the Hessian <span class="math notranslate nohighlight">\(\mathbf{H}_i\)</span>
+of the terms that touch the block, and moves the block by one Newton step:</p>
+<div class="math notranslate nohighlight">
+\[\Delta \mathbf{x}_i = -\mathbf{H}_i^{-1}\,\mathbf{g}_i, \qquad
+\mathbf{H}_i = \frac{m_i}{h^2}\,\mathbf{1} + \sum_{e \ni i} \frac{\partial^2 E_e}{\partial \mathbf{x}_i^2}.\]</div>
+<p>For a particle this is a 3x3 solve (<code class="docutils literal notranslate"><span class="pre">solve_elasticity</span></code>). For a body it is a
+6x6 solve with the block Hessian
+<span class="math notranslate nohighlight">\(\operatorname{diag}(m_b/h^2\,\mathbf{1}_3,\ \mathbf{I}_b/h^2)\)</span> plus the
+energy terms, factored once per visit (<code class="docutils literal notranslate"><span class="pre">solve_rigid_body</span></code>, <code class="docutils literal notranslate"><span class="pre">ldlt6_solve</span></code>).
+The energy blocks of <span class="math notranslate nohighlight">\(\mathbf{H}_i\)</span> are the usual stabilised second
+derivatives, not always the exact ones: the membrane block is projected to be
+positive semi-definite, the bending block keeps only the Gauss-Newton term
+<span class="math notranslate nohighlight">\(k\,\nabla\theta\,\nabla\theta^{\mathsf T}\)</span>, and the friction block
+holds the contact normal fixed.
+Blocks are grouped into colours so that no two blocks of one colour share a
+mesh element: a triangle, a tetrahedron, a bending edge when
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.color" title="newton.ModelBuilder.color"><code class="xref py py-meth docutils literal notranslate"><span class="pre">color()</span></code></a> is called with <code class="docutils literal notranslate"><span class="pre">include_bending=True</span></code>, or
+a joint for bodies. Contact pairs are not part of the colouring, so two blocks
+of one colour can be in contact; they then update in Jacobi fashion. The
+update is Gauss-Seidel across colours and Jacobi inside a colour. Rigid blocks
+are solved before particle blocks in every iteration.</p>
+<p>The real call tree, with the control flow written out:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>SolverVBD.step(state_in, state_out, control, contacts, dt)
+  _initialize_rigid_bodies   -&gt; forward_step_rigid_bodies   (predicted poses)
+  _initialize_particles      -&gt; forward_step                (predicted positions y)
+  _initialize_particle_body_attachments -&gt; step_particle_body_attachment_lambda_rho
+                             (attachment rho from the endpoints' support; retained
+                              multipliers scaled by rigid_avbd_gamma)
+  collision detection (default: self-contact before and after this initialization;
+                       rigid contacts before it only, or before and after it with rigid-soft DAT)
+  for iteration in range(iterations):
+      if detection is due in this iteration (ITERATIONS schedule only):
+          detect again, refresh the DAT reference
+      _solve_rigid_body_iteration
+          for colour in body colours:
+              accumulate attachments, body-particle contacts, body-body contacts
+              solve_rigid_body            (6x6 LDL^T per body)
+          update dual variables of the joint and contact rows
+      _solve_particle_iteration
+          for colour in particle colours:
+              accumulate attachment, body-particle contact, spring and self-contact terms
+              solve_elasticity            (3x3 per particle: inertia + membrane + bending + volumetric)
+              DAT: planar truncation per pair, then the radius cap
+      update_duals_particle_body_attachments   (dual step of the attachment rows,
+                                                after both primal blocks)
+  _finalize_rigid_bodies     -&gt; update_body_velocity
+  _finalize_particles        -&gt; update_velocity             v = (x_new - x_old) / dt
+</pre></div>
+</div>
+<p>Two facts follow directly. Information moves about one ring of neighbours per
+iteration: a block sees only the current values of its neighbours, so a change
+reaches a neighbour in the same iteration when that neighbour’s colour comes
+later in the sweep, and in the next iteration otherwise. And an
+unfinished solve is not discarded: whatever position the last iteration leaves
+becomes the new velocity through <span class="math notranslate nohighlight">\(\mathbf{v} = (\mathbf{x}_{\text{new}} -
+\mathbf{x}_{\text{old}})/h\)</span>.</p>
+</section>
+<section id="rigid-bodies-and-joints">
+<span id="vbd-rigid-joints"></span><h3>Rigid bodies and joints<a class="headerlink" href="#rigid-bodies-and-joints" title="Link to this heading">#</a></h3>
+<p>A rigid body <span class="math notranslate nohighlight">\(b\)</span> is one block with 6 degrees of freedom: the position
+<span class="math notranslate nohighlight">\(\mathbf{c}_b\)</span> of its centre of mass and a rotation vector about it. With
+the target pose <span class="math notranslate nohighlight">\((\mathbf{c}_b^*, \mathbf{R}_b^*)\)</span> from forward
+integration and <span class="math notranslate nohighlight">\(\boldsymbol{\theta}_b\)</span> the body-frame rotation vector
+from the current rotation <span class="math notranslate nohighlight">\(\mathbf{R}_b\)</span> to <span class="math notranslate nohighlight">\(\mathbf{R}_b^*\)</span>, the
+inertia term of the step objective contributes</p>
+<div class="math notranslate nohighlight">
+\[\mathbf{f}^{\text{in}}_b = \frac{m_b}{h^2}\,(\mathbf{c}_b^* - \mathbf{c}_b),
+\qquad
+\boldsymbol{\tau}^{\text{in}}_b = \frac{1}{h^2}\,\mathbf{R}_b\,\mathbf{I}_b\,\boldsymbol{\theta}_b,
+\qquad
+\mathbf{H}^{\text{in}}_{ll} = \frac{m_b}{h^2}\,\mathbf{1},
+\qquad
+\mathbf{H}^{\text{in}}_{aa} = \frac{1}{h^2}\,\mathbf{R}_b\,\mathbf{I}_b\,\mathbf{R}_b^{\mathsf T}.\]</div>
+<p>Every term that touches the body (joints, body-body contacts, rigid-soft
+contacts, attachments, tendons) adds its force, its torque and the three
+<span class="math notranslate nohighlight">\(3 \times 3\)</span> blocks of the Hessian. The block then solves one
+<span class="math notranslate nohighlight">\(6 \times 6\)</span> system by <span class="math notranslate nohighlight">\(LDL^{\mathsf T}\)</span> (<code class="docutils literal notranslate"><span class="pre">ldlt6_solve</span></code>) and
+applies the increments (<code class="docutils literal notranslate"><span class="pre">solve_rigid_body</span></code>; the rotation increment acts in
+world space and is applied as a normalised small-angle quaternion, which
+approximates the exponential map):</p>
+<div class="math notranslate nohighlight">
+\[\begin{split}\begin{bmatrix} \mathbf{H}_{ll} &amp; \mathbf{H}_{al}^{\mathsf T} \\ \mathbf{H}_{al} &amp; \mathbf{H}_{aa} \end{bmatrix}
+\begin{bmatrix} \Delta\mathbf{c} \\ \Delta\boldsymbol{\theta} \end{bmatrix}
+=
+\begin{bmatrix} \mathbf{f} \\ \boldsymbol{\tau} \end{bmatrix},
+\qquad
+\mathbf{c}_b \leftarrow \mathbf{c}_b + \Delta\mathbf{c},
+\qquad
+\mathbf{R}_b \leftarrow \Delta\mathbf{R}\,\mathbf{R}_b,
+\qquad
+\Delta\mathbf{R} = \operatorname{normalize}\big(\tfrac{1}{2}\Delta\boldsymbol{\theta},\ 1\big)
+\approx \exp(\Delta\boldsymbol{\theta}) .\end{split}\]</div>
+<p>Joints and body-body contacts are constraint rows between two bodies, handled
+as compliant augmented-Lagrangian (ALM) rows. A row has a residual <span class="math notranslate nohighlight">\(C\)</span>,
+a material stiffness <span class="math notranslate nohighlight">\(k\)</span>, an internal metric <span class="math notranslate nohighlight">\(\rho\)</span> that the solver
+sets when it initialises the row (once per step for joints, at every rigid
+contact detection for body-body contacts), and a multiplier <span class="math notranslate nohighlight">\(\lambda\)</span>.
+With <code class="docutils literal notranslate"><span class="pre">rigid_avbd_alpha</span></code> above zero the residual is stabilised to
+<span class="math notranslate nohighlight">\(C - \alpha C_0\)</span>; the default under compliant ALM is zero, and the
+formulas below use that default. Its force along the row and the dual update
+after every iteration are</p>
+<div class="math notranslate nohighlight">
+\[f = k_{\text{eff}}\,C + s\,\lambda,
+\qquad
+k_{\text{eff}} = \frac{k\,\rho}{k + \rho},
+\qquad
+s = \frac{k}{k + \rho},
+\qquad
+\lambda \leftarrow s\,(\lambda + \rho\,C),\]</div>
+<p>and <span class="math notranslate nohighlight">\(k_{\text{eff}}\)</span> enters the Hessian blocks through the row’s
+Jacobian. A bilateral row keeps the full force. A unilateral row keeps only
+the admissible sign: for contact <span class="math notranslate nohighlight">\(f_n = \max(f, 0)\)</span> and
+<span class="math notranslate nohighlight">\(\lambda_n \leftarrow \max(\,\cdot\,, 0)\)</span>. Joint multipliers persist
+across steps, scaled by <code class="docutils literal notranslate"><span class="pre">rigid_avbd_gamma</span></code> (0.999); body-body contacts
+restart theirs at zero unless <code class="docutils literal notranslate"><span class="pre">rigid_contact_history=True</span></code>.</p>
+<p><em>Joints</em> (<code class="docutils literal notranslate"><span class="pre">evaluate_joint_force_hessian</span></code>). The structural rows of a joint
+between parent <span class="math notranslate nohighlight">\(p\)</span> and child <span class="math notranslate nohighlight">\(c\)</span> are the offset of the two joint
+anchors and the rotation away from the rest relative orientation, each
+projected onto the locked axes of the joint type
+(<code class="docutils literal notranslate"><span class="pre">compute_kappa_and_jacobian</span></code>, <code class="docutils literal notranslate"><span class="pre">build_joint_projectors</span></code>). D6 joints with
+two or three angular axes are the exception: their angular rows use the
+absolute joint coordinates of <code class="docutils literal notranslate"><span class="pre">eval_fk</span></code> in the joint-axis basis
+(<code class="docutils literal notranslate"><span class="pre">compute_joint_kappa_and_jacobian</span></code>):</p>
+<div class="math notranslate nohighlight">
+\[\mathbf{C}_{\text{lin}} = \mathbf{P}_{\text{lin}}\,(\mathbf{x}_c - \mathbf{x}_p),
+\qquad
+\mathbf{C}_{\text{ang}} = \mathbf{P}_{\text{ang}}\,\boldsymbol{\kappa}(\mathbf{R}_p, \mathbf{R}_c),
+\qquad
+\mathbf{P} = \mathbf{1} - \sum_{\text{free axes}} \mathbf{a}\,\mathbf{a}^{\mathsf T},\]</div>
+<p>so BALL keeps the three linear rows; REVOLUTE the three linear rows and two
+angular rows; PRISMATIC two linear rows and the three angular rows; FIXED all
+six; D6 whatever its free axes leave; FREE adds no row. The material stiffness
+is <code class="docutils literal notranslate"><span class="pre">rigid_joint_linear_ke</span></code> or <code class="docutils literal notranslate"><span class="pre">rigid_joint_angular_ke</span></code>, and the metric is
+<span class="math notranslate nohighlight">\(\rho = \max(\text{support}, 9k)\)</span>, chosen so that <span class="math notranslate nohighlight">\(k_{\text{eff}}
+\ge 0.9\,k\)</span> in every local solve;
+<code class="docutils literal notranslate"><span class="pre">rigid_joint_linear_kd</span></code> and <code class="docutils literal notranslate"><span class="pre">rigid_joint_angular_kd</span></code> add absolute damping.
+Drives are bilateral rows on the free axes of REVOLUTE, PRISMATIC and D6
+joints, with the spring and the damper folded into one row:</p>
+<div class="math notranslate nohighlight">
+\[K = k_t + \frac{d_t}{h},
+\qquad
+e = \frac{k_t\,(q - q^*) + d_t\,(\dot q - \dot q^*)}{K},
+\qquad
+f_d = K_{\text{eff}}\,e + s\,\lambda_d,\]</div>
+<p>with <span class="math notranslate nohighlight">\(k_t = \mathtt{joint\_target\_ke}\)</span>, <span class="math notranslate nohighlight">\(d_t =
+\mathtt{joint\_target\_kd}\)</span>, and <span class="math notranslate nohighlight">\(K_{\text{eff}}, s\)</span> formed from
+<span class="math notranslate nohighlight">\(K\)</span> and the axis metric as above. Limits are unilateral rows at the
+nearer bound with <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_limit_ke" title="newton.Model.joint_limit_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_ke</span></code></a> and <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_limit_kd" title="newton.Model.joint_limit_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_kd</span></code></a>; only forces into
+the bound are kept, and the multiplier is projected onto its half-line. ROD joints use four rows,
+stretch, shear, bend and twist, with <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_target_ke" title="newton.Model.joint_target_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_ke</span></code></a> and
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_target_kd" title="newton.Model.joint_target_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_kd</span></code></a> as their stiffness and damping. DISTANCE joints are not
+supported.</p>
+<p><em>Body-body contact</em> is the unilateral row of the same family: <span class="math notranslate nohighlight">\(C\)</span> is the
+penetration of the two effective surfaces, <span class="math notranslate nohighlight">\(k\)</span> the pair average of the
+shape stiffness, <span class="math notranslate nohighlight">\(\rho_n\)</span> the pair’s inverse Delassus support over
+<span class="math notranslate nohighlight">\(h^2\)</span>, <span class="math notranslate nohighlight">\(f_n = \max(k_{\text{eff}}\,C + s\,\lambda_n,\ 0)\)</span>, and
+friction is a Coulomb projection carrying <span class="math notranslate nohighlight">\(\boldsymbol{\lambda}_t\)</span>. The
+complete law, with the material mixing and the damping, is in
+<a class="reference internal" href="#vbd-energy-terms"><span class="std std-ref">The energy terms</span></a>.</p>
+<p>The deprecated legacy path (<code class="docutils literal notranslate"><span class="pre">rigid_compliant_alm=False</span></code>) replaces the
+finite-material rows with ramped penalties and hard or soft slots.</p>
+</section>
+<section id="the-energy-terms">
+<span id="vbd-energy-terms"></span><h3>The energy terms<a class="headerlink" href="#the-energy-terms" title="Link to this heading">#</a></h3>
+<p>Each energy term depends on a few blocks and on model parameters:</p>
+<div class="pst-scrollable-table-container"><table class="wrap-literals table">
+<colgroup>
+<col style="width: 22.0%" />
+<col style="width: 22.0%" />
+<col style="width: 28.0%" />
+<col style="width: 28.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Energy term</p></th>
+<th class="head"><p>Acts on</p></th>
+<th class="head"><p>Model parameters</p></th>
+<th class="head"><p>Kernel</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Membrane</p></td>
+<td><p>the 3 particles of a triangle</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ke</span></code></a> (<span class="math notranslate nohighlight">\(\mu\)</span>), <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ka</span></code></a> (<span class="math notranslate nohighlight">\(\lambda\)</span>), <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_kd</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">evaluate_neo_hookean_membrane_force_hessian</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Bending</p></td>
+<td><p>the 4 particles of an interior edge</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_ke</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_kd</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">evaluate_dihedral_angle_based_bending_force_hessian</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Volumetric</p></td>
+<td><p>the 4 particles of a tetrahedron</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_mu</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_lambda</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_damp</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">evaluate_volumetric_neo_hookean_force_and_hessian</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Self-contact, with friction and damping</p></td>
+<td><p>a vertex and a triangle, or two edges, of one particle system</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_ke" title="newton.Model.soft_contact_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_ke</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_kd" title="newton.Model.soft_contact_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_kd</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_mu" title="newton.Model.soft_contact_mu"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_mu</span></code></a>,
+<code class="docutils literal notranslate"><span class="pre">particle_self_contact_margin</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">evaluate_self_contact_force_norm</span></code>, <code class="docutils literal notranslate"><span class="pre">compute_friction</span></code>, <code class="docutils literal notranslate"><span class="pre">damp_collision</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Rigid-soft contact, with friction and damping</p></td>
+<td><p>a particle, or a point on a soft edge or face, and one shape</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_ke" title="newton.Model.soft_contact_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_ke</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_kd" title="newton.Model.soft_contact_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_kd</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_mu" title="newton.Model.soft_contact_mu"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_mu</span></code></a> averaged
+with the shape <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.ke" title="newton.ModelBuilder.ShapeConfig.ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ke</span></code></a>, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.kd" title="newton.ModelBuilder.ShapeConfig.kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">kd</span></code></a>, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.mu" title="newton.ModelBuilder.ShapeConfig.mu"><code class="xref py py-attr docutils literal notranslate"><span class="pre">mu</span></code></a>; <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_radius" title="newton.Model.particle_radius"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_radius</span></code></a> and the shape
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.margin" title="newton.ModelBuilder.ShapeConfig.margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">margin</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">compute_projected_isotropic_friction</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Body-body contact, with friction and damping</p></td>
+<td><p>two shapes, on two rigid bodies or on a rigid body and a static shape</p></td>
+<td><p>shape <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.ke" title="newton.ModelBuilder.ShapeConfig.ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ke</span></code></a>, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.kd" title="newton.ModelBuilder.ShapeConfig.kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">kd</span></code></a>, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.mu" title="newton.ModelBuilder.ShapeConfig.mu"><code class="xref py py-attr docutils literal notranslate"><span class="pre">mu</span></code></a> averaged over the pair; shape radius and
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.margin" title="newton.ModelBuilder.ShapeConfig.margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">margin</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">evaluate_rigid_contact_from_collision</span></code>, <code class="docutils literal notranslate"><span class="pre">update_duals_body_body_contacts</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Particle-body attachments</p></td>
+<td><p>a particle and a point fixed on a body</p></td>
+<td><p>attachment stiffness (finite: compliant; infinite: hard limit, damping
+ignored) and damping</p></td>
+<td><p>compliant augmented-Lagrangian row:
+<code class="docutils literal notranslate"><span class="pre">accumulate_body_particle_attachment_force_and_hessian</span></code> (particle block),
+<code class="docutils literal notranslate"><span class="pre">accumulate_body_particle_attachments_per_body</span></code> (body block),
+<code class="docutils literal notranslate"><span class="pre">update_duals_particle_body_attachments</span></code> (dual step)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Springs</p></td>
+<td><p>two particles</p></td>
+<td><p>spring stiffness and damping</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">accumulate_spring_force_and_hessian</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Joints, drives and limits</p></td>
+<td><p>one or two bodies</p></td>
+<td><p>joint stiffness and damping</p></td>
+<td><p>compliant augmented-Lagrangian rows, <code class="docutils literal notranslate"><span class="pre">update_duals_joint</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Elasticity</strong> is three terms. The membrane term resists stretch and shear of a
+triangle. With <span class="math notranslate nohighlight">\(\mathbf{F}\)</span> the in-plane deformation gradient,
+<span class="math notranslate nohighlight">\(I_C = \lVert \mathbf{F} \rVert^2\)</span> and <span class="math notranslate nohighlight">\(J_s\)</span> the area ratio, the
+energy per unit rest area is the stable Neo-Hookean membrane energy</p>
+<div class="math notranslate nohighlight">
+\[\psi_{\text{m}} = \frac{\mu}{2}\,(I_C - 2) + \frac{\lambda_{\text{NH}}}{2}\,(J_s - \alpha)^2,
+\qquad \alpha = 1 + \frac{\mu}{\lambda_{\text{NH}}},\]</div>
+<p>with <span class="math notranslate nohighlight">\(\mu = \mathtt{tri\_ke}\)</span> and <span class="math notranslate nohighlight">\(\lambda_{\text{NH}} =
+\mathtt{tri\_ka} + \mathtt{tri\_ke}\)</span>; the triangle energy is <span class="math notranslate nohighlight">\(A_0\,\psi_{\text{m}}\)</span>.
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_kd</span></code></a> damps the rate of the metric <span class="math notranslate nohighlight">\(\mathbf{F}^{\mathsf T}\mathbf{F}\)</span>,
+so rigid rotations are not damped. The bending term resists a change of the
+dihedral angle <span class="math notranslate nohighlight">\(\theta\)</span> across an interior edge of rest length
+<span class="math notranslate nohighlight">\(L_0\)</span>:</p>
+<div class="math notranslate nohighlight">
+\[E_{\text{b}} = \tfrac{1}{2}\,\mathtt{edge\_ke}\;L_0\,(\theta - \theta_0)^2,\]</div>
+<p>and <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_kd</span></code></a> damps the angle rate with the force
+<span class="math notranslate nohighlight">\(\mathbf{f}_d = -\mathtt{edge\_kd}\,L_0\,\dot\theta\,\partial\theta/\partial\mathbf{x}\)</span>,
+where <span class="math notranslate nohighlight">\(\dot\theta\)</span> is the change of <span class="math notranslate nohighlight">\(\theta\)</span> over the step divided
+by <span class="math notranslate nohighlight">\(h\)</span>. The volumetric term is the stable
+Neo-Hookean energy of a tetrahedron of rest volume <span class="math notranslate nohighlight">\(V_0\)</span>,</p>
+<div class="math notranslate nohighlight">
+\[\psi_{\text{v}} = \frac{\mu}{2}\,(I_C - 3) + \frac{\lambda_{\text{NH}}}{2}\,(J - \alpha)^2,
+\qquad J = \det \mathbf{F},\]</div>
+<p>with <span class="math notranslate nohighlight">\(\mu = \mathtt{k\_mu}\)</span>, <span class="math notranslate nohighlight">\(\lambda_{\text{NH}} = \mathtt{k\_lambda} +
+\mathtt{k\_mu}\)</span>, the same <span class="math notranslate nohighlight">\(\alpha\)</span>, energy <span class="math notranslate nohighlight">\(V_0\,\psi_{\text{v}}\)</span>,
+and <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_damp</span></code></a> damping the rate of the metric <span class="math notranslate nohighlight">\(\mathbf{F}^{\mathsf T}\mathbf{F}\)</span>
+like <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_kd</span></code></a>. In both Neo-Hookean terms the user values are
+Lamé parameters; the kernels convert them to the Neo-Hookean parameters, which
+is why <span class="math notranslate nohighlight">\(\lambda_{\text{NH}}\)</span> carries the extra <span class="math notranslate nohighlight">\(\mu\)</span>.</p>
+<p><strong>Contact</strong> is three different terms, one per contact kind. They share the
+friction smoothing length <span class="math notranslate nohighlight">\(\epsilon_u = \mathtt{friction\_epsilon}\, h\)</span>
+and nothing else: each kind has its own distance, its own stiffness and its
+own law.</p>
+<p><em>Self-contact</em> acts between a vertex and a triangle, or between two edges, of
+one particle system (<code class="docutils literal notranslate"><span class="pre">accumulate_self_contact_force_and_hessian</span></code>). The
+distance <span class="math notranslate nohighlight">\(d\)</span> is the closest-point distance of the pair, the interaction
+distance is <span class="math notranslate nohighlight">\(r = \mathtt{particle\_self\_contact\_margin}\)</span> and the
+stiffness is <span class="math notranslate nohighlight">\(k = \mathtt{soft\_contact\_ke}\)</span>. The energy
+(<code class="docutils literal notranslate"><span class="pre">evaluate_self_contact_force_norm</span></code>) is a quadratic penalty that turns into
+a logarithmic barrier at half the interaction distance:</p>
+<div class="math notranslate nohighlight">
+\[\begin{split}E_{\text{sc}}(d) =
+\begin{cases}
+\tfrac{k}{2}\,(r - d)^2 &amp; \tfrac{r}{2} \le d &lt; r,\\[3pt]
+-k\,(\tfrac{r}{2})^2 \ln d + \text{const} &amp; d_{\min} &lt; d &lt; \tfrac{r}{2},\\[3pt]
+\text{second-order expansion of the barrier at } d_{\min} &amp; d \le d_{\min},
+\end{cases}
+\qquad d_{\min} = \min(10\,\mu\text{m},\ \tfrac{r}{4}).\end{split}\]</div>
+<p>The gradient in the barrier region is <span class="math notranslate nohighlight">\(-k\,(r/2)^2/d\)</span>, so the force
+grows like <span class="math notranslate nohighlight">\(1/d\)</span> as the gap closes; below <span class="math notranslate nohighlight">\(d_{\min}\)</span> it continues
+linearly, so the force stays finite. A pair whose closest points coincide
+(<span class="math notranslate nohighlight">\(d = 0\)</span>) is skipped. The pair force is distributed to the
+four vertices by the barycentric weights of the two closest points. Friction
+follows the IPC form (<code class="docutils literal notranslate"><span class="pre">compute_friction</span></code>). With <span class="math notranslate nohighlight">\(f_n = -\partial
+E_{\text{sc}}/\partial d\)</span> the normal force, <span class="math notranslate nohighlight">\(\mathbf{u}\)</span> the tangential
+relative displacement of the two closest points over the step and
+<span class="math notranslate nohighlight">\(\mathbf{T}\)</span> the tangent basis,</p>
+<div class="math notranslate nohighlight">
+\[\begin{split}\mathbf{f}_{\text{fr}} = -\mu\, f_n\, \mathbf{T}\,
+\frac{f_1(\lVert\mathbf{u}\rVert)}{\lVert\mathbf{u}\rVert}\,\mathbf{u},
+\qquad
+f_1(x) = \begin{cases} 2x/\epsilon_u - x^2/\epsilon_u^2 &amp; x &lt; \epsilon_u,\\
+1 &amp; x \ge \epsilon_u, \end{cases}\end{split}\]</div>
+<p>with <span class="math notranslate nohighlight">\(\mu = \mathtt{soft\_contact\_mu}\)</span>. Unlike IPC, the contact normal
+is held constant inside the block solve; the kernel notes that this improves
+stability. Damping (<code class="docutils literal notranslate"><span class="pre">damp_collision</span></code>) acts on the gap rate <span class="math notranslate nohighlight">\(\dot d =
+(d - d_{\text{prev}})/h\)</span>, the change of the contact distance over the substep;
+<span class="math notranslate nohighlight">\(d_{\text{prev}}\)</span> is the distance at the substep-start positions from its own
+closest point, so a rigid motion of the pair gives <span class="math notranslate nohighlight">\(\dot d = 0\)</span>. The force is
+<span class="math notranslate nohighlight">\(\mathbf{f}_d = -\mathtt{soft\_contact\_kd}\;\dot d\,\mathbf{n}\)</span> with the
+Hessian <span class="math notranslate nohighlight">\((\mathtt{soft\_contact\_kd}/h)\,\mathbf{n}\mathbf{n}^T\)</span>. By default
+(<code class="docutils literal notranslate"><span class="pre">soft_contact_damping_bidirectional=True</span></code>) it acts while the gap closes and
+while it opens. <code class="docutils literal notranslate"><span class="pre">soft_contact_damping_bidirectional=False</span></code> keeps
+closing-only damping, which leaves a separating pair undamped.</p>
+<p><em>Rigid-soft contact</em> acts between a soft contact point and one shape of a
+rigid or static body. The point is a particle, or, with full-surface mesh
+contact (<code class="docutils literal notranslate"><span class="pre">enable_rigid_soft_full_surface_contact</span></code>), a barycentric point on a
+soft edge or face; the records come from the collision pipeline. The
+distance is <span class="math notranslate nohighlight">\(d = \mathbf{n}\cdot(\mathbf{x} - \mathbf{b})\)</span>, with
+<span class="math notranslate nohighlight">\(\mathbf{b}\)</span> the shape’s contact point carried along with its body and
+<span class="math notranslate nohighlight">\(\mathbf{n}\)</span> the stored contact normal. The interaction distance is
+<span class="math notranslate nohighlight">\(r = \mathtt{particle\_radius}\)</span> plus the shape <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.margin" title="newton.ModelBuilder.ShapeConfig.margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">margin</span></code></a>; an edge or
+face point uses the largest radius among its corners. The material is mixed
+per contact from the two sides (<code class="docutils literal notranslate"><span class="pre">init_body_particle_contacts</span></code>):
+<span class="math notranslate nohighlight">\(k = \tfrac{1}{2}(\mathtt{soft\_contact\_ke} + \mathtt{ke}_{\text{shape}})\)</span>,
+<span class="math notranslate nohighlight">\(k_d = \tfrac{1}{2}(\mathtt{soft\_contact\_kd} + \mathtt{kd}_{\text{shape}})\)</span>
+and <span class="math notranslate nohighlight">\(\mu = \sqrt{\mathtt{soft\_contact\_mu}\;\mathtt{mu}_{\text{shape}}}\)</span>.
+The normal law is the plain
+quadratic penalty <span class="math notranslate nohighlight">\(E = \tfrac{k}{2}(r - d)^2\)</span> for <span class="math notranslate nohighlight">\(d &lt; r\)</span>;
+<code class="docutils literal notranslate"><span class="pre">rigid_soft_contact_use_log_barrier=True</span></code> switches it to the self-contact
+barrier law. Damping and friction have the same form as for self-contact,
+written in world space (<code class="docutils literal notranslate"><span class="pre">compute_projected_isotropic_friction</span></code>): the damping force
+<span class="math notranslate nohighlight">\(-k_d\,\dot d\,\mathbf{n}\)</span>, with <span class="math notranslate nohighlight">\(\dot d =
+\mathbf{n}\cdot\Delta\mathbf{x}_{\text{rel}}/h\)</span> the normal rate of the point
+relative to the shape, acts in both directions by default, or only while the
+point approaches the shape with
+<code class="docutils literal notranslate"><span class="pre">soft_contact_damping_bidirectional=False</span></code>, and the friction force is <span class="math notranslate nohighlight">\(-\mu\, f_n\,
+f_1(\lVert\mathbf{u}_t\rVert)\,\hat{\mathbf{u}}_t\)</span>, with <span class="math notranslate nohighlight">\(\mathbf{u}_t\)</span>
+the tangential slip of the point relative to the shape surface over the step.
+The force is distributed to the particles by their barycentric weights, and
+the equal and opposite force with its torque acts on the body
+(<code class="docutils literal notranslate"><span class="pre">accumulate_body_particle_contacts_per_body</span></code>). With full-surface mesh
+contact, every stored edge and face record is kept for DAT, but normally only
+the records that pass the feature-region test of Offset Geometric Contact
+produce force (<code class="docutils literal notranslate"><span class="pre">mesh_contact_valid</span></code>); penetration-recovery records and rows
+stored after a buffer overflow bypass the test.</p>
+<p><em>Body-body contact</em> acts between two shapes, on two rigid bodies or on a
+rigid body and a static shape. It is a constraint row of the rigid solve, not
+a penalty energy. The gap is measured between the two effective surfaces:
+with <span class="math notranslate nohighlight">\(\mathbf{p}_0, \mathbf{p}_1\)</span> the support points carried along with
+their bodies and <span class="math notranslate nohighlight">\(t_0, t_1\)</span> the effective thicknesses (shape radius plus
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.margin" title="newton.ModelBuilder.ShapeConfig.margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">margin</span></code></a>, stored by the collision pipeline as <code class="docutils literal notranslate"><span class="pre">rigid_contact_margin0</span></code> and
+<code class="docutils literal notranslate"><span class="pre">rigid_contact_margin1</span></code>), the penetration is</p>
+<div class="math notranslate nohighlight">
+\[C = -\big(\mathbf{n}\cdot(\mathbf{p}_1 - \mathbf{p}_0) - t_0 - t_1\big).\]</div>
+<p>The material is the pair average of the shape values:
+<span class="math notranslate nohighlight">\(k = \tfrac{1}{2}(\mathtt{ke}_0 + \mathtt{ke}_1)\)</span>,
+<span class="math notranslate nohighlight">\(k_d = \tfrac{1}{2}(\mathtt{kd}_0 + \mathtt{kd}_1)\)</span> and
+<span class="math notranslate nohighlight">\(\mu = \sqrt{\mathtt{mu}_0\,\mathtt{mu}_1}\)</span>. On the default compliant
+ALM path (<code class="docutils literal notranslate"><span class="pre">rigid_compliant_alm=True</span></code>) the normal force is</p>
+<div class="math notranslate nohighlight">
+\[f_n = \max\!\big(k_{\text{eff}}\,C + s\,\lambda_n,\ 0\big),
+\qquad k_{\text{eff}} = \frac{k\,\rho_n}{k + \rho_n},
+\qquad s = \frac{k}{k + \rho_n},\]</div>
+<p>where <span class="math notranslate nohighlight">\(\lambda_n\)</span> is the multiplier of the row and <span class="math notranslate nohighlight">\(\rho_n\)</span> is an
+internal metric that the solver sets every step from the pair’s inverse
+Delassus support over <span class="math notranslate nohighlight">\(h^2\)</span> plus structural stiffness; the user does not set <span class="math notranslate nohighlight">\(\rho_n\)</span>. The
+force acts along <span class="math notranslate nohighlight">\(\mathbf{n}\)</span> at the support points with the matching
+torques, and the row adds <span class="math notranslate nohighlight">\(k_{\text{eff}}\,\mathbf{n}\mathbf{n}^{\mathsf T}\)</span>
+to the body Hessians (<code class="docutils literal notranslate"><span class="pre">evaluate_rigid_contact_from_collision</span></code>). After every
+iteration the multiplier is advanced by the relaxed ascent
+<span class="math notranslate nohighlight">\(\lambda_n \leftarrow \max\big(s\,(\lambda_n + \rho_n C),\ 0\big)\)</span>
+(<code class="docutils literal notranslate"><span class="pre">update_duals_body_body_contacts</span></code>). At
+the fixed point <span class="math notranslate nohighlight">\(\lambda_n = k\,C\)</span> and <span class="math notranslate nohighlight">\(f_n = k\,C\)</span>: a converged
+resting contact carries its load like a penalty of the material stiffness
+<span class="math notranslate nohighlight">\(k\)</span>, with the penetration <span class="math notranslate nohighlight">\(f_n/k\)</span>, while each single iteration
+uses the smaller <span class="math notranslate nohighlight">\(k_{\text{eff}}\)</span>, which keeps the 6x6 systems well
+conditioned. Friction is a Coulomb bound, not a smooth law: the tangential
+force <span class="math notranslate nohighlight">\(\rho_t\,\mathbf{u}_t + \boldsymbol{\lambda}_t\)</span>, with
+<span class="math notranslate nohighlight">\(\mathbf{u}_t\)</span> the tangential offset between the two anchored surface
+points and <span class="math notranslate nohighlight">\(\rho_t\)</span> the tangent metric, is projected onto the disk
+<span class="math notranslate nohighlight">\(\lVert\mathbf{f}_t\rVert \le \mu f_n\)</span>,
+and <span class="math notranslate nohighlight">\(\boldsymbol{\lambda}_t\)</span> is advanced and projected onto the disk of
+radius <span class="math notranslate nohighlight">\(\mu\lambda_n\)</span> in the same dual step. Damping is
+<span class="math notranslate nohighlight">\(-k_d\,(\mathbf{n}\cdot\mathbf{v}_{\text{rel}})\,\mathbf{n}\)</span> while the row
+carries load, only while the bodies approach by default and in both directions
+of the normal relative velocity with <code class="docutils literal notranslate"><span class="pre">rigid_contact_damping_bidirectional=True</span></code>.
+The multipliers start from zero in
+every step unless <code class="docutils literal notranslate"><span class="pre">rigid_contact_history=True</span></code> warm-starts them from the
+matched contacts of the previous step. The legacy AVBD path
+(<code class="docutils literal notranslate"><span class="pre">rigid_compliant_alm=False</span></code>, deprecated) uses the pair stiffness as a fixed
+penalty by default (<code class="docutils literal notranslate"><span class="pre">rigid_avbd_beta</span></code> is zero). With a positive beta
+(<code class="docutils literal notranslate"><span class="pre">rigid_avbd_linear_beta</span></code>, falling back to <code class="docutils literal notranslate"><span class="pre">rigid_avbd_beta</span></code>) the penalty
+starts at <code class="docutils literal notranslate"><span class="pre">rigid_contact_k_start</span></code> and grows by beta times the penetration
+per iteration, capped at the pair stiffness. Its soft
+mode uses the IPC friction law instead of the Coulomb projection.</p>
+<p>The underlying methods are described in the references cited by
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a>: VBD for the particle blocks, AVBD for the
+rigid rows, Divide and Truncate (DAT) for penetration-free contact and Offset
+Geometric Contact (OGC) for the feature regions of mesh contact. The two
+contact papers are also listed under Contact Handling above.</p>
+<p><strong>Particle-body attachments</strong> are compliant augmented-Lagrangian rows of the
+same form as the joint rows (<a class="reference internal" href="#vbd-rigid-joints"><span class="std std-ref">Rigid bodies and joints</span></a>). With <span class="math notranslate nohighlight">\(C =
+\mathbf{x} - \mathbf{a}\)</span> the offset of the particle from its anchor point fixed
+on the body, the row applies <span class="math notranslate nohighlight">\(k_{\text{eff}}\,C + s\,\lambda\)</span> to the
+particle and the opposite force, with its torque, to the body;
+<span class="math notranslate nohighlight">\(k_{\text{eff}}\)</span> and <span class="math notranslate nohighlight">\(s\)</span> follow from the authored stiffness
+<span class="math notranslate nohighlight">\(k\)</span> and the metric <span class="math notranslate nohighlight">\(\rho\)</span> as above. The solver sets <span class="math notranslate nohighlight">\(\rho\)</span>
+once per step to the row’s support, the endpoints’ reduced inverse mass over
+<span class="math notranslate nohighlight">\(h^2\)</span> plus the particle’s incident material Hessian, and at the same time
+scales the retained multiplier by <code class="docutils literal notranslate"><span class="pre">rigid_avbd_gamma</span></code>
+(<code class="docutils literal notranslate"><span class="pre">step_particle_body_attachment_lambda_rho</span></code>). The multiplier advances once
+per iteration after both primal blocks, <span class="math notranslate nohighlight">\(\lambda \leftarrow s\,(\lambda +
+\rho\,C)\)</span> (<code class="docutils literal notranslate"><span class="pre">update_duals_particle_body_attachments</span></code>). Infinite stiffness is
+the hard limit of the same row, <span class="math notranslate nohighlight">\(k_{\text{eff}} = \rho\)</span> and <span class="math notranslate nohighlight">\(s =
+1\)</span>, and ignores the attachment damping; a finite stiffness keeps its spring
+offset under load and adds the damping force <span class="math notranslate nohighlight">\(k_d\,\dot C\)</span>. Springs
+between two particles stay plain penalty energies
+(<code class="docutils literal notranslate"><span class="pre">accumulate_spring_force_and_hessian</span></code>).</p>
+</section>
+<section id="penetration-free-truncation-dat">
+<span id="vbd-dat"></span><h3>Penetration-free truncation (DAT)<a class="headerlink" href="#penetration-free-truncation-dat" title="Link to this heading">#</a></h3>
+<p>Self-contact and rigid-soft contact are penalty energies, so a large step
+could jump through a surface between two detections. The Divide and Truncate
+scheme (DAT) prevents that for every pair that detection found separated and
+within the query radius. It works on the displacement each vertex has
+accumulated since the last detection and has two distinct parts.</p>
+<p><strong>Planar truncation</strong> acts per detected vertex-triangle or edge-edge pair
+(<code class="docutils literal notranslate"><span class="pre">apply_planar_truncation_parallel_by_collision</span></code>). At the detection-time
+positions a certified separating plane is found and placed between the two
+primitives; it splits the gap in proportion to how far each side wants to move
+toward the other, and each side keeps at least 5 percent of the gap
+(<code class="docutils literal notranslate"><span class="pre">place_dat_division_plane</span></code>). Each vertex of the pair receives a factor
+<span class="math notranslate nohighlight">\(t \le 1\)</span> so that its straight trajectory stays on its own side of the
+plane, scaled by <code class="docutils literal notranslate"><span class="pre">dat_conservative_bound_relaxation</span></code>; motion away from the
+plane or along it passes untouched (<code class="docutils literal notranslate"><span class="pre">planar_truncation_t</span></code>). A vertex in
+several pairs keeps the smallest factor. A pair whose primitives already
+intersect at detection time has no strict separator and is left unconstrained
+in that pass.</p>
+<p><strong>Radius truncation</strong> acts on every particle (<code class="docutils literal notranslate"><span class="pre">apply_truncation_ts</span></code>). After
+the planar factor is applied, the length of the accumulated displacement is
+capped at one half of <code class="docutils literal notranslate"><span class="pre">dat_conservative_bound_relaxation</span></code> times the query
+radius, isotropically. Two primitives farther apart than the query radius at
+detection therefore cannot meet before the next detection.</p>
+<p><strong>Rigid-soft DAT</strong> (<code class="docutils literal notranslate"><span class="pre">rigid_soft_enable_dat</span></code>, off by default) applies the
+same two parts to contacts between soft geometry and shapes. One thread per
+contact record builds the division plane from the detection-time
+configuration and truncates both sides against it
+(<code class="docutils literal notranslate"><span class="pre">apply_rigid_soft_truncation</span></code>). The soft vertices of the
+record move on straight rays, as in self-contact. The vertices of the rigid
+primitive move on curved trajectories because the body rotates, so their
+crossing times are found by sampling and bisection, with an interval bound on
+the signed-distance derivative for rows that start inside the plane’s band;
+<code class="docutils literal notranslate"><span class="pre">rigid_soft_dat_use_interval_arithmetic</span></code> additionally certifies the sampled
+prefix with interval arithmetic (experimental). Without it, a crossing that
+happens and reverses between two sample points can be missed. Full-surface
+mesh contacts name the exact rigid triangle, edge or vertex through
+<a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts.soft_contact_rigid_indices" title="newton.Contacts.soft_contact_rigid_indices"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_rigid_indices</span></code></a>; analytic SDF contacts and
+penetration-recovery contacts truncate only their stored rigid surface point.
+Each body then scales its whole pose update, translation and rotation about
+the centre of mass, by the smallest factor of its contacts
+(<code class="docutils literal notranslate"><span class="pre">apply_body_truncation_ts</span></code>). The radius truncation caps the motion of every
+point of the body, bounded by the translation plus the rotation angle times
+the body’s bounding radius, at one half of the relaxation factor times the
+smallest rigid-soft query radius (pipeline gap plus soft feature radius plus
+shape margin); that budget is fixed at construction. The pass runs after the
+forward step and after every body colour of every iteration, and the particle
+pass re-enforces the same planes after the particles move. Kinematic bodies
+move outside the solver and are not truncated. A pair for which no separating
+plane can be certified freezes. <a class="reference internal" href="../concepts/simulation_tuning_vbd.html#vbd-contact-handling"><span class="std std-ref">Contact Handling</span></a> describes the
+parts for tuning and illustrates the planes.</p>
+<p>The guarantee has a price: a vertex cannot move faster than about one motion
+budget per detection cycle. The motion that the truncation removes is called
+<strong>DAT damping</strong> here and in <a class="reference internal" href="../concepts/simulation_tuning_vbd.html#tuning-vbd"><span class="std std-ref">VBD Tuning</span></a>. It is not related to any <code class="docutils literal notranslate"><span class="pre">kd</span></code>
+damping coefficient.</p>
+</section>
+</section>
+<section id="examples">
+<h2>Examples<a class="headerlink" href="#examples" title="Link to this heading">#</a></h2>
+<p><a class="reference internal" href="../concepts/simulation_tuning_vbd.html#vbd-empirical-table"><span class="std std-ref">Empirical parameter combinations</span></a> on the tuning
+page lists one shipped example per scenario, from cloth drape to a gripper on
+a soft pad, and says what each one demonstrates; copy the values from the
+example file. For cables, see the
+<a class="reference internal" href="../concepts/simulation_tuning_vbd.html#vbd-cable-examples"><span class="std std-ref">cable example table</span></a>.</p>
+<p>Runnable examples using <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> on GitHub:</p>
+<ul class="simple">
+<li><p><a class="reference external" href="https://github.com/newton-physics/newton/tree/main/newton/examples/cloth">Cloth examples</a></p></li>
+<li><p><a class="reference external" href="https://github.com/newton-physics/newton/tree/main/newton/examples/softbody">Soft-body examples</a></p></li>
+<li><p><a class="reference external" href="https://github.com/newton-physics/newton/tree/main/newton/examples/cable">Cable examples</a></p></li>
+<li><p><a class="reference external" href="https://github.com/newton-physics/newton/tree/main/newton/examples/vbd">VBD-specific examples</a>
+(rigid and soft contacts, grippers, stiff materials)</p></li>
+<li><p><a class="reference external" href="https://github.com/newton-physics/newton/tree/main/newton/examples/multiphysics">Multiphysics examples</a>
+(coupling with MuJoCo, XPBD, and MPM)</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-to-choose-vbd">When to Choose VBD</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#api-explanations">API Explanations</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#construction-and-stepping">Construction and Stepping</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#model-inputs">Model Inputs</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#scene-authored-settings">Scene-authored settings</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#coupling-modes">Coupling Modes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-handling">Contact Handling</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#key-constructor-parameters">Key Constructor Parameters</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-vbd-works">How VBD Works</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#step-objective">Step objective</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#how-it-is-solved">How it is solved</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rigid-bodies-and-joints">Rigid bodies and joints</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-energy-terms">The energy terms</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#penetration-free-truncation-dat">Penetration-free truncation (DAT)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#examples">Examples</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
+      <br/>
+    
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.22.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
