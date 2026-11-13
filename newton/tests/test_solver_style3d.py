@@ -539,7 +539,7 @@ add_function_test(
     TestSolverStyle3D,
     "test_add_cloth_mesh_accepts_tuple_rotation",
     test_add_cloth_mesh_accepts_tuple_rotation,
-    devices=devices,
+    devices=None,
     check_output=False,
 )
 
