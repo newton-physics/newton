@@ -10,7 +10,7 @@ from newton import NewtonWarning
 from newton._src.solvers.mujoco import solver_mujoco
 
 _MOCK_REQUIREMENTS = (
-    "mujoco~=3.8.0 ; extra == 'sim'",
+    "mujoco-core~=3.8.0 ; extra == 'sim'",
     "mujoco-warp~=3.8.0,>=3.8.0.3 ; extra == 'sim'",
 )
 _MOCK_METADATA = "\n".join(f"Requires-Dist: {requirement}" for requirement in _MOCK_REQUIREMENTS)
@@ -18,7 +18,8 @@ _MOCK_METADATA = "\n".join(f"Requires-Dist: {requirement}" for requirement in _M
 
 def _mujoco_dependency_specs():
     return {
-        package: solver_mujoco._required_specifier(package, _MOCK_REQUIREMENTS) for package in ("mujoco", "mujoco-warp")
+        package: solver_mujoco._required_specifier(package, _MOCK_REQUIREMENTS)
+        for package in ("mujoco-core", "mujoco-warp")
     }
 
 
@@ -40,7 +41,7 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
         with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.get):
             with self.assertWarnsRegex(
                 NewtonWarning,
-                r"MuJoCo dependency version mismatch.*mujoco==0\.0\.0.*mujoco-warp==0\.0\.0",
+                r"MuJoCo dependency version mismatch.*mujoco-core==0\.0\.0.*mujoco-warp==0\.0\.0",
             ):
                 solver_mujoco._warn_if_mujoco_versions_mismatch(
                     types.SimpleNamespace(),
@@ -52,7 +53,7 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
         mujoco_warp_bad_version = "0.0.0"
         self.assertFalse(solver_mujoco._version_satisfies(mujoco_warp_bad_version, specs["mujoco-warp"]))
 
-        versions = {"mujoco": _matching_version(specs["mujoco"]), "mujoco-warp": mujoco_warp_bad_version}
+        versions = {"mujoco-core": _matching_version(specs["mujoco-core"]), "mujoco-warp": mujoco_warp_bad_version}
         with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.get):
             with self.assertWarnsRegex(NewtonWarning, f"mujoco-warp=={mujoco_warp_bad_version}"):
                 solver_mujoco._warn_if_mujoco_versions_mismatch(
@@ -109,7 +110,7 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
         }
         for name, requirements in cases.items():
             with self.subTest(name):
-                self.assertIsNone(solver_mujoco._required_specifier("mujoco", requirements))
+                self.assertIsNone(solver_mujoco._required_specifier("mujoco-core", requirements))
 
 
 class TestMuJoCoDeterminismConfig(unittest.TestCase):

@@ -339,7 +339,10 @@ class PlotLogger:
         target_rows = max(1, min(rows, int(heatmap_height / min_cell_px)))
         display_array = self._downsample_heatmap(array, target_rows, target_cols)
         display_rows, display_cols = display_array.shape
-        texture_state = self._ensure_array_texture(name, display_cols, display_rows)
+        # Dear ImGui samples textures linearly, so cells need whole pixels to keep sharp edges.
+        texture_width = max(display_cols, round(heatmap_width))
+        texture_height = max(display_rows, round(heatmap_height))
+        texture_state = self._ensure_array_texture(name, texture_width, texture_height)
 
         if (
             name in self._array_dirty
@@ -347,6 +350,11 @@ class PlotLogger:
             or texture_state["display_shape"] != display_array.shape
         ):
             rgba, value_min, value_max = self._colorize_heatmap(display_array)
+            pixel_rows = np.arange(texture_height) * display_rows // texture_height
+            pixel_cols = np.arange(texture_width) * display_cols // texture_width
+            # Copying whole RGBA pixels is far cheaper than indexing their bytes.
+            pixels = rgba.view(np.uint32)[..., 0].take(pixel_rows, axis=0).take(pixel_cols, axis=1)
+            rgba = pixels.view(np.uint8).reshape(texture_height, texture_width, 4)
             self._update_array_texture(texture_state["texture_id"], rgba)
             texture_state["source_shape"] = array.shape
             texture_state["display_shape"] = display_array.shape

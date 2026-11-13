@@ -32,9 +32,9 @@ Dependency versioning strategy
 (e.g. ``warp-lang>=1.12.0``).  ``uv.lock`` pins the **latest known-good**
 versions for reproducible installs.
 
-``mujoco`` and ``mujoco-warp`` instead use **compatible-release** pins on
-both ``main`` and release branches (e.g. ``mujoco~=3.5.0``) to allow
-``3.5.x`` updates while excluding ``3.6.0`` and later.  MuJoCo follows
+``mujoco-core`` and ``mujoco-warp`` instead use **compatible-release** pins on
+both ``main`` and release branches (e.g. ``mujoco-core~=4.0.1``) to allow
+``4.0.x`` updates while excluding ``4.1.0`` and later.  MuJoCo follows
 `custom versioning from 3.5.0 onward`_; its third component is
 ``MINOR_OR_PATCH`` and guarantees API backward compatibility.
 

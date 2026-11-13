@@ -34,6 +34,7 @@ class TestViewerUI(unittest.TestCase):
         self.addCleanup(imgui.destroy_context, context)
         # Exercise ImGui state without an OpenGL renderer or window.
         self.ui = UI.__new__(UI)
+        self.ui._context = context
         self.ui.imgui = imgui
         self.ui.giz = imguizmo.im_guizmo
         self.ui.io = imgui.get_io()
@@ -373,6 +374,7 @@ class TestViewerGizmos(unittest.TestCase):
         self.gui = ViewerGui.__new__(ViewerGui)
         self.gui._viewer = self.viewer
         self.gui.ui = UI.__new__(UI)
+        self.gui.ui._context = context
         self.gui.ui.is_available = True
         self.gui.ui.imgui = imgui
         self.gui.ui.io = self.io

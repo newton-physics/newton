@@ -8,7 +8,7 @@ MuJoCo Solver
 
 :class:`~newton.solvers.SolverMuJoCo` wraps `mujoco_warp
 <https://github.com/google-deepmind/mujoco_warp>`_ behind Newton's standard
-solver interface. Newton uses compatible-release pins (``~=``) on both ``mujoco``
+solver interface. Newton uses compatible-release pins (``~=``) on both ``mujoco-core``
 and ``mujoco-warp`` to keep the two version-aligned; see
 :github:`pyproject.toml` for the current pins.
 
@@ -515,7 +515,7 @@ MJCF ``<dcmotor>`` actuators follow this MuJoCo-specific path. The importer uses
 MuJoCo's native parser to resolve electrical, controller, thermal, cogging, and
 LuGre parameters, including inherited defaults, into the existing actuator
 parameter arrays for both the CPU and MuJoCo-Warp backends. Importing these
-shortcuts requires the optional ``mujoco`` package and raises ``ImportError``
+shortcuts requires the optional ``mujoco-core`` package and raises ``ImportError``
 with installation guidance when it is unavailable. Install ``newton[sim]`` to
 include MuJoCo. Ordinary MJCF and compiled ``<general>`` actuator import do not
 require MuJoCo; parsing DC-motor shortcuts does not require MuJoCo-Warp.
@@ -539,12 +539,8 @@ their low-level arrays remain runtime-editable, including after saving and
 reimporting compiled MJCF. Compilation preserves the dynamics, not the shortcut's
 authoring-time parameter ownership.
 
-Actuator damping is preserved on both backends. MuJoCo-Warp 3.15 folds it into
-joint and tendon damping; Newton retains that contribution when publishing
-joint or tendon property updates. Actuator armature is preserved only on the
-native MuJoCo CPU backend (``use_mujoco_cpu=True``); the Warp backend emits a
-:class:`~newton.NewtonWarning` when it is nonzero. This limitation applies to all actuator
-types, not only DC motors. MJCF ``damping`` accepts one, two, or three coefficients:
+Actuator damping and armature are preserved on both backends, for all actuator
+types. MJCF ``damping`` accepts one, two, or three coefficients:
 the first is stored in ``mujoco:actuator_damping`` and the remaining two in
 ``mujoco:actuator_dampingpoly``. Partial overrides retain inherited trailing
 coefficients; otherwise omitted coefficients default to zero. Compiled USD rows can author
@@ -553,12 +549,8 @@ passive properties are set at solver construction, must be uniform across
 replicated worlds, and are not refreshed by ``notify_model_changed(ACTUATOR_PROPERTIES)``.
 The solver rejects mismatched passive properties or control signatures across worlds,
 including on compiled ``GENERAL`` rows. Worlds must also have matching actuator row counts.
-Warp's folded damping uses the construction-time transmission gear. For actuators
-with nonzero linear or polynomial damping, ``actuator_gear`` must match the compiled
-gear in every world and remain unchanged. Construction and eager property
-notifications reject mismatches; captured notifications retain the compiled gear.
-Recreate the solver to change these gears. Undamped Warp actuators still support
-per-world and runtime gear edits. Native CPU actuator gears remain runtime-editable.
+Both scale with the square of the transmission gear, so ``actuator_gear`` stays
+per-world and runtime-editable for damped actuators too.
 DC-motor trajectory parity with native MuJoCo is tested with ``integrator="euler"``;
 MuJoCo-Warp's approximate implicit DC-motor derivatives can produce different
 trajectories with ``implicitfast``.
@@ -1263,6 +1255,35 @@ Caveats
   The solver creates MuJoCo masks that reproduce Newton's allowed collision
   pairs when they fit in 32 bits. See `Collision filtering`_ for the behavior
   of imported masks and the warned fallback used when the rules do not fit.
+
+
+.. _mujoco-viewer:
+
+MuJoCo viewer
+-------------
+
+MuJoCo's own viewer shows the model as ``SolverMuJoCo`` converted it, which helps
+when debugging the conversion. It needs ``pip install "mujoco-core[rendering]"``.
+Stepping on the Warp backend only updates ``solver.mjw_data``, so copy one world
+into ``solver.mj_data`` before each ``viewer.sync()``:
+
+.. code-block:: python
+
+    import mujoco.viewer
+    import mujoco_warp
+
+    solver = newton.solvers.SolverMuJoCo(model)
+
+    with mujoco.viewer.launch_passive(solver.mj_model, solver.mj_data) as viewer:
+        while viewer.is_running():
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+            if not solver.use_mujoco_cpu:
+                mujoco_warp.get_data_into(solver.mj_data, solver.mj_model, solver.mjw_data, world_id=0)
+            viewer.sync()
+
+The viewer shows the geoms compiled at construction, so it does not follow body
+variant selections.
 
 
 .. _mujoco-kinematic-links-and-fixed-roots:

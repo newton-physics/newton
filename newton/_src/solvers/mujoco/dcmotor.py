@@ -85,7 +85,7 @@ def add_actuator_dcmotor(
 ) -> int:
     """Add a native DC motor controlled through ``control.mujoco.ctrl``.
 
-    Requires the optional ``mujoco`` package (included in ``newton[sim]``),
+    Requires the optional ``mujoco-core`` package (included in ``newton[sim]``),
     but not MuJoCo-Warp. Native MuJoCo resolves the electrical and controller
     parameters; these are construction-time properties, not runtime-editable
     general-actuator gains. No model is compiled by this helper. Parameter
@@ -118,13 +118,10 @@ def add_actuator_dcmotor(
             Other signatures raise :class:`NotImplementedError`.
         gear: Native transmission gear, padded to six values. Ball/free joints
             require explicit native gear as described in :class:`ActuatorTarget`.
-            With nonzero damping on the Warp backend, gear must match across
-            replicated worlds and cannot change after solver construction.
         damping: Coefficients of ``-d0*v - d1*abs(v)*v - d2*v**3`` in actuator
             velocity ``v``. Coefficient ``dn`` has units [N·m·(s/rad)^(n+1)]
             for angular transmissions or [N·(s/m)^(n+1)] for linear ones.
         armature: Passive rotor inertia [kg·m² or kg for linear transmissions].
-            Currently supported only by native MuJoCo.
         ctrlrange: Optional two-value control range: voltage [V], position
             [m or rad], or velocity [m/s or rad/s], in actuator coordinates.
         ctrllimited: Control-limit tri-state (false, true, or auto).

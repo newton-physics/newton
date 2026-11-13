@@ -511,7 +511,7 @@ select. Current limitations:
   compiles one geom layout for all worlds, so construct it before selecting different variants per
   world. It follows per-world ``solref``, ``solimp``, ``solmix``, and friction after a selection, but
   ``condim`` and ``priority`` stay as compiled, all worlds use world 0's site sizes, spatial tendons
-  cannot wrap around variant shapes, and its MuJoCo viewer is unavailable.
+  cannot wrap around variant shapes, and MuJoCo's viewer does not follow selections.
 - Variant shapes cannot be planes, heightfields, Gaussians, or hydroelastic shapes.
 - :class:`~newton.sensors.SensorCamera` and :func:`~newton.intersect_ray` follow selections after
   the next :meth:`~newton.Model.bvh_refit_shapes`. The deprecated ``SensorTiledCamera`` raises for

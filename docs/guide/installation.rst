@@ -84,7 +84,7 @@ toolkit; see `Warp's CUDA 12.9 ARM64 limitation
 Windows on ARM64 requires Warp 1.19 or newer. Several
 optional dependencies do not publish Windows ARM64 packages, so the extras skip
 them on this platform. Most notably, :class:`~newton.solvers.SolverMuJoCo` and
-USD import and export are unavailable because ``mujoco`` and ``usd-core`` cannot
+USD import and export are unavailable because ``mujoco-core`` and ``usd-core`` cannot
 be installed. The platform markers in ``pyproject.toml`` list all skipped
 packages. The ``torch-cu12``, ``torch-cu13``, ``rtx``, ``docs``, and
 ``notebook`` extras cannot be installed because PyTorch provides no CUDA

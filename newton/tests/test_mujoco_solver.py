@@ -1261,7 +1261,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
           <contact><pair geom1="ga" geom2="gb"/></contact>
           <equality><connect body1="a" body2="b" anchor="0.2 0 1"/></equality>
           <tendon><fixed name="t"><joint joint="ja" coef="1"/><joint joint="jb" coef="-1"/></fixed></tendon>
-          <actuator><general name="u" joint="ja" gainprm="1"/></actuator>
+          <actuator><general name="u" joint="ja" gainprm="1" damping="0.4"/></actuator>
         </mujoco>
         """
 
@@ -1315,7 +1315,10 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
 
                 # Compare every world against the upstream mass matrix at qpos0 to
                 # catch drift in its assembly.
-                solver._mujoco_warp.set_const_0(solver.mjw_model, solver.mjw_data, restore=False)
+                groups = solver._mujoco_warp.SetConstGroup
+                solver._mujoco_warp.set_const(
+                    solver.mjw_model, solver.mjw_data, groups=groups.KIN0 | groups.INERT0, restore=False
+                )
                 M = solver.mjw_data.M.numpy()
                 diag = solver.mjw_model.M_rowadr.numpy() + solver.mjw_model.M_rownnz.numpy() - 1
                 np.testing.assert_allclose(physical_dof_M0, M[:, diag], rtol=1.0e-5)
@@ -1343,6 +1346,10 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 gainprm = model.mujoco.actuator_gainprm.numpy()
                 gainprm[:, 0] = per_world(gain, gainprm.shape[0])
                 model.mujoco.actuator_gainprm.assign(gainprm)
+                # Gears stay editable on damped actuators, also during replay.
+                gear = model.mujoco.actuator_gear.numpy()
+                gear[:, 0] = per_world(gain, gear.shape[0])
+                model.mujoco.actuator_gear.assign(gear)
                 wp.capture_launch(capture.graph)
 
                 kinematic_eq = solver._kinematic_weld_eq.numpy()
@@ -1364,6 +1371,8 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 )
                 mjw_gain = solver.mjw_model.actuator_gainprm.numpy()[..., 0]
                 np.testing.assert_allclose(mjw_gain, np.broadcast_to(gain[:, None], mjw_gain.shape))
+                mjw_gear = solver.mjw_model.actuator_gear.numpy()[..., 0]
+                np.testing.assert_allclose(mjw_gear, np.broadcast_to(gain[:, None], mjw_gear.shape))
 
                 model.body_flags.assign(per_world([dynamic, kinematic], model.body_count).astype(np.int32))
                 wp.capture_launch(capture.graph)
@@ -5114,7 +5123,8 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
 
     def test_notify_body_inertial_invalidates_contact_fast_path(self):
         """notify_model_changed(BODY_INERTIAL_PROPERTIES) must invalidate the
-        cached contact conversion fast path.
+        cached contact conversion fast path, and so must ACTUATOR_PROPERTIES,
+        whose gear and armature also change the inverse weights.
 
         Regression: ``set_const_fixed`` recomputes MuJoCo constants that feed
         into the cached MJWarp contact fields written by the fast path.  If the
@@ -5170,6 +5180,10 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         collision_pipeline.collide(state_in, contacts)
         solver.step(state_in, state_out, control, contacts, 0.002)
         wp.synchronize()  # force surfacing any async device errors
+
+        self.assertNotEqual(int(solver._last_contact_generation.numpy()[0]), -1)
+        solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+        self.assertEqual(int(solver._last_contact_generation.numpy()[0]), -1)
 
     def test_contacts_instance_swap_invalidates_fast_path(self):
         """Swapping the bound :class:`Contacts` instance must invalidate the
