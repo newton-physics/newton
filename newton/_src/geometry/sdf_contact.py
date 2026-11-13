@@ -27,8 +27,9 @@ from .kernels import mesh_query_point_sign, resolve_mesh_sign_method
 # Upper bound (mesh-local units) on the closest-point search for the mesh sign
 # queries below. It is not a physical contact range: culling uses the tight
 # ``_SDF_QUERY_RADIUS_SLACK * threshold`` bounds, with a full-query retry for
-# bounded misses inside the mesh bounds. The queries operate in mesh-local coordinates (per-shape scale
-# is divided out), so there is no global unit to tie it to; 1e11 is effectively
+# bounded misses inside the mesh bounds. The queries operate in mesh-local
+# coordinates (per-shape scale is divided out), so there is no global unit to
+# tie it to; 1e11 is effectively
 # unbounded for any asset under any unit convention (~8x Earth's diameter in
 # millimeters). Going much larger is unsafe: Warp's mesh queries square
 # ``max_dist`` internally, and the no-hit branches return it as a sentinel that

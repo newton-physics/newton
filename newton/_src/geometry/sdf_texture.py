@@ -1800,8 +1800,10 @@ def _texture_sample_sdf_grad_hw_impl_variant(
     Shared body for :func:`texture_sample_sdf_grad_hw` and
     :func:`texture_sample_sdf_grad_only_hw`. When ``local_pos`` is
     outside the SDF box, returns the unit vector from the clamped
-    boundary point to ``local_pos`` (matches the
-    :func:`texture_sample_sdf_grad` extrapolation convention). Inside
+    boundary point to ``local_pos``. This inexpensive contact-normal
+    approximation omits tangential field derivatives; use
+    :func:`texture_sample_sdf_grad` for the derivative of the extrapolated
+    scalar field. Inside
     the box, issues six hardware-filtered fetches (one per ±axis) for
     a centred-difference gradient with half-step ``0.5 / inv_sdf_dx``.
     """
@@ -1920,8 +1922,9 @@ def texture_sample_sdf_grad_only_hw(
     from prior context.
 
     When ``local_pos`` is outside the SDF box, the gradient is the
-    unit vector from the clamped boundary point to ``local_pos`` --
-    same extrapolation convention as :func:`texture_sample_sdf_grad`.
+    unit vector from the clamped boundary point to ``local_pos``. Unlike
+    :func:`texture_sample_sdf_grad`, this contact-normal approximation
+    omits tangential field derivatives.
 
     Args:
         sdf: texture SDF data
