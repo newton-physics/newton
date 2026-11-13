@@ -3130,6 +3130,80 @@ class TestSCCSolver(NewtonTestCase):
                     1.0e-4,
                 )
 
+    def test_08d3a_dense_schur_matches_alternation_on_articulated_contacts(self):
+        """Match converged alternation when Schur rows couple contacts through joints.
+
+        Each sphere link touches the ground on its own, so the contact rows share
+        no body yet are coupled once the joint rows are eliminated.
+        """
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        SolverKamino.register_custom_attributes(builder)
+        builder.add_ground_plane(cfg=shape_cfg)
+        parent = builder.add_link(
+            mass=0.1,
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.018), wp.quat_identity()),
+            inertia=wp.mat33(np.eye(3) * 1.0e-3),
+            lock_inertia=True,
+        )
+        builder.add_shape_sphere(parent, radius=0.02, cfg=shape_cfg)
+        joints = [builder.add_joint_free(parent)]
+        for index in range(6):
+            body = builder.add_link(
+                mass=0.01, com=wp.vec3(0.05, 0.0, 0.0), inertia=wp.mat33(np.eye(3) * 1.0e-3), lock_inertia=True
+            )
+            builder.add_shape_sphere(
+                body, xform=wp.transform(wp.vec3(0.05, 0.0, 0.0), wp.quat_identity()), radius=0.02, cfg=shape_cfg
+            )
+            joints.append(
+                builder.add_joint_revolute(
+                    parent,
+                    body,
+                    parent_xform=wp.transform(wp.vec3(0.1, 0.0, 0.0), wp.quat_identity()),
+                    axis=(newton.Axis.Z, newton.Axis.Y, newton.Axis.X)[index % 3],
+                    armature=0.1,
+                    friction=0.05,
+                    effort_limit=1.0,
+                    target_ke=100.0,
+                    target_kd=10.0,
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                )
+            )
+            parent = body
+        builder.add_articulation(joints)
+        model = builder.finalize(device=self.device)
+        rng = np.random.default_rng(0)
+        targets = rng.uniform(-0.3, 0.3, model.joint_coord_count)
+        initial_qd = rng.uniform(-0.5, 0.5, model.joint_dof_count)
+
+        def step(use_schur_complement: bool, max_alternating_iterations: int) -> np.ndarray:
+            config = SolverKamino.Config(
+                dynamics_solver="scc",
+                use_fk_solver=False,
+                sparse_jacobian=False,
+                sparse_dynamics=False,
+                use_collision_detector=True,
+                scc=kamino_config.SCCSolverConfig(
+                    use_schur_complement=use_schur_complement,
+                    max_alternating_iterations=max_alternating_iterations,
+                    tolerance=0.0,
+                ),
+            )
+            solver = SolverKamino(model, config=config)
+            state_in, state_out = model.state(), model.state()
+            state_in.joint_qd.assign(initial_qd)
+            newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+            control = model.control()
+            control.joint_target_q.assign(targets)
+            solver.step(state_in, state_out, control=control, contacts=None, dt=0.005)
+            self.assertGreater(int(solver._contacts_kamino.world_active_contacts.numpy()[0]), 0)
+            return state_out.joint_qd.numpy()
+
+        reference = step(use_schur_complement=False, max_alternating_iterations=3000)
+        schur = step(use_schur_complement=True, max_alternating_iterations=400)
+        scale = np.max(np.abs(reference))
+        np.testing.assert_allclose(schur / scale, reference / scale, rtol=0.0, atol=1.0e-3)
+
     def test_08d4_scc_incline_friction_threshold(self):
         """Hold or slide according to the Coulomb incline threshold."""
         dt = 2.0e-3
