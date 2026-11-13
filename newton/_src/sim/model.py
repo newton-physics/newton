@@ -18,7 +18,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
-from ..exceptions import NewtonDeprecationWarning
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
@@ -46,6 +46,7 @@ _COLLISION_EDGE_DEPRECATION_MSG = (
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
+    from ..actuators.batteries import BatteryBase
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
 
@@ -379,7 +380,13 @@ class Model:
         CONSTRAINT_MIMIC = 14
         """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
         WORLD = 15
-        """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.world_count`)."""
+        """Attribute frequency follows the number of worlds plus the global world.
+
+        Arrays have shape ``(world_count + 1,)`` (see :attr:`~newton.Model.world_count`):
+        entries ``[0, world_count)`` belong to local worlds and the final entry to
+        global world ``-1``, matching per-world reset masks. Consumers without
+        global-world semantics may ignore the final entry.
+        """
         ATTACHMENT_PARTICLE_BODY = 16
         """Attribute frequency follows the number of particle-body attachments."""
         CONTACT = 17
@@ -411,6 +418,8 @@ class Model:
         """Experimental frequency for recorded deformable surfaces (see :attr:`~newton.Model.surface_count`)."""
         VOLUME = 25
         """Experimental frequency for recorded deformable volumes (see :attr:`~newton.Model.volume_count`)."""
+        ACTUATOR = 26
+        """Attribute frequency follows the number of actuators (see :attr:`~newton.Model.actuator_count`)."""
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -859,6 +868,7 @@ class Model:
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
         AttributeFrequency.WORLD: "world_count",
         AttributeFrequency.ATTACHMENT_PARTICLE_BODY: "attachment_particle_body_count",
+        AttributeFrequency.ACTUATOR: "actuator_count",
         AttributeFrequency.CONTACT: "contact_max",
         AttributeFrequency.CONTACT_RIGID: "rigid_contact_max",
         AttributeFrequency.CONTACT_SOFT: "soft_contact_max",
@@ -1778,12 +1788,11 @@ class Model:
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity: wp.array[wp.vec3] | None = None
-        """Local-world and global gravity vectors [m/s²], dtype :class:`vec3`.
+        """Local-world and global gravity vectors [m/s²], shape [world_count + 1], dtype :class:`vec3`.
 
-        Models with explicit local worlds have shape [world_count + 1], where
-        the final element is the gravity for global world ``-1``. Legacy
-        implicit single-world models have shape [1], shared by world ``0``
-        and global world ``-1``.
+        Entries ``[0, world_count)`` are local-world gravities and the final
+        entry is the gravity of global world ``-1``, which is distinct from
+        world ``0`` also in models built without explicit worlds.
         """
 
         self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
@@ -1926,6 +1935,10 @@ class Model:
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
+        self.actuator_count: int = 0
+        """Total number of actuators added with :meth:`ModelBuilder.add_actuator() <newton.ModelBuilder.add_actuator>`."""
+        self.batteries: list[BatteryBase] = []
+        """List of battery instances for this model."""
 
     @property
     def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:
@@ -2630,6 +2643,9 @@ class Model:
 
         if frequency == Model.AttributeFrequency.ONCE:
             return 1
+        if frequency == Model.AttributeFrequency.WORLD:
+            # Local worlds followed by the global world -1.
+            return int(self.world_count) + 1
         if frequency in (
             Model.AttributeFrequency.CONTACT,
             Model.AttributeFrequency.CONTACT_RIGID,
@@ -2684,6 +2700,11 @@ class Model:
         self._add_custom_attributes(
             c, Model.AttributeAssignment.CONTROL, requires_grad=requires_grad, clone_arrays=clone_variables
         )
+        c._attribute_frequency = {
+            name: spec.frequency
+            for name, spec in self._iter_attribute_specs()
+            if spec.assignment == Model.AttributeAssignment.CONTROL or name in vars(c)
+        }
         return c
 
     def set_gravity(
@@ -2712,6 +2733,8 @@ class Model:
                 raise ValueError("Expected single gravity vector (3,) when world is specified")
             if world < -1 or world >= self.world_count:
                 raise IndexError(f"world {world} out of range; expected -1 or [0, {self.world_count})")
+            if world == 0:
+                self._warn_global_gravity_unchanged("set_gravity(..., world=0)")
             current = self.gravity.numpy()
             current[world] = gravity_np
             self.gravity.assign(current)
@@ -2725,11 +2748,37 @@ class Model:
             if gravity_np.shape == full_shape:
                 self.gravity.assign(gravity_np)
             elif gravity_np.shape == local_shape:
+                self._warn_global_gravity_unchanged(f"set_gravity() with shape {local_shape}")
                 current = self.gravity.numpy()
                 current[: self.world_count] = gravity_np
                 self.gravity.assign(current)
             else:
                 raise ValueError(f"Expected gravity with shape {local_shape} or {full_shape}, got {gravity_np.shape}")
+
+    def _warn_global_gravity_unchanged(self, call: str) -> None:
+        """Warn when a local-world gravity update reaches no entity because only global entities are dynamic.
+
+        Models built without :meth:`ModelBuilder.begin_world` place every entity in global
+        world ``-1``, whose gravity entry is separate from world ``0``.
+        """
+        # Only single-world models can be fully global; skip the host scan for larger ones.
+        if self.world_count != 1:
+            return
+        worlds = [
+            array.numpy()
+            for array in (self.body_world, self.particle_world)
+            if array is not None and array.shape[0] > 0
+        ]
+        if not worlds:
+            return
+        worlds = np.concatenate(worlds)
+        if np.any(worlds == -1) and not np.any(worlds >= 0):
+            warnings.warn(
+                f"{call} does not affect this model's bodies or particles, which all belong to global "
+                "world -1; pass world=-1 or a single gravity vector for every world.",
+                NewtonWarning,
+                stacklevel=3,
+            )
 
     def select_body_variants(self, variants: wp.array[wp.int32], *, bodies: wp.array[wp.int32] | None = None) -> int:
         """Select the shape variant of bodies declared with

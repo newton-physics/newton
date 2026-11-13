@@ -8,6 +8,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonWarning
 from newton.solvers import SolverKamino, SolverSemiImplicit, SolverVBD, SolverXPBD
 from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
@@ -138,8 +139,12 @@ def test_runtime_gravity_bodies(test, device, solver_fn):
     body_vel_default = state_0.body_qd.numpy()[0, :3]
     test.assertLess(body_vel_default[2], -0.5)  # Should be falling
 
-    # Step 2: Change gravity to horizontal
-    model.set_gravity((9.81, 0.0, 0.0))
+    # Step 2: Change the global gravity to horizontal. The body belongs to global world -1,
+    # so the opposing gravity of world 0 must not reach it.
+    test.assertEqual(int(model.body_world.numpy()[0]), -1)
+    model.set_gravity((9.81, 0.0, 0.0), world=-1)
+    with test.assertWarns(NewtonWarning):
+        model.set_gravity((0.0, 0.0, 9.81), world=0)
     solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
 
     # Simulate with horizontal gravity
@@ -150,6 +155,7 @@ def test_runtime_gravity_bodies(test, device, solver_fn):
 
     body_vel_horizontal = state_0.body_qd.numpy()[0, :3]
     test.assertGreater(body_vel_horizontal[0], 0.5)  # Should be accelerating in X direction
+    test.assertAlmostEqual(body_vel_horizontal[2], body_vel_default[2], delta=1.0e-3)
 
 
 def test_gravity_fallback(test, device):
@@ -569,25 +575,50 @@ def test_set_gravity_global_world(test, device):
     np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -6.0), (0.0, 0.0, -6.0)), atol=1.0e-6)
 
 
-def test_set_gravity_implicit_world_compatibility(test, device):
-    """Preserve legacy gravity updates for implicit single-world models."""
+def test_global_gravity_mujoco_option(test, device, solver_fn):
+    """Apply global gravity to a single MuJoCo world that simulates global bodies."""
+    builder = newton.ModelBuilder()
+    builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+
+    model.set_gravity((1.0, 2.0, -3.0), world=-1)
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+    if solver.use_mujoco_cpu:
+        mujoco_gravity = solver.mj_model.opt.gravity
+    else:
+        mujoco_gravity = solver.mjw_model.opt.gravity.numpy()[0]
+    np.testing.assert_allclose(mujoco_gravity, (1.0, 2.0, -3.0), atol=1.0e-6)
+
+    state_in, state_out = model.state(), model.state()
+    solver.step(state_in, state_out, model.control(), None, 0.1)
+    np.testing.assert_allclose(state_out.body_qd.numpy()[0, :3], (0.1, 0.2, -0.3), atol=1.0e-5)
+
+
+def test_set_gravity_implicit_world_global_entry(test, device):
+    """Keep global gravity distinct from world 0 in a model without explicit worlds."""
     builder = newton.ModelBuilder()
     builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
     model = builder.finalize(device=device)
 
     test.assertEqual(model.world_count, 1)
-    test.assertEqual(model.gravity.shape, (1,))
+    test.assertEqual(model.gravity.shape, (2,))
+    test.assertEqual(int(model.particle_world.numpy()[0]), -1)
 
-    model.set_gravity((0.0, 0.0, -2.0), world=0)
-    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -2.0),), atol=1.0e-6)
-
-    model.set_gravity(np.array(((0.0, 0.0, -3.0),), dtype=np.float32))
-    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -3.0),), atol=1.0e-6)
-
-    model.gravity.assign(np.array(((0.0, 0.0, -4.0),), dtype=np.float32))
+    # The particle is global, so only the global entry accelerates it, and world 0 updates warn.
+    with test.assertWarns(NewtonWarning):
+        model.set_gravity((0.0, 0.0, -2.0), world=0)
+    with test.assertWarns(NewtonWarning):
+        model.set_gravity(np.array(((0.0, 0.0, -2.0),), dtype=np.float32))
+    model.set_gravity((0.0, 0.0, -4.0), world=-1)
+    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -2.0), (0.0, 0.0, -4.0)), atol=1.0e-6)
     state_in, state_out = model.state(), model.state()
     SolverSemiImplicit(model).step(state_in, state_out, model.control(), None, 0.1)
     test.assertAlmostEqual(state_out.particle_qd.numpy()[0, 2], -0.4, places=6)
+
+    # A single vector still updates world 0 and the global world.
+    model.set_gravity((0.0, 0.0, -3.0))
+    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -3.0), (0.0, 0.0, -3.0)), atol=1.0e-6)
 
 
 def test_set_gravity_invalid_world(test, device):
@@ -803,8 +834,6 @@ solvers_global_bodies = {
     "xpbd": SolverXPBD,
     "semi_implicit": SolverSemiImplicit,
     "vbd": lambda model: SolverVBD(model, rigid_compliant_alm=True),
-    "mujoco_cpu": solvers_bodies["mujoco_cpu"],
-    "mujoco_warp": solvers_bodies["mujoco_warp"],
     "kamino": SolverKamino,
 }
 
@@ -877,8 +906,6 @@ for device in devices:
         )
 
     for solver_name, solver_fn in solvers_global_bodies.items():
-        if device.is_cuda and solver_name == "mujoco_cpu":
-            continue
         add_function_test(
             TestRuntimeGravity,
             f"test_global_gravity_bodies_{solver_name}",
@@ -887,16 +914,24 @@ for device in devices:
             solver_fn=solver_fn,
         )
 
-    for solver_name in ("semi_implicit", "mujoco_cpu", "mujoco_warp"):
+    for solver_name in ("mujoco_cpu", "mujoco_warp"):
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
         add_function_test(
             TestRuntimeGravity,
-            f"test_global_gravity_coupling_acceleration_{solver_name}",
-            test_global_gravity_coupling_acceleration,
+            f"test_global_gravity_mujoco_option_{solver_name}",
+            test_global_gravity_mujoco_option,
             devices=[device],
             solver_fn=solvers_bodies[solver_name],
         )
+
+    add_function_test(
+        TestRuntimeGravity,
+        "test_global_gravity_coupling_acceleration_semi_implicit",
+        test_global_gravity_coupling_acceleration,
+        devices=[device],
+        solver_fn=SolverSemiImplicit,
+    )
 
     # Per-world gravity for MuJoCo Warp (only on CUDA - CPU MuJoCo uses single gravity)
     if device.is_cuda:
@@ -932,8 +967,8 @@ for device in devices:
     )
     add_function_test(
         TestRuntimeGravity,
-        "test_set_gravity_implicit_world_compatibility",
-        test_set_gravity_implicit_world_compatibility,
+        "test_set_gravity_implicit_world_global_entry",
+        test_set_gravity_implicit_world_global_entry,
         devices=[device],
     )
     add_function_test(

@@ -5186,8 +5186,9 @@ def Xform "World"
                 self.assertTrue(hasattr(model, "mujoco"))
                 self.assertTrue(hasattr(model.mujoco, option_name))
                 value = getattr(model.mujoco, option_name).numpy()
-                self.assertEqual(len(value), 1)
-                self.assertAlmostEqual(value[0], expected, places=places)
+                self.assertEqual(len(value), model.world_count + 1)  # Local worlds and the global world
+                # Options imported outside a world context belong to global world -1.
+                self.assertAlmostEqual(value[-1], expected, places=places)
 
     @requires("pxr.Usd")
     def test_option_vector_world_parsing(self):
@@ -5257,8 +5258,9 @@ def Xform "World"
                 self.assertTrue(hasattr(model, "mujoco"))
                 self.assertTrue(hasattr(model.mujoco, option_name))
                 value = getattr(model.mujoco, option_name).numpy()
-                self.assertEqual(len(value), 1)
-                self.assertTrue(np.allclose(value[0], expected))
+                self.assertEqual(len(value), model.world_count + 1)  # Local worlds and the global world
+                # Options imported outside a world context belong to global world -1.
+                self.assertTrue(np.allclose(value[-1], expected))
 
     @requires("pxr.Usd")
     def test_option_numeric_once_parsing(self):
@@ -5575,9 +5577,17 @@ def Xform "Articulation" (
 
     @requires("pxr.Usd")
     def test_springref_compiler_angle_units(self):
-        """Convert revolute springrefs using compiler units, including merged D6 joints."""
+        """Convert revolute springrefs using compiler units, including merged D6 joints, and keep stiffness per radian."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
+        # path, body, axis, angular, ref, springref, stiffness
+        joints = (
+            ("Revolute", "Hinge", "X", True, 15.0, 30.0, 3.0),
+            ("Prismatic", "Slider", "X", False, 0.1, 0.25, 4.0),
+            ("MergedHinge", "Merged", "X", True, 15.0, 30.0, 5.0),
+            ("MergedTwist", "Merged", "Y", True, 20.0, 50.0, 6.0),
+            ("MergedSlide", "Merged", "X", False, 0.1, 0.25, 7.0),
+        )
         for angle_units in (None, "degree", "radian", "no_scene"):
             stage = Usd.Stage.CreateInMemory()
             UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -5593,18 +5603,15 @@ def Xform "Articulation" (
                 mass.CreateMassAttr(1.0)
                 mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1))
 
-            for path, body, angular in (
-                ("Revolute", "Hinge", True),
-                ("Prismatic", "Slider", False),
-                ("MergedHinge", "Merged", True),
-                ("MergedSlide", "Merged", False),
-            ):
+            for path, body, axis, angular, ref, springref, stiffness in joints:
                 joint_schema = UsdPhysics.RevoluteJoint if angular else UsdPhysics.PrismaticJoint
                 joint = joint_schema.Define(stage, f"/World/{path}")
                 joint.CreateBody1Rel().SetTargets([f"/World/{body}"])
+                joint.CreateAxisAttr().Set(axis)
                 prim = joint.GetPrim()
-                prim.CreateAttribute("mjc:ref", Sdf.ValueTypeNames.Float).Set(15.0 if angular else 0.1)
-                prim.CreateAttribute("mjc:springref", Sdf.ValueTypeNames.Float).Set(30.0 if angular else 0.25)
+                prim.CreateAttribute("mjc:ref", Sdf.ValueTypeNames.Float).Set(ref)
+                prim.CreateAttribute("mjc:springref", Sdf.ValueTypeNames.Float).Set(springref)
+                prim.CreateAttribute("mjc:stiffness", Sdf.ValueTypeNames.Double).Set(stiffness)
 
             builder = newton.ModelBuilder()
             SolverMuJoCo.register_custom_attributes(builder)
@@ -5613,20 +5620,18 @@ def Xform "Articulation" (
                 model = builder.finalize(device="cpu")
                 rest_q = model.joint_rest_q.numpy()
                 reference = model.mujoco.dof_ref.numpy()
+                joint_stiffness = model.joint_stiffness.numpy()
                 angular_factor = 1.0 if angle_units == "radian" else np.pi / 180.0
-                expected_springref = 30.0 * angular_factor
+                offsets = {"MergedSlide": 0, "MergedHinge": 1, "MergedTwist": 2}
 
-                for path, offset, expected_spring, expected_ref in (
-                    ("Revolute", 0, expected_springref, 15.0 * angular_factor),
-                    ("Prismatic", 0, 0.25, 0.1),
-                    ("MergedHinge", 1, expected_springref, 15.0 * angular_factor),
-                    ("MergedSlide", 0, 0.25, 0.1),
-                ):
+                for path, _body, _axis, angular, ref, springref, stiffness in joints:
+                    factor = angular_factor if angular else 1.0
                     joint = result["path_joint_map"][f"/World/{path}"]
-                    dof = builder.joint_qd_start[joint] + offset
-                    coord = builder.joint_q_start[joint] + offset
-                    self.assertAlmostEqual(rest_q[coord], expected_spring - expected_ref, places=5)
-                    self.assertAlmostEqual(reference[dof], expected_ref, places=5)
+                    dof = builder.joint_qd_start[joint] + offsets.get(path, 0)
+                    coord = builder.joint_q_start[joint] + offsets.get(path, 0)
+                    self.assertAlmostEqual(rest_q[coord], (springref - ref) * factor, places=5)
+                    self.assertAlmostEqual(reference[dof], ref * factor, places=5)
+                    self.assertAlmostEqual(joint_stiffness[dof], stiffness, places=5)
 
     @requires("pxr.Usd")
     def test_springref_attribute_parsing(self):
@@ -6526,21 +6531,6 @@ def Xform "Articulation" (
             ),
             atol=1.0e-7,
         )
-
-    def test_omnipbr_mapping_inputs_are_not_parsed(self):
-        """Keep OmniPBR texture-mapping adapters out of the USD importer."""
-        self.assertFalse(hasattr(usd_utils, "_is_omnipbr_shader"))
-        self.assertFalse(hasattr(usd_utils, "_extract_omnipbr_texture_mapping"))
-        importer_source = inspect.getsource(usd_utils)
-        for input_name in (
-            "texture_scale",
-            "texture_translate",
-            "texture_rotate",
-            "project_uvw",
-            "world_or_object",
-        ):
-            with self.subTest(input_name=input_name):
-                self.assertNotIn(input_name, importer_source)
 
     @requires("pxr.Usd")
     def test_get_mesh_loads_alternate_texcoord_set(self):

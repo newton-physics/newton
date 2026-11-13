@@ -579,11 +579,11 @@ def test_vertex_triangle_collision(test, device):
 
     for query_radius in rs:
         collision_detector.vertex_triangle_collision_detection(query_radius)
-        vertex_colliding_triangles_count_1 = collision_detector.vertex_colliding_triangles_count.numpy()
-        vertex_min_dis_1 = collision_detector.vertex_colliding_triangles_min_dist.numpy()
+        vertex_colliding_triangles_count_1 = collision_detector.vertex_colliding_triangles_count.numpy().copy()
+        vertex_min_dis_1 = collision_detector.vertex_colliding_triangles_min_dist.numpy().copy()
 
-        triangle_colliding_vertices_count_1 = collision_detector.triangle_colliding_vertices_count.numpy()
-        triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy()
+        triangle_colliding_vertices_count_1 = collision_detector.triangle_colliding_vertices_count.numpy().copy()
+        triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy().copy()
 
         wp.launch(
             kernel=validate_vertex_collisions,
@@ -673,10 +673,10 @@ def test_vertex_triangle_collision(test, device):
 
     for query_radius in rs:
         collision_detector.vertex_triangle_collision_detection(query_radius)
-        vertex_colliding_triangles_count_1 = collision_detector.vertex_colliding_triangles_count.numpy()
-        vertex_min_dis_1 = collision_detector.vertex_colliding_triangles_min_dist.numpy()
+        vertex_colliding_triangles_count_1 = collision_detector.vertex_colliding_triangles_count.numpy().copy()
+        vertex_min_dis_1 = collision_detector.vertex_colliding_triangles_min_dist.numpy().copy()
 
-        triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy()
+        triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy().copy()
 
         wp.launch(
             kernel=validate_vertex_collisions,
@@ -735,8 +735,8 @@ def test_edge_edge_collision(test, device):
 
     for query_radius in rs:
         collision_detector.edge_edge_collision_detection(query_radius)
-        edge_colliding_edges_count_1 = collision_detector.edge_colliding_edges_count.numpy()
-        edge_min_dist_1 = collision_detector.edge_colliding_edges_min_dist.numpy()
+        edge_colliding_edges_count_1 = collision_detector.edge_colliding_edges_count.numpy().copy()
+        edge_min_dist_1 = collision_detector.edge_colliding_edges_min_dist.numpy().copy()
 
         wp.launch(
             kernel=validate_edge_collisions,

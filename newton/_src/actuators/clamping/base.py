@@ -7,6 +7,8 @@ from typing import Any, ClassVar
 
 import warp as wp
 
+from ..space import DriveOutputSpace
+
 
 class ClampingBase:
     """Base class for actuator output effort clamping.
@@ -15,6 +17,9 @@ class ClampingBase:
     actuator output effort — symmetric limits, velocity-dependent
     saturation, position-dependent curves, etc.  They read from a
     source effort buffer and write bounded values to a destination buffer.
+    Each clamp declares its input space. DUTY clamps run before an explicit
+    motor model; EFFORT clamps model limits without a motor. An actuator
+    rejects clamps whose space differs from the drive output.
 
     **Validation contract:**  :meth:`resolve_arguments` validates scalar
     parameter values before they are batched into Warp arrays.
@@ -22,6 +27,9 @@ class ClampingBase:
     reading back array contents would force a synchronous device-to-host
     copy on every construction.
     """
+
+    input_space: DriveOutputSpace = DriveOutputSpace.EFFORT
+    """Space accepted by this clamp. Physical effort clamps keep the default."""
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
 
@@ -83,6 +91,8 @@ class ClampingBase:
         pos_indices: wp.array[wp.uint32],
         vel_indices: wp.array[wp.uint32],
         device: wp.Device | None = None,
+        *,
+        supply_voltage: wp.array[float] | None = None,
     ) -> None:
         """Read effort from *src*, apply clamping, write to *dst*.
 
@@ -99,5 +109,7 @@ class ClampingBase:
             pos_indices: Indices into *positions* for each DOF.
             vel_indices: Indices into *velocities* for each DOF.
             device: Warp device for kernel launches.
+            supply_voltage: Supply voltage [V], shape (N,), passed to DUTY clamps
+                when the actuator has a motor.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement modify_forces")

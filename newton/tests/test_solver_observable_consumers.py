@@ -111,7 +111,7 @@ class TestSolverObservableConsumers(unittest.TestCase):
         observables = solver.observables(contacts=large, kinds={SolverBase.ObservableKind.CONTACT_F})
         state_in, state_out = model.state(), model.state()
         state_out.body_q.fill_(wp.transform(wp.vec3(7.0), wp.quat_identity()))
-        before = state_out.body_q.numpy()
+        before = state_out.body_q.numpy().copy()
         with self.assertRaisesRegex(ValueError, "exceeds Contacts capacity"):
             solver.step(state_in, state_out, model.control(), small, 0.001, observables=observables)
         np.testing.assert_array_equal(state_out.body_q.numpy(), before)

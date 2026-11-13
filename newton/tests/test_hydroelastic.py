@@ -2872,6 +2872,14 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
+    "test_stacked_mesh_cubes_hydroelastic_xpbd",
+    test_stacked_mesh_cubes_hydroelastic,
+    devices=cuda_devices,
+    solver_fn=solvers["xpbd"],
+)
+
+add_function_test(
+    TestHydroelastic,
     "test_stacked_small_mesh_cubes_hydroelastic_xpbd",
     test_stacked_small_mesh_cubes_hydroelastic,
     devices=cuda_devices,
