@@ -663,8 +663,10 @@ solve's iteration count, line-search length and convergence tolerances.
 The following built-in drives support the implicit mode:
 :class:`~newton.actuators.DrivePD`,
 :class:`~newton.actuators.DrivePID`,
-:class:`~newton.actuators.DriveNeuralMLP` and
-:class:`~newton.actuators.DriveNeuralLSTM`.
+:class:`~newton.actuators.DriveNeuralMLP`,
+:class:`~newton.actuators.DriveNeuralLSTM` and
+:class:`~newton.actuators.DriveNeuralGRU`.
+
 The neural drives enter the solve as a per-step linearization of the
 network, whose slopes come from a Warp autodiff pass over the loaded network.
 
@@ -672,7 +674,7 @@ Limitations of the implicit mode.  In the cases marked *error*,
 :meth:`~newton.actuators.Actuator.set_effort_mode_implicit` raises
 ``NotImplementedError`` instead of falling back silently:
 
-* **Other drives** (error), e.g. :class:`~newton.actuators.DriveNeuralGRU`:
+* **Other drives** (error):
   they define no :attr:`~newton.actuators.DriveBase.evaluate_force` law for
   the solve.
 * **Motors** (error): the solve does not model the motor stage, e.g.
