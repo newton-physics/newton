@@ -57,7 +57,8 @@ class Example:
         # Load the heterogeneous basic models either from USD or manually using the
         # model builder API, depending on the command-line argument `--from-usd`
         builder = newton.ModelBuilder()
-        if args is not None and args.from_usd:
+        self.from_usd = args.from_usd if args is not None else True
+        if self.from_usd:
             # Load all basic USD assets and add them to the builder
             asset_names = [
                 "boxes_fourbar",
@@ -81,7 +82,9 @@ class Example:
         solver_config = newton.solvers.SolverKamino.Config.from_model(self.model)
         solver_config.use_collision_detector = True
         solver_config.use_fk_solver = True
-        solver_config.collision_detector.pipeline = "primitive"
+        # The USD assets use box platforms, which the primitive pipeline supports. The manually built
+        # models use ground planes, which only the unified pipeline supports.
+        solver_config.collision_detector.pipeline = "primitive" if self.from_usd else "unified"
         solver_config.collision_detector.max_contacts = 32 * self.model.world_count
         solver_config.dynamics.preconditioning = True
         solver_config.padmm.primal_tolerance = 1e-4
@@ -175,11 +178,16 @@ class Example:
             "bodies stay on top of their platforms",
             lambda q, qd: q[2] > -0.01 and abs(q[0]) < 5.0 and abs(q[1]) < 5.0,
         )
-        # The unjointed box and hinged pair start at rest on their platforms and must remain there.
-        free_bodies = [
-            i for i, label in enumerate(self.model.body_label) if "box_on_plane" in label or "boxes_hinged" in label
-        ]
-        assert free_bodies, "Expected the box-on-plane and hinged-boxes bodies"
+        # The floating models (nunchaku, hinged pair, and box) start at rest on their platforms and must
+        # remain there. Select them by world structure, so both build paths are checked: a floating world
+        # has no joint other than a free joint attached to the world.
+        joint_world = self.model.joint_world.numpy()
+        joint_parent = self.model.joint_parent.numpy()
+        joint_type = self.model.joint_type.numpy()
+        anchored_worlds = set(joint_world[(joint_parent < 0) & (joint_type != int(newton.JointType.FREE))].tolist())
+        body_world = self.model.body_world.numpy()
+        free_bodies = [i for i in range(self.model.body_count) if body_world[i] not in anchored_worlds]
+        assert len(free_bodies) >= 6, f"Expected the floating nunchaku, hinged-boxes, and box bodies, got {free_bodies}"
         np.testing.assert_allclose(
             body_q[free_bodies, 2],
             self.body_q_initial[free_bodies, 2],
