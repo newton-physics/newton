@@ -102,8 +102,9 @@ can inherit ``model.vbd`` settings.
        last resort, see :ref:`vbd-jitter-pipeline`.
      - Runtime grows linearly. Does not fix a stiffness-ratio problem.
    * - ``friction_epsilon`` (1e-2)
-     - Threshold for small sliding speeds [m/s]. Sets the friction smoothing
-       length to ``friction_epsilon`` x ``dt`` for particle and rigid-soft contacts.
+     - Threshold for small sliding speeds [m/s]. With the default contact mode,
+       sets the friction smoothing length to ``friction_epsilon`` x ``dt``
+       for particle and rigid-soft contacts.
      - Particle or rigid-soft friction chatters at rest.
      - Larger values permit slow creep under tangential load. Does not affect
        compliant-ALM rigid-rigid contacts.

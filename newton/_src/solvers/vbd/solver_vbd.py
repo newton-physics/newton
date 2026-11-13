@@ -83,7 +83,10 @@ from .rigid_vbd_kernels import (
     compute_body_particle_contact_forces,
     compute_rigid_contact_forces,
     compute_rod_dahl_parameters,
+    create_accumulate_body_body_contacts_per_body,
     create_solve_rigid_body,
+    create_update_duals_body_body_contacts,
+    create_update_duals_joint,
     forward_step_rigid_bodies,
     init_body_body_contact_materials,
     init_body_body_contacts_alm,
@@ -504,7 +507,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             iterations: Number of VBD iterations per step. If ``None``, use the registered
                 ``newton:maxSolverIterations`` scene value, or ``10`` if absent or ``-1``.
                 Explicit values override the scene.
-            friction_epsilon: Small sliding-speed threshold [m/s] for particle and rigid-soft friction.
+            friction_epsilon: Small sliding-speed threshold [m/s]. With the default contact mode,
+                regularizes particle and rigid-soft friction.
                 Does not affect compliant-ALM rigid-rigid contacts.
             dat_conservative_bound_relaxation: Relaxation factor in (0, 1) shared by every Divide-and-Truncate
                 (DAT) truncation: soft self-contact (``particle_enable_self_contact``) and rigid-soft
@@ -1067,17 +1071,20 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         )
 
         options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
-        self._solve_rigid_body_kernel = create_solve_rigid_body(model.tendon_count > 0)
         if integrates_rigid_bodies:
             rigid_modules = (
                 rigid_vbd_kernels,
                 accumulate_body_body_contacts_per_body.module,
+                create_accumulate_body_body_contacts_per_body(True).module,
                 compute_rigid_contact_forces.module,
                 update_duals_body_body_contacts.module,
+                create_update_duals_body_body_contacts(False).module,
+                create_update_duals_body_body_contacts(False, True).module,
+                create_update_duals_body_body_contacts(True, True).module,
             )
             for module in rigid_modules:
                 self._set_module_options(options, module=module)
-            for module in (self._solve_rigid_body_kernel.module, update_duals_joint.module):
+            for module in (update_duals_joint.module, create_update_duals_joint(True).module):
                 self._set_module_options(options | {"fast_math": enable_fast_math}, module=module)
         if model.joint_count > 0:
             self._set_module_options(
@@ -1144,6 +1151,16 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             rigid_joint_linear_kd,
             rigid_joint_angular_kd,
         )
+
+        self._solve_rigid_body_kernel = create_solve_rigid_body(
+            model.tendon_count > 0,
+            integrates_rigid_bodies and self.joint_constraint_count > 0,
+            bool(self.rigid_compliant_alm),
+        )
+        if integrates_rigid_bodies:
+            self._set_module_options(
+                options | {"fast_math": enable_fast_math}, module=self._solve_rigid_body_kernel.module
+            )
 
         attachment_count = model.attachment_particle_body_count
         self._attachment_particle_body_lambda = wp.zeros(attachment_count, dtype=wp.vec3, device=self.device)
@@ -1438,8 +1455,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # Persistent scratch for joint_f accumulation
             self._body_f_for_integration = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=self.device)
 
+            # Free joints add no constraint: only joint constraints change a body's contact-free compliance.
             angular_compliance_capacity = (
-                model.body_count if model.joint_count > 0 and model.shape_count > 0 and self.rigid_compliant_alm else 0
+                model.body_count
+                if self.joint_constraint_count > 0 and model.shape_count > 0 and self.rigid_compliant_alm
+                else 0
             )
             self.body_contact_free_angular_compliance = wp.zeros(
                 angular_compliance_capacity, dtype=wp.mat33, device=self.device
@@ -1452,6 +1472,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self.body_body_contact_counts = wp.zeros(model.body_count, dtype=wp.int32, device=self.device)
             self.body_body_contact_indices = wp.zeros(
                 model.body_count * bb_pre_alloc, dtype=wp.int32, device=self.device
+            )
+            # Body pair (body0, body1) of each list entry's contact, and whether both are dynamic bodies of one color.
+            self.body_body_contact_bodies = wp.zeros(
+                model.body_count * bb_pre_alloc, dtype=wp.vec3i, device=self.device
             )
             self.body_body_contact_overflow_max = wp.zeros(1, dtype=wp.int32, device=self.device)
 
@@ -1499,9 +1523,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self.body_body_contact_normal_rho = wp.zeros(0, dtype=float, device=self.device)
             self.body_body_contact_material_ke = wp.zeros(0, dtype=float, device=self.device)
             self.body_body_contact_material_kd = wp.zeros(0, dtype=float, device=self.device)
-            self.body_body_contact_material_mu = wp.zeros(0, dtype=float, device=self.device)
-            self.body_body_contact_material_mu_torsional = wp.zeros(0, dtype=float, device=self.device)
-            self.body_body_contact_material_mu_rolling = wp.zeros(0, dtype=float, device=self.device)
+            # Friction record per contact: (sliding, torsional, rolling).
+            self.body_body_contact_material_mu = wp.zeros(0, dtype=wp.vec3, device=self.device)
             self.body_body_contact_tangent_rho = wp.zeros(0, dtype=wp.mat22, device=self.device)
             self.body_body_contact_torsional_rho = wp.zeros(0, dtype=float, device=self.device)
             self.body_body_contact_rolling_rho = wp.zeros(0, dtype=wp.mat22, device=self.device)
@@ -1991,9 +2014,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.body_body_contact_normal_rho = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_material_ke = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_material_kd = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
-        self.body_body_contact_material_mu = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
-        self.body_body_contact_material_mu_torsional = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
-        self.body_body_contact_material_mu_rolling = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
+        # Friction record per contact: (sliding, torsional, rolling).
+        self.body_body_contact_material_mu = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
         self.body_body_contact_tangent_rho = wp.zeros(rigid_contact_max, dtype=wp.mat22, device=self.device)
         self.body_body_contact_torsional_rho = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_rolling_rho = wp.zeros(rigid_contact_max, dtype=wp.mat22, device=self.device)
@@ -3841,11 +3863,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         contacts.rigid_contact_shape1,
                         model.shape_body,
                         self.body_inv_mass_effective,
+                        self._body_color,
                         self.body_body_contact_buffer_pre_alloc,
                     ],
                     outputs=[
                         self.body_body_contact_counts,
                         self.body_body_contact_indices,
+                        self.body_body_contact_bodies,
                         self.body_body_contact_overflow_max,
                     ],
                     device=self.device,
@@ -3921,8 +3945,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             self.body_body_contact_lambda_angular,
                             self.body_body_contact_material_kd,
                             self.body_body_contact_material_mu,
-                            self.body_body_contact_material_mu_torsional,
-                            self.body_body_contact_material_mu_rolling,
                             self.body_body_contact_material_ke,
                         ],
                         device=self.device,
@@ -3945,15 +3967,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             self.body_body_contact_penalty_k,
                             self.body_body_contact_material_kd,
                             self.body_body_contact_material_mu,
-                            self.body_body_contact_material_mu_torsional,
-                            self.body_body_contact_material_mu_rolling,
                             self.body_body_contact_material_ke,
                         ],
                         dim=contact_launch_dim,
                         device=self.device,
                     )
+                    # Contact-frame setup clears the angular multiplier of each row without a linear one.
                     self.body_body_contact_lambda.zero_()
-                    self.body_body_contact_lambda_angular.zero_()
 
                 # A fresh refresh supersedes the prior contact rows, so consume the
                 # pending reset (contact-reset state exists only with history on).
@@ -4095,8 +4115,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 1.0 / (dt * dt),
                 penalty_decay,
                 self.body_body_contact_material_ke,
-                self.body_body_contact_material_mu_torsional,
-                self.body_body_contact_material_mu_rolling,
+                self.body_body_contact_material_mu,
                 self.rigid_contact_k_start_value,
             ],
             outputs=[
@@ -4893,24 +4912,20 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # Accumulate body-body (rigid-rigid) contact forces and Hessians on bodies (per-body, per-color)
             if contacts is not None and model.shape_count > 0:
                 wp.launch(
-                    kernel=accumulate_body_body_contacts_per_body,
+                    kernel=create_accumulate_body_body_contacts_per_body(bool(self.rigid_compliant_alm)),
                     dim=color_group.size * _NUM_CONTACT_THREADS_PER_BODY,
                     inputs=[
                         dt,
                         color_group,
-                        self._body_color,
                         self.body_q_prev,
                         state_in.body_q,
                         model.body_com,
-                        self.body_inv_mass_effective,
                         self.friction_epsilon,
                         self.body_body_contact_penalty_k,
                         self.body_body_contact_normal_rho,
                         self.body_body_contact_material_ke,
                         self.body_body_contact_material_kd,
                         self.body_body_contact_material_mu,
-                        self.body_body_contact_material_mu_torsional,
-                        self.body_body_contact_material_mu_rolling,
                         self.body_body_contact_tangent_rho,
                         self.body_body_contact_torsional_rho,
                         self.body_body_contact_rolling_rho,
@@ -4921,8 +4936,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.rigid_contact_hard,
                         self.rigid_compliant_alm,
                         contacts.rigid_contact_count,
-                        contacts.rigid_contact_shape0,
-                        contacts.rigid_contact_shape1,
                         contacts.rigid_contact_point0,
                         contacts.rigid_contact_point1,
                         contacts.rigid_contact_surface_velocity,
@@ -4931,10 +4944,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         contacts.rigid_contact_normal,
                         contacts.rigid_contact_margin0,
                         contacts.rigid_contact_margin1,
-                        model.shape_body,
                         self.body_body_contact_buffer_pre_alloc,
                         self.body_body_contact_counts,
                         self.body_body_contact_indices,
+                        self.body_body_contact_bodies,
                     ],
                     outputs=[
                         self.body_forces,
@@ -5051,7 +5064,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         if contacts is not None and contacts.rigid_contact_max > 0 and model.shape_count > 0:
             wp.launch(
-                kernel=update_duals_body_body_contacts,
+                kernel=create_update_duals_body_body_contacts(
+                    refresh_contact_angular_conditioning == 1, bool(self.rigid_compliant_alm)
+                ),
                 dim=contacts.rigid_contact_max,
                 inputs=[
                     contacts.rigid_contact_count,
@@ -5072,8 +5087,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     refresh_contact_angular_conditioning,
                     dt,
                     self.body_body_contact_material_mu,
-                    self.body_body_contact_material_mu_torsional,
-                    self.body_body_contact_material_mu_rolling,
                     self.body_body_contact_C0,
                     self.rigid_contact_alpha,
                     self.rigid_contact_hard,
@@ -5116,7 +5129,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         if self.joint_constraint_count > 0:
             wp.launch(
-                kernel=update_duals_joint,
+                kernel=create_update_duals_joint(bool(self.rigid_compliant_alm)),
                 dim=model.joint_count,
                 inputs=[
                     model.joint_type,
@@ -5222,8 +5235,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.body_body_contact_material_ke,
                 self.body_body_contact_material_kd,
                 self.body_body_contact_material_mu,
-                self.body_body_contact_material_mu_torsional,
-                self.body_body_contact_material_mu_rolling,
                 self.body_body_contact_tangent_rho,
                 self.body_body_contact_torsional_rho,
                 self.body_body_contact_rolling_rho,
@@ -5355,8 +5366,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 getattr(self, "body_body_contact_material_ke", None),
                 getattr(self, "body_body_contact_material_kd", None),
                 getattr(self, "body_body_contact_material_mu", None),
-                getattr(self, "body_body_contact_material_mu_torsional", None),
-                getattr(self, "body_body_contact_material_mu_rolling", None),
                 getattr(self, "body_body_contact_tangent_rho", None),
                 getattr(self, "body_body_contact_torsional_rho", None),
                 getattr(self, "body_body_contact_rolling_rho", None),
@@ -5421,8 +5430,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.body_body_contact_material_ke,
                 self.body_body_contact_material_kd,
                 self.body_body_contact_material_mu,
-                self.body_body_contact_material_mu_torsional,
-                self.body_body_contact_material_mu_rolling,
                 self.body_body_contact_tangent_rho,
                 self.body_body_contact_torsional_rho,
                 self.body_body_contact_rolling_rho,
