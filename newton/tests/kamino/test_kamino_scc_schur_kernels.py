@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.kamino._src.solvers.scc.decoupling import SparseDecoupledRows
 from newton._src.solvers.kamino._src.solvers.scc.kernels import _compute_scc_status_residuals
 from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     COMPACT_SCHUR_PGS_BLOCK_DIM,
@@ -163,6 +164,14 @@ class TestKaminoCompactSchur(NewtonTestCase):
                     "enable_compact_schur": True,
                     "block_iteration": 0,
                 }
+                # No decoupled joint rows
+                data.update(
+                    zip(
+                        ("has_coupled_rows", "coupled_row", "coupled_value"),
+                        SparseDecoupledRows(None, 0, self.device).inputs,
+                        strict=True,
+                    )
+                )
                 results = []
                 for kernels in (
                     (_solve_scc_sparse_inequalities_pgs_cooperative,),
@@ -387,8 +396,18 @@ class TestKaminoFullSchurAssembly(NewtonTestCase):
 
         for device in wp.get_devices():
             arrays = {}
+            # No decoupled joint rows
+            arrays.update(
+                zip(
+                    ("has_coupled_rows", "coupled_row", "coupled_value"),
+                    SparseDecoupledRows(None, 0, device).inputs,
+                    strict=True,
+                )
+            )
             for arg in kernel.adj.args:
                 name = arg.label
+                if name in arrays:
+                    continue
                 if name == "workers_per_world":
                     arrays[name] = 128
                 else:

@@ -13,8 +13,6 @@ from newton._src.solvers.kamino._src.core.joints import JOINT_TAUMAX
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.solver_configs import (
-    DECOUPLED_CONFIG_NAMES,
-    DECOUPLED_CONFIGS,
     KAMINO_CONFIGS,
     PADMM_CONFIG_NAMES,
     make_padmm_sparse_fused_config,
@@ -207,11 +205,11 @@ class TestSolverKaminoJointEffortLimitImplicitPd(NewtonTestCase):
                     ):
                         expected_effort = direction * effort_limit
                         expected_velocity = DT * expected_effort / (_EFFECTIVE_JOINT_INERTIA + armature)
-                        # PADMM and dense SCC decouple the effort row from the armature row of the same
-                        # DoF, and the body actuation wrench holds the part of the effort that acts on
-                        # the body directly, ``r / (d + r)`` with ``d = 1 / I`` and ``r = 1 / armature``.
+                        # PADMM and SCC decouple the effort row from the armature row of the same DoF,
+                        # and the body actuation wrench holds the part of the effort that acts on the
+                        # body directly, ``r / (d + r)`` with ``d = 1 / I`` and ``r = 1 / armature``.
                         expected_body_effort = expected_effort
-                        if config_name in DECOUPLED_CONFIG_NAMES and armature > 0.0:
+                        if armature > 0.0:
                             expected_body_effort *= (1.0 / armature) / (1.0 / _BODY_INERTIA + 1.0 / armature)
                         self.assertAlmostEqual(float(actual_efforts[world]), expected_effort, delta=3.0e-4)
                         self.assertAlmostEqual(float(reported_efforts[world]), expected_effort, delta=3.0e-4)
@@ -384,7 +382,7 @@ class TestSolverKaminoJointEffortLimitDominantArmature(NewtonTestCase):
 
     def test_bounded_pd_with_dominant_armature(self):
         """Solve effort-limited PD accurately when the armature dwarfs the body inertia."""
-        self._check_bounded_pd(DECOUPLED_CONFIGS)
+        self._check_bounded_pd(KAMINO_CONFIGS)
 
     def test_bounded_pd_with_dominant_armature_fused_cr(self):
         """Solve effort-limited PD with the fused conjugate residual solver, see the test above."""

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...core.types import vec6f
+from .decoupling import coupled_rows_entry
 from .sparse_kernels import _subgroup_sum, _unilateral_nzb_offsets
 
 if TYPE_CHECKING:
@@ -70,8 +71,15 @@ def _assemble(
     slots: int,
     masks: wp.array[wp.uint64],
     values: wp.array[wp.float32],
+    has_coupled_rows: wp.bool,
+    coupled_row: wp.array2d[wp.int32],
+    coupled_value: wp.array2d[wp.float32],
 ):
-    """Cache exact shared-body coefficients without materializing zero blocks."""
+    """Cache exact shared-body coefficients without materializing zero blocks.
+
+    A joint dynamics row and a friction or effort row of the same DoF share their bodies, so the
+    joint-space coupling of decoupled joint rows has a slot.
+    """
     w, col = wp.tid()
     if col >= dim[w] - njc[w]:
         return
@@ -123,7 +131,10 @@ def _assemble(
                     if offsets[1] >= 0 and body == body1:
                         for component in range(6):
                             value += weighted_j[component] * jac1[component]
-            values[((w * slots + slot) * 6 + local) * width + col] = value * scale
+            value *= scale
+            if has_coupled_rows and row >= 0 and col < nbc[w]:
+                value += coupled_rows_entry(vio[w] + row, njc[w] + col, coupled_row, coupled_value)
+            values[((w * slots + slot) * 6 + local) * width + col] = value
         slot += 1
         remaining = remaining & (remaining - wp.uint64(1))
 
@@ -226,7 +237,7 @@ class PackedCoupling:
                 bsm.nzb_start,
                 bsm.nzb_coords,
                 bsm.nzb_values,
-                operator.constraint_jacobian.nzb_values,
+                path.decoupled_rows.jacobian_values(problem),
                 state.limit_indices,
                 state.contact_indices,
                 jacobian.bounded_constraint_nzb_offsets,
@@ -239,6 +250,7 @@ class PackedCoupling:
                 self.slots,
                 self.masks,
                 self.values,
+                *path.decoupled_rows.inputs,
             ],
             device=self._device,
         )

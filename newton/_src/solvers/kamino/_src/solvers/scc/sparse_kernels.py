@@ -14,6 +14,7 @@ from ...core.types import vec6f
 from ...geometry.keying import build_pair_key2, uint64_sentinel_value
 from ...linalg.factorize._array_ptr import get_float32_array_offset_ptr
 from ...linalg.factorize.llt_blocked import make_llt_blocked_solve_func
+from .decoupling import coupled_rows_entry, coupled_rows_product
 from .kernels import (
     _FUSED_BILATERAL_BLOCK,
     _FUSED_INEQUALITY_BLOCK,
@@ -224,6 +225,10 @@ def _sparse_bilateral_gemv(
     lambdas: wp.array[float32],
     # Mask:
     world_mask: wp.array[bool],
+    # Joint-space couplings of decoupled joint rows:
+    has_coupled_rows: wp.bool,
+    coupled_row: wp.array2d[int32],
+    coupled_value: wp.array2d[float32],
 ):
     wid, block_idx = wp.tid()
 
@@ -237,7 +242,10 @@ def _sparse_bilateral_gemv(
         row = block_idx
         if row < njc:
             vec_idx = row_start[wid] + row
-            wp.atomic_add(y, vec_idx, eta[vec_idx] * lambdas[vec_idx])
+            value = eta[vec_idx] * lambdas[vec_idx]
+            if has_coupled_rows:
+                value += coupled_rows_product(vec_idx, row_start[wid], coupled_row, coupled_value, lambdas)
+            wp.atomic_add(y, vec_idx, value)
 
     if block_idx >= num_nzb[wid]:
         return
@@ -850,6 +858,9 @@ def _assemble_sparse_bilateral_unilateral_coupling(
     coupling: wp.array[float32],
     row_groups: int32,
     compact_layout: wp.bool,
+    has_coupled_rows: wp.bool,
+    coupled_row: wp.array2d[int32],
+    coupled_value: wp.array2d[float32],
 ):
     """Assemble the bilateral-unilateral coupling with one thread per column and row group.
 
@@ -929,7 +940,10 @@ def _assemble_sparse_bilateral_unilateral_coupling(
             if col_block_1 >= int32(0) and body_1 == row_body:
                 for component in range(6):
                     value += mass_weighted[component] * jacobian_1[component]
-        coupling[offset + row * stride + unilateral] = value * scale
+        value *= scale
+        if has_coupled_rows and unilateral < nbc:
+            value += coupled_rows_entry(problem_vio[wid] + row, col, coupled_row, coupled_value)
+        coupling[offset + row * stride + unilateral] = value
 
 
 @wp.kernel
@@ -1337,6 +1351,9 @@ def _solve_scc_sparse_inequalities_pgs(
     transpose_max_cols: wp.array[int32],
     transpose_column_major: bool,
     world_start: int32,
+    has_coupled_rows: wp.bool,
+    coupled_row: wp.array2d[int32],
+    coupled_value: wp.array2d[float32],
 ):
     """Apply one conflict-free sparse PGS schedule to every inequality."""
     tid = wp.tid()
@@ -1496,6 +1513,10 @@ def _solve_scc_sparse_inequalities_pgs(
                                         bilateral_coupling[coupling_index] * bilateral_delta[bvio + bilateral_row]
                                     )
                                 bound_value += problem_v_f[vec_idx]
+                                if has_coupled_rows:
+                                    bound_value += coupled_rows_product(
+                                        vec_idx, vio, coupled_row, coupled_value, solution_lambdas
+                                    )
                                 P_bound = problem_P[vec_idx]
                                 diagonal_raw = projected_diag[vec_idx]
                                 lambda_bound_old = solution_lambdas[vec_idx]
@@ -2051,9 +2072,14 @@ def _cooperative_sparse_bounded_update(
     eta: wp.array[float32],
     body_space: wp.array[float32],
     solution_lambdas: wp.array[float32],
+    has_coupled_rows: wp.bool,
+    coupled_row: wp.array2d[int32],
+    coupled_value: wp.array2d[float32],
 ) -> float32:
     offsets = bounded_nzb_offsets[bounded_id]
     value = eta[row_start + row] * solution_lambdas[vec_idx] + bilateral_value
+    if has_coupled_rows:
+        value += coupled_rows_product(vec_idx, vec_idx - row, coupled_row, coupled_value, solution_lambdas)
     for k in range(2):
         nzb_idx = offsets[k]
         if nzb_idx >= int32(0) and nzb_idx < matrix_end and bsm_nzb_coords[nzb_idx, 0] == row:
@@ -2323,6 +2349,9 @@ def _prepare_full_sparse_unilateral_schur(
     body_space: wp.array[float32],
     solution_lambdas: wp.array[float32],
     workers_per_world: int32,
+    has_coupled_rows: wp.bool,
+    coupled_row: wp.array2d[int32],
+    coupled_value: wp.array2d[float32],
 ):
     """Build the full compact operator with parallel rows and matrix entries."""
     tid = wp.tid()
@@ -2375,6 +2404,8 @@ def _prepare_full_sparse_unilateral_schur(
                 body = col_start + bsm_nzb_coords[idx, 1]
                 for component in range(6):
                     value += block[component] * body_space[body + component]
+        if has_coupled_rows and unilateral < nbc:
+            value += coupled_rows_product(vio + row, vio, coupled_row, coupled_value, solution_lambdas)
         compact_q[vio + row] = value + problem_v_f[vio + row]
     for entry in range(lane, num_unilateral_rows * num_unilateral_rows, workers_per_world):
         column = entry / num_unilateral_rows
@@ -2426,6 +2457,8 @@ def _prepare_full_sparse_unilateral_schur(
         value *= problem_P[vio + njc + column]
         if row == column:
             value += eta[row_start + njc + row]
+        elif has_coupled_rows and row < nbc and column < nbc:
+            value += coupled_rows_entry(vio + njc + row, njc + column, coupled_row, coupled_value)
         compact_schur[response_offset + column * num_unilateral_rows + row] -= value
 
 
@@ -2483,6 +2516,9 @@ def _solve_scc_sparse_inequalities_pgs_cooperative(
     solver_status: wp.array[SCCStatus],
     body_space: wp.array[float32],
     solution_lambdas: wp.array[float32],
+    has_coupled_rows: wp.bool,
+    coupled_row: wp.array2d[int32],
+    coupled_value: wp.array2d[float32],
 ):
     """Apply sparse PGS with one warp cooperating on each articulated world.
 
@@ -2754,6 +2790,9 @@ def _solve_scc_sparse_inequalities_pgs_cooperative(
                                             eta,
                                             body_space,
                                             solution_lambdas,
+                                            has_coupled_rows,
+                                            coupled_row,
+                                            coupled_value,
                                         )
                                 elif uid < scalar_count:
                                     if phase == int32(0):
@@ -3420,6 +3459,9 @@ def make_sparse_bilateral_inverse_kernel(body_capacity: int):
         bsm_nzb_coords: wp.array2d[int32],
         bsm_nzb_values: wp.array[vec6f],
         world_start: int32,
+        has_coupled_rows: wp.bool,
+        coupled_row: wp.array2d[int32],
+        coupled_value: wp.array2d[float32],
     ):
         wid, lane = wp.tid()
         wid += world_start
@@ -3462,6 +3504,9 @@ def make_sparse_bilateral_inverse_kernel(body_capacity: int):
                     for component in range(6):
                         contribution += block[component] * workspace[col + component]
                     value += contribution
+                if has_coupled_rows:
+                    # The couplings of joint rows only reach unilateral rows
+                    value += coupled_rows_product(pvio + row, pvio, coupled_row, coupled_value, solution_lambdas)
                 value = -bilateral_P[bvio + row] * (value + problem_v_f[pvio + row])
                 bilateral_rhs[bvio + row] = value
                 workspace[body_capacity + row] = value

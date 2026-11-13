@@ -23,6 +23,7 @@ from ...linalg import LDLBlockSparseSolver, LLTBlockedRCMSolver, LLTBlockedSolve
 from ...linalg.factorize.llt_blocked_rcm import make_llt_blocked_rcm_solve_kernel
 from . import sparse_factor
 from .coupling import PackedCoupling
+from .decoupling import SparseDecoupledRows
 from .effort_limit_condensation import EffortLimitCondensation
 from .joint_blocks import JointBlockSolver
 from .kernels import (
@@ -154,6 +155,8 @@ class SparseSCCPath:
         self.joint_block_solver: JointBlockSolver | None = None
         self.packed_coupling: PackedCoupling | None = None
         self.effort_limit_condensation: EffortLimitCondensation | None = None
+        # Decoupled joint rows of the problem (see `prepare`)
+        self.decoupled_rows = SparseDecoupledRows(None, 0, device)
         self.bilateral_solver = bilateral_solver
         self.use_schur_complement = use_schur_complement
         self.max_alternating_iterations = max_alternating_iterations
@@ -217,9 +220,17 @@ class SparseSCCPath:
     def prepare(self, problem: DualProblem) -> None:
         """Precompute host-derived sparse topology before the first solve."""
         delassus = _get_sparse_delassus(problem)
-        # General PGS and fused inverse solves read transpose values directly.
+        self.decoupled_rows = SparseDecoupledRows(
+            problem.joint_decoupling,
+            self.size.sum_of_max_total_cts,
+            self.device,
+            jacobian_values=delassus.constraint_jacobian.nzb_values,
+        )
+        # General PGS and fused inverse solves read transpose values directly. The raw transpose
+        # holds the unscaled Jacobian, not the body Jacobian of decoupled joint rows.
         delassus._set_raw_transpose_enabled(
-            self.device.is_cuda
+            not self.decoupled_rows.enabled
+            and self.device.is_cuda
             and self.size.num_worlds >= 2048
             and self.has_unilateral_constraints
             and self.max_alternating_iterations >= 4
@@ -665,7 +676,7 @@ def _launch_sparse_inequality_pgs(
         bsm.nzb_start,
         bsm.nzb_coords,
         bsm.nzb_values,
-        delassus.constraint_jacobian.nzb_values,
+        path.decoupled_rows.jacobian_values(problem),
         bsm.row_start,
         bsm.col_start,
     ]
@@ -794,6 +805,7 @@ def _launch_sparse_inequality_pgs(
                 path.body_space,
                 path.data.solution.lambdas,
                 schur_workers,
+                *path.decoupled_rows.inputs,
             ],
             device=path.device,
             block_dim=128,
@@ -906,6 +918,8 @@ def _launch_sparse_inequality_pgs(
             path.effort_limit_condensation.publish(compact_inputs)
     if kernel == _solve_scc_sparse_inequalities_pgs:
         kernel_inputs.extend(body_inputs)
+    if kernel in (_solve_scc_sparse_inequalities_pgs, _solve_scc_sparse_inequalities_pgs_cooperative):
+        kernel_inputs.extend(path.decoupled_rows.inputs)
     wp.launch(
         kernel=kernel,
         dim=world_count * threads_per_world,
@@ -991,6 +1005,7 @@ def _sparse_bilateral_matvec(path: SparseSCCPath, problem: DualProblem) -> None:
             state.v_aug,
             path.data.solution.lambdas,
             path.all_worlds_mask,
+            *path.decoupled_rows.inputs,
         ],
         device=path.device,
     )
@@ -1252,6 +1267,7 @@ def _solve_sparse_bilateral_block(
                 delassus.bsm.nzb_coords,
                 delassus.bsm.nzb_values,
                 world_start,
+                *path.decoupled_rows.inputs,
             ],
             device=path.device,
             block_dim=128,
@@ -1888,7 +1904,7 @@ def _assemble_sparse_bilateral_coupling(path: SparseSCCPath, problem: DualProble
             bsm.nzb_start,
             bsm.nzb_coords,
             bsm.nzb_values,
-            delassus.constraint_jacobian.nzb_values,
+            path.decoupled_rows.jacobian_values(problem),
             problem.data.dim,
             problem.data.njc,
             problem.data.nbc,
@@ -1910,6 +1926,7 @@ def _assemble_sparse_bilateral_coupling(path: SparseSCCPath, problem: DualProble
             state.bilateral_coupling,
             coupling_row_groups,
             wp.bool(compact_layout),
+            *path.decoupled_rows.inputs,
         ],
         device=path.device,
     )

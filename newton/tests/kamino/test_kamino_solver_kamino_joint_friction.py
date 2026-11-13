@@ -17,7 +17,6 @@ from newton._src.solvers.kamino._src.solvers.scc.response import make_response_k
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.solver_configs import (
-    DECOUPLED_CONFIGS,
     KAMINO_CONFIGS,
     PADMM_CONFIG_NAMES,
     make_padmm_dense_config,
@@ -661,7 +660,7 @@ class TestSolverKaminoJointFrictionDominantArmature(NewtonTestCase):
 
     def test_spin_down_with_dominant_armature(self):
         """Spin down without adding energy when the armature dwarfs the body inertia."""
-        self._check_spin_down(DECOUPLED_CONFIGS)
+        self._check_spin_down(KAMINO_CONFIGS)
 
     def test_spin_down_with_dominant_armature_fused_cr(self):
         """Spin down with the fused conjugate residual solver, see the test above."""

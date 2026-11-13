@@ -1,1 +1,1 @@
-Fix inaccurate joint friction and effort-limited implicit PD in `SolverKamino` with dense SCC when a joint's armature is much larger than the inertia of the bodies it connects. Dense SCC now decouples these rows from the joint's armature or damping row, as PADMM does; sparse SCC is unchanged.
+Fix inaccurate joint friction and effort-limited implicit PD in `SolverKamino` with SCC when a joint's armature is much larger than the inertia of the bodies it connects. SCC now decouples these rows from the joint's armature or damping row, as PADMM does.

@@ -12,6 +12,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.kamino._src.core.types import vec6f
+from newton._src.solvers.kamino._src.solvers.scc.decoupling import SparseDecoupledRows
 from newton._src.solvers.kamino._src.solvers.scc.solver import SCCSolver
 from newton._src.solvers.kamino._src.solvers.scc.sparse import _build_sparse_bilateral_row_nzb_topology
 from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
@@ -164,6 +165,8 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                                 ints(coords),
                                 wp.array(blocks, dtype=vec6f, device=device),
                                 int(row_storage),  # world_start
+                                # No decoupled joint rows
+                                *SparseDecoupledRows(None, 0, device).inputs,
                             ],
                             device=device,
                             block_dim=128,
@@ -278,6 +281,8 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                                 coupling,
                                 3,
                                 compact,
+                                # No decoupled joint rows
+                                *SparseDecoupledRows(None, 0, device).inputs,
                             ],
                             device=device,
                         )

@@ -682,6 +682,7 @@ class SCCSolver:
                 raise RuntimeError("Sparse SCC path has not been allocated. Call `finalize()` first.")
             if self._sparse_path.bilateral_nzb_pairs is None:
                 self._sparse_path.prepare(problem)
+            self._sparse_path.decoupled_rows.update(problem)
             # Apply projected iterations through matrix-free products
             # D * lambda = J * (M^-1 * (J^T * lambda)) + R * lambda.
             if self._apgd is None:

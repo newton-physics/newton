@@ -9,8 +9,6 @@ import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 
 __all__ = [
-    "DECOUPLED_CONFIGS",
-    "DECOUPLED_CONFIG_NAMES",
     "KAMINO_CONFIGS",
     "PADMM_CONFIGS",
     "PADMM_CONFIG_NAMES",
@@ -125,11 +123,6 @@ PADMM_CONFIG_NAMES = ("dense", "sparse")
 
 # The PADMM entries of KAMINO_CONFIGS
 PADMM_CONFIGS = tuple(entry for entry in KAMINO_CONFIGS if entry[0] in PADMM_CONFIG_NAMES)
-
-# The entries of KAMINO_CONFIGS that decouple joint friction and effort rows from the joint
-# dynamics rows of the same DoFs (see ``DynamicJointDecoupling``). Sparse SCC does not.
-DECOUPLED_CONFIG_NAMES = (*PADMM_CONFIG_NAMES, "scc_dense")
-DECOUPLED_CONFIGS = tuple(entry for entry in KAMINO_CONFIGS if entry[0] in DECOUPLED_CONFIG_NAMES)
 
 
 def solve_variants(config_factory) -> list[tuple[dict[str, Any], SolverKamino.Config]]:

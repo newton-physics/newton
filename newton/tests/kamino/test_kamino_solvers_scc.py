@@ -32,6 +32,7 @@ from newton._src.solvers.kamino._src.linalg import (
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino._src.solvers.scc import SCCSolver, sparse_factor
+from newton._src.solvers.kamino._src.solvers.scc.decoupling import SparseDecoupledRows
 from newton._src.solvers.kamino._src.solvers.scc.kernels import (
     BILATERAL_FAILED_PIVOT_SHIFT,
     _find_bilateral_factor_row_start,
@@ -83,6 +84,7 @@ from newton.tests.kamino.utils.make import (
     make_test_problem_fourbar,
     update_containers,
 )
+from newton.tests.kamino.utils.solver_configs import make_scc_dense_config, make_scc_sparse_config
 from newton.tests.unittest_utils import NewtonTestCase, requires
 from newton.tests.utils import basics, testing
 
@@ -1044,6 +1046,7 @@ class TestSCCSolver(NewtonTestCase):
                     int32_array([6]),  # transpose_max_cols
                     column_major,  # transpose_column_major
                     0,  # world_start
+                    *SparseDecoupledRows(None, 0, self.device).inputs,  # no decoupled joint rows
                 ],
                 device=self.device,
                 block_dim=threads_per_world,
@@ -5073,6 +5076,75 @@ class TestSCCSolver(NewtonTestCase):
                     atol=2.0e-6,
                     rtol=2.0e-6,
                 )
+
+
+class TestSCCSparseDecoupledJointRows(NewtonTestCase):
+    """Sparse SCC applies the change of variables of decoupled joint rows like dense SCC.
+
+    A chain with 36 joint rows takes the cooperative and compact Schur sparse paths on CUDA, which
+    form row products and matrix entries from the Jacobian blocks themselves.
+    """
+
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+
+    def test_sparse_matches_dense_on_armature_dominant_chain(self):
+        """Match dense SCC with friction and effort-limited PD on every joint of an armature-dominant chain."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        SolverKamino.register_custom_attributes(builder)
+        parent, joints = -1, []
+        for k in range(6):
+            # The body inertia about each axis is 1e-3, and the armature 0.1
+            body = builder.add_link(
+                mass=0.01, com=wp.vec3(0.05, 0.0, 0.0), inertia=wp.mat33(np.eye(3) * 1.0e-3), lock_inertia=True
+            )
+            joints.append(
+                builder.add_joint_revolute(
+                    parent,
+                    body,
+                    parent_xform=wp.transform(wp.vec3(0.1 if parent >= 0 else 0.0, 0.0, 0.0), wp.quat_identity()),
+                    axis=(newton.Axis.Z, newton.Axis.Y, newton.Axis.X)[k % 3],
+                    armature=0.1,
+                    friction=0.05,
+                    target_ke=100.0,
+                    target_kd=10.0,
+                    effort_limit=1.0,
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                )
+            )
+            parent = body
+        builder.add_articulation(joints)
+        model = builder.finalize(device=test_context.device)
+        rng = np.random.default_rng(0)
+        targets = rng.uniform(-0.3, 0.3, model.joint_coord_count)
+        initial_velocities = rng.uniform(-0.5, 0.5, model.joint_dof_count)
+
+        def rollout(config):
+            solver = SolverKamino(model, config)
+            model.joint_q.zero_()
+            model.joint_qd.assign(initial_velocities)
+            state_in, state_out = model.state(), model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+            control = model.control()
+            control.joint_target_q.assign(targets)
+            velocities = []
+            for _ in range(3):
+                solver.step(state_in, state_out, control=control, contacts=None, dt=0.005)
+                state_in, state_out = state_out, state_in
+                velocities.append(state_in.joint_qd.numpy())
+            return np.array(velocities)
+
+        for use_schur_complement, unilateral_solver in product((True, False), ("pgs", "apgd")):
+            configs = []
+            for factory in (make_scc_dense_config, make_scc_sparse_config):
+                config = factory()
+                config.scc.use_schur_complement = use_schur_complement
+                config.scc.unilateral_solver = unilateral_solver
+                configs.append(config)
+            with self.subTest(use_schur_complement=use_schur_complement, unilateral_solver=unilateral_solver):
+                dense, sparse = rollout(configs[0]), rollout(configs[1])
+                np.testing.assert_allclose(sparse, dense, rtol=0.0, atol=1.0e-4 * np.max(np.abs(dense)))
 
 
 if __name__ == "__main__":
