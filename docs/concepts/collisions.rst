@@ -1585,8 +1585,10 @@ observed shape speed:
     schedule.step()
 
 During the collision callback, the scheduler's pipeline retains candidates
-within a pairwise distance reserve of at least ``speculative_contact_gap_max``,
-regardless of approach velocity. Authored gaps and physical margins are preserved.
+within a pairwise distance reserve estimated for the selected time horizon,
+capped by ``speculative_contact_gap_max``. The estimate uses global point speed,
+gravity, and observed speed changes, and covers every approach direction.
+Authored gaps and physical margins are preserved.
 The callback must use the pipeline passed to the scheduler. Calls outside the
 callback retain velocity-adapted admission.
 
@@ -1594,7 +1596,9 @@ Gravity, slowing, and turning consume this reserve without unconditionally
 forcing a refresh. Refreshes occur when the travel estimate approaches the
 reserve or the previous horizon expires. The next-step estimate includes the
 speed increase observed over the preceding substep. This is not a bound on
-unobserved forces or impulses. Shapes with rigid collision disabled do not affect
+unobserved forces or impulses. At rest without gravity the added reserve is zero;
+unexpected motion can exhaust it even below the configured distance cap.
+Shapes with rigid collision disabled do not affect
 the schedule or overflow reporting. The final substep is checked for overflow.
 
 The reserve may retain more contacts than velocity-adapted admission. Measure
@@ -1605,8 +1609,9 @@ The same ``step()`` call works directly or inside CUDA graph capture; callbacks
 must therefore be capture-safe and preallocate their storage. The scheduler
 always executes every configured solver substep. Its two states are ping-pong
 buffers, so the substep count must be even. ``schedule.interval_overflow`` is
-set when observed per-substep or accumulated travel exceeds the budget; in
-that case, increase the substep count or the speculative extension limit.
+set when observed travel exceeds the actual reserve of the last refresh, not
+just the configured cap. Increase the substep count for abrupt motion; increasing
+the extension limit helps only when that limit clipped the reserve estimate.
 Collision prediction horizons are capped at the next frame boundary, where
 contacts are always refreshed.
 

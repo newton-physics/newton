@@ -113,8 +113,8 @@ Collision frequency
 
    For rigid contacts with fast motion, consider the experimental
    :class:`CollisionSubstepScheduler` instead of a fixed collision interval.
-   It reserves nearby contact candidates and conditionally refreshes them
-   based on observed travel and the maximum refresh interval while preserving
+   It reserves nearby contact candidates for the selected horizon and refreshes
+   them based on observed travel and the maximum refresh interval while preserving
    every solver substep. See :ref:`tuning-adaptive-collision-detection` for
    configuration, solver requirements, overflow diagnostics, and the limits of
    this alternative to full continuous collision detection.

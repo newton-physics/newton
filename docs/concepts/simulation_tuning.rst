@@ -133,9 +133,13 @@ Tune these three controls together:
 Ordinary velocity-adapted detection keeps possible contacts that current motion
 could close before the next check, up to the configured distance limit. Supply
 that time as ``pipeline.collide(..., dt=collision_dt)``. During scheduled checks,
-the pipeline instead keeps possible contacts throughout that distance, including
-between objects currently moving apart. This distance reserve lets the scheduler
+the pipeline instead estimates a distance reserve for the selected interval from
+speed, gravity, and observed acceleration, capped by the configured limit. It
+keeps candidates in every direction, including between objects currently moving
+apart. This distance reserve lets the scheduler
 reuse contacts through small velocity changes without checking again immediately.
+Unexpected impulses can exhaust the actual reserve even below the configured
+limit; monitor ``interval_overflow`` and use enough substeps for abrupt motion.
 See :ref:`speculative-contacts` for callback setup, CUDA graph requirements,
 refresh rules, and supported geometry.
 

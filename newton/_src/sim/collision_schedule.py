@@ -57,12 +57,15 @@ def _update_collision_schedule(
     previous_max_point_speed: wp.array[wp.float32],
     substep_dt: float,
     travel_budget: float,
+    gravity: wp.array[wp.vec3],
     substep_index: int,
+    substeps: int,
     collision_intervals: wp.array[wp.int32],
     interval_conditions: wp.array[wp.int32],
     collision_due: wp.array[wp.int32],
     collision_deadline: wp.array[wp.int32],
     travel_estimate: wp.array[wp.float32],
+    active_reserve: wp.array[wp.float32],
     interval_overflow: wp.array[wp.int32],
 ):
     """Accumulate relative travel and select the next collision horizon."""
@@ -83,9 +86,11 @@ def _update_collision_schedule(
 
     # Allow for the speed increase observed over the preceding substep.
     next_travel = relative_travel_per_substep + 2.0 * wp.max(speed - previous_speed, 0.0) * substep_dt
-    accumulated_overflow = accumulated_travel > travel_budget
+    accumulated_overflow = substep_index > 0 and accumulated_travel > active_reserve[0]
     due = (
-        substep_index == 0 or substep_index >= collision_deadline[0] or accumulated_travel + next_travel > travel_budget
+        substep_index == 0
+        or substep_index >= collision_deadline[0]
+        or accumulated_travel + next_travel > active_reserve[0]
     )
     collision_due[0] = int(due)
     if due:
@@ -103,8 +108,23 @@ def _update_collision_schedule(
     if due:
         # The travel budget can outlast the rounded prediction horizon. Never
         # extend an existing horizon merely because the observed speed falls.
-        collision_deadline[0] = substep_index + collision_intervals[selected_interval_index]
-    if relative_travel_per_substep > travel_budget or accumulated_overflow:
+        interval = wp.min(collision_intervals[selected_interval_index], substeps - substep_index)
+        collision_deadline[0] = substep_index + interval
+        horizon = float(interval) * substep_dt
+        acceleration = float(0.0)
+        for world in range(gravity.shape[0]):
+            acceleration = wp.max(acceleration, wp.length(gravity[world]))
+        if substep_index > 0:
+            # Braking also signals acceleration: retain room for a rebound
+            # instead of dropping the reserve to zero at an impact.
+            acceleration = wp.max(acceleration, wp.abs(speed - previous_speed) / substep_dt)
+        # Two bodies can approach from any direction. H*(H+dt) bounds the
+        # semi-implicit gravity displacement; observed acceleration only
+        # forecasts future forces. Do not interpret an initial speed as acceleration.
+        reserve = 2.0 * speed * horizon + acceleration * horizon * (horizon + substep_dt)
+        # Leave rounding room for the sum of per-substep travel estimates.
+        active_reserve[0] = wp.min(travel_budget, reserve * 1.00001)
+    if relative_travel_per_substep > active_reserve[0] or accumulated_overflow:
         interval_overflow[0] = 1
 
 
@@ -115,7 +135,7 @@ def _check_final_substep(
     travel_estimate: wp.array[wp.float32],
     interval_overflow: wp.array[wp.int32],
     substep_dt: float,
-    travel_budget: float,
+    active_reserve: wp.array[wp.float32],
 ):
     """Check motion observed after the final solver substep."""
     speed = max_point_speed[0]
@@ -124,7 +144,7 @@ def _check_final_substep(
     accumulated_travel = travel_estimate[0]
     if speed > previous_speed:
         accumulated_travel += 2.0 * (speed - previous_speed) * substep_dt
-    if accumulated_travel > travel_budget:
+    if accumulated_travel > active_reserve[0]:
         interval_overflow[0] = 1
 
 
@@ -140,14 +160,15 @@ class CollisionSubstepScheduler:
     Selection stays on the device and uses :func:`warp.capture_if`, so it is
     compatible with CUDA graph capture.
 
-    During the collision callback, the supplied pipeline reserves at least
-    ``speculative_contact_gap_max`` of pairwise detection distance, independently
-    of velocity. Authored gaps and physical margins are preserved. The callback
-    must call this pipeline; calls outside the callback keep their usual
+    During the collision callback, the supplied pipeline reserves pairwise
+    detection distance for the selected horizon, using the global point speed,
+    gravity, and observed speed changes, capped by ``speculative_contact_gap_max``.
+    The reserve covers every direction. Authored gaps and physical margins are
+    preserved. The callback must call this pipeline; calls outside it keep their usual
     velocity-adapted behavior. The reserve can increase contact counts.
 
-    Velocity changes alone do not invalidate reserved candidates. Scheduling is
-    based on instantaneous rigid-shape velocities and observed speed increases.
+    Direction changes within the reserved travel do not invalidate candidates.
+    Scheduling uses instantaneous rigid-shape velocities and observed speed changes.
     It reacts to acceleration and impulses after a completed substep; it does
     not bound unobserved forces or impulses within the next substep. This is
     an optimization for speculative rigid contacts, not continuous collision
@@ -281,18 +302,22 @@ class CollisionSubstepScheduler:
         self._max_point_speed = wp.zeros(1, dtype=wp.float32, device=device)
         self._previous_max_point_speed = wp.zeros(1, dtype=wp.float32, device=device)
         self._travel_estimate = wp.zeros(1, dtype=wp.float32, device=device)
+        self._active_reserve = wp.zeros(1, dtype=wp.float32, device=device)
         self.interval_overflow = wp.zeros(1, dtype=wp.int32, device=device)
-        """Device scalar set when observed per-substep or accumulated travel exceeds the budget."""
+        """Device scalar set when observed travel exceeds the last refresh's actual reserve."""
 
     def _run_collision(self, state: State, horizon: float) -> None:
         # Reserve candidates in every direction, including motion that starts
         # after this pass. Scope the reserve to this callback, including capture.
         previous = self._pipeline._scheduled_gap_active
+        previous_reserve = self._pipeline._scheduled_contact_reserve
         self._pipeline._scheduled_gap_active = True
+        self._pipeline._scheduled_contact_reserve = self._active_reserve
         try:
             self._collision_callback(state, horizon)
         finally:
             self._pipeline._scheduled_gap_active = previous
+            self._pipeline._scheduled_contact_reserve = previous_reserve
 
     def _dispatch_collision(self, substep_index: int, interval_index: int | None = None) -> None:
         if interval_index is None:
@@ -355,12 +380,15 @@ class CollisionSubstepScheduler:
                     self._previous_max_point_speed,
                     self._substep_dt,
                     self._travel_budget,
+                    model.gravity,
                     substep_index,
+                    self._substeps,
                     self._interval_values,
                     self._interval_conditions,
                     self._collision_due,
                     self._collision_deadline,
                     self._travel_estimate,
+                    self._active_reserve,
                     self.interval_overflow,
                 ],
                 device=model.device,
@@ -399,7 +427,7 @@ class CollisionSubstepScheduler:
                 self._travel_estimate,
                 self.interval_overflow,
                 self._substep_dt,
-                self._travel_budget,
+                self._active_reserve,
             ],
             device=model.device,
         )

@@ -122,6 +122,7 @@ def test_collision_schedule_horizon_deadline(test, device, external_capture=Fals
                 expected_overflow = False
                 for frame in range(2):
                     travel, previous_speed, deadline = 0.0, 0.0, 0
+                    reserve = 0.0
                     expected_overflow = False
                     for i in range(substeps):
                         index = frame * substeps + i
@@ -129,21 +130,26 @@ def test_collision_schedule_horizon_deadline(test, device, external_capture=Fals
                         relative_travel = 2.0 * speed * dt
                         if i > 0 and speed > previous_speed:
                             travel += 2.0 * (speed - previous_speed) * dt
-                        accumulated_overflow = travel > 0.03
+                        accumulated_overflow = i > 0 and travel > reserve
                         next_travel = relative_travel + 2.0 * max(speed - previous_speed, 0.0) * dt
-                        if i == 0 or i >= deadline or travel + next_travel > 0.03:
+                        if i == 0 or i >= deadline or travel + next_travel > reserve:
                             interval = max((j for j in intervals if j * relative_travel <= 0.03), default=1)
                             interval = min(interval, substeps - i)
                             expected[index] = interval * dt
                             deadline = i + interval
                             travel = 0.0
-                        expected_overflow |= relative_travel > 0.03 or accumulated_overflow
+                            horizon = interval * dt
+                            acceleration = abs(speed - previous_speed) / dt if i > 0 else 0.0
+                            reserve = min(
+                                0.03, (2.0 * speed * horizon + acceleration * horizon * (horizon + dt)) * 1.00001
+                            )
+                        expected_overflow |= relative_travel > reserve or accumulated_overflow
                         travel += relative_travel
                         previous_speed = speed
                     final_speed = abs(float(speeds[((frame + 1) * substeps) % len(speeds)]))
                     if final_speed > previous_speed:
                         travel += 2.0 * (final_speed - previous_speed) * dt
-                    expected_overflow |= travel > 0.03
+                    expected_overflow |= travel > reserve
                 np.testing.assert_allclose(recorded, expected, rtol=1e-6, atol=0.0)
                 events = np.flatnonzero(recorded)
                 test.assertIn(0, events)
@@ -346,8 +352,15 @@ def test_collision_schedule_checks_final_substep_overflow(test, device):
     scheduler = newton.CollisionSubstepScheduler(
         pipeline, states, collision_callback=collide, substep_callback=step, frame_dt=1.0, substeps=2
     )
-    scheduler.step()
-    test.assertEqual(int(scheduler.interval_overflow.numpy()[0]), 1)
+    for speed in (0.1, 0.6):
+        # The smaller jump fits the configured cap but exceeds the zero-speed
+        # forecast. Neither overflow may be hidden by the cap or frame boundary.
+        velocities.assign(np.array([0.0, 0.0, speed], dtype=np.float32))
+        tick.zero_()
+        for state in states:
+            state.body_qd.zero_()
+        scheduler.step()
+        test.assertEqual(int(scheduler.interval_overflow.numpy()[0]), 1)
 
 
 def test_collision_schedule_preserves_integer_time_limits(test, device):
@@ -645,11 +658,14 @@ add_function_test(
 
 
 def test_collision_schedule_reserve_scope(test, device, mesh_ground=False):
-    """Reserve separated candidates only inside scheduled collision callbacks."""
+    """Reserve reachable candidates without admitting the entire extension cap."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     builder.rigid_gap = 0.0
-    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15)))
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.101)))
     builder.add_shape_sphere(body, radius=0.1)
+    builder.body_qd[body] = (0.1, 0.0, 0.0, 0.0, 0.0, 0.0)
+    far_body = builder.add_body(xform=wp.transform(wp.vec3(0.5, 0.0, 0.15)))
+    builder.add_shape_sphere(far_body, radius=0.1)
     if mesh_ground:
         mesh = newton.Mesh(
             vertices=np.array([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]], dtype=np.float32),
@@ -680,8 +696,13 @@ def test_collision_schedule_reserve_scope(test, device, mesh_ground=False):
     )
     schedule.step()
     test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    shapes = np.concatenate(
+        (contacts.rigid_contact_shape0.numpy()[:count], contacts.rigid_contact_shape1.numpy()[:count])
+    )
+    test.assertNotIn(1, shapes, "The distant sphere must not consume scheduled contact rows")
     np.testing.assert_array_equal(model.shape_gap.numpy(), 0.0)
-    test.assertAlmostEqual(float(states[0].body_q.numpy()[0, 2]), 0.15, places=6)
+    test.assertAlmostEqual(float(states[0].body_q.numpy()[0, 2]), 0.101, places=6)
     pipeline.collide(states[0], contacts, dt=1.0 / 60.0)
     test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
