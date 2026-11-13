@@ -30,11 +30,14 @@ class FastExampleCablePile:
             args = newton.examples.default_args()
         else:
             args = None
-        viewer = ViewerNull(num_frames=self.num_frames)
+        viewer = ViewerNull(num_frames=self.num_frames + 1)
         if _supports_cable_pile_size_args():
             self.example = ExampleCablePile(viewer, args, layers=4, lanes_per_layer=10)
         else:
             self.example = ExampleCablePile(viewer, args)
+        # Keep one-time device work out of the samples.
+        self.example.step()
+        self.example.render()
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)

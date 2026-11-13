@@ -661,7 +661,7 @@ def parse_mjcf(
             ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
             ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or target a multi-DoF
             joint (such as joints sharing a body) are preserved this way even when True, with a
-            :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
+            :class:`~newton.NewtonWarning`; only SolverMuJoCo enforces them.
         convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
             Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
             an identity rest orientation. Default is False.
@@ -808,7 +808,8 @@ def parse_mjcf(
     balance_inertia = balance_inertia_value == "true"
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
-    # WORLD frequency attributes use index 0 here; they get remapped during add_world()
+    # WORLD frequency attributes use the current world, -1 outside a world context;
+    # add_world() remaps them to the destination world.
     # Use findall for <option> to handle multiple elements after include expansion
     # (later values override earlier ones, matching MuJoCo's merge behavior).
     if parse_mujoco_options:
@@ -822,7 +823,8 @@ def parse_mjcf(
                     parsed = parse_custom_attributes(elem.attrib, builder_custom_attr_option, "mjcf")
                     for key, value in parsed.items():
                         if key in builder.custom_attributes:
-                            builder.custom_attributes[key].values[0] = value
+                            attribute = builder.custom_attributes[key]
+                            attribute.values[builder._model_value_key(attribute)] = value
 
         flag_attrs = [
             attr
@@ -841,7 +843,8 @@ def parse_mjcf(
                         stacklevel=2,
                     )
                 for key, value in parse_custom_attributes(flag_elem.attrib, flag_attrs, "mjcf").items():
-                    builder.custom_attributes[key].values[0] = value
+                    attribute = builder.custom_attributes[key]
+                    attribute.values[builder._model_value_key(attribute)] = value
                 if "gravity" in flag_elem.attrib:
                     gravity_enabled = SolverMuJoCo._parse_enable_disable(flag_elem.attrib["gravity"])
         if not gravity_enabled:
@@ -1416,6 +1419,8 @@ def parse_mjcf(
             if key in _SOLREF_SHORTHAND_KEYS and len(default) >= 2:
                 # MuJoCo's solref-style shorthand: trailing components fall
                 # back to the registered default (e.g. dampratio=1.0).
+                # SolverMuJoCo._solref_value_transformer applies the same rule
+                # to the mujoco:solref and mujoco:solreflimit custom attributes.
                 padded = (out[0], *(float(default[i]) for i in range(1, len(default))))
                 return wp.types.vector(len(default), wp.float32)(*padded)
             # Legacy "replicate to fill" behaviour for vec3 attributes that
@@ -1666,7 +1671,10 @@ def parse_mjcf(
                 friction_values = np.array(geom_attrib["friction"].split(), dtype=np.float32)
 
                 if len(friction_values) >= 1:
+                    # MJCF has one sliding coefficient: it replaces the whole friction pair, so a
+                    # builder default mu_static only applies to geoms without an explicit friction.
                     shape_cfg.mu = float(friction_values[0])
+                    shape_cfg.mu_static = None
 
                 if len(friction_values) >= 2:
                     shape_cfg.mu_torsional = float(friction_values[1])
@@ -2705,11 +2713,33 @@ def parse_mjcf(
                 warn_invalid_joint_solreflimit(joint_attrib)
 
                 effort_limit = default_joint_effort_limit
-                if "actuatorfrcrange" in joint_attrib and is_limited(
-                    joint_attrib, "actuatorfrclimited", "actuatorfrcrange"
-                ):
-                    actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
-                    effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
+                actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
+                if actuatorfrclimited not in {"auto", "false", "true"}:
+                    raise ValueError(
+                        f"Joint {joint_name[-1]!r} actuatorfrclimited must be 'auto', 'false', or 'true'; "
+                        f"got {actuatorfrclimited!r}."
+                    )
+                if "actuatorfrcrange" in joint_attrib or actuatorfrclimited == "true":
+                    # MuJoCo reads an empty attribute as unspecified.
+                    actuatorfrcrange = [float(value) for value in joint_attrib.get("actuatorfrcrange", "").split()]
+                    actuatorfrcrange = actuatorfrcrange or [0.0, 0.0]
+                    if len(actuatorfrcrange) != 2:
+                        raise ValueError("Joint actuatorfrcrange must contain exactly two values.")
+                    lower, upper = actuatorfrcrange
+                    if (
+                        actuatorfrclimited == "auto"
+                        and compiler_attribs.get("autolimits", "true").lower() == "false"
+                        and (lower != 0.0 or upper != 0.0)
+                    ):
+                        raise ValueError(
+                            f"Joint {joint_name[-1]!r} has actuatorfrcrange but requires explicit "
+                            'actuatorfrclimited="true" or "false" when autolimits="false".'
+                        )
+                    force_limited = actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and lower < upper)
+                    if force_limited:
+                        if lower >= upper:
+                            raise ValueError("Joint actuatorfrcrange lower bound must be smaller than upper bound.")
+                        effort_limit = max(abs(lower), abs(upper))
 
                 rest_q = builder.default_joint_cfg.rest_q
                 if "springref" in joint_attrib or "ref" in joint_attrib:

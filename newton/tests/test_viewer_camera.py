@@ -11,6 +11,7 @@ import warp as wp
 import newton
 from newton._src.viewer.camera import Camera
 from newton._src.viewer.viewer_gui import ViewerGui
+from newton.tests.unittest_utils import requires
 from newton.viewer import ViewerGL, ViewerNull
 
 
@@ -22,6 +23,7 @@ def _assert_vec_close(test, actual, expected, tol=1.0e-6):
     np.testing.assert_allclose(_as_np(actual), np.array(expected, dtype=float), atol=tol, rtol=0.0)
 
 
+@requires("pyglet")
 class TestViewerCamera(unittest.TestCase):
     def _frame(self, viewer, points, width=1280, height=720, up_axis="Z"):
         viewer.camera = Camera(width=width, height=height, up_axis=up_axis)

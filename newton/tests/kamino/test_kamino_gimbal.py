@@ -24,6 +24,7 @@ from newton._src.solvers.kamino._src.kinematics.joints import (
 from newton.solvers import SolverKamino, SolverMuJoCo
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_cts_jacobians, extract_dofs_jacobians
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 _RH_AXES = (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
 _LH_AXES = (newton.Axis.X, newton.Axis.Z, newton.Axis.Y)
@@ -448,8 +449,8 @@ class TestGimbal(unittest.TestCase):
         state = model.state()
         q_start = model.joint_q_start.numpy()[d6]
         qd_start = model.joint_qd_start.numpy()[d6]
-        q = state.joint_q.numpy()
-        qd = state.joint_qd.numpy()
+        q = state.joint_q.numpy().copy()
+        qd = state.joint_qd.numpy().copy()
         q[q_start : q_start + 3] = [0.2, -0.3, 0.4]
         qd[qd_start : qd_start + 3] = [-0.1, 0.15, -0.2]
         state.joint_q.assign(q)
@@ -498,6 +499,7 @@ class TestGimbal(unittest.TestCase):
 
 
 @unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")
+@requires(*MUJOCO_MODULES)
 class TestGimbalMJWarp(unittest.TestCase):
     """Compare Kamino and MJWarp through the public Newton state layout."""
 

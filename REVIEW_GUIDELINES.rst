@@ -227,6 +227,9 @@ for incompatible changes.
 Check the repository obligations relevant to the change, including:
 
 - focused regression coverage and documentation;
+- tests that need optional dependencies declare all of them with
+  ``requires()``, so they skip rather than fail where those dependencies are
+  not installed;
 - schema/importer coverage, compatible schema-package versions, and deferrals;
 - diagnostics that follow the error, warning, and logging rules, including
   Newton warning categories and module loggers instead of ``print()``;

@@ -4,7 +4,7 @@
 """Example Basic Heightfield
 
 Demonstrates heightfield terrain with objects dropped onto it.
-Supports XPBD, MuJoCo, and Kamino DVI solvers.
+Supports XPBD, MuJoCo, and Kamino SCC solvers.
 
 Success criteria:
 - Five spheres start above a wavy heightfield and drop onto its surface.
@@ -82,13 +82,13 @@ class Example:
         elif self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model,
-                dynamics_solver="dvi",
+                dynamics_solver="scc",
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
             solver_config.use_collision_detector = True
             solver_config.integrator = "moreau"
-            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.scc.max_alternating_iterations = 8
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)

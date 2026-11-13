@@ -17,7 +17,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton.tests.unittest_utils import patch_sys_module
+from newton.tests.unittest_utils import patch_sys_module, requires
 
 
 class _GLuintArray(list):
@@ -442,6 +442,7 @@ class TestViewerGuiDrawsLoggedImages(unittest.TestCase):
         gui._viewer._image_logger.draw.assert_called_once_with(gui.ui, sidebar_width_px=_SIDEBAR_WIDTH_PX)
 
 
+@requires("pyglet")
 class TestViewerGLImageWindowSurvivesExampleSwitch(unittest.TestCase):
     def test_clear_model_keeps_drawing_logged_images(self):
         """Verify the image window is still drawn after clear_model drops example UI callbacks."""

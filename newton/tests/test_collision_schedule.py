@@ -130,8 +130,8 @@ def test_collision_schedule_horizon_deadline(test, device, external_capture=Fals
                         if i > 0 and speed > previous_speed:
                             travel += 2.0 * (speed - previous_speed) * dt
                         accumulated_overflow = travel > 0.03
-                        motion_changed = i > 0 and speeds[index % len(speeds)] != speeds[(index - 1) % len(speeds)]
-                        if i == 0 or i >= deadline or motion_changed or travel + relative_travel > 0.03:
+                        next_travel = relative_travel + 2.0 * max(speed - previous_speed, 0.0) * dt
+                        if i == 0 or i >= deadline or travel + next_travel > 0.03:
                             interval = max((j for j in intervals if j * relative_travel <= 0.03), default=1)
                             interval = min(interval, substeps - i)
                             expected[index] = interval * dt
@@ -169,7 +169,7 @@ def test_collision_schedule_horizon_deadline(test, device, external_capture=Fals
 
 
 def test_collision_schedule_refreshes_for_shape_acceleration(test, device):
-    """Refresh a newly accelerating shape despite another shape's higher speed."""
+    """Reuse reserved candidates when acceleration stays within the travel budget."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     slow_body = builder.add_body()
     builder.add_shape_sphere(slow_body, radius=0.1)
@@ -196,11 +196,11 @@ def test_collision_schedule_refreshes_for_shape_acceleration(test, device):
         pipeline, states, collision_callback=collide, substep_callback=step, frame_dt=0.04, substeps=4
     )
     scheduler.step()
-    np.testing.assert_array_equal(np.flatnonzero(horizons.numpy()), [0, 1])
+    np.testing.assert_array_equal(np.flatnonzero(horizons.numpy()), [0])
 
 
 def test_collision_schedule_refreshes_for_velocity_changes(test, device, external_capture=False):
-    """Refresh after slowing, reversing, or turning without increasing speed."""
+    """Reuse reserved candidates after slowing, reversing, or turning within the budget."""
     if external_capture and not wp.is_conditional_graph_supported():
         test.skipTest("CUDA graph capture requires conditional graph support")
     for velocity in ((0.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
@@ -233,7 +233,7 @@ def test_collision_schedule_refreshes_for_velocity_changes(test, device, externa
                 wp.capture_launch(capture.graph)
             else:
                 scheduler.step()
-            np.testing.assert_array_equal(np.flatnonzero(horizons.numpy()), [0, 1])
+            np.testing.assert_array_equal(np.flatnonzero(horizons.numpy()), [0])
             test.assertEqual(int(scheduler.interval_overflow.numpy()[0]), 0)
 
 
@@ -571,6 +571,135 @@ add_function_test(
     test_collision_schedule_nondivisor_intervals,
     devices=get_cuda_test_devices(),
     external_capture=True,
+)
+
+
+def test_collision_schedule_gravity_reserve(test, device, external_capture=False):
+    """Retain resting and falling contacts while skipping unnecessary refreshes."""
+    if external_capture and not wp.is_conditional_graph_supported():
+        test.skipTest("CUDA graph capture requires conditional graph support")
+    for height, speed in ((0.105, 0.0), (2.0, 0.0), (2.0, 1.0), (2.0, 50.0)):
+        with test.subTest(height=height, speed=speed):
+            builder = newton.ModelBuilder(gravity=wp.vec3(0.0, 0.0, -9.81))
+            builder.rigid_gap = 0.0
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, height)))
+            builder.add_shape_sphere(body, radius=0.1)
+            builder.add_ground_plane()
+            builder.body_qd[body] = (speed, 0.0, 0.0, 0.0, 0.0, 0.0)
+            model = builder.finalize(device=device)
+            states = (model.state(), model.state())
+            pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=0.1)
+            contacts = pipeline.contacts()
+            solver = SolverXPBD(model, iterations=5)
+            calls = wp.zeros(1, dtype=int, device=device)
+
+            def collide(state, horizon, *, calls=calls, pipeline=pipeline, contacts=contacts):
+                wp.launch(_increment_tick, 1, inputs=[calls], device=device)
+                pipeline.collide(state, contacts, dt=horizon)
+
+            def step(state_in, state_out, dt, *, solver=solver, contacts=contacts):
+                state_in.clear_forces()
+                solver.step(state_in, state_out, None, contacts, dt)
+
+            schedule = newton.CollisionSubstepScheduler(
+                pipeline,
+                states,
+                collision_callback=collide,
+                substep_callback=step,
+                frame_dt=1.0 / 60.0,
+                substeps=20,
+            )
+            pipeline.collide(states[0], contacts, dt=1.0 / 60.0)
+            graph = None
+            if external_capture:
+                with wp.ScopedCapture(device=device) as capture:
+                    schedule.step()
+                graph = capture.graph
+            for _ in range(5):
+                if graph is None:
+                    schedule.step()
+                else:
+                    wp.capture_launch(graph)
+                test.assertEqual(int(schedule.interval_overflow.numpy()[0]), 0)
+                test.assertGreaterEqual(float(states[0].body_q.numpy()[0, 2]), 0.099)
+            count = int(calls.numpy()[0])
+            if speed < 50.0:
+                test.assertEqual(count, 5)
+            else:
+                test.assertGreater(count, 5)
+
+
+add_function_test(
+    TestCollisionSchedule,
+    "test_collision_schedule_gravity_reserve",
+    test_collision_schedule_gravity_reserve,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestCollisionSchedule,
+    "test_collision_schedule_gravity_reserve_capture",
+    test_collision_schedule_gravity_reserve,
+    devices=get_cuda_test_devices(),
+    external_capture=True,
+)
+
+
+def test_collision_schedule_reserve_scope(test, device, mesh_ground=False):
+    """Reserve separated candidates only inside scheduled collision callbacks."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    builder.rigid_gap = 0.0
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15)))
+    builder.add_shape_sphere(body, radius=0.1)
+    if mesh_ground:
+        mesh = newton.Mesh(
+            vertices=np.array([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]], dtype=np.float32),
+            indices=np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
+        )
+        builder.add_shape_mesh(-1, mesh=mesh)
+    else:
+        builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    states = (model.state(), model.state())
+    pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=0.1)
+    contacts = pipeline.contacts()
+    solver = SolverXPBD(model, iterations=1)
+
+    def collide(state, horizon):
+        pipeline.collide(state, contacts, dt=horizon)
+
+    def step(state_in, state_out, dt):
+        solver.step(state_in, state_out, None, contacts, dt)
+
+    schedule = newton.CollisionSubstepScheduler(
+        pipeline,
+        states,
+        collision_callback=collide,
+        substep_callback=step,
+        frame_dt=1.0 / 60.0,
+        substeps=2,
+    )
+    schedule.step()
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+    np.testing.assert_array_equal(model.shape_gap.numpy(), 0.0)
+    test.assertAlmostEqual(float(states[0].body_q.numpy()[0, 2]), 0.15, places=6)
+    pipeline.collide(states[0], contacts, dt=1.0 / 60.0)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+add_function_test(
+    TestCollisionSchedule,
+    "test_collision_schedule_reserve_scope",
+    test_collision_schedule_reserve_scope,
+    devices=get_test_devices(),
+)
+
+
+add_function_test(
+    TestCollisionSchedule,
+    "test_collision_schedule_reserve_mesh",
+    test_collision_schedule_reserve_scope,
+    devices=get_test_devices(),
+    mesh_ground=True,
 )
 
 

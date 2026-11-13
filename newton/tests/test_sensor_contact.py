@@ -83,7 +83,7 @@ class TestSensorContact(unittest.TestCase):
             SensorContact(model, sensing_bodies="*", request_contact_attributes=True)
 
         self.assertEqual(len(caught), 1)
-        self.assertIs(caught[0].category, newton.exceptions.NewtonDeprecationWarning)
+        self.assertIs(caught[0].category, newton.NewtonDeprecationWarning)
         self.assertRegex(
             str(caught[0].message), r"SensorContact.*request_contact_attributes=True.*1\.7.*SolverBase.Observables"
         )
@@ -509,7 +509,7 @@ class TestSensorContact(unittest.TestCase):
         col_b = sensor.counterpart_indices[row_a].index(shape_b)
         col_ground_a = sensor.counterpart_indices[row_a].index(ground)
         col_ground_b = sensor.counterpart_indices[row_b].index(ground)
-        positions = sensor.position_matrix.numpy()
+        positions = sensor.position_matrix.numpy().copy()
         # surface points are the offset-shifted contact points in world space
         # A-B: weights 2 and 5 over surface midpoints (6, 12, 0) and (4, 13.5, 0)
         expected_ab = [32.0 / 7.0, 91.5 / 7.0, 0.0]

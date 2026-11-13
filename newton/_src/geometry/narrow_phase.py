@@ -40,12 +40,13 @@ from ..geometry.collision_primitive import (
 )
 from ..geometry.contact_data import (
     CONTACT_SORT_CONVEX_SUB_KEY_BITS,
-    CONTACT_SORT_MAX_SHAPE_INDEX_BITS,
+    CONTACT_SORT_DEFAULT_SHAPE_INDEX_BITS,
     CONTACT_SORT_SUB_KEY_BITS,
     SHAPE_PAIR_HFIELD_BIT,
     ContactData,
-    _contact_passes_gap_check_precomputed,
+    contact_passes_gap_check,
     contact_passes_speculative_gap_check,
+    contact_separation,
     contact_sort_shape_index_bits,
     make_contact_sort_key_with_bits,
     prepare_speculative_contact,
@@ -409,22 +410,8 @@ def write_contact_simple(
         writer_data: ContactWriterData struct containing output arrays
         output_index: If -1, use atomic_add to get the next available index if contact distance is less than gap_sum. If >= 0, use this index directly and skip gap check.
     """
-    total_separation_needed = (
-        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.margin_a + contact_data.margin_b
-    )
-
     contact_normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
-
-    a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
-    )
-    b_contact_world = contact_data.contact_point_center + contact_normal_a_to_b * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
-    )
-
-    diff = b_contact_world - a_contact_world
-    distance = wp.dot(diff, contact_normal_a_to_b)
-    d = distance - total_separation_needed
+    d = contact_separation(contact_data)
 
     if output_index < 0:
         if d >= contact_data.gap_sum:
@@ -507,14 +494,13 @@ def create_narrow_phase_primitive_kernel(
         contact_data: ContactData,
         position: wp.vec3,
         distance: float,
-        normalized_contact_normal: wp.vec3,
-        total_separation_needed: float,
         shape_transform: wp.array[wp.transform],
         shape_linear_velocity: wp.array[wp.vec3],
         shape_angular_velocity: wp.array[wp.vec3],
         collision_update_dt: float,
         max_speculative_extension: float,
     ) -> bool:
+        """Check a primitive candidate against the active contact gap policy."""
         contact_data.contact_point_center = position
         contact_data.contact_distance = distance
         if wp.static(speculative):
@@ -526,11 +512,7 @@ def create_narrow_phase_primitive_kernel(
                 collision_update_dt,
                 max_speculative_extension,
             )
-        return _contact_passes_gap_check_precomputed(
-            contact_data,
-            normalized_contact_normal,
-            total_separation_needed,
-        )
+        return contact_passes_gap_check(contact_data)
 
     @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_primitive_kernel(
@@ -990,9 +972,6 @@ def create_narrow_phase_primitive_kernel(
                 else:
                     contact_data.gap_sum = gap_sum
 
-                total_separation_needed = radius_eff_a + radius_eff_b + margin_offset_a + margin_offset_b
-                normalized_contact_normal = wp.normalize(contact_normal)
-
                 # Check margin for all possible contacts
                 contact_0_valid = False
                 if contact_dist_0 < MAXVAL:
@@ -1000,8 +979,6 @@ def create_narrow_phase_primitive_kernel(
                         contact_data,
                         contact_pos_0,
                         contact_dist_0,
-                        normalized_contact_normal,
-                        total_separation_needed,
                         shape_transform,
                         shape_linear_velocity,
                         shape_angular_velocity,
@@ -1015,8 +992,6 @@ def create_narrow_phase_primitive_kernel(
                         contact_data,
                         contact_pos_1,
                         contact_dist_1,
-                        normalized_contact_normal,
-                        total_separation_needed,
                         shape_transform,
                         shape_linear_velocity,
                         shape_angular_velocity,
@@ -1030,8 +1005,6 @@ def create_narrow_phase_primitive_kernel(
                         contact_data,
                         contact_pos_2,
                         contact_dist_2,
-                        normalized_contact_normal,
-                        total_separation_needed,
                         shape_transform,
                         shape_linear_velocity,
                         shape_angular_velocity,
@@ -1045,8 +1018,6 @@ def create_narrow_phase_primitive_kernel(
                         contact_data,
                         contact_pos_3,
                         contact_dist_3,
-                        normalized_contact_normal,
-                        total_separation_needed,
                         shape_transform,
                         shape_linear_velocity,
                         shape_angular_velocity,
@@ -2657,7 +2628,8 @@ class NarrowPhase:
                 This is model-wide so mesh-SDF kernels require only two bounded static variants.
             deterministic: Make contact generation and ordering independent of
                 GPU thread scheduling. Adds deterministic hydroelastic atomics
-                and a radix sort + gather pass.
+                and a radix sort + gather pass. Limits the shape count; see
+                :ref:`Deterministic Contacts`.
             contact_max: Maximum number of contacts for the deterministic sort buffer.
                 Must match the ``contact_pair`` array size passed to :meth:`launch`.
                 Defaults to ``max_candidate_pairs``.  Set this to a larger value when
@@ -2749,16 +2721,21 @@ class NarrowPhase:
             with wp.ScopedDevice(device):
                 self.shape_aabb_lower = wp.zeros(0, dtype=wp.vec3, device=device)
                 self.shape_aabb_upper = wp.zeros(0, dtype=wp.vec3, device=device)
-        self._contact_sort_shape_index_bits = (
-            contact_sort_shape_index_bits(self.shape_aabb_lower.shape[0])
-            if self.external_aabb
-            else CONTACT_SORT_MAX_SHAPE_INDEX_BITS
-        )
         self._contact_sort_sub_key_bits = (
             CONTACT_SORT_SUB_KEY_BITS
             if has_meshes or has_heightfields or hydroelastic_sdf is not None
             else CONTACT_SORT_CONVEX_SUB_KEY_BITS
         )
+        # Sort keys are written only in deterministic mode; external AABBs give the shape count.
+        if not deterministic:
+            self._contact_sort_shape_index_bits = 0
+        elif self.external_aabb:
+            self._contact_sort_shape_index_bits = contact_sort_shape_index_bits(
+                self.shape_aabb_lower.shape[0], self._contact_sort_sub_key_bits
+            )
+        else:
+            # launch() checks the shape count against this width.
+            self._contact_sort_shape_index_bits = CONTACT_SORT_DEFAULT_SHAPE_INDEX_BITS
         self.shape_voxel_resolution = shape_voxel_resolution
 
         # Determine the writer function
@@ -4230,6 +4207,16 @@ class NarrowPhase:
                 f"deterministic sort buffer size ({self._sort_key_array.shape[0]}). "
                 f"The sorter operates over fixed-capacity buffers for CUDA graph capture "
                 f"compatibility, so the sizes must match exactly."
+            )
+        if self.deterministic and shape_types.shape[0] > 1 << self._contact_sort_shape_index_bits:
+            hint = (
+                f"the shape AABBs passed at construction cover {self.shape_aabb_lower.shape[0]} shapes"
+                if self.external_aabb
+                else "pass shape_aabb_lower/upper at construction to size them"
+            )
+            raise ValueError(
+                f"Deterministic sort keys hold {self._contact_sort_shape_index_bits}-bit shape indices, got "
+                f"{shape_types.shape[0]} shapes; {hint}."
             )
 
         # Create ContactWriterData struct

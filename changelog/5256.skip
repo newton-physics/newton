@@ -1,0 +1,1 @@
+Fixes a regression from #5241, which no release has shipped; its pending 5240.fixed.md entry covers the change.

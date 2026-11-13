@@ -5,7 +5,7 @@
 
 Demonstrates the viewer "layer" system by running four simulations of
 the same quadruple-pendulum chain in a single viewer window, each driven
-by a different solver (XPBD, Featherstone, MuJoCo Warp, Kamino DVI). By default the
+by a different solver (XPBD, Featherstone, MuJoCo Warp, Kamino SCC). By default the
 layers overlay exactly so the per-solver divergence is obvious; bumping
 the ``spacing`` constant lays them out side-by-side along the world
 X-axis via ``viewer.set_layer_transform``. Layers can also be toggled
@@ -96,12 +96,12 @@ def _build_pendulum_model(num_links: int = 4, register_solver_attributes=None) -
 
 def _create_kamino_solver(model: newton.Model) -> newton.solvers.SolverKamino:
     config = newton.solvers.SolverKamino.Config.from_model(
-        model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+        model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
     )
     config.use_collision_detector = True
     config.integrator = "moreau"
-    config.dvi.max_alternating_iterations = 8
-    config.dvi.use_schur_complement = True
+    config.scc.max_alternating_iterations = 8
+    config.scc.use_schur_complement = True
     return newton.solvers.SolverKamino(model, config=config)
 
 
@@ -211,7 +211,7 @@ class Example:
             ("Featherstone", (0.20, 0.70, 0.95), newton.solvers.SolverFeatherstone, None, False),
             ("MuJoCo Warp", (0.50, 0.85, 0.30), newton.solvers.SolverMuJoCo, None, False),
             (
-                "Kamino DVI",
+                "Kamino SCC",
                 (0.75, 0.35, 0.90),
                 _create_kamino_solver,
                 newton.solvers.SolverKamino.register_custom_attributes,
@@ -253,6 +253,8 @@ class Example:
             # Capture after binding the model so viewer-force kernels use
             # this layer's picking state, including picks made after capture.
             layer.graph = layer._capture()
+        # Leave room for the chain to swing to either side of the anchor.
+        self.viewer.set_camera(wp.vec3(22.0, 0.0, 2.0), pitch=0.0, yaw=-180.0)
 
     def step(self):
         for layer in self.layers:

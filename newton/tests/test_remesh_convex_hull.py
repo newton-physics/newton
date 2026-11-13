@@ -28,6 +28,7 @@ import warnings
 import numpy as np
 
 from newton._src.geometry.utils import remesh_convex_hull
+from newton.tests.unittest_utils import requires
 
 
 def _assert_mesh_shape(test: unittest.TestCase, verts: np.ndarray, faces: np.ndarray) -> None:
@@ -69,6 +70,7 @@ def _assert_closed_outward_hull(test: unittest.TestCase, verts: np.ndarray, face
     np.testing.assert_allclose(_signed_volume(verts, faces), ConvexHull(v).volume, rtol=1e-6)
 
 
+@requires("scipy")
 class TestRemeshConvexHullFull3D(unittest.TestCase):
     """Regression tests for the untouched full-rank (3D) path."""
 
@@ -187,6 +189,7 @@ class TestRemeshConvexHullFull3D(unittest.TestCase):
             _assert_closed_outward_hull(self, verts, faces)
 
 
+@requires("scipy")
 class TestRemeshConvexHullDegenerate(unittest.TestCase):
     """Degeneracy handling added by the diff."""
 
@@ -347,6 +350,7 @@ class TestRemeshConvexHullDegenerate(unittest.TestCase):
         _assert_mesh_shape(self, verts, faces)
 
 
+@requires("scipy")
 class TestRemeshConvexHullNeverRaises(unittest.TestCase):
     """Property-style guarantee: degenerate input must never raise."""
 
@@ -402,6 +406,7 @@ class TestRemeshConvexHullNeverRaises(unittest.TestCase):
                 _assert_mesh_shape(self, verts, faces)
 
 
+@requires("scipy")
 class TestRemeshConvexHullDegenerateWarnings(unittest.TestCase):
     """Each rank-0/1/2 branch must emit a UserWarning so that callers don't
     silently end up with a zero-volume, zero-mass collider."""
