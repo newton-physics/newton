@@ -26,12 +26,16 @@ Newton releases are tested on the following configurations:
    * - GPU
      - NVIDIA Ada Lovelace, Blackwell
    * - Python
-     - 3.11+. Full tests use ``.python-version``; CI imports 3.11-3.14 and resolves deps on 3.11-3.13.
+     - 3.11+. Full CPU/GPU tests use Python 3.14 (``.python-version``); CI imports and resolves dependencies on 3.11-3.14.
    * - Dependencies
      - Latest known-good versions are pinned in the release branch's ``uv.lock``
    * - CUDA
      - 13; 12 is deprecated in Newton 1.7 and covered by the nightly Warp 1.17
        minimum-dependency tests on an R570 driver
+
+CI also installs ``newton[dev,notebook]`` with pip on Python 3.14 on Linux
+x86-64 and ARM64, Windows x86-64, and macOS ARM64, then tests the installed
+package's USD import/export, convex decomposition, and Rerun notebook workflows.
 
 For the minimum requirements to install Newton, see
 :ref:`system-requirements` in the installation guide.

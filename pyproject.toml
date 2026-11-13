@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3 :: Only",
     "Environment :: GPU :: NVIDIA CUDA",
     "Environment :: GPU :: NVIDIA CUDA :: 12",
@@ -63,10 +64,12 @@ importers = [
 
     # USD core libraries
     "usd-core>=25.5,<26.9 ; platform_machine != 'aarch64' and python_version < '3.15' and (sys_platform != 'win32' or platform_machine != 'ARM64')",
+    # USD Exchange has no Python 3.14 wheels; USD Core 26.11 adds Linux ARM64 wheels.
+    "usd-core>=26.11,<26.12 ; platform_machine == 'aarch64' and python_version >= '3.14' and python_version < '3.15'",
     "usd-exchange>=2.3.0,<4 ; platform_machine == 'aarch64' and python_version < '3.14'",
 
     # Newton USD Schemas
-    "newton-usd-schemas>=0.6.0",
+    "newton-usd-schemas>=0.7.0",
 ]
 
 # Remeshing dependencies (for SurfaceReconstructor)

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import unittest
 import warnings
 from unittest.mock import Mock, patch
@@ -294,6 +295,47 @@ class TestViewerRerunInitArgs(unittest.TestCase):
                         viewer = ViewerRerun()
 
                     self.assertIsNone(viewer.rec_id)
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("rerun") and importlib.util.find_spec("rerun_notebook"),
+    "Requires newton[notebook]",
+)
+class TestViewerRerunNotebook(unittest.TestCase):
+    def test_record_model_and_create_widget(self):
+        """Serialize Newton geometry through Arrow and expose its recording in a notebook widget."""
+        import rerun as rr
+        from rerun.notebook import Viewer
+
+        import newton
+        from newton.viewer import ViewerRerun
+
+        previous_recording = rr.get_global_data_recording()
+        if previous_recording is not None:
+            self.addCleanup(rr.set_global_data_recording, previous_recording)
+        # Select notebook mode without launching a browser or a native viewer.
+        # The recording, geometry serialization, and notebook widget are real.
+        with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=True):
+            viewer = ViewerRerun(app_id="newton-notebook-test")
+        self.addCleanup(viewer.close)
+        recording = rr.memory_recording()
+        initial_messages = recording.num_msgs()
+
+        builder = newton.ModelBuilder()
+        body = builder.add_body(label="box")
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device="cpu")
+        viewer.set_model(model)
+        viewer.begin_frame(0.0)
+        viewer.log_state(model.state())
+        viewer.end_frame()
+        self.assertGreater(recording.num_msgs(), initial_messages)
+        self.assertTrue(recording.drain_as_bytes())
+
+        widget = Viewer(recording=rr.get_global_data_recording(), width=320, height=240)
+        self.addCleanup(widget._viewer.close)
+        bundle, _ = widget._viewer._repr_mimebundle_()
+        self.assertTrue(bundle["application/vnd.jupyter.widget-view+json"]["model_id"])
 
 
 if __name__ == "__main__":
