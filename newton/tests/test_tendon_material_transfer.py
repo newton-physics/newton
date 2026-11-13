@@ -858,9 +858,32 @@ def test_direct_input_contract(test, device):
         solver.tendon_material_direct = False
         with test.assertRaisesRegex(ValueError, "Reconstruct"):
             solver.step(model.state(), model.state(), model.control(), None, 0.01)
-    for options in ({"iterations": 0}, {"integrate_with_external_rigid_solver": True}):
-        with test.assertRaisesRegex(ValueError, "Direct tendon"):
-            newton.solvers.SolverVBD(model, tendon_material_direct=True, **options)
+    solver = newton.solvers.SolverVBD(model, iterations=1, tendon_material_direct=True)
+    state, output = model.state(), model.state()
+    control = model.control()
+    fields = ("tendon_segment_rest_length", "_tendon_initialized", "_tendon_material_failure")
+    initial = [[getattr(s, field).numpy().copy() for field in fields] for s in (state, output)]
+    for options in ({"iterations": 0}, {"iterations": -1}, {"integrate_with_external_rigid_solver": True}):
+        with test.subTest(options=options):
+            with test.assertRaisesRegex(ValueError, "Direct tendon"):
+                newton.solvers.SolverVBD(model, tendon_material_direct=True, **options)
+            name, value = next(iter(options.items()))
+            original = getattr(solver, name)
+            setattr(solver, name, value)
+            for capture in (False, True) if wp.get_device(device).is_cuda else (False,):
+                with test.subTest(capture=capture), test.assertRaisesRegex(ValueError, "Direct tendon"):
+                    if capture:
+                        with wp.ScopedCapture(device=device):
+                            solver.step(state, output, control, None, 0.01)
+                    else:
+                        solver.step(state, output, control, None, 0.01)
+            for s, expected in zip((state, output), initial, strict=True):
+                for field, value in zip(fields, expected, strict=True):
+                    np.testing.assert_array_equal(getattr(s, field).numpy(), value)
+            setattr(solver, name, original)
+    solver.step(state, output, control, None, 0.01)
+    solver.check_tendon_material(output)
+    np.testing.assert_allclose(solver.tendon_segment_material_tension.numpy(), 10.0, atol=1e-4, rtol=0.0)
 
     # State.requires_grad is derived from body/particle arrays, so use a body here.
     builder = newton.ModelBuilder()
@@ -926,26 +949,27 @@ def test_stiff_pinhole_body_force_balance(test, device):
                 model, slider = build_stiff_pinhole_capstan(n_pinholes=9, mu=0.25)
                 model.body_color_groups = [wp.array([body], dtype=int) for body in range(model.body_count)]
                 options = {"joint_linear_relaxation": 0.8} if solver_type is newton.solvers.SolverXPBD else {}
-                solver = solver_type(model, iterations=128, tendon_material_direct=True, **options)
+                solver = solver_type(model, iterations=64, tendon_material_direct=True, **options)
                 a, b = model.state(), model.state()
                 control = model.control()
                 force = np.zeros((model.body_count, 6), dtype=np.float32)
                 force[slider, 2] = -10.0
-                # Both buffers keep the same external pull, including captured replay.
+                # Both buffers keep the same external pull.
                 a.body_f.assign(force)
                 b.body_f.assign(force)
                 dt = 1 / 2400
-                for _ in range(16):
+                # Check the cold step and reuse of its persisted material history.
+                for _ in range(2):
                     solver.step(a, b, control, None, dt)
                     a, b = b, a
-                solver.check_tendon_material(a)
-                tension = solver.tendon_segment_material_tension.numpy()
-                compliance = solver.tendon_segment_active_compliance.numpy()
-                resolution = float(np.spacing(a.tendon_segment_rest_length.numpy()[-1]) / compliance[-1])
-                test.assertLess(resolution, 0.75)
-                test.assertAlmostEqual(float(tension[-1]), 10.0, delta=resolution)
-                test.assertGreater(float(tension[0]), 0.4 * float(tension[-1]))
-                test.assertLess(float(tension[0]), 0.6 * float(tension[-1]))
+                    solver.check_tendon_material(a)
+                    tension = solver.tendon_segment_material_tension.numpy()
+                    compliance = solver.tendon_segment_active_compliance.numpy()
+                    resolution = float(np.spacing(a.tendon_segment_rest_length.numpy()[-1]) / compliance[-1])
+                    test.assertLess(resolution, 0.75)
+                    test.assertAlmostEqual(float(tension[-1]), 10.0, delta=resolution)
+                    test.assertGreater(float(tension[0]), 0.4 * float(tension[-1]))
+                    test.assertLess(float(tension[0]), 0.6 * float(tension[-1]))
 
 
 class TestTendonMaterialTransfer(NewtonTestCase):

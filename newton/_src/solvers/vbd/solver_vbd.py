@@ -2970,9 +2970,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 contact record at the final configuration. See :ref:`vbd_contact_forces`.
 
         Raises:
+            ValueError: If direct tendon material solving is enabled with fewer than one iteration or external
+                rigid-body integration.
             RuntimeError: If required rigid contact-matching data is unavailable, or contact-history storage would
                 need to be allocated or grown during graph capture.
         """
+        if self.tendon_material_direct and (self.iterations < 1 or self.integrate_with_external_rigid_solver):
+            raise ValueError("Direct tendon material solving requires iterations >= 1 and internal rigid integration")
         contacts = self._resolve_step_contacts(contacts)
         self.validate_observables(observables, contacts)
         self._require_unreduced_contacts(contacts)
