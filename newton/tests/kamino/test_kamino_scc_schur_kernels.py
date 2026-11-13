@@ -1,25 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regressions for Kamino DVI Schur assembly, sweeps, and residuals."""
+"""Regressions for Kamino SCC Schur assembly, sweeps, and residuals."""
 
 import unittest
 
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.solvers.dvi.kernels import _compute_dvi_status_residuals
-from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
+from newton._src.solvers.kamino._src.solvers.scc.kernels import _compute_scc_status_residuals
+from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _apply_small_bilateral_inverse,
     _assemble_compact_unilateral_schur_blocked,
     _invert_small_bilateral_block,
-    _solve_dvi_sparse_inequalities_pgs_cooperative,
+    _solve_scc_sparse_inequalities_pgs_cooperative,
     make_compact_schur_pgs_kernel,
 )
-from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
+from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _prepare_full_sparse_unilateral_schur as kernel,
 )
-from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, DVIStatus
+from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCStatus
 
 
 class TestKaminoCompactSchur(unittest.TestCase):
@@ -108,7 +108,7 @@ class TestKaminoCompactSchur(unittest.TestCase):
                 group_bounds = np.unique(np.linspace(0, slots, min(4, slots) + 1).astype(np.int32))
                 groups = len(group_bounds) - 1
                 color_bounds = np.unique(np.array([0, groups // 2, groups], dtype=np.int32))
-                config = DVIConfigStruct()
+                config = SCCConfigStruct()
                 # A non-fused iteration selects the general implementation without
                 # its dispatch to the pipeline. One outer iteration makes the two
                 # schedules equivalent, including odd tangent sweeps.
@@ -152,18 +152,18 @@ class TestKaminoCompactSchur(unittest.TestCase):
                     "inequality_ids_by_color": self.ints(order),
                     "inequality_color_starts": self.ints(color_bounds),
                     "inequality_group_starts": self.ints(group_bounds),
-                    "solver_config": wp.array([config], dtype=DVIConfigStruct, device=self.device),
+                    "solver_config": wp.array([config], dtype=SCCConfigStruct, device=self.device),
                     "enable_compact_schur": True,
                     "block_iteration": 0,
                 }
                 results = []
                 for kernels in (
-                    (_solve_dvi_sparse_inequalities_pgs_cooperative,),
+                    (_solve_scc_sparse_inequalities_pgs_cooperative,),
                     (make_compact_schur_pgs_kernel(64), make_compact_schur_pgs_kernel(128)),
                 ):
                     data["compact_q"] = self.floats(np.concatenate([np.zeros(n), q0]))
                     data["solution_lambdas"] = self.floats(initial)
-                    data["solver_status"] = wp.zeros(1, dtype=DVIStatus, device=self.device)
+                    data["solver_status"] = wp.zeros(1, dtype=SCCStatus, device=self.device)
                     for index, kernel in enumerate(kernels):
                         before = data["solution_lambdas"].numpy(), data["compact_q"].numpy()
                         inputs = []
@@ -390,8 +390,8 @@ class TestKaminoFullSchurAssembly(unittest.TestCase):
                     block_dim=128,
                     device=device,
                 )
-                actual_s = arrays["compact_schur"].numpy()
-                actual_q = arrays["compact_q"].numpy()
+                actual_s = arrays["compact_schur"].numpy().copy()
+                actual_q = arrays["compact_q"].numpy().copy()
                 np.testing.assert_allclose(actual_s, expected_s, atol=1e-5, rtol=1e-5)
                 np.testing.assert_allclose(actual_q, expected_q, atol=1e-5, rtol=1e-5)
                 if reference_s is not None:
@@ -400,7 +400,7 @@ class TestKaminoFullSchurAssembly(unittest.TestCase):
                 reference_s, reference_q = actual_s, actual_q
 
 
-class TestDVIResiduals(unittest.TestCase):
+class TestSCCResiduals(unittest.TestCase):
     def test_cooperative_matches_serial(self):
         """Preserve all status fields across ragged worlds and constraint types."""
         if not wp.get_cuda_device_count():
@@ -426,13 +426,13 @@ class TestDVIResiduals(unittest.TestCase):
         configs = []
         statuses = []
         for index in range(len(counts)):
-            config = DVIConfigStruct()
+            config = SCCConfigStruct()
             config.tolerance = 1.0e-5
             configs.append(config)
-            status = DVIStatus()
+            status = SCCStatus()
             status.iterations = index
             statuses.append(status)
-        initial_status = wp.array(statuses, dtype=DVIStatus, device=device)
+        initial_status = wp.array(statuses, dtype=SCCStatus, device=device)
         inputs = [
             ints(dimensions),
             ints(vector_offsets),
@@ -448,7 +448,7 @@ class TestDVIResiduals(unittest.TestCase):
             floats(rng.uniform(0, 1, int(nc.sum()))),
             floats(-rng.uniform(0, 2, int(nbc.sum()))),
             floats(rng.uniform(0, 2, int(nbc.sum()))),
-            wp.array(configs, dtype=DVIConfigStruct, device=device),
+            wp.array(configs, dtype=SCCConfigStruct, device=device),
         ]
         for converged in (False, True):
             velocities = np.zeros(size, dtype=np.float32) if converged else rng.normal(size=size).astype(np.float32)
@@ -457,7 +457,7 @@ class TestDVIResiduals(unittest.TestCase):
             for workers in (1, 32):
                 status = wp.clone(initial_status)
                 wp.launch(
-                    _compute_dvi_status_residuals,
+                    _compute_scc_status_residuals,
                     dim=len(counts) * workers,
                     inputs=[*inputs, floats(velocities), floats(impulses), status, workers, 1],
                     block_dim=128,

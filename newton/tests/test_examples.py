@@ -1885,7 +1885,8 @@ add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_robot_anymal_d",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500},
+    # The robot comes to rest after about 65 frames.
+    test_options={"num-frames": 150},
     use_viewer=True,
 )
 for example_name, num_frames in (

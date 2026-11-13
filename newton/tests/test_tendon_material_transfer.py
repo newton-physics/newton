@@ -22,6 +22,9 @@ from newton.tests.test_tendon_capstan import (
     build_explicit_inactive_dynamic_route,
     build_stiff_pinhole_capstan,
 )
+from newton.tests.test_tendon_capstan import (
+    test_dynamic_route_signed_arc_inventory as _check_dynamic_route_signed_arc_inventory,
+)
 from newton.tests.test_tendon_material_direct import _reference_taut
 from newton.tests.unittest_utils import NewtonTestCase, add_function_test, get_test_devices
 
@@ -976,6 +979,14 @@ for function in (
     test_stiff_pinhole_body_force_balance,
 ):
     add_function_test(TestTendonMaterialTransfer, function.__name__, function, devices=get_test_devices())
+
+
+add_function_test(
+    TestTendonMaterialTransfer,
+    "test_direct_dynamic_route_signed_arc_inventory",
+    partial(_check_dynamic_route_signed_arc_inventory, direct=True),
+    devices=get_test_devices(),
+)
 
 
 if __name__ == "__main__":

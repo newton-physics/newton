@@ -2713,11 +2713,33 @@ def parse_mjcf(
                 warn_invalid_joint_solreflimit(joint_attrib)
 
                 effort_limit = default_joint_effort_limit
-                if "actuatorfrcrange" in joint_attrib and is_limited(
-                    joint_attrib, "actuatorfrclimited", "actuatorfrcrange"
-                ):
-                    actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
-                    effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
+                actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
+                if actuatorfrclimited not in {"auto", "false", "true"}:
+                    raise ValueError(
+                        f"Joint {joint_name[-1]!r} actuatorfrclimited must be 'auto', 'false', or 'true'; "
+                        f"got {actuatorfrclimited!r}."
+                    )
+                if "actuatorfrcrange" in joint_attrib or actuatorfrclimited == "true":
+                    # MuJoCo reads an empty attribute as unspecified.
+                    actuatorfrcrange = [float(value) for value in joint_attrib.get("actuatorfrcrange", "").split()]
+                    actuatorfrcrange = actuatorfrcrange or [0.0, 0.0]
+                    if len(actuatorfrcrange) != 2:
+                        raise ValueError("Joint actuatorfrcrange must contain exactly two values.")
+                    lower, upper = actuatorfrcrange
+                    if (
+                        actuatorfrclimited == "auto"
+                        and compiler_attribs.get("autolimits", "true").lower() == "false"
+                        and (lower != 0.0 or upper != 0.0)
+                    ):
+                        raise ValueError(
+                            f"Joint {joint_name[-1]!r} has actuatorfrcrange but requires explicit "
+                            'actuatorfrclimited="true" or "false" when autolimits="false".'
+                        )
+                    force_limited = actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and lower < upper)
+                    if force_limited:
+                        if lower >= upper:
+                            raise ValueError("Joint actuatorfrcrange lower bound must be smaller than upper bound.")
+                        effort_limit = max(abs(lower), abs(upper))
 
                 rest_q = builder.default_joint_cfg.rest_q
                 if "springref" in joint_attrib or "ref" in joint_attrib:

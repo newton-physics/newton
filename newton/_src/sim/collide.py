@@ -1664,6 +1664,12 @@ def _warn_full_surface_fallbacks(model: Model, capable: np.ndarray) -> None:
     )
 
 
+@wp.kernel(enable_backward=False)
+def _reserve_contact_gap(authored: wp.array[float], reserve: float, gap: wp.array[float]):
+    shape = wp.tid()
+    gap[shape] = wp.max(authored[shape], reserve)
+
+
 class CollisionPipeline:
     """
     Full-featured collision pipeline with GJK/MPR narrow phase and pluggable broad phase.
@@ -2070,6 +2076,8 @@ class CollisionPipeline:
         self.include_static_kinematic_pairs = include_static_kinematic_pairs
         self.speculative_contact_gap_max = speculative_contact_gap_max
         self._speculative_enabled = speculative_contact_gap_max is not None
+        self._scheduled_shape_gap = None
+        self._scheduled_gap_active = False
         contact_writer = write_contact_speculative if self._speculative_enabled else write_contact
 
         unit_scale_sdf_shapes = None
@@ -3151,6 +3159,22 @@ class CollisionPipeline:
             speculative_active = False
             search_gap = model.shape_gap
 
+        shape_gap = model.shape_gap
+        if self._scheduled_gap_active:
+            shape_gap = self._scheduled_shape_gap
+            wp.launch(
+                _reserve_contact_gap,
+                dim=model.shape_count,
+                inputs=[model.shape_gap, 0.5 * float(self.speculative_contact_gap_max)],
+                outputs=[shape_gap],
+                device=self.device,
+                record_tape=False,
+            )
+            search_gap = shape_gap
+            speculative_active = False
+            # Keep the horizon for predictive manifold reduction: nearby
+            # receding features must not displace approaching mesh/SDF features.
+
         # Rigid contact detection -- broad phase + narrow phase.
         # These kernels hardcode record_tape=False internally so they are
         # never captured on an active wp.Tape.  The differentiable
@@ -3176,7 +3200,7 @@ class CollisionPipeline:
                 model.shape_collision_radius,
                 model.shape_source_ptr,
                 model.shape_margin,
-                model.shape_gap,
+                shape_gap,
                 model.shape_collision_aabb_lower,
                 model.shape_collision_aabb_upper,
                 model.shape_flags,
@@ -3196,7 +3220,9 @@ class CollisionPipeline:
             record_tape=False,
         )
 
-        if speculative_active:
+        # Scheduled passes need velocities for reduction, but their AABBs
+        # already include the full distance reserve.
+        if speculative_active or self._scheduled_gap_active:
             wp.launch(
                 kernel=compute_shape_velocities,
                 dim=model.shape_count,
@@ -3209,9 +3235,9 @@ class CollisionPipeline:
                     model.shape_collision_aabb_lower,
                     model.shape_collision_aabb_upper,
                     model.shape_collision_radius,
-                    model.shape_gap,
+                    shape_gap,
                     collision_update_dt,
-                    max_speculative_extension,
+                    0.0 if self._scheduled_gap_active else max_speculative_extension,
                 ],
                 outputs=[
                     self._shape_linear_velocity,
@@ -3291,7 +3317,7 @@ class CollisionPipeline:
         writer_data.sub_key_bits = self._contact_sort_sub_key_bits
         writer_data.body_q = state.body_q
         writer_data.shape_body = model.shape_body
-        writer_data.shape_gap = model.shape_gap
+        writer_data.shape_gap = shape_gap
         writer_data.contact_count = contacts.rigid_contact_count
         writer_data.out_shape0 = contacts.rigid_contact_shape0
         writer_data.out_shape1 = contacts.rigid_contact_shape1
@@ -3335,7 +3361,7 @@ class CollisionPipeline:
             )
         if self._speculative_enabled:
             narrow_phase_extension_kwargs.update(
-                shape_base_gap=model.shape_gap,
+                shape_base_gap=shape_gap,
                 shape_linear_velocity=self._shape_linear_velocity,
                 shape_angular_velocity=self._shape_angular_velocity,
                 collision_update_dt=collision_update_dt,
