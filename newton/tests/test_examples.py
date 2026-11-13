@@ -851,7 +851,7 @@ add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_franka",
     devices=cuda_test_devices,
-    test_options={"requires": ("pxr.Usd",), "num-frames": 50},
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada"), "num-frames": 50},
     use_viewer=True,
 )
 add_example_test(
@@ -962,7 +962,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_c_walk",
     devices=cuda_test_devices,
-    test_options={"requires": ("pxr.Usd", "onnx", "warp_nn", *MUJOCO_MODULES), "num-frames": 500},
+    test_options={"requires": ("pxr.Usd", "onnx", "warp_nn", "trimesh", "collada", *MUJOCO_MODULES), "num-frames": 500},
     use_viewer=True,
 )
 add_example_test(
@@ -1068,7 +1068,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_panda_hydro",
     devices=cuda_test_devices,
-    test_options={"requires": ("pxr.Usd", *MUJOCO_MODULES), "num-frames": 720},
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada", *MUJOCO_MODULES), "num-frames": 720},
     use_viewer=True,
 )
 
@@ -1153,7 +1153,7 @@ add_example_test(
     TestAdvancedRobotExamples,
     name="mpm.example_mpm_anymal",
     devices=cuda_test_devices,
-    test_options={"requires": ("onnx", "warp_nn", *MUJOCO_MODULES), "num-frames": 100},
+    test_options={"requires": ("onnx", "warp_nn", "trimesh", "collada", *MUJOCO_MODULES), "num-frames": 100},
     allow_output_regexes=[(_ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE, "stderr")],
     use_viewer=True,
 )
@@ -1180,7 +1180,7 @@ add_example_test(
     name="ik.example_ik_custom",
     devices=cuda_test_devices,
     use_viewer=True,
-    test_options={"requires": ("git",)},
+    test_options={"requires": ("git", "trimesh", "collada")},
 )
 
 add_example_test(
@@ -1189,7 +1189,7 @@ add_example_test(
     test_options_cuda={"world-count": 16, "num-frames": 2000},
     devices=cuda_test_devices,
     use_viewer=True,
-    test_options={"requires": ("git", *MUJOCO_MODULES)},
+    test_options={"requires": ("git", "trimesh", "collada", *MUJOCO_MODULES)},
 )
 
 
@@ -1214,7 +1214,7 @@ add_example_test(
     TestSteelExamples,
     name="steel.example_steel_determinism_arms",
     devices=cuda_test_devices,
-    test_options={"requires": ("git",), "num-frames": 20},
+    test_options={"requires": ("git", "trimesh", "collada"), "num-frames": 20},
     use_viewer=True,
 )
 
@@ -1393,7 +1393,7 @@ add_example_test(
     TestSensorExamples,
     name="sensors.example_sensor_camera",
     devices=cuda_test_devices,
-    test_options={"requires": ("pxr.Usd",), "num-frames": 4 * 36},  # train_iters * sim_steps
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada"), "num-frames": 4 * 36},  # train_iters * sim_steps
     use_viewer=True,
 )
 
@@ -1668,7 +1668,7 @@ add_contact_example_test(
 add_contact_example_test(
     name="contacts.example_brick_stacking",
     devices=cuda_test_devices,
-    test_options={"requires": ("git", *MUJOCO_MODULES), "num-frames": 1200},
+    test_options={"requires": ("git", "trimesh", "collada", *MUJOCO_MODULES), "num-frames": 1200},
     use_viewer=True,
     allow_output_regexes=[(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
@@ -1793,7 +1793,7 @@ add_example_test(
     name="multiphysics.example_mujoco_franka_vbd_cable_admm_solver",
     devices=cuda_test_devices,
     test_options={
-        "requires": ("git", *MUJOCO_MODULES),
+        "requires": ("git", "trimesh", "collada", *MUJOCO_MODULES),
         "num-frames": 2,
         "world-count": 1,
         "substeps": 1,
@@ -1983,14 +1983,14 @@ add_example_test(
     TestControllersExamples,
     name="controllers.example_controller_operational_space_hybrid_force_motion",
     devices=cuda_test_devices,
-    test_options={"requires": ("pxr.Usd", *MUJOCO_MODULES), "num-frames": 600},
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada", *MUJOCO_MODULES), "num-frames": 600},
     use_viewer=True,
 )
 add_example_test(
     TestControllersExamples,
     name="controllers.example_controller_differential_ik",
     devices=cuda_test_devices,
-    test_options={"requires": ("pxr.Usd",), "num-frames": 100},
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada"), "num-frames": 100},
     use_viewer=True,
 )
 
@@ -2003,7 +2003,7 @@ add_example_test(
     TestUSDDependentExamples,
     name="softbody.example_softbody_franka",
     devices=cuda_test_devices,
-    test_options={"requires": ("pxr.Usd",)},
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada")},
     use_viewer=True,
 )
 # 120 frames reaches the first engagement (~1.0 s) and holds the panel well past the seal settling,

@@ -636,7 +636,7 @@ class TestImportUsdPhysics(unittest.TestCase):
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "scipy")
     def test_mesh_approximation_cfg(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -688,7 +688,7 @@ class TestImportUsdPhysics(unittest.TestCase):
             builder.add_usd(stage)
             self.assertEqual(captured["threshold"], 0.5)
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "scipy")
     def test_physx_convex_decomposition_limits(self):
         """Import opt-in PhysX limits without merging disconnected components."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -785,7 +785,7 @@ class TestImportUsdPhysics(unittest.TestCase):
                             self.assertEqual(model.shape_count, builder.shape_count)
                             self.assertTrue(np.isfinite(model.shape_scale.numpy()).all())
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "scipy")
     def test_instanced_mesh_colliders_share_geometry(self):
         """Share instanced USD meshes and their approximations, keeping per-instance materials."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
@@ -3368,7 +3368,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         model = builder.finalize()
         verify_usdphysics_parser(self, asset_path, model, compare_min_max_coords=True, floating=False)
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "scipy")
     def test_g1(self):
         builder = newton.ModelBuilder()
         asset_path = str(newton.utils.download_asset("unitree_g1/usd") / "g1_isaac.usd")
@@ -3383,7 +3383,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         model = builder.finalize()
         verify_usdphysics_parser(self, asset_path, model, compare_min_max_coords=False, floating=True)
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "scipy")
     def test_h1(self):
         builder = newton.ModelBuilder()
         asset_path = str(newton.utils.download_asset("unitree_h1/usd") / "h1_minimal.usda")
@@ -11569,7 +11569,7 @@ def Xform "Body" (
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(flags & ShapeFlags.VISIBLE)
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "scipy")
     def test_hide_collision_shapes_suppresses_approximated_visual_copy(self):
         """Verify hide_collision_shapes=True also suppresses the visual split off by approximation.
 
@@ -11777,7 +11777,7 @@ def Xform "Body" (
         forced_shape = forced.add_usd(stage, force_show_colliders=True)["path_shape_map"]["/Body/CollisionMesh"]
         self.assertTrue(forced.shape_flags[forced_shape] & ShapeFlags.VISIBLE)
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "scipy")
     def test_approximated_viewport_collider_keeps_its_render_mesh(self):
         """Approximating a drawable collider splits it into a collider and a visual.
 

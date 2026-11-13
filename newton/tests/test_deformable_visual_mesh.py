@@ -951,6 +951,7 @@ class TestDeformableVisualGLTextures(unittest.TestCase):
             after = viewer.get_frame().numpy()
             self.assertFalse(np.array_equal(before, after), "The rendered mesh must follow its moved particle")
 
+    @requires("PIL")
     def test_gl_reuses_skinned_textures_but_updates_regular_meshes(self):
         """Reuse visual textures untinted by default; preserve explicit colors and ordinary uploads."""
         from newton._src.utils.texture import load_texture  # noqa: PLC0415
