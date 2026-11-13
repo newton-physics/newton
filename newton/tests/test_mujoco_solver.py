@@ -23,6 +23,7 @@ from newton import BodyFlags, JointType, Mesh, ModelFlags, NewtonDeprecationWarn
 from newton._src.core.types import vec5
 from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
+    FLOAT64_EPS,
     MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
@@ -32,6 +33,7 @@ from newton._src.solvers.mujoco.enums import (
     _ActuatorBiasType,
     _ActuatorDynamicsType,
     _ActuatorGainType,
+    _JointType,
 )
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.geometry import build_shape_layout, compile_layout_collision_masks
@@ -66,8 +68,8 @@ def _add_deprecated_mimic_constraint(
 
 
 def _expected_positive_limit_solref(ke: float, kd: float, factor: float) -> np.ndarray:
-    direct_stiffness = max(float(ke) * float(factor), MJ_MINVAL)
-    direct_damping = max(float(kd) * float(factor), MJ_MINVAL)
+    direct_stiffness = max(float(ke) * float(factor), FLOAT64_EPS)
+    direct_damping = max(float(kd) * float(factor), FLOAT64_EPS)
     return np.array(
         [2.0 / direct_damping, direct_damping / (2.0 * math.sqrt(direct_stiffness))],
         dtype=np.float64,
@@ -2060,6 +2062,12 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
         )
         template_builder.add_articulation([joint])
 
+        for add_joint in (template_builder.add_joint_free, template_builder.add_joint_ball):
+            body = template_builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            template_builder.add_shape_box(body=body, hx=0.05, hy=0.05, hz=0.05)
+            joint = add_joint(parent=-1, child=body)
+            template_builder.add_articulation([joint])
+
         world_count = 3
         builder = newton.ModelBuilder()
         builder.replicate(template_builder, world_count)
@@ -2084,14 +2092,18 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
 
         # Get mappings
         mjc_dof_to_newton_dof = solver.mjc_dof_to_newton_dof.numpy()
-        mjc_jnt_to_newton_dof = solver.mjc_jnt_to_newton_dof.numpy()
+        joint_dof_starts = model.joint_qd_start.numpy()[solver.mjc_jnt_to_newton_jnt.numpy()]
         nworld_mjc = mjc_dof_to_newton_dof.shape[0]
         nv_mjc = mjc_dof_to_newton_dof.shape[1]
-        njnt_mjc = mjc_jnt_to_newton_dof.shape[1]
+        njnt_mjc = joint_dof_starts.shape[1]
 
         def assert_passive_values(expected_stiffness: np.ndarray, expected_damping: np.ndarray):
             dof_damping = solver.mjw_model.dof_damping.numpy()
             jnt_stiffness = solver.mjw_model.jnt_stiffness.numpy()
+            np.testing.assert_array_equal(
+                solver.mjw_model.jnt_axis.numpy(),
+                np.broadcast_to(solver.mj_model.jnt_axis, (nworld_mjc, njnt_mjc, 3)),
+            )
 
             # Check DOF damping - iterate over MuJoCo DOFs
             for world_idx in range(nworld_mjc):
@@ -2109,7 +2121,7 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
             # Check joint stiffness - iterate over MuJoCo joints
             for world_idx in range(nworld_mjc):
                 for mjc_jnt in range(njnt_mjc):
-                    newton_dof = mjc_jnt_to_newton_dof[world_idx, mjc_jnt]
+                    newton_dof = joint_dof_starts[world_idx, mjc_jnt]
                     if newton_dof < 0:
                         continue
                     self.assertAlmostEqual(
@@ -2126,7 +2138,7 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
 
         model.joint_stiffness.assign(updated_stiffness)
         model.joint_damping.assign(updated_damping)
-        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_PROPERTIES)
 
         assert_passive_values(updated_stiffness, updated_damping)
 
@@ -11606,10 +11618,10 @@ class TestActuatorDampratio(unittest.TestCase):
         mujoco = self.solver._mujoco
         native = mujoco.MjModel.from_xml_string(xml)
         expected = native.actuator_biasprm[0, 2]
-        for cpu in (True, False):
-            with self.subTest(cpu=cpu), tempfile.TemporaryDirectory() as tmp:
+        for importer, cpu in itertools.product(("add_mjcf", "add_mjcf_native"), (True, False)):
+            with self.subTest(importer=importer, cpu=cpu), tempfile.TemporaryDirectory() as tmp:
                 builder = newton.ModelBuilder()
-                builder.add_mjcf(xml)
+                getattr(builder, importer)(xml)
                 builder.joint_qd[-1] = 0.1
                 model = builder.finalize(device="cpu" if cpu else self.model.device)
                 exported = os.path.join(tmp, "model.xml")
@@ -12072,39 +12084,50 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
 
     def test_joint_target_initial_damping(self):
         """Resolve each world's gains, armature, and ratio despite skipped metadata."""
-        template = newton.ModelBuilder()
-        template.add_mjcf(self.MJCF)
-        builder = newton.ModelBuilder()
-        builder.replicate(template, 3)
-        builder.joint_armature[1] = 0.3
-        builder.joint_target_ke[1] = 25.0
-        builder.joint_target_kd[2] = 5.0
-        skipped_row = {
-            key: attr.default for key, attr in builder.custom_attributes.items() if attr.frequency == "mujoco:actuator"
-        }
-        skipped_row["mujoco:actuator_target_label"] = "/missing"
-        builder.add_custom_values(**skipped_row)
-        model = builder.finalize()
-        worlds = model.mujoco.actuator_world.numpy()
-        biasprm = model.mujoco.actuator_biasprm.numpy()
-        ratios = np.array([0.5, 2.0, 1.0])
-        biasprm[worlds >= 0, 2] = ratios[worlds[worlds >= 0]]
-        biasprm[worlds < 0, 2] = 0.75
-        model.mujoco.actuator_biasprm.assign(biasprm)
+        for importer in ("add_mjcf", "add_mjcf_native"):
+            with self.subTest(importer=importer):
+                template = newton.ModelBuilder()
+                getattr(template, importer)(self.MJCF)
+                builder = newton.ModelBuilder()
+                builder.replicate(template, 3)
+                builder.joint_armature[1] = 0.3
+                builder.joint_target_ke[1] = 25.0
+                builder.joint_target_kd[2] = 5.0
+                skipped_row = {
+                    key: attr.default
+                    for key, attr in builder.custom_attributes.items()
+                    if attr.frequency == "mujoco:actuator"
+                }
+                skipped_row["mujoco:actuator_target_label"] = "/missing"
+                builder.add_custom_values(**skipped_row)
+                ratios = np.array([0.5, 2.0, 1.0])
+                if importer == "add_mjcf_native":
+                    for row, ratio in enumerate(ratios):
+                        attr = builder.custom_attributes["mujoco:actuator_biasprm"]
+                        bias = list(attr.values[row])
+                        bias[2] = ratio
+                        attr.values[row] = bias
+                model = builder.finalize()
+                worlds = model.mujoco.actuator_world.numpy()
+                biasprm = model.mujoco.actuator_biasprm.numpy()
+                if importer == "add_mjcf":
+                    biasprm[worlds >= 0, 2] = ratios[worlds[worlds >= 0]]
+                biasprm[worlds < 0, 2] = 0.75
+                model.mujoco.actuator_biasprm.assign(biasprm)
 
-        mujoco = self.solver._mujoco
-        native = mujoco.MjModel.from_xml_string(self.MJCF)
-        modified = mujoco.MjModel.from_xml_string(
-            self.MJCF.replace('type="hinge"', 'type="hinge" armature="0.3"').replace('kp="100"', 'kp="25"')
-        )
-        expected = [0.5 * native.actuator_biasprm[0, 2], 2.0 * modified.actuator_biasprm[0, 2], -5.0]
-        with self.assertWarnsRegex(UserWarning, "unresolved target '/missing'"):
-            solver = SolverMuJoCo(model, disable_contacts=True)
-        np.testing.assert_allclose(model.joint_target_kd.numpy(), -np.array(expected), rtol=1e-5)
-        np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
-        np.testing.assert_array_equal(model.mujoco.actuator_biasprm.numpy()[worlds < 0], biasprm[worlds < 0])
-        solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
-        np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
+                mujoco = self.solver._mujoco
+                native = mujoco.MjModel.from_xml_string(self.MJCF)
+                modified = mujoco.MjModel.from_xml_string(
+                    self.MJCF.replace('type="hinge"', 'type="hinge" armature="0.3"').replace('kp="100"', 'kp="25"')
+                )
+                expected = [0.5 * native.actuator_biasprm[0, 2], 2.0 * modified.actuator_biasprm[0, 2], -5.0]
+                with self.assertWarnsRegex(UserWarning, "unresolved target '/missing'"):
+                    solver = SolverMuJoCo(model, disable_contacts=True)
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), -np.array(expected), rtol=1e-5)
+                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
+                np.testing.assert_array_equal(model.mujoco.actuator_biasprm.numpy()[worlds < 0], biasprm[worlds < 0])
+                solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
+                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
 
     def test_joint_target_kinematic_initial_damping(self):
         """Resolve every ball axis using physical inertia and preserve explicit edits."""
@@ -12116,12 +12139,14 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
         )
         native = self.solver._mujoco.MjModel.from_xml_string(xml.replace(position, axes))
         expected = -native.actuator_biasprm[:, 2]
-        for cpu in (True, False):
-            with self.subTest(cpu=cpu):
+        for importer, cpu in itertools.product(("add_mjcf", "add_mjcf_native"), (True, False)):
+            with self.subTest(importer=importer, cpu=cpu):
                 builder = newton.ModelBuilder()
-                builder.add_mjcf(xml)
+                getattr(builder, importer)(xml)
                 builder.body_flags[0] = int(BodyFlags.KINEMATIC)
                 model = builder.finalize(device="cpu" if cpu else self.model.device)
+                if importer == "add_mjcf_native":
+                    np.testing.assert_allclose(model.joint_target_kd.numpy(), expected, rtol=1e-5)
                 solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                 np.testing.assert_allclose(model.joint_target_kd.numpy(), expected, rtol=1e-5)
                 np.testing.assert_allclose(solver.mj_model.actuator_biasprm[:, 2], -expected, rtol=1e-5)
@@ -13999,7 +14024,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         invw_b = float(body_invweight0[0, body_b, 0]) if body_b >= 0 else 0.0
         dmax = float(solver.mjw_data.contact.solimp.numpy()[contact_idx, 1])
         factor = (invw_a + invw_b) * (1.0 - dmax)
-        solref = convert_solref(max(ke * factor, MJ_MINVAL), max(kd * factor, MJ_MINVAL), 1.0, 1.0)
+        solref = convert_solref(max(ke * factor, FLOAT64_EPS), max(kd * factor, FLOAT64_EPS), 1.0, 1.0)
         return float(solref[0]), float(solref[1])
 
     def test_force_space_contact_solref_uses_invweight0_and_dmax(self):
@@ -14284,7 +14309,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         self._run_to_first_contact(model, solver)
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
         # dmax=1 zeroes the factor → override skipped; solref[0] stays sub-1.0
-        # instead of the ~2/MJ_MINVAL a fired override would produce.
+        # instead of the ~2/FLOAT64_EPS a fired override would produce.
         self.assertLess(float(actual_solref[0]), 1.0)
 
     def test_force_space_contact_stiff_contact_stays_finite(self):
@@ -14734,12 +14759,14 @@ class TestActuatorTypes(unittest.TestCase):
         return self.MJCF.format(dyntype=dyntype, gaintype=gaintype, biastype=biastype, extra=extra)
 
     def test_enums_match_mujoco(self):
-        """Pin every actuator enum ordinal against the matching mujoco.mjt* member."""
+        """Pin native type ordinals and the scalar floor against MuJoCo."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
+        self.assertEqual(MJ_MINVAL, mujoco.mjMINVAL)
         for enum, mj_enum, prefix in (
             (_ActuatorBiasType, mujoco.mjtBias, "mjBIAS_"),
             (_ActuatorDynamicsType, mujoco.mjtDyn, "mjDYN_"),
             (_ActuatorGainType, mujoco.mjtGain, "mjGAIN_"),
+            (_JointType, mujoco.mjtJoint, "mjJNT_"),
         ):
             for member in enum:
                 with self.subTest(enum=enum.__name__, member=member.name):

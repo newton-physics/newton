@@ -43,7 +43,7 @@ import os
 import unittest
 import warnings
 from abc import abstractmethod
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -120,6 +120,7 @@ def create_newton_model_from_mjcf(
     num_worlds: int = 1,
     add_ground: bool = True,
     parse_visuals: bool = False,
+    native_importer: bool = False,
 ) -> newton.Model:
     """
     Create a Newton model from an MJCF file.
@@ -129,6 +130,7 @@ def create_newton_model_from_mjcf(
         num_worlds: Number of world instances to create
         add_ground: Whether to add a ground plane
         parse_visuals: Whether to parse visual-only geoms (default False for physics testing)
+        native_importer: Whether to import through MuJoCo's compiler.
 
     Returns:
         Finalized Newton Model
@@ -141,7 +143,8 @@ def create_newton_model_from_mjcf(
 
     # floating defaults to None, which honors the MJCF's explicit joint definitions.
     # Menagerie models define their own <freejoint> tags for floating-base robots.
-    robot_builder.add_mjcf(
+    importer = robot_builder.add_mjcf_native if native_importer else robot_builder.add_mjcf
+    importer(
         str(mjcf_path),
         parse_visuals=parse_visuals,
         ctrl_direct=True,
@@ -470,6 +473,8 @@ def compare_compiled_model_fields(
     native_mjw: Any,
     fields: list[str] | None = None,
     tol: float = 1e-3,
+    *,
+    rtol: float = 0.0,
 ) -> None:
     """Compare model fields that depend on compilation (mj_setConst).
 
@@ -486,6 +491,7 @@ def compare_compiled_model_fields(
         native_mjw: Native MuJoCo's MjWarpModel
         fields: Field names to compare (defaults to MODEL_BACKFILL_FIELDS)
         tol: Maximum allowed absolute difference (default 1e-3)
+        rtol: Relative tolerance for large inverse-inertia values.
     """
     if fields is None:
         fields = MODEL_BACKFILL_FIELDS
@@ -512,10 +518,13 @@ def compare_compiled_model_fields(
             f"Compiled field '{field}' shape mismatch: {newton_arr.shape} vs {native_arr.shape}"
         )
 
-        diff = float(np.max(np.abs(native_arr.numpy().astype(float) - newton_arr.numpy().astype(float))))
-        assert diff <= tol, (
-            f"Compiled field '{field}' has diff {diff:.6e} > tol {tol:.0e}. "
-            f"This likely indicates a parser bug, not a compilation difference."
+        np.testing.assert_allclose(
+            newton_arr.numpy().astype(float),
+            native_arr.numpy().astype(float),
+            atol=tol,
+            rtol=rtol,
+            equal_nan=False,
+            err_msg=f"Compiled field '{field}'",
         )
 
 
@@ -1613,22 +1622,19 @@ class TestMenagerieBase(unittest.TestCase):
 
         return xml_content
 
-    def _create_native_mujoco_warp(self) -> tuple[Any, Any, Any, Any]:
-        """Create native mujoco_warp model/data from the same MJCF.
+    def _create_native_spec(self) -> Any:
+        """Load the reference source before compiler configuration."""
+        if self.discard_visual:
+            xml_content = self._get_mjcf_xml()
+            return _mujoco.MjSpec.from_string(xml_content, assets=self._load_assets())
+        return _mujoco.MjSpec.from_file(str(self.mjcf_path))
 
-        Returns:
-            (mj_model, mj_data, mjw_model, mjw_data) tuple
-        """
+    def _create_native_mujoco_warp(self) -> tuple[Any, Any, Any, Any]:
+        """Create the reference CPU model/data and GPU model/data."""
         assert _mujoco is not None
         assert _mujoco_warp is not None
 
-        # Create base MuJoCo model/data (uses default initialization)
-        if self.discard_visual:
-            xml_content = self._get_mjcf_xml()
-            # from_string needs the assets path for meshes
-            spec = _mujoco.MjSpec.from_string(xml_content, assets=self._load_assets())
-        else:
-            spec = _mujoco.MjSpec.from_file(str(self.mjcf_path))
+        spec = self._create_native_spec()
         # Match SolverMuJoCo, which disables simple bodies to support runtime inertia edits.
         for body in spec.bodies:
             if body.name != "world":
@@ -1919,6 +1925,8 @@ def _restore_collisions(mjw_model: Any, saved: dict) -> None:
 class TestMenagerieMJCF(TestMenagerieBase):
     """Base class for MJCF-based tests: Newton loads directly from MJCF."""
 
+    native_importer: bool = False
+
     def _create_newton_model(self) -> newton.Model:
         """Create Newton model by loading MJCF directly."""
         return create_newton_model_from_mjcf(
@@ -1926,7 +1934,184 @@ class TestMenagerieMJCF(TestMenagerieBase):
             num_worlds=self.num_worlds,
             add_ground=False,  # scene.xml includes ground plane
             parse_visuals=self.parse_visuals,
+            native_importer=self.native_importer,
         )
+
+
+class TestMenagerieNativeMJCF(TestMenagerieMJCF):
+    """Reuse the USD/MJCF comparison workflow without reference-parameter backfill."""
+
+    native_importer = True
+    num_steps = 20
+    fk_enabled = True
+    backfill_model = False
+
+    def setUp(self):
+        """Reset simulation state while retaining expensive model setup."""
+        self._ensure_models()
+        self.__class__._newton_state = self._newton_model.state()
+        self.__class__._newton_control = self._newton_model.control()
+        _mujoco_warp.reset_data(self._newton_solver.mjw_model, self._newton_solver.mjw_data)
+        _mujoco_warp.reset_data(self._native_mjw_model, self._native_mjw_data)
+
+    def _create_newton_model(self) -> newton.Model:
+        """Allow omitted scene metadata while retaining all physics diagnostics."""
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=r"Native MJCF import omits lights(?:, keys)?;")
+            return super()._create_newton_model()
+
+    def _align_models(self, newton_solver: SolverMuJoCo, native_mjw_model: Any, mj_model: Any) -> None:
+        """Recompute reference constants on GPU, as SolverMuJoCo does."""
+        _mujoco_warp.set_const_fixed(native_mjw_model, self._native_mjw_data)
+        _mujoco_warp.set_const_0(native_mjw_model, self._native_mjw_data)
+
+    def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare physical inertia despite different principal-axis frames."""
+        compare_inertia_tensors(newton_mjw, native_mjw)
+
+    def _compare_compiled_fields(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Check inertia-dependent fields without copying reference values."""
+        compare_compiled_model_fields(newton_mjw, native_mjw, tol=1e-5, rtol=1e-5)
+
+
+class TestMenagerieNativeMJCF_UR5e(TestMenagerieNativeMJCF):
+    """Compare the native-imported UR5e arm with direct MuJoCo compilation."""
+
+    robot_folder = "universal_robots_ur5e"
+
+
+class TestMenagerieNativeMJCF_Allegro(TestMenagerieNativeMJCF):
+    """Compare the native-imported Allegro hand with direct MuJoCo compilation."""
+
+    robot_folder = "wonik_allegro"
+    robot_xml = "scene_right.xml"
+
+
+class TestMenagerieNativeMJCF_UR5eAllegro(TestMenagerieNativeMJCF):
+    """Compare Newton attachment with MuJoCo composition of the same assets."""
+
+    robot_folder = "universal_robots_ur5e"
+    robot_xml = "ur5e.xml"
+    dynamics_tolerance = 5e-6
+    mount_pos = (0.0, 0.2, 0.0)
+    mount_quat = (0.7071067811865476, 0.0, 0.0, 0.7071067811865476)
+    probe_pos = (-0.69, -0.295, 0.063)
+    probe_radius = 0.02
+
+    @classmethod
+    def setUpClass(cls):
+        """Load independently valid arm and hand sources."""
+        super().setUpClass()
+        cls.hand_path = download_menagerie_asset("wonik_allegro") / "right_hand.xml"
+
+    def _create_newton_model(self) -> newton.Model:
+        """Attach the hand through the builder's parent_body API."""
+        robot = newton.ModelBuilder()
+        robot.default_shape_cfg.gap = 0.0
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=r"Native MJCF import omits lights, keys;")
+            robot.add_mjcf_native(str(self.mjcf_path), parse_visuals=False, ctrl_direct=True)
+        wrist = next(i for i, name in enumerate(robot.body_label) if name.endswith("/wrist_3_link"))
+        robot.add_mjcf_native(
+            str(self.hand_path),
+            parent_body=wrist,
+            xform=wp.transform(self.mount_pos, self.mount_quat),
+            parse_visuals=False,
+            parse_mujoco_options=False,
+            ctrl_direct=True,
+        )
+        robot.add_mjcf_native(
+            f'''<mujoco><worldbody><geom name="contact_probe" type="sphere"
+                size="{self.probe_radius}" pos="{" ".join(map(str, self.probe_pos))}"/>
+            </worldbody></mujoco>''',
+            parse_mujoco_options=False,
+        )
+        builder = newton.ModelBuilder()
+        builder.replicate(robot, self.num_worlds)
+        return builder.finalize()
+
+    def _create_native_spec(self) -> Any:
+        """Attach source specs before compiling the reference model."""
+        arm = _mujoco.MjSpec.from_file(str(self.mjcf_path))
+        hand = _mujoco.MjSpec.from_file(str(self.hand_path))
+        arm.compiler.discardvisual = True
+        hand.compiler.discardvisual = True
+        # Match parse_mujoco_options=False on the attached hand.
+        hand.option.cone = arm.option.cone
+        hand.option.impratio = arm.option.impratio
+        frame = arm.body("wrist_3_link").add_frame(pos=self.mount_pos, quat=np.roll(self.mount_quat, 1))
+        arm.attach(hand, prefix="hand/", frame=frame)
+        arm.worldbody.add_geom(
+            name="contact_probe",
+            type=_mujoco.mjtGeom.mjGEOM_SPHERE,
+            size=[self.probe_radius, 0, 0],
+            pos=self.probe_pos,
+        )
+        return arm
+
+    def test_contact_dynamics(self):
+        """Match finger-sphere contact pairs, impulses, and motion after attachment."""
+        self._run_model_comparisons()
+        solver = self._newton_solver
+        reference = self._mj_model
+        steps = 100
+        controls = np.zeros(self._native_mjw_data.ctrl.shape, dtype=np.float32)
+        for name in ("hand/mfj1", "hand/mfj2", "hand/mfj3"):
+            joint = reference.joint(name).id
+            actuator = np.flatnonzero(reference.actuator_trnid[:, 0] == joint)
+            self.assertEqual(len(actuator), 1)
+            controls[:, actuator] = np.where(np.arange(self.num_worlds) % 2 == 0, 0.2, 0.3)[:, None]
+        self._native_mjw_data.ctrl.assign(controls)
+        self._newton_control.mujoco.ctrl.assign(controls.ravel())
+
+        models = (solver.mjw_model, self._native_mjw_model)
+        data = (solver.mjw_data, self._native_mjw_data)
+        body_ids = (solver.mj_model.geom_bodyid, reference.geom_bodyid)
+        contact_ids = [wp.array(np.arange(d.naconmax), dtype=wp.int32) for d in data]
+        forces = [wp.empty(d.naconmax, dtype=wp.spatial_vector) for d in data]
+        impulses = np.zeros((2, self.num_worlds))
+        onset = np.full((2, self.num_worlds), steps)
+        expected_pairs = {(0, reference.body(name).id) for name in ("hand/mf_distal", "hand/mf_tip")}
+        observed_pairs = [set(), set()]
+
+        for step in range(steps):
+            solver.step(self._newton_state, self._newton_state, self._newton_control, None, self._dt)
+            _mujoco_warp.step(models[1], data[1])
+            for field, tolerance in (("qpos", 2e-6), ("qvel", 1e-4), ("qfrc_constraint", 1e-4)):
+                actual, expected = (getattr(d, field).numpy() for d in data)
+                self.assertTrue(np.isfinite(actual).all(), f"{field}, step {step}")
+                self.assertTrue(np.isfinite(expected).all(), f"reference {field}, step {step}")
+                np.testing.assert_allclose(actual, expected, atol=tolerance, rtol=1e-5, err_msg=f"{field}, step {step}")
+
+            pairs = []
+            for side, (model, state) in enumerate(zip(models, data, strict=True)):
+                count = int(state.nacon.numpy()[0])
+                self.assertLess(count, state.naconmax)
+                worlds = state.contact.worldid.numpy()[:count]
+                geoms = state.contact.geom.numpy()[:count]
+                contacts = Counter(
+                    (int(world), *sorted(int(body_ids[side][g]) for g in pair))
+                    for world, pair in zip(worlds, geoms, strict=True)
+                )
+                pairs.append(contacts)
+                body_pairs = {pair[1:] for pair in contacts}
+                self.assertTrue(body_pairs <= expected_pairs, f"unexpected contact: {body_pairs - expected_pairs}")
+                observed_pairs[side].update(body_pairs)
+
+                _mujoco_warp.contact_force(model, state, contact_ids[side], False, forces[side])
+                force = forces[side].numpy()[:count]
+                self.assertTrue(np.isfinite(force).all())
+                normal_force = np.bincount(worlds, weights=force[:, 0], minlength=self.num_worlds)
+                impulses[side] += normal_force * self._dt
+                onset[side] = np.where((onset[side] == steps) & (normal_force > 1e-4), step, onset[side])
+            self.assertEqual(pairs[0], pairs[1], f"contact pairs, step {step}")
+
+        for side in range(2):
+            self.assertEqual(observed_pairs[side], expected_pairs)
+            self.assertTrue(np.all(onset[side] < steps // 2))
+            self.assertTrue(np.all(impulses[side] > 0.01))
+        np.testing.assert_allclose(onset[0], onset[1], atol=1, rtol=0)
+        np.testing.assert_allclose(impulses[0], impulses[1], atol=1e-5, rtol=1e-3)
 
 
 # =============================================================================

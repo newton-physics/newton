@@ -10,6 +10,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ...geometry.flags import ShapeFlags
+from ...sim.enums import BodyFlags, JointType
+
 MUJOCO_COLLISION_MASK_UNSET = np.iinfo(np.int64).min
 """Sentinel for Newton shapes without preserved MuJoCo collision masks."""
 
@@ -18,6 +21,93 @@ MUJOCO_COLLISION_MASK_DOMAIN_UNSET = -1
 
 NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT = 256
 NEWTON_COLLISION_MASK_MAX_EXCLUDED_PAIR_COUNT = 1024
+
+
+def set_mjcf_joint_collision_filter(builder, joint: int, filter_parent: bool) -> None:
+    """Keep same-weld filtering and exempt joints whose parent is welded to world."""
+    if builder.joint_type[joint] == JointType.FIXED:
+        return
+    parent = builder.joint_parent[joint]
+    while parent >= 0 and not builder.body_flags[parent] & BodyFlags.KINEMATIC:
+        parents = builder.joint_parents.get(parent, ())
+        if not parents:
+            break
+        ancestor, parent_joint = next(
+            (entry for entry in parents if builder.joint_articulation[entry[1]] >= 0), parents[0]
+        )
+        if builder.joint_type[parent_joint] != JointType.FIXED:
+            break
+        parent = ancestor
+    builder.joint_collision_filter_parent[joint] &= filter_parent and parent >= 0
+
+
+def add_mjcf_body_collision_filters(builder, joint_indices: Sequence[int], start_shape: int) -> None:
+    """Apply MuJoCo's same-weld and parent-weld filtering to imported shapes."""
+    imported_joints = set(joint_indices)
+    weld_roots = {-1: -1}
+    for joint, child in enumerate(builder.joint_child):
+        if joint not in imported_joints and builder.joint_articulation[joint] < 0:
+            continue
+        parent = builder.joint_parent[joint]
+        welded = builder.joint_type[joint] == JointType.FIXED and not builder.body_flags[child] & BodyFlags.KINEMATIC
+        weld_roots[child] = weld_roots.get(parent, parent) if welded else child
+
+    groups = {}
+    imported_groups = set()
+    for shape, body in enumerate(builder.shape_body):
+        if not builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES:
+            continue
+        root = weld_roots.get(body, body)
+        groups.setdefault(root, []).append(shape)
+        if shape >= start_shape:
+            imported_groups.add(root)
+
+    for root in imported_groups:
+        shapes = groups[root]
+        for i, first in enumerate(shapes):
+            for second in shapes[i + 1 :]:
+                if second >= start_shape and builder.shape_body[first] != builder.shape_body[second]:
+                    builder.add_shape_collision_filter_pair(first, second)
+
+    # Attached shapes can extend the welded child of an existing joint.
+    for joint, child in enumerate(builder.joint_child):
+        if joint not in imported_joints and builder.joint_articulation[joint] < 0:
+            continue
+        if not builder.joint_collision_filter_parent[joint]:
+            continue
+        parent = builder.joint_parent[joint]
+        parent_root = weld_roots.get(parent, parent)
+        child_root = weld_roots[child]
+        # MuJoCo permits contacts with the world even when parent filtering is enabled.
+        if parent_root == -1 or parent_root == child_root:
+            continue
+        for first in groups.get(parent_root, ()):
+            for second in groups.get(child_root, ()):
+                if first >= start_shape or second >= start_shape:
+                    builder.add_shape_collision_filter_pair(first, second)
+
+
+def has_allowed_parent_collision(model) -> bool:
+    """Check whether MuJoCo's parent filter would suppress an exported allowed pair."""
+    weld_geoms = {}
+    for geom, body in enumerate(model.geom_bodyid):
+        if model.geom_contype[geom] or model.geom_conaffinity[geom]:
+            weld_geoms.setdefault(int(model.body_weldid[body]), []).append(geom)
+    excludes = {int(signature) for signature in model.exclude_signature}
+    for root, geoms in weld_geoms.items():
+        parent = int(model.body_weldid[model.body_parentid[root]])
+        if not root or not parent or parent == root:
+            continue
+        for first in geoms:
+            for second in weld_geoms.get(parent, ()):
+                body1, body2 = sorted((int(model.geom_bodyid[first]), int(model.geom_bodyid[second])))
+                if (body1 << 16 | body2) in excludes:
+                    continue
+                if (model.geom_contype[first] & model.geom_conaffinity[second]) or (
+                    model.geom_contype[second] & model.geom_conaffinity[first]
+                ):
+                    return True
+    return False
 
 
 def mujoco_mask_to_signed(value: int) -> int:

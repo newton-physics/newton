@@ -1734,6 +1734,16 @@ class ModelBuilder:
         Mutually exclusive with :attr:`references`; the callback owns reference remapping.
         """
 
+        mjcf_native_value_transformer: Callable[[Any, dict[str, Any]], Any] | None = field(default=None, kw_only=True)
+        """Experimental extraction hook for :meth:`ModelBuilder.add_mjcf_native`.
+
+        Receives a parsed MuJoCo element and a context containing ``spec``, ``attr``,
+        and import ``scale``. Defaults are resolved; compilation and scaling have
+        not run. Return a dtype-compatible value, or None to retain this attribute's
+        default. Treat native objects as read-only and do not retain them.
+        See :ref:`native-mjcf-custom-attributes` for supported frequencies and mapping.
+        """
+
         def __post_init__(self):
             """Initialize default values and validate dtype compatibility."""
             if self.references is not None and self.reference_value_transformer is not None:
@@ -2677,6 +2687,7 @@ class ModelBuilder:
         self._custom_attribute_model_finalizers: dict[
             str, Callable[[ModelBuilder, Model, ModelBuilder.CustomAttribute], None]
         ] = {}
+        self._model_finalizers: dict[Callable[[ModelBuilder, Model], None], None] = {}
         # Registered custom frequencies (must be registered before adding attributes with that frequency)
         self.custom_frequencies: dict[str, ModelBuilder.CustomFrequency] = {}
         """Registered custom string frequencies keyed by ``namespace:name`` or bare name."""
@@ -2944,6 +2955,10 @@ class ModelBuilder:
                 f"({existing!r} != {finalizer!r})."
             )
         self._custom_attribute_model_finalizers[key] = finalizer
+
+    def _add_model_finalizer(self, finalizer: Callable[[ModelBuilder, Model], None]) -> None:
+        """Resolve composed properties after custom attributes and initial body variants."""
+        self._model_finalizers[finalizer] = None
 
     def add_custom_frequency(self, frequency: CustomFrequency) -> None:
         """
@@ -5719,6 +5734,109 @@ class ModelBuilder:
             legacy_margin_gap=legacy_margin_gap,
         )
 
+    def add_mjcf_native(
+        self,
+        source: str,
+        *,
+        xform: Transform | None = None,
+        floating: bool | None = None,
+        base_joint: dict | None = None,
+        parent_body: int = -1,
+        armature_scale: float = 1.0,
+        scale: float = 1.0,
+        hide_visuals: bool = False,
+        parse_visuals_as_colliders: bool = False,
+        parse_meshes: bool = True,
+        parse_sites: bool = True,
+        parse_visuals: bool = True,
+        parse_mujoco_options: bool = True,
+        up_axis: AxisType = Axis.Z,
+        ignore_names: Sequence[str] = (),
+        ignore_classes: Sequence[str] = (),
+        visual_classes: Sequence[str] = ("visual",),
+        collider_classes: Sequence[str] = ("collision",),
+        no_class_as_colliders: bool = True,
+        force_show_colliders: bool = False,
+        enable_self_collisions: bool = True,
+        ignore_inertial_definitions: bool = False,
+        collapse_fixed_joints: bool = False,
+        collapse_massless_fixed_root: bool = False,
+        verbose: bool = False,
+        skip_equality_constraints: bool = False,
+        convert_mjc_equality_constraints: bool = True,
+        convert_3d_hinge_to_ball_joints: bool = False,
+        mesh_maxhullvert: int | None = None,
+        ctrl_direct: bool = False,
+        path_resolver: Callable[[str | None, str], str] | None = None,
+        override_root_xform: bool = False,
+        legacy_margin_gap: bool = False,
+    ) -> None:
+        """Import MJCF through MuJoCo's native parser and compiler.
+
+        .. experimental::
+
+        Accepts the same arguments as :meth:`add_mjcf`. Requires the optional
+        MuJoCo dependency (``uv sync --extra sim``). See :ref:`native-mjcf-import`
+        for supported features and differences. Native objects exist only during
+        import; the builder owns the resulting data.
+
+        Joint damping, stiffness, armature, shape gap, and friction fall back to builder defaults.
+        MJCF element and default-class values, including explicit zeros, take
+        precedence. Builder gaps remain in meters when ``scale`` is applied.
+        Scalar joint rest positions use builder defaults when both ``ref`` and
+        ``springref`` are omitted; otherwise they use ``springref - ref``.
+
+        With ``ctrl_direct=False``, representable position/velocity servos use
+        joint targets. Ball servos drive all three Newton angular axes, replacing
+        the authored gear transmission. Position-only drives with ``dampratio``
+        retain joint-target control. Finalization resolves their damping and
+        automatic passive springs from composed inertia; native-only inertia
+        and unsupported articulations retain deferred MuJoCo resolution.
+        Other actuators retain direct MuJoCo controls.
+
+        A missing source file raises :class:`FileNotFoundError`. Missing includes
+        detected by MuJoCo raise :class:`ValueError`, preserving its diagnostic.
+        Errors from custom path resolution propagate unchanged.
+        """
+        from ..solvers.mujoco.import_mjcf_native import parse_mjcf  # noqa: PLC0415
+
+        parse_mjcf(
+            self,
+            source,
+            xform=xform,
+            floating=floating,
+            base_joint=base_joint,
+            parent_body=parent_body,
+            armature_scale=armature_scale,
+            scale=scale,
+            hide_visuals=hide_visuals,
+            parse_visuals_as_colliders=parse_visuals_as_colliders,
+            parse_meshes=parse_meshes,
+            parse_sites=parse_sites,
+            parse_visuals=parse_visuals,
+            parse_mujoco_options=parse_mujoco_options,
+            up_axis=up_axis,
+            ignore_names=ignore_names,
+            ignore_classes=ignore_classes,
+            visual_classes=visual_classes,
+            collider_classes=collider_classes,
+            no_class_as_colliders=no_class_as_colliders,
+            force_show_colliders=force_show_colliders,
+            enable_self_collisions=enable_self_collisions,
+            ignore_inertial_definitions=ignore_inertial_definitions,
+            collapse_fixed_joints=collapse_fixed_joints,
+            collapse_massless_fixed_root=collapse_massless_fixed_root,
+            verbose=verbose,
+            skip_equality_constraints=skip_equality_constraints,
+            convert_mjc_equality_constraints=convert_mjc_equality_constraints,
+            convert_3d_hinge_to_ball_joints=convert_3d_hinge_to_ball_joints,
+            mesh_maxhullvert=mesh_maxhullvert,
+            ctrl_direct=ctrl_direct,
+            path_resolver=path_resolver,
+            override_root_xform=override_root_xform,
+            legacy_margin_gap=legacy_margin_gap,
+        )
+
     # endregion
 
     # region World management methods
@@ -6193,6 +6311,7 @@ class ModelBuilder:
 
         for key, finalizer in builder._custom_attribute_model_finalizers.items():
             self._add_custom_attribute_model_finalizer(key, finalizer)
+        self._model_finalizers.update(builder._model_finalizers)
 
     def _merge_builder_batteries(self, builder: ModelBuilder, actuator_offset: int, world: int) -> None:
         for battery_class, sub_entry in builder.battery_entries.items():
@@ -17052,6 +17171,8 @@ class ModelBuilder:
 
             self._finalize_custom_frequency_metadata(m, device)
             self._variant_shape_rows.finalize(self, m, validate_inertia=validate_inertia)
+            for finalizer in self._model_finalizers:
+                finalizer(self, m)
 
             for battery in m.batteries:
                 battery.reset(m)
