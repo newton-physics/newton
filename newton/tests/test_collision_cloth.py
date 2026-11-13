@@ -1469,6 +1469,7 @@ def test_collision_filter_decouple(test, device):
     test.assertIn(1, detector.edge_filtering_list.numpy().tolist())
 
 
+@requires("pxr.Usd")
 def test_detector_check_and_grow(test, device):
     """The detector's own grow call must warn, raise budgets, rebind, and fit
     the demand on the next detection, without any solver involved."""
@@ -1488,7 +1489,7 @@ def test_detector_check_and_grow(test, device):
 
     old_info = detector.collision_info
     old_vt_rows = old_info.vertex_colliding_triangles
-    with test.assertWarns(newton.exceptions.NewtonWarning):
+    with test.assertWarns(newton.NewtonWarning):
         grew = detector.check_and_grow_collision_buffers()
     test.assertTrue(grew)
     # growth is in place: same struct object, larger row arrays
@@ -1506,6 +1507,7 @@ def test_detector_check_and_grow(test, device):
     test.assertFalse(detector.check_and_grow_collision_buffers())
 
 
+@requires("pxr.Usd")
 def test_sorted_contact_rows(test, device):
     """Sorted rows are ascending by counterpart, hold the same contacts as an
     unsorted detector, and are bitwise stable across repeated detections."""
@@ -1922,11 +1924,11 @@ def test_self_contact_overflow_and_growth(test, device):
 
     # the read-only query warns on request and never grows
     rows_before = detector.collision_info.vertex_colliding_triangles.shape[0]
-    with test.assertWarns(newton.exceptions.NewtonWarning):
+    with test.assertWarns(newton.NewtonWarning):
         solver.check_self_contact_overflow(warn=True)
     test.assertEqual(detector.collision_info.vertex_colliding_triangles.shape[0], rows_before)
 
-    with test.assertWarns(newton.exceptions.NewtonWarning):
+    with test.assertWarns(newton.NewtonWarning):
         grew = solver.check_and_grow_self_contact_buffers()
     test.assertTrue(grew)
 
@@ -1970,11 +1972,11 @@ def test_pipeline_growth_upgrades_stale_buffers(test, device):
     # overflow the undersized pool with the first buffer bound, then grow
     # through the public pipeline wrapper
     pipeline.collide(state, contacts_a, soft_self_contact=True)
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "overflowed"):
+    with test.assertWarnsRegex(newton.NewtonWarning, "overflowed"):
         test.assertTrue(pipeline.check_and_grow_soft_self_contact_buffers())
 
     # binding the pre-growth buffer resizes it in place (with a warning) instead of raising
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "automatic resizing"):
+    with test.assertWarnsRegex(newton.NewtonWarning, "automatic resizing"):
         pipeline.collide(state, contacts_b, soft_self_contact=True)
     data = contacts_b.soft_self_contact_data
     test.assertIs(pipeline._soft_self_contact_detector.collision_info, data)
@@ -2028,10 +2030,10 @@ def test_solver_device_view_refresh_after_external_growth(test, device):
     pipeline, solver = _build_pipeline_solver(model)
     contacts_b = pipeline.contacts()
     pipeline.collide(state_0, contacts_b, soft_self_contact=True)
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "overflowed"):
+    with test.assertWarnsRegex(newton.NewtonWarning, "overflowed"):
         test.assertTrue(pipeline.check_and_grow_soft_self_contact_buffers())
     launch_size_before = solver.particle_self_contact_evaluation_kernel_launch_size
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "automatic resizing"):
+    with test.assertWarnsRegex(newton.NewtonWarning, "automatic resizing"):
         test.assertTrue(solver.check_and_grow_self_contact_buffers())
     test.assertGreater(solver.particle_self_contact_evaluation_kernel_launch_size, launch_size_before)
     test.assertFalse(solver.check_and_grow_self_contact_buffers())
@@ -2041,10 +2043,10 @@ def test_solver_device_view_refresh_after_external_growth(test, device):
     pipeline2, solver2 = _build_pipeline_solver(model)
     contacts_c = pipeline2.contacts()
     pipeline2.collide(state_0, contacts_c, soft_self_contact=True)
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "overflowed"):
+    with test.assertWarnsRegex(newton.NewtonWarning, "overflowed"):
         test.assertTrue(pipeline2.check_and_grow_soft_self_contact_buffers())
     launch_size_before = solver2.particle_self_contact_evaluation_kernel_launch_size
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "automatic resizing"):
+    with test.assertWarnsRegex(newton.NewtonWarning, "automatic resizing"):
         solver2.step(state_0, state_1, control, None, 1e-3)
     wp.synchronize_device(wp.get_device(device))
     test.assertGreater(solver2.particle_self_contact_evaluation_kernel_launch_size, launch_size_before)
