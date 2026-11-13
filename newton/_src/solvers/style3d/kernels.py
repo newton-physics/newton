@@ -336,7 +336,8 @@ def prepare_jacobi_preconditioner_kernel(
     # Cloth contacts stay in the matrix-free product, but also enter preconditioning.
     if tid < contact_hessian_diags.shape[0]:
         diag += contact_hessian_diags[tid]
-    inv_A_diag[tid] = wp.inverse(diag) if A_diag_base[tid] > 0.0 else wp.identity(3, float) * 0.0
+    # Constraints can make an affine block invertible even when its mass diagonal is zero.
+    inv_A_diag[tid] = wp.inverse(diag)
 
 
 @wp.kernel
