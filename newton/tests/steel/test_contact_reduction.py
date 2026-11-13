@@ -71,7 +71,7 @@ class TestSteelBodyPairReductionGate(unittest.TestCase):
         """Use reduced contacts with a compliant law when its required material arrays are supplied."""
         if not wp.get_device().is_cuda:
             self.skipTest("Steel contact compliance requires CUDA")
-        model = self._foot_model()
+        model = _foot_model((0.0, 0.0, 0.0149))
         state_0, state_1 = model.state(), model.state()
         pipeline = _make_pipeline(model, True)
         contacts = pipeline.contacts()
@@ -83,8 +83,11 @@ class TestSteelBodyPairReductionGate(unittest.TestCase):
             )
         pipeline.collide(state_0, contacts)
         self.assertTrue(contacts.rigid_contact_body_pair_reduced)
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+        contacts.rigid_contact_stiffness.fill_(2.0e4)
         solver = newton.solvers.SolverSteel(model, contact_compliance=True, friction_anchor_beta=0.0)
         solver.step(state_0, state_1, model.control(), contacts, DT)
+        self.assertGreater(solver.compliance_contact_count, 0)
         self.assertTrue(np.isfinite(state_1.body_q.numpy()).all())
 
     def test_captured_warmstart_step_keeps_accepting_reduced_contacts(self):
