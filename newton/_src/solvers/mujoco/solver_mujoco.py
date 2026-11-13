@@ -1606,7 +1606,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.int64,
                 default=MUJOCO_COLLISION_MASK_UNSET,
                 namespace="mujoco",
-                usd_attribute_name="mjc:contype",
                 mjcf_attribute_name="contype",
             )
         )
@@ -1618,7 +1617,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.int64,
                 default=MUJOCO_COLLISION_MASK_UNSET,
                 namespace="mujoco",
-                usd_attribute_name="mjc:conaffinity",
                 mjcf_attribute_name="conaffinity",
             )
         )
