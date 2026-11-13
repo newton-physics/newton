@@ -1398,7 +1398,10 @@ def test_speculative_mesh_sdf_retains_rotating_leading_feature(test, device, sch
             pipeline.collide(state, contacts, dt=horizon)
             if not first_points:
                 count = int(contacts.rigid_contact_count.numpy()[0])
-                first_points.append(contacts.rigid_contact_point0.numpy()[:count])
+                # A one-substep horizon may initially admit no contacts while
+                # the rod is separated. Inspect the first admitted manifold.
+                if count > 0:
+                    first_points.append(contacts.rigid_contact_point0.numpy()[:count])
 
         def step(state_in, state_out, dt):
             solver.step(state_in, state_out, None, contacts, dt)
@@ -1412,6 +1415,7 @@ def test_speculative_mesh_sdf_retains_rotating_leading_feature(test, device, sch
         # Millimeter-scale SDF error is acceptable; losing the leading end
         # allows centimeter-scale penetration even with 1 ms substeps.
         test.assertGreater(float(minimum.numpy()[0]), -0.002)
+        test.assertTrue(first_points, "The rotating rod must generate contacts")
         rod_points = first_points[0]
     else:
         pipeline.collide(states[0], contacts, dt=0.03)
