@@ -144,7 +144,7 @@ jobs:
           exit 1
 
   gpu-unit-tests:
-    name: Run GPU Unit Tests on AWS EC2
+    name: Execute GPU Unit Tests on AWS EC2
     needs: start-runner # required to start the main job when the runner is ready
     runs-on: ${{ needs.start-runner.outputs.label }} # run the job on the newly created runner
     permissions:
@@ -347,6 +347,23 @@ jobs:
           ================================================================================
 
           EOF
+
+  # Preserve the required check name and reject tests skipped after a launch failure.
+  gpu-unit-tests-gate:
+    name: Run GPU Unit Tests on AWS EC2
+    needs: gpu-unit-tests
+    if: always() && github.repository == 'newton-physics/newton'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Check GPU test result
+        env:
+          RESULT: ${{ needs.gpu-unit-tests.result }}
+        run: |
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::GPU unit tests finished with result '$RESULT'."
+            exit 1
+          fi
 
   codecov-upload:
     name: Upload coverage to Codecov
