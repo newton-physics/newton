@@ -1,8 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 
 import warp as wp
 
@@ -12,142 +15,47 @@ wp.config.log_level = wp.LOG_WARNING
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 
-class SlowExampleRobotAnymal:
+class _ExampleLoad:
+    """Time a cold start of an example: imports, kernel compilation, and one frame."""
+
+    module = None
     warmup_time = 0
     repeat = 2
     number = 1
     timeout = 600
 
     def setup(self):
-        wp.clear_lto_cache()
-        wp.clear_kernel_cache()
+        # An empty private cache forces compilation without wiping the shared one.
+        self.cache_dir = tempfile.mkdtemp(prefix="newton-asv-warp-cache-")
+
+    def teardown(self):
+        shutil.rmtree(self.cache_dir, ignore_errors=True)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_load(self):
-        """Time the amount of time it takes to load and run one frame of the example."""
-
-        command = [
-            sys.executable,
-            "-m",
-            "newton.examples.robot.example_robot_anymal_c_walk",
-            "--num-frames",
-            "1",
-            "--viewer",
-            "null",
-        ]
-
-        # Run the script as a subprocess
-        subprocess.run(command, capture_output=True, text=True, check=True)
+        command = [sys.executable, "-m", self.module, "--num-frames", "1", "--viewer", "null"]
+        env = {**os.environ, "WARP_CACHE_PATH": self.cache_dir}
+        subprocess.run(command, capture_output=True, text=True, check=True, env=env)
 
 
-class SlowExampleRobotCartpole:
-    warmup_time = 0
-    repeat = 2
-    number = 1
-    timeout = 600
-
-    def setup(self):
-        wp.clear_lto_cache()
-        wp.clear_kernel_cache()
-
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_load(self):
-        """Time the amount of time it takes to load and run one frame of the example."""
-
-        command = [
-            sys.executable,
-            "-m",
-            "newton.examples.robot.example_robot_cartpole",
-            "--num-frames",
-            "1",
-            "--viewer",
-            "null",
-        ]
-
-        # Run the script as a subprocess
-        subprocess.run(command, capture_output=True, text=True, check=True)
+class SlowExampleRobotAnymal(_ExampleLoad):
+    module = "newton.examples.robot.example_robot_anymal_c_walk"
 
 
-class SlowExampleClothFranka:
-    warmup_time = 0
-    repeat = 2
-    number = 1
-
-    def setup(self):
-        wp.clear_lto_cache()
-        wp.clear_kernel_cache()
-
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_load(self):
-        """Time the amount of time it takes to load and run one frame of the example."""
-
-        command = [
-            sys.executable,
-            "-m",
-            "newton.examples.cloth.example_cloth_franka",
-            "--num-frames",
-            "1",
-            "--viewer",
-            "null",
-        ]
-
-        # Run the script as a subprocess
-        subprocess.run(command, capture_output=True, text=True, check=True)
+class SlowExampleRobotCartpole(_ExampleLoad):
+    module = "newton.examples.robot.example_robot_cartpole"
 
 
-class SlowExampleClothTwist:
-    warmup_time = 0
-    repeat = 2
-    number = 1
-
-    def setup(self):
-        wp.clear_lto_cache()
-        wp.clear_kernel_cache()
-
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_load(self):
-        """Time the amount of time it takes to load and run one frame of the example."""
-
-        command = [
-            sys.executable,
-            "-m",
-            "newton.examples.cloth.example_cloth_twist",
-            "--num-frames",
-            "1",
-            "--viewer",
-            "null",
-        ]
-
-        # Run the script as a subprocess
-        subprocess.run(command, capture_output=True, text=True, check=True)
+class SlowExampleClothFranka(_ExampleLoad):
+    module = "newton.examples.cloth.example_cloth_franka"
 
 
-class SlowExampleBasicUrdf:
-    warmup_time = 0
-    repeat = 2
-    number = 1
-    timeout = 600
+class SlowExampleClothTwist(_ExampleLoad):
+    module = "newton.examples.cloth.example_cloth_twist"
 
-    def setup(self):
-        wp.clear_lto_cache()
-        wp.clear_kernel_cache()
 
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_load(self):
-        """Time the amount of time it takes to load and run one frame of the example."""
-
-        command = [
-            sys.executable,
-            "-m",
-            "newton.examples.basic.example_basic_urdf",
-            "--num-frames",
-            "1",
-            "--viewer",
-            "null",
-        ]
-
-        # Run the script as a subprocess
-        subprocess.run(command, capture_output=True, text=True, check=True)
+class SlowExampleBasicUrdf(_ExampleLoad):
+    module = "newton.examples.basic.example_basic_urdf"
 
 
 if __name__ == "__main__":
