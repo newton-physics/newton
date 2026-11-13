@@ -8,8 +8,9 @@ Multi-step gradient tape through SolverFeatherstone on a quadruped URDF
 system-matrix ownership: before the fix, the solver-owned mass-matrix chain
 scratch (J, M, P, H, L) was rewritten by every step, so inside one tape the
 steps aliased (primal staleness + covector double-counting) and the
-10-step gradient error against central finite differences was ~52% on the
-worst channel. Post-fix it is ~0.2%.
+10-step gradient error against central finite differences reached ~39% on
+the worst resolvable channel (q[16]; q[5] ~21-27%). Post-fix the worst
+resolvable channel sits at ~4-5% at K=10 (~5.9% across the whole check).
 
 A channel fails only if the tape deviates from FD by more than max(8%,
 the FD two-epsilon spread); channels whose FD itself is not converged
@@ -19,7 +20,8 @@ backpropagated individually instead of through one shared tape, the
 aliasing-free upper bound - measured ~6% error on the q[16] channel at
 the K=2 horizon, i.e. the residual there is float32 chaos and FD
 truncation, not adjoint aliasing. The pre-fix failures (12% on that
-channel, 26-52% on others) clear the bar by >2x.
+channel on cuda at the same horizon, 12-39% across the K=10 channels)
+reach up to ~5x over the 8% bar.
 """
 
 import unittest
