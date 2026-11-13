@@ -9,10 +9,10 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
+from newton import NewtonWarning
 from newton._src.geometry import broad_phase_nxn
 from newton._src.geometry.broad_phase_sap import _advance_sap_chunk_base
 from newton._src.geometry.flags import ShapeFlags
-from newton.exceptions import NewtonWarning
 from newton.geometry import BroadPhaseAllPairs, BroadPhaseExplicit, BroadPhaseSAP
 from newton.tests.unittest_utils import get_test_devices
 

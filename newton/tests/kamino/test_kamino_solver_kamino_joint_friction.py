@@ -13,14 +13,16 @@ import warp as wp
 import newton
 import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import make_llt_blocked_rcm_solve_kernel
-from newton._src.solvers.kamino._src.solvers.dvi.response import make_response_kernel
+from newton._src.solvers.kamino._src.solvers.scc.response import make_response_kernel
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.solver_configs import (
     KAMINO_CONFIGS,
     PADMM_CONFIG_NAMES,
+    PADMM_CONFIGS,
     make_padmm_dense_config,
     make_padmm_sparse_config,
+    make_padmm_sparse_fused_config,
     make_single_iteration_config,
 )
 
@@ -164,7 +166,8 @@ def _run_spin_down_test(
         ):
             expected = direction * np.maximum(abs(initial_velocities[world]) - decrement * np.arange(1, steps + 1), 0.0)
             np.testing.assert_allclose(velocities[:steps, world], expected, atol=3.0e-4, rtol=0.0)
-            np.testing.assert_allclose(velocities[steps - 1, world], 0.0, atol=1.0e-6)
+            # Velocity very close to sticking at final spin down step, and sticking after that.
+            np.testing.assert_allclose(velocities[steps - 1, world], 0.0, atol=2.0e-5)
             np.testing.assert_allclose(velocities[steps : steps + 20, world], 0.0, atol=1.0e-6)
             np.testing.assert_allclose(
                 coordinates[steps : steps + 20, world], coordinates[steps - 1, world], atol=1.0e-6
@@ -273,7 +276,7 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         self.assertEqual(solver._model_kamino.size.sum_of_num_bounded_joint_cts, 0)
 
     @mock.patch(
-        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_response_kernel",
+        "newton._src.solvers.kamino._src.solvers.scc.sparse.make_response_kernel",
         wraps=make_response_kernel,
     )
     def test_compact_schur_friction_spin_down(self, response_kernel):
@@ -281,7 +284,7 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         self._check_compact_schur_friction(response_kernel, omega=1.0, max_iterations=8)
 
     @mock.patch(
-        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_response_kernel",
+        "newton._src.solvers.kamino._src.solvers.scc.sparse.make_response_kernel",
         wraps=make_response_kernel,
     )
     def test_compact_schur_friction_stationarity(self, response_kernel):
@@ -289,11 +292,11 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         self._check_compact_schur_friction(response_kernel, omega=0.5, max_iterations=32)
 
     @mock.patch(
-        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_llt_blocked_rcm_solve_kernel",
+        "newton._src.solvers.kamino._src.solvers.scc.sparse.make_llt_blocked_rcm_solve_kernel",
         wraps=make_llt_blocked_rcm_solve_kernel,
     )
     @mock.patch(
-        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_response_kernel",
+        "newton._src.solvers.kamino._src.solvers.scc.sparse.make_response_kernel",
         wraps=make_response_kernel,
     )
     def test_compact_schur_reuse_forward(self, response_kernel, solve_kernel):
@@ -328,12 +331,12 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
             model.rigid_contact_max = 1
         model.set_gravity((0.0, 0.0, 0.0))
         config = SolverKamino.Config(
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
             sparse_dynamics=True,
             sparse_jacobian=True,
             use_collision_detector=False,
             use_fk_solver=False,
-            dvi=kamino_config.DVISolverConfig(
+            scc=kamino_config.SCCSolverConfig(
                 tolerance=1.0e-6 if omega < 1.0 else 1.0e-5,
                 use_schur_complement=True,
                 bilateral_solver_type="LLTBRCM",
@@ -630,6 +633,54 @@ class TestSolverKaminoJointFrictionSpinDown(unittest.TestCase):
                 if config.padmm is not None:
                     config.padmm.use_acceleration = use_acceleration
                 _run_spin_down_test(self, config_name, config)
+
+
+class TestSolverKaminoJointFrictionDominantArmature(unittest.TestCase):
+    """
+    Friction and armature act on the same joint DoF. With ``armature / I = 1e5`` the body-space
+    friction and armature impulses nearly cancel, so a small relative error in either produces a
+    large velocity error.
+    """
+
+    def setUp(self):
+        """Initialize the shared public Kamino test context."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+
+    def test_spin_down_with_dominant_armature(self):
+        """Spin down without adding energy when the armature dwarfs the body inertia."""
+        self._check_spin_down(PADMM_CONFIGS)
+
+    def test_spin_down_with_dominant_armature_fused_cr(self):
+        """Spin down with the fused conjugate residual solver, see the test above."""
+        if not wp.get_device(test_context.device).is_cuda:
+            self.skipTest("The fused conjugate residual solver requires CUDA.")
+        self._check_spin_down((("sparse_fused", make_padmm_sparse_fused_config),))
+
+    def _check_spin_down(self, configs):
+        inertia, armature, friction, w0, dt = 1.0e-6, 0.1, 0.01, 0.01, 0.005
+        decrement = friction * dt / (inertia + armature)
+        stop_steps = int(round(w0 / decrement))
+        steps = stop_steps + 10
+        for config_name, config_factory in configs:
+            for use_acceleration in (True, False):
+                with self.subTest(config=config_name, use_acceleration=use_acceleration):
+                    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                    body = builder.add_link(mass=0.01, inertia=wp.mat33(np.eye(3) * inertia), lock_inertia=True)
+                    joint = builder.add_joint_revolute(
+                        -1, body, axis=newton.Axis.Z, friction=friction, armature=armature
+                    )
+                    builder.add_articulation([joint])
+                    model = builder.finalize(device=test_context.device)
+                    config = config_factory()
+                    config.padmm.use_acceleration = use_acceleration
+                    solver = SolverKamino(model, config)
+                    state = _initialize_state(model, qd=w0)
+                    _, _, velocities, _ = _rollout(solver, model, state, steps=steps, dt=dt)
+                    velocities = np.concatenate(([w0], velocities[:, 0]))
+                    np.testing.assert_array_less(np.diff(np.abs(velocities)), 1.0e-2 * decrement)
+                    np.testing.assert_allclose(-np.diff(velocities[:stop_steps]), decrement, rtol=3.0e-2, atol=0.0)
+                    np.testing.assert_allclose(velocities[stop_steps + 1 :], 0.0, atol=1.0e-2 * decrement)
 
 
 if __name__ == "__main__":

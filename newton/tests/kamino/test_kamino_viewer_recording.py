@@ -5,7 +5,6 @@
 KAMINO: UNIT TESTS: VIEWER RECORDING
 """
 
-import importlib.util
 import subprocess
 import tempfile
 import unittest
@@ -16,9 +15,10 @@ import warp as wp
 from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
 from newton.tests.kamino import setup_tests
 from newton.tests.test_viewer_get_frame import _make_box_model, _make_headless_viewer_gl_or_skip
+from newton.tests.unittest_utils import requires
 
 
-@unittest.skipUnless(importlib.util.find_spec("imageio_ffmpeg") is not None, "Requires imageio-ffmpeg")
+@requires("imageio_ffmpeg")
 class TestKaminoViewerRecording(unittest.TestCase):
     def test_headless_video_recording(self):
         """Encode and decode a real recording driven by a headless ``ViewerGL``.

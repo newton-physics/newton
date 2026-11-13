@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Animate a garden of twenty-stage Stewart platform flowers using Kamino DVI.
+"""Animate a garden of twenty-stage Stewart platform flowers using Kamino SCC.
 
 Each plate is the moving platform of one stage and the base of the next.
 Universal joints attach both ends of each hydraulic actuator. A passive axial
@@ -785,7 +785,7 @@ class Example:
         self.variations = wp.array(self.variations_host, dtype=wp.vec3)
 
         config = SolverKamino.Config.from_model(
-            self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
         )
         config.use_fk_solver = False
         config.use_collision_detector = False
@@ -795,13 +795,13 @@ class Example:
         config.dynamics.preconditioning = False
         config.dynamics.linear_solver_type = "CR"
         config.dynamics.linear_solver_kwargs = {"maxiter": 9}
-        config.dvi.bilateral_solver_type = "LLTBRCM"
-        config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
-        config.dvi.tolerance = 1e-5
-        config.dvi.regularization = 1e-8
-        config.dvi.max_alternating_iterations = 4
-        config.dvi.inequality_sweeps_per_iteration = 3
-        config.dvi.bilateral_solve_interval = 1
+        config.scc.bilateral_solver_type = "LLTBRCM"
+        config.scc.bilateral_solver_kwargs = {"parallel_factorization": True}
+        config.scc.tolerance = 1e-5
+        config.scc.regularization = 1e-8
+        config.scc.max_alternating_iterations = 4
+        config.scc.inequality_sweeps_per_iteration = 3
+        config.scc.bilateral_solve_interval = 1
         self.solver = SolverKamino(self.model, config=config)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

@@ -31,6 +31,7 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests import get_kamino_basics_asset
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils import print as print_utils
+from newton.tests.unittest_utils import requires
 from newton.tests.utils.basics import (
     build_box_pendulum,
     build_boxes_fourbar,
@@ -247,6 +248,7 @@ class TestModelConversions(unittest.TestCase):
         test_util_checks.assert_model_conversion_consistency(self, model_newton, model_kamino)
         test_util_checks.assert_model_info_size_consistency(self, model_kamino)
 
+    @requires("pxr.Usd")
     def test_03_model_conversions_consistency_fourbar_from_usd(self):
         """
         Test that the Newton to Kamino model conversion of a fourbar model
@@ -274,6 +276,7 @@ class TestModelConversions(unittest.TestCase):
         test_util_checks.assert_model_conversion_consistency(self, model_newton, model_kamino)
         test_util_checks.assert_model_info_size_consistency(self, model_kamino)
 
+    @requires("pxr.Usd")
     def test_04_model_conversions_consistency_box_on_plane_materials_from_usd(self):
         """
         Test that the Newton to Kamino model conversion of a box-on-plane model

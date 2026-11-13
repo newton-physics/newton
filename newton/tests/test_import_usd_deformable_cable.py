@@ -25,11 +25,11 @@ from newton.tests._usd_deformable_test_utils import (
     group_labels,
     group_range,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
+from newton.tests.unittest_utils import get_test_devices, requires
 from newton.usd import SchemaResolverPhysx
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUSDDeformableCable(unittest.TestCase):
     """Curve-deformable (cable) parsing into capsule bodies joined by rod joints."""
 

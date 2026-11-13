@@ -33,6 +33,9 @@ class FastExampleSelectionCartpoleMuJoCo:
             self.example = Example(
                 viewer=newton.viewer.ViewerNull(num_frames=self.num_frames), world_count=16, verbose=False
             )
+        # Keep one-time device work out of the samples.
+        self.example.step()
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

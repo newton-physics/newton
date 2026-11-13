@@ -13,12 +13,14 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverBase, SolverXPBD
+from newton.tests.unittest_utils import requires
 from newton.viewer import ViewerNull
 
 
 class TestSolverObservableConsumers(unittest.TestCase):
     """Check contact allocation boundaries without requiring a solver step."""
 
+    @requires("yaml")
     def test_robot_examples_export_only_on_final_substep(self):
         """Run real example loops with lightweight state and solver stand-ins."""
         for name in ("g1", "h1", "anymal_d", "policy"):
@@ -109,7 +111,7 @@ class TestSolverObservableConsumers(unittest.TestCase):
         observables = solver.observables(contacts=large, kinds={SolverBase.ObservableKind.CONTACT_F})
         state_in, state_out = model.state(), model.state()
         state_out.body_q.fill_(wp.transform(wp.vec3(7.0), wp.quat_identity()))
-        before = state_out.body_q.numpy()
+        before = state_out.body_q.numpy().copy()
         with self.assertRaisesRegex(ValueError, "exceeds Contacts capacity"):
             solver.step(state_in, state_out, model.control(), small, 0.001, observables=observables)
         np.testing.assert_array_equal(state_out.body_q.numpy(), before)

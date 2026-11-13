@@ -162,8 +162,8 @@ def _expected_wid(model_newton: Model, newton_attr: str) -> np.ndarray:
     raw = getattr(model_newton, newton_attr).numpy()
     if model_newton.world_count != 1 or not np.any(raw < 0):
         return raw
-    has_dedicated_global_gravity = model_newton.gravity.shape[0] > model_newton.world_count
-    if newton_attr == "body_world" and has_dedicated_global_gravity:
+    # Body -1 is preserved when world 0 owns bodies; otherwise world 0 simulates the global world.
+    if newton_attr == "body_world" and np.any(raw == 0):
         return raw
     expected = raw.copy()
     expected[expected < 0] = 0

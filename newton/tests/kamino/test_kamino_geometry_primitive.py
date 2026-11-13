@@ -282,6 +282,14 @@ def check_contacts(
     """
     Checks the contents of a ContactsKamino container against expected values.
     """
+    # A misspelled or missing count key would otherwise skip the checks silently.
+    checked = ("model_active_contacts", "world_active_contacts", "wid", "cid")
+    checked += ("gid_AB", "bid_AB", "position_A", "position_B", "gapfunc", "frame")
+    if unchecked := set(expected).difference(checked):
+        raise KeyError(f"{header}: unchecked expected keys {sorted(unchecked)} for `{case}`")
+    if "model_active_contacts" not in expected:
+        raise KeyError(f"{header}: `model_active_contacts` is required for `{case}`")
+
     # Run contact counts checks
     if "model_active_contacts" in expected:
         np.testing.assert_equal(
@@ -982,13 +990,13 @@ class TestPrimitiveNarrowPhase(unittest.TestCase):
         lie exactly on the Z-axis. thus the bottom corner of the top box touches the
         top face of the bottom box at a single point, slightly penetrating each other.
         """
-        # NOTE: We set to negative value to move the geoms into each other,
-        # i.e. move the bottom geom upwards and the top geom downwards.
+        # NOTE: Negative, lowering the top box so its vertex penetrates the bottom face.
         penetration = -0.01
 
         # Define expected contact data
         expected = {
-            "num_contacts": 1,
+            "model_active_contacts": 1,
+            "world_active_contacts": [1],
             "gid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(1, 1)),
             "bid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(1, 1)),
             "position_A": np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
@@ -1000,7 +1008,7 @@ class TestPrimitiveNarrowPhase(unittest.TestCase):
         # Create a builder for the specified shape pair
         builder = testing.make_single_shape_pair_builder(
             shapes=("box", "box"),
-            top_xyz=[0.0, 0.0, 0.5 * np.sqrt(3) + 0.5],
+            top_xyz=[0.0, 0.0, 0.5 * np.sqrt(3) + penetration],
             top_rpy=[np.pi / 4, -np.arctan(1.0 / np.sqrt(2)), 0.0],
         )
 

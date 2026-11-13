@@ -852,8 +852,8 @@ class TestSolverKaminoStatus(unittest.TestCase):
                 )
                 self._step_and_assert_status_contract(solver, model)
 
-    def test_dvi_status_is_always_available(self):
-        """Verify DVI terminal status is available regardless of detailed collection."""
+    def test_scc_status_is_always_available(self):
+        """Verify SCC terminal status is available regardless of detailed collection."""
         model = self._make_three_world_model()
 
         for collect_solver_info in (False, True):
@@ -861,7 +861,7 @@ class TestSolverKaminoStatus(unittest.TestCase):
                 solver = newton.solvers.SolverKamino(
                     model,
                     config=newton.solvers.SolverKamino.Config(
-                        dynamics_solver="dvi",
+                        dynamics_solver="scc",
                         collect_solver_info=collect_solver_info,
                     ),
                 )
@@ -896,7 +896,7 @@ class TestSolverKaminoScratchStateReset(unittest.TestCase):
 
     def _assert_step_resets_scratch_state(
         self,
-        dynamics_solver: Literal["padmm", "dvi"],
+        dynamics_solver: Literal["padmm", "scc"],
         warmstart_mode: Literal["none", "internal", "containers"],
     ) -> None:
         """Assert that a single step resets the dynamics solver scratch state before solving."""
@@ -909,7 +909,7 @@ class TestSolverKaminoScratchStateReset(unittest.TestCase):
         if dynamics_solver == "padmm":
             config.padmm.warmstart_mode = warmstart_mode
         else:
-            config.dvi.warmstart_mode = warmstart_mode
+            config.scc.warmstart_mode = warmstart_mode
         solver = SolverKamino(model, config=config)
 
         solver_fd = solver._solver_kamino.solver_fd
@@ -935,11 +935,11 @@ class TestSolverKaminoScratchStateReset(unittest.TestCase):
             with self.subTest(warmstart_mode=warmstart_mode):
                 self._assert_step_resets_scratch_state("padmm", warmstart_mode)
 
-    def test_dvi_step_resets_scratch_state(self):
-        """Verify DVI reinitializes its scratch state on both the cold- and warm-start paths."""
+    def test_scc_step_resets_scratch_state(self):
+        """Verify SCC reinitializes its scratch state on both the cold- and warm-start paths."""
         for warmstart_mode in ("none", "internal"):
             with self.subTest(warmstart_mode=warmstart_mode):
-                self._assert_step_resets_scratch_state("dvi", warmstart_mode)
+                self._assert_step_resets_scratch_state("scc", warmstart_mode)
 
 
 class TestSolverKaminoImpl(unittest.TestCase):

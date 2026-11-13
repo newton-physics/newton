@@ -677,7 +677,7 @@ def test_identical_meshes_share_contact_precomputation(test, device):
         mock.patch.object(soft_contacts_mesh, "_mesh_feature_data", feature_data),
         warnings.catch_warnings(),
     ):
-        warnings.simplefilter("error", newton.exceptions.NewtonDeprecationWarning)
+        warnings.simplefilter("error", newton.NewtonDeprecationWarning)
         pipeline = newton.CollisionPipeline(model, enable_rigid_soft_full_surface_contact=True)
     test.assertEqual(feature_data.call_count, 1)
     # Identical instances share the actual adjacency spans, not just feature construction.
@@ -1884,7 +1884,7 @@ def test_mesh_complete_rigid_indices_and_reuse(test, device):
     state.particle_q.assign(np.array([(-0.01, -0.01, 0.0), (0.01, -0.01, 0.0), (0.0, 0.01, 0.0)], dtype=np.float32))
     pipeline.collide(state, contacts)
     count = int(contacts.soft_contact_count.numpy()[0])
-    features_np = contacts._soft_contact_mesh_features.numpy()[:count, 0]
+    features_np = contacts._soft_contact_mesh_features.numpy()[:count, 0].copy()
     recovery_np = (features_np >= 0) & ((features_np & int(soft_contacts_mesh._MESH_FEATURE_RECOVERY)) != 0)
     test.assertTrue(np.any(recovery_np))
     test.assertTrue(

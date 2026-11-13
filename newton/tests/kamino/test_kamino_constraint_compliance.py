@@ -56,7 +56,7 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         model,
         constraints,
         *,
-        backend="dvi",
+        backend="scc",
         sparse=False,
         preconditioning=False,
         unilateral_solver="pgs",
@@ -84,11 +84,11 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
             collect_solver_info=collect_solver_info,
             use_collision_detector=internal,
         )
-        config.dvi.unilateral_solver = unilateral_solver
-        config.dvi.use_schur_complement = schur
+        config.scc.unilateral_solver = unilateral_solver
+        config.scc.use_schur_complement = schur
         # Analytical Coulomb checks need converged nonlinear corrections.
-        config.dvi.apgd.max_nonlinear_corrections = 20
-        config.dvi.apgd.tolerance = 1.0e-6
+        config.scc.apgd.max_nonlinear_corrections = 20
+        config.scc.apgd.tolerance = 1.0e-6
         config.padmm.max_iterations = 300
         config.padmm.primal_tolerance = 1.0e-7
         config.padmm.dual_tolerance = 1.0e-7
@@ -115,7 +115,7 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         dt, stiffness, damping, gap, velocity, gravity = 0.01, 5000.0, 20.0, -0.02, -0.3, -10.0
         model = self._sphere(stiffness=stiffness, damping=damping, gap=gap, velocity=velocity, gravity=gravity)
         for backend, (integrator, internal) in product(
-            ("dvi", "padmm"), (("euler", False), ("moreau", True), ("moreau", False))
+            ("scc", "padmm"), (("euler", False), ("moreau", True), ("moreau", False))
         ):
             for sparse in (False, True):
                 for preconditioning in (False, True) if backend == "padmm" else (False,):
@@ -191,9 +191,9 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         pipeline.collide(state_in, contacts)
         for name, value in (("rigid_contact_stiffness", 500.0), ("rigid_contact_damping", 20.0)):
             setattr(contacts, name, wp.full(contacts.rigid_contact_max, value, dtype=wp.float32, device=self.device))
-        variants = [(backend, sparse, "pgs") for backend, sparse in product(("dvi", "padmm"), (False, True))]
+        variants = [(backend, sparse, "pgs") for backend, sparse in product(("scc", "padmm"), (False, True))]
         if self.device.is_cuda:
-            variants.extend(("dvi", sparse, "apgd") for sparse in (False, True))
+            variants.extend(("scc", sparse, "apgd") for sparse in (False, True))
         for backend, sparse, subsolver in variants:
             with self.subTest(backend=backend, sparse=sparse, subsolver=subsolver):
                 solver = self._solver(
@@ -215,7 +215,7 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         joint = builder.add_joint_fixed(-1, body)
         builder.add_articulation([joint])
         model = builder.finalize(device=self.device)
-        for backend, sparse in (("dvi", False), ("dvi", True), ("padmm", False)):
+        for backend, sparse in (("scc", False), ("scc", True), ("padmm", False)):
             with self.subTest(backend=backend, sparse=sparse):
                 constraints = ConstraintStabilizationConfig(
                     joint_recovery_time=0.02,
@@ -243,7 +243,7 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
             model = builder.finalize(device=self.device)
             model.joint_q.assign([-0.02])
             for backend, sparse, speed, integrator in product(
-                ("dvi", "padmm"), (False, True), (0.0, 0.1), ("euler", "moreau")
+                ("scc", "padmm"), (False, True), (0.0, 0.1), ("euler", "moreau")
             ):
                 with self.subTest(angular=angular, backend=backend, sparse=sparse, speed=speed, integrator=integrator):
                     constraints = ConstraintStabilizationConfig(
@@ -279,11 +279,11 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
             for value in (-1.0, float("nan")):
                 with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                     ConstraintStabilizationConfig(**{field: value})
-        with self.assertRaisesRegex(ValueError, "PADMM or DVI"):
+        with self.assertRaisesRegex(ValueError, "PADMM or SCC"):
             SolverKamino.Config(
                 dynamics_solver="lox", constraints=ConstraintStabilizationConfig(joint_recovery_time=0.01)
             )
-        for backend in ("dvi", "padmm"):
+        for backend in ("scc", "padmm"):
             config = SolverKamino.Config(dynamics_solver=backend)
             config.lox.contact_compliance = True
             with self.subTest(backend=backend), self.assertRaisesRegex(ValueError, "constraints.contact_compliance"):
@@ -314,7 +314,7 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         """Refresh material compliance and clear retired contact rows in reused solver storage."""
         model = self._sphere()
         constraints = ConstraintStabilizationConfig(contact_compliance=True, delta=0.0)
-        for backend, linear_solver in (("dvi", "CR"), ("padmm", "CR"), ("padmm", "CRF")):
+        for backend, linear_solver in (("scc", "CR"), ("padmm", "CR"), ("padmm", "CRF")):
             if linear_solver == "CRF" and not self.device.is_cuda:
                 continue
             with self.subTest(backend=backend):
@@ -426,7 +426,7 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
             getattr(model.kamino, f"constraints_{name}").fill_(value)
         config = SolverKamino.Config.from_model(
             model,
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
             compute_solution_metrics=True,
             constraints=ConstraintStabilizationConfig(
                 joint_recovery_time=0.02, limit_recovery_speed=0.1, contact_recovery_speed=1.0, delta=0.0
@@ -459,7 +459,7 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
             builder.add_ground_plane(cfg=shape)
             builder.end_world()
         model = builder.finalize(device=self.device)
-        for backend in ("dvi", "padmm"):
+        for backend in ("scc", "padmm"):
             with self.subTest(backend=backend):
                 solver = self._solver(
                     model,
@@ -511,7 +511,7 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         poses[fixed, 0] = 0.003
         state_in.body_q.assign(poses)
 
-        for backend, sparse in (("dvi", False), ("padmm", True)):
+        for backend, sparse in (("scc", False), ("padmm", True)):
             for dt in (0.005, 0.01):
                 for fractions in ((0.0, 0.1, 1.0), (0.1, 1.0, 0.0), (1.0, 0.0, 0.1)):
                     with self.subTest(backend=backend, dt=dt, fractions=fractions):
