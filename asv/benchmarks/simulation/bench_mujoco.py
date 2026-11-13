@@ -39,9 +39,14 @@ class _SimulationMetricTracksMuJoCo(_SimulationMetricTracks):
     track_solver_niter_max.unit = "iterations"
 
 
+# Control rate [Hz] and solver steps per control step of IsaacLab's Newton MJWarp presets.
+_CONTROL_STEPS = {"cartpole": (60, 2), "humanoid": (60, 4), "g1": (50, 8), "allegro": (30, 8)}
+
+
 class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
     """Utility base class for KPI benchmarks."""
 
+    version = "2"  # IsaacLab timesteps; one frame is one control step.
     param_names = ["world_count"]
     num_frames = None
     params = None
@@ -54,6 +59,7 @@ class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
     def _create_workload(self, builder, world_count):
         from benchmark_mujoco import Example  # noqa: PLC0415
 
+        fps, sim_substeps = _CONTROL_STEPS[self.robot]
         workload = Example(
             stage_path=None,
             robot=self.robot,
@@ -64,6 +70,8 @@ class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
             builder=builder,
             world_count=world_count,
             environment=self.environment,
+            fps=fps,
+            sim_substeps=sim_substeps,
         )
         if workload.graph is None:
             raise RuntimeError("KPI benchmark requires CUDA graph capture (is the CUDA mempool allocator enabled?)")
@@ -238,6 +246,7 @@ class _NewtonOverheadBenchmark:
 
         from newton.utils import EventTracer  # noqa: PLC0415
 
+        fps, sim_substeps = _CONTROL_STEPS[self.robot]
         trace = {}
         with EventTracer(enabled=True) as tracer:
             for _iter in range(self.samples):
@@ -250,6 +259,8 @@ class _NewtonOverheadBenchmark:
                     world_count=world_count,
                     use_cuda_graph=True,
                     builder=self.builder[world_count],
+                    fps=fps,
+                    sim_substeps=sim_substeps,
                 )
 
                 for _ in range(self.num_frames):
@@ -347,7 +358,7 @@ class FastKitchenG1(_KpiBenchmark):
     num_frames = 50
     robot = "g1"
     timeout = 900
-    version = "2"  # The pre-v2 series accidentally omitted the kitchen environment.
+    version = "3"  # IsaacLab timesteps; one frame is one control step.
     samples = 2
     random_init = True
     environment = "kitchen"
