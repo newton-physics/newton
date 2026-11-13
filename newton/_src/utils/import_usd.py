@@ -253,7 +253,7 @@ def parse_usd(
                     - ``body_idx``
                     - ❌ Error: FREE joints require world frame
 
-        only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
+        only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded. With OpenUSD 26.11 or newer, disabled rigid bodies are never loaded, since OpenUSD assigns their colliders and joints to the nearest enabled ancestor body.
         only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
         joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
         verbose: If True, log additional information about the parsed USD file. Default is False.
@@ -463,6 +463,7 @@ def parse_usd(
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
     require_newton_usd_schemas(Usd)
+    skip_disabled_rigid_bodies = only_load_enabled_rigid_bodies or usd.physics_parser_skips_disabled_bodies()
 
     from ..usd import _joints  # noqa: PLC0415
     from ..usd._articulations import _parse_articulations  # noqa: PLC0415
@@ -472,7 +473,11 @@ def parse_usd(
         _apply_filtered_pairs,
         _collect_filtered_pairs,
     )
-    from ..usd._mass_properties import _is_enabled_collider, _UsdMassProperties  # noqa: PLC0415
+    from ..usd._mass_properties import (  # noqa: PLC0415
+        _is_enabled_collider,
+        _owns_descendants,
+        _UsdMassProperties,
+    )
     from ..usd._visuals import _UsdVisuals  # noqa: PLC0415
 
     # Capture material defaults at the start of this import.
@@ -871,7 +876,7 @@ def parse_usd(
             allow_visual_shapes: Whether non-site geometry may be loaded from this subtree.
             recurse: Whether to inspect child prims after processing ``prim``.
         """
-        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+        if _owns_descendants(prim):
             return
         path_name = str(prim.GetPath())
         if any(re.match(path, path_name) for path in ignore_paths):
@@ -1146,7 +1151,7 @@ def parse_usd(
         nonlocal path_body_map
         nonlocal physics_scene_prim
 
-        if not rigid_body_desc.rigidBodyEnabled and only_load_enabled_rigid_bodies:
+        if not rigid_body_desc.rigidBodyEnabled and skip_disabled_rigid_bodies:
             return -1
 
         if origin is None:
@@ -1550,7 +1555,7 @@ def parse_usd(
                 # This fallback is only needed for enabled descendant MassAPI overrides.
                 descendants = iter(Usd.PrimRange(prim, Usd.TraverseInstanceProxies()))
                 for descendant in descendants:
-                    if descendant != prim and descendant.HasAPI(UsdPhysics.RigidBodyAPI):
+                    if descendant != prim and _owns_descendants(descendant):
                         descendants.PruneChildren()
                         continue
                     if _is_enabled_collider(descendant) and descendant.HasAPI(UsdPhysics.MassAPI):
@@ -1902,7 +1907,11 @@ def parse_usd(
     # instance-proxy walk. Body visuals were already loaded by add_body(), so only untouched
     # static candidates need geometry/material work here.
     if load_visual_shapes and load_static_visual_shapes:
-        rigid_body_paths = {str(path) for path in ret_dict.get(UsdPhysics.ObjectType.RigidBody, ((), ()))[0]}
+        rigid_body_paths = {
+            str(path)
+            for path in ret_dict.get(UsdPhysics.ObjectType.RigidBody, ((), ()))[0]
+            if _owns_descendants(stage.GetPrimAtPath(path))
+        }
 
         def _is_in_rigid_body_hierarchy(path: str) -> bool:
             while path:
@@ -2022,6 +2031,8 @@ def parse_usd(
                         has_effective_inertia = True
                         inertia_tensor = wp.mat33(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz)
 
+            # Mass that the body's current inertia corresponds to.
+            inertia_mass_basis = builder.body_mass[body_id]
             # Compute baseline mass properties via mass computer when at least one property needs resolving.
             if not (has_effective_mass and has_effective_inertia and has_effective_com):
                 rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
@@ -2043,6 +2054,7 @@ def parse_usd(
                     )
                     if recorded_properties is not None:
                         cmp_mass, recorded_inertia, cmp_com = recorded_properties
+                        inertia_mass_basis = cmp_mass
                         builder.body_inertia[body_id] = recorded_inertia
                         if np.array(recorded_inertia).any():
                             builder.body_inv_inertia[body_id] = wp.inverse(recorded_inertia)
@@ -2114,7 +2126,6 @@ def parse_usd(
             # Mass: effective authored value takes precedence over mass computer.
             if has_effective_mass:
                 mass = effective_mass
-                shape_accumulated_mass = builder.body_mass[body_id]
                 if not has_effective_inertia and effective_density is not None:
                     warnings.warn(
                         f"Body {body_path}: authored mass and density without authored diagonalInertia. "
@@ -2124,8 +2135,8 @@ def parse_usd(
                     )
                 # When mass is authored but inertia is not, scale the accumulated
                 # inertia to be consistent with the authored mass.
-                if not has_effective_inertia and shape_accumulated_mass > 0.0 and mass > 0.0:
-                    scale = mass / shape_accumulated_mass
+                if not has_effective_inertia and inertia_mass_basis > 0.0 and mass > 0.0:
+                    scale = mass / inertia_mass_basis
                     builder.body_inertia[body_id] = wp.mat33(np.array(builder.body_inertia[body_id]) * scale)
                     builder.body_inv_inertia[body_id] = wp.inverse(builder.body_inertia[body_id])
             else:
