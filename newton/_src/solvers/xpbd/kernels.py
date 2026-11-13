@@ -439,8 +439,9 @@ def bending_constraint(
     n2_length = wp.length(n2)
     e_length = wp.length(e)
 
-    # Check for degenerate cases
-    if n1_length < eps or n2_length < eps or e_length < eps:
+    # Compare triangle heights to the shared edge, independently of mesh scale.
+    area_eps = eps * e_length * e_length
+    if n1_length < area_eps or n2_length < area_eps or e_length < eps:
         return
 
     n1_hat = n1 / n1_length
@@ -453,10 +454,13 @@ def bending_constraint(
 
     c = theta - rest_angle
 
-    grad_x1 = -n1_hat * e_length
-    grad_x2 = -n2_hat * e_length
-    grad_x3 = -n1_hat * wp.dot(x1 - x4, e_hat) - n2_hat * wp.dot(x2 - x4, e_hat)
-    grad_x4 = -n1_hat * wp.dot(x3 - x1, e_hat) - n2_hat * wp.dot(x3 - x2, e_hat)
+    # Angle derivatives use inverse-area normals.
+    n1_grad = n1_hat / n1_length
+    n2_grad = n2_hat / n2_length
+    grad_x1 = -n1_grad * e_length
+    grad_x2 = -n2_grad * e_length
+    grad_x3 = -n1_grad * wp.dot(x1 - x4, e_hat) - n2_grad * wp.dot(x2 - x4, e_hat)
+    grad_x4 = -n1_grad * wp.dot(x3 - x1, e_hat) - n2_grad * wp.dot(x3 - x2, e_hat)
 
     denominator = (
         w1 * wp.length_sq(grad_x1)

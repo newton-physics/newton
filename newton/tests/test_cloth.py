@@ -983,6 +983,115 @@ def test_cloth_bending(test, device, solver):
     test.assertTrue((example.init_pos != final_pos).any())
 
 
+def _hinge_angle(positions):
+    """Evaluate the signed angle without using the solver's gradient formula."""
+    a, b, c, d = positions
+    n1 = np.cross(c - a, d - a)
+    n2 = np.cross(d - b, c - b)
+    edge = d - c
+    return np.arctan2(np.dot(np.cross(n1, n2), edge / np.linalg.norm(edge)), np.dot(n1, n2))
+
+
+def _hinge_angle_gradient(positions):
+    """Differentiate the angle by centered differences in float64."""
+    h = np.linalg.norm(positions[3] - positions[2]) * 1.0e-5
+    gradient = np.empty_like(positions)
+    for vertex in range(4):
+        for axis in range(3):
+            offset = np.zeros_like(positions)
+            offset[vertex, axis] = h
+            gradient[vertex, axis] = (_hinge_angle(positions + offset) - _hinge_angle(positions - offset)) / (2 * h)
+    return gradient
+
+
+def test_cloth_bending_matches_angle_derivative(test, device, solver):
+    """Match one bending step to finite-difference angle derivatives at several scales."""
+    # Existing cloth scenes check stability, but do not check the magnitude of
+    # bending forces or projections. One four-particle hinge isolates that law.
+    for scale, asymmetric in ((1.0, False), (0.01, False), (0.0005, False), (0.03, True)):
+        with test.subTest(scale=scale, asymmetric=asymmetric):
+            fold = -0.4 if asymmetric else np.pi / 6
+            positions = scale * np.array(
+                [[0.2, np.cos(fold), np.sin(fold)], [0.3, -1.7 if asymmetric else -1.0, 0], [0, 0, 0], [1, 0, 0]]
+            )
+            velocities = np.zeros((4, 3))
+            masses = np.ones(4)
+            rest, kd = 0.0, 0.0
+            if asymmetric:
+                # Unequal triangle areas require a different normalization on
+                # each face. Include damping, nonzero rest angle and a pin.
+                velocities = scale * np.array([[0.1, 0.2, -0.3], [-0.2, 0.1, 0.4], [0, 0, 0], [0.3, -0.2, 0.1]])
+                masses = np.array([1.0, 2.0, 0.0, 4.0])
+                rest, kd = -0.1, 0.2
+            ke = 10.0 if asymmetric else (1.0e12 if solver == "xpbd" else 1.0)
+            dt = 1.0e-3
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            for position, velocity, mass in zip(positions, velocities, masses, strict=True):
+                builder.add_particle(wp.vec3(*position), wp.vec3(*velocity), mass, radius=0.0)
+            builder.add_edge(0, 1, 2, 3, rest=rest, edge_ke=ke, edge_kd=kd)
+            model = builder.finalize(device=device)
+            state_in, state_out = model.state(), model.state()
+            positions = state_in.particle_q.numpy().astype(np.float64)
+            velocities = state_in.particle_qd.numpy().astype(np.float64)
+            weights = model.particle_inv_mass.numpy().astype(np.float64)
+            if solver == "xpbd":
+                integrator = newton.solvers.SolverXPBD(model, iterations=1)
+                predicted = (positions + dt * velocities).astype(np.float32).astype(np.float64)
+                gradient = _hinge_angle_gradient(predicted)
+                alpha = 1.0 / (ke * dt * dt)
+                gamma = kd / (ke * dt)
+                multiplier = -(_hinge_angle(predicted) - rest + gamma * dt * np.sum(gradient * velocities)) / (
+                    (1.0 + gamma) * np.sum(weights[:, None] * gradient**2) + alpha
+                )
+                expected = weights[:, None] * multiplier * gradient
+                integrator.step(state_in, state_out, None, None, dt)
+                actual = state_out.particle_q.numpy().astype(np.float64) - predicted
+            else:
+                integrator = newton.solvers.SolverSemiImplicit(model)
+                gradient = _hinge_angle_gradient(positions)
+                force = (
+                    -np.linalg.norm(positions[3] - positions[2])
+                    * (ke * (_hinge_angle(positions) - rest) + kd * np.sum(gradient * velocities))
+                    * gradient
+                )
+                expected = dt * weights[:, None] * force
+                integrator.step(state_in, state_out, None, None, dt)
+                actual = state_out.particle_qd.numpy().astype(np.float64) - velocities
+            tolerance = 3.0e-5 * np.max(np.abs(expected))
+            np.testing.assert_allclose(actual, expected, rtol=3.0e-5, atol=tolerance)
+            if not asymmetric:
+                # Internal bending cannot add net momentum or torque.
+                np.testing.assert_allclose(actual.sum(axis=0), 0.0, atol=4 * tolerance)
+                np.testing.assert_allclose(np.cross(positions, actual).sum(axis=0), 0.0, atol=4 * scale * tolerance)
+
+
+def test_cloth_bending_degenerate_hinges(test, device, solver):
+    """Keep singular, thin and incomplete hinges finite and inactive."""
+    for scale in (1.0, 0.0005):
+        for case in ("collinear", "thin", "zero_edge", "boundary"):
+            with test.subTest(scale=scale, case=case):
+                positions = scale * np.array([[0.2, 0.0, 0.0], [0.3, -1.0, 0.0], [0, 0, 0], [1, 0, 0]])
+                if case == "thin":
+                    positions[0, 2] = scale * 1.0e-7
+                elif case == "zero_edge":
+                    positions[3] = positions[2]
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                for position in positions:
+                    builder.add_particle(wp.vec3(*position), wp.vec3(0.0), 1.0, radius=0.0)
+                builder.add_edge(-1 if case == "boundary" else 0, 1, 2, 3, rest=0.5, edge_ke=10.0, edge_kd=0.1)
+                model = builder.finalize(device=device)
+                state_in, state_out = model.state(), model.state()
+                before = state_in.particle_q.numpy().copy()
+                integrator = (
+                    newton.solvers.SolverXPBD(model, iterations=1)
+                    if solver == "xpbd"
+                    else newton.solvers.SolverSemiImplicit(model)
+                )
+                integrator.step(state_in, state_out, None, None, 1.0e-3)
+                np.testing.assert_array_equal(state_out.particle_q.numpy(), before)
+                np.testing.assert_array_equal(state_out.particle_qd.numpy(), np.zeros((4, 3)))
+
+
 def test_cloth_bending_non_zero_rest_angle_bending(test, device, solver):
     example = ClothSim(device, solver, use_graph=True)
     example.set_up_non_zero_rest_angle_bending_experiment()
@@ -1204,6 +1313,8 @@ class TestCloth(unittest.TestCase):
 
 tests_to_run = {
     "xpbd": [
+        test_cloth_bending_matches_angle_derivative,
+        test_cloth_bending_degenerate_hinges,
         test_cloth_free_fall,
         test_cloth_sagging,
         test_cloth_bending,
@@ -1215,6 +1326,8 @@ tests_to_run = {
         test_cloth_stitching,
     ],
     "semi_implicit": [
+        test_cloth_bending_matches_angle_derivative,
+        test_cloth_bending_degenerate_hinges,
         test_cloth_free_fall,
         test_cloth_sagging,
         test_cloth_bending,
