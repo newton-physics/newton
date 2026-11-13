@@ -9714,6 +9714,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 err = float(np.max(np.abs(tau_newton - expected)))
                 self.assertLess(err, 1e-5, f"got={tau_newton}, expected={expected}, err={err:.2e}")
 
+    @requires(*MUJOCO_MODULES)
     def test_ball_joint_zero_effort_limit_raises(self):
         """A zero effort limit on an actuated ball joint cannot be a MuJoCo force range."""
 
