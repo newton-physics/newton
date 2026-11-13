@@ -447,16 +447,18 @@ class DriveNeuralGRU(DriveBase):
         self._lin_params: wp.array2d[float] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
-        """Load the Warp-NN ONNX runtime and inference buffers.
+        """Load the runtime and buffers once, preserving existing implicit bindings.
 
         Args:
             device: Device on which inference runs.
             num_actuators: Number of vectorized actuator lanes.
         """
-        if self._device is not None and (self._device != device or self._num_actuators != num_actuators):
-            raise RuntimeError(
-                "DriveNeuralGRU is already finalized for a different actuator; construct one drive per actuator."
-            )
+        if self._device is not None:
+            if self._device != device or self._num_actuators != num_actuators:
+                raise RuntimeError(
+                    "DriveNeuralGRU is already finalized for a different actuator; construct one drive per actuator."
+                )
+            return
         graph = self._graph
         try:
             network, _ = load_checkpoint(
@@ -470,7 +472,6 @@ class DriveNeuralGRU(DriveBase):
                 "DriveNeuralGRU requires Warp-NN and ONNX. Install them with `pip install newton[onnx]`."
             ) from exc
 
-        self._device = device
         self._num_actuators = num_actuators
         self._network = network
         self._input_means_wp = wp.array(self._input_means, dtype=wp.float32, device=device)
@@ -509,6 +510,7 @@ class DriveNeuralGRU(DriveBase):
                     f"DriveNeuralGRU: ONNX output '{name}' has shape {state_shape}, "
                     f"expected {(1, num_actuators, graph.hidden_size)}"
                 )
+        self._device = device
 
     def is_stateful(self) -> bool:
         """Return ``True`` because the GRU maintains hidden state."""

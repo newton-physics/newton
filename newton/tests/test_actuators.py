@@ -1218,7 +1218,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
                 DriveNeuralGRU(path)
 
     def test_checkpoint_and_network_validation(self):
-        """Reject missing files, non-ONNX paths, and shape-inconsistent weights."""
+        """Validate checkpoint paths, weights, and supported GRU attributes."""
         with self.assertRaisesRegex(ValueError, "model_path"):
             DriveNeuralGRU.resolve_arguments({})
         with self.assertRaisesRegex(ValueError, "non-empty"):
@@ -1246,6 +1246,46 @@ class TestDriveNeuralGRU(unittest.TestCase):
                 indices=wp.array([0], dtype=wp.uint32, device=self.device),
                 drive=DriveNeuralGRU(self._save_gru("reset_gate.onnx", linear_before_reset=0)),
             )
+
+        _, _, helper, numpy_helper = _onnx_modules()
+        metadata = self._metadata()
+        source = self._save_gru("attribute_variants.onnx", metadata)
+        for attribute, value, message in (
+            ("layout", 1, "layout"),
+            ("clip", 1.0, "clip"),
+            ("activations", ["Relu", "Tanh"], "non-default activations"),
+            ("activation_alpha", [0.1, 0.1], "activation_alpha"),
+            ("activation_beta", [0.1, 0.1], "activation_beta"),
+            ("sequence_lens", None, "sequence_lens"),
+            ("direction", "reverse", None),
+            ("activations", ["Sigmoid", "Tanh"], None),
+        ):
+            with self.subTest(attribute=attribute, value=value):
+
+                def edit(model, attribute=attribute, value=value):
+                    node = next(node for node in model.graph.node if node.op_type == "GRU")
+                    if attribute == "sequence_lens":
+                        node.input[4] = "sequence_lengths"
+                        model.graph.initializer.append(
+                            numpy_helper.from_array(np.array([1], dtype=np.int32), name="sequence_lengths")
+                        )
+                    else:
+                        node.attribute.append(helper.make_attribute(attribute, value))
+
+                path = self._mutate_gru(source, f"{attribute}_{message is None}.onnx", edit)
+                if message is not None:
+                    with self.assertRaisesRegex(NotImplementedError, message):
+                        Actuator(
+                            indices=wp.array([0], dtype=wp.uint32, device=self.device),
+                            drive=DriveNeuralGRU(path),
+                        )
+                else:
+                    # A one-sample sequence has identical forward and reverse semantics.
+                    case = self._make_case(path, 1)
+                    expected_effort, expected_hidden = self._expected(metadata, case)
+                    effort, hidden = self._step(case)
+                    np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
+                    np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
 
     def test_rejects_graphs_without_hidden_state_wiring(self):
         """Reject graphs whose GRU hidden state is not a graph input and output."""
@@ -1627,7 +1667,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         device = self.device
         h = self.SAMPLE_DT
         q0, qd0, target, target_vel = 0.2, 0.3, 1.0, -0.4
-        features = self.ALL_FEATURES[:-1]
+        metadata = self._metadata(self.ALL_FEATURES)
 
         model = _build_pendulum(device)
         state = model.state()
@@ -1636,43 +1676,65 @@ class TestDriveNeuralGRU(unittest.TestCase):
         control = model.control()
         control.joint_target_q.assign(np.array([target], dtype=np.float32))
         control.joint_target_qd.assign(np.array([target_vel], dtype=np.float32))
+        control.bias_force = wp.full(1, 0.7, dtype=wp.float32, device=device)
 
-        drive = DriveNeuralGRU(self._save_gru("implicit_gru.onnx", metadata=self._metadata(features)))
+        path = self._save_gru("implicit_gru.onnx", metadata=metadata)
+        drive = DriveNeuralGRU(path)
         response = JointSpaceResponse(model)
         actuator = Actuator(indices=wp.array([0], dtype=wp.uint32, device=device), drive=drive)
 
         actuator.set_effort_mode_implicit(response=response)
+        # Reusing the same configuration must preserve the first solver's binding.
+        Actuator(indices=actuator.indices, drive=drive)
         response.refresh(state)
         sa, sb = actuator.state(), actuator.state()
-        control.joint_f.zero_()
-        actuator.step(state, control, sa, sb, dt=h)
-
-        tau0, a, b, pq0, pqd0 = (float(v) for v in drive._lin_params.numpy()[0])
-        self.assertAlmostEqual(pq0, q0, delta=1e-6)
-        self.assertAlmostEqual(pqd0, qd0, delta=1e-6)
-        self.assertGreater(abs(a) + abs(b), 0.0)
-
+        reference = types.SimpleNamespace(
+            position=state.joint_q.numpy(),
+            velocity=state.joint_qd.numpy(),
+            target=control.joint_target_q.numpy(),
+            target_velocity=control.joint_target_qd.numpy(),
+            bias_force=control.bias_force.numpy(),
+            indices=np.array([0]),
+            pos_indices=np.array([0]),
+            target_indices=np.array([0]),
+            target_vel_indices=np.array([0]),
+            network=self._networks[path],
+        )
         alpha = _response_at_state(model, state)[0, 0]
-        expected = (tau0 + a * h * pqd0) / (1.0 - alpha * h * (a * h + b))
-        tau = float(control.joint_f.numpy()[0])
-        self.assertAlmostEqual(tau, expected, delta=abs(expected) * 1e-3 + 1e-6)
-        self.assertTrue(np.any(sb.drive_state.hidden.numpy() != 0.0))
-
-        actuator.set_effort_mode_explicit()
-
-        def explicit_tau(q_val: float, qd_val: float) -> float:
-            state.joint_q.assign(np.array([q_val], dtype=np.float32))
-            state.joint_qd.assign(np.array([qd_val], dtype=np.float32))
+        for step in range(2):
+            incoming_hidden = sa.drive_state.hidden.numpy()
+            expected_tau0, expected_hidden = self._expected(metadata, reference, hidden=incoming_hidden)
             control.joint_f.zero_()
-            actuator.step(state, control, actuator.state(), actuator.state(), dt=h)
-            return float(control.joint_f.numpy()[0])
+            actuator.step(state, control, sa, sb, dt=h)
 
-        self.assertAlmostEqual(float(drive._tau0.numpy()[0]), explicit_tau(q0, qd0), delta=1e-5)
-        eps = 1e-3
-        fd_dq = (explicit_tau(q0 + eps, qd0) - explicit_tau(q0 - eps, qd0)) / (2.0 * eps)
-        fd_dqd = (explicit_tau(q0, qd0 + eps) - explicit_tau(q0, qd0 - eps)) / (2.0 * eps)
-        self.assertAlmostEqual(float(drive._dtau_dq.numpy()[0]), fd_dq, delta=abs(fd_dq) * 0.02 + 1e-3)
-        self.assertAlmostEqual(float(drive._dtau_dqd.numpy()[0]), fd_dqd, delta=abs(fd_dqd) * 0.02 + 1e-3)
+            with self.subTest(step=step):
+                tau0, a, b, pq0, pqd0 = (float(v) for v in drive._lin_params.numpy()[0])
+                self.assertAlmostEqual(pq0, q0, delta=1e-6)
+                self.assertAlmostEqual(pqd0, qd0, delta=1e-6)
+                self.assertGreater(abs(a) + abs(b), 0.0)
+                self.assertAlmostEqual(tau0, float(expected_tau0[0]), delta=1e-5)
+                expected = (tau0 + a * h * pqd0) / (1.0 - alpha * h * (a * h + b))
+                self.assertAlmostEqual(float(control.joint_f.numpy()[0]), expected, delta=abs(expected) * 1e-3 + 1e-6)
+                np.testing.assert_allclose(sb.drive_state.hidden.numpy(), expected_hidden, rtol=1e-5, atol=1e-6)
+
+                eps = 1e-3
+                for field, raw_slope, packed_slope in (
+                    ("position", drive._dtau_dq, a),
+                    ("velocity", drive._dtau_dqd, b),
+                ):
+                    values = getattr(reference, field)
+                    original = float(values[0])
+                    values[0] = original + eps
+                    plus = self._expected(metadata, reference, hidden=incoming_hidden)[0][0]
+                    values[0] = original - eps
+                    minus = self._expected(metadata, reference, hidden=incoming_hidden)[0][0]
+                    values[0] = original
+                    finite_difference = float(plus - minus) / (2.0 * eps)
+                    slope = float(raw_slope.numpy()[0])
+                    self.assertAlmostEqual(slope, finite_difference, delta=abs(finite_difference) * 0.02 + 1e-3)
+                    self.assertAlmostEqual(packed_slope, slope, delta=1e-6)
+
+            sa, sb = sb, sa
 
 
 @unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
