@@ -337,7 +337,13 @@ def prepare_jacobi_preconditioner_kernel(
     if tid < contact_hessian_diags.shape[0]:
         diag += contact_hessian_diags[tid]
     # Constraints can make an affine block invertible even when its mass diagonal is zero.
-    inv_A_diag[tid] = wp.inverse(diag)
+    # Scale the full block to avoid overflow in the float32 inverse.
+    scale = wp.max(wp.max(wp.abs(diag[0, 0]), wp.abs(diag[1, 1])), wp.abs(diag[2, 2]))
+    if scale > 0.0:
+        inv_scale = 1.0 / scale
+        inv_A_diag[tid] = wp.inverse(diag * inv_scale) * inv_scale
+    else:
+        inv_A_diag[tid] = wp.mat33(0.0)
 
 
 @wp.kernel
