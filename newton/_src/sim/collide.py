@@ -1910,10 +1910,10 @@ class CollisionPipeline:
                 .. experimental::
 
                     The ``"sticky"`` mode may change without prior notice.
-            contact_matching_pos_threshold: World-space distance threshold [m]
-                between the previous and current contact midpoints
-                ``0.5 * (world(point0) + world(point1))``.  Contacts whose
-                midpoint moves more than this are considered broken. In sticky mode,
+            contact_matching_pos_threshold: World-space distance threshold [m].
+                In latest mode, compare the previous and current contact midpoints
+                ``0.5 * (world(point0) + world(point1))``; movement beyond the
+                threshold breaks the match. In sticky mode,
                 compare both transported body-local witnesses with their fresh
                 points, or match a travelling contact when the changes in one
                 body's world-oriented witness offset and in the world-space
