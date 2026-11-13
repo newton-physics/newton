@@ -1087,6 +1087,74 @@ class TestImportMjcfNative(unittest.TestCase):
                     ("geom_fluid", "geom_surfacevel", "geom_adhesion"),
                 )
 
+    def test_native_world_parameters(self):
+        """Preserve each world's polynomials, contact parameters, and delayed actuation."""
+        import mujoco
+        import mujoco_warp
+
+        xml = """<mujoco><option gravity="0 0 0" timestep=".001" integrator="Euler"/>
+            <worldbody><body><joint name="j" stiffness="3 {poly} 0" damping=".2 {poly} 0"/>
+                <geom size=".1" mass="1" surfacevel="{speed} 0 0 0 0 0" adhesion="{adhesion}"/>
+            </body><body pos="1 0 0"><joint type="ball" stiffness="1 {poly} 0" damping=".1 {poly} 0"/>
+                <geom type="box" size=".1 .2 .3" mass="1"/></body></worldbody>
+            <tendon><fixed name="t" stiffness="0 {poly} 0" damping="0 {poly} 0">
+                <joint joint="j" coef="1"/></fixed></tendon>
+            <actuator><general joint="j" damping=".3 .2 .1" delay="{delay}" nsample="4" interp="{interp}"/>
+                <general tendon="t" damping=".1 .3 .2"/></actuator></mujoco>"""
+        builder = newton.ModelBuilder()
+        references = []
+        for poly, speed, adhesion, delay, interp in ((0, 0, 0, 0.0015, "zoh"), (7, 4, 0.5, 0.0025, "cubic")):
+            source = xml.format(poly=poly, speed=speed, adhesion=adhesion, delay=delay, interp=interp)
+            builder.begin_world()
+            builder.add_mjcf_native(source, ctrl_direct=True)
+            builder.end_world()
+            reference = mujoco.MjModel.from_xml_string(source)
+            data = mujoco.MjData(reference)
+            data.qpos[0] = 0.25
+            data.qvel[:] = 0.4
+            references.append((reference, data))
+        solver = SolverMuJoCo(builder.finalize(), separate_worlds=True, disable_contacts=True)
+        for field in ("geom_surfacevel", "geom_adhesion", "actuator_delay", "actuator_history"):
+            with self.subTest(field=field):
+                np.testing.assert_allclose(
+                    getattr(solver.mjw_model, field).numpy(),
+                    np.stack([getattr(m, field) for m, _ in references]),
+                )
+        self.assertTrue(solver.mjw_model.flg_adhesion)
+        solver.mjw_data.qpos.assign(np.stack([d.qpos for _, d in references]))
+        solver.mjw_data.qvel.fill_(0.4)
+        for step in range(8):
+            control = [0.1 if step % 3 else -0.2, 0.05]
+            solver.mjw_data.ctrl.assign(np.tile(control, (2, 1)))
+            mujoco_warp.step(solver.mjw_model, solver.mjw_data)
+            for m, d in references:
+                d.ctrl[:] = control
+                mujoco.mj_step(m, d)
+            with self.subTest(step=step):
+                np.testing.assert_allclose(
+                    solver.mjw_data.qvel.numpy(), np.stack([d.qvel for _, d in references]), rtol=2e-5, atol=2e-6
+                )
+
+    def test_native_world_template_parameters(self):
+        """Reject different fluid coefficients or actuator layouts across worlds."""
+        xml = """<mujoco><worldbody><body><joint name="j"/><geom size=".1" mass="1"
+            fluidshape="ellipsoid"/></body></worldbody>
+            <actuator><motor joint="j" nsample="4"/></actuator></mujoco>"""
+        asset = newton.ModelBuilder()
+        asset.add_mjcf_native(xml, ctrl_direct=True)
+        for name, value in (
+            ("native_geom_fluid_ellipsoid", 0.0),
+            ("native_geom_fluid_coefs", (2.0, 3.0, 4.0, 5.0, 6.0)),
+            ("native_actuator_group", 2),
+            ("native_actuator_nsample", 5),
+        ):
+            with self.subTest(field=name):
+                builder = newton.ModelBuilder()
+                builder.replicate(asset, 2)
+                builder.custom_attributes[f"mujoco:{name}"].values[1] = value
+                with self.assertRaisesRegex(ValueError, name):
+                    SolverMuJoCo(builder.finalize(), separate_worlds=True)
+
     def test_native_actuator_history_and_dcmotor(self):
         """Preserve actuator history, passive properties, and DC-motor inputs."""
         for actuator in (

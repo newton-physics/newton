@@ -9248,7 +9248,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             eq.solref = (0.0, 0.0)
             kinematic_welds.append(eq)
 
-        from .mjcf_export import _apply_native_parameters  # noqa: PLC0415
+        from .mjcf_export import (  # noqa: PLC0415
+            _NATIVE_BATCHED_MODEL_FIELDS,
+            _apply_native_parameters,
+            _publish_native_world_parameters,
+        )
 
         has_native_parameters = _apply_native_parameters(
             model, spec, dof_to_mjc_joint, shape_mapping, actuator_custom_attr_idx
@@ -9361,6 +9365,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # Determine nworld for mapping dimensions
             nworld = model.world_count if separate_worlds else 1
             batch_sizes = dict.fromkeys(_MJW_BATCHED_MODEL_FIELDS, nworld) if nworld > 1 else None
+            if batch_sizes is not None and has_native_parameters:
+                batch_sizes.update(dict.fromkeys(_NATIVE_BATCHED_MODEL_FIELDS, nworld))
             try:
                 self.mjw_model = mujoco_warp.put_model(self.mj_model, batch_sizes=batch_sizes)
             finally:
@@ -9662,6 +9668,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     template_tendon = newton_tendon % tendons_per_world if tendons_per_world > 0 else newton_tendon
                     mjc_tendon_to_newton_tendon_np[:, mjc_tendon] = world_offsets * tendons_per_world + template_tendon
                 self.mjc_tendon_to_newton_tendon = wp.array(mjc_tendon_to_newton_tendon_np, dtype=wp.int32)
+
+            if has_native_parameters:
+                _publish_native_world_parameters(
+                    model,
+                    self.mj_model,
+                    self.mjw_model,
+                    mjc_jnt_to_newton_dof_np,
+                    geom_shape_mapping,
+                    mjc_tendon_to_newton_tendon_np if ntendon else None,
+                    actuator_custom_attr_idx if len(actuator_custom_attr_idx) else None,
+                )
 
             if separate_worlds:
                 nworld = model.world_count

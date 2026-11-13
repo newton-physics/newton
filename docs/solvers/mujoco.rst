@@ -125,6 +125,13 @@ per-world options belong to the current builder world;
 use ``parse_mujoco_options=False`` when attaching an asset that should not
 replace the assembled model's settings.
 
+With ``separate_worlds=True``, joint and tendon polynomials, geom surface
+velocity and adhesion, and actuator delay and interpolation retain per-world
+values at solver construction. Fluid coefficients, actuator groups, and
+history-buffer sample counts must match across corresponding entities;
+different values raise ``ValueError`` because their compiled layout is shared.
+Rebuild the solver after editing these native attributes.
+
 Without a custom resolver, file-backed native imports use MuJoCo's asset-path
 rules. The legacy importer resolves ``assetdir`` and ``meshdir`` separately for
 each included file. For portable nested includes, omit these
