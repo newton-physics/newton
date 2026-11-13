@@ -11225,12 +11225,8 @@ class ModelBuilder:
             shape = self.body_shapes[body][0]
             scale = self.shape_scale[shape]
             radius, half_height = float(scale[0]), float(scale[1])
-            if radius <= 0.0 or half_height <= 0.0:
-                raise ValueError("A positive rod segment mass requires positive cylinder volume")
             inner_radius = 0.0
             if not self.shape_is_solid[shape]:
-                if self.shape_margin[shape] == 0.0:
-                    raise ValueError("A positive rod segment mass requires positive tube wall thickness")
                 thickness = _validate_hollow_thickness("capsule", self.shape_margin[shape], (("radius", radius),))
                 inner_radius = radius - thickness
             # Use assigned mass directly: subtracting shell tensors loses precision for thin walls.

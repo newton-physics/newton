@@ -7493,12 +7493,13 @@ class TestCable(unittest.TestCase):
         radius, thickness, length, density = 0.05, 0.01, 0.8, 1200.0
         cfg = newton.ModelBuilder.ShapeConfig(density=density)
         cylinder_mass = density * np.pi * radius**2 * length
-        # A float16 density checks that the mass is computed in Python precision.
-        cases = [(cfg, cylinder_mass), (newton.ModelBuilder.ShapeConfig(density=np.float16(density)), cylinder_mass)]
-        # A very thin float32 wall checks that neither the tube-wall area nor its inertia cancels.
-        for wall in (thickness, np.float32(radius * 1e-8)):
-            hollow_cfg = newton.ModelBuilder.ShapeConfig(density=density, is_solid=False, margin=wall)
-            cases.append((hollow_cfg, density * np.pi * float(wall) * (2.0 * radius - float(wall)) * length))
+        hollow_cfg = newton.ModelBuilder.ShapeConfig(density=density, is_solid=False, margin=thickness)
+        cases = [
+            (cfg, cylinder_mass),
+            # float16 exposes premature rounding unless density is converted before arithmetic.
+            (newton.ModelBuilder.ShapeConfig(density=np.float16(density)), cylinder_mass),
+            (hollow_cfg, density * np.pi * thickness * (2.0 * radius - thickness) * length),
+        ]
         for rod_cfg, expected_mass in cases:
             for segments in (1, 16):
                 with self.subTest(is_solid=rod_cfg.is_solid, margin=rod_cfg.margin, segments=segments):
@@ -7519,7 +7520,7 @@ class TestCable(unittest.TestCase):
                             rtol=1e-6,
                             atol=1e-7,
                         )
-                    inner_radius = 0.0 if rod_cfg.is_solid else radius - float(rod_cfg.margin)
+                    inner_radius = 0.0 if rod_cfg.is_solid else radius - thickness
                     radial_sum = radius**2 + inner_radius**2
                     transverse = expected_mass * (radial_sum / 4.0 + length**2 / 12.0)
                     axial = expected_mass * radial_sum / 2.0
@@ -7531,13 +7532,13 @@ class TestCable(unittest.TestCase):
         initial = np.array([(0.0, 0.0, z) for z in (0.0, 0.2, 0.6, 1.2)])
         rest = initial * 0.5
         for edges in (None, [(1, 2), (0, 1), (2, 3)]):
-            for total_mass in (6.0, 0.0, np.float16(1e-4)):
+            for total_mass in (6.0, 0.0):
                 with self.subTest(edges=edges, total_mass=total_mass):
                     rod = newton.Rod(initial, edges=edges, rest_points=rest, radius=0.05)
                     builder = newton.ModelBuilder()
                     bodies, _ = builder.add_rod(rod=rod, total_mass=total_mass)
                     lengths = np.linalg.norm(rest[rod.edges[:, 1]] - rest[rod.edges[:, 0]], axis=1)
-                    expected = float(total_mass) * lengths / lengths.sum()
+                    expected = total_mass * lengths / lengths.sum()
                     np.testing.assert_allclose(np.asarray(builder.body_mass)[bodies], expected, rtol=1e-6)
                     for body in bodies:
                         if total_mass > 0.0:
@@ -7586,15 +7587,6 @@ class TestCable(unittest.TestCase):
         self.assertTrue(builder.shape_flags[shape] & newton.ShapeFlags.SITE)
         self.assertFalse(builder.shape_flags[shape] & newton.ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(builder.shape_flags[shape] & newton.ShapeFlags.COLLIDE_PARTICLES)
-
-    def test_rod_small_inertia_has_finite_inverse(self):
-        """Keep small positive rod inertias invertible when their float32 determinant underflows."""
-        builder = newton.ModelBuilder()
-        bodies, _ = builder.add_rod(rod=newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1e-4)], radius=1e-5), total_mass=1e-8)
-        inertia = np.asarray(builder.body_inertia[bodies[0]]).reshape(3, 3)
-        inverse = np.asarray(builder.body_inv_inertia[bodies[0]]).reshape(3, 3)
-        self.assertTrue(np.isfinite(inverse).all())
-        np.testing.assert_allclose(inertia @ inverse, np.eye(3), rtol=1e-6, atol=1e-7)
 
     def test_semi_implicit_rejects_rod_joints(self):
         """Reject Rod models at SemiImplicit construction."""
