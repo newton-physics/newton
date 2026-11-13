@@ -1290,6 +1290,33 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
         with self.assertRaises(ValueError):
             PADMMSolver(model=test.model, config=config, problem=test.problem)
 
+    def test_04_joint_rho_scale(self):
+        """Removing the penalty of the bilateral joint rows preserves the solution and speeds up convergence."""
+        for use_acceleration in (False, True):
+            with self.subTest(use_acceleration=use_acceleration):
+                status, v_plus, lambdas = {}, {}, {}
+                for scale in (1.0, 0.0):
+                    test = make_redundant_fourbar(self.default_device, sparse=False)
+                    config = PADMMSolver.Config(
+                        redundant_joint_tolerance=1e-5, joint_rho_scale=scale, max_iterations=500
+                    )
+                    solver = PADMMSolver(
+                        model=test.model, config=config, problem=test.problem, use_acceleration=use_acceleration
+                    )
+                    test.build()
+                    solver.coldstart()
+                    solver.solve(problem=test.problem)
+                    status[scale] = solver.data.status.numpy()[0]
+                    v_plus[scale] = solver.data.solution.v_plus.numpy()
+                    lambdas[scale] = solver.data.solution.lambdas.numpy()
+
+                # Check that both converge to the same solution, the unpenalized one in fewer iterations
+                self.assertTrue(bool(status[1.0]["converged"]))
+                self.assertTrue(bool(status[0.0]["converged"]))
+                self.assertLess(status[0.0]["iterations"], status[1.0]["iterations"])
+                np.testing.assert_allclose(v_plus[0.0], v_plus[1.0], rtol=0.0, atol=1e-3 * np.abs(v_plus[1.0]).max())
+                np.testing.assert_allclose(lambdas[0.0], lambdas[1.0], rtol=0.0, atol=1e-3 * np.abs(lambdas[1.0]).max())
+
 
 ###
 # Test execution

@@ -32,6 +32,7 @@ from .kernels import (
     _compute_projection_argument,
     _compute_solution_vectors,
     _compute_velocity_bias,
+    _fill_rho_scale,
     _make_compute_infnorm_residuals_kernel,
     _make_project_dual_convergence_accel_kernel,
     _project_to_feasible_cone,
@@ -269,6 +270,9 @@ class PADMMSolver:
             PADMMPenaltyUpdate.from_string(c.penalty_update_method) != PADMMPenaltyUpdate.FIXED for c in self._config
         )
 
+        # Check if any world scales the penalty of the bilateral joint rows
+        self._scale_joint_rho = any(c.joint_rho_scale != 1.0 for c in self._config)
+
         # Compute the largest max iterations across all worlds
         # NOTE: This is needed to allocate the solver
         # info arrays if `collect_info` is enabled
@@ -469,6 +473,10 @@ class PADMMSolver:
         # Initialize the solver status, ALM penalty, and iterative solver tolerance
         self._initialize()
 
+        # Scale the penalty of the bilateral joint rows
+        if self._scale_joint_rho:
+            self._update_rho_scale(problem)
+
         # Add the diagonal proximal regularization to the Delassus matrix
         # D_{eta,rho} := D + (eta + rho) * I_{ncts}
         self._update_regularization(problem)
@@ -564,6 +572,28 @@ class PADMMSolver:
         # converges or reaches the maximum number of iterations
         self._data.state.done.fill_(self._size.num_worlds)
 
+    def _update_rho_scale(self, problem: DualProblem):
+        """Assign the per-row scale of the ALM penalty from the constraint groups."""
+        wp.launch(
+            kernel=_fill_rho_scale,
+            dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
+            inputs=[
+                # Inputs:
+                problem.data.dim,
+                problem.data.nbc,
+                problem.data.nl,
+                problem.data.nc,
+                problem.data.bcgo,
+                problem.data.lcgo,
+                problem.data.ccgo,
+                problem.data.vio,
+                self._data.config,
+                # Outputs:
+                self._data.state.rho_scale,
+            ],
+            device=self.device,
+        )
+
     def _update_sparse_regularization(self, problem: DualProblem):
         """Propagate eta + rho to the sparse Delassus diagonal regularization."""
         wp.launch(
@@ -575,6 +605,7 @@ class PADMMSolver:
                 self._data.config,
                 self._data.penalty,
                 self._data.status,
+                self._data.state.rho_scale,
                 problem.delassus._eta,
             ],
             device=self.device,
@@ -630,8 +661,11 @@ class PADMMSolver:
                 inputs=[
                     # Inputs:
                     problem.data.dim,
+                    problem.data.vio,
+                    self._data.penalty,
                     self._data.status,
                     self._data.state.sigma,
+                    self._data.state.rho_scale,
                     # Outputs:
                     problem.data.D,
                 ],
@@ -1035,6 +1069,7 @@ class PADMMSolver:
                 self._data.config,
                 self._data.penalty,
                 self._data.status,
+                self._data.state.rho_scale,
                 self._data.state.s,
                 self._data.state.x_p,
                 y,
@@ -1076,6 +1111,7 @@ class PADMMSolver:
                 self._data.config,
                 self._data.penalty,
                 self._data.status,
+                self._data.state.rho_scale,
                 self._data.state.x_p,
                 y,
                 z,
@@ -1121,6 +1157,7 @@ class PADMMSolver:
                 problem.data.vio,
                 self._data.penalty,
                 self._data.status,
+                self._data.state.rho_scale,
                 z,
                 self._data.state.x,
                 # Outputs:
@@ -1224,6 +1261,7 @@ class PADMMSolver:
                 self._data.status,
                 problem.sparse,
                 self._data.state.sigma,
+                self._data.state.rho_scale,
                 self._data.state.v,
                 self._data.state.x,
                 self._data.state.y,
@@ -1274,6 +1312,7 @@ class PADMMSolver:
                 self._data.state.a_p,
                 problem.sparse,
                 self._data.state.sigma,
+                self._data.state.rho_scale,
                 self._data.state.v,
                 self._data.state.x,
                 self._data.state.x_p,

@@ -273,6 +273,9 @@ class PADMMConfigStruct:
     warmstart_scale: wp.float32
     """Scale applied to cached constraint forces during warm-starting. Defaults to `0.9`."""
 
+    joint_rho_scale: wp.float32
+    """Scale of the ALM penalty on the bilateral joint constraints. Defaults to `1.0`."""
+
 
 @wp.struct
 class PADMMStatus:
@@ -518,6 +521,12 @@ class PADMMState:
         Shape of ``(num_worlds,)``.
         """
 
+        self.rho_scale: wp.array[wp.float32] | None = None
+        """
+        The per-row scale of the ALM penalty `rho`, which differs from one only on bilateral joint constraints.
+        Shape of ``(sum_of_max_total_cts,)``.
+        """
+
         self.s: wp.array[wp.float32] | None = None
         """
         The De Saxce correction velocities `s = Gamma(v_plus)`.
@@ -625,6 +634,7 @@ class PADMMState:
 
         # Allocate primary state variables
         self.sigma = wp.zeros(size.num_worlds, dtype=wp.vec2f)
+        self.rho_scale = wp.ones(size.sum_of_max_total_cts, dtype=wp.float32)
         self.s = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
         self.v = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
         self.x = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
@@ -1295,4 +1305,5 @@ def convert_config_to_struct(config: PADMMSolverConfig) -> PADMMConfigStruct:
     config_struct.linear_solver_tolerance = config.linear_solver_tolerance
     config_struct.linear_solver_tolerance_ratio = config.linear_solver_tolerance_ratio
     config_struct.warmstart_scale = config.warmstart_scale
+    config_struct.joint_rho_scale = config.joint_rho_scale
     return config_struct

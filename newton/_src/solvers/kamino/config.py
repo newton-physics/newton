@@ -751,6 +751,16 @@ class PADMMSolverConfig:
     Must be in the range [0, 1). Defaults to `0.0`, which disables the detection.
     """
 
+    joint_rho_scale: float = 1.0
+    """
+    The scale of the ALM penalty on the bilateral joint constraints, i.e. the joint dynamics and kinematic rows.\n
+    The projection onto the feasible set leaves the impulses of bilateral constraints unchanged, so the penalty
+    only acts as an additional proximal regularization of these rows. A scale of zero solves them exactly at
+    each iteration, up to the proximal regularization `eta`, which requires a well-conditioned Delassus matrix
+    on the joint constraints, e.g. by dropping the redundant ones with `redundant_joint_tolerance`.\n
+    Must be in the range [0, 1]. Defaults to `1.0`.
+    """
+
     @override
     @staticmethod
     def register_custom_attributes(builder: ModelBuilder) -> None:
@@ -920,6 +930,8 @@ class PADMMSolverConfig:
             raise ValueError(
                 f"Invalid redundant joint tolerance: {self.redundant_joint_tolerance}. Must be in the range [0, 1)."
             )
+        if not 0.0 <= self.joint_rho_scale <= 1.0:
+            raise ValueError(f"Invalid joint penalty scale: {self.joint_rho_scale}. Must be in the range [0, 1].")
         if self.dual_residual_mode not in ("standard", "delassus"):
             raise ValueError(
                 f"Invalid dual residual mode: {self.dual_residual_mode}. Must be either 'standard' or 'delassus'."
