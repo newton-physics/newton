@@ -3397,8 +3397,8 @@ def update_pair_properties_kernel(
 
     Iterates over MuJoCo pairs [world, pair] and copies solver properties
     (solref, solimp, margin, gap, friction) from Newton custom attributes.
-    MuJoCo sorts pairs during compilation, so ``mjc_pair_to_newton_pair`` maps each
-    compiled pair to its row within a world.
+    MuJoCo sorts pairs during compilation and the solver may skip invalid rows, so
+    ``mjc_pair_to_newton_pair`` maps each compiled pair to its row offset within a world.
     """
     world, mjc_pair = wp.tid()
     newton_pair = world * pairs_per_world + mjc_pair_to_newton_pair[mjc_pair]

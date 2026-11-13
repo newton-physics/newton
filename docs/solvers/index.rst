@@ -586,8 +586,9 @@ conservatively for given flags:
         randomize_friction(model)
         solver.notify_model_changed(flags)
 
-For example, :class:`~newton.solvers.SolverMuJoCo` with the MuJoCo Warp backend can capture every
-notification, while host-side validation or rebuilding makes some notifications of
+For example, :class:`~newton.solvers.SolverMuJoCo` can capture every notification with the MuJoCo
+Warp backend and none with the MuJoCo CPU backend (``use_mujoco_cpu=True``), while host-side
+validation or rebuilding makes some notifications of
 :class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverKamino`,
 :class:`~newton.solvers.SolverSteel`, :class:`~newton.solvers.SolverVBD`, and the coupled solvers
 not capturable.

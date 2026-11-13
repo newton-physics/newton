@@ -3591,7 +3591,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     def _init_pairs(
         self, model: Model, spec: Any, shape_mapping: dict[int, str], template_world: int
-    ) -> list[tuple[str, str]]:
+    ) -> list[tuple[int, str, str]]:
         """
         Initialize MuJoCo contact pairs from custom attributes.
 
@@ -3606,9 +3606,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             template_world: The world index to use as the template (typically first_group).
 
         Returns:
-            The geom names of the added pairs, in the order they were added.
+            For each added pair, in the order they were added: its row offset within the template
+            world's pair rows, counting skipped rows, and its geom names.
         """
-        added_pairs: list[tuple[str, str]] = []
+        added_pairs: list[tuple[int, str, str]] = []
+        template_start: int | None = None
         pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
         if pair_count == 0:
             return added_pairs
@@ -3638,6 +3640,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             pw = int(pair_world[i])
             if pw != template_world and pw >= 0:
                 continue
+            if template_start is None:
+                template_start = i
 
             # Map Newton shape indices to MuJoCo geom names
             newton_shape1 = int(pair_geom1[i])
@@ -3701,16 +3705,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 pair_kwargs["friction"] = pair_friction[i].tolist()
 
             spec.add_pair(**pair_kwargs)
-            added_pairs.append((geom_name1, geom_name2))
+            added_pairs.append((i - template_start, geom_name1, geom_name2))
 
         return added_pairs
 
-    def _map_compiled_pairs(self, added_pairs: list[tuple[str, str]], device: wp.DeviceLike) -> wp.array | None:
-        """Map compiled MuJoCo pairs to the order in which :meth:`_init_pairs` added them.
+    def _map_compiled_pairs(self, added_pairs: list[tuple[int, str, str]], device: wp.DeviceLike) -> wp.array | None:
+        """Map compiled MuJoCo pairs to their row offsets within a world's Newton pair rows.
 
         MuJoCo sorts pairs by body-pair signature during compilation, so a compiled pair index
         generally differs from the authored row. It may also swap the geoms of a pair, so pairs are
-        matched by their unordered geoms.
+        matched by their unordered geoms. :meth:`_init_pairs` may also skip rows, so each pair
+        carries its own row offset.
         """
         if self.mj_model.npair == 0:
             return None
@@ -3719,7 +3724,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             return (min(geom1, geom2), max(geom1, geom2))
 
         rows_by_geoms: dict[tuple[int, int], list[int]] = {}
-        for row, (geom_name1, geom_name2) in enumerate(added_pairs):
+        for row, geom_name1, geom_name2 in added_pairs:
             pair_key = key(self.mj_model.geom(geom_name1).id, self.mj_model.geom(geom_name2).id)
             rows_by_geoms.setdefault(pair_key, []).append(row)
         # The sort is stable, so pairs between the same geoms keep their order.

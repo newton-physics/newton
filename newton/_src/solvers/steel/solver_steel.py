@@ -3377,10 +3377,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         if int(getattr(mujoco, "equality_constraint_count", 0) or 0):
             # MuJoCo equality rows are validated on the host.
             flags |= ModelFlags.CONSTRAINT_PROPERTIES
-        if self._enable_restitution and (
-            self._solve_mode != "matrix_free" or self._sparse_mass_matrix_size is not None
-        ):
-            # Restitution support is checked on the host.
+        if self._enable_restitution and self._sparse_mass_matrix_size is not None:
+            # Sparse mass factors check restitution support on the host.
             flags |= ModelFlags.SHAPE_PROPERTIES
         return int(flags)
 
