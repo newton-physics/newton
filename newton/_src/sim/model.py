@@ -1152,7 +1152,7 @@ class Model:
 
         # Shape and particle BVH structures and related fields
         self._optix_scene: OptixScene | None = None
-        self._optix_unsupported: str | None = None
+        self._bvh_backend: str | None = None
         self.bvh_shapes: wp.Bvh | None = None
         """BVH over selected shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
         self.bvh_shapes_group_roots: wp.array[wp.int32] | None = None
@@ -2280,7 +2280,7 @@ class Model:
         )
 
         self._optix_scene = None
-        self._optix_unsupported = None
+        self._bvh_backend = None
         if self.shape_count == 0:
             return
 
@@ -2377,9 +2377,7 @@ class Model:
         Manually populated models must call :meth:`bvh_build_shapes` first.
         Updates world-space shape transforms from ``state.body_q`` and refits
         the BVH in place, and marks the leaves of empty variant rows (see
-        :meth:`select_body_variants`) so that ray queries skip them. If OptiX
-        ray queries have initialized acceleration, refits that structure too;
-        this requires running outside CUDA graph capture.
+        :meth:`select_body_variants`) so that ray queries skip them.
 
         Args:
             state: Current simulation state with body transforms.
@@ -2402,8 +2400,6 @@ class Model:
         compute_shape_bvh_bounds_launch(self, self.bvh_shapes.lowers, self.bvh_shapes.uppers, self.bvh_shapes.groups)
         self.bvh_shapes.refit()
         self._mark_inactive_bvh_shapes()
-        if self._optix_scene is not None:
-            self._optix_scene.refit()
 
     def _mark_inactive_bvh_shapes(self) -> None:
         """Mark the BVH leaves of empty or transparent variant rows on the device, so it also works in CUDA graphs."""

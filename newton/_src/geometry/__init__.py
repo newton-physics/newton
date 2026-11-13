@@ -22,7 +22,6 @@ from .deformable_visual import DeformableVisualMesh, DeformableVisuals
 from .flags import ParticleFlags, ShapeFlags
 from .inertia import compute_inertia_shape, compute_inertia_sphere, transform_inertia
 from .particle_surface import ParticleSurface, extract_particle_surface
-from .raycast import RaycastBackend as RaycastBackend
 from .raycast import intersect_ray as intersect_ray
 from .sdf_utils import SDF
 from .terrain_generator import create_mesh_heightfield, create_mesh_terrain

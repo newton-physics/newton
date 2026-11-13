@@ -671,7 +671,7 @@ def _make_intersection_model(device: str):
     return builder.finalize(device=device)
 
 
-def test_intersect_ray(test: TestRaycast, device: str, backend=newton.RaycastBackend.WARP):
+def test_intersect_ray(test: TestRaycast, device: str, backend="warp"):
     """Check hits, optional outputs and acceleration updates after motion and rebuild."""
     model = _make_intersection_model(device)
 
@@ -778,7 +778,10 @@ def test_intersect_ray(test: TestRaycast, device: str, backend=newton.RaycastBac
 
 
 def test_intersect_ray_default_backend(test: TestRaycast, device: str):
-    """Use OptiX by default where it is available and Warp during CUDA graph capture."""
+    """Use OptiX by default where it is available and Warp during CUDA graph capture.
+
+    The BVH refit stays capturable after OptiX raycasts build their acceleration.
+    """
     model = _make_intersection_model(device)
     origins = wp.array([wp.vec3(-2.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
     directions = wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
@@ -793,13 +796,15 @@ def test_intersect_ray_default_backend(test: TestRaycast, device: str):
 
     if wp.get_device(device).is_cuda:
         out_dist.fill_(0.0)
+        state = model.state()
         with wp.ScopedCapture(device) as capture:
+            model.bvh_refit_shapes(state)
             newton.intersect_ray(model, **kwargs)
         wp.capture_launch(capture.graph)
         np.testing.assert_allclose(out_dist.numpy(), [1.5], atol=1e-5)
     else:
         with test.assertRaisesRegex(RuntimeError, "OptiX"):
-            newton.intersect_ray(model, backend=newton.RaycastBackend.OPTIX, **kwargs)
+            newton.intersect_ray(model, backend="optix", **kwargs)
 
 
 def _make_global_world_model(device: str):
@@ -823,7 +828,7 @@ def _make_global_world_model(device: str):
     return builder.finalize(device=device), global_box, sphere0, sphere1
 
 
-def test_intersect_ray_global_world(test: TestRaycast, device: str, backend=newton.RaycastBackend.WARP):
+def test_intersect_ray_global_world(test: TestRaycast, device: str, backend="warp"):
     """Check local and global world selection with both traversal backends."""
     model, global_box, sphere0, sphere1 = _make_global_world_model(device)
 
@@ -870,9 +875,7 @@ def test_intersect_ray_global_world(test: TestRaycast, device: str, backend=newt
     )
 
 
-def test_intersect_ray_heightfield_uses_finalize_bvh(
-    test: TestRaycast, device: str, backend=newton.RaycastBackend.WARP
-):
+def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: str, backend="warp"):
     """Query heightfield triangles using acceleration built from the finalized model."""
     builder = newton.ModelBuilder()
     heightfield = Heightfield(data=np.zeros((2, 2), dtype=np.float32), nrow=2, ncol=2, hx=1.0, hy=1.0)
@@ -901,7 +904,7 @@ def test_intersect_ray_heightfield_uses_finalize_bvh(
     np.testing.assert_array_equal(out_shape_id.numpy(), np.array([shape_id], dtype=np.int32))
 
 
-def test_intersect_ray_heightfield_flat_at_min_z(test: TestRaycast, device: str, backend=newton.RaycastBackend.WARP):
+def test_intersect_ray_heightfield_flat_at_min_z(test: TestRaycast, device: str, backend="warp"):
     """Rays from above hit terrain that is flat at ``min_z`` with a +Z normal (issue #4452)."""
     # Left half flat at min_z, right half bumpy.
     elevation = np.zeros((8, 8), dtype=np.float32)
@@ -935,9 +938,7 @@ def test_intersect_ray_heightfield_flat_at_min_z(test: TestRaycast, device: str,
     np.testing.assert_allclose(out_normal.numpy(), np.tile([0.0, 0.0, 1.0], (n, 1)), atol=1e-5)
 
 
-def test_intersect_ray_includes_collision_shapes_on_request(
-    test: TestRaycast, device: str, backend=newton.RaycastBackend.WARP
-):
+def test_intersect_ray_includes_collision_shapes_on_request(test: TestRaycast, device: str, backend="warp"):
     """Include collision-only shapes in the shape BVH when requested."""
     builder = newton.ModelBuilder()
     visible_cfg = newton.ModelBuilder.ShapeConfig(
@@ -1031,7 +1032,7 @@ add_function_test(
 
 
 def test_intersect_ray_skips_transparent_shapes_but_keeps_requested_colliders(
-    test: TestRaycast, device: str, backend=newton.RaycastBackend.WARP
+    test: TestRaycast, device: str, backend="warp"
 ):
     """A zero-opacity shape is dropped by the VISIBLE mask but kept when selected through a collision flag."""
     builder = newton.ModelBuilder()
@@ -1068,9 +1069,7 @@ def test_intersect_ray_skips_transparent_shapes_but_keeps_requested_colliders(
     np.testing.assert_array_equal(out_shape_id.numpy(), np.array([solid, transparent]))
 
 
-def test_intersect_ray_misses_when_no_shape_is_selected(
-    test: TestRaycast, device: str, backend=newton.RaycastBackend.WARP
-):
+def test_intersect_ray_misses_when_no_shape_is_selected(test: TestRaycast, device: str, backend="warp"):
     """An empty shape selection is a valid BVH, so every ray reports the documented miss."""
     builder = newton.ModelBuilder()
     cfg = newton.ModelBuilder.ShapeConfig(is_visible=True, has_shape_collision=False, has_particle_collision=False)
@@ -1105,8 +1104,8 @@ add_function_test(
     TestRaycast, "test_intersect_ray_default_backend", test_intersect_ray_default_backend, devices=devices
 )
 
-for backend in newton.RaycastBackend:
-    backend_devices = devices if backend == newton.RaycastBackend.WARP else [d for d in devices if d.is_cuda]
+for backend in ("warp", "optix"):
+    backend_devices = devices if backend == "warp" else [d for d in devices if d.is_cuda]
     for test_func in (
         test_intersect_ray,
         test_intersect_ray_global_world,
@@ -1117,13 +1116,13 @@ for backend in newton.RaycastBackend:
         test_intersect_ray_misses_when_no_shape_is_selected,
     ):
         test = test_func
-        if backend == newton.RaycastBackend.OPTIX:
+        if backend == "optix":
             test = unittest.skipUnless(importlib.util.find_spec("warp_optix") is not None, "requires warp-optix")(
                 test_func
             )
         add_function_test(
             TestRaycast,
-            f"{test_func.__name__}_{backend.value}",
+            f"{test_func.__name__}_{backend}",
             test,
             devices=backend_devices,
             backend=backend,

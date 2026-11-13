@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...core import MAXVAL
+from ...geometry.optix import SceneData
 from . import raytrace
 from .types import RenderConfig
 
@@ -16,8 +17,6 @@ if TYPE_CHECKING:
 def create_compute_lighting_function(
     config: RenderConfig, state: "RenderContext.RenderState", optix=None
 ) -> wp.Function:
-    from .optix import SceneData  # noqa: PLC0415
-
     shape_accel_type = wp.uint64 if optix is None else SceneData
     raytrace_first_hit = raytrace.create_first_hit_function(config, state, optix)
 

@@ -25,7 +25,7 @@ _IDENTITY_XFORM = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32
 
 class TestSensorCamera(unittest.TestCase):
     device = "cpu"
-    backend = newton.RaycastBackend.WARP
+    backend = "warp"
 
     def _rays(
         self, width: int, height: int, fov: float = math.radians(45.0), device: str | None = None
@@ -70,9 +70,11 @@ class TestSensorCamera(unittest.TestCase):
         model, camera = self._build_sphere_scene()
         self.assertEqual(camera.backend, self.backend)
         self.assertEqual(SensorCamera(model).backend, self.backend)
-        if self.backend == newton.RaycastBackend.WARP:
+        if self.backend == "warp":
             with self.assertRaisesRegex(RuntimeError, "OptiX"):
-                SensorCamera(model, backend=newton.RaycastBackend.OPTIX)
+                SensorCamera(model, backend="optix")
+        with self.assertRaisesRegex(ValueError, "backend"):
+            SensorCamera(model, backend="vulkan")
 
     def test_camera_ray_helpers_live_on_sensor_camera(self) -> None:
         """Verify camera ray helpers live on SensorCamera."""
@@ -1042,9 +1044,7 @@ class TestSensorCamera(unittest.TestCase):
 
     def test_cloth_albedo_uses_per_face_colors(self) -> None:
         """Verify albedo-only renders select each face's color across worlds and viewing sides."""
-        for device in (
-            [wp.get_device(self.device)] if self.backend == newton.RaycastBackend.OPTIX else get_test_devices()
-        ):
+        for device in [wp.get_device(self.device)] if self.backend == "optix" else get_test_devices():
             model, camera, rays, poses, worlds, expected_srgb = self._cloth_color_scene(device)
             state = model.state()
             albedo = camera.allocate_image_albedo(4, 2, 1)
@@ -1073,9 +1073,7 @@ class TestSensorCamera(unittest.TestCase):
 
     def test_cloth_renders_triangle_colors_from_both_sides(self) -> None:
         """Verify two-sided depth, camera-facing normals, and per-face color under directional light."""
-        for device in (
-            [wp.get_device(self.device)] if self.backend == newton.RaycastBackend.OPTIX else get_test_devices()
-        ):
+        for device in [wp.get_device(self.device)] if self.backend == "optix" else get_test_devices():
             model, camera, rays, poses, worlds, expected = self._cloth_color_scene(device)
             state = model.state()
             depth = camera.allocate_image_depth(4, 2, 1)
@@ -1125,9 +1123,7 @@ class TestSensorCamera(unittest.TestCase):
 
     def test_cloth_respects_backface_culling(self) -> None:
         """Honor default and explicit culling settings in both triangle intersection paths."""
-        for device in (
-            [wp.get_device(self.device)] if self.backend == newton.RaycastBackend.OPTIX else get_test_devices()
-        ):
+        for device in [wp.get_device(self.device)] if self.backend == "optix" else get_test_devices():
             model, camera, rays, poses, worlds, _ = self._cloth_color_scene(device)
             state = model.state()
             depth = camera.allocate_image_depth(4, 2, 1)
@@ -1467,9 +1463,7 @@ class TestSensorCamera(unittest.TestCase):
     def test_forward_depth_uses_camera_origin(self) -> None:
         """Measure custom-ray hits from the camera plane with a rotated camera."""
         pose = wp.transform(wp.vec3(3.0, -2.0, 1.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.7))
-        for device in (
-            [wp.get_device(self.device)] if self.backend == newton.RaycastBackend.OPTIX else get_test_devices()
-        ):
+        for device in [wp.get_device(self.device)] if self.backend == "optix" else get_test_devices():
             with self.subTest(device=device):
                 builder = newton.ModelBuilder()
                 builder.add_shape_box(
@@ -1507,9 +1501,7 @@ class TestSensorCamera(unittest.TestCase):
 
     def test_forward_depth_conversion_preserves_invalid_depth(self) -> None:
         """Preserve zero and negative depth sentinels with custom ray origins."""
-        for device in (
-            [wp.get_device(self.device)] if self.backend == newton.RaycastBackend.OPTIX else get_test_devices()
-        ):
+        for device in [wp.get_device(self.device)] if self.backend == "optix" else get_test_devices():
             with self.subTest(device=device):
                 rays_np = np.zeros((1, 3, 1, 2, 3), dtype=np.float32)
                 rays_np[..., 0, 2] = -1.0
@@ -1615,9 +1607,7 @@ class TestSensorCamera(unittest.TestCase):
         expected = np.full((*values.shape, 4), 255, dtype=np.uint8)
         expected[..., :3] = gray[..., None]
         expected_tiled = np.concatenate(list(expected), axis=1)
-        for device in (
-            [wp.get_device(self.device)] if self.backend == newton.RaycastBackend.OPTIX else get_test_devices()
-        ):
+        for device in [wp.get_device(self.device)] if self.backend == "optix" else get_test_devices():
             depth = wp.array(values, dtype=wp.float32, device=device)
             for depth_range in ((1.0, 3.0), wp.array([1.0, 3.0], dtype=wp.float32, device=device)):
                 with self.subTest(device=device, range_type=type(depth_range).__name__):
@@ -1732,7 +1722,7 @@ class TestSensorCamera(unittest.TestCase):
         builder.add_shape_plane(-1, xform=wp.transform(wp.vec3(0.0, 0.0, -4.0), wp.quat_identity()))
         model = builder.finalize(device=self.device)
         state = model.state()
-        cameras = [SensorCamera(model, backend=backend) for backend in (newton.RaycastBackend.WARP, self.backend)]
+        cameras = [SensorCamera(model, backend=backend) for backend in ("warp", self.backend)]
         for camera in cameras:
             camera.create_default_light(enable_shadows=True)
             camera.default_render_config.enable_shadows = True
@@ -1786,7 +1776,7 @@ class TestSensorCamera(unittest.TestCase):
         builder.add_shape_sphere(-1, xform=wp.transform(wp.vec3(0.0, 0.0, -4.0), wp.quat_identity()), radius=0.25)
         model = builder.finalize(device=self.device)
         state = model.state()
-        cameras = [SensorCamera(model, backend=backend) for backend in (newton.RaycastBackend.WARP, self.backend)]
+        cameras = [SensorCamera(model, backend=backend) for backend in ("warp", self.backend)]
         values = np.zeros((1, 3, 1, 2, 3), dtype=np.float32)
         # The +X ray would enter world 1's cell without clipping.
         values[0, 0, 0, 1] = (1.0, 0.0, 0.0)
@@ -1829,11 +1819,11 @@ class TestSensorCamera(unittest.TestCase):
         state = model.state()
         rays = SensorCamera.compute_camera_rays_pinhole(16, 16, camera_fov=1.0, device=model.device)
         poses = wp.array([wp.transform_identity()], dtype=wp.transform, device=model.device)
-        if self.backend == newton.RaycastBackend.OPTIX:
+        if self.backend == "optix":
             with self.assertRaisesRegex(RuntimeError, "particles or deformable surfaces"):
                 SensorCamera(model, backend=self.backend)
         camera = SensorCamera(model)
-        self.assertEqual(camera.backend, newton.RaycastBackend.WARP)
+        self.assertEqual(camera.backend, "warp")
         depth = camera.allocate_image_depth(1, 16, 16)
         camera.update(state, poses, rays, depth_image=depth)
         self.assertGreater(np.count_nonzero(depth.numpy()), 0)
@@ -1847,7 +1837,7 @@ class TestSensorCamera(unittest.TestCase):
         depth = camera.allocate_image_depth(1, 2, 2)
         camera.update(model.state(), poses, rays, depth_image=depth)
         np.testing.assert_array_equal(depth.numpy(), 0.0)
-        if self.backend != newton.RaycastBackend.OPTIX:
+        if self.backend != "optix":
             return
         with wp.ScopedCapture(device=model.device):
             with self.assertRaisesRegex(RuntimeError, "CUDA graph capture"):
@@ -1862,7 +1852,7 @@ class TestSensorCameraOptix(TestSensorCamera):
     """Run the camera contract against the optional traversal backend."""
 
     device = "cuda:0"
-    backend = newton.RaycastBackend.OPTIX
+    backend = "optix"
 
     def setUp(self):
         unsupported = (

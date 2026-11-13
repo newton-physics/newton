@@ -1,1 +1,1 @@
-Add experimental OptiX acceleration for `SensorCamera` and `intersect_ray`, installed through the optional `optix` extra (`warp-optix~=0.3.0`). Both default to OptiX when it supports the model and device and to Warp otherwise; select a backend explicitly with `RaycastBackend`.
+Add experimental OptiX acceleration for `SensorCamera` and `intersect_ray`, installed with the `optix` extra. Both use OptiX by default when it is available; pass `backend="warp"` or `backend="optix"` to choose.

@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import enum
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -924,24 +923,6 @@ def raycast_kernel(
         _spinlock_release(lock)
 
 
-class RaycastBackend(enum.Enum):
-    """Shape traversal backend for ray queries and :class:`~newton.sensors.SensorCamera`.
-
-    Passing ``None`` instead selects :attr:`OPTIX` when it can be used and
-    :attr:`WARP` otherwise.
-
-    .. experimental::
-        The OptiX backend requires ``newton[optix]`` and a CUDA device that
-        supports OptiX. Shape variants, Gaussian shapes and CUDA graph capture
-        are not supported.
-    """
-
-    WARP = "warp"
-    """Portable Warp BVH traversal."""
-    OPTIX = "optix"
-    """Hardware traversal using the optional ``newton[optix]`` dependency."""
-
-
 def intersect_ray(
     model: Model,
     *,
@@ -953,7 +934,7 @@ def intersect_ray(
     out_shape_id: wp.array[wp.int32] | None = None,
     out_normal: wp.array[wp.vec3] | None = None,
     fast_math: bool = True,
-    backend: RaycastBackend | None = None,
+    backend: str | None = None,
 ):
     """Intersect rays with model shapes.
 
@@ -983,17 +964,14 @@ def intersect_ray(
         out_shape_id: Optional output hit shape indices, shape [ray_count]. ``-1`` on miss.
         out_normal: Optional output hit normals, shape [ray_count, 3].
         fast_math: Whether to compile the intersection kernel with fast math enabled.
-        backend: Shape traversal backend. ``None`` uses OptiX when it supports the
-            model and device and the call is not being captured into a CUDA graph,
-            and Warp otherwise. Requesting :attr:`RaycastBackend.OPTIX` when it cannot
-            be used raises :class:`RuntimeError`. OptiX acceleration is built lazily and
-            updated by :meth:`~newton.Model.bvh_refit_shapes`. Rebuilding the model
-            BVH invalidates the cached OptiX acceleration.
+        backend: ``"warp"``, ``"optix"``, or ``None`` to use OptiX when it supports the
+            model and device, outside CUDA graph capture. ``"optix"`` raises
+            :class:`RuntimeError` when unsupported.
     """
 
-    if backend is not None:
-        backend = RaycastBackend(backend)
-    if backend != RaycastBackend.WARP:
+    if backend not in (None, "warp", "optix"):
+        raise ValueError(f"backend must be None, 'warp' or 'optix', got {backend!r}")
+    if backend != "warp":
         from .optix import intersect_rays  # noqa: PLC0415
 
         if intersect_rays(
@@ -1006,7 +984,7 @@ def intersect_ray(
             out_shape_id=out_shape_id,
             out_normal=out_normal,
             fast_math=fast_math,
-            required=backend == RaycastBackend.OPTIX,
+            required=backend == "optix",
         ):
             return
 

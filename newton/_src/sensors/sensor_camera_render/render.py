@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...geometry import Gaussian, GeoType
+from ...geometry.optix import SceneData
 from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
 from .types import AntiAliasing, ClearData, MeshData, RenderConfig, RenderOrder, TextureData, WorldRenderFlag
@@ -80,8 +81,6 @@ def _unpack_rgba(packed: wp.uint32):
 def create_kernel(
     config: RenderConfig, state: "RenderContext.RenderState", clear_data: ClearData, optix=None
 ) -> wp.kernel:
-    from .optix import SceneData  # noqa: PLC0415
-
     shape_accel_type = wp.uint64 if optix is None else SceneData
     compute_lighting = lighting.create_compute_lighting_function(config, state, optix)
     sample_texture = textures.create_sample_texture_function(config)

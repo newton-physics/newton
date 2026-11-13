@@ -257,7 +257,7 @@ class _SensorCameraSceneRig:
         render_order: SensorCamera.RenderOrder,
         camera_fov_deg: float = 45.0,
         *,
-        backend: newton.RaycastBackend = newton.RaycastBackend.WARP,
+        backend: str = "warp",
     ):
         world = preset.build()
         _disable_collision_handling(world)
@@ -321,7 +321,7 @@ class _SceneBenchmark:
     param_names = ["resolution", "world_count", "iterations"]
     scene: str
     render_order = RENDER_ORDER
-    backend = newton.RaycastBackend.WARP
+    backend = "warp"
 
     def setup(self, resolution: int, world_count: int, iterations: int):
         self.rig = _SensorCameraSceneRig(
@@ -459,7 +459,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--backend",
-        choices=[backend.value for backend in newton.RaycastBackend],
+        choices=["warp", "optix"],
         default="warp",
         help="Camera shape-traversal backend.",
     )
@@ -470,6 +470,6 @@ if __name__ == "__main__":
             print(f"Wrote {path}")
     else:
         for key in args.bench or benchmark_list.keys():
-            benchmark_list[key].backend = newton.RaycastBackend(args.backend)
+            benchmark_list[key].backend = args.backend
             result = run_benchmark(benchmark_list[key])
             print_fps_results(result)

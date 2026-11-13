@@ -13,7 +13,6 @@ import warp as wp
 
 from ..core.types import Devicelike
 from ..geometry.deformable_visual import DeformableVisuals
-from ..geometry.raycast import RaycastBackend
 from .sensor_camera_render import Utils
 from .sensor_camera_render.types import (
     AntiAliasing,
@@ -143,7 +142,7 @@ class SensorCamera:
         default_clear_data: ClearData | None = None,
         default_render_config: RenderConfig | None = None,
         load_textures: bool = True,
-        backend: RaycastBackend | None = None,
+        backend: str | None = None,
         deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Construct a camera sensor for a model.
@@ -156,18 +155,9 @@ class SensorCamera:
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
                 ``RenderConfig()``.
-            backend: Shape-traversal backend. ``None`` selects
-                :attr:`RaycastBackend.OPTIX <newton.RaycastBackend.OPTIX>` when it supports
-                the model and device, and :attr:`RaycastBackend.WARP <newton.RaycastBackend.WARP>`
-                otherwise; :attr:`backend` reports the choice. Requesting OptiX when it cannot
-                be used raises :class:`RuntimeError`. The OptiX backend is experimental,
-                requires a CUDA device and ``newton[optix]``, and does not support
-                CUDA graph capture, particles, deformable surfaces, Gaussian
-                shapes, or shape variants. Mesh topology and the set of enabled shapes
-                must remain fixed. Continue to call
-                :meth:`Model.bvh_refit_shapes() <newton.Model.bvh_refit_shapes>`
-                after changing body poses; the camera refits its OptiX instances
-                from these transforms on each update unless ``sync_shapes=False``.
+            backend: ``"warp"``, ``"optix"``, or ``None`` to use OptiX when it supports
+                the model and device. ``"optix"`` raises :class:`RuntimeError` when
+                unsupported. See :ref:`camera-traversal-backends`.
             load_textures: Load the textures of shape meshes and deformable visual
                 meshes from file paths or in-memory images. A texture that cannot
                 be loaded raises ``ValueError`` here, so pass ``False`` for
@@ -211,8 +201,8 @@ class SensorCamera:
         return self._render_context.model.device
 
     @property
-    def backend(self) -> RaycastBackend:
-        """Shape-traversal backend this sensor renders with, resolved at construction."""
+    def backend(self) -> str:
+        """Shape traversal backend, ``"warp"`` or ``"optix"``."""
         return self._render_context.backend
 
     def allocate_image(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array[Any]:
@@ -1072,12 +1062,8 @@ class SensorCamera:
                 :attr:`default_clear_data`.
             render_config: Render settings for this call. Defaults to
                 :attr:`default_render_config`.
-            sync_shapes: Refit camera-owned shape acceleration structures from
-                the model's current shape transforms before rendering. The first
-                update always syncs them. Set ``False`` for subsequent renders of
-                an unchanged scene. The Warp backend uses the
-                model's BVH directly. This does not replace
-                the caller's :meth:`Model.bvh_refit_shapes() <newton.Model.bvh_refit_shapes>`.
+            sync_shapes: Refit the OptiX shape instances from the model's shape
+                transforms. The first update always refits.
             sync_deformables: Sync simulation surfaces and visual mesh points
                 from *state* before rendering. Set ``False`` if you already
                 called :meth:`sync_deformable_meshes` this frame.

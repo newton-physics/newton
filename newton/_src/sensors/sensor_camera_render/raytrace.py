@@ -7,6 +7,7 @@ import warp as wp
 
 from ...geometry import Gaussian, GeoType, raycast
 from ...geometry.bvh import BVH_SHAPE_INACTIVE
+from ...geometry.optix import SceneData
 from . import gaussians
 from .types import MeshData, RenderConfig
 
@@ -98,8 +99,6 @@ def get_group_roots(group_roots: wp.array[wp.int32], world_index: wp.int32, want
 
 
 def create_closest_hit_function(config: RenderConfig, state: "RenderContext.RenderState", optix=None) -> wp.Function:
-    from .optix import SceneData  # noqa: PLC0415
-
     shape_accel_type = wp.uint64 if optix is None else SceneData
     shade_gaussians = gaussians.create_shade_function(config, state)
 
@@ -302,7 +301,7 @@ def create_closest_hit_function(config: RenderConfig, state: "RenderContext.Rend
         return closest_hit
 
     if optix is not None:
-        from .optix import create_closest_hit  # noqa: PLC0415
+        from .render_optix import create_closest_hit  # noqa: PLC0415
 
         closest_hit_shape = create_closest_hit(config, optix)
 
@@ -383,8 +382,6 @@ def create_closest_hit_function(config: RenderConfig, state: "RenderContext.Rend
 def create_closest_hit_depth_only_function(
     config: RenderConfig, state: "RenderContext.RenderState", optix=None
 ) -> wp.Function:
-    from .optix import SceneData  # noqa: PLC0415
-
     shape_accel_type = wp.uint64 if optix is None else SceneData
     shade_gaussians = gaussians.create_shade_function(config, state)
 
@@ -552,7 +549,7 @@ def create_closest_hit_depth_only_function(
         return closest_hit
 
     if optix is not None:
-        from .optix import create_closest_hit  # noqa: PLC0415
+        from .render_optix import create_closest_hit  # noqa: PLC0415
 
         closest_hit_shape_depth_only = create_closest_hit(config, optix)
 
@@ -630,8 +627,6 @@ def create_closest_hit_depth_only_function(
 
 
 def create_first_hit_function(config: RenderConfig, state: "RenderContext.RenderState", optix=None) -> wp.Function:
-    from .optix import SceneData  # noqa: PLC0415
-
     shape_accel_type = wp.uint64 if optix is None else SceneData
 
     @wp.func
@@ -757,7 +752,7 @@ def create_first_hit_function(config: RenderConfig, state: "RenderContext.Render
         return False
 
     if optix is not None:
-        from .optix import create_first_hit  # noqa: PLC0415
+        from .render_optix import create_first_hit  # noqa: PLC0415
 
         first_hit_shape = create_first_hit(config, optix)
 

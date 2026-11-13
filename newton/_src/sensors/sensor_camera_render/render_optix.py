@@ -5,15 +5,13 @@
 
 import warp as wp
 
-from ...geometry import GeoType, raycast
+from ...geometry import Gaussian, GeoType, raycast
 from ...geometry.optix import SceneData, ray_interval, world_offset
+from .raytrace import ClosestHit, _mesh_hit_normal
+from .types import MeshData
 
 
 def create_closest_hit(config, scene):
-    from ...geometry import Gaussian  # noqa: PLC0415
-    from .raytrace import ClosestHit, _mesh_hit_normal  # noqa: PLC0415
-    from .types import MeshData  # noqa: PLC0415
-
     wo = scene.wo
 
     @wp.func
@@ -35,7 +33,7 @@ def create_closest_hit(config, scene):
         direction: wp.vec3f,
         camera_forward: wp.vec3f,
     ) -> ClosestHit:
-        # Keep the two traversals unrolled: dynamic traversal loops miscompile with OptiX 0.3.0.
+        # Unrolled: dynamic traversal loops miscompile with warp-optix 0.3.0.
         for i in range(wp.static(2 if config.enable_global_world else 1)):
             world = wp.where(i == 1, data.world_count, world_index)
             interval = ray_interval(origin, direction, data.extent[0], hit.distance)
@@ -125,7 +123,7 @@ def create_first_hit(config, scene):
         direction: wp.vec3f,
         max_dist: wp.float32,
     ) -> wp.bool:
-        # Keep the two traversals unrolled: dynamic traversal loops miscompile with OptiX 0.3.0.
+        # Unrolled: dynamic traversal loops miscompile with warp-optix 0.3.0.
         for i in range(wp.static(2 if config.enable_global_world else 1)):
             world = wp.where(i == 1, data.world_count, world_index)
             interval = ray_interval(origin, direction, data.extent[0], max_dist)

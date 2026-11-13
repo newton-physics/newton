@@ -119,58 +119,33 @@ attributes, and usage examples.
   visual meshes render too; see :ref:`deformable-visual-camera-output`.
 * :class:`~newton.sensors.SensorTiledCamera` -- deprecated; superseded by :class:`~newton.sensors.SensorCamera`.
 
+.. _camera-traversal-backends:
+
 Camera Traversal Backends
 -------------------------
 
-:class:`~newton.sensors.SensorCamera` and :func:`~newton.intersect_ray` traverse
-shapes with Warp BVHs or, when ``newton[optix]`` is installed, with OptiX
-hardware ray tracing. By default (``backend=None``) they use OptiX when it
-supports the model and device and Warp otherwise, so installing the extra is
-enough to enable it:
-
-.. code-block:: python
-
-   camera = SensorCamera(model)
-   print(camera.backend)  # RaycastBackend.OPTIX when available
-
-Pass :attr:`RaycastBackend.WARP <newton.RaycastBackend.WARP>` to always use
-Warp, or :attr:`RaycastBackend.OPTIX <newton.RaycastBackend.OPTIX>` to require
-OptiX; requesting OptiX when it cannot be used raises :class:`RuntimeError`
-with the reason.
+:class:`~newton.sensors.SensorCamera` and :func:`~newton.intersect_ray` take
+``backend="warp"`` (Warp BVH), ``"optix"`` (OptiX hardware ray tracing), or
+``None``, the default, which uses OptiX when ``newton[optix]`` is installed and
+it supports the model and device. ``"optix"`` raises :class:`RuntimeError` when
+it is unsupported. :attr:`SensorCamera.backend <newton.sensors.SensorCamera.backend>`
+reports the choice.
 
 .. experimental::
 
-   ``newton.RaycastBackend.OPTIX`` is experimental. The ``warp-optix~=0.3.0``
-   extra currently installs on Python 3.12, on x86-64 Linux and Windows, and
-   requires an NVIDIA CUDA device supported by OptiX.
+   The OptiX backend requires Python 3.12 on x86-64 Linux or Windows and an
+   NVIDIA GPU supported by OptiX.
 
-OptiX shares mesh geometry between instances and spatially packs worlds into
-one instance acceleration structure. Rays are offset into the selected world's
-cell and clipped to its bounds so they cannot hit neighboring worlds. The cell
-extent grows on the GPU from the model's shape bounds when geometry moves.
-Global bounded shapes occupy an additional cell, while planes are intersected
-analytically. Camera rays, image outputs, materials, lights, and shading are the
-same for both backends. Packing uses float32 coordinates, so results are not
-bit-identical to Warp.
+OptiX packs all worlds into one acceleration structure, one cell per world, so
+results are not bit-identical to Warp. Refit the model's shape BVH after shapes
+move as usual. OptiX raycasts refit their acceleration on each call, and cameras
+on each update unless ``sync_shapes=False``. OptiX does not support:
 
-Continue to refit the model's shape BVH after changing poses or sizes. The
-camera refits its OptiX instances from those transforms on every update; pass
-``sync_shapes=False`` to skip the refit for an unchanged scene. Mesh topology
-and the set of enabled shapes must remain fixed for the camera's lifetime.
-
-The OptiX backend does not support:
-
-- CUDA graph capture. Render outside graph capture, or create the camera with
-  ``backend=RaycastBackend.WARP``; simulation may still use CUDA graphs.
-  Raycasts with the default backend use Warp while a graph is being captured.
-- Particles, deformable surfaces, Gaussian shapes, and shape variants. Cameras
-  of such models use Warp by default. Raycasts query rigid shapes only.
-
-Raycasts build their OptiX acceleration lazily on the model.
-:meth:`~newton.Model.bvh_refit_shapes` updates it, and
-:meth:`~newton.Model.bvh_build_shapes` invalidates it, including when the shape
-selection changes. World selection, optional outputs, and miss values are the
-same for both backends.
+- CUDA graph capture. Render outside capture or use ``backend="warp"``.
+  Raycasts with the default backend use Warp during capture.
+- Gaussian shapes or shape variants. Cameras of models with particles or
+  deformable surfaces use Warp by default.
+- Changing mesh topology after the first OptiX query.
 
 The optional package declares ``Apache-2.0 AND BSD-3-Clause AND
 LicenseRef-NVIDIA-OptiX``. It is installed separately; Newton does not redistribute

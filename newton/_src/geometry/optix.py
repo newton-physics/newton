@@ -3,7 +3,6 @@
 
 """Optional packed OptiX acceleration shared by shape queries and camera rendering."""
 
-import functools
 import weakref
 
 import numpy as np
@@ -17,20 +16,7 @@ _MAX_REGISTERS = 80
 
 
 class UnsupportedError(RuntimeError):
-    """The OptiX backend cannot traverse this model on its device."""
-
-
-@functools.cache
-def import_warp_optix():
-    """Return the optional ``warp_optix`` module, or ``None`` if it is not installed.
-
-    Imported on first use because importing it registers OptiX with Warp.
-    """
-    try:
-        import warp_optix  # noqa: PLC0415
-    except ImportError:
-        return None
-    return warp_optix
+    """OptiX cannot traverse this model on its device."""
 
 
 @wp.struct
@@ -84,26 +70,19 @@ def _grow_extent(
         wp.atomic_max(extent, 0, radius * 1.01)
 
 
-@wp.kernel(enable_backward=False)
-def _mesh_types(types: wp.array[wp.int32]):
-    i = wp.tid()
-    if types[i] == GeoType.CONVEX_MESH or types[i] == GeoType.HFIELD:
-        types[i] = GeoType.MESH
-
-
 class Scene:
     """Own shared geometry and one spatially packed world instance structure."""
 
-    def __init__(self, model, shape_types=None):
-        wo = import_warp_optix()
-        if wo is None:
-            raise UnsupportedError("The OptiX backend requires the newton[optix] extra")
+    def __init__(self, model):
+        try:
+            import warp_optix as wo  # noqa: PLC0415
+        except ImportError as exc:
+            raise UnsupportedError("The OptiX backend requires the newton[optix] extra") from exc
         if not model.device.is_cuda:
             raise UnsupportedError("The OptiX backend requires a CUDA device")
         try:
             wo.get_context(model.device)
         except Exception as exc:
-            # OptiX reports unsupported GPUs and drivers with device-specific errors.
             raise UnsupportedError(f"OptiX is not supported on {model.device}: {exc}") from exc
         if model.shape_count >= 1 << 24:
             raise UnsupportedError("OptiX shape instance IDs must fit in 24 bits")
@@ -112,13 +91,13 @@ class Scene:
         if model.shape_count and model.bvh_shape_enabled is None:
             raise UnsupportedError("Build the model shape BVH before using the OptiX backend")
         self.wo = wo
-        # Ray queries cache this scene on the model; do not create an ownership cycle.
+        # The model caches this scene; avoid an ownership cycle.
         self.model = weakref.proxy(model)
         self.device = model.device
-        self.shape_types = shape_types if shape_types is not None else wp.clone(model.shape_type)
-        if shape_types is None:
-            wp.launch(_mesh_types, dim=model.shape_count, inputs=[self.shape_types], device=self.device)
-        types = self.shape_types.numpy() if model.shape_count else np.empty(0, dtype=np.int32)
+        types = model.shape_type.numpy() if model.shape_count else np.empty(0, dtype=np.int32)
+        # Convex hulls and heightfields are traced as their triangle meshes.
+        types = np.where(np.isin(types, (GeoType.CONVEX_MESH, GeoType.HFIELD)), GeoType.MESH, types).astype(np.int32)
+        self.shape_types = wp.array(types, dtype=wp.int32, device=self.device)
         if np.any(types == GeoType.GAUSSIAN):
             raise UnsupportedError("The OptiX backend does not support Gaussian shapes")
         enabled = (
@@ -302,6 +281,20 @@ class Scene:
         )
 
 
+def model_scene(model, *, required: bool) -> Scene | None:
+    """Return the model's OptiX scene, built on first use, or ``None`` if OptiX is unsupported."""
+    # Retry an unsupported model when OptiX is required, to raise the reason.
+    if model._bvh_backend is None or (required and model._bvh_backend == "warp"):
+        try:
+            model._optix_scene = Scene(model)
+            model._bvh_backend = "optix"
+        except UnsupportedError:
+            model._bvh_backend = "warp"
+            if required:
+                raise
+    return model._optix_scene if model._bvh_backend == "optix" else None
+
+
 def intersect_rays(
     model,
     ray_origins,
@@ -315,25 +308,16 @@ def intersect_rays(
     fast_math,
     required,
 ) -> bool:
-    """Launch batched shape queries using the model-owned packed acceleration.
-
-    Returns ``False`` without launching when OptiX is not ``required`` and cannot be used,
-    including during CUDA graph capture, so the caller falls back to Warp.
-    """
+    """Launch shape queries on the model's OptiX scene; return ``False`` to fall back to Warp."""
     if model.device.is_cuda and model.device.stream.is_capturing:
         if required:
             raise RuntimeError("The OptiX backend does not support CUDA graph capture")
         return False
-    if model._optix_scene is None and model._optix_unsupported is None:
-        try:
-            model._optix_scene = Scene(model)
-        except UnsupportedError as exc:
-            model._optix_unsupported = str(exc)
-    if model._optix_unsupported is not None:
-        if required:
-            raise UnsupportedError(model._optix_unsupported)
+    scene = model_scene(model, required=required)
+    if scene is None:
         return False
-    scene = model._optix_scene
+    # Refit here rather than in Model.bvh_refit_shapes, which may be graph captured.
+    scene.refit()
     key = (enable_global_world, out_dist is not None, out_shape_id is not None, out_normal is not None, fast_math)
     if key not in scene.ray_pipelines:
         scene.ray_pipelines[key] = _create_ray_pipeline(scene, *key)
