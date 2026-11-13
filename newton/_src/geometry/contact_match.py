@@ -78,8 +78,9 @@ The matcher owns its previous-frame state: sorted keys and uniqueness claims
 each), 40 bytes/contact in total.  None of it aliases the
 :class:`ContactSorter` scratch buffers, so a pipeline stage that runs between
 sorting and matching (for example a pass that compacts the sorted stream) may
-reuse that scratch without corrupting the history.  Sticky mode adds the
-body-frame points and offsets (48 bytes/contact) and replays the owned normal.
+reuse that scratch without corrupting the history. Sticky mode adds body-frame
+points and offsets, world-oriented witness offsets, and witness separation
+(84 bytes/contact), and replays the owned normal when its witnesses remain close.
 The optional contact report adds one ``int32`` flag per contact.
 
 Per-frame call order (inside :class:`~newton.CollisionPipeline`)::
@@ -679,7 +680,8 @@ class ContactMatcher:
     The matcher owns all previous-frame state: the sorted key cache, the
     per-prev claim word used by the ``atomic_min`` race that keeps new→prev
     injective, and the world-space contact midpoints and normals, 40 bytes per
-    contact in total.  It does not alias sorter scratch, so the history
+    contact for the common history. Sticky mode adds 84 bytes per contact.
+    It does not alias sorter scratch, so the history
     survives any pass that reuses that scratch between sorting and matching.
     When ``contact_report`` is disabled, the ``prev_was_matched`` flag array
     is skipped.
@@ -702,15 +704,17 @@ class ContactMatcher:
             previous and current contact midpoints
             ``0.5 * (world(point0) + world(point1))``.  Contacts whose midpoint
             moved more than this between frames are considered broken. In sticky
-            mode, the previous body-local witnesses are instead transformed by the
-            current body poses, and each must lie within this distance of its
-            fresh contact point for a match.
+            mode, match when both transported witnesses stay within this distance,
+            or when changes in one body's world-oriented witness offset and
+            the world-space witness separation stay within it. Matched contacts
+            keep fresh geometry if either transported witness exceeds this distance.
         normal_dot_threshold: Minimum dot product between old and new contact
             normals.  Below this the contact is considered broken.
         contact_report: Allocate the ``prev_was_matched`` flag array needed
             to enumerate broken contacts in :meth:`build_report`.
-        sticky: Allocate four extra per-contact ``wp.vec3`` buffers
-            (``point0``/``point1``/``offset0``/``offset1`` body-frame) used by
+        sticky: Allocate seven extra per-contact ``wp.vec3`` buffers:
+            body-frame points and offsets, world-oriented witness offsets,
+            and witness separation. These support travelling matches and
             :meth:`replay_matched`, which replays the owned previous normal.
             When ``False`` these attributes are ``None`` and no extra kernel
             launches are added.
@@ -886,7 +890,9 @@ class ContactMatcher:
         (``0.5 * (world(point0) + world(point1))``) so the metric is symmetric
         in shape 0 / shape 1. Sticky mode instead measures the larger distance
         from each previous body-local witness, transformed by its current body
-        pose, to its fresh contact point. This excludes shared body motion.
+        pose, to its fresh contact point. It also accepts travelling contacts
+        when changes in either body's world-oriented witness offset and in
+        the world-space witness separation stay within the threshold.
 
         Args:
             sort_keys: Current frame's sorted int64 keys (use

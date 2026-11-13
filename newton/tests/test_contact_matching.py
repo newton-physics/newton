@@ -1179,8 +1179,11 @@ def _check_sticky_rotated_witness(test, device, *, plane_first, threshold, use_c
         fields = ("point0", "point1", "offset0", "offset1", "normal")
         previous = {field: getattr(contacts, f"rigid_contact_{field}").numpy()[:count].copy() for field in fields}
 
-        # The cylinder's geometry stays put while its material witnesses rotate.
+        # Translate the fresh-geometry case so the plane witness also moves:
+        # matching must use the cylinder's world-oriented offset, not the plane's.
         pose = state.body_q.numpy()
+        if not expect_replay:
+            pose[0, 1] += 0.01
         pose[0, 3:] = np.asarray(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1))
         state.body_q.assign(pose)
         reference = newton.CollisionPipeline(model, broad_phase="nxn", rigid_contact_max=64, deterministic=True)

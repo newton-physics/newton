@@ -2692,10 +2692,10 @@ between each saved body-local witness, transformed by its current body pose,
 and its corresponding fresh contact point. This preserves matches during
 shared body motion and compression that leaves each witness on its own
 surface. A contact can also match while travelling with one body's
-translation, as with a rolling wheel: that body's world-oriented witness
-offset and the world-space separation between witnesses must remain within
-the position threshold. Both matching rules are symmetric in shape 0 and
-shape 1.
+translation, as with a rolling wheel: changes in that body's world-oriented
+witness offset and in the world-space separation between witnesses must
+remain within the position threshold. Both matching rules are symmetric
+in shape 0 and shape 1.
 
 **Thresholds**
 
