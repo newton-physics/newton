@@ -84,6 +84,7 @@ from .rigid_vbd_kernels import (
     compute_rigid_contact_forces,
     compute_rod_dahl_parameters,
     create_accumulate_body_body_contacts_per_body,
+    create_compute_rigid_contact_forces,
     create_solve_rigid_body,
     create_update_duals_body_body_contacts,
     create_update_duals_joint,
@@ -1077,6 +1078,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 accumulate_body_body_contacts_per_body.module,
                 create_accumulate_body_body_contacts_per_body(True).module,
                 compute_rigid_contact_forces.module,
+                create_compute_rigid_contact_forces(True).module,
                 update_duals_body_body_contacts.module,
                 create_update_duals_body_body_contacts(False).module,
                 create_update_duals_body_body_contacts(False, True).module,
@@ -5406,7 +5408,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._rigid_contact_pure_torque_on_body1 = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
 
         wp.launch(
-            kernel=compute_rigid_contact_forces,
+            kernel=(
+                create_compute_rigid_contact_forces(True) if self.rigid_compliant_alm else compute_rigid_contact_forces
+            ),
             dim=max_contacts,
             inputs=[
                 float(dt),

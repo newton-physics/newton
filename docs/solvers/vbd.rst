@@ -603,9 +603,10 @@ Each energy term depends on a few blocks and on model parameters:
      - ``compute_projected_isotropic_friction``
    * - Body-body contact, with friction and damping
      - two shapes, on two rigid bodies or on a rigid body and a static shape
-     - shape :attr:`~newton.ModelBuilder.ShapeConfig.ke`, :attr:`~newton.ModelBuilder.ShapeConfig.kd`, :attr:`~newton.ModelBuilder.ShapeConfig.mu` averaged over the pair; shape radius and
+     - shape :attr:`~newton.ModelBuilder.ShapeConfig.ke`, :attr:`~newton.ModelBuilder.ShapeConfig.kd`, :attr:`~newton.ModelBuilder.ShapeConfig.mu` and, with compliant ALM,
+       :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` and :attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling`, combined over the pair; shape radius and
        :attr:`~newton.ModelBuilder.ShapeConfig.margin`
-     - ``evaluate_rigid_contact_from_collision``, ``update_duals_body_body_contacts``
+     - ``accumulate_body_body_contacts_per_body``, ``update_duals_body_body_contacts``
    * - Particle-body attachments
      - a particle and a point fixed on a body
      - attachment stiffness (finite: compliant; infinite: hard limit, damping
@@ -662,10 +663,11 @@ like :attr:`tri_kd <newton.Model.tri_materials>`. In both Neo-Hookean terms the 
 Lamé parameters; the kernels convert them to the Neo-Hookean parameters, which
 is why :math:`\lambda_{\text{NH}}` carries the extra :math:`\mu`.
 
-**Contact** is three different terms, one per contact kind. They share the
-friction smoothing length :math:`\epsilon_u = \mathtt{friction\_epsilon}\, h`
-and nothing else: each kind has its own distance, its own stiffness and its
-own law.
+**Contact** is three different terms, one per contact kind: each kind has its
+own distance, its own stiffness and its own law. For self-contact and
+rigid-soft contact, the friction smoothing length is
+:math:`\epsilon_u = \mathtt{friction\_epsilon}\, h`; compliant-ALM body-body
+friction is a Coulomb projection and does not use it.
 
 *Self-contact* acts between a vertex and a triangle, or between two edges, of
 one particle system (``accumulate_self_contact_force_and_hessian``). The
@@ -769,7 +771,7 @@ internal metric that the solver sets every step from the pair's inverse
 Delassus support over :math:`h^2` plus structural stiffness; the user does not set :math:`\rho_n`. The
 force acts along :math:`\mathbf{n}` at the support points with the matching
 torques, and the row adds :math:`k_{\text{eff}}\,\mathbf{n}\mathbf{n}^{\mathsf T}`
-to the body Hessians (``evaluate_rigid_contact_from_collision``). After every
+to the body Hessians (``accumulate_body_body_contacts_per_body``). After every
 iteration the multiplier is advanced by the relaxed ascent
 :math:`\lambda_n \leftarrow \max\big(s\,(\lambda_n + \rho_n C),\ 0\big)`
 (``update_duals_body_body_contacts``). At
@@ -780,10 +782,17 @@ uses the smaller :math:`k_{\text{eff}}`, which keeps the 6x6 systems well
 conditioned. Friction is a Coulomb bound, not a smooth law: the tangential
 force :math:`\rho_t\,\mathbf{u}_t + \boldsymbol{\lambda}_t`, with
 :math:`\mathbf{u}_t` the tangential offset between the two anchored surface
-points and :math:`\rho_t` the tangent metric, is projected onto the disk
-:math:`\lVert\mathbf{f}_t\rVert \le \mu f_n`,
+points and :math:`\rho_t` the tangent metric, a 2D response matrix in the
+contact plane, is projected onto the disk
+:math:`\lVert\mathbf{f}_t\rVert \le \mu f_n` in the inverse response metric,
 and :math:`\boldsymbol{\lambda}_t` is advanced and projected onto the disk of
-radius :math:`\mu\lambda_n` in the same dual step. Damping is
+radius :math:`\mu\lambda_n` in the same dual step. Torsional and rolling
+friction are two further Coulomb bounds on the relative rotation of the two
+bodies: the torque about the normal is clamped to
+:math:`\mu_{\text{tor}} f_n` and the torque in the contact plane is projected
+onto the disk of radius :math:`\mu_{\text{roll}} f_n`, with the pair's
+:attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` and
+:attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling` [m]. Damping is
 :math:`-k_d\,(\mathbf{n}\cdot\mathbf{v}_{\text{rel}})\,\mathbf{n}` while the
 bodies approach and the row carries load. The multipliers start from zero in
 every step unless ``rigid_contact_history=True`` warm-starts them from the
