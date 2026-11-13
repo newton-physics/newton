@@ -430,8 +430,6 @@ def test_mujoco_rest_height_follows_selection(test, device):
     np.testing.assert_allclose(heights, [0.25, 0.1], atol=0.02)
 
     with test.assertRaises(NotImplementedError):
-        solver.render_mujoco_viewer()
-    with test.assertRaises(NotImplementedError):
         newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=True)
 
 
