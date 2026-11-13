@@ -113,9 +113,11 @@ Collision frequency
 
    For rigid contacts with fast motion, consider the experimental
    :class:`CollisionSubstepScheduler` instead of a fixed collision interval.
-   It reserves nearby contact candidates for the selected horizon and refreshes
-   them based on observed travel and the maximum refresh interval while preserving
-   every solver substep. See :ref:`tuning-adaptive-collision-detection` for
+   It preserves velocity-guided speculative contacts and refreshes them based on
+   observed shape velocity changes, travel, and the maximum refresh interval.
+   After a velocity change, it uses a one-substep prediction horizon; gravity and
+   impacts may require checks every substep. It preserves every solver substep.
+   See :ref:`tuning-adaptive-collision-detection` for
    configuration, solver requirements, overflow diagnostics, and the limits of
    this alternative to full continuous collision detection.
 

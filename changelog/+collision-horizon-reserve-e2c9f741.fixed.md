@@ -1,1 +1,1 @@
-Size adaptive collision reserves for the selected time horizon instead of always using the full speculative distance cap, and report overflow against the actual reserve. Increase solver substeps when unexpected motion exhausts the reserve; raising the distance cap helps only when it limits the estimate.
+Keep velocity-guided speculative contact extension during adaptive collision scheduling, refresh after observed shape velocity changes, and shorten those prediction horizons to one substep. Gravity and impacts may require a collision pass every substep.

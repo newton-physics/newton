@@ -1419,7 +1419,11 @@ def test_speculative_mesh_sdf_retains_rotating_leading_feature(test, device, sch
         rod_points = contacts.rigid_contact_point0.numpy()[:count]
 
     test.assertGreater(len(rod_points), 1)
-    test.assertLess(float(rod_points[:, 0].min()), -0.3)
+    if not scheduled:
+        # This fixture starts with the negative end penetrating the board.
+        # In the scheduled fixture that end is separated by about 5 mm and
+        # receding, so velocity-guided admission may correctly omit it.
+        test.assertLess(float(rod_points[:, 0].min()), -0.3)
     test.assertGreater(float(rod_points[:, 0].max()), 0.3)
 
 
