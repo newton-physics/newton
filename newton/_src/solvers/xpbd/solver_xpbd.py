@@ -310,6 +310,11 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         if self.enable_restitution and flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_rigid_restitution_enabled()
 
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # The tendon refresh validates on the host and rebuilds the tendon reset state.
+        return int(ModelFlags.TENDON_PROPERTIES) if self.model.tendon_count > 0 else 0
+
     def _refresh_rigid_restitution_enabled(self) -> None:
         restitution = self.model.shape_material_restitution
         self._rigid_restitution_enabled = restitution is not None and restitution.size > 0

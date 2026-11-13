@@ -1,0 +1,1 @@
+Add `Model.AttributeSpec.dtype`, `update_flags`, `state_update_flags`, and `differentiable`, which declare the flags announcing each built-in attribute's edits and, for attributes that `ModelBuilder.finalize()` converts generically, the Warp dtype and whether `finalize(requires_grad=True)` allocates a gradient.

@@ -547,6 +547,51 @@ coupler also warns when both endpoints belong to one entry whose solver does not
 support attachments. Hard attachments require both endpoints in one VBD entry;
 the coupler raises an error for other ownership arrangements.
 
+.. _Runtime model updates:
+
+Runtime Model Updates
+---------------------
+
+Solvers cache data derived from the :class:`~newton.Model`, such as per-world copies of shape
+materials or factored mass matrices, and from the :class:`~newton.State`, such as warm starts.
+After editing model attributes, for example for domain randomization, call
+:meth:`~newton.solvers.SolverBase.notify_model_changed` with the :class:`~newton.ModelFlags` that
+cover them. After editing state attributes, for example to teleport bodies, call
+:meth:`~newton.solvers.SolverBase.reset` with the :class:`~newton.StateFlags` that cover them.
+:meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns these
+flags for built-in attributes and for custom attributes such as ``"mujoco:solref"``. ``NONE`` means
+that solvers read the attribute at every step, as for most :class:`~newton.Control` and all
+:class:`~newton.Contacts` attributes, and ``None`` means that no flag covers the attribute, so
+solvers that cache it must be recreated. Some model attributes, such as
+:attr:`~newton.Model.joint_target_q`, only provide initial values for new :class:`~newton.State` or
+:class:`~newton.Control` objects, which copy them by default. Editing such a model attribute does not
+change existing objects; edit their copy directly, or create new ones.
+Coupled solvers hold copies of the model arrays in their entry views, so after editing an
+attribute whose flags are ``NONE``, notify them with the flags of the attribute's entity, such as
+:attr:`~newton.ModelFlags.BODY_PROPERTIES` for a per-body attribute.
+
+Whether a notification can be captured in a CUDA graph depends on the solver, its configuration,
+and the model. :meth:`~newton.solvers.SolverBase.is_notify_model_changed_graphable` answers it
+conservatively for given flags:
+
+.. code-block:: python
+
+    flags = model.get_attribute_update_flags("shape_material_mu")
+    if solver.is_notify_model_changed_graphable(flags):
+        with wp.ScopedCapture() as capture:
+            randomize_friction(model)  # writes model.shape_material_mu in place
+            solver.notify_model_changed(flags)
+        randomize_graph = capture.graph
+    else:
+        randomize_friction(model)
+        solver.notify_model_changed(flags)
+
+For example, :class:`~newton.solvers.SolverMuJoCo` with the MuJoCo Warp backend can capture every
+notification, while host-side validation or rebuilding makes some notifications of
+:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverKamino`,
+:class:`~newton.solvers.SolverSteel`, :class:`~newton.solvers.SolverVBD`, and the coupled solvers
+not capturable.
+
 .. _Differentiability:
 
 Differentiability

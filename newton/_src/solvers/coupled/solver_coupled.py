@@ -15,6 +15,7 @@ import numpy as np
 import warp as wp
 
 from ...core.reset import reset_world_selected as _reset_world_selected
+from ...core.types import override
 from ...geometry import ParticleFlags, ShapeFlags
 from ...sim import JointType, Model, ModelFlags, StateFlags
 from ..solver import SolverBase
@@ -3867,48 +3868,34 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 self._filter_shape_contact_pairs(entry.view)
 
     def _attribute_matches_model_flags(self, attribute: _AttributeProjection, flags: int) -> bool:
-        """Return whether a projected model attribute is covered by change flags."""
-        frequency = attribute.frequency
-        model_frequency = self.model.AttributeFrequency
-        if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
-            if frequency == model_frequency.BODY:
-                return True
-        configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref")
-        if flags & int(ModelFlags.JOINT_PROPERTIES):
-            if (
-                frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) and attribute.name != "joint_rest_q"
-            ) or attribute.name in ("joint_axis", "joint_target_q"):
-                return True
+        """Return whether a projected model attribute is covered by change flags.
+
+        An attribute matches the flags it declares (see :meth:`Model.get_attribute_update_flags`).
+        Entry views hold copies, so attributes that declare no flag, including those solvers read at
+        every step, match the flags of their entity frequency.
+        """
         if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
-            if frequency == model_frequency.JOINT_DOF or attribute.name in ("joint_target_q", "joint_rest_q"):
-                return True
-        if flags & int(ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
-            if (
-                frequency == model_frequency.JOINT_DOF and attribute.name != "joint_armature" and not configuration_dof
-            ) or attribute.name == "joint_target_q":
-                return True
-        if flags & int(ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES) and attribute.name in (
-            "joint_target_q",
-            "mujoco:dof_ref",
-            "joint_rest_q",
-        ):
-            return True
-        if flags & int(ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES) and attribute.name == "joint_armature":
-            return True
-        if flags & int(ModelFlags.SHAPE_PROPERTIES):
-            if frequency == model_frequency.SHAPE or "pair_" in attribute.name:
-                return True
-        if flags & int(ModelFlags.MODEL_PROPERTIES):
-            if frequency in (model_frequency.ONCE, model_frequency.WORLD):
-                return True
-        if flags & int(ModelFlags.CONSTRAINT_PROPERTIES):
-            if frequency in (model_frequency.CONSTRAINT_MIMIC, model_frequency.ATTACHMENT_PARTICLE_BODY):
-                return True
-            if any(token in attribute.name for token in ("constraint", ":eq_", "mimic")):
-                return True
-        if flags & int(ModelFlags.TENDON_PROPERTIES) and "tendon" in attribute.name:
-            return True
-        return bool(flags & int(ModelFlags.ACTUATOR_PROPERTIES) and "actuator" in attribute.name)
+            flags |= int(
+                ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+                | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+                | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+            )
+        spec = self.model._attribute_spec(attribute.name)
+        if spec is not None and spec.update_flags:
+            return bool(flags & int(spec.update_flags))
+        model_frequency = self.model.AttributeFrequency
+        frequency_flags = {
+            model_frequency.BODY: ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES,
+            model_frequency.JOINT: ModelFlags.JOINT_PROPERTIES,
+            model_frequency.JOINT_COORD: ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES,
+            model_frequency.JOINT_DOF: ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
+            model_frequency.SHAPE: ModelFlags.SHAPE_PROPERTIES,
+            model_frequency.ONCE: ModelFlags.MODEL_PROPERTIES,
+            model_frequency.WORLD: ModelFlags.MODEL_PROPERTIES,
+            model_frequency.CONSTRAINT_MIMIC: ModelFlags.CONSTRAINT_PROPERTIES,
+            model_frequency.ATTACHMENT_PARTICLE_BODY: ModelFlags.CONSTRAINT_PROPERTIES,
+        }
+        return bool(flags & int(frequency_flags.get(attribute.frequency, 0)))
 
     def _refresh_body_inertial_view_overrides(self, entry: SolverEntry) -> None:
         """Refresh base ownership masks derived from parent body inertia."""
@@ -3924,6 +3911,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.solver.notify_model_changed(flags)
         if int(flags) & self._gravity_acceleration_refresh_flags():
             self._refresh_gravity_accelerations()
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # Entry model views re-project the changed attributes into newly allocated copies.
+        return ~0
 
 
 def _entry_control(view: ModelView) -> Control:
