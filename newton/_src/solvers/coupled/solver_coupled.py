@@ -1559,6 +1559,25 @@ class SolverCoupled(SolverBase, CouplingInterface):
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
         if custom_frequency_orders is None:
             return None, "a selected custom-frequency domain is not grouped by world"
+        # MuJoCo sensor object ids depend on the row's object type, so a compact view
+        # cannot remap them through declared references. Keep the full model unless
+        # every entity a sensor can reference keeps its index.
+        if int(model.custom_frequency_counts.get("mujoco:sensor", 0)) > 0:
+            sensor_domains = (
+                (body_order, model.body_count),
+                (joint_dof_order, model.joint_dof_count),
+                (shape_order, model.shape_count),
+                (
+                    custom_frequency_orders.get("mujoco:tendon", []),
+                    model.custom_frequency_counts.get("mujoco:tendon", 0),
+                ),
+                (
+                    custom_frequency_orders.get("mujoco:actuator", []),
+                    model.custom_frequency_counts.get("mujoco:actuator", 0),
+                ),
+            )
+            if any(list(order) != list(range(int(count))) for order, count in sensor_domains):
+                return None, "MuJoCo sensors reference entities that a compact view would renumber"
 
         frequency_orders = {
             frequency: (order, model._attribute_frequency_count(frequency))

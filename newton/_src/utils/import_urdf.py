@@ -227,6 +227,8 @@ def parse_urdf(
             for revolute, prismatic, and planar joints.
             XPBD/VBD do not consume passive joint damping.
     """
+    if collapse_fixed_joints:
+        builder._check_fixed_joint_collapse_supported()
     if joint_damping_mode not in ("passive", "drive"):
         raise ValueError("joint_damping_mode must be 'passive' or 'drive'")
     use_drive_damping = joint_damping_mode == "drive"
