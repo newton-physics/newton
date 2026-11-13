@@ -390,8 +390,8 @@ class TestKaminoFullSchurAssembly(unittest.TestCase):
                     block_dim=128,
                     device=device,
                 )
-                actual_s = arrays["compact_schur"].numpy()
-                actual_q = arrays["compact_q"].numpy()
+                actual_s = arrays["compact_schur"].numpy().copy()
+                actual_q = arrays["compact_q"].numpy().copy()
                 np.testing.assert_allclose(actual_s, expected_s, atol=1e-5, rtol=1e-5)
                 np.testing.assert_allclose(actual_q, expected_q, atol=1e-5, rtol=1e-5)
                 if reference_s is not None:

@@ -1619,7 +1619,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             The solver observable API may change without prior notice.
         """
 
-        body_awake: "wp.array[wp.bool] | None" = SolverBase.Observables.field(  # noqa: RUF009
+        body_awake: wp.array[wp.bool] | None = SolverBase.Observables.field(  # noqa: RUF009
             dtype=wp.bool,
             frequency=Model.AttributeFrequency.BODY,
         )
@@ -3219,7 +3219,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             )
 
     @override
-    def notify_model_changed(self, flags: ModelFlags | int, *, world_mask: "wp.array[wp.bool] | None" = None) -> None:
+    def notify_model_changed(self, flags: ModelFlags | int, *, world_mask: wp.array[wp.bool] | None = None) -> None:
         """Refresh cached solver data after model changes.
 
         Joint (frames), joint DOF, DOF force (drive gains), DOF inertial (armature), body
@@ -3424,7 +3424,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         world = np.where(world < 0, int(model.world_count), world).astype(np.int32)
         return supported[joint_dof_joint], world[joint_dof_joint]
 
-    def _clear_warmstart_history(self, world_mask: "wp.array[wp.bool] | None") -> None:
+    def _clear_warmstart_history(self, world_mask: wp.array[wp.bool] | None) -> None:
         """Discard the carried contact impulses of the selected worlds (all worlds for ``None``)."""
         if not self._contact_warmstart or self._world_count == 0:
             return
@@ -3454,7 +3454,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=self.model.device,
             )
 
-    def notify_state_changed(self, state: State, *, world_mask: "wp.array[wp.bool] | None" = None) -> None:
+    def notify_state_changed(self, state: State, *, world_mask: wp.array[wp.bool] | None = None) -> None:
         """Drop the carried kinematics of the selected worlds after writing ``state`` outside :meth:`step`.
 
         With ``reuse_kinematics`` on, the solver keeps the kinematics and inverse-dynamics terms it
@@ -3489,7 +3489,7 @@ class SolverSteel(SolverBase, CouplingInterface):
     def reset(
         self,
         state: State,
-        world_mask: "wp.array[wp.bool] | None" = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Clear solver-owned state of the selected worlds.
@@ -3685,7 +3685,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         endpoint_index: wp.array[int],
         endpoint_local_pos: wp.array[wp.vec3],
         out_mass: wp.array[float],
-        out_inertia: "wp.array[wp.mat33] | None" = None,
+        out_inertia: wp.array[wp.mat33] | None = None,
     ) -> None:
         """Evaluate articulated effective mass and inertia for coupling endpoints.
 

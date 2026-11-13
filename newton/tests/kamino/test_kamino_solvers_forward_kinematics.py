@@ -542,7 +542,7 @@ class TestPassiveUniversalJointFrame(unittest.TestCase):
         np.testing.assert_allclose(constraints, 0.0, atol=1.0e-6)
 
         # Validate jacobian with finite differences
-        body_q_np = body_q.numpy().reshape(-1)
+        body_q_np = body_q.numpy().reshape(-1).copy()
         jacobian = solver.eval_kinematic_constraints_jacobian(body_q, target_transforms).numpy()[0]
 
         def eval_constraints(body_q_stepped_np):
