@@ -155,9 +155,9 @@ class SensorCamera:
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
                 ``RenderConfig()``.
-            backend: ``"warp"``, ``"optix"``, or ``None`` to use OptiX when it supports
-                the model and device. ``"optix"`` raises :class:`RuntimeError` when
-                unsupported. See :ref:`camera-traversal-backends`.
+            backend: ``"warp"``, ``"optix"`` (experimental, requires ``newton[optix]``),
+                or ``None`` to use OptiX when it supports the model and device.
+                ``"optix"`` raises :class:`RuntimeError` when unsupported.
             load_textures: Load the textures of shape meshes and deformable visual
                 meshes from file paths or in-memory images. A texture that cannot
                 be loaded raises ``ValueError`` here, so pass ``False`` for
