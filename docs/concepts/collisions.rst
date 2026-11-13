@@ -1279,6 +1279,13 @@ Contact reduction is enabled by default. For scenes with many mesh-mesh interact
 
 To disable reduction, set ``reduce_contacts=False`` when creating the pipeline.
 
+Mesh/SDF depth coverage uses aspect-ratio-based voxel grids and normalized
+indexing, independent of the scene's length units. This also applies when
+body-pair reduction is disabled. Removing absolute length cutoffs and
+stabilizing normalized cell boundaries can change the retained contacts and
+simulation trajectories, especially for very small or degenerate geometry.
+No API or scene migration is required.
+
 **Body-pair contact reduction (opt-in):**
 
 Bodies built from many colliders (a foot made of several spheres or capsules, a

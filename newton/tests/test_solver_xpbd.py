@@ -2692,15 +2692,16 @@ def test_xpbd_body_pair_reduction_on_curved_support(test, device):
         state, out = model.state(), model.state()
         control = model.control()
         solver = newton.solvers.SolverXPBD(model, iterations=8)
-        angular_tail = []
+        angular_tail = wp.empty(60, dtype=wp.spatial_vector, device=device)
         for step in range(240):
             state.clear_forces()
             pipeline.collide(state, contacts)
             solver.step(state, out, control, contacts, 1.0 / 240)
             state, out = out, state
             if step >= 180:
-                angular_tail.append(float(np.linalg.norm(state.body_qd.numpy()[body, 3:])))
-        outcomes.append((float(state.body_q.numpy()[body, 2]), float(np.mean(angular_tail))))
+                wp.copy(angular_tail, state.body_qd, dest_offset=step - 180, src_offset=body, count=1)
+        angular_speeds = np.linalg.norm(angular_tail.numpy()[:, 3:], axis=1)
+        outcomes.append((float(state.body_q.numpy()[body, 2]), float(np.mean(angular_speeds, dtype=np.float64))))
     test.assertLess(abs(outcomes[1][0] - outcomes[0][0]), 1e-5)
     test.assertLess(outcomes[1][1], max(2 * outcomes[0][1], 0.01))
 
