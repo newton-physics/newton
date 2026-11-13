@@ -309,6 +309,63 @@ def _multisample_offset(sample_index: int, sample_count: int):
     return wp.vec2f(0.5 + radius * wp.cos(angle), 0.5 + radius * wp.sin(angle))
 
 
+@wp.func
+def model_camera_pinhole(
+    focal_length: wp.float32,
+    aperture: wp.vec2f,
+    aperture_offset: wp.vec2f,
+    resolution: wp.vec2i,
+    image_aspect: wp.float32,
+) -> wp.vec4f:
+    """Return the pinhole projection of a model camera for an image of the given aspect ratio.
+
+    This defines how the ``Model.camera_*`` intrinsics project, for every consumer of model
+    cameras. A zero aperture component follows the image aspect ratio (square pixels). With both
+    components set, the aperture keeps the pixel aspect ratio it has at ``resolution`` (square
+    pixels without one) and expands to the image aspect ratio, like USD's default
+    ``expandAperture`` conform policy.
+
+    Returns:
+        The horizontal and vertical aperture and principal-point offset, each divided by the focal
+        length, as used by :func:`pinhole_pixel_ray`.
+    """
+    horizontal = aperture[0]
+    vertical = aperture[1]
+    if horizontal <= 0.0:
+        horizontal = vertical * image_aspect
+    elif vertical <= 0.0:
+        vertical = horizontal / image_aspect
+    else:
+        target = image_aspect
+        if resolution[0] > 0 and resolution[1] > 0:
+            target = image_aspect * (horizontal * float(resolution[1])) / (vertical * float(resolution[0]))
+        if horizontal < vertical * target:
+            horizontal = vertical * target
+        else:
+            vertical = horizontal / target
+    return wp.vec4f(
+        horizontal / focal_length,
+        vertical / focal_length,
+        aperture_offset[0] / focal_length,
+        aperture_offset[1] / focal_length,
+    )
+
+
+@wp.func
+def pinhole_pixel_ray(
+    px: int, py: int, sample_index: int, sample_count: int, width: int, height: int, pinhole: wp.vec4f
+) -> wp.vec3f:
+    """Return the unit camera-space direction of a pixel sample through a pinhole lens.
+
+    ``pinhole`` holds the horizontal and vertical aperture and principal-point offset, each
+    divided by the focal length.
+    """
+    offset = _multisample_offset(sample_index, sample_count)
+    u = (float(px) + offset[0]) / float(width)
+    v = (float(py) + offset[1]) / float(height)
+    return wp.normalize(wp.vec3f((u - 0.5) * pinhole[0] + pinhole[2], (0.5 - v) * pinhole[1] + pinhole[3], -1.0))
+
+
 @wp.kernel(enable_backward=False)
 def compute_camera_rays_pinhole(
     width: int,
@@ -341,14 +398,11 @@ def compute_camera_rays_pinhole_from_aperture_kernel(
     out_rays: wp.array4d[wp.vec3f],
 ):
     py, px, sample_index = wp.tid()
-    offset = _multisample_offset(sample_index, sample_count)
-    u = (float(px) + offset[0]) / float(width)
-    v = (float(py) + offset[1]) / float(height)
-    film_x = (u - 0.5) * horizontal_aperture + horizontal_aperture_offset
-    film_y = (0.5 - v) * vertical_aperture + vertical_aperture_offset
-    ray_direction_camera_space = wp.vec3f(film_x / focal_length, film_y / focal_length, -1.0)
+    pinhole = wp.vec4f(horizontal_aperture, vertical_aperture, horizontal_aperture_offset, vertical_aperture_offset)
     out_rays[py, px, sample_index, 0] = wp.vec3f(0.0)
-    out_rays[py, px, sample_index, 1] = wp.normalize(ray_direction_camera_space)
+    out_rays[py, px, sample_index, 1] = pinhole_pixel_ray(
+        px, py, sample_index, sample_count, width, height, pinhole / focal_length
+    )
 
 
 _PINHOLE_OPENCV_INVERSION_ITERATIONS = 10

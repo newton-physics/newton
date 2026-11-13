@@ -272,10 +272,10 @@ class Example:
         # Observer rays are world-fixed; the robot rays are for a link-mounted
         # camera (see _update_camera_transforms).
         self.sensor_camera_rays = SensorCamera.compute_camera_rays_pinhole(
-            W, H, camera_fov=self.observer_camera_fov, device=self.model.device
+            W, H, fov=self.observer_camera_fov, device=self.model.device
         )
         self.robot_sensor_camera_rays = SensorCamera.compute_camera_rays_pinhole(
-            W, H, camera_fov=self.robot_camera_fov, device=self.model.device
+            W, H, fov=self.robot_camera_fov, device=self.model.device
         )
         self.sensor_camera_transforms = wp.empty(view_count, dtype=wp.transformf, device=self.model.device)
         self.robot_sensor_camera_transforms = wp.empty(view_count, dtype=wp.transformf, device=self.model.device)

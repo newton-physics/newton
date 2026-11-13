@@ -1344,6 +1344,39 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(view.attachment_particle_body_body.numpy(), [0])
         np.testing.assert_array_equal(view.attachment_particle_body_particle.numpy(), [owned_particle])
 
+    def test_compact_views_hide_cameras(self):
+        """Hide cameras from compact entry views, whose body indices no longer match the model."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        body_a = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        body_b = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_camera(body_b, label="mounted")
+        builder.add_camera(-1, label="fixed")
+        external_particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+        owned_particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+        builder.color()
+        model = builder.finalize(device="cpu")
+
+        with self.assertWarns(DeprecationWarning):
+            coupled = SolverCoupled(
+                model,
+                (
+                    SolverCoupled.Entry("other", _StepCountingCopySolver, particles=(external_particle,)),
+                    SolverCoupled.Entry(
+                        "vbd",
+                        lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
+                        bodies=(body_a, body_b),
+                        particles=(owned_particle,),
+                    ),
+                ),
+            )
+        view = coupled.view("vbd")
+        self.assertEqual(model.camera_count, 2)
+        self.assertEqual(view.camera_count, 0)
+        self.assertEqual(view.camera_body.shape[0], 0)
+        self.assertEqual(view.camera_label, [])
+        self.assertEqual(len(model.camera_label), 2)
+
     def test_noncompact_views_hide_cross_entry_attachments(self):
         """Filter attachment ownership even when an owned joint's out-of-entry child prevents compaction."""
         world = newton.ModelBuilder()
