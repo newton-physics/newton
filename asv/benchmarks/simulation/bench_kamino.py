@@ -95,49 +95,6 @@ class G1SCC:
         self.example.test_final()
 
 
-class _FastBenchmark:
-    """Utility base class for fast Kamino benchmarks."""
-
-    num_frames = None
-    robot = None
-    number = 1
-    rounds = 2
-    repeat = None
-    world_count = None
-
-    def setup(self):
-        from benchmark_kamino import DRLegsBenchmarkWorkload  # noqa: PLC0415
-
-        if not hasattr(self, "_builder") or self._builder is None:
-            self._builder = DRLegsBenchmarkWorkload.create_model_builder(self.robot, self.world_count)
-
-        self.workload = DRLegsBenchmarkWorkload(
-            robot=self.robot,
-            world_count=self.world_count,
-            use_cuda_graph=True,
-            use_policy=False,
-            builder=self._builder,
-        )
-
-        wp.synchronize_device()
-
-        if self.workload.graph is None or self.workload.reset_graph is None:
-            raise SkipNotImplemented("CUDA graph capture unavailable (is the CUDA mempool allocator enabled?)")
-
-    def teardown(self):
-        workload = getattr(self, "workload", None)
-        if workload is not None:
-            workload.test_final()
-
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_simulate(self):
-        for _ in range(self.num_frames):
-            for _ in range(self.workload.decimation):
-                wp.capture_launch(self.workload.reset_graph)
-                wp.capture_launch(self.workload.graph)
-        wp.synchronize_device()
-
-
 class _KpiBenchmark(_SimulationMetricTracks):
     """Utility base class for Kamino KPI benchmarks."""
 
@@ -162,14 +119,6 @@ class _KpiBenchmark(_SimulationMetricTracks):
                 use_policy=self.use_policy,
             )
         return metrics
-
-
-class FastDRLegs(_FastBenchmark):
-    version = "2"  # effort limits now enforced for implicit PD (#3990) -> new ASV series
-    num_frames = 25
-    robot = "dr_legs"
-    repeat = 2
-    world_count = 32
 
 
 class FastMetricsDRLegs(_SimulationMetricTracksUnparameterized):
@@ -279,7 +228,6 @@ if __name__ == "__main__":
 
     benchmark_list = {
         "G1SCC": G1SCC,
-        "FastDRLegs": FastDRLegs,
         "FastMetricsDRLegs": FastMetricsDRLegs,
         "KpiDRLegs": KpiDRLegs,
         "NotifyDRLegs": NotifyDRLegs,
