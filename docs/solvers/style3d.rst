@@ -75,6 +75,39 @@ Kinematic and zero-mass bodies remain prescribed; their output poses and
 velocities are owned by the caller. Changes to model particle and body flags
 are read at the start of each step.
 
+.. _style3d-externally-driven-bodies:
+
+Externally driven bodies
+------------------------
+
+With ``Dynamics.AFFINE_BODY`` or ``Dynamics.ALL``, a positive-mass
+:attr:`~newton.BodyFlags.KINEMATIC` body participates in contact prediction
+while its output pose and velocity remain owned by the external driver.
+The caller must supply ``state_in`` so that Style3D's rigid-body predictor
+reproduces the body's externally prescribed end-of-substep pose, within
+numerical precision. This requirement applies to both translation and
+rotation, using the same ``dt`` as :meth:`~newton.solvers.SolverStyle3D.step`.
+
+The predictor uses semi-implicit Euler integration with ``state_in.body_q``,
+``state_in.body_qd``, ``state_in.body_f``, and the model's mass, inertia, and
+gravity. For a positive-mass body, its predicted center of mass is
+
+.. math::
+
+   \hat c = c + v\,dt + (g + f/m)\,dt^2.
+
+Rotation uses the updated angular velocity, including applied torque and
+the gyroscopic term, followed by a normalized Euler quaternion update with
+zero angular damping. The input velocities must account for these integration
+rules and all supplied forces when representing a prescribed trajectory.
+
+Contacts use this predicted pose to compute separation, damping, and friction
+against the externally driven body. The external driver must write consistent
+final poses and velocities to ``state_out`` before that state is consumed or
+swapped. A mismatch between the predicted and prescribed end pose makes the
+contact response inconsistent with the body's actual motion. Zero-mass bodies
+use their input pose as a fixed contact boundary for the substep.
+
 Affine rigidity
 ---------------
 
