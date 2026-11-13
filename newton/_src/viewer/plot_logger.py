@@ -352,7 +352,9 @@ class PlotLogger:
             rgba, value_min, value_max = self._colorize_heatmap(display_array)
             pixel_rows = np.arange(texture_height) * display_rows // texture_height
             pixel_cols = np.arange(texture_width) * display_cols // texture_width
-            rgba = np.ascontiguousarray(rgba[pixel_rows][:, pixel_cols])
+            # Copying whole RGBA pixels is far cheaper than indexing their bytes.
+            pixels = rgba.view(np.uint32)[..., 0].take(pixel_rows, axis=0).take(pixel_cols, axis=1)
+            rgba = pixels.view(np.uint8).reshape(texture_height, texture_width, 4)
             self._update_array_texture(texture_state["texture_id"], rgba)
             texture_state["source_shape"] = array.shape
             texture_state["display_shape"] = display_array.shape
