@@ -131,14 +131,14 @@ ROBOT_CONFIGS = {
         "solver": "newton",
         "integrator": "implicitfast",
         "njmax": 80,
-        "nconmax": 25,
+        "nconmax": 50,
         "cone": "pyramidal",
         "sensing_bodies": ["*thigh*", "*shin*", "*foot*", "*arm*"],
     },
     "g1": {
         "solver": "newton",
         "integrator": "implicitfast",
-        "njmax": 210,
+        "njmax": 140,
         "nconmax": 35,
         "cone": "pyramidal",
     },
@@ -159,8 +159,8 @@ ROBOT_CONFIGS = {
     "ant": {
         "solver": "newton",
         "integrator": "implicitfast",
-        "njmax": 38,
-        "nconmax": 15,
+        "njmax": 24,
+        "nconmax": 25,
         "cone": "pyramidal",
     },
     "quadruped": {
@@ -179,8 +179,8 @@ ROBOT_CONFIGS = {
     },
     "kitchen": {
         "setup_builder": lambda x: _setup_kitchen(x),  # noqa: PLW0108  # lambda defers lookup
-        "njmax": 3800,
-        "nconmax": 900,
+        "njmax": 60,
+        "nconmax": 500,
     },
     "tabletop": {
         "setup_builder": lambda x: _setup_tabletop(x),  # noqa: PLW0108  # lambda defers lookup
@@ -206,6 +206,18 @@ def _setup_humanoid(articulation_builder):
     return root_dofs
 
 
+# Joint-name pattern, stiffness [N*m/rad], and damping [N*m*s/rad] of IsaacLab's G1
+# locomotion actuators; the first match wins and the last entry covers arms and hands.
+_G1_GAINS = (
+    ("_hip_pitch_", 200.0, 5.0),
+    ("_hip_", 150.0, 5.0),
+    ("_knee_", 200.0, 5.0),
+    ("waist_", 200.0, 5.0),
+    ("_ankle_", 20.0, 2.0),
+    ("", 40.0, 10.0),
+)
+
+
 def _setup_g1(articulation_builder):
     articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
         limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
@@ -225,9 +237,13 @@ def _setup_g1(articulation_builder):
         hide_collision_shapes=True,
     )
 
-    for i in range(6, articulation_builder.joint_dof_count):
-        articulation_builder.joint_target_ke[i] = 1000.0
-        articulation_builder.joint_target_kd[i] = 5.0
+    for joint, label in enumerate(articulation_builder.joint_label):
+        dof = articulation_builder.joint_qd_start[joint]
+        if dof < 6:
+            continue
+        ke, kd = next(gains for pattern, *gains in _G1_GAINS if pattern in label)
+        articulation_builder.joint_target_ke[dof] = ke
+        articulation_builder.joint_target_kd[dof] = kd
 
     # approximate meshes for faster collision detection
     articulation_builder.approximate_meshes("bounding_box")
@@ -299,6 +315,11 @@ def _setup_ant(articulation_builder):
     # Setting root pose
     root_dofs = 7
     articulation_builder.joint_q[:3] = [0.0, 0.0, 1.5]
+    # The zero pose violates the foot joint limits; start at the authored drive targets.
+    if hasattr(articulation_builder, "joint_target_q"):
+        articulation_builder.joint_q[root_dofs:] = articulation_builder.joint_target_q[root_dofs:]
+    else:
+        articulation_builder.joint_q[root_dofs:] = articulation_builder.joint_target_pos[root_dofs - 1 :]
 
     return root_dofs
 
