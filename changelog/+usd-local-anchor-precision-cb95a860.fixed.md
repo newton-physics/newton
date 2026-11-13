@@ -1,0 +1,1 @@
+Preserve authored rigid-body-local equality-site offsets by resolving their coordinate conversion in USD double precision before the final float32 cast, avoiding translation-dependent world-pose round-trip loss.
