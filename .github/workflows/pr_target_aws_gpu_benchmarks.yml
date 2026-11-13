@@ -73,7 +73,7 @@ jobs:
           fi
 
   require-approval:
-    name: Require Manual Approval for External PRs
+    name: Require Manual Approval for External PRs (${{ github.event.pull_request.head.sha }})
     runs-on: ubuntu-latest
     permissions:
       deployments: write  # Required for creating deployment record when using environment
@@ -81,7 +81,7 @@ jobs:
     if: needs.check-author-membership.outputs.membership_status != 'CONFIRMED_MEMBER'
     environment:
       name: external-pr-approval
-      url: ${{ github.event.pull_request.html_url }}/commits/${{ github.event.pull_request.head.sha }}
+      url: ${{ github.event.pull_request.html_url }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
