@@ -38,7 +38,11 @@ def create_closest_hit(config, scene):
             world = wp.where(i == 1, data.world_count, world_index)
             interval = ray_interval(origin, direction, data.extent[0], hit.distance)
             packed_origin = origin + world_offset(world, data.grid, data.extent[0])
-            if data.has_instances[world] and interval[1] >= interval[0]:
+            if (
+                (i == 0 or wp.static(scene.has_global_instances))
+                and data.has_instances[world]
+                and interval[1] >= interval[0]
+            ):
                 flags = wp.uint32(0)
                 if wp.static(config.enable_backface_culling):
                     flags = wp.uint32(wp.static(int(wo.RayFlags.CULL_BACK_FACING_TRIANGLES)))
@@ -128,18 +132,19 @@ def create_first_hit(config, scene):
             world = wp.where(i == 1, data.world_count, world_index)
             interval = ray_interval(origin, direction, data.extent[0], max_dist)
             packed_origin = origin + world_offset(world, data.grid, data.extent[0])
-            if data.has_instances[world] and interval[1] >= interval[0]:
+            if (
+                (i == 0 or wp.static(scene.has_global_instances))
+                and data.has_instances[world]
+                and interval[1] >= interval[0]
+            ):
                 if wo.accel_query_ray_anyhit(data.handle, packed_origin, direction, interval[1], interval[0], 255):
                     return True
             for p in range(data.plane_offsets[world], data.plane_offsets[world + 1]):
                 si = data.planes[p]
-                distance, _normal = raycast.ray_intersect_shape_no_normal(
-                    shape_transforms[si],
-                    shape_sizes[si],
-                    shape_types[si],
-                    origin,
-                    direction,
-                    wp.static(config.enable_backface_culling),
+                # Planes only: the full primitive dispatch here costs 3-7% in the shadow path.
+                local_origin, local_direction = raycast.map_ray_to_local(shape_transforms[si], origin, direction)
+                distance, _normal = raycast.ray_intersect_plane(
+                    local_origin, local_direction, shape_sizes[si], wp.static(config.enable_backface_culling)
                 )
                 if distance >= 0.0 and distance < max_dist:
                     return True

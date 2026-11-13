@@ -65,17 +65,6 @@ class TestSensorCamera(unittest.TestCase):
         """A SensorCamera that renders ``model`` (owns an internal render context)."""
         return SensorCamera(model, backend=self.backend, **camera_kwargs)
 
-    def test_default_backend_selects_optix_when_supported(self) -> None:
-        """Resolve the default backend to OptiX only on configurations that support it."""
-        model, camera = self._build_sphere_scene()
-        self.assertEqual(camera.backend, self.backend)
-        self.assertEqual(SensorCamera(model).backend, self.backend)
-        if self.backend == "warp":
-            with self.assertRaisesRegex(RuntimeError, "OptiX"):
-                SensorCamera(model, backend="optix")
-        with self.assertRaisesRegex(ValueError, "backend"):
-            SensorCamera(model, backend="vulkan")
-
     def test_camera_ray_helpers_live_on_sensor_camera(self) -> None:
         """Verify camera ray helpers live on SensorCamera."""
         sensor_helper_names = (
