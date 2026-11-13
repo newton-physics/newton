@@ -41,12 +41,14 @@ method details. For symptom-driven diagnosis and parameter tuning, start with
 Choosing a Solver
 -----------------
 
-MuJoCo, Kamino, and VBD currently have dedicated backend guides:
+MuJoCo, Kamino, Style3D, and VBD currently have dedicated backend guides:
 
 - :doc:`MuJoCo <mujoco>` — generalized-coordinate rigid-body simulation and
   MuJoCo or MJCF workflows.
 - :doc:`Kamino <kamino>` — constrained rigid mechanisms with kinematic loops
   and hard frictional contacts; experimental.
+- :doc:`Style3D <style3d>` — cloth and free affine rigid bodies with two-way
+  particle-shape contact coupling.
 - :doc:`VBD <vbd>` — unified simulation of cloth, soft bodies, and rigid
   bodies in a single VBD-based solver; experimental.
 
@@ -138,7 +140,7 @@ Supported Features
      - ✅
    * - :class:`~newton.solvers.SolverStyle3D`
      - Implicit
-     - ❌
+     - ✅ affine body dynamics
      - ❌
      - ✅
      - ✅
@@ -202,12 +204,14 @@ formulation.
   :class:`~newton.solvers.SolverImplicitMPM`.
 - ``ke`` / ``kd``: :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`,
-  :class:`~newton.solvers.SolverMuJoCo`, and
+  :class:`~newton.solvers.SolverMuJoCo`,
+  :class:`~newton.solvers.SolverStyle3D` (rigid-rigid contacts), and
   :class:`~newton.solvers.SolverVBD`.
 - ``kf`` / ``ka``: :class:`~newton.solvers.SolverFeatherstone` and
   :class:`~newton.solvers.SolverSemiImplicit`; ``kf`` is also used by
   :class:`~newton.solvers.SolverMuJoCo`
-  (see :ref:`mujoco-contact-friction-solreffriction`).
+  (see :ref:`mujoco-contact-friction-solreffriction`) and
+  :class:`~newton.solvers.SolverStyle3D` (rigid-rigid contacts).
 - ``restitution``: :class:`~newton.solvers.SolverSteel` (arithmetic mean of
   the two shapes, for contacts closing faster than ``restitution_velocity_threshold``
   at the start of the step, unless ``enable_restitution=False``),

@@ -59,7 +59,12 @@ def _warn_legacy_attribute(name: str, config_name: str) -> None:
 
 
 class SolverStyle3D(SolverBase):
-    r"""Projective dynamics based cloth solver.
+    r"""Implicit solver for cloth and free rigid bodies using affine body dynamics.
+
+    Select :attr:`Dynamics.DEFORMABLE` (the default), :attr:`Dynamics.AFFINE_BODY`,
+    or :attr:`Dynamics.ALL` to advance cloth, rigid bodies, or both together.
+    Joint constraints are not supported. See the :doc:`Style3D solver guide
+    </solvers/style3d>` for setup, rigidity, and contact parameters.
 
     With affine body dynamics enabled, rigid-rigid and particle-rigid contacts
     use a normal penalty, closing-only damping, and Coulomb-limited viscous friction.
@@ -179,7 +184,11 @@ class SolverStyle3D(SolverBase):
         """Number of PCG iterations per non-linear iteration, capped by PCG capacity (999 by default)."""
 
         affine_rigidity_ratio: float = 1e2
-        """Dimensionless SO(3) stiffness ratio relative to mean directional inertia."""
+        """Dimensionless SO(3) stiffness ratio relative to mean directional inertia.
+
+        Zero disables the penalty. See :doc:`/solvers/style3d` for the stiffness
+        formula and its distinction from contact stiffness.
+        """
 
         drag_spring_stiff: float = 1e2
         """Stiffness of the mouse-dragging spring [N/m]."""
