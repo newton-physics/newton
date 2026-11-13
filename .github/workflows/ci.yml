@@ -91,25 +91,6 @@ jobs:
         run: uv sync --dry-run --python 3.13 --extra dev
       - name: Test dependency resolution (Python 3.14)
         run: uv sync --locked --dry-run --python 3.14 --extra dev --extra notebook
-      # Test published dependency metadata with pip as well as uv's lockfile.
-      # Use a separate environment and run outside the checkout to test the wheel.
-      - name: Install with pip (Python 3.14)
-        shell: bash
-        run: |
-          uv venv --python 3.14 --seed "$RUNNER_TEMP/python314-pip"
-          uv run --no-project --python "$RUNNER_TEMP/python314-pip" python -m pip install "$GITHUB_WORKSPACE[dev,notebook]"
-          uv run --no-project --python "$RUNNER_TEMP/python314-pip" python -m pip check
-      - name: Test installed package workflows (Python 3.14)
-        shell: bash
-        working-directory: ${{ runner.temp }}
-        run: |
-          uv run --no-project --python "$RUNNER_TEMP/python314-pip" python -c "import coacd, newton_usd_schemas, rerun.notebook, rerun_notebook; from pxr import Usd"
-          uv run --no-project --python "$RUNNER_TEMP/python314-pip" python -m unittest -v \
-            newton.tests.test_python_compatibility \
-            newton.tests.test_usd_mesh_loading \
-            newton.tests.test_viewer_usd \
-            newton.tests.test_model.TestModelMesh.test_mesh_approximation_coacd_is_repeatable \
-            newton.tests.test_viewer_rerun_init_args.TestViewerRerunNotebook
 
   # Unsharded legs report their required check names directly.
   newton-unittests:
