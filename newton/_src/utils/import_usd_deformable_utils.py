@@ -428,6 +428,23 @@ def _warn_subset_material_bindings(prim, path: str) -> None:
         )
 
 
+def _has_graphics_material_subsets(prim) -> bool:
+    """Whether a non-empty ``UsdGeomSubset`` of ``prim`` carries its own graphics (non-physics) material binding."""
+    from pxr import UsdShade
+
+    physics_bindings = ("material:binding:physics", "material:binding:collection:physics:")
+    return any(
+        subset.GetIndicesAttr().Get()
+        and any(
+            rel.GetName().startswith("material:binding")
+            and not rel.GetName().startswith(physics_bindings)
+            and rel.GetTargets()
+            for rel in subset.GetPrim().GetRelationships()
+        )
+        for subset in UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets()
+    )
+
+
 def _enabled_collider_prim(prim) -> bool:
     """Whether a prim carries an enabled ``PhysicsCollisionAPI``.
 
@@ -753,15 +770,6 @@ def _deformable_body_skip_reason(prim: Usd.Prim, read_attr: Callable) -> str | N
     return None
 
 
-def _builder_body_xform(builder: ModelBuilder, body_id: int) -> wp.transform:
-    """Return body ``body_id``'s current world transform from the builder's ``body_q``."""
-    body_q = builder.body_q[body_id]
-    return wp.transform(
-        wp.vec3(float(body_q[0]), float(body_q[1]), float(body_q[2])),
-        wp.quat(float(body_q[3]), float(body_q[4]), float(body_q[5]), float(body_q[6])),
-    )
-
-
 def _resolve_attachment_target(
     ctx: _DeformableImportContext, target_path: str, local_point: wp.vec3
 ) -> tuple[int, wp.vec3] | None:
@@ -783,7 +791,10 @@ def _resolve_attachment_target(
     body = ctx.path_body_map.get(body_path)
     if body is None:
         return None
-    body_point = wp.transform_point(wp.transform_inverse(_builder_body_xform(ctx.builder, body)), world_point)
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    body_xform = ctx.incoming_world_xform * usd.get_transform(ctx.stage.GetPrimAtPath(body_path), local=False)
+    body_point = wp.transform_point(wp.transform_inverse(body_xform), world_point)
     return body, body_point
 
 

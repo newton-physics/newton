@@ -1021,6 +1021,11 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
     applying ``P`` and ``M⁻¹`` on the fly (no ``P J M⁻¹`` or ``(P J)ᵀ`` value copy is materialized;
     the only auxiliary data are ``int32`` index arrays).
 
+    Joint friction and effort rows that are decoupled from the joint dynamics row of the same DoF
+    (see :class:`.joint_decoupling.DynamicJointDecoupling`) are supported by folding their body
+    Jacobian scale into ``P``, their joint-space compliance into ``eta``, and adding their joint-space
+    couplings from the operator's per-row coupled-row table.
+
     Requires a :class:`.delassus.BlockSparseMatrixFreeDelassusOperator`.
     """
 
@@ -1098,7 +1103,20 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
         if int(model.size.max_of_num_bodies) >= (1 << 7):
             raise ValueError("fused CR row-block packing needs max bodies/world < 128.")
 
-        self._kernel = make_fused_cr_kernel(self._max_rows, self._max_cols, MAX_BLOCKS_PER_ROW, self._block_dim)
+        # Joint friction and effort rows may be decoupled from joint dynamics rows of the same DoF
+        # (see DynamicJointDecoupling), which adds joint-space couplings to the products
+        size = model.size
+        self._coupled_rows = size.sum_of_num_dynamic_joint_cts > 0 and (
+            size.sum_of_num_friction_joint_cts + size.sum_of_num_effort_joint_cts > 0
+        )
+        # Joint rows come first in each world's constraint rows, so only the leading
+        # bilateral and bounded joint rows can have couplings
+        self._num_coupled_rows = (
+            size.max_of_num_bilateral_joint_cts + size.max_of_num_bounded_joint_cts if self._coupled_rows else 0
+        )
+        self._kernel = make_fused_cr_kernel(
+            self._max_rows, self._max_cols, MAX_BLOCKS_PER_ROW, self._block_dim, coupled_rows=self._num_coupled_rows
+        )
 
         with wp.ScopedDevice(device):
             self._row_blk = wp.empty((self._total_rows, MAX_BLOCKS_PER_ROW), dtype=wp.int32)
@@ -1116,10 +1134,16 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
             bodies_offset = model.info.bodies_offset.numpy()
             self._nbd = wp.array((np.diff(bodies_offset) * 6).astype(np.int32), dtype=wp.int32)
             self._precond_dummy = wp.zeros((1,), dtype=wp.float32)
+            self._coupled_row_dummy = wp.full((1, 2), -1, dtype=wp.int32)
+            self._coupled_coef_dummy = wp.zeros((1, 2), dtype=wp.float32)
             # Full-length zero eta fallback (the fused kernel reads eta[voff + row] for every active row).
             self._eta_dummy = wp.zeros((self._total_rows,), dtype=wp.float32)
         # Combined regularization, refreshed together with the index structures (see _solve_impl).
         self._cached_eta = self._eta_dummy
+        # Row scale of the Jacobian (the preconditioner, with the decoupled joint rows scaled by their
+        # body share) and the coupled-row table of the decoupled joint rows, refreshed with the regularization.
+        self._cached_row_scale = None
+        self._cached_coupled_rows = None
 
         # Per-world stopping controls are read in the kernel as device arrays so per-world or
         # PADMM-adaptive (``linear_solver_atol``) tolerances are honored rather than scalarized.
@@ -1142,90 +1166,8 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
     def _solve_inplace_impl(self, x: wp.array[wp.float32], **kwargs: dict[str, Any]) -> None:
         self._solve_impl(x, x, **kwargs)
 
-    def _refresh_combined_regularization(self, op) -> wp.array[wp.float32]:
-        # Mirror BlockSparseMatrixFreeDelassusOperator.update()'s regularization step (eta plus
-        # armature inv_m_j and effort inv_m_a) without assembling any Jacobian copy. Uses the raw
-        # Jacobian's row_start.
-        if op._combined_regularization is None:
-            return op._eta
-
-        from ..dynamics.delassus import (  # noqa: PLC0415
-            _add_armature_regularization_preconditioned_sparse,
-            _add_armature_regularization_sparse,
-            _add_effort_regularization_preconditioned_sparse,
-            _add_effort_regularization_sparse,
-        )
-
-        model = op._model
-        data = op._data
-        device = op.device
-        row_start = op.constraint_jacobian.row_start
-        if op._eta is not None:
-            wp.copy(op._combined_regularization, op._eta)
-        else:
-            op._combined_regularization.zero_()
-
-        if op._preconditioner is None:
-            if model.size.sum_of_num_dynamic_joint_cts > 0:
-                wp.launch(
-                    _add_armature_regularization_sparse,
-                    dim=(op.num_matrices, model.size.max_of_num_dynamic_joint_cts),
-                    inputs=[
-                        model.info.num_joint_dynamic_cts,
-                        model.info.joint_dynamic_cts_offset,
-                        row_start,
-                        data.joints.inv_m_j,
-                        op._combined_regularization,
-                    ],
-                    device=device,
-                )
-            if model.size.sum_of_num_effort_joint_cts > 0:
-                wp.launch(
-                    _add_effort_regularization_sparse,
-                    dim=(op.num_matrices, model.size.max_of_num_effort_joint_cts),
-                    inputs=[
-                        model.info.num_joint_effort_cts,
-                        model.info.joint_effort_cts_offset,
-                        model.info.joint_bounded_cts_group_offset,
-                        model.info.num_joint_friction_cts,
-                        row_start,
-                        data.joints.inv_m_a,
-                        op._combined_regularization,
-                    ],
-                    device=device,
-                )
-        else:
-            if model.size.sum_of_num_dynamic_joint_cts > 0:
-                wp.launch(
-                    _add_armature_regularization_preconditioned_sparse,
-                    dim=(op.num_matrices, model.size.max_of_num_dynamic_joint_cts),
-                    inputs=[
-                        model.info.num_joint_dynamic_cts,
-                        model.info.joint_dynamic_cts_offset,
-                        data.joints.inv_m_j,
-                        row_start,
-                        op._preconditioner,
-                        op._combined_regularization,
-                    ],
-                    device=device,
-                )
-            if model.size.sum_of_num_effort_joint_cts > 0:
-                wp.launch(
-                    _add_effort_regularization_preconditioned_sparse,
-                    dim=(op.num_matrices, model.size.max_of_num_effort_joint_cts),
-                    inputs=[
-                        model.info.num_joint_effort_cts,
-                        model.info.joint_effort_cts_offset,
-                        model.info.joint_bounded_cts_group_offset,
-                        model.info.num_joint_friction_cts,
-                        data.joints.inv_m_a,
-                        row_start,
-                        op._preconditioner,
-                        op._combined_regularization,
-                    ],
-                    device=device,
-                )
-        return op._combined_regularization
+    def _refresh_combined_regularization(self, op) -> wp.array[wp.float32] | None:
+        return op._refresh_combined_regularization()
 
     def prepare_solve(self) -> None:
         """Rebuild the per-step index structures and combined regularization, if the operator was
@@ -1250,6 +1192,9 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
         # preconditioner, not on the Jacobian sparsity, so it never needs the index structures.
         eta = self._refresh_combined_regularization(op)
         self._cached_eta = eta if eta is not None else self._eta_dummy
+        # The row scale and couplings of decoupled joint rows depend on the preconditioner as well
+        self._cached_row_scale = op._update_jacobian_row_scale()
+        self._cached_coupled_rows = op.update_decoupled_coupled_rows() if self._coupled_rows else None
         op._regularization_needs_update = False
 
         # The index structures depend only on the Jacobian sparsity, so rebuild them (the segmented
@@ -1295,8 +1240,12 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
         self.prepare_solve()
 
         eta = self._cached_eta
-        use_precond = 1 if op._preconditioner is not None else 0
-        precond = op._preconditioner if op._preconditioner is not None else self._precond_dummy
+        # The kernel scales the Jacobian rows by the preconditioner, so decoupled joint rows also get their body share
+        row_scale = self._cached_row_scale
+        use_precond = 1 if row_scale is not None else 0
+        precond = row_scale if row_scale is not None else self._precond_dummy
+        use_coupled_rows = 1 if self._cached_coupled_rows is not None else 0
+        coupled_row, coupled_coef = self._cached_coupled_rows or (self._coupled_row_dummy, self._coupled_coef_dummy)
 
         # Resolve per-world stopping controls to device arrays. A wp.array (e.g. PADMM's adaptive
         # ``linear_solver_atol``) is used directly so the kernel reads its live contents; a scalar
@@ -1332,6 +1281,9 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
                 precond,
                 use_precond,
                 eta,
+                coupled_row,
+                coupled_coef,
+                use_coupled_rows,
                 b,
                 x,
                 maxiter,

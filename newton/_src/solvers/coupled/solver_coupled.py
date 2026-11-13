@@ -1552,7 +1552,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.TETRAHEDRON: list(range(model.tet_count)) if keep_deformables else [],
             model.AttributeFrequency.SPRING: list(range(model.spring_count)) if keep_deformables else [],
             model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY: attachment_order,
-            model.AttributeFrequency.WORLD: list(range(model.world_count)),
+            # WORLD rows include the global world -1 after the local worlds.
+            model.AttributeFrequency.WORLD: list(range(model.world_count + 1)),
         }
         built_in_frequency_orders.update(self._compact_deformable_orders(built_in_frequency_orders))
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
@@ -1926,7 +1927,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         world_frequency = model.AttributeFrequency.WORLD
         projections.setdefault(
             world_frequency,
-            _compact_index_projection(range(model.world_count), model.world_count),
+            _compact_index_projection(range(model.world_count + 1), model.world_count + 1),
         )
         projections[attachment_frequency] = _compact_index_projection(
             rows,
@@ -2355,7 +2356,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         namespace = overrides.get(namespace_name)
         if namespace is None:
             parent_namespace = getattr(self.model, namespace_name)
-            namespace = _AttributeNamespaceView(parent_namespace)
+            namespace = _AttributeNamespaceView(parent_namespace, view)
             setattr(view, namespace_name, namespace)
         setattr(namespace, attr_name, value)
 
@@ -3030,6 +3031,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         contacts) own their own buffers internally.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         self._distribute_state(state_in, dt=dt)
         self._active_observables = observables
         try:
@@ -3796,6 +3798,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 device=contacts.device,
             )
         filtered._contact_matching_mode = contacts.contact_matching_mode
+        # Entry solvers check this stamp; the filtered rows are as reduced as their source.
+        filtered._rigid_contact_body_pair_reduced = contacts.rigid_contact_body_pair_reduced
         filtered._enable_rigid_soft_full_surface_contact = bool(
             contacts._enable_rigid_soft_full_surface_contact and has_particles
         )
@@ -3869,15 +3873,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             if frequency == model_frequency.BODY:
                 return True
-        configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref", "mujoco:dof_springref")
+        configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref")
         if flags & int(ModelFlags.JOINT_PROPERTIES):
-            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) or attribute.name in (
-                "joint_axis",
-                "joint_target_q",
-            ):
+            if (
+                frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) and attribute.name != "joint_rest_q"
+            ) or attribute.name in ("joint_axis", "joint_target_q"):
                 return True
         if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
-            if frequency == model_frequency.JOINT_DOF or attribute.name == "joint_target_q":
+            if frequency == model_frequency.JOINT_DOF or attribute.name in ("joint_target_q", "joint_rest_q"):
                 return True
         if flags & int(ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
             if (
@@ -3887,7 +3890,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if flags & int(ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES) and attribute.name in (
             "joint_target_q",
             "mujoco:dof_ref",
-            "mujoco:dof_springref",
+            "joint_rest_q",
         ):
             return True
         if flags & int(ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES) and attribute.name == "joint_armature":

@@ -14,11 +14,11 @@ import logging
 import math
 import warnings
 import weakref
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from os import PathLike
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -87,6 +87,14 @@ from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
+from .body_variants import (
+    _BodyVariants,
+    _plan_variant_rows,
+    _snapshot_variants,
+    _validate_variant_builder,
+    _VariantShape,
+    _VariantShapeRows,
+)
 from .enums import (
     BodyFlags,
     JointTargetMode,
@@ -108,8 +116,11 @@ from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
 if TYPE_CHECKING:
     from pxr import Usd
 
+    from ..actuators.batteries.base import BatteryBase
     from ..actuators.clamping.base import ClampingBase
     from ..actuators.drives.base import DriveBase
+    from ..actuators.input_processors.base import InputProcessorBase
+    from ..actuators.motor_dc import MotorDC
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -189,14 +200,26 @@ def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray
     return opacities
 
 
-_DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
-_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
-    "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
+_ACTUATOR_DELAY_STEPS_DEPRECATION_MSG = (
+    "ModelBuilder.add_actuator(delay_steps=...) is deprecated in Newton 1.9; "
+    "use input_processors=[(InputProcessorDelay, {'delay_steps': ...})] instead."
+)
+_ACTUATOR_ENTRY_DELAY_ARGS_UNSET = object()
+_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG = (
+    "ModelBuilder.ActuatorEntry.delay_args is deprecated in Newton 1.9; use input_processor_args instead."
 )
 _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "ModelBuilder.joint_twist_lower and ModelBuilder.joint_twist_upper are deprecated in Newton 1.7 and "
     "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
     "limits of ModelBuilder.JointDofConfig instead."
+)
+_ADD_MUSCLE_DEPRECATION_MSG = (
+    "ModelBuilder.add_muscle() is deprecated in Newton 1.9 and will be removed in a future release. "
+    "Legacy muscles ignore their parameters and are only evaluated by SolverSemiImplicit. "
+    "Use SolverMuJoCo muscle actuators instead: import MJCF <muscle> actuators, or build "
+    "them with newton.solvers.mujoco.add_tendon_spatial() and "
+    'add_actuator_general(..., dyntype="muscle", gaintype="muscle", biastype="muscle") '
+    "with explicit muscle dynprm, gainprm, and biasprm values."
 )
 _REPLICATE_WORLD_COUNT_DEPRECATION_MSG = (
     "ModelBuilder.replicate(world_count=...) is deprecated in Newton 1.8; use copy_count=... instead."
@@ -657,6 +680,16 @@ class _BuilderShapeCollisionFilterPairs:
         self._template_cache = None
 
 
+def _resolve_joint_target_alias(value: float | None, legacy: float | None, name: str, old_name: str) -> float | None:
+    """Resolve a deprecated joint target keyword without silently accepting conflicting values."""
+    if legacy is not None:
+        warnings.warn(f"{old_name} is deprecated; use {name} instead.", NewtonDeprecationWarning, stacklevel=3)
+        if value is not None and value != legacy:
+            raise ValueError(f"Conflicting {name} and deprecated {old_name} values")
+        return legacy
+    return value
+
+
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
 
@@ -772,6 +805,7 @@ class ModelBuilder:
     )
     _BUILDER_ATTRIBUTE_SPECS: ClassVar[dict[str, Model.AttributeSpec]] = {
         "body_lock_inertia": Model.AttributeSpec(Model.AttributeFrequency.BODY),
+        "_joint_rest_q_authored": Model.AttributeSpec(Model.AttributeFrequency.JOINT_COORD),
         "joint_collision_filter_parent": Model.AttributeSpec(Model.AttributeFrequency.JOINT),
         "joint_cts": Model.AttributeSpec(Model.AttributeFrequency.JOINT_CONSTRAINT),
         "joint_cts_start": Model.AttributeSpec(
@@ -931,14 +965,23 @@ class ModelBuilder:
         )
 
     @dataclass
+    class BatteryEntry:
+        """Stores accumulated specs for the batteries of one battery class."""
+
+        battery_class: type  # BatteryBase subclass (e.g. BatteryConstantResistance)
+        args: list[dict[str, Any]] = field(default_factory=list)  # Per-battery array params
+        actuators: list[list[int]] = field(default_factory=list)  # Per-battery actuators
+        world: list[int] = field(default_factory=list)  # Per-battery world
+
+    @dataclass(init=False)
     class ActuatorEntry:
         """Stores accumulated specs for one group of compatible composed actuators.
 
         Each element in ``indices`` is a single DOF index.  The entry key is
-        ``(drive_class, delay_steps is not None, clamping_key, drive_shared_key)``
+        ``(drive_class, input_processor_key, clamping_key, drive_shared_key, motor_key)``
         where shared params (e.g. ``model_path``, lookup tables) must
-        be identical across all actuators in a group.  Delay step values
-        are per-DOF; the buffer is sized to ``max(delay_step_values) + 1``.
+        be identical across all actuators in a group.  Per-actuator params
+        such as delay step values may differ within a group.
         """
 
         drive_class: type  # DriveBase subclass (e.g. DrivePD)
@@ -948,8 +991,122 @@ class ModelBuilder:
         indices: list[int]  # Per-actuator DOF indices (joint_qd layout)
         pos_indices: list[int]  # Per-actuator position indices (joint_q layout)
         drive_args: list[dict[str, Any]]  # Per-actuator drive array params
-        delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
+        input_processor_classes: tuple = ()  # Tuple of InputProcessorBase subclass types (in order)
+        input_processor_shared_kwargs: tuple = ()  # Tuple of dicts: shared kwargs per input processor class
+        input_processor_args: list[list[dict[str, Any]]] = field(default_factory=list)  # Per-actuator params
+        actuator_indices: list[int] = field(default_factory=list)  # Per-actuator rows of per-actuator arrays
+        motor_class: type | None = None  # Motor class (e.g. MotorDC), or None
+        motor_shared_kwargs: dict = field(default_factory=dict)  # Shared motor kwargs
+        motor_args: list[dict[str, Any]] = field(default_factory=list)  # Per-actuator motor array params
+
+        def __init__(
+            self,
+            drive_class: type,
+            clamping_classes: tuple,
+            clamping_shared_kwargs: tuple,
+            drive_shared_kwargs: dict,
+            indices: list[int],
+            pos_indices: list[int],
+            drive_args: list[dict[str, Any]],
+            delay_args: list[dict[str, Any]] | object = _ACTUATOR_ENTRY_DELAY_ARGS_UNSET,
+            clamping_args: list[list[dict[str, Any]]] | None = None,
+            *,
+            input_processor_classes: tuple = (),
+            input_processor_shared_kwargs: tuple = (),
+            input_processor_args: list[list[dict[str, Any]]] | None = None,
+            actuator_indices: list[int] | None = None,
+            motor_class: type | None = None,
+            motor_shared_kwargs: dict | None = None,
+            motor_args: list[dict[str, Any]] | None = None,
+        ):
+            """Initialize an actuator entry.
+
+            Args:
+                delay_args: Deprecated in Newton 1.9; pass an
+                    :class:`~newton.actuators.InputProcessorDelay` in
+                    *input_processor_classes* and its per-actuator params in
+                    *input_processor_args* instead.
+                actuator_indices: Index of each actuator in per-actuator
+                    arrays, as returned by :meth:`ModelBuilder.add_actuator`.
+                    Entries built by hand without it get no per-actuator
+                    arrays.
+            """
+            self.drive_class = drive_class
+            self.clamping_classes = clamping_classes
+            self.clamping_shared_kwargs = clamping_shared_kwargs
+            self.drive_shared_kwargs = drive_shared_kwargs
+            self.indices = indices
+            self.pos_indices = pos_indices
+            self.drive_args = drive_args
+            self.clamping_args = clamping_args if clamping_args is not None else []
+            self.input_processor_classes = input_processor_classes
+            self.input_processor_shared_kwargs = input_processor_shared_kwargs
+            self.input_processor_args = input_processor_args if input_processor_args is not None else []
+            self.actuator_indices = actuator_indices if actuator_indices is not None else []
+            self.motor_class = motor_class
+            self.motor_shared_kwargs = motor_shared_kwargs if motor_shared_kwargs is not None else {}
+            self.motor_args = motor_args if motor_args is not None else []
+            if delay_args is _ACTUATOR_ENTRY_DELAY_ARGS_UNSET:
+                return
+            warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            if not delay_args:
+                return
+            from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
+
+            self.input_processor_classes = (InputProcessorDelay, *self.input_processor_classes)
+            self.input_processor_shared_kwargs = ({}, *self.input_processor_shared_kwargs)
+            others = self.input_processor_args or [[] for _ in delay_args]
+            self.input_processor_args = [[dict(delay), *rest] for delay, rest in zip(delay_args, others, strict=True)]
+
+        @property
+        def delay_args(self) -> list[dict[str, Any]]:
+            """Deprecated alias for the delay entries of :attr:`input_processor_args`.
+
+            The returned list is a new list holding the per-actuator delay
+            dicts: changing a dict changes the entry, but appending to the
+            list does not. Assign a new list to replace the delay entries.
+
+            .. deprecated:: 1.9
+                Use :attr:`input_processor_args` instead.
+            """
+            warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            slot = self._delay_slot()
+            if slot is None:
+                return []
+            return [per_actuator[slot] for per_actuator in self.input_processor_args]
+
+        @delay_args.setter
+        def delay_args(self, value: list[dict[str, Any]]) -> None:
+            from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
+
+            warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            value = [dict(delay) for delay in value]
+            if not self.input_processor_args:
+                self.input_processor_args = [[] for _ in value]
+            if len(value) != len(self.input_processor_args):
+                raise ValueError(
+                    f"delay_args has {len(value)} entries but the entry has {len(self.input_processor_args)} actuators"
+                )
+            slot = self._delay_slot()
+            if slot is None:
+                self.input_processor_classes = (InputProcessorDelay, *self.input_processor_classes)
+                self.input_processor_shared_kwargs = ({}, *self.input_processor_shared_kwargs)
+                self.input_processor_args = [
+                    [delay, *rest] for delay, rest in zip(value, self.input_processor_args, strict=True)
+                ]
+                return
+            for per_actuator, delay in zip(self.input_processor_args, value, strict=True):
+                per_actuator[slot] = delay
+
+        def _delay_slot(self) -> int | None:
+            """Return the position of the delay among the input processors, or ``None``."""
+            from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
+
+            for i, proc_class in enumerate(self.input_processor_classes):
+                if issubclass(proc_class, InputProcessorDelay):
+                    return i
+            return None
 
     @dataclass
     class BvhConfig:
@@ -1013,16 +1170,24 @@ class ModelBuilder:
         :class:`~newton.solvers.SolverFeatherstone`. ``0`` disables adhesion. See
         :ref:`Contact friction gain and adhesion`."""
         mu: float = 1.0
-        """The coefficient of friction."""
+        """The coefficient of friction [dimensionless]; the dynamic (kinetic) coefficient when
+        :attr:`mu_static` is set."""
+        mu_static: float | None = None
+        """The coefficient of static friction [dimensionless], the break-away threshold for sticking
+        contacts. ``None`` uses :attr:`mu` (no static/dynamic distinction); a set value must not be
+        below :attr:`mu`, so code that overrides :attr:`mu` alone has to resolve this field as well.
+        No built-in solver models stick-slip friction yet; the value is stored for solvers that do."""
         restitution: float = 0.0
         """The coefficient of restitution.
 
         :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True``
         on the solver constructor for this field to take effect.
         :class:`~newton.solvers.SolverSteel` uses the arithmetic mean of the
-        two shapes' coefficients, each clamped to ``[0, 1]`` (non-finite values
-        count as zero), for contacts whose closing speed at the start of the step
+        two shapes' coefficients, each clamped to ``[0, 1]``, for contacts whose
+        closing speed at the start of the step
         exceeds its ``restitution_velocity_threshold``.
+        Non-finite contact material values on colliding shapes are rejected by
+        :meth:`ModelBuilder.finalize` unless shape validation is disabled.
         """
         mu_torsional: float = 0.005
         """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
@@ -1164,6 +1329,14 @@ class ModelBuilder:
                 )
             if not math.isfinite(self.density) or self.density < 0.0:
                 raise ValueError(f"density must be finite and >= 0 (got {self.density}).")
+            if self.mu_static is not None:
+                if not math.isfinite(self.mu_static) or self.mu_static < 0.0:
+                    raise ValueError(f"mu_static must be finite and >= 0 (got mu_static={self.mu_static}).")
+                if self.mu_static < self.mu:
+                    raise ValueError(
+                        f"mu_static must be >= mu (got mu_static={self.mu_static}, mu={self.mu}). "
+                        "Leave mu_static as None for a single friction coefficient."
+                    )
 
             if self.sdf_target_voxel_size is not None and (
                 not math.isfinite(self.sdf_target_voxel_size) or self.sdf_target_voxel_size <= 0.0
@@ -1215,6 +1388,30 @@ class ModelBuilder:
             ):
                 raise ValueError(
                     "Hydroelastic shapes require an SDF. Set either sdf_max_resolution or sdf_target_voxel_size."
+                )
+
+        def _validate_site(self, shape_label: str) -> None:
+            """Validate collision, density, and group settings for a site."""
+            if self.has_shape_collision or self.has_particle_collision:
+                raise ValueError(
+                    f"Site shape '{shape_label}' cannot have collision enabled. "
+                    f"Sites must be non-colliding reference points. "
+                    f"has_shape_collision={self.has_shape_collision}, "
+                    f"has_particle_collision={self.has_particle_collision}"
+                )
+
+            if self.density != 0.0:
+                raise ValueError(
+                    f"Site shape '{shape_label}' must have zero density. "
+                    f"Sites do not contribute to body mass. "
+                    f"Got density={self.density}"
+                )
+
+            if self.collision_group != 0:
+                raise ValueError(
+                    f"Site shape '{shape_label}' must have collision_group=0. "
+                    f"Sites do not participate in collision detection. "
+                    f"Got collision_group={self.collision_group}"
                 )
 
         def mark_as_site(self) -> None:
@@ -1283,17 +1480,23 @@ class ModelBuilder:
             limit_upper: float = MAXVAL,
             limit_ke: float = 1e4,
             limit_kd: float = 1e1,
-            target_pos: float = 0.0,
-            target_vel: float = 0.0,
+            target_q: float | None = None,
+            target_qd: float | None = None,
             target_ke: float = 0.0,
             target_kd: float = 0.0,
             damping: float = 0.0,
+            stiffness: float = 0.0,
+            rest_q: float | None = None,
             armature: float = 0.0,
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
             friction: float = 0.0,
             actuator_mode: JointTargetMode | None = None,
+            target_pos: float | None = None,
+            target_vel: float | None = None,
         ):
+            target_q = _resolve_joint_target_alias(target_q, target_pos, "target_q", "target_pos")
+            target_qd = _resolve_joint_target_alias(target_qd, target_vel, "target_qd", "target_vel")
             self.axis = wp.normalize(axis_to_vec3(axis))
             """The 3D joint axis in the joint parent anchor frame."""
             self.limit_lower = limit_lower
@@ -1305,11 +1508,11 @@ class ModelBuilder:
             self.limit_kd = limit_kd
             """The damping coefficient of the joint axis limits
             [N·s/m or N·m·s/rad, depending on joint type]. Defaults to 1e1."""
-            self.target_pos = target_pos
+            self.target_q = 0.0 if target_q is None else target_q
             """The target position of the joint axis.
-            If the initial `target_pos` is outside the limits,
+            If the initial `target_q` is outside the limits,
             it defaults to the midpoint of `limit_lower` and `limit_upper`. Otherwise, defaults to 0.0."""
-            self.target_vel = target_vel
+            self.target_qd = 0.0 if target_qd is None else target_qd
             """The target velocity of the joint axis."""
             self.target_ke = target_ke
             """The proportional gain of the target drive PD controller. Defaults to 0.0."""
@@ -1317,6 +1520,13 @@ class ModelBuilder:
             """The derivative gain of the target drive PD controller. Defaults to 0.0."""
             self.damping = damping
             """Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] that is always active. Defaults to 0.0."""
+            self.stiffness = stiffness
+            """Passive spring stiffness [N/m or N·m/rad]. Defaults to zero."""
+            self.rest_q = rest_q
+            """Passive spring rest coordinate [m or rad], independent of joint limits.
+            None leaves the coordinate unspecified (effectively zero unless a legacy spring input supplies it).
+            An explicit zero takes precedence over legacy defaults.
+            """
             self.armature = armature
             """Artificial inertia added around the joint axis [kg·m² or kg]. Defaults to 0."""
             self.effort_limit = effort_limit
@@ -1329,8 +1539,38 @@ class ModelBuilder:
             """Actuator mode for this DOF. Determines which actuators are installed (see :class:`JointTargetMode`).
             If None, the mode is inferred from gains and targets."""
 
-            if self.target_pos > self.limit_upper or self.target_pos < self.limit_lower:
-                self.target_pos = 0.5 * (self.limit_lower + self.limit_upper)
+            if self.target_q > self.limit_upper or self.target_q < self.limit_lower:
+                self.target_q = 0.5 * (self.limit_lower + self.limit_upper)
+
+        @property
+        def target_pos(self) -> float:
+            """Deprecated position target.
+
+            .. deprecated:: 1.8
+                Use :attr:`target_q` instead.
+            """
+            warnings.warn("target_pos is deprecated; use target_q instead.", NewtonDeprecationWarning, stacklevel=2)
+            return self.target_q
+
+        @target_pos.setter
+        def target_pos(self, value: float) -> None:
+            warnings.warn("target_pos is deprecated; use target_q instead.", NewtonDeprecationWarning, stacklevel=2)
+            self.target_q = value
+
+        @property
+        def target_vel(self) -> float:
+            """Deprecated velocity target.
+
+            .. deprecated:: 1.8
+                Use :attr:`target_qd` instead.
+            """
+            warnings.warn("target_vel is deprecated; use target_qd instead.", NewtonDeprecationWarning, stacklevel=2)
+            return self.target_qd
+
+        @target_vel.setter
+        def target_vel(self, value: float) -> None:
+            warnings.warn("target_vel is deprecated; use target_qd instead.", NewtonDeprecationWarning, stacklevel=2)
+            self.target_qd = value
 
         @classmethod
         def create_unlimited(cls, axis: AxisType | Vec3) -> ModelBuilder.JointDofConfig:
@@ -1339,8 +1579,8 @@ class ModelBuilder:
                 axis=axis,
                 limit_lower=-MAXVAL,
                 limit_upper=MAXVAL,
-                target_pos=0.0,
-                target_vel=0.0,
+                target_q=0.0,
+                target_qd=0.0,
                 target_ke=0.0,
                 target_kd=0.0,
                 damping=0.0,
@@ -1418,6 +1658,9 @@ class ModelBuilder:
         """Storage for specific values (overrides).
 
         For enum frequencies (BODY, SHAPE, etc.): dict[int, Any] mapping entity indices to values.
+        For ``WORLD``, keys are world indices, and key ``-1`` is global world ``-1``, whose value is
+        also the default of local worlds without one unless the attribute stores
+        references through :attr:`references` or :attr:`reference_value_transformer`.
         For string frequencies ("mujoco:pair", etc.): list[Any] for sequential custom data.
 
         If None, the attribute is not initialized with any values. Values can be assigned in subsequent
@@ -1603,6 +1846,15 @@ class ModelBuilder:
             else:
                 # Enum frequency: vals is a dict, use get() to fill gaps with defaults
                 arr = [self.values.get(i, self.default) for i in range(count)]
+                if self.frequency == Model.AttributeFrequency.WORLD and count > 0 and -1 in self.values:
+                    # Key -1 is global world -1, stored after the local worlds. Like builder
+                    # gravity, it is also the default of local worlds without their own value.
+                    global_value = self.values[-1]
+                    if self.references is None and self.reference_value_transformer is None:
+                        arr = [self.values.get(i, global_value) for i in range(count - 1)]
+                        arr.append(global_value)
+                    else:
+                        arr[-1] = global_value
 
             # String dtype: return as Python list instead of warp array
             if self.dtype is str:
@@ -1940,6 +2192,10 @@ class ModelBuilder:
         """Friction coefficients accumulated for :attr:`Model.shape_material_mu`."""
         self.shape_material_restitution: list[float] = []
         """Restitution coefficients accumulated for :attr:`Model.shape_material_restitution`."""
+        self.shape_material_mu_static: list[float | None] = []
+        """Static friction coefficients accumulated for :attr:`Model.shape_material_mu_static`. ``None`` means
+        "same as ``mu``" and is resolved in :meth:`finalize`, so a direct edit of :attr:`shape_material_mu` keeps a
+        single coefficient for such shapes; an explicit value is checked against the final ``mu`` there."""
         self.shape_material_mu_torsional: list[float] = []
         """Torsional friction coefficients accumulated for :attr:`Model.shape_material_mu_torsional`."""
         self.shape_material_mu_rolling: list[float] = []
@@ -2082,15 +2338,35 @@ class ModelBuilder:
 
         # muscles
         self.muscle_start: list[int] = []
-        """Muscle waypoint start indices accumulated for :attr:`Model.muscle_start`."""
+        """Muscle waypoint start indices accumulated for :attr:`Model.muscle_start`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
         self.muscle_params: list[tuple[float, float, float, float, float]] = []
-        """Muscle parameter rows accumulated for :attr:`Model.muscle_params`."""
+        """Muscle parameter rows accumulated for :attr:`Model.muscle_params`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
         self.muscle_activations: list[float] = []
-        """Muscle activations accumulated for :attr:`Model.muscle_activations`."""
+        """Muscle activations accumulated for :attr:`Model.muscle_activations`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
         self.muscle_bodies: list[int] = []
-        """Muscle waypoint body indices accumulated for :attr:`Model.muscle_bodies`."""
+        """Muscle waypoint body indices accumulated for :attr:`Model.muscle_bodies`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
         self.muscle_points: list[Vec3] = []
-        """Muscle waypoint local offsets accumulated for :attr:`Model.muscle_points`."""
+        """Muscle waypoint local offsets accumulated for :attr:`Model.muscle_points`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
 
         # rigid bodies
         self.body_mass: list[float] = []
@@ -2115,6 +2391,8 @@ class ModelBuilder:
         """Body flags accumulated for :attr:`Model.body_flags`."""
         self.body_shapes: dict[int, list[int]] = {-1: []}
         """Mapping from body index to attached shape indices, finalized into :attr:`Model.body_shapes`."""
+        self._body_variants: dict[int, _BodyVariants] = {}
+        """Shape variants by body index, declared with :meth:`add_body_variants`."""
         self.body_world: list[int] = []
         """World indices accumulated for :attr:`Model.body_world`."""
         self.body_color_groups: list[Any] = []
@@ -2158,6 +2436,12 @@ class ModelBuilder:
         """Joint target stiffness values accumulated for :attr:`Model.joint_target_ke`."""
         self.joint_target_kd: list[float] = []
         """Joint target damping values accumulated for :attr:`Model.joint_target_kd`."""
+        self.joint_stiffness: list[float] = []
+        """Passive spring stiffness accumulated for :attr:`Model.joint_stiffness`."""
+        # Builder-only authorship distinguishes explicit zero from legacy defaults.
+        self._joint_rest_q_authored: list[bool] = []
+        self.joint_rest_q: list[float] = []
+        """Spring rest configurations in joint coordinate layout, for :attr:`Model.joint_rest_q`."""
         self.joint_damping: list[float] = []
         """Passive velocity damping values accumulated for :attr:`Model.joint_damping`."""
         self.joint_limit_lower: list[float] = []
@@ -2324,6 +2608,8 @@ class ModelBuilder:
         """Total joint coordinate count propagated to :attr:`Model.joint_coord_count`."""
         self.joint_constraint_count: int = 0
         """Total joint constraint count propagated to :attr:`Model.joint_constraint_count`."""
+        self.actuator_count: int = 0
+        """Total actuator count propagated to :attr:`Model.actuator_count`."""
 
         self._current_world: int = -1
         """Internal world context backing the read-only :attr:`current_world` property."""
@@ -2404,6 +2690,8 @@ class ModelBuilder:
         # Key is (drive_class, delay is not None, clamping_key, drive_shared_key) to group compatible actuators
         self.actuator_entries: dict[tuple, ModelBuilder.ActuatorEntry] = {}
         """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by drive class and shared params."""
+        self.battery_entries: dict[type, ModelBuilder.BatteryEntry] = {}
+        """Battery entry groups accumulated from :meth:`add_battery`, keyed by battery class."""
 
         # Equality constraints are canonical MuJoCo custom attributes and must be available
         # independently of SolverMuJoCo. Lazy import avoids a module-level solver dependency.
@@ -3205,18 +3493,19 @@ class ModelBuilder:
         delay_steps: int | None = None,
         pos_index: int | None = None,
         *,
-        controller_class: type[DriveBase] | object = _DEPRECATED_ACTUATOR_DRIVE_UNSET,
+        input_processors: list[tuple[type[InputProcessorBase], dict[str, Any]]] | None = None,
+        motor: tuple[type[MotorDC], dict[str, Any]] | None = None,
         **kwargs: Any,
-    ) -> None:
+    ) -> int:
         """Add an external actuator for a single DOF.
 
         External actuators apply forces computed outside the physics engine.
-        Multiple calls with the same *drive_class*, *clamping*
-        types, and identical shared parameters are accumulated into one
+        Multiple calls with the same *drive_class*, *clamping*, input
+        processor and *motor* types, and identical shared parameters are
+        accumulated into one
         :class:`~newton.actuators.Actuator` instance during
-        :meth:`finalize <ModelBuilder.finalize>`.  Different delay
-        values are supported within the same group; the buffer is
-        sized to ``max(delay_step_values)``.
+        :meth:`finalize <ModelBuilder.finalize>`.  Per-actuator parameters,
+        such as delay step values, may differ within the same group.
 
         Args:
             drive_class: Drive class (e.g. :class:`~newton.actuators.DrivePD`).
@@ -3224,26 +3513,57 @@ class ModelBuilder:
                 velocity targets, feedforward, forces).
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
                 post-drive. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
-            delay_steps: Optional number of timesteps [timesteps] to delay inputs.
+                Clamps must accept the drive output space. DUTY clamps run
+                before the motor; EFFORT clamps require an actuator without a motor.
+            delay_steps: Deprecated in Newton 1.9; use
+                ``input_processors=[(InputProcessorDelay, {"delay_steps": ...})]`` instead.
             pos_index: DOF index into ``joint_q``-shaped arrays (positions,
                 position targets). Defaults to *index*. Differs from
                 *index* for floating-base or ball-joint articulations
                 where ``joint_q`` and ``joint_qd`` have different layouts.
-            controller_class: Deprecated in Newton 1.6; use ``drive_class`` instead.
+            input_processors: Optional list of ``(InputProcessorClass, kwargs)``
+                tuples applied in order before the drive. E.g.
+                ``[(InputProcessorDelay, {"delay_steps": 3})]``. Parameters listed in the
+                class's :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`
+                take a joint index or a joint label; ``None`` selects the
+                actuated joint.
+            motor: Optional ``(MotorClass, kwargs)`` tuple applied after DUTY
+                clamping and duty-to-voltage conversion. E.g. ``(MotorDC, {"kt": 1.0, "resistance": 2.0, "vin": 12.0})``.
             **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
+
+        Returns:
+            The index of the actuator in per-actuator arrays, e.g. for
+            :meth:`add_battery`.
+
+        Raises:
+            ValueError: *index* belongs to another world than the current
+                one, a joint parameter of an input
+                processor does not identify a single-DOF joint of the current
+                world or a global joint, of the same type as the actuated joint,
+                or the
+                drive and clamps do not match the modeling path: DUTY with
+                a motor, EFFORT without one.
         """
-        if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
-            if drive_class is not None:
-                raise TypeError("Specify only one of 'drive_class' and deprecated 'controller_class'.")
-            warnings.warn(_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            drive_class = controller_class
         if drive_class is None:
             raise TypeError("add_actuator() requires 'drive_class'")
 
         if index is None:
             raise TypeError("add_actuator() missing required argument: 'index'")
+        if 0 <= index < self.joint_dof_count:
+            dof_world = self.joint_world[bisect_right(self.joint_qd_start, index) - 1]
+            if dof_world not in (-1, self.current_world):
+                raise ValueError(
+                    f"add_actuator: DOF index {index} belongs to world {dof_world}, "
+                    f"but the actuator is added to world {self.current_world}"
+                )
 
         clamping = clamping or []
+        input_processors = list(input_processors or [])
+        if delay_steps is not None:
+            from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
+
+            warnings.warn(_ACTUATOR_DELAY_STEPS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            input_processors.insert(0, (InputProcessorDelay, {"delay_steps": delay_steps}))
 
         # --- Resolve drive kwargs and separate shared from per-DOF ---
         resolved_drive = drive_class.resolve_arguments(kwargs)
@@ -3273,10 +3593,66 @@ class ModelBuilder:
 
         clamping_shared_kwargs = tuple(clamping_shared_list)
 
+        # --- Resolve per-input-processor kwargs and separate shared from per-DOF ---
+        input_processor_classes = tuple(pc for pc, _ in input_processors)
+        input_processor_shared_list = []
+        input_processor_array_params_list = []
+        for proc_class, proc_kwargs in input_processors:
+            resolved_proc = proc_class.resolve_arguments(proc_kwargs)
+            for name in proc_class.JOINT_PARAMS:
+                joint = resolved_proc.pop(name)
+                if joint is None:
+                    resolved_proc[f"{name}_indices"] = index
+                    resolved_proc[f"{name}_pos_indices"] = pos_index if pos_index is not None else index
+                    continue
+                joint = self._resolve_actuator_joint(joint, proc_class.__name__, name, world=self.current_world)
+                if index < self.joint_dof_count:
+                    actuated = bisect_right(self.joint_qd_start, index) - 1
+                    if self.joint_type[joint] != self.joint_type[actuated]:
+                        raise ValueError(
+                            f"{proc_class.__name__}: '{name}' joint '{self.joint_label[joint]}' must have the type "
+                            f"of the actuated joint '{self.joint_label[actuated]}'"
+                        )
+                resolved_proc[f"{name}_indices"] = self.joint_qd_start[joint]
+                resolved_proc[f"{name}_pos_indices"] = self.joint_q_start[joint]
+            proc_shared_names = getattr(proc_class, "SHARED_PARAMS", set())
+            proc_shared = {k: resolved_proc[k] for k in proc_shared_names if k in resolved_proc}
+            proc_array = {k: v for k, v in resolved_proc.items() if k not in proc_shared_names}
+            input_processor_shared_list.append(proc_shared)
+            input_processor_array_params_list.append(proc_array)
+
+        input_processor_shared_kwargs = tuple(input_processor_shared_list)
+
+        # --- Resolve motor kwargs and separate shared from per-DOF ---
+        motor_class = None
+        motor_shared = {}
+        motor_array_params = {}
+        if motor is not None:
+            motor_class, motor_kwargs = motor
+            resolved_motor = motor_class.resolve_arguments(motor_kwargs)
+            unrecognized = set(motor_kwargs) - set(resolved_motor)
+            if unrecognized:
+                warnings.warn(
+                    f"add_actuator: {motor_class.__name__} ignoring "
+                    f"unrecognized parameter(s): {', '.join(sorted(unrecognized))}",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+            motor_shared_names = getattr(motor_class, "SHARED_PARAMS", set())
+            motor_shared = {k: resolved_motor[k] for k in motor_shared_names if k in resolved_motor}
+            motor_array_params = {k: v for k, v in resolved_motor.items() if k not in motor_shared_names}
+        from ..actuators.space import _validate_spaces  # noqa: PLC0415
+
+        _validate_spaces(
+            resolved_drive.get("output_space", drive_class.output_space),
+            (cc.input_space for cc in clamping_classes),
+            motor is not None,
+        )
+
         # --- Build entry key: identifies a group of compatible actuators ---
-        # Groups differ when drive class, presence of delay, clamping
-        # types/shared-params, or drive shared params differ.
-        # Delay values are per-DOF; the buffer is sized to max(delays).
+        # Groups differ when drive class, input processor types/shared-params,
+        # clamping types/shared-params, drive shared params, or motor
+        # type/shared-params differ.
         def _make_hashable(v: Any) -> Any:
             if isinstance(v, list):
                 return tuple(v)
@@ -3287,7 +3663,12 @@ class ModelBuilder:
             (cc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
             for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
         )
-        entry_key = (drive_class, delay_steps is not None, clamping_key, drive_shared_key)
+        input_processor_key = tuple(
+            (pc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
+            for pc, shared in zip(input_processor_classes, input_processor_shared_list, strict=True)
+        )
+        motor_key = (motor_class, tuple(sorted((k, _make_hashable(v)) for k, v in motor_shared.items())))
+        entry_key = (drive_class, input_processor_key, clamping_key, drive_shared_key, motor_key)
 
         entry = self.actuator_entries.setdefault(
             entry_key,
@@ -3299,17 +3680,120 @@ class ModelBuilder:
                 indices=[],
                 pos_indices=[],
                 drive_args=[],
-                delay_args=[],
                 clamping_args=[],
+                input_processor_classes=input_processor_classes,
+                input_processor_shared_kwargs=input_processor_shared_kwargs,
+                input_processor_args=[],
+                motor_class=motor_class,
+                motor_shared_kwargs=motor_shared,
             ),
         )
 
+        actuator = self.actuator_count
+        self.actuator_count += 1
         entry.indices.append(index)
         entry.pos_indices.append(pos_index if pos_index is not None else index)
         entry.drive_args.append(drive_array_params)
-        if delay_steps is not None:
-            entry.delay_args.append({"delay_steps": delay_steps})
         entry.clamping_args.append(clamping_array_params_list)
+        entry.input_processor_args.append(input_processor_array_params_list)
+        entry.actuator_indices.append(actuator)
+        if motor_class is not None:
+            entry.motor_args.append(motor_array_params)
+        return actuator
+
+    def add_battery(self, battery_class: type[BatteryBase], actuators: Sequence[int], **kwargs: Any) -> None:
+        """Add a battery shared by several actuators of the current world.
+
+        Multiple calls with the same *battery_class* are accumulated into one
+        :class:`~newton.actuators.BatteryBase` instance during
+        :meth:`finalize <ModelBuilder.finalize>`.  Per-battery parameters,
+        such as the nominal voltage, may differ within the same group.
+
+        Args:
+            battery_class: Battery class (e.g. :class:`~newton.actuators.BatteryConstantResistance`).
+            actuators: Actuator indices returned by :meth:`add_actuator`. At
+                least one is required, and each must belong to the current
+                world and have a motor that draws from a battery (e.g.
+                :class:`~newton.actuators.MotorDC` with ``supply_from_battery=True``).
+            **kwargs: Per-battery parameters (e.g. ``nominal_voltage``, ``resistance``).
+
+        Raises:
+            ValueError: *actuators* is empty or lists an actuator twice, an
+                actuator does not exist, belongs to another world, does not
+                draw from a battery or already has a battery, or a battery
+                parameter is invalid.
+        """
+        args = battery_class.resolve_arguments(kwargs)
+        actuators = [int(actuator) for actuator in actuators]
+        if not actuators:
+            raise ValueError("add_battery: at least one actuator is required")
+        if len(set(actuators)) != len(actuators):
+            raise ValueError("add_battery: an actuator is listed more than once")
+        with_battery = self._actuators_with_battery()
+        rows = {
+            row: (dof, entry.motor_args[i] if entry.motor_args else {})
+            for entry in self.actuator_entries.values()
+            for i, (row, dof) in enumerate(zip(entry.actuator_indices, entry.indices, strict=False))
+        }
+        for actuator in actuators:
+            if not 0 <= actuator < self.actuator_count:
+                raise ValueError(f"add_battery: actuator {actuator} does not exist")
+            dof, motor_args = rows.get(actuator, (None, {}))
+            if dof is not None:
+                world = self.joint_world[bisect_right(self.joint_qd_start, dof) - 1]
+                if world != self.current_world:
+                    raise ValueError(f"add_battery: actuator {actuator} belongs to world {world}")
+            if not motor_args.get("supply_from_battery"):
+                raise ValueError(
+                    f"add_battery: actuator {actuator} does not draw from a battery; "
+                    "add it with a motor with supply_from_battery=True"
+                )
+            if actuator in with_battery:
+                raise ValueError(f"add_battery: actuator {actuator} already draws from a battery")
+        entry = self.battery_entries.setdefault(battery_class, ModelBuilder.BatteryEntry(battery_class=battery_class))
+        entry.args.append(args)
+        entry.actuators.append(actuators)
+        entry.world.append(self.current_world)
+
+    def _actuators_with_battery(self) -> set[int]:
+        """Return the actuators that draw from a battery added with :meth:`add_battery`."""
+        return {
+            actuator
+            for entry in self.battery_entries.values()
+            for actuators in entry.actuators
+            for actuator in actuators
+        }
+
+    def _resolve_actuator_joint(self, joint: int | str, owner: str, name: str, world: int | None = None) -> int:
+        """Resolve a joint index or joint label to a single-DOF joint index.
+
+        With *world* given, the joint must belong to that world or be global
+        (world ``-1``), and a label is looked up among those joints only.
+        """
+        if isinstance(joint, str):
+            matches = [
+                i
+                for i, label in enumerate(self.joint_label)
+                if label == joint and (world is None or self.joint_world[i] in (-1, world))
+            ]
+            if len(matches) != 1:
+                problem = "unknown" if not matches else f"ambiguous ({len(matches)} joints with this)"
+                raise ValueError(f"{owner}: '{name}' references {problem} joint label '{joint}'")
+            joint = matches[0]
+        if not 0 <= joint < self.joint_count:
+            raise ValueError(f"{owner}: '{name}' joint index {joint} is out of range")
+        if world is not None and self.joint_world[joint] not in (-1, world):
+            raise ValueError(
+                f"{owner}: '{name}' joint index {joint} belongs to world {self.joint_world[joint]}, "
+                f"but the actuator is added to world {world}"
+            )
+        next_start = self.joint_qd_start[joint + 1] if joint + 1 < self.joint_count else self.joint_dof_count
+        if next_start - self.joint_qd_start[joint] != 1:
+            raise ValueError(
+                f"{owner}: '{name}' must reference a single-DOF joint, "
+                f"but joint '{self.joint_label[joint]}' has {next_start - self.joint_qd_start[joint]} DOFs"
+            )
+        return joint
 
     def _stack_args_to_arrays(
         self,
@@ -3349,8 +3833,7 @@ class ModelBuilder:
             if default_dtype == wp.int32 and all(isinstance(v, int) for v in values):
                 result[key] = wp.array(values, dtype=wp.int32, device=device)
             else:
-                rg = requires_grad and default_dtype != wp.int32
-                result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=rg)
+                result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=requires_grad)
 
         return result
 
@@ -3513,8 +3996,10 @@ class ModelBuilder:
 
     @property
     def muscle_count(self):
-        """
-        The number of muscles in the model.
+        """The number of muscles in the model.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
         """
         return len(self.muscle_start)
 
@@ -3647,8 +4132,9 @@ class ModelBuilder:
             To approximate mesh shapes, call
             :meth:`~newton.ModelBuilder.approximate_meshes` on ``builder`` before
             passing it here. Replication copies mesh references, so approximating
-            first yields a single simplified copy shared across all copies;
-            approximating afterwards allocates one copy per replicated shape.
+            first simplifies each mesh once and shares the result across all copies;
+            approximating afterwards produces the same shared result but processes
+            every replicated shape.
 
         Args:
             builder: The builder to replicate. All entities from this builder will be copied.
@@ -3784,6 +4270,10 @@ class ModelBuilder:
 
         counts = self._builder_merge_counts(builder)
         self._validate_builder_merge(builder, set(counts))
+        # Values can change without a schema change, so check them before copying entities.
+        for full_key, attr in builder.custom_attributes.items():
+            if attr.frequency == Model.AttributeFrequency.WORLD:
+                self._check_merged_world_values(full_key, attr.values)
         attribute_specs = self._builder_merge_attribute_specs()
         bases = self._builder_merge_counts(self)
 
@@ -3939,6 +4429,9 @@ class ModelBuilder:
                     self.body_shapes[-1].extend(translated_shapes)
                 else:
                     self.body_shapes[body + int(body_start)] = translated_shapes
+            # Copies share the variant sets by identity.
+            for body, body_variants in builder._body_variants.items():
+                self._body_variants[body + int(body_start)] = body_variants.shifted(int(shape_start))
 
         joint_starts = starts("joint")
         joint_coord_starts = starts("joint_coord")
@@ -4120,6 +4613,29 @@ class ModelBuilder:
                 builder,
                 int(joint_dof_starts[copy_index]),
                 int(joint_coord_starts[copy_index]),
+                entity_offsets["actuator"],
+            )
+            self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
+        self.actuator_count += copy_count * counts["actuator"]
+
+    def _model_value_key(self, attribute: CustomAttribute) -> int:
+        """Return the value key of a ``ONCE`` or ``WORLD`` attribute in the current world context.
+
+        ``WORLD`` keys are world indices, so outside a world context values belong to
+        global world ``-1``.
+        """
+        return self.current_world if attribute.frequency == Model.AttributeFrequency.WORLD else 0
+
+    def _check_merged_world_values(self, key: str, values: dict[int, Any] | None) -> None:
+        """Reject different source ``WORLD`` values, which a merge into one destination world cannot keep."""
+        if not values:
+            return
+        worlds = sorted(values)
+        first = values[worlds[0]]
+        if any(not self._custom_attribute_defaults_match(first, values[world]) for world in worlds[1:]):
+            raise ValueError(
+                f"Custom attribute '{key}' has different values for source worlds {worlds}, which merge into "
+                "one destination world."
             )
 
     @staticmethod
@@ -4221,7 +4737,8 @@ class ModelBuilder:
         try:
             matches = existing == incoming
             if hasattr(matches, "__iter__") and not isinstance(matches, (str, bytes)):
-                matches = all(matches)
+                # np.all also reduces multidimensional comparisons, such as of matrices.
+                matches = np.all(matches)
         except (ValueError, TypeError):
             return False
         return bool(matches)
@@ -4786,9 +5303,11 @@ class ModelBuilder:
                 colliders on bodies with visual-only geometry. Default is False.
             parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
-                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-                equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
-                and finalize under ``model.mujoco.equality_constraint_*``.
+                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
+                becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
+                and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+                ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
+                ``model.mujoco.equality_constraint_*``.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
             schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
                 Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -4819,6 +5338,9 @@ class ModelBuilder:
                 Torch checkpoints. Only use this for trusted USD assets and
                 checkpoints: loading a Torch checkpoint may execute code during
                 :meth:`newton.ModelBuilder.finalize`. Defaults to ``False``.
+
+                .. deprecated:: 1.8
+                    Torch checkpoints are deprecated; export the network to ONNX.
 
         Returns:
             .. experimental::
@@ -4860,8 +5382,10 @@ class ModelBuilder:
             Particle widths are diameters. Newton converts each radius as
             ``width / 2`` after applying stage units and the prim's uniform world
             scale; converted widths and radii are in meters. Authored
-            ``physics:masses`` take precedence over body mass or density, then
-            material density. Density-derived mass uses
+            ``newton:masses`` take precedence over body mass or density, then
+            material density. The deprecated ``physics:masses`` name is read,
+            with a deprecation warning, when ``newton:masses`` is unauthored.
+            Density-derived mass uses
             ``physics:density * width**3``; converted masses are in kilograms.
             Without widths, it uses ``ModelBuilder.default_particle_radius`` and a
             support width of twice that radius. Non-uniform scale or shear is
@@ -4911,9 +5435,9 @@ class ModelBuilder:
                 * - ``"path_soft_attrs"``
                   - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its as-authored, solver-neutral attributes (``resolved_density``). Present only with ``return_deformable_results=True``.
                 * - ``"path_attachment_map"``
-                  - Mapping from prim path (str) of a supported ``PhysicsAttachment`` prim to the created joint indices. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping. Present only with ``return_deformable_results=True``.
+                  - Mapping from prim path (str) of a supported cable ``PhysicsAttachment`` prim to the created joint indices. Cloth/volume particle-body attachments are not joints and are listed only in ``path_attachment_attrs``. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping. Present only with ``return_deformable_results=True``.
                 * - ``"path_attachment_attrs"``
-                  - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Junctions consumed as rod-graph topology are absent here as well. Present only with ``return_deformable_results=True``.
+                  - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Imported cloth/volume attachments list their particle-body attachment indices under ``"attachment_particle_body_indices"``. Junctions consumed as rod-graph topology are absent here as well. Present only with ``return_deformable_results=True``.
                 * - ``"mass_unit"``
                   - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
                 * - ``"linear_unit"``
@@ -5128,10 +5652,16 @@ class ModelBuilder:
             verbose: If True, log additional information about parsing the MJCF.
             skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
-                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-                equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
-                and finalize under ``model.mujoco.equality_constraint_*``.
-            convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
+                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
+                becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
+                and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+                ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
+                ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or target a multi-DoF
+                joint (such as joints sharing a body) are preserved this way even when True, with a
+                :class:`~newton.NewtonWarning`; only SolverMuJoCo enforces them.
+            convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
+                Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
+                an identity rest orientation. Default is False.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
             ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
                 where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
@@ -5425,7 +5955,8 @@ class ModelBuilder:
             elif attr.frequency == Model.AttributeFrequency.ONCE:
                 index_offset = 0
             elif attr.frequency == Model.AttributeFrequency.WORLD:
-                index_offset = 0 if world == -1 else world
+                # The destination entry: the destination world, or global world -1.
+                index_offset = world
             else:
                 index_offset = get_offset(attr.frequency)
 
@@ -5548,8 +6079,10 @@ class ModelBuilder:
                         # Implicit source defaults must not replace an existing global value.
                         count = int(full_key not in self.custom_attributes)
                     elif freq_key == Model.AttributeFrequency.WORLD:
-                        # Each copy uses one destination world, or none for global entities.
-                        count = int(world >= 0)
+                        # Each copy fills its destination world. Like ONCE, an implicit source
+                        # default must not replace an existing global value.
+                        existing = self.custom_attributes.get(full_key)
+                        count = int(world >= 0 or existing is None or -1 not in (existing.values or {}))
                     else:
                         if source_counts is None:
                             source_counts = self._builder_merge_counts(builder)
@@ -5559,6 +6092,20 @@ class ModelBuilder:
                             else source_counts.get(self._builder_frequency_key(freq_key), 0)
                         )
                     source_values = attr._values_with_defaults(count)
+
+            if freq_key == Model.AttributeFrequency.WORLD:
+                # All source entities join one destination entry. Explicit source values agree,
+                # so take the global value, or else that of an explicit world, or else the default.
+                enum_values = {}
+                if source_values:
+                    source_key = -1 if -1 in source_values else min(attr.values or source_values)
+                    value = source_values[source_key]
+                    enum_values[index_offset] = transform_enum_value(source_key, value) if needs_remap else value
+            elif not isinstance(freq_key, str):
+                enum_values = {
+                    index_offset + idx: transform_enum_value(idx, value) if needs_remap else value
+                    for idx, value in source_values.items()
+                }
 
             merged = self.custom_attributes.get(full_key)
             if merged is None:
@@ -5570,12 +6117,8 @@ class ModelBuilder:
                         )
                     else:
                         mapped_values.extend(source_values)
-                elif needs_remap:
-                    mapped_values = {
-                        index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()
-                    }
                 else:
-                    mapped_values = {index_offset + idx: value for idx, value in source_values.items()}
+                    mapped_values = enum_values
                 merged = replace(attr, values=mapped_values)
                 self.custom_attributes[full_key] = merged
                 self._custom_schema_epoch += 1
@@ -5598,12 +6141,8 @@ class ModelBuilder:
                     merged.values.extend(transform_enum_value(idx, value) for idx, value in enumerate(source_values))
                 else:
                     merged.values.extend(source_values)
-            elif needs_remap:
-                merged.values.update(
-                    {index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()}
-                )
             else:
-                merged.values.update({index_offset + idx: value for idx, value in source_values.items()})
+                merged.values.update(enum_values)
 
         if label_prefix:
             for frequency_key, frequency in builder.custom_frequencies.items():
@@ -5655,11 +6194,21 @@ class ModelBuilder:
         for key, finalizer in builder._custom_attribute_model_finalizers.items():
             self._add_custom_attribute_model_finalizer(key, finalizer)
 
+    def _merge_builder_batteries(self, builder: ModelBuilder, actuator_offset: int, world: int) -> None:
+        for battery_class, sub_entry in builder.battery_entries.items():
+            entry = self.battery_entries.setdefault(
+                battery_class, ModelBuilder.BatteryEntry(battery_class=battery_class)
+            )
+            entry.args.extend(sub_entry.args)
+            entry.actuators.extend([idx + actuator_offset for idx in actuators] for actuators in sub_entry.actuators)
+            entry.world.extend([world] * len(sub_entry.world))
+
     def _merge_builder_actuators(
         self,
         builder: ModelBuilder,
         joint_dof_offset: int,
         joint_coord_offset: int,
+        actuator_offset: int,
     ) -> None:
         for entry_key, sub_entry in builder.actuator_entries.items():
             entry = self.actuator_entries.setdefault(
@@ -5672,15 +6221,29 @@ class ModelBuilder:
                     indices=[],
                     pos_indices=[],
                     drive_args=[],
-                    delay_args=[],
                     clamping_args=[],
+                    input_processor_classes=sub_entry.input_processor_classes,
+                    input_processor_shared_kwargs=sub_entry.input_processor_shared_kwargs,
+                    input_processor_args=[],
+                    motor_class=sub_entry.motor_class,
+                    motor_shared_kwargs=sub_entry.motor_shared_kwargs,
                 ),
             )
             entry.indices.extend(idx + joint_dof_offset for idx in sub_entry.indices)
+            entry.actuator_indices.extend(idx + actuator_offset for idx in sub_entry.actuator_indices)
             entry.pos_indices.extend(idx + joint_coord_offset for idx in sub_entry.pos_indices)
             entry.drive_args.extend(sub_entry.drive_args)
-            entry.delay_args.extend(sub_entry.delay_args)
             entry.clamping_args.extend(sub_entry.clamping_args)
+            entry.motor_args.extend(sub_entry.motor_args)
+            for per_actuator in sub_entry.input_processor_args:
+                offset_args = []
+                for proc_class, sub_args in zip(sub_entry.input_processor_classes, per_actuator, strict=True):
+                    proc_args = dict(sub_args)
+                    for name in proc_class.JOINT_PARAMS:
+                        proc_args[f"{name}_indices"] += joint_dof_offset
+                        proc_args[f"{name}_pos_indices"] += joint_coord_offset
+                    offset_args.append(proc_args)
+                entry.input_processor_args.append(offset_args)
 
     def add_builder(
         self,
@@ -5919,6 +6482,142 @@ class ModelBuilder:
 
         return body_id
 
+    def add_body_variants(
+        self,
+        body: int,
+        variants: Sequence[ModelBuilder],
+        *,
+        initial: int = 0,
+        labels: Sequence[str] | None = None,
+    ) -> None:
+        """Declare alternative shape sets for a body, one of which is selected at a time.
+
+        Each variant is a builder with exactly one body, such as an asset loaded with
+        :meth:`add_usd` or :meth:`add_mjcf`: its shapes, colliders and visuals of any type and count,
+        and its body's mass, center of mass, and inertia. ``body`` gets one block of shape rows per
+        role (colliders, then other shapes such as visuals, then sites), each with as many rows as
+        the variant with the most shapes of that role has. Selecting a variant with
+        :meth:`Model.select_body_variants <newton.Model.select_body_variants>` copies each of its
+        shapes into the next row of its role's block, in the variant's order, empties the remaining
+        rows, and sets the body's mass properties to those of the body as built plus the variant's.
+        Shapes added to ``body`` directly stay in place for every variant.
+
+        A row takes everything authored on the variant shape it holds: geometry, flags, color,
+        opacity, materials, and model-assigned shape custom attributes. It keeps its label, world,
+        collision group, and filter pairs, so the i-th colliders of all variants must share a
+        collision group. An
+        empty row has its collision and visibility flags cleared, so it neither collides nor
+        renders. Variant shapes are expressed in the variant body's frame, which maps onto
+        ``body``'s frame; the variant body's pose, joints, and other entities are ignored, as are
+        body custom attributes and shape custom attributes that reference other entities. The
+        variants are copied at declaration, so later edits to the variant builders have no effect, and
+        :meth:`finalize` replaces edits to the rows in this builder, such as by
+        :meth:`approximate_meshes`, with the initial variant; edit the variant builders instead.
+
+        Bodies copied with :meth:`add_builder` or :meth:`replicate` share the variants, which
+        :meth:`finalize` stores once, and select independently per world. Variant ids are positions
+        in ``variants`` and are the same for every copy.
+
+        .. experimental::
+
+            Body variants may change without a deprecation period.
+
+        Args:
+            body: Index of the body that receives the variants.
+            variants: Single-body builders defining the variants.
+            initial: Index of the variant selected in the finalized model.
+            labels: Variant labels. Defaults to each variant's body label.
+
+        Raises:
+            IndexError: If ``body`` or ``initial`` is out of range.
+            ValueError: If ``body`` already has variants, ``labels`` does not match ``variants``,
+                colliders held by the same row have different collision groups, a shape custom
+                attribute is declared differently than here or in another variant, shapes of a later
+                world or trailing global shapes were added after ``body``'s world, or a variant
+                builder is this builder, declares variants itself, uses a different up axis, does
+                not contain exactly one body, contains shapes not attached to it, contains planes,
+                heightfields, Gaussians, or hydroelastic shapes, or has values for shape custom
+                attributes not assigned to the model.
+        """
+        if not 0 <= body < self.body_count:
+            raise IndexError(f"Body index {body} out of range [0, {self.body_count}).")
+        if body in self._body_variants:
+            raise ValueError(f"Body {body} already has variants.")
+        variants = tuple(variants)
+        if not variants:
+            raise ValueError("add_body_variants() requires at least one variant.")
+        labels = (
+            tuple(variant.body_label[0] if variant.body_count else "" for variant in variants)
+            if labels is None
+            else tuple(labels)
+        )
+        if len(labels) != len(variants):
+            raise ValueError(f"Expected {len(variants)} labels, got {len(labels)}.")
+        if not 0 <= initial < len(variants):
+            raise IndexError(f"Initial variant {initial} out of range [0, {len(variants)}).")
+        # The rows join the body's world at the end of the shapes, which must keep shapes ordered by world.
+        world = self.body_world[body]
+        tail = self.shape_world[-1] if self.shape_world else -1
+        if world >= 0 and (tail > world or (tail < 0 and any(w >= 0 for w in self.shape_world))):
+            raise ValueError(
+                f"Variants of body {body} in world {world} must be declared before shapes of later worlds "
+                "or trailing global shapes are added."
+            )
+        for variant in variants:
+            _validate_variant_builder(self, variant)
+        variant_set = _snapshot_variants(variants, labels, self._shape_row_attributes())
+        rows = _plan_variant_rows(variant_set, initial, self.body_label[body])
+        declarations = dict(self.custom_attributes)
+        for row in rows:
+            for candidate in row.candidates:
+                for key, declaration, _ in candidate.custom:
+                    if not self._custom_attribute_specs_match(declarations.setdefault(key, declaration), declaration):
+                        raise ValueError(
+                            f"Variant shape custom attribute '{key}' is declared differently than in this "
+                            "builder or another variant."
+                        )
+        # Declare every variant's attributes now, so later declarations are checked against them and
+        # finalize() declares nothing.
+        for key, declaration in declarations.items():
+            if key not in self.custom_attributes:
+                self.add_custom_attribute(declaration)
+
+        # A row's builder flags are the union over the shapes it can hold, which all have the row's
+        # role, so contact pairs and joint filters include every one of them.
+        row_start = self.shape_count
+        for row in rows:
+            shape = self._append_shape_row(row.seed, body, world, row.label)
+            flags = 0
+            for candidate in row.candidates:
+                flags |= int(candidate.values["shape_flags"])
+            self.shape_flags[shape] = flags
+            self.body_shapes[body].append(shape)
+            if flags & ShapeFlags.COLLIDE_SHAPES:
+                self._add_joint_collision_filter_pairs(shape, body)
+        self._body_variants[body] = _BodyVariants(variant_set, row_start, initial)
+
+    def _shape_row_attributes(self) -> list[str]:
+        """Builder SHAPE attributes copied verbatim between shapes."""
+        return [
+            name
+            for name, spec in self._builder_merge_attribute_specs().items()
+            if spec.frequency == Model.AttributeFrequency.SHAPE and spec.compaction_policy == "generic"
+        ]
+
+    def _append_shape_row(self, row: _VariantShape, body: int, world: int, label: str) -> int:
+        """Append a shape with the attributes of ``row``, attached to ``body`` in ``world``."""
+        shape = self.shape_count
+        for name, value in row.values.items():
+            getattr(self, name).append(value)
+        self.shape_body[shape] = body
+        self.shape_world[shape] = world
+        self.shape_label[shape] = label
+        for key, declaration, value in row.custom:
+            if key not in self.custom_attributes:
+                self.add_custom_attribute(declaration)
+            self._process_custom_attributes(shape, {key: value}, Model.AttributeFrequency.SHAPE)
+        return shape
+
     # region joints
 
     def add_joint(
@@ -5970,6 +6669,12 @@ class ModelBuilder:
         if angular_axes is None:
             angular_axes = []
 
+        if joint_type in (JointType.BALL, JointType.FREE, JointType.DISTANCE, JointType.ROD):
+            if any(dim.rest_q not in (None, 0.0) for dim in angular_axes):
+                raise ValueError(
+                    "Quaternion joints require a joint-level rest orientation; scalar rest_q must be zero."
+                )
+
         if joint_type == JointType.ROD:
             # Rod material coordinates use canonical XYZ linear and angular ordering,
             # so the axis set is fixed rather than free-form.
@@ -5993,15 +6698,18 @@ class ModelBuilder:
                         "JointType.ROD requires canonical XYZ linear and XYZ angular axis ordering; "
                         "use ModelBuilder.add_joint_rod() to construct the canonical layout."
                     )
-                if not math.isfinite(float(configured.target_pos)):
-                    raise ValueError("JointType.ROD requires finite target_pos values for structural rest.")
+                if configured.target_q != 0.0:
+                    raise ValueError(
+                        "JointType.ROD requires zero target_q values; "
+                        "use add_joint_rod(rest_rotation=...) or joint_rest_q for structural rest."
+                    )
                 if configured.actuator_mode is not None and configured.actuator_mode != JointTargetMode.NONE:
                     raise ValueError(
                         f"JointType.ROD requires actuator_mode=JointTargetMode.NONE; got {configured.actuator_mode!r}."
                     )
-            if any(float(configured.target_pos) != 0.0 for configured in linear_axes):
+            if any(configured.rest_q not in (None, 0.0) for configured in linear_axes):
                 raise ValueError(
-                    "JointType.ROD requires zero linear target_pos values because its structural-rest anchors coincide."
+                    "JointType.ROD requires zero linear rest_q values because its structural-rest anchors coincide."
                 )
 
         if collision_filter_parent is None:
@@ -6091,7 +6799,7 @@ class ModelBuilder:
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
-            self.joint_target_qd.append(dim.target_vel)
+            self.joint_target_qd.append(dim.target_qd)
 
             # Use actuator_mode if explicitly set, otherwise infer from gains
             if joint_type == JointType.ROD:
@@ -6109,6 +6817,7 @@ class ModelBuilder:
             self.joint_target_mode.append(mode)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
+            self.joint_stiffness.append(dim.stiffness)
             self.joint_damping.append(dim.damping)
             self.joint_limit_ke.append(dim.limit_ke)
             self.joint_limit_kd.append(dim.limit_kd)
@@ -6164,13 +6873,13 @@ class ModelBuilder:
                 quat_offset = target_q_offset
             else:
                 for i, dim in enumerate(linear_axes):
-                    self.joint_target_q[target_q_offset + i] = dim.target_pos
+                    self.joint_target_q[target_q_offset + i] = dim.target_q
                 quat_offset = target_q_offset + 3
 
             qx, qy, qz, qw = self._quat_from_axis_targets(
-                angular_axes[0].target_pos,
-                angular_axes[1].target_pos,
-                angular_axes[2].target_pos,
+                angular_axes[0].target_q,
+                angular_axes[1].target_q,
+                angular_axes[2].target_q,
             )
             self.joint_target_q[quat_offset + 0] = qx
             self.joint_target_q[quat_offset + 1] = qy
@@ -6178,9 +6887,16 @@ class ModelBuilder:
             self.joint_target_q[quat_offset + 3] = qw
         elif joint_type != JointType.FIXED:
             for i, dim in enumerate(linear_axes):
-                self.joint_target_q[target_q_offset + i] = dim.target_pos
+                self.joint_target_q[target_q_offset + i] = dim.target_q
             for i, dim in enumerate(angular_axes):
-                self.joint_target_q[target_q_offset + len(linear_axes) + i] = dim.target_pos
+                self.joint_target_q[target_q_offset + len(linear_axes) + i] = dim.target_q
+
+        if joint_type in (JointType.BALL, JointType.FREE, JointType.DISTANCE, JointType.ROD):
+            rest = [dim.rest_q for dim in linear_axes] + [0.0, 0.0, 0.0, 1.0]
+        else:
+            rest = [dim.rest_q for dim in (*linear_axes, *angular_axes)]
+        self._joint_rest_q_authored.extend(value is not None for value in rest)
+        self.joint_rest_q.extend(0.0 if value is None else value for value in rest)
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
@@ -6220,11 +6936,13 @@ class ModelBuilder:
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         axis: AxisType | Vec3 | JointDofConfig | None = None,
-        target_pos: float | None = None,
-        target_vel: float | None = None,
+        target_q: float | None = None,
+        target_qd: float | None = None,
         target_ke: float | None = None,
         target_kd: float | None = None,
         damping: float | None = None,
+        stiffness: float | None = None,
+        rest_q: float | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -6234,6 +6952,8 @@ class ModelBuilder:
         velocity_limit: float | None = None,
         friction: float | None = None,
         actuator_mode: JointTargetMode | None = None,
+        target_pos: float | None = None,
+        target_vel: float | None = None,
         label: str | None = None,
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
@@ -6250,11 +6970,13 @@ class ModelBuilder:
             axis: The axis of rotation in the joint parent anchor frame, which is
                 the parent body's local frame transformed by `parent_xform`. It can be a :class:`JointDofConfig` object
                 whose settings will be used instead of the other arguments.
-            target_pos: The target position of the joint.
-            target_vel: The target velocity of the joint.
+            target_q: The target position of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.target_q`` is used.
+            target_qd: The target velocity of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.target_qd`` is used.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
             damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
+            stiffness: Passive spring stiffness [N·m/rad]. If None, the default value from ``ModelBuilder.default_joint_cfg.stiffness`` is used.
+            rest_q: Spring rest coordinate [rad], which may lie outside joint limits. If None, the default value from ``ModelBuilder.default_joint_cfg.rest_q`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
@@ -6263,6 +6985,9 @@ class ModelBuilder:
             effort_limit: Maximum effort (force/torque) the joint axis can exert. If None, the default value from ``ModelBuilder.default_joint_cfg.effort_limit`` is used.
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
+            actuator_mode: The actuator mode for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.actuator_mode`` is used.
+            target_pos: Deprecated since 1.8; use ``target_q``.
+            target_vel: Deprecated since 1.8; use ``target_qd``.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
@@ -6273,6 +6998,8 @@ class ModelBuilder:
 
         """
 
+        target_q = _resolve_joint_target_alias(target_q, target_pos, "target_q", "target_pos")
+        target_qd = _resolve_joint_target_alias(target_qd, target_vel, "target_qd", "target_vel")
         if axis is None:
             axis = self.default_joint_cfg.axis
         if isinstance(axis, ModelBuilder.JointDofConfig):
@@ -6282,11 +7009,13 @@ class ModelBuilder:
                 axis=axis,
                 limit_lower=limit_lower if limit_lower is not None else self.default_joint_cfg.limit_lower,
                 limit_upper=limit_upper if limit_upper is not None else self.default_joint_cfg.limit_upper,
-                target_pos=target_pos if target_pos is not None else self.default_joint_cfg.target_pos,
-                target_vel=target_vel if target_vel is not None else self.default_joint_cfg.target_vel,
+                target_q=target_q if target_q is not None else self.default_joint_cfg.target_q,
+                target_qd=target_qd if target_qd is not None else self.default_joint_cfg.target_qd,
                 target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
                 target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
                 damping=damping if damping is not None else self.default_joint_cfg.damping,
+                stiffness=stiffness if stiffness is not None else self.default_joint_cfg.stiffness,
+                rest_q=rest_q if rest_q is not None else self.default_joint_cfg.rest_q,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
@@ -6317,11 +7046,13 @@ class ModelBuilder:
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         axis: AxisType | Vec3 | JointDofConfig = Axis.X,
-        target_pos: float | None = None,
-        target_vel: float | None = None,
+        target_q: float | None = None,
+        target_qd: float | None = None,
         target_ke: float | None = None,
         target_kd: float | None = None,
         damping: float | None = None,
+        stiffness: float | None = None,
+        rest_q: float | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -6331,6 +7062,8 @@ class ModelBuilder:
         velocity_limit: float | None = None,
         friction: float | None = None,
         actuator_mode: JointTargetMode | None = None,
+        target_pos: float | None = None,
+        target_vel: float | None = None,
         label: str | None = None,
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
@@ -6346,11 +7079,13 @@ class ModelBuilder:
             axis: The axis of translation in the joint parent anchor frame, which is
                 the parent body's local frame transformed by `parent_xform`. It can be a :class:`JointDofConfig` object
                 whose settings will be used instead of the other arguments.
-            target_pos: The target position of the joint.
-            target_vel: The target velocity of the joint.
+            target_q: The target position of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.target_q`` is used.
+            target_qd: The target velocity of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.target_qd`` is used.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
             damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
+            stiffness: Passive spring stiffness [N/m]. If None, the default value from ``ModelBuilder.default_joint_cfg.stiffness`` is used.
+            rest_q: Spring rest coordinate [m], which may lie outside joint limits. If None, the default value from ``ModelBuilder.default_joint_cfg.rest_q`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
@@ -6359,6 +7094,9 @@ class ModelBuilder:
             effort_limit: Maximum effort (force) the joint axis can exert. If None, the default value from ``ModelBuilder.default_joint_cfg.effort_limit`` is used.
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
+            actuator_mode: The actuator mode for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.actuator_mode`` is used.
+            target_pos: Deprecated since 1.8; use ``target_q``.
+            target_vel: Deprecated since 1.8; use ``target_qd``.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
@@ -6369,6 +7107,8 @@ class ModelBuilder:
 
         """
 
+        target_q = _resolve_joint_target_alias(target_q, target_pos, "target_q", "target_pos")
+        target_qd = _resolve_joint_target_alias(target_qd, target_vel, "target_qd", "target_vel")
         if axis is None:
             axis = self.default_joint_cfg.axis
         if isinstance(axis, ModelBuilder.JointDofConfig):
@@ -6378,11 +7118,13 @@ class ModelBuilder:
                 axis=axis,
                 limit_lower=limit_lower if limit_lower is not None else self.default_joint_cfg.limit_lower,
                 limit_upper=limit_upper if limit_upper is not None else self.default_joint_cfg.limit_upper,
-                target_pos=target_pos if target_pos is not None else self.default_joint_cfg.target_pos,
-                target_vel=target_vel if target_vel is not None else self.default_joint_cfg.target_vel,
+                target_q=target_q if target_q is not None else self.default_joint_cfg.target_q,
+                target_qd=target_qd if target_qd is not None else self.default_joint_cfg.target_qd,
                 target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
                 target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
                 damping=damping if damping is not None else self.default_joint_cfg.damping,
+                stiffness=stiffness if stiffness is not None else self.default_joint_cfg.stiffness,
+                rest_q=rest_q if rest_q is not None else self.default_joint_cfg.rest_q,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
@@ -6414,11 +7156,12 @@ class ModelBuilder:
         armature: float | None = None,
         friction: float | None = None,
         damping: float | None = None,
+        stiffness: float | None = None,
+        actuator_mode: JointTargetMode | None = None,
         label: str | None = None,
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
-        actuator_mode: JointTargetMode | None = None,
     ) -> int:
         """Adds a ball (spherical) joint to the model. Its position is defined by a 4D quaternion (xyzw) and its velocity is a 3D vector.
 
@@ -6430,14 +7173,23 @@ class ModelBuilder:
             armature: Artificial inertia added around the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
             friction: Friction coefficient for the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             damping: Passive angular velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on all three BALL joint angular DOFs. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
+            stiffness: Isotropic passive angular spring stiffness [N·m/rad], supported by SolverMuJoCo. If None, the default value from ``ModelBuilder.default_joint_cfg.stiffness`` is used.
+            actuator_mode: The actuator mode for this joint's DOFs. If None, defaults to NONE.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
-            actuator_mode: The actuator mode for this joint's DOFs. If None, defaults to NONE.
 
         Returns:
             The index of the added joint.
+
+        .. note::
+            The spring rest orientation defaults to the identity quaternion. After adding the joint,
+            set its four ``joint_rest_q`` entries in xyzw order using
+            ``builder.joint_rest_q[builder.joint_q_start[joint]:builder.joint_q_start[joint] + 4]``.
+            The scalar ``default_joint_cfg.rest_q`` does not apply to ball joints.
+            To edit the rest orientation after finalization, update :attr:`Model.joint_rest_q`
+            and notify the solver with :attr:`ModelFlags.JOINT_DOF_PROPERTIES`.
 
         .. note:: Target position and velocity control for ball joints is currently only supported in :class:`newton.solvers.SolverMuJoCo`.
 
@@ -6447,6 +7199,8 @@ class ModelBuilder:
             armature = self.default_joint_cfg.armature
         if friction is None:
             friction = self.default_joint_cfg.friction
+        if stiffness is None:
+            stiffness = self.default_joint_cfg.stiffness
         if damping is None:
             damping = self.default_joint_cfg.damping
 
@@ -6455,6 +7209,7 @@ class ModelBuilder:
             armature=armature,
             friction=friction,
             damping=damping,
+            stiffness=stiffness,
             actuator_mode=actuator_mode,
         )
         y = ModelBuilder.JointDofConfig(
@@ -6462,6 +7217,7 @@ class ModelBuilder:
             armature=armature,
             friction=friction,
             damping=damping,
+            stiffness=stiffness,
             actuator_mode=actuator_mode,
         )
         z = ModelBuilder.JointDofConfig(
@@ -6469,6 +7225,7 @@ class ModelBuilder:
             armature=armature,
             friction=friction,
             damping=damping,
+            stiffness=stiffness,
             actuator_mode=actuator_mode,
         )
 
@@ -6775,7 +7532,8 @@ class ModelBuilder:
                 translation is the attachment point and its local ``+Z`` axis is the child-side material
                 tangent.
             rest_rotation: Child anchor rotation relative to the parent anchor at structural rest
-                [unitless quaternion]. If None, it uses the initial relative anchor rotation at creation.
+                [unitless quaternion], stored in :attr:`joint_rest_q`. If None, it uses the initial
+                relative anchor rotation at creation.
             stretch_stiffness: Rod stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e5.
             stretch_damping: Rod stretch damping [N·s/m] (stored as ``target_kd``). If None,
                 defaults to 0.0.
@@ -6871,8 +7629,8 @@ class ModelBuilder:
         q_start = self.joint_q_start[joint_id]
         if rest_rotation_value is None:
             rest_rotation_value = wp.quat(*self.joint_q[q_start + 3 : q_start + 7])
-        self.joint_target_q[q_start : q_start + 3] = [0.0, 0.0, 0.0]
-        self.joint_target_q[q_start + 3 : q_start + 7] = list(rest_rotation_value)
+        self.joint_rest_q[q_start : q_start + 3] = [0.0, 0.0, 0.0]
+        self.joint_rest_q[q_start + 3 : q_start + 7] = list(rest_rotation_value)
         return joint_id
 
     def add_tendon(
@@ -7532,7 +8290,44 @@ class ModelBuilder:
             through ``joints_to_keep`` to preserve the original segment layout.
             Curve-removal warnings are emitted after collapse completes.
         """
+        if self._body_variants:
+            raise NotImplementedError("collapse_fixed_joints() does not support bodies with variants.")
         joints_to_keep = set(joints_to_keep or ())
+
+        # A FIXED joint outside every articulation whose child also has an articulated joint closes a loop (for
+        # example the weld of a link-break loop). The traversal below either merges across it or drops it, which
+        # opens the loop, so warn instead of failing silently.
+        incoming = {}
+        for j in range(self.joint_count):
+            incoming.setdefault(self.joint_child[j], []).append(j)
+        # A converted MuJoCo weld keeps its equality row, which SolverMuJoCo enforces and SolverSteel rejects once
+        # collapsing drops the joint (target kind 1 is a joint).
+        target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
+        target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
+        equality_joints = set()
+        if target_kind_attr is not None and target_attr is not None and target_attr.values:
+            for eq_idx, target in enumerate(target_attr.values):
+                kinds = target_kind_attr.values
+                if target is not None and kinds and eq_idx < len(kinds) and kinds[eq_idx] is not None:
+                    if int(kinds[eq_idx]) == 1:
+                        equality_joints.add(int(target))
+        loop_welds = [
+            j
+            for j in range(self.joint_count)
+            if self.joint_type[j] == JointType.FIXED
+            and self.joint_articulation[j] < 0
+            and j not in equality_joints
+            and any(k != j and self.joint_articulation[k] >= 0 for k in incoming[self.joint_child[j]])
+        ]
+        if loop_welds:
+            labels = ", ".join(repr(self.joint_label[j]) for j in loop_welds)
+            warnings.warn(
+                f"collapse_fixed_joints() does not preserve FIXED loop-closing joints ({labels}): it may merge or "
+                "drop them, which opens their loops. Build or import link-break models without collapsing fixed "
+                "joints (collapse_fixed_joints=False).",
+                NewtonWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
 
         original_counts = self._builder_merge_counts(self)
         original_counts.update(once=1, world=max(1, self.world_count))
@@ -7584,6 +8379,8 @@ class ModelBuilder:
                 "type": self.joint_type[i],
                 "q": self.joint_q[q_start : q_start + q_dim],
                 "target_q": self.joint_target_q[q_start : q_start + q_dim],
+                "rest_q": self.joint_rest_q[q_start : q_start + q_dim],
+                "rest_q_authored": self._joint_rest_q_authored[q_start : q_start + q_dim],
                 "qd": self.joint_qd[qd_start : qd_start + qd_dim],
                 "target_qd": self.joint_target_qd[qd_start : qd_start + qd_dim],
                 "cts": self.joint_cts[cts_start : cts_start + cts_dim],
@@ -7612,6 +8409,7 @@ class ModelBuilder:
                         "actuator_mode": self.joint_target_mode[j],
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
+                        "stiffness": self.joint_stiffness[j],
                         "damping": self.joint_damping[j],
                         "limit_ke": self.joint_limit_ke[j],
                         "limit_kd": self.joint_limit_kd[j],
@@ -7771,17 +8569,17 @@ class ModelBuilder:
                 if last_dynamic_body > -1:
                     source_m = body_data[last_dynamic_body]["mass"]
                     source_com = body_data[last_dynamic_body]["com"]
-                    # add inertia to last_dynamic_body
                     m = body_data[child_body]["mass"]
                     com = wp.transform_point(incoming_xform, body_data[child_body]["com"])
                     inertia = body_data[child_body]["inertia"]
-                    body_data[last_dynamic_body]["inertia"] += transform_inertia(
-                        m, inertia, incoming_xform.p, incoming_xform.q
-                    )
-                    body_data[last_dynamic_body]["mass"] += m
                     total_mass = m + source_m
+                    merged_com = (m * com + source_m * source_com) / total_mass if total_mass > 0.0 else source_com
+                    # Both tensors must be expressed about the merged COM.
+                    body_data[last_dynamic_body]["inertia"] = transform_inertia(
+                        source_m, body_data[last_dynamic_body]["inertia"], source_com - merged_com, wp.quat_identity()
+                    ) + transform_inertia(m, inertia, com - merged_com, incoming_xform.q)
+                    body_data[last_dynamic_body]["mass"] = total_mass
                     if total_mass > 0.0:
-                        merged_com = (m * com + source_m * source_com) / total_mass
                         qd = body_data[last_dynamic_body]["qd"]
                         angular_velocity = wp.spatial_bottom(qd)
                         # Preserve the velocity field when shifting the COM reference.
@@ -7944,6 +8742,16 @@ class ModelBuilder:
             else:
                 # If no group was assigned, use default -1
                 self.body_world.append(-1)
+
+        def remap_body_frame(body: int) -> tuple[int, wp.transform | None]:
+            """Return the final body index and the old-to-surviving frame transform.
+
+            The DFS records the full transform across each fixed-joint chain.
+            Retained bodies and world (-1) need no geometry transformation.
+            """
+            if body in body_merged_parent:
+                return body_remap[body_merged_parent[body]], body_merged_transform[body]
+            return body_remap[body], None
 
         for spec in self._deformable_visual_meshes:
             if spec["kind"] != DeformableVisualMesh.Kind.BODY:
@@ -8149,6 +8957,9 @@ class ModelBuilder:
         self.joint_target_mode.clear()
         self.joint_target_ke.clear()
         self.joint_target_kd.clear()
+        self.joint_stiffness.clear()
+        self.joint_rest_q.clear()
+        self._joint_rest_q_authored.clear()
         self.joint_damping.clear()
         self.joint_limit_lower.clear()
         self.joint_limit_upper.clear()
@@ -8172,6 +8983,8 @@ class ModelBuilder:
             self.joint_cts_start.append(len(self.joint_cts))
             self.joint_q.extend(joint["q"])
             self.joint_target_q.extend(joint["target_q"])
+            self.joint_rest_q.extend(joint["rest_q"])
+            self._joint_rest_q_authored.extend(joint["rest_q_authored"])
             self.joint_qd.extend(joint["qd"])
             self.joint_target_qd.extend(joint["target_qd"])
             self.joint_cts.extend(joint["cts"])
@@ -8201,6 +9014,7 @@ class ModelBuilder:
                 self.joint_target_mode.append(axis["actuator_mode"])
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
+                self.joint_stiffness.append(axis["stiffness"])
                 self.joint_damping.append(axis["damping"])
                 self.joint_limit_lower.append(axis["limit_lower"])
                 self.joint_limit_upper.append(axis["limit_upper"])
@@ -8223,13 +9037,10 @@ class ModelBuilder:
 
         # Keep tendon contact geometry in the same world frame when its body is merged.
         for guide_idx, old_body in enumerate(self.tendon_guide_body):
-            if old_body in body_remap:
-                self.tendon_guide_body[guide_idx] = body_remap[old_body]
+            self.tendon_guide_body[guide_idx], merge_xform = remap_body_frame(old_body)
+            if merge_xform is None:
                 continue
 
-            merged_parent = body_merged_parent[old_body]
-            merge_xform = body_merged_transform[old_body]
-            self.tendon_guide_body[guide_idx] = body_remap[merged_parent]
             self.tendon_guide_offset[guide_idx] = wp.transform_point(
                 merge_xform, axis_to_vec3(self.tendon_guide_offset[guide_idx])
             )
@@ -8281,14 +9092,11 @@ class ModelBuilder:
         for i in range(self._equality_constraint_count):
             old_body1 = _at(body1_values, i, body1_attr.default)
             old_body2 = _at(body2_values, i, body2_attr.default)
-            body1_was_merged = old_body1 in body_merged_parent
-            body2_was_merged = old_body2 in body_merged_parent
-
             constraint_type = _at(type_values, i, type_attr.default)
 
             # Transform anchor/relpose from merged body's frame to parent body's frame
-            if body1_was_merged:
-                merge_xform = body_merged_transform[old_body1]
+            if old_body1 in body_merged_parent:
+                _, merge_xform = remap_body_frame(old_body1)
                 if constraint_type == EqType.CONNECT:
                     anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                     while len(anchor_values) <= i:
@@ -8300,8 +9108,8 @@ class ModelBuilder:
                         relpose_values.append(None)
                     relpose_values[i] = merge_xform * relpose
 
-            if body2_was_merged and constraint_type == EqType.WELD:
-                merge_xform = body_merged_transform[old_body2]
+            if old_body2 in body_merged_parent and constraint_type == EqType.WELD:
+                _, merge_xform = remap_body_frame(old_body2)
                 anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                 relpose = _at(relpose_values, i, relpose_attr.default)
                 while len(anchor_values) <= i:
@@ -8309,7 +9117,12 @@ class ModelBuilder:
                 while len(relpose_values) <= i:
                     relpose_values.append(None)
                 anchor_values[i] = wp.transform_point(merge_xform, anchor)
-                relpose_values[i] = relpose * wp.transform_inverse(merge_xform)
+                # relpose.p is the anchor's held position in body1's frame, which body2's merge leaves in
+                # place; only body2's orientation relative to body1 picks up the merge.
+                relpose_values[i] = wp.transform(
+                    wp.transform_get_translation(relpose),
+                    wp.transform_get_rotation(relpose) * wp.quat_inverse(wp.transform_get_rotation(merge_xform)),
+                )
 
             old_joint1 = _at(joint1_values, i, joint1_attr.default)
             old_joint2 = _at(joint2_values, i, joint2_attr.default)
@@ -8381,14 +9194,11 @@ class ModelBuilder:
         # frame so the attachment keeps its world-space position.
         for i in range(len(self.attachment_particle_body_body)):
             old_body = self.attachment_particle_body_body[i]
-            if old_body in body_merged_parent:
-                merge_xform = body_merged_transform[old_body]
+            self.attachment_particle_body_body[i], merge_xform = remap_body_frame(old_body)
+            if merge_xform is not None:
                 self.attachment_particle_body_body_point[i] = wp.transform_point(
                     merge_xform, self.attachment_particle_body_body_point[i]
                 )
-                self.attachment_particle_body_body[i] = body_remap[body_merged_parent[old_body]]
-            else:
-                self.attachment_particle_body_body[i] = body_remap[old_body]
 
         # Generic entity-reference remap for any custom attribute that points at bodies or joints
         # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
@@ -8402,10 +9212,9 @@ class ModelBuilder:
                 idx = int(value)
             except (TypeError, ValueError):
                 return value
-            if idx in body_remap:
-                return body_remap[idx]
-            if idx in body_merged_parent:
-                return body_remap[body_merged_parent[idx]]
+            if idx in body_remap or idx in body_merged_parent:
+                new_body, _ = remap_body_frame(idx)
+                return new_body
             return value
 
         def _remap_joint_reference(value: Any) -> Any:
@@ -8472,7 +9281,27 @@ class ModelBuilder:
     def add_muscle(
         self, bodies: list[int], positions: list[Vec3], f0: float, lm: float, lt: float, lmax: float, pen: float
     ) -> int:
-        """Adds a muscle-tendon activation unit.
+        """Adds a legacy muscle-tendon activation unit.
+
+        .. deprecated:: 1.9
+            Legacy muscles will be removed in a future release. Only
+            :class:`~newton.solvers.SolverSemiImplicit` evaluates them, and it
+            ignores the muscle parameters, applying a force of magnitude
+            ``Control.muscle_activations`` along each waypoint segment. Use
+            :class:`~newton.solvers.SolverMuJoCo` muscle actuators instead,
+            either imported from MJCF ``<muscle>`` actuators or built in code:
+            route a spatial tendon through sites on the waypoint bodies with
+            :func:`newton.solvers.mujoco.add_tendon_spatial`, then actuate it
+            with :func:`newton.solvers.mujoco.add_actuator_general` using
+            :meth:`ActuatorTarget.tendon() <newton.solvers.mujoco.ActuatorTarget.tendon>`
+            and ``dyntype``, ``gaintype`` and ``biastype`` set to ``"muscle"``.
+            Pass explicit muscle parameters, since MuJoCo rejects the generic
+            defaults of :func:`~newton.solvers.mujoco.add_actuator_general` for
+            muscles. MuJoCo's ``<muscle>`` defaults are
+            ``dynprm=(0.01, 0.04)`` and
+            ``gainprm = biasprm = (0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2)``,
+            which hold range, force, scale, lmin, lmax, vmax, fpmax and fvmax.
+            A negative force derives the peak force from ``scale``.
 
         Args:
             bodies: A list of body indices for each waypoint
@@ -8486,9 +9315,8 @@ class ModelBuilder:
         Returns:
             The index of the muscle in the model
 
-        .. note:: The simulation support for muscles is in progress and not yet fully functional.
-
         """
+        warnings.warn(_ADD_MUSCLE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
 
         n = len(bodies)
 
@@ -8576,6 +9404,17 @@ class ModelBuilder:
         if scale is None:
             scale = (1.0, 1.0, 1.0)
 
+        # TODO: Remove this compatibility path with the deprecated attribute.
+        site_size_is_display = False
+        if cfg.is_site and custom_attributes and "mujoco:site_size_is_display" in custom_attributes:
+            warnings.warn(
+                "The 'mujoco:site_size_is_display' attribute is deprecated; remove it, "
+                "and set scale[2] of a cylinder site to 0.0 directly where it was True.",
+                NewtonDeprecationWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
+            site_size_is_display = bool(custom_attributes["mujoco:site_size_is_display"])
+
         # Normalize / validate negative scale components by shape type. Symmetric
         # primitives (sphere, box, capsule, cylinder, ellipsoid, plane, gaussian)
         # are point-symmetric and produce identical geometry under sign flip of any
@@ -8596,10 +9435,9 @@ class ModelBuilder:
             GeoType.GAUSSIAN,
         ):
             scale = (abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
-            site_size_is_display = cfg.is_site and bool(
-                custom_attributes and custom_attributes.get("mujoco:site_size_is_display", False)
-            )
-            if type == GeoType.CYLINDER and not site_size_is_display and scale[2] != 0.0 and scale[2] < scale[1]:
+            if type == GeoType.CYLINDER and site_size_is_display:
+                scale = (scale[0], scale[1], 0.0)
+            if type == GeoType.CYLINDER and scale[2] != 0.0 and scale[2] < scale[1]:
                 raise ValueError(f"Cylinder barrel radius must be zero or at least the half-height; got scale={scale}.")
         elif type == GeoType.CONE:
             if float(scale[1]) < 0.0:
@@ -8615,34 +9453,8 @@ class ModelBuilder:
                     "Mirroring of heightfields is not yet supported."
                 )
 
-        # Validate site invariants
         if cfg.is_site:
-            shape_label = label or f"shape_{self.shape_count}"
-
-            # Sites must not have collision enabled
-            if cfg.has_shape_collision or cfg.has_particle_collision:
-                raise ValueError(
-                    f"Site shape '{shape_label}' cannot have collision enabled. "
-                    f"Sites must be non-colliding reference points. "
-                    f"has_shape_collision={cfg.has_shape_collision}, "
-                    f"has_particle_collision={cfg.has_particle_collision}"
-                )
-
-            # Sites must have zero density (no mass contribution)
-            if cfg.density != 0.0:
-                raise ValueError(
-                    f"Site shape '{shape_label}' must have zero density. "
-                    f"Sites do not contribute to body mass. "
-                    f"Got density={cfg.density}"
-                )
-
-            # Sites must have collision group 0 (no collision filtering)
-            if cfg.collision_group != 0:
-                raise ValueError(
-                    f"Site shape '{shape_label}' must have collision_group=0. "
-                    f"Sites do not participate in collision detection. "
-                    f"Got collision_group={cfg.collision_group}"
-                )
+            cfg._validate_site(label or f"shape_{self.shape_count}")
 
         resolved_opacity = opacity
         if resolved_opacity is None and src is not None:
@@ -8682,6 +9494,7 @@ class ModelBuilder:
         self.shape_material_kf.append(cfg.kf)
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
+        self.shape_material_mu_static.append(cfg.mu_static)
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_material_mu_torsional.append(cfg.mu_torsional)
         self.shape_material_mu_rolling.append(cfg.mu_rolling)
@@ -8698,20 +9511,7 @@ class ModelBuilder:
         self.shape_sdf_padding.append(cfg.sdf_padding)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent:
-            for parent_body, joint_idx in self.joint_parents.get(body, ()):
-                if not self.joint_collision_filter_parent[joint_idx]:
-                    continue
-                for parent_shape in self.body_shapes[parent_body]:
-                    if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
-                        continue
-                    self.add_shape_collision_filter_pair(parent_shape, shape)
-            for child_body, joint_idx in self.joint_children.get(body, ()):
-                if not self.joint_collision_filter_parent[joint_idx]:
-                    continue
-                for child_shape in self.body_shapes[child_body]:
-                    if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
-                        continue
-                    self.add_shape_collision_filter_pair(shape, child_shape)
+            self._add_joint_collision_filter_pairs(shape, body)
 
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
             (m, c, inertia) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
@@ -8727,6 +9527,23 @@ class ModelBuilder:
             )
 
         return shape
+
+    def _add_joint_collision_filter_pairs(self, shape: int, body: int) -> None:
+        """Filter a colliding shape against the shapes of bodies joined to ``body``."""
+        for parent_body, joint_idx in self.joint_parents.get(body, ()):
+            if not self.joint_collision_filter_parent[joint_idx]:
+                continue
+            for parent_shape in self.body_shapes[parent_body]:
+                if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
+                    continue
+                self.add_shape_collision_filter_pair(parent_shape, shape)
+        for child_body, joint_idx in self.joint_children.get(body, ()):
+            if not self.joint_collision_filter_parent[joint_idx]:
+                continue
+            for child_shape in self.body_shapes[child_body]:
+                if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
+                    continue
+                self.add_shape_collision_filter_pair(shape, child_shape)
 
     def add_shape_plane(
         self,
@@ -9524,9 +10341,14 @@ class ModelBuilder:
             :meth:`~newton.ModelBuilder.add_world`, not to the parent builder
             afterwards. Replication copies mesh *references*, not mesh data, so
             ``N`` worlds share one :class:`~newton.Mesh` object. Approximating
-            first produces a single simplified copy that is shared across all
-            replicated worlds; approximating afterwards allocates one copy per
-            replicated shape — up to ``N`` times the memory for identical data.
+            first simplifies each mesh once and shares the result across all
+            replicated worlds; approximating afterwards produces the same shared
+            result but processes every replicated shape.
+
+            Shapes that share one source :class:`~newton.Mesh` object receive one
+            shared replacement mesh, so copy a shape's
+            :attr:`~newton.ModelBuilder.shape_source` entry
+            before modifying it for that shape alone.
 
             Recommended:
 
@@ -9656,6 +10478,9 @@ class ModelBuilder:
                     import trimesh
 
                 decompositions = {}
+                # Shapes sharing one source mesh, e.g. USD instances, share its convex replacement and parts.
+                replacement_meshes: dict[int, tuple[Mesh, Mesh]] = {}
+                part_meshes: dict[tuple[int, int | None], list[Mesh]] = {}
                 filtered_shapes_by_shape: dict[int, set[int]] = {}
                 convex_parts_by_shape: dict[int, list[int]] = {}
                 source_shapes = set(shape_indices)
@@ -9723,12 +10548,16 @@ class ModelBuilder:
                         decomposition_failed = True
                         continue
                     # note we need to copy the mesh to avoid modifying the original mesh
-                    replacement_mesh = self.shape_source[shape].copy(
-                        vertices=decomposition[0][0], indices=decomposition[0][1]
-                    )
-                    # Decomposition outputs do not provide attributes remapped to the new vertices.
-                    replacement_mesh._normals = None
-                    replacement_mesh._uvs = None
+                    cached_replacement = replacement_meshes.get(id(mesh))
+                    if cached_replacement is None:
+                        replacement_mesh = mesh.copy(vertices=decomposition[0][0], indices=decomposition[0][1])
+                        # Decomposition outputs do not provide attributes remapped to the new vertices.
+                        replacement_mesh._normals = None
+                        replacement_mesh._uvs = None
+                        # Keep the source alive so its id cannot be reused by a new mesh.
+                        replacement_meshes[id(mesh)] = (mesh, replacement_mesh)
+                    else:
+                        replacement_mesh = cached_replacement[1]
                     self.shape_source[shape] = replacement_mesh
                     # mark as convex mesh type
                     self.shape_type[shape] = GeoType.CONVEX_MESH
@@ -9749,6 +10578,7 @@ class ModelBuilder:
                             kf=self.shape_material_kf[shape],
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
+                            mu_static=self.shape_material_mu_static[shape],
                             restitution=self.shape_material_restitution[shape],
                             mu_torsional=self.shape_material_mu_torsional[shape],
                             mu_rolling=self.shape_material_mu_rolling[shape],
@@ -9762,12 +10592,19 @@ class ModelBuilder:
                         cfg.gap = self.shape_gap[shape]
                         cfg.collision_group = self.shape_collision_group[shape]
                         cfg.collision_filter_parent = False
-                        for i in range(1, len(decomposition)):
+                        parts = part_meshes.get(hash_m)
+                        if parts is None:
+                            parts = [
+                                Mesh(vertices, indices, maxhullvert=mesh.maxhullvert)
+                                for vertices, indices in decomposition[1:]
+                            ]
+                            part_meshes[hash_m] = parts
+                        for i, part in enumerate(parts, 1):
                             # add additional convex parts as convex meshes
                             extra_shape = self.add_shape_convex_hull(
                                 body=body,
                                 xform=xform,
-                                mesh=Mesh(decomposition[i][0], decomposition[i][1], maxhullvert=mesh.maxhullvert),
+                                mesh=part,
                                 scale=scale,
                                 cfg=cfg,
                                 color=color,
@@ -9808,13 +10645,23 @@ class ModelBuilder:
         if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
             remeshed = {}
+            # Shapes sharing one source mesh, e.g. USD instances, share its remeshed replacement.
+            replacements: dict[int, tuple[Mesh, Mesh]] = {}
             remesh_failed = False
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     # already remeshed with coacd or vhacd
                     continue
                 mesh: Mesh = self.shape_source[shape]
-                hash_m = hash(mesh)
+                cached_replacement = replacements.get(id(mesh))
+                if cached_replacement is not None:
+                    self.shape_source[shape] = cached_replacement[1]
+                    if method == "convex_hull":
+                        self.shape_type[shape] = GeoType.CONVEX_MESH
+                    remeshed_shapes.add(shape)
+                    continue
+                # Mesh.__hash__ does not include the hull-vertex limit.
+                hash_m = (hash(mesh), mesh.maxhullvert)
                 rmesh = remeshed.get(hash_m, None)
                 if rmesh is None:
                     try:
@@ -9832,7 +10679,10 @@ class ModelBuilder:
                             remesh_failed = True
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
-                self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
+                replacement = mesh.copy(vertices=rmesh.vertices, indices=rmesh.indices)
+                # Keep the source alive so its id cannot be reused by a new mesh.
+                replacements[id(mesh)] = (mesh, replacement)
+                self.shape_source[shape] = replacement
                 # mark convex_hull result as convex mesh type for efficient collision detection
                 if method == "convex_hull":
                     self.shape_type[shape] = GeoType.CONVEX_MESH
@@ -10183,10 +11033,10 @@ class ModelBuilder:
                 link_joints.append(j_loop)
 
         if rest_straight:
-            # Straight rest uses the identity quaternion in each joint's target coordinates.
+            # Straight rest uses the identity quaternion in each joint's rest coordinates.
             for joint in link_joints:
                 q_start = self.joint_q_start[joint]
-                self.joint_target_q[q_start + 3 : q_start + 7] = [0.0, 0.0, 0.0, 1.0]
+                self.joint_rest_q[q_start + 3 : q_start + 7] = [0.0, 0.0, 0.0, 1.0]
 
         return link_bodies, link_joints
 
@@ -10261,8 +11111,12 @@ class ModelBuilder:
                 offset by half its rest length. The world-space origin equals the initial
                 segment start only when initial and rest lengths match. ``"com"`` places
                 the body origin at the initial segment midpoint so the
-                body origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
-                a supported option.
+                body origin and COM coincide. Defaults to ``"com"``.
+
+                .. deprecated:: 1.8
+                    ``"start"`` emits a :class:`~newton.NewtonDeprecationWarning`.
+                    Use ``"com"`` instead. For manually authored body-local anchors,
+                    subtract the old ``body_com`` offset.
             junction_collision_filter: Whether to suppress self-collisions
                 between incident, non-jointed segments at graph junctions.
                 Has no effect for an ordered chain.
@@ -10523,6 +11377,21 @@ class ModelBuilder:
 
             node_incidence[u].append(e_idx)
             node_incidence[v].append(e_idx)
+
+        cfg.validate(shape_type=GeoType.CAPSULE)
+        if cfg.is_site:
+            shape_label = f"{label}_edge_capsule_0" if label else f"shape_{self.shape_count}"
+            cfg._validate_site(shape_label)
+
+        # Warn after validation but before mutating the builder.
+        if body_frame_origin == "start":
+            warnings.warn(
+                'add_rod(body_frame_origin="start") is deprecated as of Newton 1.8. '
+                'Use the default "com" origin. For manually authored body-local anchors, '
+                "subtract the old body_com offset.",
+                NewtonDeprecationWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
 
         # Create all edge bodies first.
         for e_idx, (body_q, com_offset, capsule_xform) in enumerate(edge_body_data):
@@ -10940,11 +11809,11 @@ class ModelBuilder:
     ) -> int:
         """Adds an attachment between a rigid body and a particle.
 
-        The compliant attachment pulls the particle toward a body-local anchor and
+        The attachment pulls the particle toward a body-local anchor and
         transfers equal-and-opposite forces between both endpoints in
         :class:`~newton.solvers.SolverVBD`. The constraint is translational;
-        a single particle does not define an orientation. When the endpoints are
-        owned by different solvers of a coupled simulation, the attachment is
+        a single particle does not define an orientation. Finite-stiffness
+        attachments whose endpoints are owned by different solvers are
         coupled by
         :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
         See :ref:`Particle-body attachments`.
@@ -10954,8 +11823,9 @@ class ModelBuilder:
             body: Index of the rigid body.
             body_point: Attachment point in the body's local frame [m]. If
                 ``None``, the body origin is used.
-            stiffness: Attachment stiffness [N/m].
-            damping: Attachment damping [N·s/m].
+            stiffness: Attachment stiffness [N/m]. Use ``math.inf`` for a hard
+                point constraint in :class:`~newton.solvers.SolverVBD`.
+            damping: Attachment damping [N·s/m]. Ignored for hard attachments.
             enabled: Whether the attachment is active.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -10965,17 +11835,22 @@ class ModelBuilder:
         Raises:
             IndexError: If ``particle`` or ``body`` is out of range.
             ValueError: If the endpoints belong to different worlds, a
-                coefficient is negative, or a coefficient or ``body_point``
-                is not finite.
+                coefficient is negative or NaN, a finite coefficient cannot be
+                represented in float32, or ``damping`` or ``body_point`` is not
+                finite.
         """
         if body < 0 or body >= self.body_count:
             raise IndexError(f"Body index {body} is out of range for {self.body_count} bodies")
         if particle < 0 or particle >= self.particle_count:
             raise IndexError(f"Particle index {particle} is out of range for {self.particle_count} particles")
-        if not math.isfinite(stiffness) or stiffness < 0.0:
-            raise ValueError("Attachment stiffness must be finite and nonnegative")
+        if math.isnan(stiffness) or stiffness < 0.0:
+            raise ValueError("Attachment stiffness must be nonnegative or positive infinity")
+        if math.isfinite(stiffness) and stiffness > float(np.finfo(np.float32).max):
+            raise ValueError("Finite attachment stiffness must be representable in float32")
         if not math.isfinite(damping) or damping < 0.0:
             raise ValueError("Attachment damping must be finite and nonnegative")
+        if damping > float(np.finfo(np.float32).max):
+            raise ValueError("Attachment damping must be representable in float32")
         resolved_body_point = wp.vec3() if body_point is None else axis_to_vec3(body_point)
         if not all(math.isfinite(c) for c in resolved_body_point):
             raise ValueError(f"Attachment body_point must be finite, got {tuple(resolved_body_point)}")
@@ -13158,7 +14033,7 @@ class ModelBuilder:
             )
 
     def _validate_shapes(self) -> bool:
-        """Validate shape gaps for stable broad phase detection.
+        """Validate finite contact materials and shape gaps for stable collision handling.
 
         Margin is an outward offset from a shape's surface [m], while broad phase uses
         ``margin + gap`` [m] for expansion/filtering. For reliable detection, ``gap`` [m]
@@ -13168,8 +14043,12 @@ class ModelBuilder:
         This check only considers shapes that participate in collisions (with the
         `COLLIDE_SHAPES` or `COLLIDE_PARTICLES` flag).
 
+        Raises:
+            ValueError: If a colliding shape has a non-finite contact material value
+                or insufficient hydroelastic SDF padding.
+
         Warns:
-            UserWarning: If any colliding shape has ``gap < 0``.
+            NewtonWarning: If any colliding shape has ``gap < 0``.
 
         Returns:
             Whether all colliding shapes have non-negative gaps.
@@ -13177,6 +14056,28 @@ class ModelBuilder:
         collision_flags_mask = ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
         shapes_with_bad_gap = []
         with self._raw_array_access():
+            colliding = (np.asarray(self.shape_flags, dtype=np.int32) & int(collision_flags_mask)) != 0
+            if np.any(colliding):
+                # Validate resolved builder arrays so imported and directly authored materials share the same checks.
+                for name in (
+                    "shape_material_ke",
+                    "shape_material_kd",
+                    "shape_material_kf",
+                    "shape_material_ka",
+                    "shape_material_mu",
+                    "shape_material_restitution",
+                    "shape_material_mu_torsional",
+                    "shape_material_mu_rolling",
+                    "shape_material_kh",
+                ):
+                    values = np.asarray(getattr(self, name))
+                    invalid = colliding & ~np.isfinite(values)
+                    if np.any(invalid):
+                        idx = int(np.flatnonzero(invalid)[0])
+                        label = self.shape_label[idx] or f"shape_{idx}"
+                        raise ValueError(
+                            f"Invalid {name} for shape {idx} ('{label}'): expected a finite value, got {values[idx]}."
+                        )
             shape_flags = _list_for_iteration(self.shape_flags)
             shape_margin = _list_for_iteration(self.shape_margin)
             shape_gap = _list_for_iteration(self.shape_gap)
@@ -13552,6 +14453,7 @@ class ModelBuilder:
                     ("joint_armature", self.joint_armature),
                     ("joint_target_ke", self.joint_target_ke),
                     ("joint_target_kd", self.joint_target_kd),
+                    ("joint_stiffness", self.joint_stiffness),
                     ("joint_damping", self.joint_damping),
                     ("joint_limit_lower", self.joint_limit_lower),
                     ("joint_limit_upper", self.joint_limit_upper),
@@ -13575,6 +14477,7 @@ class ModelBuilder:
                 coord_arrays = [
                     ("joint_q", self.joint_q),
                     ("joint_target_q", self.joint_target_q),
+                    ("joint_rest_q", self.joint_rest_q),
                 ]
             for name, arr in coord_arrays:
                 if len(arr) != self.joint_coord_count:
@@ -14413,6 +15316,27 @@ class ModelBuilder:
         batches.meshes = tuple(meshes)
         return batches.meshes, batches
 
+    def _resolve_shape_material_mu_static(self) -> list[float]:
+        """Static friction coefficients for :attr:`Model.shape_material_mu_static`.
+
+        An unset :attr:`ShapeConfig.mu_static` follows the shape's final ``mu``, including direct edits of
+        :attr:`shape_material_mu` made after :meth:`add_shape`. An explicit value below that ``mu`` is rejected
+        rather than corrected quietly.
+        """
+        shape_material_mu = _list_for_iteration(self.shape_material_mu)
+        shape_material_mu_static = _list_for_iteration(self.shape_material_mu_static)
+        resolved = [
+            mu if mu_static is None else mu_static
+            for mu, mu_static in zip(shape_material_mu, shape_material_mu_static, strict=True)
+        ]
+        for shape, (mu, mu_static) in enumerate(zip(shape_material_mu, resolved, strict=True)):
+            if mu_static < mu:
+                raise ValueError(
+                    f"shape_material_mu_static[{shape}] = {mu_static} is below shape_material_mu[{shape}] = {mu}. "
+                    "Update both when editing mu after add_shape, or leave mu_static None for a single coefficient."
+                )
+        return resolved
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -14443,7 +15367,8 @@ class ModelBuilder:
             skip_validation_joints: If True, skips articulation-topology and membership validation. By default,
                 joints cannot connect separate articulations, and non-root joints must belong to an articulation or
                 close a loop; standalone world-root joints are allowed.
-            skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
+            skip_validation_shapes: If True, skips validation of finite contact materials, contact gaps, and
+                hydroelastic SDF padding on colliding shapes. Default is False.
             skip_validation_inertia: If True, skips all rigid body mass/inertia validation and correction,
                 preserving the builder's mass and inertia. Derived inverses are always recomputed.
                 Skipped checks include finiteness, symmetry,
@@ -14456,6 +15381,9 @@ class ModelBuilder:
 
         Returns:
             A fully constructed Model object containing all simulation data on the specified device.
+
+        Raises:
+            ValueError: If an enabled validation fails, including non-finite contact material values on colliding shapes.
 
         Notes:
             - Validates and corrects rigid body inertia and mass unless ``skip_validation_inertia``
@@ -14483,30 +15411,37 @@ class ModelBuilder:
             # ensure the world count is set correctly
             self.world_count = max(1, self.world_count)
 
-            # validate world ordering and contiguity
-            if not skip_all_validations and not skip_validation_worlds:
-                self._validate_world_ordering()
+            # Variant shapes are appended as detached rows for the duration of finalize(), so that they
+            # are validated and get their collision data like shapes.
+            self._variant_shape_rows = _VariantShapeRows(self)
+            try:
+                # validate world ordering and contiguity
+                if not skip_all_validations and not skip_validation_worlds:
+                    self._validate_world_ordering()
 
-            # validate joints belong to an articulation
-            if not skip_all_validations and not skip_validation_joints:
-                self._validate_joints()
+                # validate joints belong to an articulation
+                if not skip_all_validations and not skip_validation_joints:
+                    self._validate_joints()
 
-            # validate shapes have valid contact margins
-            if not skip_all_validations and not skip_validation_shapes:
-                self._validate_shapes()
+                # validate contact materials, gaps, and hydroelastic SDF padding
+                if not skip_all_validations and not skip_validation_shapes:
+                    self._validate_shapes()
 
-            # validate structural invariants (body/joint references, array lengths)
-            if not skip_all_validations and not skip_validation_structure:
-                self._validate_structure()
+                # validate structural invariants (body/joint references, array lengths)
+                if not skip_all_validations and not skip_validation_structure:
+                    self._validate_structure()
 
-            # validate DFS topological joint ordering (opt-in, skipped by default)
-            if not skip_all_validations and not skip_validation_joint_ordering:
-                self.validate_joint_ordering()
+                # validate DFS topological joint ordering (opt-in, skipped by default)
+                if not skip_all_validations and not skip_validation_joint_ordering:
+                    self.validate_joint_ordering()
 
-            with self._raw_array_access():
-                return self._finalize_impl(
-                    device=device, requires_grad=requires_grad, validate_inertia=validate_inertia
-                )
+                with self._raw_array_access():
+                    return self._finalize_impl(
+                        device=device, requires_grad=requires_grad, validate_inertia=validate_inertia
+                    )
+            finally:
+                self._variant_shape_rows.remove(self)
+                del self._variant_shape_rows
         finally:
             if gc_was_enabled:
                 gc.enable()
@@ -14881,6 +15816,9 @@ class ModelBuilder:
             m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_material_mu_static = wp.array(
+                self._resolve_shape_material_mu_static(), dtype=wp.float32, requires_grad=requires_grad
+            )
             m.shape_material_mu_torsional = wp.array(
                 self.shape_material_mu_torsional, dtype=wp.float32, requires_grad=requires_grad
             )
@@ -14934,21 +15872,12 @@ class ModelBuilder:
 
                 return nx, ny, nz
 
-            site_display_size_attr = self.custom_attributes.get("mujoco:site_size_is_display")
-            for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
-                zip(self.shape_type, self.shape_source, shape_scale_list, strict=True)
+            for shape_type, shape_src, shape_scale in zip(
+                self.shape_type, self.shape_source, shape_scale_list, strict=True
             ):
-                site_size_is_display = bool(
-                    site_display_size_attr
-                    and site_display_size_attr.values.get(_shape_idx, site_display_size_attr.default)
-                )
                 # Create cache key based on shape type and parameters
                 if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
                     cache_key = (shape_type, id(shape_src), tuple(shape_scale))
-                elif shape_type == GeoType.CYLINDER and site_size_is_display:
-                    # MuJoCo cylinder sites may carry an unused third display-size component.
-                    # It is not Newton's barrel radius and does not affect their bounds.
-                    cache_key = (shape_type, (shape_scale[0], shape_scale[1], 0.0))
                 else:
                     cache_key = (shape_type, tuple(shape_scale))
 
@@ -15013,8 +15942,6 @@ class ModelBuilder:
                     elif shape_type == GeoType.CYLINDER:
                         # Cylinder: shape_scale = (end_radius, half_height, barrel_radius)
                         r, half_height, barrel_radius = shape_scale
-                        if site_size_is_display:
-                            barrel_radius = 0.0
                         radial_extent = r
                         if barrel_radius > 0.0:
                             radial_extent += (half_height * half_height) / (
@@ -15510,6 +16437,10 @@ class ModelBuilder:
                 else wp.zeros(1, dtype=wp.vec4, device=device)
             )
 
+            # Variant shape rows got their collision data above like shapes; move them to the variant
+            # table so that the shape arrays, counts, and labels hold real shapes only.
+            shape_count = self._variant_shape_rows.split(self, m)
+
             # ---------------------
             # springs
 
@@ -15771,6 +16702,8 @@ class ModelBuilder:
             m.joint_target_mode = wp.array(self.joint_target_mode, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_stiffness = wp.array(self.joint_stiffness, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_rest_q = wp.array(self.joint_rest_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_damping = wp.array(self.joint_damping, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_q = wp.array(self.joint_target_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_qd = wp.array(self.joint_target_qd, dtype=wp.float32, requires_grad=requires_grad)
@@ -15886,7 +16819,11 @@ class ModelBuilder:
             # per-world start indices
             m.particle_world_start = wp.array(self.particle_world_start, dtype=wp.int32)
             m.body_world_start = wp.array(self.body_world_start, dtype=wp.int32)
-            m.shape_world_start = wp.array(self.shape_world_start, dtype=wp.int32)
+            # Variant shape rows were counted as global shapes, in the leading block when no world
+            # shape precedes them; no start lies beyond the real shapes.
+            m.shape_world_start = wp.array(
+                [min(start, shape_count) for start in self.shape_world_start], dtype=wp.int32
+            )
             m.joint_world_start = wp.array(self.joint_world_start, dtype=wp.int32)
             m.articulation_world_start = wp.array(self.articulation_world_start, dtype=wp.int32)
             m.joint_dof_world_start = wp.array(self.joint_dof_world_start, dtype=wp.int32)
@@ -15901,7 +16838,7 @@ class ModelBuilder:
             m.joint_constraint_count = self.joint_constraint_count
             m.particle_count = len(self.particle_q)
             m.body_count = self.body_count
-            m.shape_count = len(self.shape_type)
+            m.shape_count = shape_count
             m.tri_count = len(self.tri_poses)
             m.tet_count = len(self.tet_poses)
             m.edge_count = len(self.edge_rest_angle)
@@ -15912,12 +16849,13 @@ class ModelBuilder:
             m.mujoco.equality_constraint_count = self._equality_constraint_count
             m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
+            m.actuator_count = self.actuator_count
 
             m._shape_contact_pair_data = _ShapeContactPairs(
-                self.shape_body,
-                self.shape_world,
-                self.shape_collision_group,
-                self.shape_flags,
+                self.shape_body[:shape_count],
+                self.shape_world[:shape_count],
+                self.shape_collision_group[:shape_count],
+                self.shape_flags[:shape_count],
                 shape_collision_filter_packed,
                 self.world_count,
             )
@@ -15929,13 +16867,10 @@ class ModelBuilder:
             # enable ground plane
             m.up_axis = self.up_axis
 
-            # Explicit local worlds need a trailing global entry. Implicit
-            # single-world models retain their legacy shared gravity entry.
+            # Local worlds followed by a distinct entry for global world -1.
             global_gravity = self._gravity_as_vector()
-            if self.world_gravity:
-                gravity_vecs = [*self.world_gravity, global_gravity]
-            else:
-                gravity_vecs = [global_gravity for _ in range(self.world_count)]
+            local_gravity = self.world_gravity or [global_gravity] * self.world_count
+            gravity_vecs = [*local_gravity, global_gravity]
             m.gravity = wp.array(
                 gravity_vecs,
                 dtype=wp.vec3,
@@ -15945,9 +16880,10 @@ class ModelBuilder:
 
             # Create actuators from accumulated entries
             from ..actuators.actuator import Actuator  # noqa: PLC0415
-            from ..actuators.delay import Delay  # noqa: PLC0415
+            from ..actuators.clamping.clamping_current_duty import ClampingCurrentDuty  # noqa: PLC0415
 
             m.actuators = []
+            with_battery = self._actuators_with_battery()
             for entry in self.actuator_entries.values():
                 indices = self._build_index_array(entry.indices, device)
 
@@ -15959,11 +16895,41 @@ class ModelBuilder:
                 drive_arrays = self._stack_args_to_arrays(entry.drive_args, device=device, requires_grad=requires_grad)
                 drive = entry.drive_class(**drive_arrays, **entry.drive_shared_kwargs)
 
-                delay_obj = None
-                if entry.delay_args:
-                    delay_arrays = self._stack_args_to_arrays(entry.delay_args, device=device, default_dtype=wp.int32)
-                    max_delay = max(d["delay_steps"] for d in entry.delay_args)
-                    delay_obj = Delay(**delay_arrays, max_delay=max_delay)
+                # Build input processors from per-DOF arrays + shared kwargs
+                input_processor_objs = []
+                for i, (proc_class, shared_kw) in enumerate(
+                    zip(entry.input_processor_classes, entry.input_processor_shared_kwargs, strict=True)
+                ):
+                    proc_args_per_actuator = [dict(per_act[i]) for per_act in entry.input_processor_args]
+                    index_arrays = {}
+                    for name in proc_class.JOINT_PARAMS:
+                        for key in (f"{name}_indices", f"{name}_pos_indices"):
+                            index_arrays[key] = self._build_index_array(
+                                [args.pop(key) for args in proc_args_per_actuator], device
+                            )
+                    proc_arrays = self._stack_args_to_arrays(
+                        proc_args_per_actuator, device=device, requires_grad=requires_grad, default_dtype=wp.int32
+                    )
+                    input_processor_objs.append(proc_class(**proc_arrays, **index_arrays, **shared_kw))
+
+                motor_obj = None
+                if entry.motor_class is not None:
+                    motor_arrays = self._stack_args_to_arrays(
+                        entry.motor_args, device=device, requires_grad=requires_grad
+                    )
+                    motor_obj = entry.motor_class(**motor_arrays, **entry.motor_shared_kwargs)
+                    missing = [
+                        row
+                        for row, args in zip(entry.actuator_indices, entry.motor_args, strict=False)
+                        if args.get("supply_from_battery") and row not in with_battery
+                    ]
+                    if missing:
+                        warnings.warn(
+                            f"{entry.motor_class.__name__} draws from a battery, but actuator(s) {missing} "
+                            "have no battery; their supply voltage stays 0 V",
+                            NewtonWarning,
+                            stacklevel=2,
+                        )
 
                 # Build clamping objects from per-DOF arrays + shared kwargs
                 clamping_objs = []
@@ -15971,22 +16937,48 @@ class ModelBuilder:
                     zip(entry.clamping_classes, entry.clamping_shared_kwargs, strict=True)
                 ):
                     comp_args_per_actuator = [per_act[i] for per_act in entry.clamping_args]
+                    if issubclass(comp_class, ClampingCurrentDuty):
+                        comp_args_per_actuator = ClampingCurrentDuty._complete_estimates(
+                            comp_args_per_actuator, entry.motor_args
+                        )
                     comp_arrays = self._stack_args_to_arrays(
                         comp_args_per_actuator, device=device, requires_grad=requires_grad
                     )
                     clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
 
+                has_rows = len(entry.actuator_indices) == len(entry.indices)
                 actuator = Actuator(
                     indices=indices,
                     drive=drive,
-                    delay=delay_obj,
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
                     requires_grad=requires_grad,
+                    input_processors=input_processor_objs,
+                    motor=motor_obj,
+                    actuator_indices=self._build_index_array(entry.actuator_indices, device) if has_rows else None,
                 )
 
                 actuator.register_custom_attributes(self)
                 m.actuators.append(actuator)
+
+            m.batteries = []
+            for entry in self.battery_entries.values():
+                actuator_counts = [len(actuators) for actuators in entry.actuators]
+                m.batteries.append(
+                    entry.battery_class(
+                        **self._stack_args_to_arrays(entry.args, device=device, requires_grad=requires_grad),
+                        actuator_start=wp.array(
+                            np.concatenate(([0], np.cumsum(actuator_counts))), dtype=wp.int32, device=device
+                        ),
+                        actuators=wp.array(
+                            [actuator for actuators in entry.actuators for actuator in actuators],
+                            dtype=wp.int32,
+                            device=device,
+                        ),
+                        world=wp.array(entry.world, dtype=wp.int32, device=device),
+                        world_count=m.world_count,
+                    )
+                )
 
             # Add custom attributes onto the model (with lazy evaluation)
             self._resolve_custom_frequency_articulation_owners()
@@ -16059,6 +17051,10 @@ class ModelBuilder:
                 )
 
             self._finalize_custom_frequency_metadata(m, device)
+            self._variant_shape_rows.finalize(self, m, validate_inertia=validate_inertia)
+
+            for battery in m.batteries:
+                battery.reset(m)
 
             m.bvh_build_shapes(
                 m,
@@ -16164,6 +17160,8 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "shape_material_kf": wp.float32,
     "shape_material_ka": wp.float32,
     "shape_material_mu": wp.float32,
+    # Holds None for "same as mu" until finalize() resolves it, so the merged array is an object array.
+    "shape_material_mu_static": wp.float32,
     "shape_material_restitution": wp.float32,
     "shape_material_mu_torsional": wp.float32,
     "shape_material_mu_rolling": wp.float32,
@@ -16226,6 +17224,8 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "joint_target_mode": wp.int32,
     "joint_target_ke": wp.float32,
     "joint_target_kd": wp.float32,
+    "joint_stiffness": wp.float32,
+    "joint_rest_q": wp.float32,
     "joint_damping": wp.float32,
     "joint_effort_limit": wp.float32,
     "joint_velocity_limit": wp.float32,

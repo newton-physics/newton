@@ -151,6 +151,24 @@ def patch_sys_module(name: str, module: Any):
             sys.modules[name] = original
 
 
+def import_pyglet_window(*, shadow_window: bool = True):
+    """Import ``pyglet.window`` with GL error checks off, as ``RendererGL`` does.
+
+    pyglet reads ``debug_gl`` only on its first GL import, so a test importing it first
+    would otherwise leave the checks on for every later viewer in its worker.
+    """
+    import pyglet
+
+    pyglet.options["debug_gl"] = False
+    saved_shadow_window = pyglet.options["shadow_window"]
+    pyglet.options["shadow_window"] = shadow_window
+    try:
+        import pyglet.window
+    finally:
+        pyglet.options["shadow_window"] = saved_shadow_window
+    return pyglet
+
+
 try:
     if sys.platform == "win32":
         LIBC = ctypes.CDLL("ucrtbase.dll")
@@ -261,6 +279,53 @@ def configure_sdf_for_collision_shapes(builder):
             builder.shape_flags[i] & int(ShapeFlags.COLLIDE_PARTICLES)
         ):
             builder.shape_force_sdf[i] = True
+
+
+def capture_with_cuda_driver(device, fn, auto_free_on_launch: bool = False):
+    """Capture ``fn`` with the CUDA driver alone, as another framework would; return launch and release functions.
+
+    ``launch`` replays the graph and synchronizes the stream. The capture loads ``libcuda.so.1``, so it runs only on Linux.
+    """
+    cuda = ctypes.CDLL("libcuda.so.1")
+    handle = ctypes.c_void_p
+    cuda.cuStreamBeginCapture_v2.argtypes = [handle, ctypes.c_int]
+    cuda.cuStreamEndCapture.argtypes = [handle, ctypes.POINTER(handle)]
+    cuda.cuGraphInstantiateWithFlags.argtypes = [ctypes.POINTER(handle), handle, ctypes.c_ulonglong]
+    cuda.cuGraphLaunch.argtypes = [handle, handle]
+    cuda.cuGraphExecDestroy.argtypes = [handle]
+    cuda.cuGraphDestroy.argtypes = [handle]
+    stream = handle(wp.get_stream(device).cuda_stream)
+    graph, graph_exec = handle(), handle()
+    thread_local_mode = 1
+    began = cuda.cuStreamBeginCapture_v2(stream, thread_local_mode)
+    if began != 0:
+        raise RuntimeError(f"cuStreamBeginCapture failed with {began}")
+    try:
+        fn()
+    except BaseException:
+        if cuda.cuStreamEndCapture(stream, ctypes.byref(graph)) == 0:
+            cuda.cuGraphDestroy(graph)
+        raise
+    ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
+    if ended != 0:
+        raise RuntimeError(f"cuStreamEndCapture failed with {ended}")
+    flags = ctypes.c_ulonglong(1 if auto_free_on_launch else 0)
+    instantiated = cuda.cuGraphInstantiateWithFlags(ctypes.byref(graph_exec), graph, flags)
+    if instantiated != 0:
+        cuda.cuGraphDestroy(graph)
+        raise RuntimeError(f"cuGraphInstantiateWithFlags failed with {instantiated}")
+
+    def launch():
+        launched = cuda.cuGraphLaunch(graph_exec, stream)
+        if launched != 0:
+            raise RuntimeError(f"cuGraphLaunch failed with {launched}")
+        wp.synchronize_stream(wp.get_stream(device))
+
+    def release():
+        cuda.cuGraphExecDestroy(graph_exec)
+        cuda.cuGraphDestroy(graph)
+
+    return launch, release
 
 
 class StreamCapture:

@@ -809,7 +809,7 @@ class TestDVISolver(NewtonTestCase):
         solver = SolverKamino(model)
         state = model.state()
 
-        body_q = state.body_q.numpy()
+        body_q = state.body_q.numpy().copy()
         body_q[:, 0] += 1.0
         state.body_q.assign(body_q)
         solver.reset(
@@ -1112,7 +1112,7 @@ class TestDVISolver(NewtonTestCase):
         """Decay copied tangential warmstarts without mutating cached reactions."""
         model, problem, setup = self._make_box_on_plane_setup()
         contact_count = int(setup.contacts.model_active_contacts.numpy()[0])
-        reactions = setup.contacts.reaction.numpy()
+        reactions = setup.contacts.reaction.numpy().copy()
         reactions[:contact_count] = np.array([2.0, -4.0, 3.0], dtype=np.float32)
         setup.contacts.reaction.assign(reactions)
 
@@ -4180,7 +4180,9 @@ class TestDVISolver(NewtonTestCase):
             sparse_jacobian=True,
             use_collision_detector=True,
             integrator="moreau",
-            constraints=kamino_config.ConstraintStabilizationConfig(gamma=0.01, delta=0.0),
+            constraints=kamino_config.ConstraintStabilizationConfig(
+                contact_recovery_time=time_step * (1.0 / 0.01 - 1.0), delta=0.0
+            ),
             dvi=kamino_config.DVISolverConfig(
                 max_alternating_iterations=8,
                 bilateral_solve_interval=1,

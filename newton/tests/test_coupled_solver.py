@@ -536,6 +536,8 @@ class TestModelView(unittest.TestCase):
         """disable_body_dynamics should zero inverse inertia without changing flags."""
         view = ModelView(self.model, "test")
         indices = wp.array([1], dtype=int, device="cpu")
+        mass_before = self.model.body_mass.numpy().copy()
+        inertia_before = self.model.body_inertia.numpy().copy()
         view.disable_body_dynamics(indices)
 
         mass = view.body_mass.numpy()
@@ -552,9 +554,9 @@ class TestModelView(unittest.TestCase):
         self.assertNotEqual(flags[0] & dynamic, 0)
         self.assertEqual(flags[0] & kinematic, 0)
         # Body 1 should keep forward inertial metadata but become immovable.
-        self.assertEqual(mass[1], self.model.body_mass.numpy()[1])
+        self.assertEqual(mass[1], mass_before[1])
         self.assertEqual(inv_mass[1], 0.0)
-        np.testing.assert_allclose(inertia[1], self.model.body_inertia.numpy()[1])
+        np.testing.assert_allclose(inertia[1], inertia_before[1])
         np.testing.assert_allclose(inv_inertia[1], np.zeros((3, 3)))
         self.assertNotEqual(flags[1] & dynamic, 0)
         self.assertEqual(flags[1] & kinematic, 0)
@@ -574,13 +576,14 @@ class TestModelView(unittest.TestCase):
         )
         model = builder.finalize(device="cpu")
         view = ModelView(model, "test")
+        dof_dim_before = model.joint_dof_dim.numpy()[joint].copy()
 
         view.disable_joints(wp.array([joint], dtype=int, device="cpu"))
 
         self.assertFalse(bool(view.joint_enabled.numpy()[joint]))
         self.assertEqual(int(view.joint_type.numpy()[joint]), int(newton.JointType.FREE))
         self.assertEqual(int(model.joint_type.numpy()[joint]), int(newton.JointType.ROD))
-        np.testing.assert_array_equal(view.joint_dof_dim.numpy()[joint], model.joint_dof_dim.numpy()[joint])
+        np.testing.assert_array_equal(view.joint_dof_dim.numpy()[joint], dof_dim_before)
 
     def test_zero_particle_mass(self):
         """zero_particle_mass should zero forward and inverse mass arrays."""
@@ -730,17 +733,6 @@ class TestModelView(unittest.TestCase):
 
 class TestSolverCoupledContactsAndMPM(unittest.TestCase):
     """Test coupled contact preparation and implicit MPM integration."""
-
-    def test_graph_capture_setup_stays_solver_specific(self):
-        """Verify coupled solvers do not expose a generic graph protocol."""
-        for name in ("supports_graph_capture", "prepare_graph_capture", "check_status"):
-            with self.subTest(name=name):
-                self.assertFalse(hasattr(SolverCoupled, name))
-
-        self.assertFalse(hasattr(SolverImplicitMPM, "supports_graph_capture"))
-        self.assertFalse(hasattr(SolverImplicitMPM, "prepare_graph_capture"))
-        self.assertFalse(hasattr(SolverImplicitMPM, "check_status"))
-        self.assertTrue(hasattr(SolverImplicitMPM, "check_sparse_grid_rebuild_status"))
 
     def test_implicit_mpm_reset_syncs_namespaced_non_in_place_state(self):
         """Verify coupled reset mirrors MPM history into the non-in-place output state."""
@@ -2277,7 +2269,9 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         model.joint_armature.fill_(3.0)
         model.mujoco.dof_ref.fill_(0.2)
-        model.mujoco.dof_springref.fill_(0.3)
+        rest_q = model.joint_rest_q.numpy()
+        rest_q[-2:] = 0.1
+        model.joint_rest_q.assign(rest_q)
         model.joint_damping.fill_(0.8)
         model.joint_target_ke.fill_(25.0)
         model.joint_friction.fill_(0.4)
@@ -2301,9 +2295,10 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
         coupled.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
+        np.testing.assert_allclose(view.joint_rest_q.numpy(), 0.0)
         coupled.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.2)
-        np.testing.assert_allclose(view.mujoco.dof_springref.numpy(), 0.3)
+        np.testing.assert_allclose(view.joint_rest_q.numpy(), 0.1)
 
     def test_joint_properties_refresh_compacted_targets(self):
         """Refresh position targets in a compact model view."""
@@ -3148,7 +3143,7 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
                 wp.launch(
                     eval_mujoco_coupling_gravity_acceleration_kernel,
                     dim=3,
-                    inputs=[gravity, body_world, mjc_body_to_newton, body_gravcomp],
+                    inputs=[gravity, body_world, mjc_body_to_newton, body_gravcomp, 0],
                     outputs=[acceleration],
                     device=device,
                 )
@@ -3285,6 +3280,20 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
             np.array([[0.0, 0.0, -7.5], [0.0, 0.0, -5.0], [0.0, 0.0, -2.5]], dtype=np.float32),
             atol=1.0e-6,
         )
+
+        # A global body that shares the MuJoCo world with world 0 follows world 0's gravity.
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.begin_world()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.end_world()
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model=model, iterations=1, disable_contacts=True)
+        model.set_gravity((0.0, 0.0, -4.0), world=-1)
+        solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+        body_acceleration = wp.empty(model.body_count, dtype=wp.vec3, device=model.device)
+        solver.coupling_eval_gravity_acceleration(body_acceleration, None)
+        np.testing.assert_allclose(body_acceleration.numpy(), [[0.0, 0.0, -10.0]] * 2, atol=1.0e-6)
 
 
 def _coupled_vbd_reset_preserves_pose_history(test, device):
@@ -3443,7 +3452,9 @@ def _harvest_comoving_proxy_contact(
     """Harvest the proxy force of one particle resting on a box that moves up at ``speed``.
 
     Without gravity, the particle slightly penetrates the box top and moves up at
-    ``particle_speed``, which defaults to ``speed`` (no relative motion). With ``proxy="body"``
+    ``particle_speed``, which defaults to ``speed`` (no relative motion). The VBD entry uses
+    closing-only contact damping: the penalty pushes the particle out of the box over the step, and
+    the default two-sided damping would damp that separation. With ``proxy="body"``
     the box is the proxy and the VBD destination entry simulates the particle; the harvested
     proxy-body force is returned. With ``proxy="particle"`` the roles are swapped and the
     harvested proxy-particle force is returned.
@@ -3482,7 +3493,9 @@ def _harvest_comoving_proxy_contact(
             ),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda view: _RecordingVBD(view, iterations=4, rigid_compliant_alm=True),
+                solver=lambda view: _RecordingVBD(
+                    view, iterations=4, rigid_compliant_alm=True, soft_contact_damping_bidirectional=False
+                ),
                 bodies=[] if proxy_bodies else [body],
                 particles=[] if proxy_particles else [0],
                 substeps=vbd_substeps,

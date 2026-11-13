@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "newton"
-version = "1.8.0.dev0"
+version = "1.9.0.dev0"
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
@@ -14,7 +14,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Natural Language :: English",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -26,7 +25,7 @@ classifiers = [
 ]
 description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "warp-lang>=1.17.0",
 ]
@@ -36,8 +35,8 @@ dependencies = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp~=3.16.0; (sys_platform != 'win32' or platform_machine != 'ARM64')",  # MuJoCo, warp-accelerated
-    "mujoco~=3.16.0; (sys_platform != 'win32' or platform_machine != 'ARM64')",       # MuJoCo physics engine
+    "mujoco-warp~=3.17.0; (sys_platform != 'win32' or platform_machine != 'ARM64')",  # MuJoCo, warp-accelerated
+    "mujoco~=3.17.0; (sys_platform != 'win32' or platform_machine != 'ARM64')",       # MuJoCo physics engine
 ]
 
 # Optional ONNX policy inference for neural actuators and RL policy examples.

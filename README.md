@@ -17,9 +17,9 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
 
 ## Requirements
 
-- **Python** 3.10+ (3.10 support is deprecated; removal planned for Newton 1.9; use 3.11+)
+- **Python** 3.11+
 - **OS:** Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
-- **GPU:** Fresh installs currently select Warp 1.18, which requires an NVIDIA Turing GPU (compute capability 7.5+) and driver R580+ for CUDA acceleration.
+- **GPU:** Since Warp 1.18, standard Warp wheels require an NVIDIA Turing GPU (compute capability 7.5+) and driver R580+ for CUDA acceleration.
   On an R545–R579 driver or an older supported GPU, install with `warp-lang==1.17.0` (see the installation guide).
   No local CUDA Toolkit is required; macOS runs on CPU.
 
@@ -184,14 +184,20 @@ python -m newton.examples --describe robot_omniwheel
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_mimic_joint.jpg" alt="Mimic Joint">
       </a>
     </td>
-    <td width="33%"></td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_multi_solver_overlay.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_multi_solver_overlay.jpg" alt="Multi-Solver Overlay">
+      </a>
+    </td>
     <td width="33%"></td>
   </tr>
   <tr>
     <td align="center" width="33%">
       <code>python -m newton.examples basic_mimic_joint</code>
     </td>
-    <td width="33%"></td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_multi_solver_overlay</code>
+    </td>
     <td width="33%"></td>
   </tr>
   <tr>
@@ -1108,6 +1114,52 @@ python -m newton.examples --describe robot_omniwheel
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples steel_determinism_arms</code>
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="3"><h3>Surface Gripper Examples</h3></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/surface_gripper/example_surface_gripper.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_surface_gripper.jpg" alt="Surface Gripper">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples surface_gripper</code>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="3"><h3>MuJoCo Examples</h3></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mujoco/example_mujoco_sleeping.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mujoco_sleeping.jpg" alt="MuJoCo Sleeping">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples mujoco_sleeping</code>
+    </td>
+    <td align="center" width="33%">
     </td>
     <td align="center" width="33%">
     </td>

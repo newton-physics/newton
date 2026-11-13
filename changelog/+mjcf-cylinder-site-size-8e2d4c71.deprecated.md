@@ -1,0 +1,1 @@
+Deprecate the `mujoco:site_size_is_display` shape attribute registered by `SolverMuJoCo`. The MJCF importer no longer populates it. Passing it to `ModelBuilder.add_site()` emits a deprecation warning; if it is `True`, `scale[2]` of a cylinder site is set to `0.0`. Remove the attribute, and set `scale[2]` of the cylinder site to `0.0` directly where it was `True`.

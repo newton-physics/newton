@@ -10,8 +10,8 @@ import warp as wp
 
 import newton
 from newton._src.solvers.style3d.affine_body import AffineBody
+from newton import NewtonDeprecationWarning
 from newton._src.solvers.style3d.builder import PDMatrixBuilder, _compute_max_neighbors
-from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 

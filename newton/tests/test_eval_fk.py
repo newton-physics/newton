@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.sim.articulation import eval_articulation_fk
+from newton._src.sim.articulation import _fk_prefers_tiled, eval_articulation_fk
 from newton._src.sim.articulation_cuda import (
     FK_TILE_MAX_LEVEL_WIDTH,
     TILE_BLOCK_DIM,
@@ -41,7 +41,7 @@ def _expect_parallel_joint_warning(test):
         yield
 
     test.assertEqual(len(caught), 1)
-    test.assertEqual(caught[0].category, newton.exceptions.NewtonWarning)
+    test.assertEqual(caught[0].category, newton.NewtonWarning)
     test.assertRegex(str(caught[0].message), _PARALLEL_JOINT_WARNING)
 
 
@@ -227,6 +227,7 @@ def test_heterogeneous_wide_articulations(test, device):
     test.assertEqual(
         max(level_joint_start[level + 1] - level_joint_start[level] for level in wide_articulation_levels), 40
     )
+    test.assertEqual(_fk_prefers_tiled(model), model.device.is_cuda)
     variants = [
         (None, None),
         (wp.array([True, False, True], dtype=bool, device=device), None),
@@ -269,6 +270,7 @@ def test_deep_articulation(test, device):
     test.assertEqual(articulation_level_start[1] - articulation_level_start[0], 41)
     test.assertEqual(model._fk_level_capacity, 1)
     test.assertEqual(model._fk_level_parent_pos.numpy()[-1], 0)
+    test.assertFalse(_fk_prefers_tiled(model))
 
     state_reference = model.state()
     state_parallel = model.state()
@@ -281,8 +283,8 @@ def test_deep_articulation(test, device):
 def test_empty_articulation_selection(test, device):
     model = _build_heterogeneous_model(device)
     state = model.state()
-    body_q = state.body_q.numpy()
-    body_qd = state.body_qd.numpy()
+    body_q = state.body_q.numpy().copy()
+    body_qd = state.body_qd.numpy().copy()
 
     newton.eval_fk(
         model,

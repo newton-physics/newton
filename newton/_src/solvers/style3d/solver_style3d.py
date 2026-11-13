@@ -414,6 +414,7 @@ class SolverStyle3D(SolverBase):
                 input nor output state is modified in this case.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
 
         if self.dynamics == SolverStyle3D.Dynamics.NONE:
             return
