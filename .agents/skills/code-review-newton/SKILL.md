@@ -19,6 +19,9 @@ axes, and enforce the latter during Standards review.
    and the code, public surface, and tests it would need. Freeze this baseline
    for step 7.
 3. Read the complete `merge-base..head` diff and `CODING_GUIDELINES.rst`.
+   Check the changes on `main` since the merge base for semantic conflicts,
+   overlapping fixes, and changed assumptions, even when Git reports a clean
+   merge.
 4. Perform an adversarial correctness-first Requirements pass. Trace changed
    inputs, state, counts, offsets, ownership, and outputs through every relevant
    supported execution mode. Check applicable zero/one/many and capacity
@@ -28,7 +31,8 @@ axes, and enforce the latter during Standards review.
    complexity, allocations, synchronization, transfers, and whether benchmarks
    exercise the changed path. Answer the Honest contract, Siblings, Tests, and
    Cost questions in `REVIEW_GUIDELINES.rst`. Run a minimal adversarial probe
-   when feasible. Apply the guides' schema and importer checks to authorable
+   when feasible, focused on failure modes specific to the changed domain.
+   Apply the guides' schema and importer checks to authorable
    features, including behavioral equivalence and explicit acceptance of
    deferrals.
 5. Freeze candidate findings before reading existing reviews. Record the
