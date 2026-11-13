@@ -14,7 +14,7 @@ import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
@@ -44,6 +44,9 @@ from .kernels import (
 )
 from .utils import OPAQUE_OPACITY_THRESHOLD
 
+if TYPE_CHECKING:
+    from ..solvers.solver import SolverBase
+
 MAX_TRIANGLE_OPACITY_GROUPS = 32
 MAX_TRIANGLE_APPEARANCE_GROUPS = MAX_TRIANGLE_OPACITY_GROUPS
 _DEFAULT_TRIANGLE_COLOR = (0.7, 0.5, 0.3)
@@ -55,6 +58,44 @@ _DEFAULT_LAYER_ID = "__default__"
 
 #: Fields that configure a layer itself rather than model/runtime state.
 _LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform"))
+
+# Shared inventories keep reset preservation and GUI change tracking aligned.
+_LAYER_DISPLAY_OPTIONS = {
+    "sdf_margin_mode",
+    "contact_mode_eps_force",
+    "contact_mode_eps_velocity",
+    "contact_viz_scale",
+    "contact_normal_scale",
+    "gaussians_max_points",
+}
+_GLOBAL_DISPLAY_OPTIONS = (
+    "show_ui",
+    "vsync",
+    "_paused",
+    "camera_speed",
+    "camera_slowdown",
+    "show_contact_pairs",
+    "show_contact_lines",
+    "show_contact_labels",
+    "contact_selection_only",
+)
+_RENDERER_DISPLAY_OPTIONS = (
+    "draw_sky",
+    "draw_shadows",
+    "draw_wireframe",
+    "draw_edges",
+    "wireframe_line_width",
+    "_light_color",
+    "sky_upper",
+    "sky_lower",
+    "arrow_scale",
+    "joint_scale",
+    "com_scale",
+    "contact_arrow_scale",
+    "contact_normal_max_pixels",
+    "contact_force_max_pixels",
+    "contact_disk_scale",
+)
 
 _VIEWER_PATH_COMPONENT_RE = re.compile(r"[^A-Za-z0-9_]")
 
@@ -150,6 +191,8 @@ class ViewerBase(ABC):
         self.picking_enabled = True
         self._camera_speed = 4.0
         self._rendering_paused = False
+        self.show_contact_pairs = False
+        self.show_contact_lines = True
         # Built-in display controls record explicit edits for example switching.
         # Constructor defaults must not become preferences for later examples.
         # Contact force scale is stored as a gain relative to model calibration.
@@ -188,6 +231,30 @@ class ViewerBase(ABC):
         if layers is not None and active_layer_id in layers:
             setattr(layers[active_layer_id], name, value)
 
+    @contextmanager
+    def _track_display_options(self) -> Iterator[None]:
+        """Remember display changes made during a GUI draw, not scene defaults."""
+        names = _LAYER_DISPLAY_OPTIONS | {"contact_force_scale"}
+        owners = [(self, [name for name in vars(self.layer) if name.startswith("show_") or name in names])]
+        owners.append((self, _GLOBAL_DISPLAY_OPTIONS))
+        owners.append((getattr(self, "camera", None), ("fov", "near", "far")))
+        owners.append((getattr(self, "renderer", None), _RENDERER_DISPLAY_OPTIONS))
+        before = [
+            (owner, name, copy.deepcopy(getattr(owner, name)))
+            for owner, fields in owners
+            for name in fields
+            if hasattr(owner, name)
+        ]
+        try:
+            yield
+        finally:
+            for owner, name, previous in before:
+                value = getattr(owner, name)
+                if not np.array_equal(value, previous):
+                    if name == "contact_force_scale":
+                        value /= max(self._contact_force_scale_default, 1e-12)
+                    self._display_options_user[name] = copy.deepcopy(value)
+
     @staticmethod
     def _apply_attrs(target: Any, values: dict[str, Any]) -> None:
         """Apply a saved set of display attributes to its owner."""
@@ -205,14 +272,7 @@ class ViewerBase(ABC):
     def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
         """Restore reset state, or explicit display choices when entering a new example."""
         user_options = self._display_options_user
-        option_names = {
-            "visible",
-            "sdf_margin_mode",
-            "contact_mode_eps_force",
-            "contact_mode_eps_velocity",
-            "contact_viz_scale",
-            "gaussians_max_points",
-        }
+        option_names = _LAYER_DISPLAY_OPTIONS | {"visible"}
         saved = {
             layer_id: {
                 name: value
@@ -229,35 +289,21 @@ class ViewerBase(ABC):
         defaults = {name: value for name, value in saved.get(active_id, {}).items() if name != "visible"}
         globals_saved = {
             name: user_options[name] if switching else getattr(self, name)
-            for name in ("show_ui", "vsync", "_paused", "camera_speed")
+            for name in _GLOBAL_DISPLAY_OPTIONS
             if hasattr(self, name) and (not switching or name in user_options)
         }
         camera = getattr(self, "camera", None)
-        # Reset keeps the navigated view in every interactive backend. A new
-        # scene chooses its own framing, projection, and navigation speed.
+        # Reset keeps the navigated view; switching retains only explicit projection edits.
         camera_saved = {
-            name: copy.deepcopy(getattr(camera, name))
+            name: copy.deepcopy(user_options[name] if switching else getattr(camera, name))
             for name in ("fov", "near", "far", "pos", "pitch", "yaw", "pivot")
-            if not switching and hasattr(camera, name)
+            if hasattr(camera, name) and (not switching or (name in ("fov", "near", "far") and name in user_options))
         }
         renderer = getattr(self, "renderer", None)
         # Include recorded names directly so new controls need no switch allowlist.
         render_saved = {
             name: copy.deepcopy(user_options[name] if switching else getattr(renderer, name))
-            for name in (
-                "draw_sky",
-                "draw_shadows",
-                "draw_wireframe",
-                "draw_edges",
-                "wireframe_line_width",
-                "_light_color",
-                "sky_upper",
-                "sky_lower",
-                "arrow_scale",
-                "joint_scale",
-                "com_scale",
-                *user_options,
-            )
+            for name in (*_RENDERER_DISPLAY_OPTIONS, *user_options)
             if hasattr(renderer, name) and (not switching or name in user_options)
         }
         try:
@@ -697,6 +743,7 @@ class ViewerBase(ABC):
         still-live layers).
         """
         layer.model = None
+        layer._inspection_components: dict[str, Any] = {}
         layer.model_changed = True
         layer._last_state = None
 
@@ -721,6 +768,10 @@ class ViewerBase(ABC):
         # Contact normal vertices
         layer._contact_points0 = None
         layer._contact_points1 = None
+        layer._contact_opposing_points = None
+        layer._last_contacts = None
+        layer._last_contact_state = None
+        layer._last_contact_observables = None
 
         # Contact disks (for contact mode color-coding)
         layer._contact_disk_mesh: str | None = None
@@ -786,6 +837,7 @@ class ViewerBase(ABC):
         # Scaling parameters for the contact visualization
         # Note: contact_viz_scale is relative to the smaller shape in each contact pair.
         layer.contact_viz_scale = 1.0
+        layer.contact_normal_scale = 1.0
         layer.contact_force_scale = 0.5  # Length of contact force arrows, w.r.t. contact normal arrows
         layer._contact_viz_scale_default = layer.contact_viz_scale
         layer._contact_force_scale_default = layer.contact_force_scale
@@ -843,6 +895,81 @@ class ViewerBase(ABC):
     def _init_extra_layer_state(self, layer: Layer) -> None:
         """Hook for backends to initialize additional per-layer attributes."""
         return
+
+    def set_control(self, control: newton.Control | None) -> None:
+        """Set the Control inspected in the active viewer layer.
+
+        .. experimental::
+            ``set_control`` may change without the normal deprecation period.
+
+        Call after :meth:`set_model`. Retains a reference without copying arrays
+        or changing other inspected components. Clearing or replacing the Model
+        clears this reference. ViewerGL exposes the inputs in its inspector;
+        other backends retain the reference without adding a GUI.
+
+        Args:
+            control: Application-owned inputs, or None to clear them. Supported
+                inputs are editable while running or paused at the live frame.
+
+        Raises:
+            RuntimeError: No model has been set.
+        """
+        self._set_inspection_component("control", control)
+
+    def set_solver(self, solver: SolverBase | None) -> None:
+        """Set the solver inspected in the active viewer layer.
+
+        .. experimental::
+            ``set_solver`` may change without the normal deprecation period.
+
+        Call after :meth:`set_model`. Retains a reference for ViewerGL settings
+        and resource inspection; the application still owns and steps the solver.
+        Other components are unchanged. Clearing or replacing the Model clears
+        this reference. Other backends retain it without adding a GUI.
+
+        Args:
+            solver: Solver using the active Model, or None to clear it.
+
+        Raises:
+            RuntimeError: No model has been set.
+            ValueError: The solver uses another model.
+        """
+        self._set_inspection_component("solver", solver)
+
+    def set_collision_pipeline(self, pipeline: newton.CollisionPipeline | None) -> None:
+        """Set the collision pipeline inspected in the active viewer layer.
+
+        .. experimental::
+            ``set_collision_pipeline`` may change without the normal deprecation period.
+
+        Call after :meth:`set_model`. Retains a reference for ViewerGL broadphase
+        and narrowphase inspection without running collision detection. Supply
+        the resulting contact buffer through :meth:`log_contacts`. Other
+        components are unchanged. Clearing or replacing the Model clears this
+        reference. Other backends retain it without adding a GUI.
+
+        Args:
+            pipeline: Pipeline using the active Model, or None to clear it.
+
+        Raises:
+            RuntimeError: No model has been set.
+            ValueError: The pipeline uses another model.
+        """
+        self._set_inspection_component("collision_pipeline", pipeline)
+
+    def _set_inspection_component(self, name: str, component: object | None) -> None:
+        """Replace one layer-owned reference and invalidate inspection discovery.
+
+        An explicit None suppresses conventional example discovery for that
+        component. Replace the mapping so cached inspection bindings retain their old
+        references and can detect when solver or pipeline resources change.
+        """
+        if self.model is None:
+            raise RuntimeError("Call set_model() before setting inspection components.")
+        if name in ("solver", "collision_pipeline") and component is not None and component.model is not self.model:
+            raise ValueError(f"{name} must belong to the viewer's active model")
+        if name not in self._inspection_components or self._inspection_components[name] is not component:
+            self._inspection_components = {**self._inspection_components, name: component}
 
     def set_model(self, model: newton.Model | None):
         """Set the model to be visualized.
@@ -923,7 +1050,7 @@ class ViewerBase(ABC):
             return self.model.world_count
         return len(self._visible_worlds)
 
-    def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
+    def set_visible_worlds(self, worlds: Sequence[int] | None, *, reflow: bool = True) -> None:
         """Set which worlds are rendered.
 
         Only shapes, joints, contacts, and other visualization elements
@@ -935,6 +1062,9 @@ class ViewerBase(ABC):
 
         Args:
             worlds: Sequence of world indices to render, or ``None`` for all.
+            reflow: Recompute a compact layout for visible worlds. If False,
+                retain every world's existing offset, including hidden worlds,
+                so visibility changes do not move the scene.
 
         Raises:
             RuntimeError: If the model has not been set yet.
@@ -949,10 +1079,11 @@ class ViewerBase(ABC):
             self._visible_worlds = None
         self._build_visible_worlds_mask()
         self._rebuild_shapes()
-        if self._user_spacing is not None:
-            self.set_world_offsets(self._user_spacing)
-        else:
-            self._auto_compute_world_offsets()
+        if reflow:
+            if self._user_spacing is not None:
+                self.set_world_offsets(self._user_spacing)
+            else:
+                self._auto_compute_world_offsets()
         self.model_changed = True
 
     def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
@@ -1090,7 +1221,9 @@ class ViewerBase(ABC):
         """Set world offsets for visual separation of multiple worlds.
 
         When :meth:`set_visible_worlds` restricts rendering to a subset, only
-        the visible worlds receive compact grid positions.
+        the visible worlds receive compact grid positions. Hidden worlds get
+        separate positions beside that grid, so revealing them without reflow
+        does not overlap existing worlds.
 
         Args:
             spacing: Spacing between worlds along each axis as a tuple, list, or wp.vec3.
@@ -1124,6 +1257,17 @@ class ViewerBase(ABC):
             for grid_idx, world_idx in enumerate(sorted(self._visible_worlds)):
                 if world_idx < self.model.world_count and grid_idx < len(compact_offsets):
                     full_offsets[world_idx] = compact_offsets[grid_idx]
+            hidden = sorted(set(range(self.model.world_count)) - self._visible_worlds)
+            hidden_offsets = compute_world_offsets(len(hidden), spacing, up_axis)
+            axes = np.flatnonzero(spacing)
+            if hidden and render_count and len(axes):
+                # Reserve a disjoint grid for hidden worlds without changing
+                # the compact layout promised by set_visible_worlds().
+                axis = axes[0]
+                hidden_offsets[:, axis] += (
+                    compact_offsets[:, axis].max() + abs(spacing[axis]) - hidden_offsets[:, axis].min()
+                )
+            full_offsets[hidden] = hidden_offsets
 
         # Convert to warp array
         self.world_offsets = wp.array(full_offsets, dtype=wp.vec3, device=self.device)
@@ -1510,6 +1654,10 @@ class ViewerBase(ABC):
         self._log_joints(state)
         self._log_com(state)
 
+    def _get_contact_shape_mask(self) -> wp.array[int] | None:
+        """Return the backend's selected-shape mask, or show contacts from every shape."""
+        return None
+
     def log_contacts(
         self,
         contacts: newton.Contacts,
@@ -1537,6 +1685,15 @@ class ViewerBase(ABC):
         all enabled (default) the master flag behaves exactly like the
         previous single-layer ``"Show Contacts"`` checkbox.
 
+        With :attr:`show_contact_pairs` enabled, mode disks mark both bodies'
+        contact points. :attr:`show_contact_lines` connects these points with a
+        yellow line. Normal and force arrows remain one per contact.
+
+        Mode colors distinguish unloaded (gray), loaded sticking (green),
+        loaded sliding (blue), and unavailable force data (amber). ViewerGL
+        draws unloaded contacts as hollow rings and unavailable modes as
+        dashed rings; only measured loaded contacts have filled disks.
+
         Args:
             contacts: The contacts to render.
             state: The state in whose body frames the contact points are expressed.
@@ -1554,8 +1711,14 @@ class ViewerBase(ABC):
                     The solver observable API may change without prior notice.
         """
 
+        # Retain references for on-demand inspection, including hidden glyphs.
+        # This does not read or copy any device buffers.
+        self._last_contacts = contacts
+        self._last_contact_state = state
+        self._last_contact_observables = observables
         if not self.show_contacts or self._layer_force_hidden():
             self.log_arrows(self._qualify("/contacts/normals"), None, None, None)
+            self.log_lines(self._qualify("/contacts/witnesses"), None, None, None)
             if self._contact_disk_mesh is not None:
                 self.log_instances(
                     self._qualify("/contacts/modes"), self._contact_disk_mesh, None, None, None, None, hidden=True
@@ -1579,6 +1742,7 @@ class ViewerBase(ABC):
 
         if max_contacts == 0:
             self.log_arrows(self._qualify("/contacts/normals"), None, None, None)
+            self.log_lines(self._qualify("/contacts/witnesses"), None, None, None)
             if self._contact_disk_mesh is not None:
                 self.log_instances(
                     self._qualify("/contacts/modes"), self._contact_disk_mesh, None, None, None, None, hidden=True
@@ -1589,12 +1753,19 @@ class ViewerBase(ABC):
         # Base glyph size as a multiplier of the smaller shape's collision
         # radius. Disks and force arrows preserve their existing proportions.
         contact_scale = 0.5 * float(self.contact_viz_scale)
+        # Mask glyphs in place: inspector labels and selection rings use the
+        # original contact slots, including when the simulation reorders them.
+        contact_shape_mask = self._get_contact_shape_mask()
+        sides = 2 if self.show_contact_pairs else 1
+        max_glyphs = sides * max_contacts
 
         # ---- Contact-normal arrows -------------------------------
-        if self.show_contact_normals:
+        connect_points = self.show_contact_pairs and self.show_contact_lines
+        if self.show_contact_normals or connect_points:
             if self._contact_points0 is None or len(self._contact_points0) < max_contacts:
                 self._contact_points0 = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
                 self._contact_points1 = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
+                self._contact_opposing_points = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
 
             from .kernels import compute_contact_lines  # noqa: PLC0415
 
@@ -1609,22 +1780,26 @@ class ViewerBase(ABC):
                     self.world_offsets,
                     self.layer.xform,
                     self._visible_worlds_mask,
+                    contact_shape_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
                     contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
                     contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_offset1,
                     contacts.rigid_contact_normal,
-                    contact_scale,
+                    contact_scale * float(self.contact_normal_scale),
                 ],
                 outputs=[
                     self._contact_points0,  # line start points
                     self._contact_points1,  # line end points
+                    self._contact_opposing_points,
                 ],
                 device=self.device,
             )
 
-            if num_contacts > 0:
+            if num_contacts > 0 and self.show_contact_normals:
                 self.log_arrows(
                     self._qualify("/contacts/normals"),
                     self._contact_points0[:num_contacts],
@@ -1636,6 +1811,16 @@ class ViewerBase(ABC):
         else:
             self.log_arrows(self._qualify("/contacts/normals"), None, None, None)
 
+        if connect_points and num_contacts:
+            self.log_lines(
+                self._qualify("/contacts/witnesses"),
+                self._contact_points0[:num_contacts],
+                self._contact_opposing_points[:num_contacts],
+                (1.0, 0.86, 0.12),
+            )
+        else:
+            self.log_lines(self._qualify("/contacts/witnesses"), None, None, None)
+
         # ---- Contact mode disks ----------------------------------
         if self.show_contact_disks:
             if self._contact_disk_mesh is None:
@@ -1645,16 +1830,16 @@ class ViewerBase(ABC):
                     int(newton.GeoType.CYLINDER), (1.0, 1.0), 0.0, True, geo_src=None
                 )
 
-            if self._contact_disk_xforms is None or len(self._contact_disk_xforms) < max_contacts:
-                self._contact_disk_xforms = wp.zeros(max_contacts, dtype=wp.transform, device=self.device)
-                self._contact_disk_scales = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
-                self._contact_disk_colors = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
+            if self._contact_disk_xforms is None or len(self._contact_disk_xforms) < max_glyphs:
+                self._contact_disk_xforms = wp.zeros(max_glyphs, dtype=wp.transform, device=self.device)
+                self._contact_disk_scales = wp.zeros(max_glyphs, dtype=wp.vec3, device=self.device)
+                self._contact_disk_colors = wp.zeros(max_glyphs, dtype=wp.vec3, device=self.device)
 
-            from .kernels import compute_contact_disk_transforms  # noqa: PLC0415
+            from .kernels import _CONTACT_MODE_COLORS, compute_contact_disk_transforms  # noqa: PLC0415
 
             wp.launch(
                 kernel=compute_contact_disk_transforms,
-                dim=max_contacts,
+                dim=max_glyphs,
                 inputs=[
                     state.body_q,
                     state.body_qd,
@@ -1665,6 +1850,7 @@ class ViewerBase(ABC):
                     self.world_offsets,
                     self.layer.xform,
                     self._visible_worlds_mask,
+                    contact_shape_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
@@ -1678,10 +1864,11 @@ class ViewerBase(ABC):
                     contact_scale * 0.004,  # cylinder half-height
                     float(self.contact_mode_eps_force),
                     float(self.contact_mode_eps_velocity),
-                    wp.vec3(0.1, 0.1, 0.1),  # open: black
-                    wp.vec3(0.6, 0.6, 0.6),  # stick: light gray
-                    wp.vec3(0.2, 0.2, 0.9),  # slip: blue
-                    wp.vec3(0.95, 0.7, 0.3),  # unknown: amber
+                    wp.vec3(*_CONTACT_MODE_COLORS["open"]),
+                    wp.vec3(*_CONTACT_MODE_COLORS["stick"]),
+                    wp.vec3(*_CONTACT_MODE_COLORS["slip"]),
+                    wp.vec3(*_CONTACT_MODE_COLORS["unknown"]),
+                    self.show_contact_pairs,
                 ],
                 outputs=[self._contact_disk_xforms, self._contact_disk_scales, self._contact_disk_colors],
                 device=self.device,
@@ -1690,9 +1877,11 @@ class ViewerBase(ABC):
             self.log_instances(
                 self._qualify("/contacts/modes"),
                 self._contact_disk_mesh,
-                self._contact_disk_xforms[:max_contacts],
-                self._contact_disk_scales[:max_contacts],
-                self._contact_disk_colors[:max_contacts],
+                # Keep capacity stable for backends that retain instanced
+                # meshes. The kernel gives unused slots zero scale.
+                self._contact_disk_xforms[:max_glyphs],
+                self._contact_disk_scales[:max_glyphs],
+                self._contact_disk_colors[:max_glyphs],
                 None,
                 hidden=False,
             )
@@ -1720,6 +1909,7 @@ class ViewerBase(ABC):
                     self.world_offsets,
                     self.layer.xform,
                     self._visible_worlds_mask,
+                    contact_shape_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
@@ -2293,6 +2483,8 @@ class ViewerBase(ABC):
             vertex_data: ``(N, 6)`` float32 array of interleaved ``[px,py,pz, cr,cg,cb]``
                 line-segment vertices (pairs).  Pass ``None`` to keep existing
                 geometry and only update the transform.
+                An ``(N, 12)`` array may append the two adjacent face normals
+                to enable silhouette-aware offset envelopes in X-ray mode.
             world_matrix: 4x4 float32 model-to-world matrix, or ``None`` to
                 keep the current matrix.
             hidden: Whether the wireframe shape should be hidden.
@@ -2658,7 +2850,11 @@ class ViewerBase(ABC):
                     if not len(indices):
                         continue
                     transforms = shapes.world_xforms.numpy()[visible]
-                    if shapes._local_bounds is not None:
+                    displayed_bounds = self._get_shape_framing_bounds(shapes)
+                    if displayed_bounds is not None:
+                        lo, hi = (bound[visible] for bound in displayed_bounds)
+                        points = lo[:, None, :] + corners * (hi - lo)[:, None, :]
+                    elif shapes._local_bounds is not None:
                         lo, hi = shapes._local_bounds
                         points = (lo + corners * (hi - lo))[None] * shapes.scales.numpy()[visible, None, :]
                     else:
@@ -2713,20 +2909,8 @@ class ViewerBase(ABC):
                         # Match the spheres used by ViewerGL.log_gaussian().
                         include(points, np.abs(np.mean(gaussian.scales[indices], axis=1))[:, None])
 
-            groups = layer._triangle_appearance_groups or []
-            if model.particle_count and (layer.show_particles or (layer.show_triangles and groups)):
-                points = state.particle_q.numpy()
-                matrix = transform_to_matrix(layer.xform)
-                points = points @ matrix[:3, :3].T + matrix[:3, 3]
-                if layer.show_triangles:
-                    for _, indices, _, opacity in groups:
-                        if opacity > 0.0:
-                            include(points[indices.numpy().reshape(-1)])
-                if layer.show_particles:
-                    active = np.ones(model.particle_count, dtype=bool)
-                    if model.particle_flags is not None:
-                        active = (model.particle_flags.numpy() & int(newton.ParticleFlags.ACTIVE)) != 0
-                    include(points[active], model.particle_radius.numpy()[active, None])
+            for points, radii in self._get_deformable_framing_points(layer, state):
+                include(points, radii)
 
             if layer.show_deformable_visual_meshes:
                 for mesh in model.deformable_visual_meshes:
@@ -2736,6 +2920,39 @@ class ViewerBase(ABC):
                         include(scratch[0].numpy())
 
         return (lower, upper) if np.isfinite(lower).all() else None
+
+    def _get_shape_framing_bounds(self, shapes: ViewerBase.ShapeInstances) -> tuple[np.ndarray, np.ndarray] | None:
+        """Return displayed per-instance local bounds, or use the model bounds.
+
+        Backends can account for geometry displayed in different units from
+        the collision model. Bounds include instance scale but exclude pose.
+        """
+        return None
+
+    def _get_deformable_framing_points(
+        self, layer: Layer, state: newton.State
+    ) -> Iterator[tuple[np.ndarray, np.ndarray | float]]:
+        """Yield displayed particle/surface points and radii for on-demand camera bounds.
+
+        Backends with additional display transforms or visibility filtering
+        override this hook. Host reads occur only when framing, not per frame.
+        """
+        model = layer.model
+        groups = layer._triangle_appearance_groups or []
+        if not model.particle_count or not (layer.show_particles or (layer.show_triangles and groups)):
+            return
+        points = state.particle_q.numpy()
+        matrix = transform_to_matrix(layer.xform)
+        points = points @ matrix[:3, :3].T + matrix[:3, 3]
+        if layer.show_triangles:
+            for _, indices, _, opacity in groups:
+                if opacity > 0.0:
+                    yield points[indices.numpy().reshape(-1)], 0.0
+        if layer.show_particles:
+            active = np.ones(model.particle_count, dtype=bool)
+            if model.particle_flags is not None:
+                active = (model.particle_flags.numpy() & int(newton.ParticleFlags.ACTIVE)) != 0
+            yield points[active], model.particle_radius.numpy()[active, None]
 
     def _should_show_shape(
         self, flags: int, is_static: bool, geo_type: int | None = None, *, layer: Layer | None = None
@@ -3005,7 +3222,7 @@ class ViewerBase(ABC):
         # loop over shapes
         for s in range(shape_count):
             # skip shapes from non-visible worlds and variant rows
-            if not self._should_render_world(shape_world[s]) or variant_row[s]:
+            if not self._should_render_world(int(shape_world[s])) or variant_row[s]:
                 continue
 
             geo_type = shape_geo_type[s]
@@ -3223,11 +3440,18 @@ class ViewerBase(ABC):
         self.model_shape_color = packed["colors"][0] if total_instances else None
         self.model_shape_opacity = packed["opacities"][0] if total_instances else None
 
+        shape_to_batch = [None] * len(self._shape_to_batch)
         for b_idx, batch in enumerate(batches):
             lo, hi = offsets[b_idx], offsets[b_idx + 1]
             for name, (values, kind) in packed.items():
                 setattr(batch, name, values[lo:hi] if hi > lo else empty[kind])
             batch.model_shapes = all_instances["model_shapes"][lo:hi]
+            # Variant rows may move between batches or become empty. Consumers
+            # such as selection outlines must follow the displayed instances.
+            for shape in batch.model_shapes:
+                shape_to_batch[shape] = batch
+
+        self._shape_to_batch = shape_to_batch
 
         slot_to_shape = all_instances["model_shapes"].astype(np.int32)
         shape_to_slot = np.full(len(self._shape_to_batch), -1, dtype=np.int32)
@@ -3295,7 +3519,7 @@ class ViewerBase(ABC):
 
         for s in range(shape_count):
             # skip shapes from non-visible worlds; variant rows follow their variant shapes
-            if not self._should_render_world(shape_world[s]) or variant_row[s]:
+            if not self._should_render_world(int(shape_world[s])) or variant_row[s]:
                 continue
 
             # Only process collision shapes with texture SDFs
@@ -3488,29 +3712,34 @@ class ViewerBase(ABC):
             color: RGB colour tuple applied to every vertex.
 
         Returns:
-            ``(E*2, 6)`` float32 array — pairs of ``[px, py, pz, cr, cg, cb]``.
+            ``(E*2, 12)`` float32 positions, colors, and adjacent face normals.
         """
         verts = np.asarray(mesh.vertices, dtype=np.float32).reshape(-1, 3)
         indices = np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3)
 
-        edge_set: set[tuple[int, int]] = set()
-        for tri in indices:
-            i0, i1, i2 = int(tri[0]), int(tri[1]), int(tri[2])
-            edge_set.add((min(i0, i1), max(i0, i1)))
-            edge_set.add((min(i1, i2), max(i1, i2)))
-            edge_set.add((min(i2, i0), max(i2, i0)))
-
-        num_edges = len(edge_set)
-        data = np.empty((num_edges * 2, 6), dtype=np.float32)
-        cr, cg, cb = color
-        idx = 0
-        for a, b in edge_set:
-            pa = verts[a]
-            pb = verts[b]
-            data[idx] = [pa[0], pa[1], pa[2], cr, cg, cb]
-            data[idx + 1] = [pb[0], pb[1], pb[2], cr, cg, cb]
-            idx += 2
-        return data
+        # Offset isosurfaces can duplicate vertices at triangle boundaries.
+        # Weld coincident positions for adjacency without changing the mesh.
+        verts, remap = np.unique(verts, axis=0, return_inverse=True)
+        indices = remap[indices]
+        # Adjacent face normals let the GPU emphasize silhouettes without any
+        # camera-dependent mesh rebuilds or additional device readbacks.
+        edges = np.sort(np.concatenate((indices[:, :2], indices[:, 1:], indices[:, ::2])), axis=1)
+        unique, first, inverse, counts = np.unique(
+            edges, axis=0, return_index=True, return_inverse=True, return_counts=True
+        )
+        last = np.zeros(len(unique), dtype=int)
+        np.maximum.at(last, inverse, np.arange(len(edges)))
+        normals = np.cross(verts[indices[:, 1]] - verts[indices[:, 0]], verts[indices[:, 2]] - verts[indices[:, 0]])
+        normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
+        n0 = normals[first % len(indices)]
+        n1 = normals[last % len(indices)]
+        n1[counts == 1] = -n0[counts == 1]
+        data = np.empty((len(unique), 2, 12), dtype=np.float32)
+        data[:, :, :3] = verts[unique]
+        data[:, :, 3:6] = color
+        data[:, :, 6:9] = n0[:, None, :]
+        data[:, :, 9:12] = n1[:, None, :]
+        return data.reshape(-1, 12)
 
     def _populate_sdf_margin_edges(
         self,
@@ -3525,9 +3754,9 @@ class ViewerBase(ABC):
             return
 
         if mode == self.SDFMarginMode.MARGIN:
-            color_rgb = (1.0, 0.9, 0.0)
+            color_rgb = (0.25, 0.85, 1.0)  # cyan margin
         else:
-            color_rgb = (1.0, 0.5, 0.0)
+            color_rgb = (0.72, 0.55, 1.0)  # violet margin + gap; orange remains selection
 
         shape_body = self.model.shape_body.numpy()
         shape_flags = self.model.shape_flags.numpy()
@@ -3543,8 +3772,6 @@ class ViewerBase(ABC):
         held = self.model._shape_variant_shape.numpy() if variant_rows is not None else None
         sources = self.model._shape_current_sources() if variant_rows is not None else None
         for s in range(shape_count):
-            if not self._should_render_world(shape_world[s]):
-                continue
             if not (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)):
                 continue
             if variant_rows is not None and variant_rows[s] and held[s] < 0:
@@ -3641,7 +3868,7 @@ class ViewerBase(ABC):
                 world_mat[13] += offsets_np[world_idx][1]
                 world_mat[14] += offsets_np[world_idx][2]
             world_mat = (layer_mat_np @ world_mat.reshape(4, 4, order="F")).ravel(order="F")
-            self.log_wireframe_shape(name, None, world_mat, hidden=False)
+            self.log_wireframe_shape(name, None, world_mat, hidden=not self._should_render_world(world_idx))
 
     def _log_joints(self, state: newton.State):
         """

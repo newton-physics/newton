@@ -1,6 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from types import ModuleType
+    from typing import Any
+
 import ast
 import copy
 import gc
@@ -349,10 +358,12 @@ class _ExampleBrowser:
     def __init__(self, viewer, args=None):
         self.viewer = viewer
         self.switch_target: str | None = None
+        self.current_module: str | None = None
+        self.load_error: str | None = None
+        self.error_title = "Could not load example"
+        self.failed_target: str | None = None
         self._reset_requested = False
         self.callback = None
-        self.load_error: str | None = None
-        self.failed_target: str | None = None
         self._tree: dict[str, list[tuple[str, str]]] = {}
         # Deep-copy so later mutations to the caller's namespace (or to
         # nested mutable fields like ``args.warp_config``) do not change
@@ -382,18 +393,21 @@ class _ExampleBrowser:
             return
 
         def _browser_ui(imgui):
-            self._error_ui(imgui)
+            self.draw_load_error(imgui)
             imgui.set_next_item_open(False, imgui.Cond_.appearing)
             if imgui.collapsing_header("Examples"):
                 for category in sorted(self._tree.keys()):
                     if imgui.tree_node(category):
                         for name, module_path in self._tree[category]:
-                            clicked, _ = imgui.selectable(name, False)
+                            clicked, _ = imgui.selectable(name, module_path == self.current_module)
                             if clicked:
                                 self.switch_target = module_path
                         imgui.tree_pop()
 
         self.callback = _browser_ui
+        gui = getattr(viewer, "gui", None)
+        if gui is not None and hasattr(gui, "_workspace_example"):
+            gui._workspace_browser = self
         viewer.register_ui_callback(_browser_ui, position="panel")
         if hasattr(viewer, "set_reset_callback"):
             viewer.set_reset_callback(lambda: setattr(self, "_reset_requested", True))
@@ -415,6 +429,12 @@ class _ExampleBrowser:
         """Re-register the example's GUI callback (panel callbacks survive clear_model)."""
         if hasattr(example, "gui") and hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
+
+    def draw_load_error(self, imgui: ModuleType) -> None:
+        """Show the browser error inside the workspace without duplicating retry logic."""
+        if self.load_error is not None:
+            imgui.text_colored(imgui.ImVec4(1.0, 0.55, 0.45, 1.0), self.error_title)
+            self._error_ui(imgui)
 
     def _show_splash(self, text):
         # Raise the splash and pump a couple of frames so it actually paints
@@ -438,75 +458,91 @@ class _ExampleBrowser:
             self.viewer.clear_model()
         # Each example starts with picking enabled and may opt out in its constructor.
         self.viewer.picking_enabled = True
-        # Clear callback references before collecting cycles, so old resources
-        # cannot be destroyed during the next constructor's CUDA graph capture.
+        # Drop callback-owned cycles before a new constructor starts graph capture.
         gc.collect()
 
     def report_error(self, error: BaseException, module_path: str, *, phase: str, retry_switch: bool = False) -> None:
-        """Report the original failure and discard the partial scene, keeping the browser."""
-        # runpy launches CLI examples as __main__, but retains their module spec.
+        """Discard a failed scene, preserving preferences and an actionable retry."""
+        # runpy launches CLI examples as __main__, but retains their importable module spec.
         module = sys.modules.get(module_path)
         module_path = getattr(getattr(module, "__spec__", None), "name", None) or module_path
         logger.error("Failed to %s example %s", phase, module_path, exc_info=(type(error), error, error.__traceback__))
-        self.load_error = f"Failed to {phase} {module_path}:\n{type(error).__name__}: {error}"
+        self.current_module = None
         self.failed_target = module_path if retry_switch else None
+        self.error_title = "Example stopped" if phase == "run" else f"Could not {phase} example"
+        self.load_error = f"{module_path.rsplit('.', 1)[-1]}\n{type(error).__name__}: {error}"
         try:
-            self._clear_viewer_scene()
+            with self.viewer._preserve_display_options():
+                self._clear_viewer_scene()
         finally:
+            # Set these after preference restoration, which also retains the
+            # user's playback choice on successful switches and resets.
+            if hasattr(self.viewer, "_paused"):
+                self.viewer._paused = True
+            if hasattr(self.viewer, "_step_requested"):
+                self.viewer._step_requested = False
             self._hide_splash()
 
     def switch(self, example_class):
-        """Return (new_example, new_class), or (None, example_class) on failure.
+        """Return the new example and class, or retain the class after a failed load.
 
-        The caller must drop its reference to the old example before switching.
+        The caller must release its old example before entering this method.
         """
         module_path, self.switch_target = self.switch_target, None
         self._reset_requested = False
         self.load_error = self.failed_target = None
+        logger.info("Loading example %s", module_path.rsplit(".", 1)[-1])
         try:
-            self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1]}...")
-            with self.viewer._preserve_display_options(switching=True):
-                self._clear_viewer_scene()
-                try:
+            self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1].removeprefix('example_')}...")
+            try:
+                with self.viewer._preserve_display_options(switching=True):
+                    self._clear_viewer_scene()
+                    self.current_module = None
+                    camera_revision = getattr(self.viewer, "_camera_revision", 0)
                     mod = importlib.import_module(module_path)
                     parser = getattr(mod.Example, "create_parser", create_parser)()
                     new_args = default_args(parser)
-                    # Snapshot before the constructor can mutate the namespace.
+                    # Constructors may mutate their argument namespace.
                     initial_args = copy.deepcopy(new_args)
                     example = mod.Example(self.viewer, new_args)
                     self._register_ui(example)
-                except (Exception, SystemExit) as error:
-                    self.report_error(error, module_path, phase="load", retry_switch=True)
-                    return None, example_class
+            except (Exception, SystemExit) as error:
+                self.report_error(error, module_path, phase="load", retry_switch=True)
+                return None, example_class
             self._initial_args = initial_args
+            self.current_module = module_path
+            gui = getattr(self.viewer, "gui", None)
+            if gui is not None and hasattr(gui, "_frame_camera_pending"):
+                # Retain authored cameras; fit other models after the first state.
+                gui._frame_camera_pending = camera_revision == getattr(self.viewer, "_camera_revision", 0)
+            logger.info("Loaded example %s", module_path.rsplit(".", 1)[-1])
             return example, type(example)
         finally:
             self._hide_splash()
 
     def reset(self, example_class):
-        """Reset the current example by re-creating it. Returns the new example or None.
-
-        The caller must drop its reference to the old example before calling
-        this method.
-        """
+        """Re-create the example after its caller releases the previous instance."""
         self._reset_requested = False
         self.load_error = self.failed_target = None
+        module_path = self.current_module or example_class.__module__
+        logger.info("Resetting example %s", module_path.rsplit(".", 1)[-1])
         try:
-            self._show_splash("Resetting...")
-            with self.viewer._preserve_display_options():
-                self._clear_viewer_scene()
-                try:
+            self._show_splash(f"Resetting {module_path.rsplit('.', 1)[-1].removeprefix('example_')}...")
+            try:
+                with self.viewer._preserve_display_options():
+                    self._clear_viewer_scene()
+                    self.current_module = None
                     if self._initial_args is not None:
-                        # Keep the user's CLI args, including nested mutable fields.
                         args = copy.deepcopy(self._initial_args)
                     else:
                         parser = getattr(example_class, "create_parser", create_parser)()
                         args = default_args(parser)
                     new_example = example_class(self.viewer, args)
                     self._register_ui(new_example)
-                except (Exception, SystemExit) as error:
-                    self.report_error(error, example_class.__module__, phase="reset")
-                    return None
+            except (Exception, SystemExit) as error:
+                self.report_error(error, module_path, phase="reset")
+                return None
+            self.current_module = module_path
             return new_example
         finally:
             self._hide_splash()
@@ -620,7 +656,7 @@ def run(example, args):
             continue
 
         if browser is not None and browser._reset_requested:
-            # Scene cleanup drops callbacks and collects cycles before construction.
+            # Scene cleanup releases callbacks and cycles before construction.
             example = None
             example = browser.reset(example_class)
             continue
@@ -632,20 +668,30 @@ def run(example, args):
             continue
 
         try:
-            if viewer.should_step():
+            gui = getattr(viewer, "gui", None)
+            if gui is not None and hasattr(gui, "_workspace_example"):
+                gui._workspace_example = example
+            workspace = getattr(gui, "workspace", None)
+            if workspace is not None:
+                workspace.bind(example)
+            if viewer.should_step() and (workspace is None or workspace.before_step()):
                 with wp.ScopedTimer("step", active=False):
                     example.step()
             if test_post_step:
                 example.test_post_step()
 
             with wp.ScopedTimer("render", active=False):
-                example.render()
+                if workspace is None:
+                    example.render()
+                else:
+                    workspace.render_example()
         except (Exception, SystemExit) as error:
             if browser is None:
+                # Test/benchmark failures must still propagate to the caller.
                 raise
+            module_path = browser.current_module or example_class.__module__
             example = None
-            with viewer._preserve_display_options():
-                browser.report_error(error, example_class.__module__, phase="run")
+            browser.report_error(error, module_path, phase="run")
 
         _throttle_render_fps(frame_start_time, render_fps)
 
@@ -1027,7 +1073,12 @@ def init(parser=None):
         raise ValueError(f"Invalid viewer: {args.viewer}")
 
     if visible_gl:
-        viewer.show_loading_splash("Loading...")
+        # The example runner uses a module name as argv[0]; direct invocation
+        # uses a filename. Both should identify the example during startup.
+        name = os.path.basename(sys.argv[0]).removesuffix(".py").rsplit(".", 1)[-1]
+        viewer.show_loading_splash(
+            f"Loading {name.removeprefix('example_')}..." if name.startswith("example_") else "Loading..."
+        )
         # Pump a few frames so the OS maps the GL surface before kernel
         # compilation blocks the main thread.  No portable "window is on
         # screen" signal exists across X11/Wayland/macOS; three frames is
@@ -1040,7 +1091,7 @@ def init(parser=None):
     return viewer, args
 
 
-def create_collision_pipeline(model, args=None, broad_phase=None, **kwargs):
+def create_collision_pipeline(model, args=None, broad_phase=None, **kwargs: Any):
     """Create a collision pipeline, optionally using --broad-phase from args.
 
     Args:

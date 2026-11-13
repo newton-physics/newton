@@ -141,8 +141,16 @@ class Example:
             self.model,
             iterations=self.sim_iterations,
         )
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
+        # Contacts belong to the collision input poses, before the solver's
+        # positional corrections. Keep those poses for accurate witness points.
+        self.contact_state = newton.State()
+        self.contact_state.body_q = wp.clone(self.state_0.body_q)
+        self.contact_state.body_qd = wp.clone(self.state_0.body_qd)
         self.control = self.model.control()
 
         self.viewer.set_model(self.model)
@@ -170,12 +178,17 @@ class Example:
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.collision_pipeline.collide(self.state_0, self.contacts)
+            last_substep = substep == self.sim_substeps - 1
+            if last_substep:
+                wp.copy(self.contact_state.body_q, self.state_0.body_q)
+                wp.copy(self.contact_state.body_qd, self.state_0.body_qd)
             self.solver.step(
                 self.state_0,
                 self.state_1,
                 self.control,
                 self.contacts,
                 self.sim_dt,
+                observables=self.solver_observables if last_substep else None,
             )
             # With an odd substep count, copy instead of swapping on the last
             # substep so every CUDA graph replay starts from state_0.
@@ -196,6 +209,7 @@ class Example:
         """Render the current simulation state."""
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.contact_state, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_final(self):
@@ -207,6 +221,8 @@ class Example:
             raise ValueError("Cable state contains non-finite values.")
         if np.max(np.abs(body_q[body_indices, :3])) >= 10.0:
             raise ValueError("Cable body positions exceeded the example bounds.")
+        if not np.isfinite(self.solver_observables.contact_f.numpy()).all():
+            raise ValueError("Cable contact forces contain non-finite values.")
 
 
 if __name__ == "__main__":
