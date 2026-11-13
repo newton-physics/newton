@@ -20,7 +20,7 @@ from newton.solvers import (
     SolverXPBD,
 )
 from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledADMM, SolverCoupledProxy
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices
 
 SCALES = (1.0, 0.5, 0.0, -1.0)
 INERTIA = wp.mat33(np.eye(3) * 0.01)
@@ -397,6 +397,7 @@ for device in get_test_devices():
     for name, (solver_fn, mujoco) in supported_solvers.items():
         if name == "mujoco_cpu" and device.is_cuda:
             continue
+        requires = MUJOCO_MODULES if mujoco else ()
         add_function_test(
             TestBodyGravityScaleSolvers,
             f"test_free_fall_{name}",
@@ -405,6 +406,7 @@ for device in get_test_devices():
             solver_fn=solver_fn,
             scene=free_body_scenes[name],
             mujoco=mujoco,
+            requires=requires,
         )
         if name == "mujoco_warp_shared":
             continue
@@ -415,6 +417,7 @@ for device in get_test_devices():
             devices=[device],
             solver_fn=solver_fn,
             mujoco=mujoco,
+            requires=requires,
         )
         add_function_test(
             TestBodyGravityScaleSolvers,
@@ -423,6 +426,7 @@ for device in get_test_devices():
             devices=[device],
             solver_fn=solver_fn,
             mujoco=mujoco,
+            requires=requires,
         )
         if device.is_cuda and name in ("featherstone", "steel", "mujoco_warp"):
             add_function_test(
@@ -432,6 +436,7 @@ for device in get_test_devices():
                 devices=[device],
                 solver_fn=solver_fn,
                 mujoco=mujoco,
+                requires=requires,
             )
     for name, solver_fn in unsupported_solvers.items():
         add_function_test(

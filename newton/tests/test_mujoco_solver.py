@@ -15598,6 +15598,7 @@ class TestMuJoCoWithoutBodyForces(unittest.TestCase):
                 np.testing.assert_allclose(states[0].body_qd.numpy()[0], np.zeros(6), atol=1.0e-5)
 
 
+@requires(*MUJOCO_MODULES)
 class TestMuJoCoBodyGravityScale(unittest.TestCase):
     """Per-body gravity scales applied as MuJoCo's native gravity compensation."""
 
