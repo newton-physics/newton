@@ -9715,10 +9715,10 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 self.assertLess(err, 1e-5, f"got={tau_newton}, expected={expected}, err={err:.2e}")
 
 
-@requires(*MUJOCO_MODULES)
 class TestMuJoCoSolverPairProperties(unittest.TestCase):
     """Test contact pair property conversion and runtime updates across multiple worlds."""
 
+    @requires(*MUJOCO_MODULES)
     def test_pair_properties_conversion_and_update(self):
         """
         Test validation of contact pair custom attributes:
@@ -9989,6 +9989,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             np.zeros_like(mujoco_contacts_solver.mjw_model.pair_margin.numpy()),
         )
 
+    @requires(*MUJOCO_MODULES)
     def test_global_pair_exported_to_spec(self):
         """Pairs with pair_world=-1 (global) should be included in the MuJoCo spec.
 

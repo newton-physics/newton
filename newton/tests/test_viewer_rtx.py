@@ -437,7 +437,7 @@ class TestViewerRTXPrimWorldMatrices(unittest.TestCase):
             np.testing.assert_allclose(out.numpy()[row], expected.T, atol=1.0e-5)
 
 
-@requires("ovrtx")
+@requires("ovrtx", "pxr.Usd")
 class TestViewerRTXRenderSettings(unittest.TestCase):
     def test_render_settings_override_render_product_attributes(self):
         """Author typed render settings on the render product, overriding the viewer's defaults."""
@@ -533,7 +533,7 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
         np.testing.assert_array_equal(viewer._capture_screenshot_pixels(), expected)
 
 
-@requires("ovrtx")
+@requires("ovrtx", "ovstage")
 @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
 class TestViewerRTXRendering(unittest.TestCase):
     """Keep real OVRTX renders in one class so class-level parallelism runs them serially."""

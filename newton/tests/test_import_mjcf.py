@@ -419,7 +419,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         self.assertTrue(forced_collision_flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(forced_collision_flags & ShapeFlags.VISIBLE)
 
-    @requires("PIL", *MUJOCO_MODULES)
+    @requires("PIL", "scipy", *MUJOCO_MODULES)
     def test_mujoco_binary_msh_mesh(self):
         """Preserve MSH geometry, normals, and UVs with authored or convex-hull faces."""
         import mujoco
@@ -2070,6 +2070,7 @@ class TestImportMjcfMeshFileCache(unittest.TestCase):
   </worldbody>
 </mujoco>"""
 
+    @requires("PIL")
     def test_mesh_file_loaded_once_per_load_args(self):
         """Verify that each mesh file loads once per distinct set of load arguments."""
         import newton._src.utils.import_mjcf as import_mjcf  # noqa: PLC0415

@@ -532,7 +532,7 @@ class TestImportUsdPhysics(unittest.TestCase):
                     builder.shape_material_restitution[shape_idx], expected[usd_path]["restitution"], places=5
                 )
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "scipy")
     def test_mesh_approximation(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 

@@ -1092,6 +1092,7 @@ class TestDeformableVisualGLTextures(unittest.TestCase):
 
 @requires("pxr.Usd")
 class TestDeformableVisualUSD(unittest.TestCase):
+    @requires("PIL")
     def test_viewer_usd_exports_skinned_mesh_and_textures(self):
         """Export deformed geometry and replacement textures, skipping hidden updates."""
         from PIL import Image

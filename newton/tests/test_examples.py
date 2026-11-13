@@ -1168,7 +1168,7 @@ add_example_test(
     name="ik.example_ik_franka",
     devices=test_devices,
     use_viewer=True,
-    test_options={"requires": ("git",)},
+    test_options={"requires": ("git", "trimesh", "collada")},
 )
 
 add_example_test(
@@ -1837,7 +1837,7 @@ add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_franka_cable_ik_pick_place",
     devices=cuda_test_devices,
-    test_options={"requires": ("git", *MUJOCO_MODULES)},
+    test_options={"requires": ("git", "trimesh", "collada", *MUJOCO_MODULES)},
     use_viewer=True,
 )
 add_example_test(
