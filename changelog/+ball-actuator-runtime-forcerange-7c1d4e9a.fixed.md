@@ -1,0 +1,1 @@
+Update the force range of `SolverMuJoCo` ball-joint actuators from `joint_effort_limit` on `notify_model_changed(JOINT_DOF_FORCE_PROPERTIES)`. Force ranges authored in MJCF are kept, and a zero limit clamps the actuator force to zero.
