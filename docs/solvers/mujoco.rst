@@ -1065,6 +1065,8 @@ all solvers and content already added to the shared builder. Inside
 outside a world, the global/default gravity is changed. A later import
 with ``gravity="enable"`` does not restore the previous gravity vector.
 
+.. _mujoco-sleeping:
+
 Sleeping
 --------
 
