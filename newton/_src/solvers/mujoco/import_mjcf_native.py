@@ -17,7 +17,7 @@ import numpy as np
 import warp as wp
 
 from ...core import quat_between_axes
-from ...core.types import Axis, AxisType, Transform
+from ...core.types import MAXVAL, Axis, AxisType, Transform
 from ...exceptions import NewtonWarning
 from ...geometry import GeoType, Mesh, ShapeFlags
 from ...geometry.types import Heightfield
@@ -36,17 +36,23 @@ from .collision_masks import (
     compile_collision_masks,
     set_mjcf_joint_collision_filter,
 )
-from .constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
-from .enums import EqType
+from .constants import (
+    _DISABLE_FLAGS,
+    _ENABLE_FLAGS,
+    _FLAG_DEFAULTS,
+    SOLREF_MODE_FORCE_SPACE,
+    SOLREF_MODE_MJCF_DEFAULT,
+    SOLREF_MODE_RAW,
+)
+from .enums import CtrlSource, CtrlType, EqType, TrnType, _joint_dof_count, _transmission_types
 from .equality import _add_equality_constraint
-from .mjcf_parameters import (
+from .mjcf_finalize import (
     _finalize_native_actuator_ranges,
     _finalize_native_core_parameters,
     _finalize_native_tendon_spring_lengths,
     _finalize_native_weld_poses,
-    _read_native_parameters,
-    _register_native_attributes,
 )
+from .mjcf_parameters import _read_native_parameters, _register_native_attributes
 from .solver_mujoco import SolverMuJoCo
 from .utils import mjc_add_equality_loop_joint, mjc_add_equality_mimic, mjc_polycoef_has_higher_order
 
@@ -187,7 +193,10 @@ def _add_joints(builder, model, selected, parent, body, local, label, attributes
     first = selected[0]
     kind = int(model.jnt_type[first])
     name = "_".join(
-        sanitize_name(model.joint(j).name or (f"{label.rsplit('/', 1)[-1]}_freejoint" if kind == 0 else f"joint_{j}"))
+        sanitize_name(
+            model.joint(j).name
+            or (f"{label.rsplit('/', 1)[-1]}_freejoint" if kind == mujoco.mjtJoint.mjJNT_FREE else f"joint_{j}")
+        )
         for j in selected
     )
     # Match legacy's shared anchor before reordering scalar DOFs.
@@ -208,6 +217,7 @@ def _add_joints(builder, model, selected, parent, body, local, label, attributes
             stiffness=float(model.jnt_stiffness[first]),
         )
         return joint, {first: builder.joint_qd_start[joint]}
+    canonical_joint_cfg = ModelBuilder.JointDofConfig()
     ordered = sorted(selected, key=lambda j: model.jnt_type[j] != int(mujoco.mjtJoint.mjJNT_SLIDE))
     linear, angular, custom = [], [], {}
     for offset, j in enumerate(ordered):
@@ -231,11 +241,13 @@ def _add_joints(builder, model, selected, parent, body, local, label, attributes
             armature=float(model.dof_armature[d]) * armature_scale,
             friction=float(model.dof_frictionloss[d]),
             actuator_mode=JointTargetMode.NONE,
-            limit_lower=float(model.jnt_range[j, 0] - ref) if model.jnt_limited[j] else -1.0e10,
-            limit_upper=float(model.jnt_range[j, 1] - ref) if model.jnt_limited[j] else 1.0e10,
+            limit_lower=float(model.jnt_range[j, 0] - ref) if model.jnt_limited[j] else -MAXVAL,
+            limit_upper=float(model.jnt_range[j, 1] - ref) if model.jnt_limited[j] else MAXVAL,
             limit_ke=builder.default_joint_cfg.limit_ke,
             limit_kd=builder.default_joint_cfg.limit_kd,
-            effort_limit=float(np.max(np.abs(model.jnt_actfrcrange[j]))) if model.jnt_actfrclimited[j] else 1.0e6,
+            effort_limit=float(np.max(np.abs(model.jnt_actfrcrange[j])))
+            if model.jnt_actfrclimited[j]
+            else canonical_joint_cfg.effort_limit,
         )
         (linear if model.jnt_type[j] == mujoco.mjtJoint.mjJNT_SLIDE else angular).append(axis)
     joint_type = JointType.D6
@@ -320,11 +332,11 @@ def _import_options(builder, spec, attributes):
     builder.custom_attributes["mujoco:enable_sleeping"].values[0] = bool(
         spec.option.enableflags & int(mujoco.mjtEnableBit.mjENBL_SLEEP)
     )
-    for name in SolverMuJoCo._ENABLE_FLAGS:
+    for name in _ENABLE_FLAGS:
         builder.custom_attributes[f"mujoco:flag_{name}"].values[0] = bool(
             spec.option.enableflags & int(getattr(mujoco.mjtEnableBit, f"mjENBL_{name.upper()}"))
         )
-    for name in SolverMuJoCo._DISABLE_FLAGS:
+    for name in _DISABLE_FLAGS:
         builder.custom_attributes[f"mujoco:flag_{name}"].values[0] = not bool(
             spec.option.disableflags & int(getattr(mujoco.mjtDisableBit, f"mjDSBL_{name.upper()}"))
         )
@@ -362,11 +374,13 @@ def _scalar_servo_mode(gain, bias):
 
 
 def _joint_target(builder, model, i, dof, bias, values, pending_damping, *, dof_count=1):
+    import mujoco
+
     gain = model.actuator_gainprm[i]
     if (
-        model.actuator_dyntype[i] != 0
-        or model.actuator_gaintype[i] != 0
-        or model.actuator_biastype[i] != 1
+        model.actuator_dyntype[i] != mujoco.mjtDyn.mjDYN_NONE
+        or model.actuator_gaintype[i] != mujoco.mjtGain.mjGAIN_FIXED
+        or model.actuator_biastype[i] != mujoco.mjtBias.mjBIAS_AFFINE
         or (dof_count == 1 and not np.array_equal(model.actuator_gear[i], [1, 0, 0, 0, 0, 0]))
     ):
         return
@@ -403,10 +417,8 @@ def _joint_target(builder, model, i, dof, bias, values, pending_damping, *, dof_
         builder.joint_target_mode[axis] = (
             mode if previous == JointTargetMode.NONE else JointTargetMode.POSITION_VELOCITY
         )
-    values["mujoco:ctrl_source"] = int(SolverMuJoCo.CtrlSource.JOINT_TARGET)
-    values["mujoco:ctrl_type"] = int(
-        SolverMuJoCo.CtrlType.POSITION if mode == JointTargetMode.POSITION else SolverMuJoCo.CtrlType.VELOCITY
-    )
+    values["mujoco:ctrl_source"] = int(CtrlSource.JOINT_TARGET)
+    values["mujoco:ctrl_type"] = int(CtrlType.POSITION if mode == JointTargetMode.POSITION else CtrlType.VELOCITY)
 
 
 def _tendons(builder, spec, model, joints, dofs, geoms, sites, attributes, custom):
@@ -749,7 +761,7 @@ def _parse_spec(
     # Let authored flags override builder settings, including flags from earlier imports.
     options = ET.Element("option")
     flags = ET.SubElement(options, "flag")
-    for name, default in SolverMuJoCo._FLAG_DEFAULTS.items():
+    for name, default in _FLAG_DEFAULTS.items():
         attr = builder.custom_attributes.get(f"mujoco:flag_{name}")
         enabled = attr.values.get(0, attr.default) if attr is not None else default
         flags.set(name, "enable" if enabled else "disable")
@@ -1040,9 +1052,7 @@ def parse_mjcf(
             mapped_dofs = [
                 dof + k
                 for native_joint, dof in mapping.items()
-                for k in range(
-                    6 if model.jnt_type[native_joint] == 0 else 3 if model.jnt_type[native_joint] == 1 else 1
-                )
+                for k in range(_joint_dof_count(model.jnt_type[native_joint]))
             ]
             start = builder.joint_qd_start[joint]
             expected_dofs = range(start, start + sum(builder.joint_dof_dim[joint]))
@@ -1052,7 +1062,7 @@ def parse_mjcf(
                 joints[native_joint] = dof
                 joint_ids[native_joint] = joint
                 source_joint = spec.joints[native_joint]
-                count = 6 if model.jnt_type[native_joint] == 0 else 3 if model.jnt_type[native_joint] == 1 else 1
+                count = _joint_dof_count(model.jnt_type[native_joint])
                 source_dof = int(model.jnt_dofadr[native_joint])
                 for k in range(count):
                     builder.joint_damping[dof + k] = float(model.dof_damping[source_dof + k])
@@ -1267,25 +1277,21 @@ def parse_mjcf(
     actuator_start = builder._custom_frequency_counts.get("mujoco:actuator", 0)
     skipped_actuators = 0
     pending_damping: set[int] = set()
+    transmission_types = {int(native): int(newton) for newton, native in _transmission_types().items()}
     for i in range(model.nu):
-        transmission = {
-            int(mujoco.mjtTrn.mjTRN_JOINT): int(SolverMuJoCo.TrnType.JOINT),
-            int(mujoco.mjtTrn.mjTRN_JOINTINPARENT): int(SolverMuJoCo.TrnType.JOINT_IN_PARENT),
-            int(mujoco.mjtTrn.mjTRN_SLIDERCRANK): int(SolverMuJoCo.TrnType.SLIDERCRANK),
-            int(mujoco.mjtTrn.mjTRN_TENDON): int(SolverMuJoCo.TrnType.TENDON),
-            int(mujoco.mjtTrn.mjTRN_SITE): int(SolverMuJoCo.TrnType.SITE),
-            int(mujoco.mjtTrn.mjTRN_BODY): int(SolverMuJoCo.TrnType.BODY),
-        }[int(model.actuator_trntype[i])]
+        transmission = transmission_types[int(model.actuator_trntype[i])]
         source_target, source_alt = map(int, model.actuator_trnid[i])
         mapping = {
-            0: joints,
-            1: joints,
-            2: tendons,
-            3: sites,
-            4: {j: b for j, b in enumerate(bodies) if b >= 0},
-            5: sites,
+            TrnType.JOINT: joints,
+            TrnType.JOINT_IN_PARENT: joints,
+            TrnType.TENDON: tendons,
+            TrnType.SITE: sites,
+            TrnType.BODY: {j: b for j, b in enumerate(bodies) if b >= 0},
+            TrnType.SLIDERCRANK: sites,
         }[transmission]
-        if source_target not in mapping or (source_alt >= 0 and transmission in (3, 5) and source_alt not in sites):
+        if source_target not in mapping or (
+            source_alt >= 0 and transmission in (TrnType.SITE, TrnType.SLIDERCRANK) and source_alt not in sites
+        ):
             warnings.warn(
                 f"Actuator {model.actuator(i).name!r} targets an excluded element; skipping.",
                 NewtonWarning,
@@ -1294,16 +1300,14 @@ def parse_mjcf(
             skipped_actuators += 1
             continue
         target = mapping[source_target]
-        alternate = sites[source_alt] if source_alt >= 0 and transmission in (3, 5) else -1
+        alternate = sites[source_alt] if source_alt >= 0 and transmission in (TrnType.SITE, TrnType.SLIDERCRANK) else -1
         native_parameters = _read_native_parameters("actuator", spec.actuators[i])
         values = attributes(
             native_actuator_target_kd=-1.0,
             actuator_label=f"{prefix}/{model.actuator(i).name or f'actuator_{i}'}",
-            ctrl_source=int(SolverMuJoCo.CtrlSource.CTRL_DIRECT),
+            ctrl_source=int(CtrlSource.CTRL_DIRECT),
             ctrl_type=int(
-                SolverMuJoCo.CtrlType.DCMOTOR
-                if model.actuator_gaintype[i] == mujoco.mjtGain.mjGAIN_DCMOTOR
-                else SolverMuJoCo.CtrlType.GENERAL
+                CtrlType.DCMOTOR if model.actuator_gaintype[i] == mujoco.mjtGain.mjGAIN_DCMOTOR else CtrlType.GENERAL
             ),
             actuator_world=builder.current_world,
             actuator_trntype=transmission,
@@ -1337,7 +1341,7 @@ def parse_mjcf(
             )
         if (
             not ctrl_direct
-            and transmission == 0
+            and transmission == TrnType.JOINT
             and int(model.jnt_type[source_target])
             in (int(mujoco.mjtJoint.mjJNT_HINGE), int(mujoco.mjtJoint.mjJNT_SLIDE), int(mujoco.mjtJoint.mjJNT_BALL))
         ):
@@ -1351,7 +1355,7 @@ def parse_mjcf(
                 pending_damping,
                 dof_count=3 if model.jnt_type[source_target] == mujoco.mjtJoint.mjJNT_BALL else 1,
             )
-        if transmission == 0 and native_parameters["native_actuator_inheritrange"] > 0:
+        if transmission == TrnType.JOINT and native_parameters["native_actuator_inheritrange"] > 0:
             values.update(attributes(native_actuator_inheritrange_bounds=model.jnt_range[source_target]))
         values.update(custom("mujoco:actuator", spec.actuators[i]))
         if values.get("mujoco:native_actuator_inheritrange", 0) > 0:

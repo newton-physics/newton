@@ -23,6 +23,7 @@ from newton import BodyFlags, JointType, Mesh, ModelFlags, NewtonDeprecationWarn
 from newton._src.core.types import vec5
 from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
+    FLOAT64_EPS,
     MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
@@ -32,6 +33,7 @@ from newton._src.solvers.mujoco.enums import (
     _ActuatorBiasType,
     _ActuatorDynamicsType,
     _ActuatorGainType,
+    _JointType,
 )
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.geometry import build_shape_layout, compile_layout_collision_masks
@@ -66,8 +68,8 @@ def _add_deprecated_mimic_constraint(
 
 
 def _expected_positive_limit_solref(ke: float, kd: float, factor: float) -> np.ndarray:
-    direct_stiffness = max(float(ke) * float(factor), MJ_MINVAL)
-    direct_damping = max(float(kd) * float(factor), MJ_MINVAL)
+    direct_stiffness = max(float(ke) * float(factor), FLOAT64_EPS)
+    direct_damping = max(float(kd) * float(factor), FLOAT64_EPS)
     return np.array(
         [2.0 / direct_damping, direct_damping / (2.0 * math.sqrt(direct_stiffness))],
         dtype=np.float64,
@@ -14022,7 +14024,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         invw_b = float(body_invweight0[0, body_b, 0]) if body_b >= 0 else 0.0
         dmax = float(solver.mjw_data.contact.solimp.numpy()[contact_idx, 1])
         factor = (invw_a + invw_b) * (1.0 - dmax)
-        solref = convert_solref(max(ke * factor, MJ_MINVAL), max(kd * factor, MJ_MINVAL), 1.0, 1.0)
+        solref = convert_solref(max(ke * factor, FLOAT64_EPS), max(kd * factor, FLOAT64_EPS), 1.0, 1.0)
         return float(solref[0]), float(solref[1])
 
     def test_force_space_contact_solref_uses_invweight0_and_dmax(self):
@@ -14307,7 +14309,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         self._run_to_first_contact(model, solver)
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
         # dmax=1 zeroes the factor → override skipped; solref[0] stays sub-1.0
-        # instead of the ~2/MJ_MINVAL a fired override would produce.
+        # instead of the ~2/FLOAT64_EPS a fired override would produce.
         self.assertLess(float(actual_solref[0]), 1.0)
 
     def test_force_space_contact_stiff_contact_stays_finite(self):
@@ -14757,12 +14759,14 @@ class TestActuatorTypes(unittest.TestCase):
         return self.MJCF.format(dyntype=dyntype, gaintype=gaintype, biastype=biastype, extra=extra)
 
     def test_enums_match_mujoco(self):
-        """Pin every actuator enum ordinal against the matching mujoco.mjt* member."""
+        """Pin native type ordinals and the scalar floor against MuJoCo."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
+        self.assertEqual(MJ_MINVAL, mujoco.mjMINVAL)
         for enum, mj_enum, prefix in (
             (_ActuatorBiasType, mujoco.mjtBias, "mjBIAS_"),
             (_ActuatorDynamicsType, mujoco.mjtDyn, "mjDYN_"),
             (_ActuatorGainType, mujoco.mjtGain, "mjGAIN_"),
+            (_JointType, mujoco.mjtJoint, "mjJNT_"),
         ):
             for member in enum:
                 with self.subTest(enum=enum.__name__, member=member.name):

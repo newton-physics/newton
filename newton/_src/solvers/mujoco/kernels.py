@@ -17,14 +17,15 @@ from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
     DEFAULT_LIMIT_SOLREF_TIMECONST,
+    FLOAT64_EPS,
     HINGE_CONNECT_HALF_SPAN,
     MJ_MINMU,
-    MJ_MINVAL,
+    MJC_OBJ_SITE,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from .enums import EqType
+from .enums import CtrlSource, CtrlType, EqType, _JointType
 
 
 def _import_contact_force_fn():
@@ -41,7 +42,7 @@ vec12 = wp.types.vector(length=12, dtype=wp.float32)
 # Utility functions
 @wp.func
 def safe_div(x: float, y: float) -> float:
-    return x / wp.where(y != 0.0, y, MJ_MINVAL)
+    return x / wp.where(y != 0.0, y, FLOAT64_EPS)
 
 
 @wp.func
@@ -158,9 +159,9 @@ def contact_params(
         solmix1 = geom_solmix[worldid, g1]
         solmix2 = geom_solmix[worldid, g2]
         mix = safe_div(solmix1, solmix1 + solmix2)
-        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
-        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
-        mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
+        mix = wp.where((solmix1 < FLOAT64_EPS) and (solmix2 < FLOAT64_EPS), 0.5, mix)
+        mix = wp.where((solmix1 < FLOAT64_EPS) and (solmix2 >= FLOAT64_EPS), 0.0, mix)
+        mix = wp.where((solmix1 >= FLOAT64_EPS) and (solmix2 < FLOAT64_EPS), 1.0, mix)
         condim = wp.max(condim1, condim2)
         resolved_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
 
@@ -651,8 +652,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
                         is_elliptic,
                     )
                     solref = convert_solref(
-                        wp.max(ke * factor, MJ_MINVAL),
-                        wp.max(kd * factor, MJ_MINVAL),
+                        wp.max(ke * factor, FLOAT64_EPS),
+                        wp.max(kd * factor, FLOAT64_EPS),
                         1.0,
                         1.0,
                     )
@@ -677,10 +678,10 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     is_elliptic,
                 )
                 solimp = vec5(imp, imp, 0.001, 1.0, 0.5)
-                contact_ke = wp.max(contact_ke * factor, MJ_MINVAL)
+                contact_ke = wp.max(contact_ke * factor, FLOAT64_EPS)
                 kd = rigid_contact_damping[tid]
                 if kd > 0.0:
-                    timeconst = 2.0 / wp.max(kd * factor, MJ_MINVAL)
+                    timeconst = 2.0 / wp.max(kd * factor, FLOAT64_EPS)
                     dampratio = wp.sqrt(1.0 / (timeconst * timeconst * contact_ke))
                 else:
                     timeconst = wp.sqrt(1.0 / contact_ke)
@@ -1357,7 +1358,7 @@ def update_connect_constraint_anchors_kernel(
     newton_jnt = src[1]
 
     anchor = wp.vec3(0.0)
-    if eq_objtype[mjc_eq] == 6:  # mjOBJ_SITE
+    if eq_objtype[mjc_eq] == MJC_OBJ_SITE:
         return
     if newton_jnt >= 0:
         X_p = joint_X_p[newton_jnt]
@@ -1487,9 +1488,9 @@ def create_convert_mjw_contacts_to_newton_kernel():
 
 # Import control source/type enums and create warp constants
 
-CTRL_SOURCE_JOINT_TARGET = wp.constant(0)
-CTRL_SOURCE_CTRL_DIRECT = wp.constant(1)
-CTRL_TYPE_DCMOTOR = wp.constant(3)
+CTRL_SOURCE_JOINT_TARGET = wp.constant(int(CtrlSource.JOINT_TARGET))
+CTRL_SOURCE_CTRL_DIRECT = wp.constant(int(CtrlSource.CTRL_DIRECT))
+CTRL_TYPE_DCMOTOR = wp.constant(int(CtrlType.DCMOTOR))
 
 
 @wp.func
@@ -2324,7 +2325,7 @@ def update_jnt_properties_kernel(
         jnt_margin[world, mjc_jnt] = limit_margin[newton_dof]
 
     ref = float(0.0)
-    if jnt_type[mjc_jnt] >= 2:  # mjJNT_SLIDE or mjJNT_HINGE
+    if jnt_type[mjc_jnt] >= _JointType.SLIDE:
         ref = qpos0[world, jnt_qposadr[mjc_jnt]]
     lower = joint_limit_lower[newton_dof]
     upper = joint_limit_upper[newton_dof]
@@ -2334,7 +2335,7 @@ def update_jnt_properties_kernel(
     jnt_actfrcrange[world, mjc_jnt] = wp.vec2(-effort_limit, effort_limit)
 
     if native_joint_type and native_joint_type[newton_dof] == jnt_type[mjc_jnt]:
-        if jnt_type[mjc_jnt] < 2:
+        if jnt_type[mjc_jnt] < _JointType.SLIDE:
             jnt_range[world, mjc_jnt] = native_joint_range[newton_dof]
 
 
@@ -2370,13 +2371,13 @@ def update_native_joint_effort_limits_kernel(
     if not native:
         return
     # MuJoCo shares this flag across worlds; unlimited worlds need unbounded ranges.
-    if jnt_type[joint] >= 2:
+    if jnt_type[joint] >= _JointType.SLIDE:
         jnt_actfrclimited[joint] = limited
     for world in range(mjc_jnt_to_newton_dof.shape[0]):
         dof = mjc_jnt_to_newton_dof[world, joint]
         if dof < 0 or native_joint_type[dof] != jnt_type[joint]:
             continue
-        if jnt_type[joint] < 2:
+        if jnt_type[joint] < _JointType.SLIDE:
             jnt_actfrcrange[world, joint] = native_joint_actfrcrange[dof]
         elif joint_effort_limit[dof] == native_joint_effort_baseline[dof]:
             if native_joint_effort_limited[dof] or not limited:
@@ -2459,7 +2460,7 @@ def update_joint_transforms_kernel(
     body_quat[world, mjc_body] = quat_xyzw_to_wxyz(tf.q)
 
     # Only hinge and slide joints use a motion axis.
-    if newton_dof >= 0 and jtype >= 2:
+    if newton_dof >= 0 and jtype >= _JointType.SLIDE:
         axis = newton_joint_axis[newton_dof]
         jnt_axis[world, mjc_jnt] = wp.quat_rotate(child_xform.q, axis)
     jnt_pos[world, mjc_jnt] = child_xform.p
@@ -2838,8 +2839,8 @@ def update_jnt_solref_from_invweight0_kernel(
     if invw > 0.0 and dmax < 1.0:
         factor = invw * (1.0 - dmax)
 
-    direct_stiffness = wp.max(ke * factor, MJ_MINVAL)
-    direct_damping = wp.max(kd * factor, MJ_MINVAL)
+    direct_stiffness = wp.max(ke * factor, FLOAT64_EPS)
+    direct_damping = wp.max(kd * factor, FLOAT64_EPS)
     jnt_solref[world, mjc_jnt] = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
 
 
@@ -2875,7 +2876,7 @@ def capture_actuator_dampratio_kernel(
     kp = actuator_gainprm[world % actuator_gainprm.shape[0], actuator][0]
     bias = actuator_biasprm[world, actuator]
     ratio = float(0.0)
-    if bias[2] > 0.0 and wp.abs(kp + bias[1]) <= MJ_MINVAL:
+    if bias[2] > 0.0 and wp.abs(kp + bias[1]) <= FLOAT64_EPS:
         ratio = bias[2]
     dampratio_out[world, actuator] = ratio
 
@@ -2884,7 +2885,7 @@ def capture_actuator_dampratio_kernel(
 def _dampratio_damping(ratio: float, kp: float, inv_weight: float):
     """Return the damping for a ``dampratio`` given the inverse reflected inertia ``J M^-1 J^T``, as MuJoCo's compiler."""
     inertia = float(0.0)
-    if inv_weight > MJ_MINVAL:
+    if inv_weight > FLOAT64_EPS:
         inertia = 1.0 / inv_weight
     return ratio * 2.0 * wp.sqrt(kp * inertia)
 
@@ -3163,7 +3164,7 @@ def update_eq_data_and_active_kernel(
     # Read existing data to preserve fields we don't update
     data = eq_data_out[world, mjc_eq]
 
-    if eq_objtype[mjc_eq] == 6:  # mjOBJ_SITE
+    if eq_objtype[mjc_eq] == MJC_OBJ_SITE:
         if constraint_type == EqType.WELD:
             data[10] = eq_constraint_torquescale[newton_eq]
     elif constraint_type == EqType.CONNECT:

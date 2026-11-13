@@ -121,7 +121,7 @@ class TestImportMjcfNative(unittest.TestCase):
         return builder, solver, reference
 
     def test_independent_entry_points(self):
-        """Keep legacy imports usable without importing the MuJoCo package."""
+        """Keep legacy import and core finalization independent of the native dependency."""
         original = builtins.__import__
 
         def without_mujoco(name, *args, **kwargs):
@@ -136,10 +136,20 @@ class TestImportMjcfNative(unittest.TestCase):
             self.assertEqual(legacy.body_count, 1)
             with self.assertRaises(ImportError):
                 newton.ModelBuilder().add_mjcf_native(xml)
+        import mujoco
+
+        native_xml = xml.replace("<joint/>", '<joint name="j" springdamper=".2 .7"/>').replace(
+            "</mujoco>", '<actuator><position joint="j" kp="20" dampratio=".7"/></actuator></mujoco>'
+        )
+        reference = mujoco.MjModel.from_xml_string(native_xml)
         with patch("newton._src.utils.import_mjcf.parse_mjcf", side_effect=AssertionError("legacy parser called")):
             native = newton.ModelBuilder()
-            native.add_mjcf_native(xml)
+            native.add_mjcf_native(native_xml)
             self.assertEqual(native.body_count, 1)
+        with patch("builtins.__import__", without_mujoco):
+            model = native.finalize()
+        np.testing.assert_allclose(model.joint_stiffness.numpy(), reference.jnt_stiffness, rtol=3e-5)
+        np.testing.assert_allclose(model.joint_target_kd.numpy(), -reference.actuator_biasprm[:, 2], rtol=3e-5)
 
     def test_slidercrank_nan_length(self):
         """Preserve MuJoCo's NaN warning behavior and legacy rejection."""
@@ -1038,7 +1048,10 @@ class TestImportMjcfNative(unittest.TestCase):
             np.testing.assert_allclose(getattr(solver.mj_model.opt, field), getattr(reference.opt, field))
         omitted = newton.ModelBuilder()
         omitted.add_mjcf_native(xml, parse_mujoco_options=False)
-        self.assertEqual(SolverMuJoCo(omitted.finalize()).mj_model.opt.enableflags, 0)
+        omitted_options = SolverMuJoCo(omitted.finalize()).mj_model.opt
+        defaults = mujoco.MjSpec().option
+        for field in ("enableflags", "disableactuator", "o_margin", "o_solref", "o_solimp", "o_friction"):
+            np.testing.assert_allclose(getattr(omitted_options, field), getattr(defaults, field))
 
     def test_native_option_flags_unsupported_by_solver(self):
         """Preserve valid flags while exposing the solver's Warp dependency in both modes."""
