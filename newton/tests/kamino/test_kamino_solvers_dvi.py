@@ -2955,69 +2955,76 @@ class TestDVISolver(NewtonTestCase):
         initial_speed = 3.0
         dt = 2.0e-3
         steps = 50
+        frictions = (0.1, 0.3, 0.8)
 
-        for friction in (0.1, 0.3, 0.8):
-            builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-            SolverKamino.register_custom_attributes(builder)
+        # One world per friction value, so each solver configuration steps the whole sweep once.
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        bodies = []
+        for friction in frictions:
+            world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            SolverKamino.register_custom_attributes(world)
             shape_cfg = newton.ModelBuilder.ShapeConfig(mu=friction, gap=0.0, margin=0.0)
-            body = builder.add_link(
+            body = world.add_link(
                 xform=wp.transformf((0.0, 0.0, 0.1), wp.quat_identity()),
                 mass=1.0,
             )
-            builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
-            joint = builder.add_joint_free(parent=-1, child=body)
-            builder.add_articulation([joint])
-            builder.add_ground_plane(cfg=shape_cfg)
-            model = builder.finalize(device=self.device)
+            # Kamino names materials after shape labels, so they must differ between worlds.
+            world.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg, label=f"box_mu_{friction}")
+            joint = world.add_joint_free(parent=-1, child=body)
+            world.add_articulation([joint])
+            world.add_ground_plane(cfg=shape_cfg)
+            bodies.append(builder.body_count)
+            builder.add_world(world)
+        model = builder.finalize(device=self.device)
 
-            expected_speed = initial_speed - friction * 9.81 * dt * steps
-            expected_distance = initial_speed * dt * steps - friction * 9.81 * dt * dt * steps * (steps + 1) / 2.0
-            for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
-                with self.subTest(friction=friction, sparse=sparse, unilateral_solver=unilateral_solver):
-                    config = SolverKamino.Config(
-                        dynamics_solver="dvi",
-                        dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
-                        use_collision_detector=True,
-                        sparse_dynamics=sparse,
-                        sparse_jacobian=sparse,
-                        collision_detector=kamino_config.CollisionDetectorConfig(
-                            max_contacts=16,
-                            max_contacts_per_world=16,
-                            max_contacts_per_pair=8,
-                        ),
-                    )
-                    # Resolve the correction for the analytical velocity/distance checks.
-                    config.dvi.apgd.max_nonlinear_corrections = 8
-                    solver = SolverKamino(model, config=config)
-                    state_0 = model.state()
-                    state_1 = model.state()
-                    joint_qd = state_0.joint_qd.numpy()
-                    joint_qd[0] = initial_speed
-                    state_0.joint_qd.assign(joint_qd)
-                    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
+            with self.subTest(sparse=sparse, unilateral_solver=unilateral_solver):
+                config = SolverKamino.Config(
+                    dynamics_solver="dvi",
+                    dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
+                    use_collision_detector=True,
+                    sparse_dynamics=sparse,
+                    sparse_jacobian=sparse,
+                    collision_detector=kamino_config.CollisionDetectorConfig(
+                        max_contacts=16 * len(frictions),
+                        max_contacts_per_world=16,
+                        max_contacts_per_pair=8,
+                    ),
+                )
+                # Resolve the correction for the analytical velocity/distance checks.
+                config.dvi.apgd.max_nonlinear_corrections = 8
+                solver = SolverKamino(model, config=config)
+                state_0 = model.state()
+                state_1 = model.state()
+                joint_qd = state_0.joint_qd.numpy().reshape(len(frictions), -1).copy()
+                joint_qd[:, 0] = initial_speed
+                state_0.joint_qd.assign(joint_qd.reshape(-1))
+                newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
-                    for _ in range(steps):
-                        solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
-                        state_0, state_1 = state_1, state_0
+                for _ in range(steps):
+                    solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
+                    state_0, state_1 = state_1, state_0
 
-                    self.assertGreater(int(solver._contacts_kamino.world_active_contacts.numpy()[0]), 0)
-                    self.assertAlmostEqual(
-                        float(state_0.body_qd.numpy()[body, 0]),
-                        expected_speed,
-                        delta=1.0e-4,
-                    )
-                    self.assertAlmostEqual(
-                        float(state_0.body_q.numpy()[body, 0]),
-                        expected_distance,
-                        delta=1.0e-5,
-                    )
+                active_contacts = solver._contacts_kamino.world_active_contacts.numpy()
+                positions = state_0.body_q.numpy()
+                velocities = state_0.body_qd.numpy()
+                for world_index, (friction, body) in enumerate(zip(frictions, bodies, strict=True)):
+                    with self.subTest(friction=friction):
+                        expected_speed = initial_speed - friction * 9.81 * dt * steps
+                        expected_distance = (
+                            initial_speed * dt * steps - friction * 9.81 * dt * dt * steps * (steps + 1) / 2.0
+                        )
+                        self.assertGreater(int(active_contacts[world_index]), 0)
+                        self.assertAlmostEqual(float(velocities[body, 0]), expected_speed, delta=1.0e-4)
+                        self.assertAlmostEqual(float(positions[body, 0]), expected_distance, delta=1.0e-5)
 
     def test_08d3_dvi_friction_propagates_through_fixed_joint(self):
         """Converge articulated contact friction at a 2 kHz step rate."""
         friction = 0.2
         initial_speed = 3.0
         dt = 5.0e-4
-        steps = 200
+        steps = 50
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         SolverKamino.register_custom_attributes(builder)
@@ -3085,22 +3092,22 @@ class TestDVISolver(NewtonTestCase):
                     velocities[[contact_body, carried_body], 0],
                     expected_speed,
                     rtol=0.0,
-                    atol=2.0e-4,
+                    atol=5.0e-5,
                 )
                 np.testing.assert_allclose(
                     positions[[contact_body, carried_body], 0],
                     expected_distance,
                     rtol=0.0,
-                    atol=2.0e-5,
+                    atol=1.25e-6,
                 )
                 self.assertAlmostEqual(
                     float(positions[carried_body, 2] - positions[contact_body, 2]),
                     0.1,
-                    delta=1.0e-5,
+                    delta=2.5e-6,
                 )
                 self.assertLess(
                     float(np.linalg.norm(velocities[carried_body] - velocities[contact_body])),
-                    1.0e-4,
+                    2.5e-5,
                 )
 
     def test_08d4_dvi_incline_friction_threshold(self):
