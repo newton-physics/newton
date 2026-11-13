@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.solvers.dvi.effort_limit_condensation import EffortLimitCondensation
-from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import make_compact_schur_pgs_kernel
-from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, DVIStatus
+from newton._src.solvers.kamino._src.solvers.scc.effort_limit_condensation import EffortLimitCondensation
+from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import make_compact_schur_pgs_kernel
+from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCStatus
 
 
 def _fixture(device, efforts, remaining):
@@ -58,13 +58,13 @@ def _fixture(device, efforts, remaining):
         ids[world, :slots] = rng.permutation(slots)
         groups[world, : slots + 1] = np.arange(slots + 1)
         colors[world, :3] = [0, slots // 2, slots]
-    config = DVIConfigStruct()
+    config = SCCConfigStruct()
     config.max_alternating_iterations = 32
     config.inequality_sweeps_per_iteration = 2
     config.regularization = 1e-6
     config.omega = 1.0
     config.tolerance = 1e-5
-    status = DVIStatus()
+    status = SCCStatus()
     status.r_p = 0.125
     status.iterations = 7
     inputs = [
@@ -97,8 +97,8 @@ def _fixture(device, efforts, remaining):
         ints(ids.ravel()),
         ints(colors.ravel()),
         ints(groups.ravel()),
-        wp.array([config] * worlds, dtype=DVIConfigStruct, device=device),
-        wp.array([status] * worlds, dtype=DVIStatus, device=device),
+        wp.array([config] * worlds, dtype=SCCConfigStruct, device=device),
+        wp.array([status] * worlds, dtype=SCCStatus, device=device),
         floats(initial),
     ]
     helper = EffortLimitCondensation([effort_ids] * worlds, device=device, schedule_capacity=schedule_capacity)

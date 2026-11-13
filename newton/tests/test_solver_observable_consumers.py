@@ -13,12 +13,14 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverBase, SolverXPBD
+from newton.tests.unittest_utils import requires
 from newton.viewer import ViewerNull
 
 
 class TestSolverObservableConsumers(unittest.TestCase):
     """Check contact allocation boundaries without requiring a solver step."""
 
+    @requires("yaml")
     def test_robot_examples_export_only_on_final_substep(self):
         """Run real example loops with lightweight state and solver stand-ins."""
         for name in ("g1", "h1", "anymal_d", "policy"):

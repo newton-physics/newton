@@ -17,8 +17,10 @@ import numpy as np
 import newton
 from newton import ModelFlags
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
+@requires(*MUJOCO_MODULES)
 class TestMuJoCoMarginZeroing(unittest.TestCase):
     """Verify SolverMuJoCo margin handling for NATIVECCD compatibility."""
 

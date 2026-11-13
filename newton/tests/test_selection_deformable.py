@@ -25,7 +25,12 @@ from newton.tests._usd_deformable_test_utils import (
     _bind_deformable_material,
     _deformable_stage,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 _CABLE_PTS = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
 _MIXED_ASSET = os.path.join(os.path.dirname(__file__), "assets", "deformables_mixed.usda")
@@ -1749,7 +1754,7 @@ def test_compact_cable_requires_its_generated_root(test, device):
             test.assertEqual(cable.ranges("joint"), [(3, 6)])
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUSDDeformableObjects(unittest.TestCase):
     """Prim-path deformable object lookup on the finalized Model across lifecycle transformations."""
 

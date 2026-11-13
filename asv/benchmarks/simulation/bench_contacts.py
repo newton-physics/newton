@@ -308,6 +308,9 @@ class FastExampleContactSdfDefaults:
                 solver="mujoco",
                 test_mode=False,
             )
+        # Keep one-time device work out of the samples.
+        self.example.step()
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
@@ -344,6 +347,9 @@ class FastExampleContactHydroWorkingDefaults:
                 solver="mujoco",
                 test_mode=False,
             )
+        # Keep one-time device work out of the samples.
+        self.example.step()
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
@@ -393,6 +399,9 @@ class _ExampleCollideBenchmark:
         with wp.ScopedCapture(device=device) as capture:
             self.pipeline.collide(self.state, self.contacts)
         self.graph = capture.graph
+        # Keep one-time device work out of the samples.
+        wp.capture_launch(self.graph)
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_collide(self):
@@ -435,6 +444,9 @@ class FastExampleContactPyramidDefaults:
                 solver="xpbd",
                 test_mode=False,
             )
+        # Keep one-time device work out of the samples.
+        self.example.step()
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
@@ -491,6 +503,9 @@ class FastConvexCollision:
         with wp.ScopedCapture(device=device) as capture:
             self.collision_pipeline.collide(self.state, self.contacts)
         self.graph = capture.graph
+        # Keep one-time device work out of the samples.
+        wp.capture_launch(self.graph)
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_collide(self, case):
@@ -540,6 +555,9 @@ class SplitConvexCollision:
         with wp.ScopedCapture(device=device) as capture:
             self.collision_pipeline.collide(self.state, self.contacts)
         self.graph = capture.graph
+        # Keep one-time device work out of the samples.
+        wp.capture_launch(self.graph)
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_collide(self, case):
@@ -596,6 +614,9 @@ class BroadPhaseCollision:
         with wp.ScopedCapture(device=device) as capture:
             self.collision_pipeline.collide(self.state, self.contacts)
         self.graph = capture.graph
+        # Keep one-time device work out of the samples.
+        wp.capture_launch(self.graph)
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_collide(self, case):
@@ -661,6 +682,9 @@ class ComplexContactCollision:
         with wp.ScopedCapture(device=device) as capture:
             self.collision_pipeline.collide(self.state, self.contacts)
         self.graph = capture.graph
+        # Keep one-time device work out of the samples.
+        wp.capture_launch(self.graph)
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_collide(self, case):
