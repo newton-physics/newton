@@ -815,6 +815,45 @@ def test_compute_body_velocity_from_position_delta_legacy_path(test, device):
     test.assertAlmostEqual(wz_legacy, 8.944272, delta=1.0e-4)
 
 
+def test_slow_body_velocities_are_preserved(test, device):
+    """Keep slow free and jointed rigid-body velocities instead of zeroing them.
+
+    Without gravity, contacts, or drives, a free body and a hinge spinning about
+    an axis through its center of mass must keep their initial velocities.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    free_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
+    builder.add_shape_box(free_body, hx=0.2, hy=0.1, hz=0.05)
+    hinge_body = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 1.0), wp.quat_identity()))
+    builder.add_shape_box(hinge_body, hx=0.2, hy=0.1, hz=0.05)
+    hinge = builder.add_joint_revolute(
+        parent=-1,
+        child=hinge_body,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(1.0, 0.0, 1.0), wp.quat_identity()),
+    )
+    builder.add_articulation([hinge])
+    model = builder.finalize(device=device)
+
+    # Speeds below 1e-4 m/s and 1e-4 rad/s, e.g. slow drift in zero gravity.
+    speed = 5.0e-5
+    qd = np.zeros((model.body_count, 6), dtype=np.float32)
+    qd[free_body] = (speed, 0.0, 0.0, 0.0, 0.0, speed)
+    qd[hinge_body] = (0.0, 0.0, 0.0, 0.0, 0.0, speed)
+
+    state_0 = model.state()
+    state_1 = model.state()
+    state_0.body_qd.assign(qd)
+    solver = newton.solvers.SolverXPBD(model, angular_damping=0.0)
+
+    for _ in range(10):
+        state_0.clear_forces()
+        solver.step(state_0, state_1, None, None, 1.0e-2)
+        state_0, state_1 = state_1, state_0
+
+    np.testing.assert_allclose(state_0.body_qd.numpy(), qd, rtol=0.0, atol=1.0e-3 * speed)
+
+
 def test_restitution_flag_does_not_change_body_integration(test, device):
     """Keep rigid-body integration independent of the restitution flag."""
     builder = newton.ModelBuilder(gravity=(0.0, -10.0, 0.0), up_axis=newton.Axis.Y)
@@ -2820,6 +2859,14 @@ add_function_test(
     TestSolverXPBD,
     "test_particle_shape_restitution_does_not_launch_resting_particle",
     test_particle_shape_restitution_does_not_launch_resting_particle,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_slow_body_velocities_are_preserved",
+    test_slow_body_velocities_are_preserved,
     devices=devices,
     check_output=False,
 )
