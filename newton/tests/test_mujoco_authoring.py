@@ -836,7 +836,7 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         builder.add_world(blueprint)
         builder.add_world(blueprint, xform=wp.transform(wp.vec3(2.0, 0.0, 1.0), wp.quat_identity()))
         model = builder.finalize()
-        solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, separate_worlds=True, disable_contacts=True)
+        solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
         initial = solver.mjw_model.eq_data.numpy().copy()
         solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
         solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)

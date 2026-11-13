@@ -185,7 +185,7 @@ class TestEqualityConstraints(unittest.TestCase):
         np.testing.assert_array_equal(model.mujoco.equality_constraint_target.numpy(), [-1, -1, -1])
 
     def test_equality_constraints_not_duplicated_per_world(self):
-        """Test that equality constraints are not duplicated for each world when using separate_worlds=True"""
+        """Test that equality constraints are not duplicated for each world."""
         # Create a simple robot builder with equality constraints
         robot = newton.ModelBuilder()
 
@@ -263,17 +263,14 @@ class TestEqualityConstraints(unittest.TestCase):
         # Should be 2 constraints per world * 3 worlds = 6 total
         self.assertEqual(model.mujoco.equality_constraint_count, 2 * world_count)
 
-        # Create MuJoCo solver with separate_worlds=True
         solver = newton.solvers.SolverMuJoCo(
             model,
-            use_mujoco_cpu=True,
-            separate_worlds=True,
             njmax=100,  # Should be enough for 2 constraints, not 6
             nconmax=50,
         )
 
         # Check that the MuJoCo model has the correct number of equality constraints
-        # With separate_worlds=True, it should only have constraints from one world (2)
+        # The template model should only have constraints from one world (2)
         self.assertEqual(
             solver.mj_model.neq, 2, f"Expected 2 equality constraints in MuJoCo model, got {solver.mj_model.neq}"
         )

@@ -375,7 +375,6 @@ class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, 
             model,
             disable_contacts=True,
             use_mujoco_cpu=True,
-            separate_worlds=True,
             integrator="euler",
             iterations=1,
             tolerance=0.0,
@@ -614,7 +613,7 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
             self.assertAlmostEqual(float(anchor1_b[k]), float(measured_a1_1[k]), places=4)
             self.assertAlmostEqual(float(anchor2_b[k]), float(measured_a2_1[k]), places=4)
 
-        # CPU-path: mj_model.eq_data is synced from world 0 only
+        # CPU-path: mj_model.eq_data is synced from world 0
         if sim.solver.use_mujoco_cpu and w == 0:
             mj_eq_data = sim.solver.mj_model.eq_data
             for k in range(3):
@@ -626,7 +625,7 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
     def _test_loop_joint_connect_constraint(self):
         """Verify loop-joint CONNECT anchors at the reference pose and across runtime updates."""
 
-        num_worlds = 2
+        num_worlds = self._num_worlds()
 
         # Test a few joint type combinations
         joint_type_combos = [
@@ -814,24 +813,28 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
 
 
 class TestLoopJointConnectConstraintMuJoCoWarp(TestLoopJointConnectConstraintBase, unittest.TestCase):
+    def _num_worlds(self):
+        return 2
+
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
             disable_contacts=True,
             use_mujoco_cpu=False,
-            separate_worlds=True,
             njmax=100,
             integrator="euler",
         )
 
 
 class TestLoopJointConnectConstraintMuJoCoCPU(TestLoopJointConnectConstraintBase, unittest.TestCase):
+    def _num_worlds(self):
+        return 1
+
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
             disable_contacts=True,
             use_mujoco_cpu=True,
-            separate_worlds=True,
             integrator="euler",
         )
 
@@ -959,7 +962,7 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
         happens at init time (during ``notify_model_changed(ALL)``), so a
         before-vs-after comparison would not catch it.
         """
-        num_worlds = 2
+        num_worlds = self._num_worlds()
         sim = self._build_mixed_weld_and_connect_model(num_worlds)
 
         import mujoco
@@ -1003,24 +1006,28 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
 
 
 class TestMixedWeldAndConnectMuJoCoWarp(TestMixedWeldAndConnectLoopJointBase, unittest.TestCase):
+    def _num_worlds(self):
+        return 2
+
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
             disable_contacts=True,
             use_mujoco_cpu=False,
-            separate_worlds=True,
             njmax=100,
             integrator="euler",
         )
 
 
 class TestMixedWeldAndConnectMuJoCoCPU(TestMixedWeldAndConnectLoopJointBase, unittest.TestCase):
+    def _num_worlds(self):
+        return 1
+
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
             disable_contacts=True,
             use_mujoco_cpu=True,
-            separate_worlds=True,
             integrator="euler",
         )
 
@@ -1214,7 +1221,6 @@ class TestConnectAnchorRefPoseMuJoCoCPU(TestConnectAnchorRefPoseBase, unittest.T
             model,
             disable_contacts=True,
             use_mujoco_cpu=True,
-            separate_worlds=True,
             integrator="euler",
         )
 

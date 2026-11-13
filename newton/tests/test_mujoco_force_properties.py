@@ -229,7 +229,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                     body_flags = model.body_flags.numpy()
                     body_flags[0] = int(newton.BodyFlags.KINEMATIC)
                     model.body_flags.assign(body_flags)
-                    solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, separate_worlds=False, disable_contacts=True)
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                     mapping = solver.mjc_dof_to_newton_dof.numpy()
                     armature = solver.mjw_model.dof_armature.numpy().copy()
                     invweight = solver.mjw_model.dof_invweight0.numpy().copy()
