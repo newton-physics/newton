@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
@@ -11,7 +12,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import warp as wp
 
-from ..core.reset import normalize_reset_world_mask
+from ..core.reset import WorldResetEpochs, normalize_reset_world_mask
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
@@ -38,6 +39,7 @@ from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
+from ..geometry.soft_contact_match import SoftContactMatcher
 from ..geometry.soft_contacts_heightfield import _HEIGHTFIELD_CELLS_PER_TASK, launch_soft_heightfield_contacts
 from ..geometry.soft_contacts_mesh import (
     MeshContactData,
@@ -1664,6 +1666,9 @@ def _warn_full_surface_fallbacks(model: Model, capable: np.ndarray) -> None:
     )
 
 
+_soft_contact_history_ids = itertools.count()
+
+
 @wp.kernel(enable_backward=False)
 def _reserve_contact_gap(authored: wp.array[float], reserve: float, gap: wp.array[float]):
     shape = wp.tid()
@@ -1778,6 +1783,7 @@ class CollisionPipeline:
         contact_matching_pos_threshold: float = 0.0005,
         contact_matching_normal_dot_threshold: float = 0.995,
         contact_report: bool = False,
+        soft_contact_matching: bool = False,
         verify_buffers: bool = True,
         contact_reduction_hashtable_size_factor: float = 0.25,
         speculative_contact_gap_max: float | None = None,
@@ -1923,7 +1929,9 @@ class CollisionPipeline:
                 instead compare each saved body-local witness, transformed by the
                 current body pose, with its fresh contact point. The contact is
                 broken if either witness moves farther than this distance.
-                Defaults to ``0.0005``.
+                With ``soft_contact_matching``, a rigid-soft anchor restarts once
+                its soft and body points have slipped apart tangentially by more
+                than this. Defaults to ``0.0005``.
             contact_matching_normal_dot_threshold: Minimum dot product between
                 old and new contact normals for a match.
             contact_report: Allocate ``rigid_contact_new_indices`` /
@@ -1931,6 +1939,22 @@ class CollisionPipeline:
                 / ``rigid_contact_broken_count`` on the :class:`Contacts`
                 container, populated each frame.  Requires a non-disabled
                 ``contact_matching`` mode.
+            soft_contact_matching: Anchor each rigid-soft contact at the soft-side
+                and body-side points where it touched down, and keep the anchor
+                across collision passes while both points touch the same surface
+                and have slipped apart by at most ``contact_matching_pos_threshold``,
+                unless the surface moves (``Contacts.soft_contact_body_vel``).
+                :class:`~newton.solvers.SolverVBD` solves anchored records at the
+                anchors, so a tangential load inside the friction cone holds still.
+                Independent of ``contact_matching``; the contact points in
+                :class:`Contacts` stay fresh. Buffers not created by :meth:`contacts`
+                get their anchors on their first :meth:`collide`, which must run
+                outside CUDA graph capture. Not supported with ``requires_grad``.
+                Defaults to ``False``.
+
+                .. experimental::
+
+                    May change without prior notice.
             verify_buffers: Run a ``dim=[1]`` diagnostic kernel at the end of
                 the narrow phase that prints warnings on any intermediate
                 candidate-pair or final rigid contact buffer overflow; see
@@ -2056,6 +2080,8 @@ class CollisionPipeline:
             raise ValueError("max_triangle_pairs must be > 0 or None")
         if requires_grad is None:
             requires_grad = model.requires_grad
+        if soft_contact_matching and requires_grad:
+            raise ValueError("soft_contact_matching is not supported with requires_grad=True")
 
         shape_world = getattr(model, "shape_world", None)
         shape_flags = getattr(model, "shape_flags", None)
@@ -2673,6 +2699,22 @@ class CollisionPipeline:
             )
         else:
             self._contact_matcher = None
+        self._soft_contact_history_id = next(_soft_contact_history_ids)
+        if soft_contact_matching and model.particle_count > 0 and soft_contact_max > 0:
+            # Anchors kept per Contacts buffer are stamped with these.
+            self._world_resets = WorldResetEpochs(model.world_count, device=device)
+            self._soft_contact_matcher = SoftContactMatcher(
+                soft_contact_max,
+                model.particle_count,
+                self._soft_contact_history_id,
+                self._world_resets,
+                pos_threshold=contact_matching_pos_threshold,
+                mesh_features=self._soft_mesh_contact_data is not None,
+                device=device,
+            )
+        else:
+            self._world_resets = None
+            self._soft_contact_matcher = None
 
         if body_pair_reduction is not None:
             self._body_pair_reducer = BodyPairReduction(
@@ -2826,6 +2868,8 @@ class CollisionPipeline:
             rigid_contact_surface_velocity=self._rigid_contact_surface_velocity,
         )
         contacts._contact_matching_mode = self.contact_matching
+        if self._soft_contact_matcher is not None:
+            contacts._allocate_soft_contact_history()
         contacts._rigid_contact_body_pair_reduced = self._reduces_body_pairs
         if self._soft_mesh_contact_data is not None:
             allocate_soft_mesh_contact_buffers(contacts)
@@ -3022,7 +3066,8 @@ class CollisionPipeline:
         """Clear all or reset-selected previous-frame contact history.
 
         Masked selections accumulate until the next :meth:`collide` call
-        consumes them.
+        consumes them. Rigid-soft contact anchors restart in every
+        :class:`~newton.Contacts` buffer, on that buffer's next pass.
 
         .. experimental::
 
@@ -3039,6 +3084,8 @@ class CollisionPipeline:
         )
         if self._contact_matcher is not None:
             self._contact_matcher.reset(world_mask)
+        if self._world_resets is not None:
+            self._world_resets.advance(world_mask)
 
     @staticmethod
     def _build_excluded_pairs(model: Model) -> wp.array[wp.vec2i] | None:
@@ -3061,6 +3108,10 @@ class CollisionPipeline:
         dt: float | None = None,
     ):
         """Run the collision pipeline using NarrowPhase.
+
+        For sticky rigid-soft matching, call this once outside CUDA graph capture
+        with externally constructed buffers to allocate their history. Buffers
+        returned by this pipeline's :meth:`contacts` are already prepared.
 
         Safe to call inside a :class:`wp.Tape` context.  The non-differentiable
         broad-phase and narrow-phase kernels are launched with tape recording
@@ -3114,6 +3165,15 @@ class CollisionPipeline:
         # particle-only solvers (XPBD, semi-implicit, Style3D) would not raise and would silently
         # ignore them. Mirrors the assignment in CollisionPipeline.contacts().
         contacts._enable_rigid_soft_full_surface_contact = self.enable_rigid_soft_full_surface_contact
+
+        history = contacts._soft_contact_history
+        if self._soft_contact_matcher is not None:
+            history = contacts._allocate_soft_contact_history()
+            # Remember the buffer's anchors as the solver left them, before this pass rewrites its records.
+            self._soft_contact_matcher.save(contacts)
+        if history is not None:
+            # Any pass that rewrites the soft records makes them its own history.
+            history.owner.fill_(self._soft_contact_history_id)
 
         # A reused buffer can retain mesh tags from a full-surface pipeline. The mesh pass
         # resets them itself; without that pass, replacement particle rows need invalid tags.
@@ -3660,6 +3720,12 @@ class CollisionPipeline:
                     gap=soft_contact_gap,
                     data=self._soft_mesh_contact_data,
                 )
+
+        # Anchor the soft records once every soft producer has written them.
+        if self._soft_contact_matcher is not None and state.particle_q:
+            self._soft_contact_matcher.replay(model, state, contacts)
+        elif history is not None:
+            history.use_fresh_points(contacts)
 
         # Preserve the previous provenance if validation or collision setup fails.
         contacts._contact_matching_mode = self.contact_matching

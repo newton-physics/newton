@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton._src.geometry import soft_contacts_mesh
+from newton._src.geometry.soft_contact_match import SoftContactAnchors
 from newton._src.geometry.soft_contacts_mesh import _make_soft_contact_filter_data
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     gather_particle_body_contact_force_and_hessian,
@@ -133,6 +134,7 @@ def _evaluate(solver, state, contacts, gather, buffers):
                     state.particle_q,
                     solver.friction_epsilon,
                     False,
+                    SoftContactAnchors(),
                     False,
                     model.particle_radius,
                     contacts.soft_contact_indices,
@@ -156,6 +158,7 @@ def _evaluate(solver, state, contacts, gather, buffers):
                     model.particle_colors,
                     solver.friction_epsilon,
                     False,
+                    SoftContactAnchors(),
                     False,
                     model.particle_radius,
                     contacts.soft_contact_indices,
@@ -186,6 +189,7 @@ def _evaluate(solver, state, contacts, gather, buffers):
             model.shape_body,
             solver.friction_epsilon,
             False,
+            SoftContactAnchors(),
             False,
             solver.body_particle_contact_penalty_k,
             solver.body_particle_contact_material_ke,
@@ -260,7 +264,7 @@ def test_current_mesh_filter_consumers(test, device):
     """Refresh geometry and activity across force consumers, including CUDA graph replay."""
     # Warp CPU printf capture is unreliable on Windows; verify overflow through its counter.
     test.allowOutputRegex(
-        r"^Warning: Per-body particle contact buffer overflowed \d+ > 256; scanning all stored contacts\.$",
+        r"^Warning: Per-body particle contact buffer overflowed \d+ > 256; scanning all stored contacts\.\r?$",
         stream="stdout",
     )
     model, state, _pipeline, contacts = _scene(device)
@@ -450,7 +454,7 @@ def test_body_candidate_overflow_preserves_reactions(test, device):
     """Retain each body's reactions and feedback when candidate lists overflow."""
     # The counter assertions below verify overflow even when native printf is not captured.
     test.allowOutputRegex(
-        r"^Warning: Per-body particle contact buffer overflowed \d+ > 4; scanning all stored contacts\.$",
+        r"^Warning: Per-body particle contact buffer overflowed \d+ > 4; scanning all stored contacts\.\r?$",
         stream="stdout",
     )
     model, state, _pipeline, contacts = _scene(device, two_bodies=True)
@@ -570,7 +574,7 @@ def test_coupled_mesh_source_overflow(test, device):
     test.allowOutputRegex(
         r"^Mesh soft-contact capacity exceeded: soft_contact_max=2, required=\d+\. "
         r"Increase soft_contact_max to at least \d+ for this collision pass; "
-        r"this collision result is incomplete\.$",
+        r"this collision result is incomplete\.\r?$",
         stream="stdout",
     )
     model, state, _pipeline, _contacts = _scene(device)

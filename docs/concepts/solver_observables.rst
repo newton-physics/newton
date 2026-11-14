@@ -465,8 +465,9 @@ Each soft row is expressed in world frame. Its first three entries are the force
 the contacted shape's body (``model.shape_body[contacts.soft_contact_shape[i]]``, ``-1`` for a
 static shape) by the soft feature; its last three entries are the torque [N·m] of that force about
 the body's center of mass, or about the world origin for a static shape. The force acts at the
-shape-side contact point (``soft_contact_body_pos`` mapped to world space). Negate the force to get
-the force on the soft contact point, and distribute it to the record's particles with
+shape-side contact point (``soft_contact_body_pos`` mapped to world space) when soft contact matching
+is disabled. In that mode, negate the force to get the force on the soft contact point,
+and distribute it to the record's particles with
 ``soft_contact_barycentric``. All values are the solver's own contact law evaluated once at the
 final configuration of the step -- the forces the last iteration balanced -- not time-step
 averages; records without penetration are zero.
@@ -474,10 +475,22 @@ averages; records without penetration are zero.
 For soft contacts this is the penalty law at the final per-contact stiffness, damping on the
 normal gap rate (while the contact point approaches the surface and, with the default
 ``soft_contact_damping_bidirectional=True``, while it separates), and regularized Coulomb
-friction on the step's slip,
-bounded by the elastic normal load. Body-body contacts use the compliant ALM or legacy AVBD
+friction on the step's slip, bounded by the elastic normal load, when soft contact matching is
+disabled. Body-body contacts use the compliant ALM or legacy AVBD
 contact law with its multipliers. Both evaluations retain the step-start pose history used
 by the iterations.
+
+With ``CollisionPipeline(soft_contact_matching=True)``, VBD evaluates the soft rows at its
+private :ref:`contact anchors <soft-contact-anchors>`, using their drift for friction and their
+kept normal load for its cone. The reported force and torque still give the wrench on the rigid
+body (or static shape), with the same world-frame and center-of-mass convention. Use that torque
+directly: the fresh ``soft_contact_body_pos`` does not describe its application point, and the
+fresh ``soft_contact_barycentric`` weights do not describe how VBD distributed the reaction to
+particles. **Per-particle force reconstruction from these rows is unsupported with soft contact
+matching enabled.** There is currently no public snapshot of the evaluated anchor geometry;
+the solver may also relax the anchors after exporting the wrench. Keep soft contact matching
+disabled when reconstructing particle forces or application points from ``Contacts``, as in
+the example below.
 
 Soft self-contact forces are not exported. :class:`~newton.sensors.SensorContact` reads the
 rigid-contact rows, so it reports VBD's body-body contacts, but it does not read the soft rows.

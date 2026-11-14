@@ -16,6 +16,7 @@ import warp as wp
 
 from ...core.reset import reset_world_selected as _reset_world_selected
 from ...geometry import ParticleFlags, ShapeFlags
+from ...geometry.soft_contact_match import SoftContactAnchors, SoftContactHistory
 from ...sim import JointType, Model, ModelFlags, StateFlags
 from ..solver import SolverBase
 from .interface import (
@@ -3519,6 +3520,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         control_callback: Callable[[Control | None], None] | None = None,
     ) -> Contacts | None:
         """Step one sub-solver entry, honoring its local substep count."""
+        source = contacts
         if filter_contacts:
             contacts = self._contacts_for_entry(entry, contacts)
         control = _copy_control_to_entry(control, entry)
@@ -3542,11 +3544,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
             substep_dt = dt / float(entry.substeps)
             for _ in range(entry.substeps):
                 step_solver(entry.state_0, entry.state_0, substep_dt)
-            return contacts
+            return self._write_back_soft_contact_anchors(entry, source, contacts)
 
         if entry.substeps == 1:
             step_solver(entry.state_0, entry.state_1, dt)
-            return contacts
+            return self._write_back_soft_contact_anchors(entry, source, contacts)
 
         substep_dt = dt / float(entry.substeps)
         if entry.state_tmp is None:
@@ -3561,7 +3563,24 @@ class SolverCoupled(SolverBase, CouplingInterface):
             state_in, state_out = state_out, state_in
         if state_in is entry.state_tmp:
             _copy_same_view_state(entry.state_tmp, entry.state_1)
-        return contacts
+        return self._write_back_soft_contact_anchors(entry, source, contacts)
+
+    def _write_back_soft_contact_anchors(
+        self, entry: SolverEntry, source: Contacts | None, filtered: Contacts | None
+    ) -> Contacts | None:
+        """Copy the entry's contact anchors back, so the collision pipeline replays what the entry left."""
+        if source is None or filtered is source or filtered._soft_contact_history is None:
+            return filtered
+        src_to_dst = self._entry_soft_contact_src_to_dst.get(entry.name)
+        if src_to_dst is not None and source.soft_contact_max > 0:
+            wp.launch(
+                _write_back_soft_contact_anchors_kernel,
+                dim=source.soft_contact_max,
+                inputs=[source.soft_contact_count, src_to_dst, filtered._soft_contact_history.anchors],
+                outputs=[source._soft_contact_history.anchors],
+                device=self.model.device,
+            )
+        return filtered
 
     def _contacts_for_entry(self, entry: SolverEntry, contacts: Contacts | None) -> Contacts | None:
         if contacts is None:
@@ -3717,6 +3736,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     contacts.soft_contact_rigid_indices,
                     contacts.soft_contact_barycentric,
                     contacts._soft_contact_mesh_features,
+                    _anchors_of(contacts),
                     entry.view.shape_flags,
                     entry.view.particle_flags,
                     int(ShapeFlags.COLLIDE_PARTICLES),
@@ -3732,6 +3752,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     filtered.soft_contact_rigid_indices,
                     filtered.soft_contact_barycentric,
                     filtered._soft_contact_mesh_features,
+                    _anchors_of(filtered),
                     soft_src_to_dst,
                 ],
                 device=self.model.device,
@@ -3798,6 +3819,15 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 device=contacts.device,
             )
         filtered._contact_matching_mode = contacts.contact_matching_mode
+        source_history = contacts._soft_contact_history
+        if source_history is None or not has_particles:
+            filtered._soft_contact_history = None
+        else:
+            if filtered._soft_contact_history is None:
+                filtered._soft_contact_history = SoftContactHistory(
+                    contacts.soft_contact_max, device=contacts.device, replayable=False
+                )
+            wp.copy(filtered._soft_contact_history.anchors.enabled, source_history.anchors.enabled)
         # Entry solvers check this stamp; the filtered rows are as reduced as their source.
         filtered._rigid_contact_body_pair_reduced = contacts.rigid_contact_body_pair_reduced
         filtered._enable_rigid_soft_full_surface_contact = bool(
@@ -4469,6 +4499,28 @@ def _add_mapped_particle_forces_kernel(
     dst_f[local_id] = dst_f[local_id] + src_f[global_id]
 
 
+def _anchors_of(contacts: Contacts) -> SoftContactAnchors:
+    history = contacts._soft_contact_history
+    return history.anchors if history is not None else SoftContactAnchors()
+
+
+@wp.kernel(enable_backward=False)
+def _write_back_soft_contact_anchors_kernel(
+    src_count: wp.array[int],
+    src_to_dst: wp.array[wp.int32],
+    dst_anchors: SoftContactAnchors,
+    src_anchors: SoftContactAnchors,
+):
+    contact_id = wp.tid()
+    if contact_id >= src_count[0]:
+        return
+    dst_id = src_to_dst[contact_id]
+    if dst_id >= 0:
+        # Entry solvers move the body points and loads; the soft-side points stay as filtered.
+        src_anchors.body_pos[contact_id] = dst_anchors.body_pos[dst_id]
+        src_anchors.normal_force[contact_id] = dst_anchors.normal_force[dst_id]
+
+
 @wp.kernel(enable_backward=False)
 def _prepare_filtered_contact_update_kernel(
     src_generation: wp.array[wp.int32],
@@ -4688,6 +4740,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     src_rigid_indices: wp.array[wp.vec3i],
     src_barycentric: wp.array[wp.vec3],
     src_mesh_features: wp.array[wp.vec3i],
+    src_anchors: SoftContactAnchors,
     shape_flags: wp.array[wp.int32],
     particle_flags: wp.array[wp.int32],
     collide_particles_mask: int,
@@ -4703,6 +4756,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_rigid_indices: wp.array[wp.vec3i],
     dst_barycentric: wp.array[wp.vec3],
     dst_mesh_features: wp.array[wp.vec3i],
+    dst_anchors: SoftContactAnchors,
     src_to_dst: wp.array[wp.int32],
 ):
     if update_filter[0] == 0:
@@ -4739,6 +4793,10 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_pos[dst_id] = src_body_pos[contact_id]
     dst_body_vel[dst_id] = src_body_vel[contact_id]
     dst_normal[dst_id] = src_normal[contact_id]
+    if dst_anchors.body_pos:
+        dst_anchors.barycentric[dst_id] = src_anchors.barycentric[contact_id]
+        dst_anchors.body_pos[dst_id] = src_anchors.body_pos[contact_id]
+        dst_anchors.normal_force[dst_id] = src_anchors.normal_force[contact_id]
     # soft_contact_tids is indexed by candidate thread, not by contact, and full-surface mesh
     # contacts are appended past the candidate range, so the source array can be shorter than
     # soft_contact_count.
