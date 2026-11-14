@@ -903,6 +903,8 @@ def _solve_scc_inequalities_colored_pgs(
     problem_bound_lower: wp.array[float32],
     problem_bound_upper: wp.array[float32],
     problem_D: wp.array[float32],
+    problem_delassus_mio: wp.array[int32],
+    problem_delassus_D: wp.array[float32],
     problem_P: wp.array[float32],
     problem_v_b: wp.array[float32],
     block_iteration: int32,
@@ -916,7 +918,12 @@ def _solve_scc_inequalities_colored_pgs(
     state_v_aug: wp.array[float32],
     solution_lambdas: wp.array[float32],
 ):
-    """Apply one graph-colored PGS schedule to all SCC inequalities."""
+    """Apply one graph-colored PGS schedule to all SCC inequalities.
+
+    ``problem_D`` holds the operator the sweeps project against: the Delassus
+    matrix, or its bilateral Schur complement. ``problem_delassus_D`` is always
+    the unprojected Delassus matrix, whose normal diagonal sets the friction load.
+    """
     tid = wp.tid()
     threads_per_world = int32(wp.block_dim())
     lane = tid % threads_per_world
@@ -937,6 +944,7 @@ def _solve_scc_inequalities_colored_pgs(
         return
     ncts = problem_dim[wid]
     mio = problem_mio[wid]
+    delassus_mio = problem_delassus_mio[wid]
     vio = problem_vio[wid]
     bcgo = problem_bcgo[wid]
     lcgo = problem_lcgo[wid]
@@ -973,138 +981,150 @@ def _solve_scc_inequalities_colored_pgs(
                     color = num_colors - int32(1) - color_index
                 color_start = inequality_color_starts[schedule_offset + color]
                 color_end = inequality_color_starts[schedule_offset + color + int32(1)]
-                color_slot = color_start + lane
-                while color_slot < color_end:
-                    uid = inequality_ids_by_color[uio + color_slot]
-                    delta_0 = float32(0.0)
-                    delta_1 = float32(0.0)
-                    column = bcgo + uid
-                    column_count = int32(1)
-                    active = int32(1)
-                    if uid < nbc:
-                        if phase == int32(1):
-                            active = int32(0)
-                        else:
-                            vec_idx = vio + column
-                            bio = bcio + uid
-                            lambda_bound_old = solution_lambdas[vec_idx]
-                            diagonal = wp.abs(problem_D[mio + ncts * column + column])
-                            lambda_bound_new = _project_box_update(
-                                lambda_bound_old,
-                                state_v_aug[vec_idx],
-                                diagonal,
-                                cfg.regularization,
-                                cfg.omega,
-                                problem_bound_lower[bio],
-                                problem_bound_upper[bio],
-                            )
-                            solution_lambdas[vec_idx] = lambda_bound_new
-                            delta_0 = lambda_bound_new - lambda_bound_old
-                    elif uid < nbc + nl:
-                        column = lcgo + (uid - nbc)
-                        if phase == int32(1):
-                            active = int32(0)
-                        else:
-                            vec_idx = vio + column
-                            lambda_limit_old = solution_lambdas[vec_idx]
-                            diagonal = wp.abs(problem_D[mio + ncts * column + column])
-                            lambda_limit_new = lambda_limit_old
-                            if diagonal > FLOAT32_EPS:
-                                lambda_limit_new = wp.max(
-                                    float32(0.0),
-                                    lambda_limit_old
-                                    - cfg.omega * state_v_aug[vec_idx] / (diagonal + cfg.regularization),
-                                )
-                            solution_lambdas[vec_idx] = lambda_limit_new
-                            delta_0 = lambda_limit_new - lambda_limit_old
-                    else:
-                        cid = uid - nbc - nl
-                        column = ccgo + int32(3) * cid
-                        if phase == int32(0):
-                            column += int32(2)
-                            vec_idx = vio + column
-                            lambda_n_old = solution_lambdas[vec_idx]
-                            diagonal_n = wp.abs(problem_D[mio + ncts * column + column])
-                            lambda_n_new = _project_contact_normal_update(
-                                lambda_n_old,
-                                state_v_aug[vec_idx],
-                                diagonal_n,
-                                cfg.regularization,
-                                cfg.omega,
-                            )
-                            solution_lambdas[vec_idx] = lambda_n_new
-                            delta_0 = lambda_n_new - lambda_n_old
-                        else:
-                            column_count = int32(2)
-                            vec_idx = vio + column
-                            lambda_t0_old = solution_lambdas[vec_idx]
-                            lambda_t1_old = solution_lambdas[vec_idx + int32(1)]
-                            diagonal_t0 = wp.abs(problem_D[mio + ncts * column + column])
-                            diagonal_t1 = wp.abs(problem_D[mio + ncts * (column + int32(1)) + column + int32(1)])
-                            lambda_t_old = wp.vec2f(lambda_t0_old, lambda_t1_old)
-                            lambda_t_new = _project_contact_tangent_update(
-                                lambda_t_old,
-                                wp.vec2f(state_v_aug[vec_idx], state_v_aug[vec_idx + int32(1)]),
-                                wp.vec2f(diagonal_t0, diagonal_t1),
-                                problem_D[mio + ncts * column + column + int32(1)],
-                                cfg.regularization,
-                                cfg.omega,
-                                problem_mu[cio + cid]
-                                * _contact_friction_normal_load(
-                                    solution_lambdas[vec_idx + int32(2)],
-                                    problem_v_b[vec_idx + int32(2)],
-                                    problem_P[vec_idx + int32(2)],
-                                    wp.abs(problem_D[mio + ncts * (column + int32(2)) + column + int32(2)]),
-                                    cfg.regularization,
-                                    cfg.omega,
-                                ),
-                            )
-                            solution_lambdas[vec_idx] = lambda_t_new.x
-                            solution_lambdas[vec_idx + int32(1)] = lambda_t_new.y
-                            delta_0 = lambda_t_new.x - lambda_t_old.x
-                            delta_1 = lambda_t_new.y - lambda_t_old.y
-
-                    if active != int32(0):
-                        if adaptive:
-                            sweep_update = wp.max(sweep_update, wp.max(wp.abs(delta_0), wp.abs(delta_1)))
-                        state_delta[vio + column] = delta_0
-                        if column_count == int32(2):
-                            state_delta[vio + column + int32(1)] = delta_1
-                    color_slot += threads_per_world
-
-                # The projected updates above have one owner per inequality.
-                # Spread their dense velocity updates across the whole block;
-                # small contact colors would otherwise leave most lanes idle.
-                _sync_threads()
-                row_count = contact_end - bcgo
-                color_size = color_end - color_start
-                update_task = lane
-                while update_task < color_size * row_count:
-                    local_color_slot = update_task / row_count
-                    row = bcgo + update_task - local_color_slot * row_count
-                    uid = inequality_ids_by_color[uio + color_start + local_color_slot]
-                    active = int32(0)
-                    if uid >= nbc + nl or phase == int32(0):
-                        active = int32(1)
-                    if active != int32(0):
+                # Eliminated joint rows couple every inequality of an articulation, so
+                # body colors no longer separate Schur rows; sweep them one at a time.
+                batch_start = color_start
+                while batch_start < color_end:
+                    batch_end = color_end
+                    if block_iteration == int32(_FUSED_BILATERAL_BLOCK):
+                        batch_end = batch_start + int32(1)
+                    color_slot = batch_start + lane
+                    while color_slot < batch_end:
+                        uid = inequality_ids_by_color[uio + color_slot]
+                        delta_0 = float32(0.0)
+                        delta_1 = float32(0.0)
                         column = bcgo + uid
                         column_count = int32(1)
-                        if uid >= nbc + nl:
+                        active = int32(1)
+                        if uid < nbc:
+                            if phase == int32(1):
+                                active = int32(0)
+                            else:
+                                vec_idx = vio + column
+                                bio = bcio + uid
+                                lambda_bound_old = solution_lambdas[vec_idx]
+                                diagonal = wp.abs(problem_D[mio + ncts * column + column])
+                                lambda_bound_new = _project_box_update(
+                                    lambda_bound_old,
+                                    state_v_aug[vec_idx],
+                                    diagonal,
+                                    cfg.regularization,
+                                    cfg.omega,
+                                    problem_bound_lower[bio],
+                                    problem_bound_upper[bio],
+                                )
+                                solution_lambdas[vec_idx] = lambda_bound_new
+                                delta_0 = lambda_bound_new - lambda_bound_old
+                        elif uid < nbc + nl:
+                            column = lcgo + (uid - nbc)
+                            if phase == int32(1):
+                                active = int32(0)
+                            else:
+                                vec_idx = vio + column
+                                lambda_limit_old = solution_lambdas[vec_idx]
+                                diagonal = wp.abs(problem_D[mio + ncts * column + column])
+                                lambda_limit_new = lambda_limit_old
+                                if diagonal > FLOAT32_EPS:
+                                    lambda_limit_new = wp.max(
+                                        float32(0.0),
+                                        lambda_limit_old
+                                        - cfg.omega * state_v_aug[vec_idx] / (diagonal + cfg.regularization),
+                                    )
+                                solution_lambdas[vec_idx] = lambda_limit_new
+                                delta_0 = lambda_limit_new - lambda_limit_old
+                        else:
                             cid = uid - nbc - nl
                             column = ccgo + int32(3) * cid
                             if phase == int32(0):
                                 column += int32(2)
+                                vec_idx = vio + column
+                                lambda_n_old = solution_lambdas[vec_idx]
+                                diagonal_n = wp.abs(problem_D[mio + ncts * column + column])
+                                lambda_n_new = _project_contact_normal_update(
+                                    lambda_n_old,
+                                    state_v_aug[vec_idx],
+                                    diagonal_n,
+                                    cfg.regularization,
+                                    cfg.omega,
+                                )
+                                solution_lambdas[vec_idx] = lambda_n_new
+                                delta_0 = lambda_n_new - lambda_n_old
                             else:
                                 column_count = int32(2)
-                        elif uid >= nbc:
-                            column = lcgo + uid - nbc
-                        row_mio = mio + ncts * row
-                        dv = problem_D[row_mio + column] * state_delta[vio + column]
-                        if column_count == int32(2):
-                            dv += problem_D[row_mio + column + int32(1)] * state_delta[vio + column + int32(1)]
-                        wp.atomic_add(state_v_aug, vio + row, dv)
-                    update_task += threads_per_world
-                _sync_threads()
+                                vec_idx = vio + column
+                                lambda_t0_old = solution_lambdas[vec_idx]
+                                lambda_t1_old = solution_lambdas[vec_idx + int32(1)]
+                                diagonal_t0 = wp.abs(problem_D[mio + ncts * column + column])
+                                diagonal_t1 = wp.abs(problem_D[mio + ncts * (column + int32(1)) + column + int32(1)])
+                                lambda_t_old = wp.vec2f(lambda_t0_old, lambda_t1_old)
+                                lambda_t_new = _project_contact_tangent_update(
+                                    lambda_t_old,
+                                    wp.vec2f(state_v_aug[vec_idx], state_v_aug[vec_idx + int32(1)]),
+                                    wp.vec2f(diagonal_t0, diagonal_t1),
+                                    problem_D[mio + ncts * column + column + int32(1)],
+                                    cfg.regularization,
+                                    cfg.omega,
+                                    problem_mu[cio + cid]
+                                    * _contact_friction_normal_load(
+                                        solution_lambdas[vec_idx + int32(2)],
+                                        problem_v_b[vec_idx + int32(2)],
+                                        problem_P[vec_idx + int32(2)],
+                                        wp.abs(
+                                            problem_delassus_D[
+                                                delassus_mio + ncts * (column + int32(2)) + column + int32(2)
+                                            ]
+                                        ),
+                                        cfg.regularization,
+                                        cfg.omega,
+                                    ),
+                                )
+                                solution_lambdas[vec_idx] = lambda_t_new.x
+                                solution_lambdas[vec_idx + int32(1)] = lambda_t_new.y
+                                delta_0 = lambda_t_new.x - lambda_t_old.x
+                                delta_1 = lambda_t_new.y - lambda_t_old.y
+
+                        if active != int32(0):
+                            if adaptive:
+                                sweep_update = wp.max(sweep_update, wp.max(wp.abs(delta_0), wp.abs(delta_1)))
+                            state_delta[vio + column] = delta_0
+                            if column_count == int32(2):
+                                state_delta[vio + column + int32(1)] = delta_1
+                        color_slot += threads_per_world
+
+                    # The projected updates above have one owner per inequality.
+                    # Spread their dense velocity updates across the whole block;
+                    # small contact colors would otherwise leave most lanes idle.
+                    _sync_threads()
+                    row_count = contact_end - bcgo
+                    color_size = batch_end - batch_start
+                    update_task = lane
+                    while update_task < color_size * row_count:
+                        local_color_slot = update_task / row_count
+                        row = bcgo + update_task - local_color_slot * row_count
+                        uid = inequality_ids_by_color[uio + batch_start + local_color_slot]
+                        active = int32(0)
+                        if uid >= nbc + nl or phase == int32(0):
+                            active = int32(1)
+                        if active != int32(0):
+                            column = bcgo + uid
+                            column_count = int32(1)
+                            if uid >= nbc + nl:
+                                cid = uid - nbc - nl
+                                column = ccgo + int32(3) * cid
+                                if phase == int32(0):
+                                    column += int32(2)
+                                else:
+                                    column_count = int32(2)
+                            elif uid >= nbc:
+                                column = lcgo + uid - nbc
+                            row_mio = mio + ncts * row
+                            dv = problem_D[row_mio + column] * state_delta[vio + column]
+                            if column_count == int32(2):
+                                dv += problem_D[row_mio + column + int32(1)] * state_delta[vio + column + int32(1)]
+                            wp.atomic_add(state_v_aug, vio + row, dv)
+                        update_task += threads_per_world
+                    _sync_threads()
+                    batch_start = batch_end
 
         if adaptive:
             sweep_update_max = wp.tile_max(wp.tile(sweep_update))[0]
