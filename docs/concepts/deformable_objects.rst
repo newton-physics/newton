@@ -272,3 +272,66 @@ or tetrahedron.
 Supported USD volume imports record each simulation ``TetMesh`` prim once,
 using its prim path as the label. Native and USD-created volumes use the same
 model attributes and :class:`~newton.selection.DeformableVolumeView`.
+
+.. _deformable-objects-kinematic-particles:
+
+Kinematic particles
+-------------------
+
+.. experimental::
+
+   :attr:`ParticleFlags.KINEMATIC <newton.ParticleFlags.KINEMATIC>` and
+   :attr:`Control.particle_target_q <newton.Control.particle_target_q>` may change
+   without prior notice.
+
+Flag a particle ``ParticleFlags.ACTIVE | ParticleFlags.KINEMATIC`` to drive it to a
+prescribed position. Each ``solver.step(state_in, state_out, control, contacts, dt)``
+then sets ``state_out.particle_q`` to ``control.particle_target_q`` exactly and
+``state_out.particle_qd`` to ``(target - state_in.particle_q) / dt``. Gravity, applied
+forces, elasticity, and contacts do not move the particle, but neighbors, bodies,
+friction, and damping all see its motion. The target buffer is indexed by global
+particle index like :attr:`State.particle_q <newton.State.particle_q>`, so one write
+kernel covers every world.
+
+.. code-block:: python
+
+   builder.add_particle(pos, vel, mass, flags=newton.ParticleFlags.ACTIVE | newton.ParticleFlags.KINEMATIC)
+   ...
+   control = model.control()  # particle_target_q starts at model.particle_q
+   for _ in range(substeps):
+       wp.launch(write_targets, dim=n, inputs=[t], outputs=[control.particle_target_q])
+       solver.step(state_0, state_1, control, contacts, sim_dt)
+       state_0, state_1 = state_1, state_0
+
+- **Missing targets.** Without a Control or with ``particle_target_q`` set to ``None``,
+  kinematic particles hold their ``state_in`` position with zero velocity.
+  :meth:`Model.control(clone_variables=False) <newton.Model.control>` leaves the target
+  ``None``.
+- **Substeps.** The target is the end pose of one ``step()`` call; nothing is
+  interpolated. Write the target every substep for smooth motion.
+- **Grasp and release.** Flags are read every step, so toggling the bit on the device
+  needs no :meth:`~newton.solvers.SolverBase.notify_model_changed`. A target equal to
+  the current ``state.particle_q`` grasps without a position jump but stops the
+  particle; ``particle_q + particle_qd * dt`` keeps its velocity. Clearing the bit
+  releases the particle with its last driven velocity.
+- **Reset.** :meth:`~newton.solvers.SolverBase.reset` does not touch Control; rewrite
+  targets for reset worlds. :meth:`Control.clear(model) <newton.Control.clear>` restores
+  all of them to ``model.particle_q``.
+- **Collision.** Contacts from :meth:`~newton.CollisionPipeline.collide` are generated
+  at ``state_in``, and discontinuity-aware truncation does not sweep the kinematic path.
+  Keep per-step target motion within the contact margin; a fast kinematic particle can
+  tunnel through cloth, as with kinematic bodies.
+- **Input state.** Kinematic particles are driven only through
+  ``control.particle_target_q``. When a target is given, a position written to
+  ``state.particle_q`` is replaced by it on the next step. :class:`~newton.solvers.SolverVBD` writes the targets
+  into ``state_in.particle_q`` at the start of the step.
+- **Support.** :class:`~newton.solvers.SolverVBD`,
+  :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`, and
+  :class:`~newton.solvers.SolverFeatherstone`. :class:`~newton.solvers.SolverStyle3D`
+  and :class:`~newton.solvers.SolverImplicitMPM` raise ``NotImplementedError`` if a
+  particle is kinematic at construction; they ignore the flag if it is set later.
+  :class:`~newton.solvers.SolverCoupled` entries copy particle flags at construction,
+  so set the flag before building the coupled solver. An entry with kinematic particles
+  must use ``substeps=1``, and kinematic particles cannot be coupling proxies.
+
+Legacy pins with zero mass or a cleared ``ACTIVE`` flag keep their previous behavior.
