@@ -110,19 +110,20 @@ def _parse_articulations(
         if verbose and articulation_custom_attrs:
             logger.info("Extracted articulation custom attributes: %s", articulation_custom_attrs)
         body_data = {}
-        # OpenUSD includes external equality endpoints in articulatedBodies.
-        # Do not consume another articulation's body specs for equality-only
-        # connections; non-equality joints still define structural ownership.
-        equality_body_paths = set()
-        structural_body_paths = set()
+        # OpenUSD also lists the far endpoint of excluded joints in articulatedBodies;
+        # only bodies reached through a tree joint belong to this articulation.
+        tree_body_paths = set()
         for joint_path in desc.articulatedJoints:
             joint_key = str(joint_path)
             joint_desc = joint_descriptions[joint_key]
-            body_paths = (
-                equality_body_paths if joint_key in mjc_equality_connect_or_weld_paths else structural_body_paths
-            )
-            body_paths.update((str(joint_desc.body0), str(joint_desc.body1)))
-        equality_only_body_paths = equality_body_paths - structural_body_paths
+            if joint_key in mjc_equality_connect_or_weld_paths or joint_desc.excludeFromArticulation:
+                continue
+            tree_body_paths.update((str(joint_desc.body0), str(joint_desc.body1)))
+        # Without tree joints (e.g. a single root body) keep the articulation root body,
+        # or every listed body when the root API sits on a non-body ancestor.
+        if not tree_body_paths:
+            articulated_keys = {str(p) for p in desc.articulatedBodies}
+            tree_body_paths = {articulation_path} if articulation_path in articulated_keys else articulated_keys
         body_ids = {}
         body_labels = []
         current_body_id = 0
@@ -135,11 +136,7 @@ def _parse_articulations(
             key = str(p)
             if key in ignored_body_paths:
                 continue
-            if (
-                key in equality_only_body_paths
-                and key != articulation_path
-                and not key.startswith("/" if articulation_path == "/" else f"{articulation_path}/")
-            ):
+            if key not in tree_body_paths:
                 continue
 
             usd_prim = stage.GetPrimAtPath(p)
