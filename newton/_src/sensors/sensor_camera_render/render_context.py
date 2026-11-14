@@ -12,7 +12,6 @@ import warp as wp
 from ...core import Axis
 from ...geometry import GeoType, Mesh
 from ...geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals, _DeformableVisualSkinBatches
-from ...geometry.optix import Scene, UnsupportedError, wo
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
@@ -87,7 +86,7 @@ class RenderContext:
         model: Model,
         load_textures: bool = True,
         *,
-        backend: str | None = None,
+        backend: str = "warp",
         deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Create a render context for a Newton simulation model.
@@ -103,13 +102,10 @@ class RenderContext:
         Args:
             model: Newton simulation model providing shapes and particles.
             load_textures: Load shape and visual mesh textures from file paths or in-memory images.
-            backend: ``"warp"``, ``"optix"``, or ``None`` to use OptiX when supported.
+            backend: ``"warp"`` or ``"optix"``.
             deformable_surface_mode: Which deformable surfaces to upload: the simulation triangles,
                 the visual meshes, or both.
         """
-        self.backend = "warp"
-        self.optix: Scene | None = None
-        self._optix_synced = False
         self._model = model
         self._deformable_surface_mode = deformable_surface_mode
         self._render_state = RenderContext.RenderState()
@@ -218,17 +214,17 @@ class RenderContext:
             if self._skinned_vertex_count:
                 self._skinned_points = self._triangle_points[self._triangle_particle_count :]
 
-        if backend not in (None, "warp", "optix"):
-            raise ValueError(f"backend must be None, 'warp' or 'optix', got {backend!r}")
-        if backend != "warp":
+        if backend not in ("warp", "optix"):
+            raise ValueError(f"backend must be 'warp' or 'optix', got {backend!r}")
+        if backend == "optix":
+            if self._has_particles or self._has_triangle_mesh:
+                raise RuntimeError("The OptiX camera backend does not support particles or deformable surfaces")
             try:
-                if self._has_particles or self._has_triangle_mesh:
-                    raise UnsupportedError("The OptiX camera backend does not support particles or deformable surfaces")
-                self.optix = Scene(model)
-                self.backend = "optix"
-            except UnsupportedError:
-                if backend == "optix":
-                    raise
+                from ...geometry import optix  # noqa: PLC0415
+            except ImportError as exc:
+                raise RuntimeError("The OptiX camera backend requires the newton[optix] extra") from exc
+            optix.check_supported(model)
+        self.backend = backend
 
     @property
     def model(self) -> Model:
@@ -522,19 +518,22 @@ class RenderContext:
             clear_data: Values used to clear output images before
                 rendering. Pass ``None`` to use :attr:`DEFAULT_CLEAR_DATA`.
             hdr_color_image: Output linear HDR color buffer.
-            sync_shapes: Refit the OptiX shape instances before rendering.
+            sync_shapes: With the OptiX backend, refit :attr:`~newton.Model.optix_shapes`
+                from *state* with :meth:`~newton.Model.optix_refit_shapes`. The first render
+                builds them with :meth:`~newton.Model.optix_build_shapes` if needed.
             config: Render settings for this render call. If ``None``, uses
                 default :class:`RenderConfig` settings.
         """
         model = self.model
-        optix = self.optix
-        if optix is not None:
+        optix = None
+        if self.backend == "optix":
             if self.device.stream.is_capturing:
                 raise RuntimeError("The OptiX camera backend does not support CUDA graph capture; use backend='warp'")
-            # Shapes may have moved since construction.
-            if sync_shapes or not self._optix_synced:
-                optix.refit()
-                self._optix_synced = True
+            if model.optix_shapes is None:
+                model.optix_build_shapes(state)
+            elif sync_shapes:
+                model.optix_refit_shapes(state)
+            optix = model.optix_shapes
 
         if config is None:
             config = RenderContext.DEFAULT_RENDER_CONFIG
@@ -545,15 +544,17 @@ class RenderContext:
         if camera_rays.ndim == 4 and camera_rays.shape[2] > 1 and anti_aliasing == AntiAliasing.NONE:
             raise ValueError("anti_aliasing must be SSAA or MSAA for camera_rays with more than one sample")
 
-        if model.shape_count > 0 and model.bvh_shape_enabled is None:
-            raise RuntimeError(
-                "Shape BVH is missing. ModelBuilder.finalize() builds it for finalized models; "
-                "call model.bvh_build_shapes(state) for manually populated models."
-            )
-
-        has_shapes = model.bvh_shape_count_enabled > 0
-        if has_shapes and (model.bvh_shapes is None or model.bvh_shapes_group_roots is None):
-            raise RuntimeError("Shape BVH is incomplete; rebuild it with model.bvh_build_shapes(state).")
+        if optix is not None:
+            has_shapes = optix.has_instances or bool(optix.planes)
+        else:
+            if model.shape_count > 0 and model.bvh_shape_enabled is None:
+                raise RuntimeError(
+                    "Shape BVH is missing. ModelBuilder.finalize() builds it for finalized models; "
+                    "call model.bvh_build_shapes(state) for manually populated models."
+                )
+            has_shapes = model.bvh_shape_count_enabled > 0
+            if has_shapes and (model.bvh_shapes is None or model.bvh_shapes_group_roots is None):
+                raise RuntimeError("Shape BVH is incomplete; rebuild it with model.bvh_build_shapes(state).")
 
         has_particles = (
             config.enable_particles
@@ -645,15 +646,19 @@ class RenderContext:
             # snapshots the mutable config so a later mutation cannot alter a stored
             # key (state/clear_data are snapshotted the same way on insert).
             key_config = replace(config, block_dim=0)
-            render_kernel = self._kernel_cache.get((key_config, self._render_state, clear_data))
+            render_kernel = self._kernel_cache.get((key_config, self._render_state, clear_data, optix))
             if render_kernel is None:
                 # Copies: the factories capture them in wp.static, and shared modules may recompile.
                 render_kernel = create_kernel(replace(config), replace(self._render_state), replace(clear_data), optix)
                 if optix is not None:
-                    render_kernel = optix.pipeline(
-                        render_kernel, enable_backface_culling=config.enable_backface_culling
+                    from ...geometry.optix import create_pipeline  # noqa: PLC0415
+
+                    render_kernel = create_pipeline(
+                        optix, render_kernel, enable_backface_culling=config.enable_backface_culling
                     )
-                self._kernel_cache[(key_config, replace(self._render_state), replace(clear_data))] = render_kernel
+                self._kernel_cache[(key_config, replace(self._render_state), replace(clear_data), optix)] = (
+                    render_kernel
+                )
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
 
@@ -664,7 +669,12 @@ class RenderContext:
                 pixels_per_view = tiles_x * tiles_y * config.tile_width * config.tile_height
 
             self._gather_variant_render_data()
-            launch = wp.launch if optix is None else wo.launch
+            if optix is None:
+                launch = wp.launch
+            else:
+                from ...geometry.optix import wo  # noqa: PLC0415
+
+                launch = wo.launch
             launch_options = {"device": self.device, "block_dim": config.block_dim} if optix is None else {}
             launch(
                 render_kernel,
@@ -681,15 +691,15 @@ class RenderContext:
                     camera_transforms,
                     world_indices,
                     # Shape BVH
-                    model.bvh_shape_count_enabled,
-                    optix.handle if optix is not None else (model.bvh_shapes.id if model.bvh_shapes is not None else 0),
-                    model.bvh_shapes_group_roots,
+                    model.bvh_shape_count_enabled if optix is None else 0,
+                    optix.id if optix is not None else (model.bvh_shapes.id if model.bvh_shapes is not None else 0),
+                    model.bvh_shapes_group_roots if optix is None else None,
                     # Shapes
-                    model._bvh_shape_active_leaves,
+                    model._bvh_shape_active_leaves if optix is None else None,
                     self._get_shape_render_type(),  # HFIELD and CONVEX_MESH remapped to MESH
                     model.shape_scale,
                     model.shape_color,
-                    model.bvh_shape_world_transforms,
+                    model.bvh_shape_world_transforms if optix is None else optix.shape_world_transforms,
                     model.shape_source_ptr,
                     self._shape_texture_ids,
                     self._shape_mesh_data_ids,

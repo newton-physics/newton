@@ -142,7 +142,7 @@ class SensorCamera:
         default_clear_data: ClearData | None = None,
         default_render_config: RenderConfig | None = None,
         load_textures: bool = True,
-        backend: str | None = None,
+        backend: str = "warp",
         deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Construct a camera sensor for a model.
@@ -155,10 +155,10 @@ class SensorCamera:
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
                 ``RenderConfig()``.
-            backend: ``"warp"``, ``"optix"`` (experimental, requires ``newton[optix]``),
-                or ``None`` to use OptiX when it supports the model and device.
-                ``"optix"`` raises :class:`RuntimeError` when unsupported. With OptiX, shapes must
-                stay within twice their initial distance from the origin.
+            backend: ``"warp"`` traverses :attr:`~newton.Model.bvh_shapes`; ``"optix"``
+                (experimental, requires ``newton[optix]``) traverses
+                :attr:`~newton.Model.optix_shapes` and raises :class:`RuntimeError` when OptiX
+                does not support the model or device.
             load_textures: Load the textures of shape meshes and deformable visual
                 meshes from file paths or in-memory images. A texture that cannot
                 be loaded raises ``ValueError`` here, so pass ``False`` for
@@ -1063,8 +1063,9 @@ class SensorCamera:
                 :attr:`default_clear_data`.
             render_config: Render settings for this call. Defaults to
                 :attr:`default_render_config`.
-            sync_shapes: Refit the OptiX shape instances from the model's shape
-                transforms. The first update always refits.
+            sync_shapes: With the OptiX backend, refit :attr:`~newton.Model.optix_shapes`
+                from *state* with :meth:`~newton.Model.optix_refit_shapes`. The first update
+                builds them with :meth:`~newton.Model.optix_build_shapes` if needed.
             sync_deformables: Sync simulation surfaces and visual mesh points
                 from *state* before rendering. Set ``False`` if you already
                 called :meth:`sync_deformable_meshes` this frame.

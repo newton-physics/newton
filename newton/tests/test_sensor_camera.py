@@ -24,14 +24,10 @@ _IDENTITY_XFORM = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32
 
 
 class TestSensorCamera(unittest.TestCase):
-    device = "cpu"
-    backend = "warp"
-
-    def _rays(
-        self, width: int, height: int, fov: float = math.radians(45.0), device: str | None = None
-    ) -> wp.array4d[wp.vec3f]:
+    @staticmethod
+    def _rays(width: int, height: int, fov: float = math.radians(45.0), device: str = "cpu") -> wp.array4d[wp.vec3f]:
         """Camera-space pinhole rays, shape ``(height, width, 1, 2)``."""
-        return SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=fov, device=device or self.device)
+        return SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=fov, device=device)
 
     @staticmethod
     def _sphere_world_builder() -> newton.ModelBuilder:
@@ -41,29 +37,32 @@ class TestSensorCamera(unittest.TestCase):
         builder.add_shape_sphere(sphere_body, radius=0.75, color=(0.25, 0.5, 0.75))
         return builder
 
+    @classmethod
     def _build_sphere_scene(
-        self,
+        cls,
         *,
         world_count: int = 1,
     ) -> tuple[newton.Model, SensorCamera]:
         if world_count == 1:
-            builder = self._sphere_world_builder()
+            builder = cls._sphere_world_builder()
         else:
             builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
             for _ in range(world_count):
-                builder.add_world(self._sphere_world_builder())
+                builder.add_world(cls._sphere_world_builder())
 
-        model = builder.finalize(device=self.device)
-        camera = SensorCamera(model, backend=self.backend)
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
         return model, camera
 
-    def _identity_transforms(self, view_count: int, device: str | None = None) -> wp.array[wp.transformf]:
+    @staticmethod
+    def _identity_transforms(view_count: int, device: str = "cpu") -> wp.array[wp.transformf]:
         """World-space identity camera poses, shape ``(view_count,)``."""
-        return wp.array(np.tile(_IDENTITY_XFORM, (view_count, 1)), dtype=wp.transformf, device=device or self.device)
+        return wp.array(np.tile(_IDENTITY_XFORM, (view_count, 1)), dtype=wp.transformf, device=device)
 
-    def _camera_with_model(self, model: newton.Model, **camera_kwargs) -> SensorCamera:
+    @staticmethod
+    def _camera_with_model(model: newton.Model, **camera_kwargs) -> SensorCamera:
         """A SensorCamera that renders ``model`` (owns an internal render context)."""
-        return SensorCamera(model, backend=self.backend, **camera_kwargs)
+        return SensorCamera(model, **camera_kwargs)
 
     def test_camera_ray_helpers_live_on_sensor_camera(self) -> None:
         """Verify camera ray helpers live on SensorCamera."""
@@ -97,26 +96,26 @@ class TestSensorCamera(unittest.TestCase):
 
         width, height = 3, 3
         rays = [
-            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=math.radians(45.0), device=self.device),
+            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=math.radians(45.0), device="cpu"),
             SensorCamera.compute_camera_rays_pinhole(
                 width,
                 height,
                 focal_length=1.0,
                 horizontal_aperture=2.0,
                 vertical_aperture=2.0,
-                device=self.device,
+                device="cpu",
             ),
             SensorCamera.compute_camera_rays_pinhole_opencv(
-                width, height, fx=2.0, fy=4.0, cx=1.0, cy=2.0, device=self.device
+                width, height, fx=2.0, fy=4.0, cx=1.0, cy=2.0, device="cpu"
             ),
             SensorCamera.compute_camera_rays_fisheye_opencv(
-                width, height, fx=1.0, fy=1.0, cx=1.5, cy=1.5, device=self.device
+                width, height, fx=1.0, fy=1.0, cx=1.5, cy=1.5, device="cpu"
             ),
             SensorCamera.compute_camera_rays_fisheye_ftheta(
-                width, height, optical_center_x=1.5, optical_center_y=1.5, device=self.device
+                width, height, optical_center_x=1.5, optical_center_y=1.5, device="cpu"
             ),
             SensorCamera.compute_camera_rays_fisheye_kannala_brandt(
-                width, height, optical_center_x=1.5, optical_center_y=1.5, device=self.device
+                width, height, optical_center_x=1.5, optical_center_y=1.5, device="cpu"
             ),
         ]
 
@@ -127,10 +126,10 @@ class TestSensorCamera(unittest.TestCase):
     def test_camera_ray_helpers_support_preallocated_output(self) -> None:
         """Verify camera ray helpers can write into caller output arrays."""
         width, height = 4, 3
-        out_rays = wp.zeros((height, width, 1, 2), dtype=wp.vec3f, device=self.device)
+        out_rays = wp.zeros((height, width, 1, 2), dtype=wp.vec3f, device="cpu")
 
         rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), out_rays=out_rays, device=self.device
+            width, height, camera_fov=math.radians(45.0), out_rays=out_rays, device="cpu"
         )
 
         self.assertIs(rays, out_rays)
@@ -140,13 +139,13 @@ class TestSensorCamera(unittest.TestCase):
         """Generate distinct subpixel rays from every camera model."""
         width, height = 4, 3
         default_rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), device=self.device
+            width, height, camera_fov=math.radians(45.0), device="cpu"
         )
         one_sample_rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), sample_count=1, device=self.device
+            width, height, camera_fov=math.radians(45.0), sample_count=1, device="cpu"
         )
         multisample_rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), sample_count=4, device=self.device
+            width, height, camera_fov=math.radians(45.0), sample_count=4, device="cpu"
         )
 
         self.assertEqual(default_rays.shape, (height, width, 1, 2))
@@ -159,16 +158,16 @@ class TestSensorCamera(unittest.TestCase):
 
         calibrated_rays = (
             SensorCamera.compute_camera_rays_pinhole_opencv(
-                width, height, fx=2.0, fy=2.0, cx=2.0, cy=1.5, sample_count=4, device=self.device
+                width, height, fx=2.0, fy=2.0, cx=2.0, cy=1.5, sample_count=4, device="cpu"
             ),
             SensorCamera.compute_camera_rays_fisheye_opencv(
-                width, height, fx=2.0, fy=2.0, cx=2.0, cy=1.5, sample_count=4, device=self.device
+                width, height, fx=2.0, fy=2.0, cx=2.0, cy=1.5, sample_count=4, device="cpu"
             ),
             SensorCamera.compute_camera_rays_fisheye_ftheta(
-                width, height, optical_center_x=2.0, optical_center_y=1.5, sample_count=4, device=self.device
+                width, height, optical_center_x=2.0, optical_center_y=1.5, sample_count=4, device="cpu"
             ),
             SensorCamera.compute_camera_rays_fisheye_kannala_brandt(
-                width, height, optical_center_x=2.0, optical_center_y=1.5, sample_count=4, device=self.device
+                width, height, optical_center_x=2.0, optical_center_y=1.5, sample_count=4, device="cpu"
             ),
         )
         for rays in calibrated_rays:
@@ -176,7 +175,7 @@ class TestSensorCamera(unittest.TestCase):
             directions = rays.numpy()[1, 1, :, 1]
             self.assertFalse(np.allclose(directions, directions[0]))
 
-        out_rays = wp.empty((height, width, 4, 2), dtype=wp.vec3f, device=self.device)
+        out_rays = wp.empty((height, width, 4, 2), dtype=wp.vec3f, device="cpu")
         rays = SensorCamera.compute_camera_rays_pinhole(
             width,
             height,
@@ -191,18 +190,16 @@ class TestSensorCamera(unittest.TestCase):
             with self.subTest(sample_count=sample_count):
                 with self.assertRaisesRegex(ValueError, "sample_count must be positive"):
                     SensorCamera.compute_camera_rays_pinhole(
-                        width, height, camera_fov=1.0, sample_count=sample_count, device=self.device
+                        width, height, camera_fov=1.0, sample_count=sample_count, device="cpu"
                     )
 
     def test_camera_multisample_offsets_center_on_pixel(self) -> None:
         """Center the pattern and place its first ray at the center when possible."""
-        center_ray = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=1.0, device=self.device).numpy()[
-            0, 0, 0, 1
-        ]
+        center_ray = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=1.0, device="cpu").numpy()[0, 0, 0, 1]
         for sample_count in (2, 3, 4, 5, 6, 8, 16):
             with self.subTest(sample_count=sample_count):
                 rays = SensorCamera.compute_camera_rays_pinhole(
-                    1, 1, camera_fov=1.0, sample_count=sample_count, device=self.device
+                    1, 1, camera_fov=1.0, sample_count=sample_count, device="cpu"
                 ).numpy()[0, 0, :, 1]
                 ray_slopes = -rays[:, :2] / rays[:, 2, None]
                 np.testing.assert_allclose(ray_slopes.mean(axis=0), (0.0, 0.0), atol=1.0e-6)
@@ -230,23 +227,23 @@ class TestSensorCamera(unittest.TestCase):
                 focal_length=1.0,
                 horizontal_aperture=2.0,
                 vertical_aperture=2.0,
-                device=self.device,
+                device="cpu",
             )
 
         with self.assertRaises(TypeError):
-            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=[math.radians(45.0)], device=self.device)
+            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=[math.radians(45.0)], device="cpu")
 
         with self.assertRaises(TypeError):
             SensorCamera.compute_camera_rays_pinhole(
                 width,
                 height,
-                focal_length=wp.array([1.0], dtype=wp.float32, device=self.device),
+                focal_length=wp.array([1.0], dtype=wp.float32, device="cpu"),
                 horizontal_aperture=2.0,
                 vertical_aperture=2.0,
-                device=self.device,
+                device="cpu",
             )
 
-        out_rays = wp.zeros((1, height, width, 2), dtype=wp.vec3f, device=self.device)
+        out_rays = wp.zeros((1, height, width, 2), dtype=wp.vec3f, device="cpu")
         with self.assertRaisesRegex(ValueError, "out_rays must have shape"):
             SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=math.radians(45.0), out_rays=out_rays)
 
@@ -255,10 +252,10 @@ class TestSensorCamera(unittest.TestCase):
         width, height = 4, 3
         for bad_fov in (0.0, math.pi, -0.1, math.pi + 0.1):
             with self.assertRaisesRegex(ValueError, r"camera_fov must be in \(0, pi\)"):
-                SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=bad_fov, device=self.device)
+                SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=bad_fov, device="cpu")
         with self.assertRaisesRegex(ValueError, "must be positive"):
             SensorCamera.compute_camera_rays_pinhole(
-                width, height, focal_length=0.0, horizontal_aperture=2.0, vertical_aperture=2.0, device=self.device
+                width, height, focal_length=0.0, horizontal_aperture=2.0, vertical_aperture=2.0, device="cpu"
             )
 
     def test_update_validates_rays_and_transforms(self) -> None:
@@ -276,7 +273,7 @@ class TestSensorCamera(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "camera_rays must have dtype"):
             camera.update(state, camera_transforms, camera_transforms)
         with self.assertRaisesRegex(ValueError, "camera_rays must have shape"):
-            camera.update(state, camera_transforms, wp.zeros((height, width, 2, 3), dtype=wp.vec3f, device=self.device))
+            camera.update(state, camera_transforms, wp.zeros((height, width, 2, 3), dtype=wp.vec3f, device="cpu"))
         with self.assertRaisesRegex(ValueError, "camera_rays must have shape"):
             camera.update(state, camera_transforms, rays.reshape((height, width, 2)))
         with self.assertRaises(TypeError):
@@ -296,7 +293,7 @@ class TestSensorCamera(unittest.TestCase):
         ray_values = single_sample_rays.numpy()
         multisample_values = np.zeros((1, 1, 2, 2, 3), dtype=np.float32)
         multisample_values[:, :, 0] = ray_values[:, :, 0]
-        multisample_rays = wp.array(multisample_values, dtype=wp.vec3f, device=self.device)
+        multisample_rays = wp.array(multisample_values, dtype=wp.vec3f, device="cpu")
 
         single_color = camera.allocate_image_color(1, 1, 1)
         multisample_color = camera.allocate_image_color(1, 1, 1)
@@ -370,8 +367,8 @@ class TestSensorCamera(unittest.TestCase):
         builder.add_shape_sphere(red_body, radius=0.5, color=(1.0, 0.0, 0.0))
         blue_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.3, 0.0, -2.0), q=wp.quat_identity()))
         builder.add_shape_sphere(blue_body, radius=0.5, color=(0.0, 0.0, 1.0))
-        model = builder.finalize(device=self.device)
-        camera = SensorCamera(model, backend=self.backend)
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
         state = model.state()
         transforms = self._identity_transforms(1)
 
@@ -383,12 +380,12 @@ class TestSensorCamera(unittest.TestCase):
         def _single_ray(direction: np.ndarray) -> wp.array4d[wp.vec3f]:
             values = np.zeros((1, 1, 1, 2, 3), dtype=np.float32)
             values[0, 0, 0, 1] = direction
-            return wp.array(values, dtype=wp.vec3f, device=self.device)
+            return wp.array(values, dtype=wp.vec3f, device="cpu")
 
         bundle_values = np.zeros((1, 1, 2, 2, 3), dtype=np.float32)
         bundle_values[0, 0, 0, 1] = dir_red
         bundle_values[0, 0, 1, 1] = dir_blue
-        bundle_rays = wp.array(bundle_values, dtype=wp.vec3f, device=self.device)
+        bundle_rays = wp.array(bundle_values, dtype=wp.vec3f, device="cpu")
 
         red_color = camera.allocate_image_color(1, 1, 1)
         blue_color = camera.allocate_image_color(1, 1, 1)
@@ -429,19 +426,19 @@ class TestSensorCamera(unittest.TestCase):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -4.0), q=wp.quat_identity()))
         builder.add_shape_sphere(body, radius=2.0, color=(1.0, 0.5, 0.2))
-        model = builder.finalize(device=self.device)
-        camera = SensorCamera(model, backend=self.backend)
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
         camera.create_default_light()
         state = model.state()
         transforms = self._identity_transforms(1)
-        center_rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device=self.device)
+        center_rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device="cpu")
         center_hdr = camera.allocate_image_color_hdr(1, 1, 1)
         camera.update(state, transforms, center_rays, hdr_color_image=center_hdr)
 
         for sample_count in (3, 4, 8):
             with self.subTest(sample_count=sample_count):
                 rays = SensorCamera.compute_camera_rays_pinhole(
-                    1, 1, camera_fov=0.8, sample_count=sample_count, device=self.device
+                    1, 1, camera_fov=0.8, sample_count=sample_count, device="cpu"
                 )
                 msaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
                 camera.update(
@@ -453,10 +450,13 @@ class TestSensorCamera(unittest.TestCase):
                 )
                 np.testing.assert_allclose(msaa_hdr.numpy(), center_hdr.numpy(), atol=1.0e-6)
 
-    def _center_hdr(self, camera: SensorCamera, model: newton.Model, **update_kwargs) -> np.ndarray:
-        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device=self.device)
+    @staticmethod
+    def _center_hdr(camera: SensorCamera, model: newton.Model, **update_kwargs) -> np.ndarray:
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device="cpu")
         hdr = camera.allocate_image_color_hdr(1, 1, 1)
-        camera.update(model.state(), self._identity_transforms(1), rays, hdr_color_image=hdr, **update_kwargs)
+        camera.update(
+            model.state(), TestSensorCamera._identity_transforms(1), rays, hdr_color_image=hdr, **update_kwargs
+        )
         return hdr.numpy().reshape(-1)[:3]
 
     def test_default_ambient_light_matches_previous_constants(self) -> None:
@@ -486,10 +486,10 @@ class TestSensorCamera(unittest.TestCase):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -2.0), q=wp.quat_identity()))
         builder.add_shape_sphere(body, radius=0.75, color=(1.0, 1.0, 1.0))
-        model = builder.finalize(device=self.device)
-        camera = SensorCamera(model, backend=self.backend)
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
         camera.set_ambient_light((0.3, 0.3, 0.3))
-        rays = SensorCamera.compute_camera_rays_pinhole(16, 16, camera_fov=0.8, device=self.device)
+        rays = SensorCamera.compute_camera_rays_pinhole(16, 16, camera_fov=0.8, device="cpu")
         hdr = camera.allocate_image_color_hdr(1, 16, 16)
         shape_index = camera.allocate_image_shape_index(1, 16, 16)
         camera.update(
@@ -522,12 +522,12 @@ class TestSensorCamera(unittest.TestCase):
             builder.add_shape_sphere(body, radius=0.75, color=(0.25, 0.5, 0.75))
             ground = builder.add_body(xform=wp.transform(p=wp.quat_rotate(q, wp.vec3(0.0, 0.0, -4.0)), q=q))
             builder.add_shape_box(ground, hx=3.0, hy=3.0, hz=0.1, color=(0.8, 0.8, 0.8))
-            model = builder.finalize(device=self.device)
-            camera = SensorCamera(model, backend=self.backend)
+            model = builder.finalize(device="cpu")
+            camera = SensorCamera(model)
             camera.create_default_light()
-            rays = SensorCamera.compute_camera_rays_pinhole(24, 24, camera_fov=1.2, device=self.device)
+            rays = SensorCamera.compute_camera_rays_pinhole(24, 24, camera_fov=1.2, device="cpu")
             hdr = camera.allocate_image_color_hdr(1, 24, 24)
-            transforms = wp.array([wp.transformf(wp.vec3f(0.0), wp.quatf(q))], dtype=wp.transformf, device=self.device)
+            transforms = wp.array([wp.transformf(wp.vec3f(0.0), wp.quatf(q))], dtype=wp.transformf, device="cpu")
             camera.update(model.state(), transforms, rays, hdr_color_image=hdr)
             images.append(hdr.numpy())
         self.assertGreater(float(images[0].max()), 0.0)
@@ -538,14 +538,14 @@ class TestSensorCamera(unittest.TestCase):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         for x in (-0.3, 0.3):
             builder.add_particle(pos=wp.vec3(x, 0.0, -2.0), vel=wp.vec3(0.0), mass=1.0, radius=0.25)
-        model = builder.finalize(device=self.device)
-        camera = SensorCamera(model, backend=self.backend)
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
         camera.create_default_light()
         ray_values = np.zeros((1, 1, 2, 2, 3), dtype=np.float32)
         for sample_index, x in enumerate((-0.3, 0.3)):
             direction = np.array([x, 0.0, -2.0], dtype=np.float32)
             ray_values[0, 0, sample_index, 1] = direction / np.linalg.norm(direction)
-        rays = wp.array(ray_values, dtype=wp.vec3f, device=self.device)
+        rays = wp.array(ray_values, dtype=wp.vec3f, device="cpu")
         transforms = self._identity_transforms(1)
         ssaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
         msaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
@@ -571,12 +571,12 @@ class TestSensorCamera(unittest.TestCase):
         """Shade repeated hits on one particle using the first covered sample."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.add_particle(pos=wp.vec3(0.0, 0.0, -2.0), vel=wp.vec3(0.0), mass=1.0, radius=0.75)
-        model = builder.finalize(device=self.device)
-        camera = SensorCamera(model, backend=self.backend)
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
         camera.create_default_light()
         transforms = self._identity_transforms(1)
-        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, sample_count=3, device=self.device)
-        first_rays = wp.array(rays.numpy()[:, :, 0:1].copy(), dtype=wp.vec3f, device=self.device)
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, sample_count=3, device="cpu")
+        first_rays = wp.array(rays.numpy()[:, :, 0:1].copy(), dtype=wp.vec3f, device="cpu")
         first_hdr = camera.allocate_image_color_hdr(1, 1, 1)
         msaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
 
@@ -610,30 +610,26 @@ class TestSensorCamera(unittest.TestCase):
             indices=[0, 1, 2, 3, 4, 5],
             density=1.0,
         )
-        model = builder.finalize(device=self.device)
-        camera = SensorCamera(model, backend=self.backend)
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
         camera.create_default_light()
         # A nearby spotlight makes shading vary across one planar face, so this
         # test can distinguish per-face reuse from per-sample shading.
-        camera._render_context._lights_type = wp.array([LightType.SPOTLIGHT], dtype=wp.int32, device=self.device)
-        camera._render_context._lights_position = wp.array(
-            [wp.vec3f(-0.5, 0.0, 0.0)], dtype=wp.vec3f, device=self.device
-        )
-        camera._render_context._lights_orientation = wp.array(
-            [wp.vec3f(0.0, 0.0, -1.0)], dtype=wp.vec3f, device=self.device
-        )
+        camera._render_context._lights_type = wp.array([LightType.SPOTLIGHT], dtype=wp.int32, device="cpu")
+        camera._render_context._lights_position = wp.array([wp.vec3f(-0.5, 0.0, 0.0)], dtype=wp.vec3f, device="cpu")
+        camera._render_context._lights_orientation = wp.array([wp.vec3f(0.0, 0.0, -1.0)], dtype=wp.vec3f, device="cpu")
         state = model.state()
         transforms = self._identity_transforms(1)
         ray_values = np.zeros((1, 1, 3, 2, 3), dtype=np.float32)
         for sample_index, target in enumerate(((-0.65, 0.0, -2.0), (-0.45, 0.0, -2.0), (0.5, 0.0, -2.1))):
             direction = np.array(target, dtype=np.float32)
             ray_values[0, 0, sample_index, 1] = direction / np.linalg.norm(direction)
-        rays = wp.array(ray_values, dtype=wp.vec3f, device=self.device)
+        rays = wp.array(ray_values, dtype=wp.vec3f, device="cpu")
         msaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
         single_hdr = camera.allocate_image_color_hdr(1, 1, 1)
         single_colors = []
         for sample_index in range(3):
-            single_ray = wp.array(ray_values[:, :, sample_index : sample_index + 1], dtype=wp.vec3f, device=self.device)
+            single_ray = wp.array(ray_values[:, :, sample_index : sample_index + 1], dtype=wp.vec3f, device="cpu")
             camera.update(state, transforms, single_ray, hdr_color_image=single_hdr)
             single_colors.append(single_hdr.numpy().copy())
         camera.update(
@@ -651,7 +647,7 @@ class TestSensorCamera(unittest.TestCase):
     def test_update_rejects_multisample_rays_without_anti_aliasing(self) -> None:
         """Reject multisampled rays when the resolve mode is left at NONE."""
         model, camera = self._build_sphere_scene()
-        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=1.0, sample_count=4, device=self.device)
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=1.0, sample_count=4, device="cpu")
         color = camera.allocate_image_color(1, 1, 1)
 
         with self.assertRaisesRegex(ValueError, "anti_aliasing"):
@@ -664,7 +660,7 @@ class TestSensorCamera(unittest.TestCase):
         state = model.state()
         rays = self._rays(width, height)
         transforms = self._identity_transforms(model.world_count)
-        depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device=self.device)
+        depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
 
         # Spy on the internal render-context sync to observe who triggers it.
         calls = []
@@ -722,7 +718,7 @@ class TestSensorCamera(unittest.TestCase):
         """Verify update rejects rays or transforms that are not on the model device."""
         width, height = 2, 2
         model = self._sphere_world_builder().finalize(device="cuda:0")
-        camera = SensorCamera(model, backend=self.backend)
+        camera = SensorCamera(model)
         self.assertEqual(camera.device, model.device)
         state = model.state()
 
@@ -736,21 +732,21 @@ class TestSensorCamera(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "camera_rays must be on the model device"):
             camera.update(state, cuda_transforms, cpu_rays)
 
-    def test_fully_transparent_shape_does_not_occlude(self) -> None:
+    def test_fully_transparent_shape_does_not_occlude(self, device: str = "cpu", backend: str = "warp") -> None:
         """A shape with opacity 0 is skipped, so the shape behind it stays visible."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         ball_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -3.0), q=wp.quat_identity()))
         ball = builder.add_shape_sphere(ball_body, radius=0.5, color=(1.0, 0.0, 0.0))
         helper_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -1.5), q=wp.quat_identity()))
         helper = builder.add_shape_box(helper_body, hx=1.0, hy=1.0, hz=0.05, opacity=0.0)
-        model = builder.finalize(device=self.device)
-        camera = SensorCamera(model, backend=self.backend)
-        rays = self._rays(8, 8, fov=math.radians(40.0))
-        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device=self.device)
-        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device=self.device)
+        model = builder.finalize(device=device)
+        camera = SensorCamera(model, backend=backend)
+        rays = self._rays(8, 8, fov=math.radians(40.0), device=device)
+        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device=device)
+        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device=device)
         camera.update(
             model.state(),
-            self._identity_transforms(1),
+            self._identity_transforms(1, device),
             rays,
             depth_image=depth,
             shape_index_image=shape_index,
@@ -768,8 +764,8 @@ class TestSensorCamera(unittest.TestCase):
         rays = self._rays(width, height)
         view_count = model.world_count
 
-        depth = wp.zeros((view_count, height, width), dtype=wp.float32, device=self.device)
-        shape_index = wp.zeros((view_count, height, width), dtype=wp.uint32, device=self.device)
+        depth = wp.zeros((view_count, height, width), dtype=wp.float32, device="cpu")
+        shape_index = wp.zeros((view_count, height, width), dtype=wp.uint32, device="cpu")
 
         # Identity transforms see the sphere placed in front of the camera.
         camera_transforms = self._identity_transforms(view_count)
@@ -788,7 +784,7 @@ class TestSensorCamera(unittest.TestCase):
         camera.update(state, camera_transforms, rays, depth_image=depth)
         self.assertEqual(float(depth.numpy()[center]), 0.0)
 
-    def test_convex_hull_renders_like_its_mesh(self) -> None:
+    def test_convex_hull_renders_like_its_mesh(self, device: str = "cpu", backend: str = "warp") -> None:
         """Verify convex-hull shapes render, matching the same geometry added as a triangle mesh.
 
         The box mesh has per-face vertices with normals and UVs, which the hull's collision mesh
@@ -803,16 +799,16 @@ class TestSensorCamera(unittest.TestCase):
                 builder.add_shape_convex_hull(-1, mesh=mesh)
             else:
                 builder.add_shape_mesh(-1, mesh=mesh)
-            model = builder.finalize(device=self.device)
-            camera = SensorCamera(model, backend=self.backend)
+            model = builder.finalize(device=device)
+            camera = SensorCamera(model, backend=backend)
             # Camera 2 m above the origin looking down -Z at the box's top face (z = 0.1 m).
             above = np.array([[0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
             depth = camera.allocate_image_depth(1, width, height)
             normal = camera.allocate_image_normal(1, width, height)
             camera.update(
                 model.state(),
-                wp.array(above, dtype=wp.transformf, device=self.device),
-                self._rays(width, height, math.radians(30.0)),
+                wp.array(above, dtype=wp.transformf, device=device),
+                self._rays(width, height, math.radians(30.0), device=device),
                 depth_image=depth,
                 normal_image=normal,
             )
@@ -836,10 +832,10 @@ class TestSensorCamera(unittest.TestCase):
         world_indices = wp.array(
             [0, int(SensorCamera.WorldRenderFlag.DISABLE_CLEAR)],
             dtype=wp.int32,
-            device=self.device,
+            device="cpu",
         )
-        depth = wp.zeros((view_count, height, width), dtype=wp.float32, device=self.device)
-        shape_index = wp.zeros((view_count, height, width), dtype=wp.uint32, device=self.device)
+        depth = wp.zeros((view_count, height, width), dtype=wp.float32, device="cpu")
+        shape_index = wp.zeros((view_count, height, width), dtype=wp.uint32, device="cpu")
 
         camera.update(
             state,
@@ -867,8 +863,8 @@ class TestSensorCamera(unittest.TestCase):
         camera.default_clear_data = SensorCamera.ClearData(clear_depth=-2.0)
         # View 0: -1 is reserved for future global-world rendering (unsupported);
         # view 1: an index >= world_count. Neither is a sentinel, so both clear.
-        world_indices = wp.array([-1, model.world_count], dtype=wp.int32, device=self.device)
-        depth = wp.full((view_count, height, width), value=42.0, dtype=wp.float32, device=self.device)
+        world_indices = wp.array([-1, model.world_count], dtype=wp.int32, device="cpu")
+        depth = wp.full((view_count, height, width), value=42.0, dtype=wp.float32, device="cpu")
 
         camera.update(
             state,
@@ -894,10 +890,10 @@ class TestSensorCamera(unittest.TestCase):
         world_indices = wp.array(
             [0, int(SensorCamera.WorldRenderFlag.DISABLE_PRESERVE)],
             dtype=wp.int32,
-            device=self.device,
+            device="cpu",
         )
-        depth = wp.full((view_count, height, width), value=42.0, dtype=wp.float32, device=self.device)
-        shape_index = wp.full((view_count, height, width), value=456, dtype=wp.uint32, device=self.device)
+        depth = wp.full((view_count, height, width), value=42.0, dtype=wp.float32, device="cpu")
+        shape_index = wp.full((view_count, height, width), value=456, dtype=wp.uint32, device="cpu")
 
         camera.update(
             state,
@@ -921,7 +917,7 @@ class TestSensorCamera(unittest.TestCase):
         state = model.state()
         rays = self._rays(width, height)
         view_count = model.world_count
-        depth = wp.zeros((view_count, height, width), dtype=wp.float32, device=self.device)
+        depth = wp.zeros((view_count, height, width), dtype=wp.float32, device="cpu")
 
         # No world_indices passed: each view renders its own world (identity mapping).
         camera.update(state, self._identity_transforms(view_count), rays, depth_image=depth)
@@ -943,7 +939,7 @@ class TestSensorCamera(unittest.TestCase):
         # Rendering different view counts (each <= world_count) works with no mapping;
         # each view renders its own world, so every view sees its sphere.
         for view_count in (3, 5, 2, 4):
-            depth = wp.zeros((view_count, height, width), dtype=wp.float32, device=self.device)
+            depth = wp.zeros((view_count, height, width), dtype=wp.float32, device="cpu")
             camera.update(state, self._identity_transforms(view_count), rays, depth_image=depth)
             self.assertTrue(all(float(depth.numpy()[v][center]) > 0.0 for v in range(view_count)))
 
@@ -960,8 +956,8 @@ class TestSensorCamera(unittest.TestCase):
         transforms = np.tile(_IDENTITY_XFORM, (3, 1))
         transforms[1, 2] = -0.5
         transforms[2, 2] = -1.0
-        camera_transforms = wp.array(transforms, dtype=wp.transformf, device=self.device)
-        world_indices = wp.array(np.zeros(3, dtype=np.int32), dtype=wp.int32, device=self.device)
+        camera_transforms = wp.array(transforms, dtype=wp.transformf, device="cpu")
+        world_indices = wp.array(np.zeros(3, dtype=np.int32), dtype=wp.int32, device="cpu")
 
         depth = camera.allocate_image_depth(3, width, height)
         self.assertEqual(depth.shape, (3, height, width))
@@ -981,17 +977,18 @@ class TestSensorCamera(unittest.TestCase):
         rays = self._rays(width, height)
         # Two views on a one-world model with no explicit mapping would index world 1.
         camera_transforms = self._identity_transforms(2)
-        depth = wp.zeros((2, height, width), dtype=wp.float32, device=self.device)
+        depth = wp.zeros((2, height, width), dtype=wp.float32, device="cpu")
         with self.assertRaisesRegex(ValueError, "exceeds model.world_count"):
             camera.update(state, camera_transforms, rays, depth_image=depth)
 
         # An explicit mapping to the valid world renders both views.
-        world_indices = wp.array(np.zeros(2, dtype=np.int32), dtype=wp.int32, device=self.device)
+        world_indices = wp.array(np.zeros(2, dtype=np.int32), dtype=wp.int32, device="cpu")
         camera.update(state, camera_transforms, rays, depth_image=depth, world_indices=world_indices)
         center = (height // 2, width // 2)
         self.assertTrue(all(float(depth.numpy()[v][center]) > 0.0 for v in range(2)))
 
-    def _cloth_color_scene(self, device):
+    @staticmethod
+    def _cloth_color_scene(device):
         """Build two overlapping worlds with distinct face colors and views from both sides."""
         colors = np.array([[0.8, 0.1, 0.2], [0.1, 0.6, 0.3], [0.2, 0.3, 0.7], [0.6, 0.4, 0.1]], dtype=np.float32)
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -1009,7 +1006,7 @@ class TestSensorCamera(unittest.TestCase):
             )
             builder.add_world(cloth)
         model = builder.finalize(device=device)
-        camera = SensorCamera(model, backend=self.backend)
+        camera = SensorCamera(model)
         # Orthographic rays hit the two triangle interiors, away from shared edges.
         rays = np.zeros((1, 2, 1, 2, 3), dtype=np.float32)
         rays[0, :, 0, 0, 0] = (-0.5, 0.5)
@@ -1033,7 +1030,7 @@ class TestSensorCamera(unittest.TestCase):
 
     def test_cloth_albedo_uses_per_face_colors(self) -> None:
         """Verify albedo-only renders select each face's color across worlds and viewing sides."""
-        for device in [wp.get_device(self.device)] if self.backend == "optix" else get_test_devices():
+        for device in get_test_devices():
             model, camera, rays, poses, worlds, expected_srgb = self._cloth_color_scene(device)
             state = model.state()
             albedo = camera.allocate_image_albedo(4, 2, 1)
@@ -1062,7 +1059,7 @@ class TestSensorCamera(unittest.TestCase):
 
     def test_cloth_renders_triangle_colors_from_both_sides(self) -> None:
         """Verify two-sided depth, camera-facing normals, and per-face color under directional light."""
-        for device in [wp.get_device(self.device)] if self.backend == "optix" else get_test_devices():
+        for device in get_test_devices():
             model, camera, rays, poses, worlds, expected = self._cloth_color_scene(device)
             state = model.state()
             depth = camera.allocate_image_depth(4, 2, 1)
@@ -1112,7 +1109,7 @@ class TestSensorCamera(unittest.TestCase):
 
     def test_cloth_respects_backface_culling(self) -> None:
         """Honor default and explicit culling settings in both triangle intersection paths."""
-        for device in [wp.get_device(self.device)] if self.backend == "optix" else get_test_devices():
+        for device in get_test_devices():
             model, camera, rays, poses, worlds, _ = self._cloth_color_scene(device)
             state = model.state()
             depth = camera.allocate_image_depth(4, 2, 1)
@@ -1148,7 +1145,7 @@ class TestSensorCamera(unittest.TestCase):
             builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
             sphere_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -2.5), q=wp.quat_identity()))
             sphere = builder.add_shape_sphere(sphere_body, radius=1.2, color=(1.0, 1.0, 1.0))
-            model = builder.finalize(device=self.device)
+            model = builder.finalize(device="cpu")
             camera = self._camera_with_model(model)
             camera.default_render_config = SensorCamera.RenderConfig(enable_textures=True, texture_projection_mode=mode)
             camera.assign_checkerboard_material(shape_indices=[sphere])
@@ -1184,15 +1181,13 @@ class TestSensorCamera(unittest.TestCase):
                 )
                 builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
                 builder.add_shape_mesh(-1, mesh=mesh, color=(1.0, 1.0, 1.0))
-                model = builder.finalize(device=self.device)
-                camera = SensorCamera(
-                    model, backend=self.backend, default_render_config=SensorCamera.RenderConfig(enable_textures=True)
-                )
+                model = builder.finalize(device="cpu")
+                camera = SensorCamera(model, default_render_config=SensorCamera.RenderConfig(enable_textures=True))
                 above = np.array([[0.0, 0.0, 1.8, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
                 albedo = camera.allocate_image_albedo(1, width, height)
                 camera.update(
                     model.state(),
-                    wp.array(above, dtype=wp.transformf, device=self.device),
+                    wp.array(above, dtype=wp.transformf, device="cpu"),
                     self._rays(width, height, math.radians(60.0)),
                     albedo_image=albedo,
                 )
@@ -1220,16 +1215,14 @@ class TestSensorCamera(unittest.TestCase):
             )
             builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
             builder.add_shape_mesh(-1, mesh=mesh, color=(1.0, 1.0, 1.0))
-            model = builder.finalize(device=self.device)
-            camera = SensorCamera(
-                model, backend=self.backend, default_render_config=SensorCamera.RenderConfig(enable_textures=True)
-            )
+            model = builder.finalize(device="cpu")
+            camera = SensorCamera(model, default_render_config=SensorCamera.RenderConfig(enable_textures=True))
             # The quad fills the view of a camera 1.8 m above it; pixel column 4 sees u = 0.25.
             above = np.array([[0.0, 0.0, 1.8, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
             albedo = camera.allocate_image_albedo(1, width, height)
             camera.update(
                 model.state(),
-                wp.array(above, dtype=wp.transformf, device=self.device),
+                wp.array(above, dtype=wp.transformf, device="cpu"),
                 self._rays(width, height, math.radians(60.0)),
                 albedo_image=albedo,
             )
@@ -1254,11 +1247,10 @@ class TestSensorCamera(unittest.TestCase):
         self.assertNotIn("model", parameters)
 
         width, height = 16, 12
-        model = self._sphere_world_builder().finalize(device=self.device)
+        model = self._sphere_world_builder().finalize(device="cpu")
         # Defaults may also be provided at construction.
         camera = SensorCamera(
             model,
-            backend=self.backend,
             default_clear_data=SensorCamera.ClearData(clear_depth=-2.0, clear_shape_index=123),
             default_render_config=SensorCamera.RenderConfig(max_distance=0.1),
             load_textures=False,
@@ -1269,8 +1261,8 @@ class TestSensorCamera(unittest.TestCase):
         rays = self._rays(width, height)
         view_count = model.world_count
 
-        depth = wp.zeros((view_count, height, width), dtype=wp.float32, device=self.device)
-        shape_index = wp.zeros((view_count, height, width), dtype=wp.uint32, device=self.device)
+        depth = wp.zeros((view_count, height, width), dtype=wp.float32, device="cpu")
+        shape_index = wp.zeros((view_count, height, width), dtype=wp.uint32, device="cpu")
 
         # No per-call overrides: max_distance=0.1 misses the sphere, so the depth
         # and shape-index outputs take the default clear values.
@@ -1298,7 +1290,7 @@ class TestSensorCamera(unittest.TestCase):
         camera.default_clear_data = SensorCamera.ClearData(clear_depth=-7.0)
         camera.default_render_config = SensorCamera.RenderConfig(max_distance=0.1)
 
-        depth = wp.zeros((view_count, height, width), dtype=wp.float32, device=self.device)
+        depth = wp.zeros((view_count, height, width), dtype=wp.float32, device="cpu")
         # ...but the per-call overrides raise max_distance so the sphere is hit.
         camera.update(
             state,
@@ -1315,7 +1307,7 @@ class TestSensorCamera(unittest.TestCase):
         behind = np.tile(np.array([0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32), (view_count, 1))
         camera.update(
             state,
-            wp.array(behind, dtype=wp.transformf, device=self.device),
+            wp.array(behind, dtype=wp.transformf, device="cpu"),
             rays,
             depth_image=depth,
             clear_data=SensorCamera.ClearData(clear_depth=-3.0),
@@ -1334,7 +1326,7 @@ class TestSensorCamera(unittest.TestCase):
                 rays = self._rays(width, height)
                 camera.default_render_config = SensorCamera.RenderConfig(render_order=render_order)
 
-                depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device=self.device)
+                depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
 
                 camera.update(state, self._identity_transforms(model.world_count), rays, depth_image=depth)
 
@@ -1343,36 +1335,32 @@ class TestSensorCamera(unittest.TestCase):
     def test_multiple_sensor_cameras_render_same_model(self) -> None:
         """Verify multiple independent SensorCamera instances can render the same model."""
         width, height = 8, 6
-        model = self._sphere_world_builder().finalize(device=self.device)
+        model = self._sphere_world_builder().finalize(device="cpu")
         state = model.state()
         rays = self._rays(width, height)
         view_count = model.world_count
 
-        # Create each camera after exercising the previous one's output specializations.
-        for _ in range(2):
-            camera = self._camera_with_model(model)
-            color = camera.allocate_image_color(view_count, width, height)
-            depth = camera.allocate_image_depth(view_count, width, height)
-            for render_color, render_depth in ((True, True), (True, False), (False, True)):
-                camera.update(
-                    state,
-                    self._identity_transforms(view_count),
-                    rays,
-                    color_image=color if render_color else None,
-                    depth_image=depth if render_depth else None,
-                )
-                if render_color:
-                    self.assertNotEqual(int(color.numpy()[0, height // 2, width // 2]) & 0xFFFFFF, 0)
-                if render_depth:
-                    self.assertGreater(float(depth.numpy()[0, height // 2, width // 2]), 0.0)
+        depth_a = wp.zeros((view_count, height, width), dtype=wp.float32, device="cpu")
+        depth_b = wp.zeros((view_count, height, width), dtype=wp.float32, device="cpu")
+
+        # Each camera owns its own private render context for the same model.
+        camera_a = self._camera_with_model(model)
+        camera_b = self._camera_with_model(model)
+
+        camera_a.update(state, self._identity_transforms(view_count), rays, depth_image=depth_a)
+        camera_b.update(state, self._identity_transforms(view_count), rays, depth_image=depth_b)
+
+        self.assertGreater(float(depth_a.numpy()[0, height // 2, width // 2]), 0.0)
+        self.assertGreater(float(depth_b.numpy()[0, height // 2, width // 2]), 0.0)
 
     # --- Rendering output channels (ported from SensorTiledCamera coverage) ---
 
-    def _shaded_sphere_model(self, color: tuple[float, float, float] = (0.5, 0.5, 0.5)) -> newton.Model:
+    @staticmethod
+    def _shaded_sphere_model(color: tuple[float, float, float] = (0.5, 0.5, 0.5)) -> newton.Model:
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -2.0), q=wp.quat_identity()))
         builder.add_shape_sphere(body, radius=1.0, color=color)
-        return builder.finalize(device=self.device)
+        return builder.finalize(device="cpu")
 
     def _render_color_and_hdr(self, output_color_space) -> tuple[np.ndarray, np.ndarray]:
         width, height = 4, 4
@@ -1436,8 +1424,8 @@ class TestSensorCamera(unittest.TestCase):
         state = model.state()
         rays = self._rays(width, height)
         view_count = model.world_count
-        depth = wp.zeros((view_count, height, width), dtype=wp.float32, device=self.device)
-        forward = wp.zeros((view_count, height, width), dtype=wp.float32, device=self.device)
+        depth = wp.zeros((view_count, height, width), dtype=wp.float32, device="cpu")
+        forward = wp.zeros((view_count, height, width), dtype=wp.float32, device="cpu")
         camera.update(
             state, self._identity_transforms(view_count), rays, depth_image=depth, forward_depth_image=forward
         )
@@ -1452,7 +1440,7 @@ class TestSensorCamera(unittest.TestCase):
     def test_forward_depth_uses_camera_origin(self) -> None:
         """Measure custom-ray hits from the camera plane with a rotated camera."""
         pose = wp.transform(wp.vec3(3.0, -2.0, 1.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.7))
-        for device in [wp.get_device(self.device)] if self.backend == "optix" else get_test_devices():
+        for device in get_test_devices():
             with self.subTest(device=device):
                 builder = newton.ModelBuilder()
                 builder.add_shape_box(
@@ -1463,7 +1451,7 @@ class TestSensorCamera(unittest.TestCase):
                     hz=1.0,
                 )
                 model = builder.finalize(device=device)
-                camera = SensorCamera(model, backend=self.backend)
+                camera = SensorCamera(model)
                 transforms = wp.array([pose], dtype=wp.transformf, device=device)
                 rays_np = np.zeros((1, 3, 1, 2, 3), dtype=np.float32)
                 # Pixel 0 uses a zero origin. Pixel 1 has lateral and forward
@@ -1490,7 +1478,7 @@ class TestSensorCamera(unittest.TestCase):
 
     def test_forward_depth_conversion_preserves_invalid_depth(self) -> None:
         """Preserve zero and negative depth sentinels with custom ray origins."""
-        for device in [wp.get_device(self.device)] if self.backend == "optix" else get_test_devices():
+        for device in get_test_devices():
             with self.subTest(device=device):
                 rays_np = np.zeros((1, 3, 1, 2, 3), dtype=np.float32)
                 rays_np[..., 0, 2] = -1.0
@@ -1566,23 +1554,23 @@ class TestSensorCamera(unittest.TestCase):
             self.assertEqual(flat.dtype, wp.uint8)
 
         # Shape-index colorized via a caller palette (out-of-range indices -> black).
-        palette = wp.array(np.array([[10, 20, 30]], dtype=np.uint8), dtype=wp.uint8, device=self.device)
+        palette = wp.array(np.array([[10, 20, 30]], dtype=np.uint8), dtype=wp.uint8, device="cpu")
         colored = SensorCamera.Utils.to_rgba_from_shape_index(shape_index, colors=palette)
         self.assertEqual(colored.shape, (view_count, height, width, 4))
 
-        # Exercise automatic ranges and host-side validation using the same image.
+        # Exercise automatic ranges and host-side validation using the same CPU image.
         auto = SensorCamera.Utils.to_rgba_from_depth(depth)
         self.assertEqual(auto.shape, (view_count, height, width, 4))
         invalid_ranges = [
             ((1.0,), "exactly two"),
             ((1.0, 1.0), "near < far"),
             ((0.0, math.inf), "finite"),
-            (wp.zeros((1, 2), dtype=wp.float32, device=self.device), "shape"),
-            (wp.array([0.0, 2.0], dtype=wp.float64, device=self.device), "dtype"),
+            (wp.zeros((1, 2), dtype=wp.float32, device="cpu"), "shape"),
+            (wp.array([0.0, 2.0], dtype=wp.float64, device="cpu"), "dtype"),
         ]
-        other_device = next((d for d in get_test_devices() if d != depth.device), None)
-        if other_device is not None:
-            invalid_ranges.append((wp.array([0.0, 2.0], dtype=wp.float32, device=other_device), "device"))
+        cuda_device = next((d for d in get_test_devices() if d.is_cuda), None)
+        if cuda_device is not None:
+            invalid_ranges.append((wp.array([0.0, 2.0], dtype=wp.float32, device=cuda_device), "device"))
         for helper in (SensorCamera.Utils.to_rgba_from_depth, SensorCamera.Utils.flatten_depth_image_to_rgba):
             for depth_range, message in invalid_ranges:
                 with self.subTest(helper=helper.__name__, message=message):
@@ -1596,7 +1584,7 @@ class TestSensorCamera(unittest.TestCase):
         expected = np.full((*values.shape, 4), 255, dtype=np.uint8)
         expected[..., :3] = gray[..., None]
         expected_tiled = np.concatenate(list(expected), axis=1)
-        for device in [wp.get_device(self.device)] if self.backend == "optix" else get_test_devices():
+        for device in get_test_devices():
             depth = wp.array(values, dtype=wp.float32, device=device)
             for depth_range in ((1.0, 3.0), wp.array([1.0, 3.0], dtype=wp.float32, device=device)):
                 with self.subTest(device=device, range_type=type(depth_range).__name__):
@@ -1629,7 +1617,7 @@ class TestSensorCamera(unittest.TestCase):
     def test_utils_shape_index_hash_colors_differ_by_index(self) -> None:
         """Verify the shape-index hash palette maps two distinct valid indices to distinct colors."""
         # One view, one row, two pixels holding shape indices 0 and 1.
-        shape_index = wp.array(np.array([[[0, 1]]], dtype=np.uint32), dtype=wp.uint32, device=self.device)
+        shape_index = wp.array(np.array([[[0, 1]]], dtype=np.uint32), dtype=wp.uint32, device="cpu")
         rgba = SensorCamera.Utils.to_rgba_from_shape_index(shape_index).numpy()
         color_0 = tuple(int(c) for c in rgba[0, 0, 0, :3])
         color_1 = tuple(int(c) for c in rgba[0, 0, 1, :3])
@@ -1657,9 +1645,9 @@ class TestSensorCamera(unittest.TestCase):
         )
         builder = newton.ModelBuilder()
         builder.add_shape_gaussian(body=-1, gaussian=gaussian)
-        model = builder.finalize(device=self.device)
+        model = builder.finalize(device="cpu")
 
-        camera = SensorCamera(model, backend=self.backend)
+        camera = SensorCamera(model)
         hdr = camera.allocate_image_color_hdr(1, 1, 1)
         camera.update(model.state(), self._identity_transforms(1), self._rays(1, 1), hdr_color_image=hdr)
         return hdr.numpy().reshape(-1, 3)[0]
@@ -1694,29 +1682,16 @@ class TestSensorCamera(unittest.TestCase):
         np.testing.assert_allclose(color, [expected] * 3, atol=1e-4)
 
 
-@unittest.skipUnless(
-    importlib.util.find_spec("warp_optix") is not None and wp.is_cuda_available(),
-    "requires warp-optix and a CUDA device",
-)
-class TestSensorCameraOptix(TestSensorCamera):
-    """Run the camera contract against the optional traversal backend."""
+def _optix_variant(test):
+    @unittest.skipUnless(importlib.util.find_spec("warp_optix") and wp.is_cuda_available(), "requires warp-optix")
+    def run(self):
+        test(self, device="cuda:0", backend="optix")
 
-    device = "cuda:0"
-    backend = "optix"
+    return run
 
-    def setUp(self):
-        unsupported = (
-            "test_msaa_shades_distinct_particles_separately",
-            "test_msaa_reuses_shading_for_one_particle",
-            "test_msaa_reuses_shading_per_deformable_face",
-            "test_cloth_albedo_uses_per_face_colors",
-            "test_cloth_renders_triangle_colors_from_both_sides",
-            "test_cloth_respects_backface_culling",
-            "test_gaussian_radiance_is_clamped_and_srgb_decoded",
-            "test_gaussian_srgb_overlapping_splats_blend_in_encoded_space",
-        )
-        if self._testMethodName in unsupported:
-            self.skipTest("OptiX supports rigid shapes only")
+
+for _name in ("test_fully_transparent_shape_does_not_occlude", "test_convex_hull_renders_like_its_mesh"):
+    setattr(TestSensorCamera, f"{_name}_optix", _optix_variant(getattr(TestSensorCamera, _name)))
 
 
 class TestSensorCameraDeformable(unittest.TestCase):
