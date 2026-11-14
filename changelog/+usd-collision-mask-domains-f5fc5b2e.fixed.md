@@ -1,1 +1,1 @@
-Preserve authored USD MuJoCo collision masks across imports by assigning collision-mask domains and compiling mask restrictions into Newton collision groups without widening USD collision-group or explicit filtered-pair exclusions.
+Preserve authored USD MuJoCo collision masks across imports by assigning collision-mask domains and lowering mask restrictions into Newton collision filter pairs without widening collision-group or explicit filtered-pair exclusions.

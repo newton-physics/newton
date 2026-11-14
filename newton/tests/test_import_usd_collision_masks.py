@@ -3,6 +3,7 @@
 
 """Test authored MuJoCo collision masks imported from USD."""
 
+import tracemalloc
 import unittest
 
 import numpy as np
@@ -10,13 +11,13 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import MUJOCO_MODULES, has_module, requires
 
-if USD_AVAILABLE:
+if has_module("pxr.Usd"):
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd", *MUJOCO_MODULES)
 class TestUsdCollisionMasks(unittest.TestCase):
     def _stage(self, body_masks):
         stage = Usd.Stage.CreateInMemory()
@@ -145,6 +146,70 @@ class TestUsdCollisionMasks(unittest.TestCase):
                 for a in range(model.shape_count):
                     for b in range(a + 1, model.shape_count):
                         self.assertEqual(self._masks_allow(solver, a, b), (a, b) in expected, (a, b))
+
+    def test_negative_group_rejects_preserved_masks(self):
+        """Regenerate MuJoCo masks when a shared negative group rejects pairs the masks allow."""
+        builder = self._builder()
+        builder.default_shape_cfg.collision_group = -1
+        result = builder.add_usd(self._stage([[(1, 1)], [(1, 1)]]), load_visual_shapes=False)
+        model = builder.finalize(device="cpu")
+        shapes = [result["path_shape_map"][f"/body{i}/shape0"] for i in range(2)]
+        self.assertEqual(len(model.shape_contact_pairs.numpy()), 0)
+        self.assertFalse(self._masks_allow(self._solver(model), *shapes))
+
+    def test_masks_keep_group_for_later_shapes(self):
+        """Keep imported shapes out of other positive groups regardless of construction order."""
+        for native_first in (True, False):
+            with self.subTest(native_first=native_first):
+                builder = self._builder()
+                cfg = newton.ModelBuilder.ShapeConfig(collision_group=2)
+                if native_first:
+                    native = builder.add_shape_sphere(builder.add_body(), radius=0.1, cfg=cfg)
+                result = builder.add_usd(self._stage([[(1, 0)], [(1, 0)]]), load_visual_shapes=False)
+                if not native_first:
+                    native = builder.add_shape_sphere(builder.add_body(), radius=0.1, cfg=cfg)
+                model = builder.finalize(device="cpu")
+                imported = [result["path_shape_map"][f"/body{i}/shape0"] for i in range(2)]
+                groups = model.shape_collision_group.numpy()
+                self.assertEqual(groups[imported].tolist(), [1, 1])
+                self.assertEqual(int(groups[native]), 2)
+                self.assertEqual(len(model.shape_contact_pairs.numpy()), 0)
+
+    def test_zero_masks_disable_collisions(self):
+        """Disable (0, 0) colliders as add_mjcf() does, whatever groups the builder already uses."""
+        builder = self._builder()
+        cfg = newton.ModelBuilder.ShapeConfig(collision_group=1)
+        builder.add_shape_sphere(builder.add_body(), radius=0.1, cfg=cfg)
+        cfg = newton.ModelBuilder.ShapeConfig(collision_group=2)
+        builder.add_shape_sphere(builder.add_body(), radius=0.1, cfg=cfg)
+        builder.default_shape_cfg.collision_group = 2
+        result = builder.add_usd(self._stage([[(0, 0)]]), load_visual_shapes=False)
+        model = builder.finalize(device="cpu")
+        self.assertEqual(int(model.shape_collision_group.numpy()[result["path_shape_map"]["/body0/shape0"]]), 0)
+        self.assertEqual(len(model.shape_contact_pairs.numpy()), 0)
+
+    def test_mask_exclusions_scale_with_rejected_pairs(self):
+        """Bound mask-lowering memory by the rejected pairs rather than all collider pairs."""
+        collider_count = 2000
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        for index in range(collider_count):
+            prim = UsdGeom.Sphere.Define(stage, f"/shape{index}").GetPrim()
+            UsdPhysics.CollisionAPI.Apply(prim)
+            for name in ("mjc:contype", "mjc:conaffinity"):
+                prim.CreateAttribute(name, Sdf.ValueTypeNames.Int, custom=True).Set(1)
+        builder = self._builder()
+        builder.add_shape_sphere(builder.add_body(), radius=0.1)
+        builder.default_shape_cfg.collision_group = 2
+        tracemalloc.start()
+        try:
+            builder.add_usd(stage, load_visual_shapes=False)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(len(builder.shape_collision_filter_pairs), 0)
+        # Enumerating all ~2M collider pairs peaks above 70 MB; the import itself needs well under this.
+        self.assertLess(peak, 32 * 1024 * 1024)
 
     def test_unauthored_masks_have_no_domain(self):
         """Leave unauthored shapes outside preserved collision mask domains."""
