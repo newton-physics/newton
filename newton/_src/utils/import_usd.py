@@ -34,6 +34,10 @@ from ..geometry import Mesh, ShapeFlags, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode, JointType
 from ..sim.model import Model
+from ..solvers.mujoco.collision_masks import (
+    MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
+    compile_collision_masks,
+)
 from ..solvers.mujoco.enums import EqType, _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 from ..solvers.mujoco.equality import _add_equality_constraint, _register_equality_constraint_attributes
 from ..solvers.mujoco.utils import (
@@ -174,6 +178,12 @@ def parse_usd(
     The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
     See :ref:`usd_parsing` for more information.
+
+    When MuJoCo custom attributes are registered, colliders authoring both
+    ``mjc:contype`` and ``mjc:conaffinity`` preserve their 32-bit masks in a
+    mask domain local to this import. These masks also restrict Newton collision
+    groups and pairs; USD collision-group and explicit filtered-pair exclusions
+    remain excluded.
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
@@ -1436,6 +1446,18 @@ def parse_usd(
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.SHAPE]
     )
+    # Mask bits are local to one imported asset, just as for add_mjcf().
+    collision_mask_domain_key = "mujoco:collision_mask_domain"
+    collision_mask_domain_attr = builder.custom_attributes.get(collision_mask_domain_key)
+    collision_mask_domain = (
+        max(
+            (int(value) for value in collision_mask_domain_attr.values.values()),
+            default=MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
+        )
+        + 1
+        if collision_mask_domain_attr is not None
+        else MUJOCO_COLLISION_MASK_DOMAIN_UNSET
+    )
     builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.BODY]
     )
@@ -1937,6 +1959,7 @@ def parse_usd(
         path_shape_map=path_shape_map,
         path_shape_scale=path_shape_scale,
         builder_custom_attr_shape=builder_custom_attr_shape,
+        collision_mask_domain=collision_mask_domain,
         bodies_with_visual_shapes=bodies_with_visual_shapes,
         incoming_world_xform=incoming_world_xform,
         usd_axis_to_axis=usd_axis_to_axis,
@@ -2388,6 +2411,102 @@ def parse_usd(
         path_soft_map=path_soft_map,
         body_owner=_deformable_prims.body_owner,
     )
+
+    # Restrict the imported colliders to their masks after USD groups and explicit
+    # filters are applied, without widening either. Solver mask regeneration then
+    # retains the restrictions across imports.
+    if collision_mask_domain_attr is not None:
+        masked_shapes = []
+        for shape, domain in list(collision_mask_domain_attr.values.items()):
+            if domain != collision_mask_domain or not builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES:
+                continue
+            if builder.shape_collision_group[shape] == 0:
+                # Collisions are disabled for this shape; its masks must not enable them in MuJoCo.
+                del collision_mask_domain_attr.values[shape]
+                continue
+            masked_shapes.append(shape)
+        masked_shapes = np.asarray(masked_shapes, dtype=np.int32)
+        if masked_shapes.size:
+            to_local = {int(shape): local for local, shape in enumerate(masked_shapes)}
+            prefiltered_pairs = [
+                (to_local[shape_a], to_local[shape_b])
+                for shape_a, shape_b in builder._shape_collision_filter_pairs.explicit_pairs
+                if shape_a in to_local and shape_b in to_local
+            ]
+            contype_attr = builder.custom_attributes["mujoco:contype"]
+            conaffinity_attr = builder.custom_attributes["mujoco:conaffinity"]
+            collision_type = np.asarray([int(contype_attr.values[int(shape)]) for shape in masked_shapes], np.int64)
+            collision_affinity = np.asarray(
+                [int(conaffinity_attr.values[int(shape)]) for shape in masked_shapes], np.int64
+            )
+            groups = np.asarray([builder.shape_collision_group[int(shape)] for shape in masked_shapes])
+            default_positive_group = int(builder.default_shape_cfg.collision_group)
+            masked_set = set(to_local)
+            # Compiled negative groups collide with every other positive group, so the
+            # compact lowering is only safe when no other shape uses a different one.
+            other_positive_groups = {
+                int(group)
+                for shape, group in enumerate(builder.shape_collision_group)
+                if group > 0 and shape not in masked_set
+            }
+            if (
+                default_positive_group > 0
+                and np.all(groups == default_positive_group)
+                and other_positive_groups <= {default_positive_group}
+            ):
+                # Same lowering as add_mjcf(): one positive group plus unique negative groups
+                # and sparse exclusions reproduce the mask relation exactly.
+                compiled = compile_collision_masks(
+                    collision_type,
+                    collision_affinity,
+                    prefiltered_pairs=prefiltered_pairs,
+                    force_nonzero=True,
+                    max_positive_groups=1,
+                )
+                used_negative_ids = {-int(group) for group in builder.shape_collision_group if int(group) < 0}
+                negative_group_map = {}
+                next_negative_id = 1
+                for raw_group in np.unique(compiled.groups):
+                    group = int(raw_group)
+                    if group >= 0:
+                        continue
+                    while next_negative_id in used_negative_ids:
+                        next_negative_id += 1
+                    negative_group_map[group] = -next_negative_id
+                    used_negative_ids.add(next_negative_id)
+                    next_negative_id += 1
+                for local_shape, shape in enumerate(masked_shapes):
+                    group = int(compiled.groups[local_shape])
+                    if group > 0:
+                        group = default_positive_group
+                    elif group < 0:
+                        group = negative_group_map[group]
+                    builder.shape_collision_group[int(shape)] = group
+                excluded_pairs = compiled.excluded_pairs
+            else:
+                # Non-default groups restrict collisions beyond this import. Keep them and
+                # exclude every pair the masks reject that the groups still allow.
+                local_a, local_b = np.triu_indices(len(masked_shapes), k=1)
+                masks_allow = ((collision_type[local_a] & collision_affinity[local_b]) != 0) | (
+                    (collision_type[local_b] & collision_affinity[local_a]) != 0
+                )
+                group_a, group_b = groups[local_a], groups[local_b]
+                groups_allow = ((group_a > 0) & ((group_a == group_b) | (group_b < 0))) | (
+                    (group_a < 0) & (group_a != group_b)
+                )
+                prefiltered = set(map(tuple, map(sorted, prefiltered_pairs)))
+                excluded_pairs = [
+                    (int(a), int(b))
+                    for a, b in zip(
+                        local_a[groups_allow & ~masks_allow], local_b[groups_allow & ~masks_allow], strict=True
+                    )
+                    if (int(a), int(b)) not in prefiltered
+                ]
+            for shape_a, shape_b in excluded_pairs:
+                builder.add_shape_collision_filter_pair(
+                    int(masked_shapes[shape_a]),
+                    int(masked_shapes[shape_b]),
+                )
 
     def _resolve_newton_mimic(joint_prim: Usd.Prim) -> tuple[Sdf.Path | None, float, float]:
         """Resolve the mimic leader joint and coefficients from a follower joint prim.
