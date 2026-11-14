@@ -1,27 +1,71 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Optional packed OptiX acceleration shared by shape queries and camera rendering."""
+"""OptiX shape acceleration, built alongside the shape BVH.
 
-import weakref
+Used by :meth:`Model.optix_build_shapes` and :meth:`Model.optix_refit_shapes`. Importing this module
+requires the ``newton[optix]`` extra, so import it lazily.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
+import warp_optix as wo
 
 from . import raycast
 from .types import GeoType
 
-try:
-    import warp_optix as wo
-except ImportError:
-    wo = None
+if TYPE_CHECKING:
+    from ..sim import Model
 
 # Raygen register cap: the occupancy gain outweighs the extra spills.
 _MAX_REGISTERS = 80
 
 
 class UnsupportedError(RuntimeError):
-    """OptiX cannot traverse this model on its device."""
+    """OptiX cannot trace this model on its device."""
+
+
+@dataclass(eq=False)
+class OptixShapes:
+    """OptiX instance acceleration over a model's shapes, with one cell per world.
+
+    The cell grid, world count and cell extent are fixed when the shapes are built, so kernels
+    compile them in. Shapes must stay within twice their initial distance from the origin, and
+    per-world infinite planes are bounded by the cell. Global planes (usually the ground) are not
+    instanced; kernels intersect them analytically.
+    """
+
+    id: int
+    """Traversable handle of :attr:`accel`, or 0 without instances."""
+    accel: wo.Accel | None
+    """Instance acceleration structure over all worlds."""
+    geometry: list[wo.Accel]
+    """Triangle and primitive acceleration structures shared by the instances."""
+    shape_types: wp.array[wp.int32]
+    """Shape types, with convex hulls and heightfields traced as meshes, shape ``[shape_count]``."""
+    shape_world_transforms: wp.array[wp.transformf]
+    """World-space shape transforms, shape ``[shape_count]``."""
+    shape_traversables: wp.array[wp.uint64]
+    """Acceleration structure instanced by each shape, shape ``[shape_count]``."""
+    instance_shapes: wp.array[wp.int32]
+    """Shape index of each instance."""
+    instances: wp.array[wo.Instance]
+    planes: tuple[int, ...]
+    """Global planes, intersected analytically."""
+    grid: int
+    extent: float
+    world_count: int
+    has_global_instances: bool
+    ray_pipelines: dict = field(default_factory=dict)
+
+    @property
+    def has_instances(self) -> bool:
+        return self.instance_shapes.shape[0] > 0
 
 
 @wp.func
@@ -68,195 +112,138 @@ def primitive_half_extents(kind: int, size: wp.vec3, extent: float) -> wp.vec3:
     return size
 
 
-class Scene:
-    """Shared triangle geometry and one instance structure with a cell per world.
-
-    The cell grid, world count and cell extent are fixed when the scene is built, so kernels
-    compile them in. Shapes must stay within twice their initial distance from the origin, and
-    per-world infinite planes are bounded by the cell. Global planes (usually the ground) are not
-    instanced; kernels intersect them analytically.
-    """
-
-    def __init__(self, model):
-        if wo is None:
-            raise UnsupportedError("The OptiX backend requires the newton[optix] extra")
-        if not model.device.is_cuda:
-            raise UnsupportedError("The OptiX backend requires a CUDA device")
-        try:
-            wo.get_context(model.device)
-        except Exception as exc:
-            raise UnsupportedError(f"OptiX is not supported on {model.device}: {exc}") from exc
-        if model.shape_count >= 1 << 24:
-            raise UnsupportedError("OptiX shape instance IDs must fit in 24 bits")
-        if model._variant_shape_source:
-            raise UnsupportedError("The OptiX backend does not support shape variants")
-        if model.shape_count and model.bvh_shape_enabled is None:
-            raise UnsupportedError("Build the model shape BVH before using the OptiX backend")
-        # The model caches this scene; avoid an ownership cycle.
-        self.model = weakref.proxy(model)
-        self.device = model.device
-        types = model.shape_type.numpy() if model.shape_count else np.empty(0, dtype=np.int32)
-        # Convex hulls and heightfields are traced as their triangle meshes.
-        types = np.where(np.isin(types, (GeoType.CONVEX_MESH, GeoType.HFIELD)), GeoType.MESH, types).astype(np.int32)
-        self.shape_types = wp.array(types, dtype=wp.int32, device=self.device)
-        if np.any(types == GeoType.GAUSSIAN):
-            raise UnsupportedError("The OptiX backend does not support Gaussian shapes")
-        leaves = (
-            model.bvh_shape_enabled.numpy()[: model.bvh_shape_count_enabled].astype(np.int32)
-            if model.shape_count
-            else np.empty(0, dtype=np.int32)
+@wp.kernel(enable_backward=False)
+def compute_optix_shape_instances(
+    grid: wp.int32,
+    extent: wp.float32,
+    world_count: wp.int32,
+    instance_shapes: wp.array[wp.int32],
+    shape_world: wp.array[wp.int32],
+    shape_types: wp.array[wp.int32],
+    shape_sizes: wp.array[wp.vec3],
+    shape_transforms: wp.array[wp.transformf],
+    shape_traversables: wp.array[wp.uint64],
+    out_instances: wp.array[wo.Instance],
+):
+    i = wp.tid()
+    si = instance_shapes[i]
+    kind = shape_types[si]
+    size = shape_sizes[si]
+    world = wp.where(shape_world[si] < 0, world_count, shape_world[si])
+    transform = shape_transforms[si]
+    rotation = wp.quat_to_matrix(wp.transform_get_rotation(transform))
+    center = wp.transform_get_translation(transform)
+    if kind == GeoType.PLANE:
+        # Center infinite axes on the plane point nearest the cell center (the origin).
+        nearest = -wp.transpose(rotation) @ center
+        center += rotation @ wp.vec3(
+            wp.where(size[0] > 0.0, 0.0, nearest[0]), wp.where(size[1] > 0.0, 0.0, nearest[1]), 0.0
         )
-        enabled = leaves[leaves >= 0]
-        sources = model.shape_source_ptr.numpy() if model.shape_count else np.empty(0, dtype=np.uint64)
-        shape_world = model.shape_world.numpy() if model.shape_count else np.empty(0, dtype=np.int32)
-        global_plane = (types[enabled] == GeoType.PLANE) & (shape_world[enabled] < 0)
-        self.planes = tuple(int(si) for si in enabled[global_plane])
+    out_instances[i] = wo.make_instance(
+        rotation @ wp.diag(primitive_half_extents(kind, size, extent)),
+        center + world_offset(world, grid, extent),
+        shape_traversables[si],
+        wp.uint32(si),
+        wp.uint32(wp.where(kind == GeoType.MESH, 0, 1)),
+        wp.uint32(255),
+        wp.uint32(wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT))),
+    )
 
-        self.ray_pipelines = {}
-        self.geometry = []
-        mesh_handles = {}
-        used_meshes = set(sources[enabled[types[enabled] == GeoType.MESH]].tolist())
-        for mesh in [*model._mesh_keep_alive, *model.heightfield_meshes]:
-            if mesh.id in used_meshes and mesh.id not in mesh_handles:
-                accel = wo.Accel([wo.triangles(mesh.points, mesh.indices)], compact=True)
-                self.geometry.append(accel)
-                mesh_handles[mesh.id] = accel.id
-        bounds = wp.array([[-1.001] * 3 + [1.001] * 3], dtype=float, device=model.device)
-        primitive = wo.Accel([wo.aabbs(bounds=bounds)], compact=True)
-        self.geometry.append(primitive)
-        handles = np.zeros(model.shape_count, dtype=np.uint64)
-        for si in enabled:
-            is_mesh = types[si] == GeoType.MESH
-            handles[si] = mesh_handles[int(sources[si])] if is_mesh else primitive.id
-        self.traversables = wp.array(handles, dtype=wp.uint64, device=model.device)
-        indices = enabled[~global_plane]
-        self.indices = wp.array(indices, dtype=wp.int32, device=model.device)
 
-        self.world_count = model.world_count
-        self.grid = int(np.ceil((model.world_count + 1) ** (1.0 / 3.0)))
-        while self.grid**3 < model.world_count + 1:
-            self.grid += 1
-        bounded = (leaves >= 0) & (types[np.maximum(leaves, 0)] != GeoType.PLANE)
-        radius = 0.0
-        if np.any(bounded):
-            lowers = model.bvh_shapes.lowers.numpy()[: len(leaves)][bounded]
-            uppers = model.bvh_shapes.uppers.numpy()[: len(leaves)][bounded]
-            radius = float(np.max(np.maximum(np.abs(lowers), np.abs(uppers))))
-        # Room for shapes to move; the padding also encloses the primitives' padded unit cube.
-        self.extent = max(2.0 * 1.01 * radius, 1.0)
-        self.has_instances = len(indices) > 0
-        self.has_global_instances = bool(np.any(shape_world[indices] < 0))
+def check_supported(model: Model) -> None:
+    """Raise :class:`UnsupportedError` if OptiX cannot trace the model's shapes on its device."""
+    if not model.device.is_cuda:
+        raise UnsupportedError("The OptiX backend requires a CUDA device")
+    try:
+        wo.get_context(model.device)
+    except Exception as exc:
+        raise UnsupportedError(f"OptiX is not supported on {model.device}: {exc}") from exc
+    if model.shape_count >= 1 << 24:
+        raise UnsupportedError("OptiX shape instance IDs must fit in 24 bits")
+    if model._variant_shape_source:
+        raise UnsupportedError("The OptiX backend does not support shape variants")
+    if model.shape_count and np.any(model.shape_type.numpy() == GeoType.GAUSSIAN):
+        raise UnsupportedError("The OptiX backend does not support Gaussian shapes")
 
-        grid, extent, world_count = self.grid, self.extent, self.world_count
 
-        @wp.kernel(module="unique", enable_backward=False)
-        def write_instances(
-            indices: wp.array[wp.int32],
-            shape_world: wp.array[wp.int32],
-            shape_types: wp.array[wp.int32],
-            shape_sizes: wp.array[wp.vec3],
-            shape_transforms: wp.array[wp.transform],
-            traversables: wp.array[wp.uint64],
-            instances: wp.array[wo.Instance],
-        ):
-            i = wp.tid()
-            si = indices[i]
-            kind = shape_types[si]
-            size = shape_sizes[si]
-            world = wp.where(shape_world[si] < 0, wp.static(world_count), shape_world[si])
-            transform = shape_transforms[si]
-            rotation = wp.quat_to_matrix(wp.transform_get_rotation(transform))
-            center = wp.transform_get_translation(transform)
-            if kind == GeoType.PLANE:
-                # Center infinite axes on the plane point nearest the cell center (the origin).
-                nearest = -wp.transpose(rotation) @ center
-                center += rotation @ wp.vec3(
-                    wp.where(size[0] > 0.0, 0.0, nearest[0]), wp.where(size[1] > 0.0, 0.0, nearest[1]), 0.0
-                )
-            instances[i] = wo.make_instance(
-                rotation @ wp.diag(primitive_half_extents(kind, size, wp.static(extent))),
-                center + world_offset(world, wp.static(grid), wp.static(extent)),
-                traversables[si],
-                wp.uint32(si),
-                wp.uint32(wp.where(kind == GeoType.MESH, 0, 1)),
-                wp.uint32(255),
-                wp.uint32(wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT))),
-            )
+def build_shape_geometry(
+    model: Model, shapes: np.ndarray, shape_types: np.ndarray
+) -> tuple[list[wo.Accel], wp.array[wp.uint64]]:
+    """Build the triangle structures of the meshes used by ``shapes`` and the primitives' unit cube."""
+    sources = model.shape_source_ptr.numpy()
+    geometry = []
+    mesh_ids = {}
+    used_meshes = set(sources[shapes[shape_types[shapes] == GeoType.MESH]].tolist())
+    for mesh in [*model._mesh_keep_alive, *model.heightfield_meshes]:
+        if mesh.id in used_meshes and mesh.id not in mesh_ids:
+            geometry.append(wo.Accel([wo.triangles(mesh.points, mesh.indices)], compact=True))
+            mesh_ids[mesh.id] = geometry[-1].id
+    bounds = wp.array([[-1.001] * 3 + [1.001] * 3], dtype=float, device=model.device)
+    geometry.append(wo.Accel([wo.aabbs(bounds=bounds)], compact=True))
+    traversables = np.zeros(model.shape_count, dtype=np.uint64)
+    for si in shapes:
+        traversables[si] = mesh_ids[int(sources[si])] if shape_types[si] == GeoType.MESH else geometry[-1].id
+    return geometry, wp.array(traversables, dtype=wp.uint64, device=model.device)
 
-        self.write_instances = write_instances
-        self.instances = wp.empty(len(indices), dtype=wo.Instance, device=model.device)
-        self.accel = None
-        self.handle = 0
-        self._write_instances()
-        if self.has_instances:
-            self.accel = wo.Accel(
-                [wo.instances(self.instances, self.geometry)],
-                flags=wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_TRACE,
-            )
-            self.handle = self.accel.id
 
-    def _write_instances(self):
-        model = self.model
-        wp.launch(
-            self.write_instances,
-            dim=len(self.indices),
-            inputs=[
-                self.indices,
-                model.shape_world,
-                self.shape_types,
-                model.shape_scale,
-                model.bvh_shape_world_transforms,
-                self.traversables,
-                self.instances,
-            ],
-            device=self.device,
+def compute_optix_shape_instances_launch(model: Model, shapes: OptixShapes) -> None:
+    """Write the instance of each shape in ``shapes`` from its current world transform."""
+    wp.launch(
+        kernel=compute_optix_shape_instances,
+        dim=shapes.instance_shapes.shape[0],
+        inputs=[
+            shapes.grid,
+            shapes.extent,
+            shapes.world_count,
+            shapes.instance_shapes,
+            model.shape_world,
+            shapes.shape_types,
+            model.shape_scale,
+            shapes.shape_world_transforms,
+            shapes.shape_traversables,
+            shapes.instances,
+        ],
+        device=model.device,
+    )
+
+
+def create_pipeline(shapes: OptixShapes, kernel: wp.Kernel, *, enable_backface_culling: bool = False) -> wo.Pipeline:
+    """Compile ``kernel`` as the ray generation program of a pipeline over ``shapes``."""
+    extent = shapes.extent
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def intersect(
+        shape_types: wp.array[wp.int32],
+        shape_sizes: wp.array[wp.vec3],
+    ):
+        # The instance scales the unit cube to the shape, so scaling the object-space ray by
+        # the half extents gives the shape-local ray with the same distance.
+        si = int(wp.optix_get_instance_id())
+        kind = shape_types[si]
+        size = shape_sizes[si]
+        half = primitive_half_extents(kind, size, wp.static(extent))
+        distance, _normal = raycast.ray_intersect_shape_local(
+            size,
+            kind,
+            wp.cw_mul(wp.optix_get_object_ray_origin(), half),
+            wp.cw_mul(wp.optix_get_object_ray_direction(), half),
+            wp.static(enable_backface_culling),
         )
+        if distance >= wp.optix_get_ray_tmin():
+            wp.optix_report_intersection(distance, wp.uint32(0), wp.uint32(0), wp.uint32(0))
 
-    def refit(self):
-        if self.device.stream.is_capturing:
-            raise RuntimeError("The OptiX backend does not support CUDA graph capture")
-        self._write_instances()
-        if self.accel is not None:
-            self.accel.refit()
-
-    def pipeline(self, kernel, *, enable_backface_culling=False):
-        extent = self.extent
-
-        @wp.kernel(module="unique", enable_backward=False)
-        def intersect(
-            shape_types: wp.array[wp.int32],
-            shape_sizes: wp.array[wp.vec3],
-        ):
-            # The instance scales the unit cube to the shape, so scaling the object-space ray by
-            # the half extents gives the shape-local ray with the same distance.
-            si = int(wp.optix_get_instance_id())
-            kind = shape_types[si]
-            size = shape_sizes[si]
-            half = primitive_half_extents(kind, size, wp.static(extent))
-            distance, _normal = raycast.ray_intersect_shape_local(
-                size,
-                kind,
-                wp.cw_mul(wp.optix_get_object_ray_origin(), half),
-                wp.cw_mul(wp.optix_get_object_ray_direction(), half),
-                wp.static(enable_backface_culling),
-            )
-            if distance >= wp.optix_get_ray_tmin():
-                wp.optix_report_intersection(distance, wp.uint32(0), wp.uint32(0), wp.uint32(0))
-
-        return wo.Pipeline(
-            kernel,
-            device=self.device,
-            sbt=wo.SbtLayout(
-                hit_groups={"triangles": wo.HitGroup(), "primitives": wo.HitGroup(intersection=intersect)}
-            ),
-            max_registers=_MAX_REGISTERS,
-            module_options={"fast_math": kernel.module.options["fast_math"]},
-            graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
-        )
+    return wo.Pipeline(
+        kernel,
+        device=shapes.shape_types.device,
+        sbt=wo.SbtLayout(hit_groups={"triangles": wo.HitGroup(), "primitives": wo.HitGroup(intersection=intersect)}),
+        max_registers=_MAX_REGISTERS,
+        module_options={"fast_math": kernel.module.options["fast_math"]},
+        graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
+    )
 
 
 def intersect_rays(
-    model,
+    model: Model,
     ray_origins,
     ray_directions,
     ray_worlds,
@@ -266,33 +253,27 @@ def intersect_rays(
     out_shape_id,
     out_normal,
     fast_math,
-    required,
-) -> bool:
-    """Launch shape queries on the model's OptiX scene; return ``False`` to fall back to Warp."""
-    if model.device.is_cuda and model.device.stream.is_capturing:
-        if required:
-            raise RuntimeError("The OptiX backend does not support CUDA graph capture")
-        return False
-    if model._optix_scene is None:
-        try:
-            model._optix_scene = Scene(model)
-        except UnsupportedError:
-            if required:
-                raise
-            return False
-    scene = model._optix_scene
-    # Refit here rather than in Model.bvh_refit_shapes, which may be graph captured.
-    scene.refit()
+) -> None:
+    """Intersect rays with :attr:`Model.optix_shapes`."""
+    shapes = model.optix_shapes
+    if shapes is None:
+        raise RuntimeError(
+            "OptiX raycasting requires OptiX shapes built for the queried state. Call "
+            "model.optix_build_shapes(state) before first use and model.optix_refit_shapes(state) "
+            "after state changes."
+        )
+    if model.device.stream.is_capturing:
+        raise RuntimeError("The OptiX backend does not support CUDA graph capture")
     key = (enable_global_world, out_dist is not None, out_shape_id is not None, out_normal is not None, fast_math)
-    if key not in scene.ray_pipelines:
-        scene.ray_pipelines[key] = _create_ray_pipeline(scene, *key)
+    if key not in shapes.ray_pipelines:
+        shapes.ray_pipelines[key] = _create_ray_pipeline(shapes, *key)
     wo.launch(
-        scene.ray_pipelines[key],
+        shapes.ray_pipelines[key],
         dim=ray_origins.shape[0],
         inputs=[
-            scene.handle,
-            model.bvh_shape_world_transforms,
-            scene.shape_types,
+            shapes.id,
+            shapes.shape_world_transforms,
+            shapes.shape_types,
             model.shape_scale,
             model.shape_source_ptr,
             ray_origins,
@@ -301,11 +282,10 @@ def intersect_rays(
         ],
         outputs=[out_dist, out_shape_id, out_normal],
     )
-    return True
 
 
-def _create_ray_pipeline(scene, enable_global_world, write_dist, write_shape_id, write_normal, fast_math):
-    grid, extent, world_count = scene.grid, scene.extent, scene.world_count
+def _create_ray_pipeline(shapes, enable_global_world, write_dist, write_shape_id, write_normal, fast_math):
+    grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
 
     @wp.kernel(enable_backward=False, module="unique", module_options={"fast_math": fast_math})
     def intersect(
@@ -328,8 +308,8 @@ def _create_ray_pipeline(scene, enable_global_world, write_dist, write_shape_id,
         shape = int(-1)
         normal = wp.vec3(0.0)
         if wp.static(enable_global_world) or ray_worlds[tid] < 0:
-            for p in range(wp.static(len(scene.planes))):
-                si = wp.static(scene.planes[p])
+            for p in range(wp.static(len(shapes.planes))):
+                si = wp.static(shapes.planes[p])
                 plane_distance, plane_normal = raycast.ray_intersect_shape(
                     shape_transforms[si], shape_sizes[si], GeoType.PLANE, origin, direction, False
                 )
@@ -338,10 +318,10 @@ def _create_ray_pipeline(scene, enable_global_world, write_dist, write_shape_id,
                     distance = plane_distance
                     normal = plane_normal
         # Match the camera's unrolled local/global traversal (OptiX 0.3.0).
-        for i in range(wp.static(2 if enable_global_world and scene.has_global_instances else 1)):
+        for i in range(wp.static(2 if enable_global_world and shapes.has_global_instances else 1)):
             world = wp.where(i == 1 or ray_worlds[tid] < 0, wp.static(world_count), ray_worlds[tid])
             interval = ray_interval(origin, direction, wp.static(extent), distance)
-            if wp.static(scene.has_instances) and interval[1] >= interval[0]:
+            if wp.static(shapes.has_instances) and interval[1] >= interval[0]:
                 packed_origin = origin + world_offset(world, wp.static(grid), wp.static(extent))
                 query = wo.accel_query_ray(handle, packed_origin, direction, interval[1], interval[0])
                 if query.result and query.t < distance:
@@ -370,4 +350,4 @@ def _create_ray_pipeline(scene, enable_global_world, write_dist, write_shape_id,
         if wp.static(write_normal):
             out_normal[tid] = normal
 
-    return scene.pipeline(intersect)
+    return create_pipeline(shapes, intersect)

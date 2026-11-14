@@ -944,7 +944,7 @@ def intersect_ray(
     out_shape_id: wp.array[wp.int32] | None = None,
     out_normal: wp.array[wp.vec3] | None = None,
     fast_math: bool = True,
-    backend: str | None = None,
+    backend: str = "warp",
 ):
     """Intersect rays with model shapes.
 
@@ -952,7 +952,10 @@ def intersect_ray(
     initial model state. If the queried state changes shape transforms, refit
     the BVH with :meth:`~newton.Model.bvh_refit_shapes` before raycasting
     again. Manually populated models must build the BVH with
-    :meth:`~newton.Model.bvh_build_shapes` before first use.
+    :meth:`~newton.Model.bvh_build_shapes` before first use. With
+    ``backend="optix"``, build and refit :attr:`~newton.Model.optix_shapes` with
+    :meth:`~newton.Model.optix_build_shapes` and :meth:`~newton.Model.optix_refit_shapes`
+    instead.
 
     Each ray is cast against the shapes of its own world (given by
     ``ray_worlds``) and against the shapes of the global world (index ``-1``),
@@ -974,18 +977,16 @@ def intersect_ray(
         out_shape_id: Optional output hit shape indices, shape [ray_count]. ``-1`` on miss.
         out_normal: Optional output hit normals, shape [ray_count, 3].
         fast_math: Whether to compile the intersection kernel with fast math enabled.
-        backend: ``"warp"``, ``"optix"``, or ``None`` to use OptiX when it supports the
-            model and device, outside CUDA graph capture. ``"optix"`` raises
-            :class:`RuntimeError` when unsupported. With OptiX, shapes must stay within twice
-            their initial distance from the origin.
+        backend: ``"warp"`` traverses :attr:`~newton.Model.bvh_shapes`; ``"optix"``
+            traverses :attr:`~newton.Model.optix_shapes` and cannot be recorded in CUDA graphs.
     """
 
-    if backend not in (None, "warp", "optix"):
-        raise ValueError(f"backend must be None, 'warp' or 'optix', got {backend!r}")
-    if backend != "warp":
+    if backend not in ("warp", "optix"):
+        raise ValueError(f"backend must be 'warp' or 'optix', got {backend!r}")
+    if backend == "optix":
         from .optix import intersect_rays  # noqa: PLC0415
 
-        if intersect_rays(
+        intersect_rays(
             model,
             ray_origins,
             ray_directions,
@@ -995,9 +996,8 @@ def intersect_ray(
             out_shape_id=out_shape_id,
             out_normal=out_normal,
             fast_math=fast_math,
-            required=backend == "optix",
-        ):
-            return
+        )
+        return
 
     if model.bvh_shape_enabled is not None and model.bvh_shape_count_enabled == 0:
         # The shape BVH was built but no shape was selected, so every ray misses.
