@@ -8950,6 +8950,67 @@ def Xform "Articulation" (
                         )
 
     @requires("pxr.Usd")
+    def test_mjc_equality_site_anchor_matches_imported_body_frame(self):
+        """Anchors use the imported body frame under ancestor shear and tiny body scales."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        for case in ("sheared", "tiny_scale"):
+            with self.subTest(case=case):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                root = UsdGeom.Xform.Define(stage, "/World")
+                stage.SetDefaultPrim(root.GetPrim())
+                body = UsdGeom.Xform.Define(stage, "/World/Body")
+                body.AddTranslateOp().Set(Gf.Vec3d(0.5, -1.5, 2.0))
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+                mass.CreateMassAttr(1.0)
+                mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1))
+                if case == "sheared":
+                    # A rotated articulated body beneath a non-uniform ancestor scale has a
+                    # sheared world matrix; the importer places it with usd.get_transform().
+                    root.AddScaleOp().Set(Gf.Vec3d(2.0, 3.0, 4.0))
+                    body.AddRotateZOp().Set(45.0)
+                    UsdPhysics.ArticulationRootAPI.Apply(body.GetPrim())
+                    child = UsdGeom.Xform.Define(stage, "/World/Body/Child")
+                    child.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.5))
+                    UsdPhysics.RigidBodyAPI.Apply(child.GetPrim())
+                    child_mass = UsdPhysics.MassAPI.Apply(child.GetPrim())
+                    child_mass.CreateMassAttr(1.0)
+                    child_mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1))
+                    hinge = UsdPhysics.RevoluteJoint.Define(stage, "/World/Hinge")
+                    hinge.CreateBody0Rel().SetTargets([body.GetPath()])
+                    hinge.CreateBody1Rel().SetTargets([child.GetPath()])
+                    hinge.CreateLocalPos0Attr(Gf.Vec3f(0.0, 0.0, 0.5))
+                    hinge.CreateAxisAttr("Z")
+                    site_offset = Gf.Vec3d(0.1, 0.2, 0.3)
+                else:
+                    body.AddRotateZOp().Set(30.0)
+                    body.AddScaleOp().Set(Gf.Vec3d(1.0e-4))
+                    site_offset = Gf.Vec3d(100.0, 200.0, -300.0)
+                site = UsdGeom.Xform.Define(stage, "/World/Body/Site")
+                site.AddTranslateOp().Set(site_offset)
+                site.GetPrim().SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcSiteAPI"]))
+                connect = UsdPhysics.SphericalJoint.Define(stage, "/World/Connect")
+                connect.CreateBody0Rel().SetTargets([site.GetPath()])
+                connect.CreateExcludeFromArticulationAttr(True)
+                connect.GetPrim().SetMetadata(
+                    "apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityConnectAPI"])
+                )
+
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                result = builder.add_usd(stage, convert_mjc_equality_constraints=False)
+                model = builder.finalize(device="cpu")
+                body_q = model.body_q.numpy()[result["path_body_map"]["/World/Body"]]
+                anchor = model.mujoco.equality_constraint_anchor.numpy()[0]
+                body_tf = wp.transform(wp.vec3(*body_q[:3]), wp.quat(*body_q[3:]))
+                world_anchor = wp.transform_point(body_tf, wp.vec3(*anchor))
+                site_world = UsdGeom.XformCache().GetLocalToWorldTransform(site.GetPrim()).ExtractTranslation()
+                np.testing.assert_allclose(world_anchor, site_world, atol=1.0e-6, rtol=0.0)
+
+    @requires("pxr.Usd")
     def test_mjc_equality_connect_site_parsing(self):
         """Test that MjcEqualityConnectAPI on a spherical joint is parsed as a connect equality constraint."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
