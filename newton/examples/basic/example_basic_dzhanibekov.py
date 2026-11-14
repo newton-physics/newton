@@ -124,7 +124,7 @@ class Example:
             self.contacts = None
         elif self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
             self.collision_pipeline = None

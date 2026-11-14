@@ -1,0 +1,1 @@
+Always import USD cables as solid capsules: `ModelBuilder.default_shape_cfg.is_solid=False` no longer marks them hollow, and a hollow default with a margin of at least the cable radius no longer makes the import fail.

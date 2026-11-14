@@ -19,7 +19,7 @@ import numpy as np
 import newton
 from newton import config
 from newton._src.geometry import _convex_cache
-from newton.tests.unittest_utils import USD_AVAILABLE, patch_sys_module
+from newton.tests.unittest_utils import patch_sys_module, requires
 
 
 class TestConvexDecompositionCache(unittest.TestCase):
@@ -121,7 +121,7 @@ class TestConvexDecompositionCache(unittest.TestCase):
         self._build(cache_dir=self.cache_dir)
         self.assertEqual(self.coacd.call_count, 3)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_usd_import_uses_global_cache(self):
         """Reuse or disable cached decomposition through automatic USD import."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -211,6 +211,7 @@ class TestConvexDecompositionCache(unittest.TestCase):
                     self._build(cache_dir=self.cache_dir)
                 self.assertEqual(list(self.cache_dir.glob("*.npz")), [])
 
+    @requires("scipy")
     def test_cache_does_not_store_fallback_hulls(self):
         """Retry decomposition after an earlier call fell back to a convex hull."""
         self.coacd.side_effect = RuntimeError("decomposition failed")

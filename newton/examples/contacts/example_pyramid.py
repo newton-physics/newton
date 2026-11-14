@@ -144,7 +144,7 @@ class Example:
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model,
-                dynamics_solver="dvi",
+                dynamics_solver="scc",
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
@@ -152,7 +152,7 @@ class Example:
             solver_config.integrator = "moreau"
             solver_config.collision_detector.broadphase = args.broad_phase
             # Resolve coupled ball/ground contacts at the roughly 6500:1 mass ratio.
-            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.scc.max_alternating_iterations = 8
             solver_config.constraints.gamma = 0.5
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
             self.collision_pipeline = None
