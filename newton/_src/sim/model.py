@@ -1171,7 +1171,8 @@ class Model:
 
         self.optix_shapes: OptixShapes | None = None
         """OptiX acceleration over selected shapes, the counterpart of :attr:`bvh_shapes` for
-        ``backend="optix"`` cameras and raycasts. Built by :meth:`optix_build_shapes`."""
+        ``backend="optix"`` cameras and raycasts. Built by :meth:`optix_build_shapes`. Experimental;
+        its contents may change without prior notice."""
 
         self.bvh_particles: wp.Bvh | None = None
         """BVH over particles. Built by :meth:`ModelBuilder.finalize` when particles are present."""
@@ -2432,8 +2433,11 @@ class Model:
         The OptiX counterpart of :meth:`bvh_build_shapes`, stored in :attr:`optix_shapes` and used
         by ``backend="optix"`` cameras and raycasts. It is independent of the shape BVH and is not
         built by :meth:`ModelBuilder.finalize`. Call it again after structural changes; for
-        ordinary state changes, use :meth:`optix_refit_shapes`. Shapes must stay within twice
-        their distance from the origin at build time.
+        ordinary state changes, use :meth:`optix_refit_shapes`, which raises once a shape moves
+        beyond twice the farthest reach of any shape from the origin at build time.
+
+        .. experimental::
+            The OptiX backend may change without prior notice.
 
         Args:
             state: Current simulation state with body transforms.
@@ -2522,10 +2526,15 @@ class Model:
         # Convex hulls and heightfields are traced as their triangle meshes.
         types = np.where(np.isin(types, (GeoType.CONVEX_MESH, GeoType.HFIELD)), GeoType.MESH, types).astype(np.int32)
         enabled = enabled.numpy().astype(np.int32)
-        bounded = types[enabled] != GeoType.PLANE
-        radius = 0.0
-        if np.any(bounded):
-            radius = float(np.max(np.abs(np.concatenate((lowers.numpy()[bounded], uppers.numpy()[bounded])))))
+        # Bounding spheres about the shape origins; infinite planes are clipped to the cells instead.
+        origins = transforms.numpy()[enabled, :3]
+        radii = np.zeros(shape_count, dtype=np.float32)
+        radii[enabled] = np.linalg.norm(
+            np.maximum(np.abs(lowers.numpy() - origins), np.abs(uppers.numpy() - origins)), axis=1
+        )
+        sizes = self.shape_scale.numpy()[enabled] if shape_count else np.empty((0, 3), dtype=np.float32)
+        bounded = (types[enabled] != GeoType.PLANE) | np.all(sizes[:, :2] > 0.0, axis=1)
+        reach = np.abs(origins).max(axis=1, initial=0.0) + radii[enabled]
         enabled = np.sort(enabled)
         shape_world = self.shape_world.numpy() if shape_count else np.empty(0, dtype=np.int32)
         global_plane = (types[enabled] == GeoType.PLANE) & (shape_world[enabled] < 0)
@@ -2543,9 +2552,11 @@ class Model:
             shape_traversables=traversables,
             instance_shapes=wp.array(instance_shapes, dtype=wp.int32, device=device),
             instances=wp.empty(len(instance_shapes), dtype=optix.wo.Instance, device=device),
+            shape_radii=wp.array(radii, dtype=wp.float32, device=device),
+            overflow=wp.zeros(1, dtype=wp.int32, device=device),
             planes=tuple(int(si) for si in enabled[global_plane]),
-            # Room for shapes to move; the padding also encloses the primitives' padded unit cube.
-            extent=max(2.0 * 1.01 * radius, 1.0),
+            # Room for shapes to move.
+            extent=max(2.0 * float(reach[bounded].max(initial=0.0)), 1.0),
             grid=grid,
             world_count=self.world_count,
             has_global_instances=bool(np.any(shape_world[instance_shapes] < 0)),
@@ -2566,8 +2577,14 @@ class Model:
         from ``state.body_q`` and refits :attr:`optix_shapes` in place. It cannot be recorded in
         a CUDA graph.
 
+        .. experimental::
+            The OptiX backend may change without prior notice.
+
         Args:
             state: Current simulation state with body transforms.
+
+        Raises:
+            RuntimeError: If a shape left its world's cell; rebuild with :meth:`optix_build_shapes`.
         """
         from ..geometry.bvh import compute_shape_world_transforms  # noqa: PLC0415
         from ..geometry.optix import compute_optix_shape_instances_launch  # noqa: PLC0415
@@ -2586,7 +2603,12 @@ class Model:
                 inputs=[state.body_q, self.shape_body, self.shape_transform, shapes.shape_world_transforms],
                 device=self.device,
             )
+        shapes.overflow.zero_()
         compute_optix_shape_instances_launch(self, shapes)
+        if shapes.overflow.numpy()[0]:
+            raise RuntimeError(
+                "A shape moved outside its OptiX world cell; rebuild with Model.optix_build_shapes(state)."
+            )
         if shapes.accel is not None:
             shapes.accel.refit()
 

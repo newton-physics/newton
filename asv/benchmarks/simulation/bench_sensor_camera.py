@@ -375,7 +375,9 @@ class SensorCameraShapes256(_SceneBenchmark):
 PREVIEW_WORLD_COUNTS = (1, 16)
 
 
-def write_preview_images(scene_names: list[str], output_dir: Path, image_size: int = 1024) -> list[Path]:
+def write_preview_images(
+    scene_names: list[str], output_dir: Path, image_size: int = 1024, backend: str = "warp"
+) -> list[Path]:
     """Write a PNG preview of each scene for every entry in :data:`PREVIEW_WORLD_COUNTS`.
 
     Single-world previews render at ``image_size``; multi-world previews tile a
@@ -390,7 +392,9 @@ def write_preview_images(scene_names: list[str], output_dir: Path, image_size: i
     for name in scene_names:
         for world_count in PREVIEW_WORLD_COUNTS:
             views_per_row = math.isqrt(world_count)
-            rig = _SensorCameraSceneRig(SCENES[name], world_count, image_size // views_per_row, RENDER_ORDER)
+            rig = _SensorCameraSceneRig(
+                SCENES[name], world_count, image_size // views_per_row, RENDER_ORDER, backend=backend
+            )
             rig.render(color=True, depth=False)
             rgba = SensorCamera.Utils.flatten_color_image_to_rgba(rig.color_image, views_per_row=views_per_row)
             path = output_dir / f"{name}_{world_count}_world{'s' if world_count > 1 else ''}.png"
@@ -466,7 +470,9 @@ if __name__ == "__main__":
     args = parser.parse_known_args()[0]
 
     if args.preview:
-        for path in write_preview_images(sorted(SCENES), args.preview_dir, image_size=args.preview_size):
+        for path in write_preview_images(
+            sorted(SCENES), args.preview_dir, image_size=args.preview_size, backend=args.backend
+        ):
             print(f"Wrote {path}")
     else:
         for key in args.bench or benchmark_list.keys():

@@ -742,6 +742,46 @@ def test_intersect_ray(test: TestRaycast, device: str, backend: str = "warp"):
     )
     np.testing.assert_allclose(out_dist.numpy(), np.array([1.5, 2.5, -1.0], dtype=np.float32), atol=1e-5)
 
+    if backend == "optix":
+        # Shapes that leave their world's cell require a rebuild.
+        body_q[1, 0] = 100.0
+        state.body_q.assign(body_q)
+        with test.assertRaises(RuntimeError):
+            model.optix_refit_shapes(state)
+
+
+def test_intersect_ray_world_planes(test: TestRaycast, device: str, backend: str = "warp"):
+    rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.25 * np.pi)
+
+    def cast(worlds, x):
+        """Cast a ray down at ``(x, 0, 1)`` in world 0 of a model with rotated planes ``(z, size)``."""
+        builder = newton.ModelBuilder()
+        for planes in worlds:
+            builder.begin_world()
+            for z, size in planes:
+                builder.add_shape_plane(xform=wp.transform(wp.vec3(0.0, 0.0, z), rotation), width=size, length=size)
+            builder.end_world()
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.optix_build_shapes(model.state())
+        out_dist = wp.empty(1, dtype=float, device=device)
+        out_shape_id = wp.empty(1, dtype=wp.int32, device=device)
+        newton.intersect_ray(
+            model,
+            backend=backend,
+            ray_origins=wp.array([[x, 0.0, 1.0]], dtype=wp.vec3, device=device),
+            ray_directions=wp.array([[0.0, 0.0, -1.0]], dtype=wp.vec3, device=device),
+            ray_worlds=wp.array([0], dtype=wp.int32, device=device),
+            out_dist=out_dist,
+            out_shape_id=out_shape_id,
+        )
+        return out_dist.numpy()[0], out_shape_id.numpy()[0]
+
+    # An off-center hit on a finite plane.
+    np.testing.assert_allclose(cast([[(0.0, 4.0)]], 1.5), (1.0, 0), atol=1e-5)
+    # World 1's infinite plane must not occlude world 0's.
+    np.testing.assert_allclose(cast([[(-0.5, 0.0)], [(0.0, 0.0)]], 0.9), (1.5, 0), atol=1e-5)
+
 
 def _make_global_world_model(device: str):
     """Two worlds each with a sphere, plus a global-world box shared by both."""
@@ -971,9 +1011,11 @@ for test_func in (
     test_intersect_ray,
     test_intersect_ray_global_world,
     test_intersect_ray_heightfield_uses_finalize_bvh,
+    test_intersect_ray_world_planes,
 ):
     add_function_test(TestRaycast, f"{test_func.__name__}_optix", test_func, devices=optix_devices, backend="optix")
 add_function_test(TestRaycast, "test_intersect_ray_global_world", test_intersect_ray_global_world, devices=devices)
+add_function_test(TestRaycast, "test_intersect_ray_world_planes", test_intersect_ray_world_planes, devices=devices)
 add_function_test(
     TestRaycast,
     "test_intersect_ray_includes_collision_shapes_on_request",

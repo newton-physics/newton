@@ -978,7 +978,8 @@ def intersect_ray(
         out_normal: Optional output hit normals, shape [ray_count, 3].
         fast_math: Whether to compile the intersection kernel with fast math enabled.
         backend: ``"warp"`` traverses :attr:`~newton.Model.bvh_shapes`; ``"optix"``
-            traverses :attr:`~newton.Model.optix_shapes` and cannot be recorded in CUDA graphs.
+            (experimental) traverses :attr:`~newton.Model.optix_shapes` and cannot be recorded
+            in CUDA graphs.
     """
 
     if backend not in ("warp", "optix"):

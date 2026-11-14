@@ -645,8 +645,10 @@ class RenderContext:
             # in block_dim must reuse the same compiled kernel. ``replace`` also
             # snapshots the mutable config so a later mutation cannot alter a stored
             # key (state/clear_data are snapshotted the same way on insert).
+            # OptiX pipelines are cached on the shapes they trace, so a rebuild releases them.
             key_config = replace(config, block_dim=0)
-            render_kernel = self._kernel_cache.get((key_config, self._render_state, clear_data, optix))
+            cache = self._kernel_cache if optix is None else optix.pipelines
+            render_kernel = cache.get((key_config, self._render_state, clear_data))
             if render_kernel is None:
                 # Copies: the factories capture them in wp.static, and shared modules may recompile.
                 render_kernel = create_kernel(replace(config), replace(self._render_state), replace(clear_data), optix)
@@ -656,9 +658,7 @@ class RenderContext:
                     render_kernel = create_pipeline(
                         optix, render_kernel, enable_backface_culling=config.enable_backface_culling
                     )
-                self._kernel_cache[(key_config, replace(self._render_state), replace(clear_data), optix)] = (
-                    render_kernel
-                )
+                cache[(key_config, replace(self._render_state), replace(clear_data))] = render_kernel
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
 
@@ -670,12 +670,11 @@ class RenderContext:
 
             self._gather_variant_render_data()
             if optix is None:
-                launch = wp.launch
+                launch, launch_options = wp.launch, {"device": self.device, "block_dim": config.block_dim}
             else:
                 from ...geometry.optix import wo  # noqa: PLC0415
 
-                launch = wo.launch
-            launch_options = {"device": self.device, "block_dim": config.block_dim} if optix is None else {}
+                launch, launch_options = wo.launch, {}
             launch(
                 render_kernel,
                 dim=(view_count * pixels_per_view),

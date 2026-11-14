@@ -156,9 +156,11 @@ class SensorCamera:
                 its ``render_config`` argument is ``None``. Defaults to
                 ``RenderConfig()``.
             backend: ``"warp"`` traverses :attr:`~newton.Model.bvh_shapes`; ``"optix"``
-                (experimental, requires ``newton[optix]``) traverses
-                :attr:`~newton.Model.optix_shapes` and raises :class:`RuntimeError` when OptiX
-                does not support the model or device.
+                traverses :attr:`~newton.Model.optix_shapes` (experimental). OptiX requires the
+                ``newton[optix]`` extra (Python 3.12 on x86-64 Linux or Windows) and a CUDA device,
+                cannot be recorded in CUDA graphs, and does not support particles, deformable
+                surfaces, Gaussians or shape variants; unsupported models raise
+                :class:`RuntimeError`.
             load_textures: Load the textures of shape meshes and deformable visual
                 meshes from file paths or in-memory images. A texture that cannot
                 be loaded raises ``ValueError`` here, so pass ``False`` for

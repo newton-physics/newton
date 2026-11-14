@@ -30,14 +30,14 @@ class UnsupportedError(RuntimeError):
     """OptiX cannot trace this model on its device."""
 
 
-@dataclass(eq=False)
+@dataclass
 class OptixShapes:
     """OptiX instance acceleration over a model's shapes, with one cell per world.
 
-    The cell grid, world count and cell extent are fixed when the shapes are built, so kernels
-    compile them in. Shapes must stay within twice their initial distance from the origin, and
-    per-world infinite planes are bounded by the cell. Global planes (usually the ground) are not
-    instanced; kernels intersect them analytically.
+    Each world's shapes are packed into a cube of half-width :attr:`extent`, spaced ``3.5 * extent``
+    apart, and rays are clipped to their world's cube. The cell grid, world count and extent are fixed
+    when the shapes are built, so kernels compile them in. Infinite per-world planes are instanced as
+    squares covering their cell, and global planes (usually the ground) are intersected analytically.
     """
 
     id: int
@@ -50,18 +50,28 @@ class OptixShapes:
     """Shape types, with convex hulls and heightfields traced as meshes, shape ``[shape_count]``."""
     shape_world_transforms: wp.array[wp.transformf]
     """World-space shape transforms, shape ``[shape_count]``."""
+    shape_radii: wp.array[wp.float32]
+    """Bounding sphere radius of each shape about its origin [m], shape ``[shape_count]``."""
     shape_traversables: wp.array[wp.uint64]
     """Acceleration structure instanced by each shape, shape ``[shape_count]``."""
     instance_shapes: wp.array[wp.int32]
     """Shape index of each instance."""
     instances: wp.array[wo.Instance]
+    """OptiX instance of each shape in :attr:`instance_shapes`."""
+    overflow: wp.array[wp.int32]
+    """Set by the instance kernel when a shape leaves its cell."""
     planes: tuple[int, ...]
     """Global planes, intersected analytically."""
     grid: int
+    """Cells per axis of the world grid."""
     extent: float
+    """Half-width of each world's cell [m]."""
     world_count: int
+    """Number of worlds; the global world uses the cell after them."""
     has_global_instances: bool
-    ray_pipelines: dict = field(default_factory=dict)
+    """Whether the global world's cell holds any instances."""
+    pipelines: dict = field(default_factory=dict)
+    """Camera and raycast pipelines compiled for these shapes."""
 
     @property
     def has_instances(self) -> bool:
@@ -72,7 +82,7 @@ class OptixShapes:
 def world_offset(world: int, grid: int, extent: float) -> wp.vec3:
     center = float(grid - 1) * 0.5
     cell = wp.vec3(float(world % grid), float((world // grid) % grid), float(world // (grid * grid)))
-    return (cell - wp.vec3(center)) * (3.0 * extent)
+    return (cell - wp.vec3(center)) * (3.5 * extent)
 
 
 @wp.func
@@ -92,14 +102,13 @@ def ray_interval(origin: wp.vec3, direction: wp.vec3, extent: float, max_distanc
 
 
 @wp.func
-def primitive_half_extents(kind: int, size: wp.vec3, extent: float) -> wp.vec3:
-    """Half extents that scale the shared unit cube to an analytic shape's bounds."""
+def primitive_half_extents(kind: int, size: wp.vec3) -> wp.vec3:
+    """Half extents that scale the shared unit cube to an analytic shape's bounds.
+
+    Infinite plane axes get 1; the instance sets their span, which does not change the hit distance.
+    """
     if kind == GeoType.PLANE:
-        # Infinite axes (size 0) span the cell, wherever it lies on the plane.
-        span = 1.7321 * extent
-        return wp.vec3(
-            wp.where(size[0] > 0.0, 0.5 * size[0], span), wp.where(size[1] > 0.0, 0.5 * size[1], span), 1.0e-3
-        )
+        return wp.vec3(wp.where(size[0] > 0.0, 0.5 * size[0], 1.0), wp.where(size[1] > 0.0, 0.5 * size[1], 1.0), 1.0e-3)
     if kind == GeoType.SPHERE:
         return wp.vec3(size[0])
     if kind == GeoType.CAPSULE:
@@ -121,9 +130,11 @@ def compute_optix_shape_instances(
     shape_world: wp.array[wp.int32],
     shape_types: wp.array[wp.int32],
     shape_sizes: wp.array[wp.vec3],
+    shape_radii: wp.array[wp.float32],
     shape_transforms: wp.array[wp.transformf],
     shape_traversables: wp.array[wp.uint64],
     out_instances: wp.array[wo.Instance],
+    out_overflow: wp.array[wp.int32],
 ):
     i = wp.tid()
     si = instance_shapes[i]
@@ -133,19 +144,30 @@ def compute_optix_shape_instances(
     transform = shape_transforms[si]
     rotation = wp.quat_to_matrix(wp.transform_get_rotation(transform))
     center = wp.transform_get_translation(transform)
-    if kind == GeoType.PLANE:
-        # Center infinite axes on the plane point nearest the cell center (the origin).
+    half = primitive_half_extents(kind, size)
+    mask = int(255)
+    if kind == GeoType.PLANE and (size[0] <= 0.0 or size[1] <= 0.0):
+        # Cover the cell (radius sqrt(3) * extent) with a square centered on the plane point nearest
+        # the cell center. Its corners stay within sqrt(6) * extent of the center, clear of other cells.
         nearest = -wp.transpose(rotation) @ center
-        center += rotation @ wp.vec3(
-            wp.where(size[0] > 0.0, 0.0, nearest[0]), wp.where(size[1] > 0.0, 0.0, nearest[1]), 0.0
-        )
+        span = wp.sqrt(wp.max(3.0 * extent * extent - nearest[2] * nearest[2], 0.0))
+        shift = wp.vec3(0.0)
+        for axis in range(2):
+            if size[axis] <= 0.0:
+                shift[axis] = nearest[axis]
+                half[axis] = wp.max(span, 1.0e-3)
+        center += rotation @ shift
+        if span == 0.0:
+            mask = 0
+    elif wp.max(wp.abs(center)) + shape_radii[si] > extent:
+        out_overflow[0] = 1
     out_instances[i] = wo.make_instance(
-        rotation @ wp.diag(primitive_half_extents(kind, size, extent)),
+        rotation @ wp.diag(half),
         center + world_offset(world, grid, extent),
         shape_traversables[si],
         wp.uint32(si),
         wp.uint32(wp.where(kind == GeoType.MESH, 0, 1)),
-        wp.uint32(255),
+        wp.uint32(mask),
         wp.uint32(wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT))),
     )
 
@@ -199,9 +221,11 @@ def compute_optix_shape_instances_launch(model: Model, shapes: OptixShapes) -> N
             model.shape_world,
             shapes.shape_types,
             model.shape_scale,
+            shapes.shape_radii,
             shapes.shape_world_transforms,
             shapes.shape_traversables,
             shapes.instances,
+            shapes.overflow,
         ],
         device=model.device,
     )
@@ -209,7 +233,6 @@ def compute_optix_shape_instances_launch(model: Model, shapes: OptixShapes) -> N
 
 def create_pipeline(shapes: OptixShapes, kernel: wp.Kernel, *, enable_backface_culling: bool = False) -> wo.Pipeline:
     """Compile ``kernel`` as the ray generation program of a pipeline over ``shapes``."""
-    extent = shapes.extent
 
     @wp.kernel(module="unique", enable_backward=False)
     def intersect(
@@ -221,7 +244,7 @@ def create_pipeline(shapes: OptixShapes, kernel: wp.Kernel, *, enable_backface_c
         si = int(wp.optix_get_instance_id())
         kind = shape_types[si]
         size = shape_sizes[si]
-        half = primitive_half_extents(kind, size, wp.static(extent))
+        half = primitive_half_extents(kind, size)
         distance, _normal = raycast.ray_intersect_shape_local(
             size,
             kind,
@@ -265,10 +288,10 @@ def intersect_rays(
     if model.device.stream.is_capturing:
         raise RuntimeError("The OptiX backend does not support CUDA graph capture")
     key = (enable_global_world, out_dist is not None, out_shape_id is not None, out_normal is not None, fast_math)
-    if key not in shapes.ray_pipelines:
-        shapes.ray_pipelines[key] = _create_ray_pipeline(shapes, *key)
+    if key not in shapes.pipelines:
+        shapes.pipelines[key] = _create_ray_pipeline(shapes, *key)
     wo.launch(
-        shapes.ray_pipelines[key],
+        shapes.pipelines[key],
         dim=ray_origins.shape[0],
         inputs=[
             shapes.id,
