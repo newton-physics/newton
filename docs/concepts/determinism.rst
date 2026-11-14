@@ -128,8 +128,7 @@ GPU models); Newton only tests ``RUN_TO_RUN``.
        MuJoCo Warp backends receive ``DeterminismType.ALL`` before constants
        are initialized, and select their supported deterministic kernels.
        MuJoCo Warp 4.0.0 still lacks contact and constraint sorting, so this
-       is not a bitwise trajectory guarantee. Older backends retain the
-       legacy Warp path, which can fail to compile with Warp 1.19. See
+       is not a bitwise trajectory guarantee. See
        :ref:`mujoco-determinism` for configuration and downstream limits.
    * - :class:`~solvers.SolverStyle3D`
      - No

@@ -49,7 +49,7 @@ Select determinism at construction, before derived model constants are computed:
         deterministic=wp.DeterministicMode.RUN_TO_RUN,
     )
 
-With a backend exposing ``mujoco_warp.DeterminismType``, Newton maps
+Newton uses ``mujoco_warp.DeterminismType`` to map
 ``NOT_GUARANTEED`` to ``NONE`` and ``RUN_TO_RUN`` to ``ALL`` on
 ``solver.mjw_model.opt.deterministic`` immediately after model upload.
 ``None`` inherits the Warp global mode at construction. Stronger modes such
@@ -61,11 +61,12 @@ the same integration is also tested with 4.0.0.
 The native backend selects its supported deterministic reductions and record
 bounds. Newton does not force Warp's global deterministic compilation onto
 every MJWarp kernel: that can fail on kernels that mix direct writes and
-atomic updates. Native backend module options are left untouched, including
-backend-authored deterministic modes and record bounds. The temporary global configuration is restored on exit,
+atomic updates. Newton resets only the inherited ``deterministic`` option on
+MJWarp's source modules to ``NOT_GUARANTEED``, preserving backend-owned record
+bounds and other options. Native factories select deterministic reductions
+using the model flags. The temporary global configuration is restored on exit,
 including exceptions. Newton's contact-conversion kernels retain the requested
-Warp mode separately. Backends without the native API retain the legacy Warp
-module configuration and generated-kernel cache handling.
+Warp mode separately.
 
 In 3.17.0/4.0.0, ``ATOMICS`` selects backend-authored reduction paths in
 smooth dynamics (including mass/inertia and force accumulation), supported

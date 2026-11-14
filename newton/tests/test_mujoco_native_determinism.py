@@ -3,6 +3,7 @@
 
 """Exercise native MuJoCo Warp determinism before construction-time constants."""
 
+import sys
 import unittest
 from unittest import mock
 
@@ -12,7 +13,6 @@ import warp as wp
 import newton
 from newton._src.solvers.mujoco import kernels, solver_mujoco
 from newton.solvers import SolverMuJoCo
-from newton.tests.determinism.test_solver_determinism import _run_isolated
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -41,18 +41,19 @@ def _build_model(device):
     return builder.finalize(device=device)
 
 
-def test_native_configuration(test, device):
+def _check_native_configuration(device_name, disable_first=False):
     """Enable the backend option before constants and keep solver options independent."""
+    test = unittest.TestCase()
+    device = wp.get_device(device_name)
+    test.assertFalse("mujoco_warp" in sys.modules, "MJWarp must not be imported before setting the global mode")
+    wp.config.deterministic = wp.DeterministicMode.RUN_TO_RUN
     import mujoco_warp as mjw
     from mujoco_warp._src import smooth
 
-    if not hasattr(mjw, "DeterminismType"):
-        test.skipTest("MuJoCo Warp native determinism API is not available")
-    for module in (smooth, kernels, solver_mujoco.convert_newton_contacts_to_mjwarp_kernel.module):
-        test.addCleanup(wp.set_module_options, wp.get_module_options(module).copy(), module=module)
     # A backend-owned record bound must survive Newton construction and updates.
     wp.set_module_options({"deterministic_max_records": 17}, module=smooth)
     backend_options = wp.get_module_options(smooth).copy()
+    backend_options["deterministic"] = wp.DeterministicMode.NOT_GUARANTEED
     observed = []
     original_crb = smooth.crb
 
@@ -65,6 +66,9 @@ def test_native_configuration(test, device):
     global_records = wp.config.deterministic_max_records
     with wp.ScopedDevice(device):
         model = _build_model(device)
+        if disable_first:
+            disabled = SolverMuJoCo(model, deterministic=wp.DeterministicMode.NOT_GUARANTEED)
+            test.assertEqual(disabled.mjw_model.opt.deterministic, int(mjw.DeterminismType.NONE))
         with mock.patch.object(smooth, "crb", side_effect=trace_crb):
             solver = SolverMuJoCo(
                 model,
@@ -178,44 +182,36 @@ def _check_native_rollout(device_name, use_mujoco_contacts):
 
 def test_native_rollout(test, device, use_mujoco_contacts=True):
     """Isolate deterministic compilation and runtime state from other test cases."""
-    import mujoco_warp as mjw
+    # This helper module imports MJWarp; defer it to preserve fresh-process import order.
+    from newton.tests.determinism.test_solver_determinism import _run_isolated  # noqa: PLC0415
 
-    if not hasattr(mjw, "DeterminismType"):
-        test.skipTest("MuJoCo Warp native determinism API is not available")
     _run_isolated(
         test,
         "_check_native_rollout",
         str(device),
         use_mujoco_contacts,
-        module_name="newton.tests.mujoco.test_native_determinism",
+        module_name="newton.tests.test_mujoco_native_determinism",
     )
+
+
+def test_native_configuration(test, device):
+    """Exercise construction after the backend inherits global RUN_TO_RUN."""
+    # This helper module imports MJWarp; defer it to preserve fresh-process import order.
+    from newton.tests.determinism.test_solver_determinism import _run_isolated  # noqa: PLC0415
+
+    for disable_first in (False, True):
+        with test.subTest(disable_first=disable_first):
+            _run_isolated(
+                test,
+                "_check_native_configuration",
+                str(device),
+                disable_first,
+                module_name="newton.tests.test_mujoco_native_determinism",
+            )
 
 
 class TestMuJoCoNativeDeterminism(unittest.TestCase):
     """Check per-model determinism configuration on supported backends."""
-
-    def test_scoped_configuration_restoration(self):
-        """Restore ambient configuration after nested native and legacy failures."""
-        native = object.__new__(SolverMuJoCo)
-        native._native_mujoco_determinism = True
-        legacy = object.__new__(SolverMuJoCo)
-        legacy._native_mujoco_determinism = False
-        legacy._deterministic = wp.DeterministicMode.RUN_TO_RUN
-        legacy._deterministic_max_records = 123
-        ambient = (wp.config.deterministic, wp.config.deterministic_max_records)
-        with self.assertRaisesRegex(RuntimeError, "injected"):
-            with legacy._scoped_deterministic_config():
-                self.assertEqual(wp.config.deterministic, wp.DeterministicMode.RUN_TO_RUN)
-                self.assertEqual(wp.config.deterministic_max_records, 123)
-                with self.assertRaisesRegex(RuntimeError, "native"):
-                    with native._scoped_deterministic_config():
-                        self.assertEqual(wp.config.deterministic, wp.DeterministicMode.NOT_GUARANTEED)
-                        self.assertEqual(wp.config.deterministic_max_records, 0)
-                        raise RuntimeError("native")
-                self.assertEqual(wp.config.deterministic, wp.DeterministicMode.RUN_TO_RUN)
-                self.assertEqual(wp.config.deterministic_max_records, 123)
-                raise RuntimeError("injected")
-        self.assertEqual((wp.config.deterministic, wp.config.deterministic_max_records), ambient)
 
 
 add_function_test(
