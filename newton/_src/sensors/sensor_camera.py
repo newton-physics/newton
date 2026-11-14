@@ -142,6 +142,7 @@ class SensorCamera:
         default_clear_data: ClearData | None = None,
         default_render_config: RenderConfig | None = None,
         load_textures: bool = True,
+        backend: str | None = None,
         deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Construct a camera sensor for a model.
@@ -154,6 +155,9 @@ class SensorCamera:
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
                 ``RenderConfig()``.
+            backend: ``"warp"``, ``"optix"`` (experimental, requires ``newton[optix]``),
+                or ``None`` to use OptiX when it supports the model and device.
+                ``"optix"`` raises :class:`RuntimeError` when unsupported.
             load_textures: Load the textures of shape meshes and deformable visual
                 meshes from file paths or in-memory images. A texture that cannot
                 be loaded raises ``ValueError`` here, so pass ``False`` for
@@ -187,6 +191,7 @@ class SensorCamera:
         self._render_context = RenderContext(
             model,
             load_textures=load_textures,
+            backend=backend,
             deformable_surface_mode=DeformableSurfaceMode(deformable_surface_mode),
         )
 
@@ -194,6 +199,11 @@ class SensorCamera:
     def device(self) -> wp.Device:
         """Device of the model this sensor renders."""
         return self._render_context.model.device
+
+    @property
+    def backend(self) -> str:
+        """Shape traversal backend, ``"warp"`` or ``"optix"``."""
+        return self._render_context.backend
 
     def allocate_image(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array[Any]:
         """Allocate a zeroed output image array on the model device.
@@ -1001,6 +1011,7 @@ class SensorCamera:
         clear_data: ClearData | None = None,
         render_config: RenderConfig | None = None,
         sync_deformables: bool = True,
+        sync_shapes: bool = True,
         deformable_visuals: DeformableVisuals | None = None,
     ) -> None:
         """Render this camera sensor.
@@ -1051,6 +1062,8 @@ class SensorCamera:
                 :attr:`default_clear_data`.
             render_config: Render settings for this call. Defaults to
                 :attr:`default_render_config`.
+            sync_shapes: Refit the OptiX shape instances from the model's shape
+                transforms. The first update always refits.
             sync_deformables: Sync simulation surfaces and visual mesh points
                 from *state* before rendering. Set ``False`` if you already
                 called :meth:`sync_deformable_meshes` this frame.
@@ -1116,4 +1129,5 @@ class SensorCamera:
                 albedo_image=albedo_image,
                 clear_data=clear_data if clear_data is not None else self.default_clear_data,
                 config=render_config if render_config is not None else self.default_render_config,
+                sync_shapes=sync_shapes,
             )

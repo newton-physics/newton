@@ -116,7 +116,8 @@ attributes, and usage examples.
 * :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
 * :class:`~newton.sensors.SensorCamera` -- raytraced color, HDR color, depth, forward-depth, normal, albedo, and
   shape-index rendering; one view per camera transform, mapped to worlds via a per-view selector. Deformable
-  visual meshes render too; see :ref:`deformable-visual-camera-output`.
+  visual meshes render too; see :ref:`deformable-visual-camera-output`. Installing ``newton[optix]`` enables
+  experimental OptiX ray tracing, used by default when it supports the model and device.
 * :class:`~newton.sensors.SensorTiledCamera` -- deprecated; superseded by :class:`~newton.sensors.SensorCamera`.
 
 Camera Rays from USD and Calibration Data

@@ -934,6 +934,7 @@ def intersect_ray(
     out_shape_id: wp.array[wp.int32] | None = None,
     out_normal: wp.array[wp.vec3] | None = None,
     fast_math: bool = True,
+    backend: str | None = None,
 ):
     """Intersect rays with model shapes.
 
@@ -963,7 +964,29 @@ def intersect_ray(
         out_shape_id: Optional output hit shape indices, shape [ray_count]. ``-1`` on miss.
         out_normal: Optional output hit normals, shape [ray_count, 3].
         fast_math: Whether to compile the intersection kernel with fast math enabled.
+        backend: ``"warp"``, ``"optix"``, or ``None`` to use OptiX when it supports the
+            model and device, outside CUDA graph capture. ``"optix"`` raises
+            :class:`RuntimeError` when unsupported.
     """
+
+    if backend not in (None, "warp", "optix"):
+        raise ValueError(f"backend must be None, 'warp' or 'optix', got {backend!r}")
+    if backend != "warp":
+        from .optix import intersect_rays  # noqa: PLC0415
+
+        if intersect_rays(
+            model,
+            ray_origins,
+            ray_directions,
+            ray_worlds,
+            enable_global_world=enable_global_world,
+            out_dist=out_dist,
+            out_shape_id=out_shape_id,
+            out_normal=out_normal,
+            fast_math=fast_math,
+            required=backend == "optix",
+        ):
+            return
 
     if model.bvh_shape_enabled is not None and model.bvh_shape_count_enabled == 0:
         # The shape BVH was built but no shape was selected, so every ray misses.

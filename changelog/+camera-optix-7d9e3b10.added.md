@@ -1,0 +1,1 @@
+Add experimental OptiX acceleration for `SensorCamera` and `intersect_ray`, installed with the `optix` extra. Both use OptiX by default when it is available; pass `backend="warp"` or `backend="optix"` to choose.

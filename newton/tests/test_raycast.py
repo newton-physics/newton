@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import unittest
 
 import numpy as np
@@ -670,7 +671,8 @@ def _make_intersection_model(device: str):
     return builder.finalize(device=device)
 
 
-def test_intersect_ray(test: TestRaycast, device: str):
+def test_intersect_ray(test: TestRaycast, device: str, backend="warp"):
+    """Check hits, optional outputs and acceleration updates after motion and rebuild."""
     model = _make_intersection_model(device)
 
     origins = wp.array(
@@ -704,6 +706,7 @@ def test_intersect_ray(test: TestRaycast, device: str):
     out_normal = wp.empty(shape=3, dtype=wp.vec3, device=device)
     newton.intersect_ray(
         model,
+        backend=backend,
         ray_origins=origins,
         ray_directions=directions,
         ray_worlds=worlds,
@@ -727,6 +730,82 @@ def test_intersect_ray(test: TestRaycast, device: str):
         atol=1e-5,
     )
 
+    # Moving outside the original packed bounds must update both the extent and IAS.
+    state = model.state()
+    transforms = state.body_q.numpy()
+    transforms[0, :2] = (20.0, 1.0)
+    state.body_q.assign(transforms)
+    moved_origins = origins.numpy()
+    moved_origins[0, 1] = 1.0  # Keep the box out of the sphere ray.
+    origins.assign(moved_origins)
+    model.bvh_refit_shapes(state)
+    for outputs in (
+        {"out_dist": out_dist},
+        {"out_shape_id": out_shape_id},
+        {"out_normal": out_normal},
+        {"out_dist": out_dist, "out_shape_id": out_shape_id, "out_normal": out_normal},
+    ):
+        newton.intersect_ray(
+            model,
+            backend=backend,
+            ray_origins=origins,
+            ray_directions=directions,
+            ray_worlds=worlds,
+            **outputs,
+        )
+        if "out_dist" in outputs:
+            np.testing.assert_allclose(out_dist.numpy(), [21.5, 1.5, -1.0], atol=1e-4)
+        if "out_shape_id" in outputs:
+            np.testing.assert_array_equal(out_shape_id.numpy(), [0, 1, -1])
+        if "out_normal" in outputs:
+            np.testing.assert_allclose(out_normal.numpy(), [[-1, 0, 0], [0, 0, 1], [0, 0, 0]], atol=1e-4)
+
+    # A rebuild must discard acceleration for shapes no longer selected.
+    model.bvh_build_shapes(state, shape_flags=0)
+    newton.intersect_ray(
+        model,
+        backend=backend,
+        ray_origins=origins,
+        ray_directions=directions,
+        ray_worlds=worlds,
+        out_dist=out_dist,
+        out_shape_id=out_shape_id,
+        out_normal=out_normal,
+    )
+    np.testing.assert_array_equal(out_dist.numpy(), -1.0)
+    np.testing.assert_array_equal(out_shape_id.numpy(), -1)
+    np.testing.assert_array_equal(out_normal.numpy(), 0.0)
+
+
+def test_intersect_ray_default_backend(test: TestRaycast, device: str):
+    """Use OptiX by default where it is available and Warp during CUDA graph capture.
+
+    The BVH refit stays capturable after OptiX raycasts build their acceleration.
+    """
+    model = _make_intersection_model(device)
+    origins = wp.array([wp.vec3(-2.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+    directions = wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+    worlds = wp.array([0], dtype=wp.int32, device=device)
+    out_dist = wp.full(1, 0.0, dtype=float, device=device)
+    kwargs = {"ray_origins": origins, "ray_directions": directions, "ray_worlds": worlds, "out_dist": out_dist}
+
+    newton.intersect_ray(model, **kwargs)
+    np.testing.assert_allclose(out_dist.numpy(), [1.5], atol=1e-5)
+    optix_available = wp.get_device(device).is_cuda and importlib.util.find_spec("warp_optix") is not None
+    test.assertEqual(model._optix_scene is not None, optix_available)
+
+    if wp.get_device(device).is_cuda:
+        out_dist.fill_(0.0)
+        state = model.state()
+        with wp.ScopedCapture(device) as capture:
+            model.bvh_refit_shapes(state)
+            newton.intersect_ray(model, **kwargs)
+        wp.capture_launch(capture.graph)
+        np.testing.assert_allclose(out_dist.numpy(), [1.5], atol=1e-5)
+    else:
+        with test.assertRaisesRegex(RuntimeError, "OptiX"):
+            newton.intersect_ray(model, backend="optix", **kwargs)
+
 
 def _make_global_world_model(device: str):
     """Two worlds each with a sphere, plus a global-world box shared by both."""
@@ -749,7 +828,8 @@ def _make_global_world_model(device: str):
     return builder.finalize(device=device), global_box, sphere0, sphere1
 
 
-def test_intersect_ray_global_world(test: TestRaycast, device: str):
+def test_intersect_ray_global_world(test: TestRaycast, device: str, backend="warp"):
+    """Check local and global world selection with both traversal backends."""
     model, global_box, sphere0, sphere1 = _make_global_world_model(device)
 
     # Rays fired along -y toward each world's sphere and the global box.
@@ -779,6 +859,7 @@ def test_intersect_ray_global_world(test: TestRaycast, device: str):
     out_normal = wp.empty(shape=5, dtype=wp.vec3, device=device)
     newton.intersect_ray(
         model,
+        backend=backend,
         ray_origins=origins,
         ray_directions=directions,
         ray_worlds=worlds,
@@ -794,7 +875,8 @@ def test_intersect_ray_global_world(test: TestRaycast, device: str):
     )
 
 
-def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: str):
+def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: str, backend="warp"):
+    """Query heightfield triangles using acceleration built from the finalized model."""
     builder = newton.ModelBuilder()
     heightfield = Heightfield(data=np.zeros((2, 2), dtype=np.float32), nrow=2, ncol=2, hx=1.0, hy=1.0)
     shape_id = builder.add_shape_heightfield(heightfield=heightfield)
@@ -810,6 +892,7 @@ def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: 
 
     newton.intersect_ray(
         model,
+        backend=backend,
         ray_origins=origins,
         ray_directions=directions,
         ray_worlds=worlds,
@@ -821,7 +904,7 @@ def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: 
     np.testing.assert_array_equal(out_shape_id.numpy(), np.array([shape_id], dtype=np.int32))
 
 
-def test_intersect_ray_heightfield_flat_at_min_z(test: TestRaycast, device: str):
+def test_intersect_ray_heightfield_flat_at_min_z(test: TestRaycast, device: str, backend="warp"):
     """Rays from above hit terrain that is flat at ``min_z`` with a +Z normal (issue #4452)."""
     # Left half flat at min_z, right half bumpy.
     elevation = np.zeros((8, 8), dtype=np.float32)
@@ -841,6 +924,7 @@ def test_intersect_ray_heightfield_flat_at_min_z(test: TestRaycast, device: str)
     out_normal = wp.empty(n, dtype=wp.vec3, device=device)
     newton.intersect_ray(
         model,
+        backend=backend,
         ray_origins=wp.array(origins, dtype=wp.vec3, device=device),
         ray_directions=wp.array(np.tile([0.0, 0.0, -1.0], (n, 1)), dtype=wp.vec3, device=device),
         ray_worlds=wp.full(n, -1, dtype=wp.int32, device=device),
@@ -854,7 +938,7 @@ def test_intersect_ray_heightfield_flat_at_min_z(test: TestRaycast, device: str)
     np.testing.assert_allclose(out_normal.numpy(), np.tile([0.0, 0.0, 1.0], (n, 1)), atol=1e-5)
 
 
-def test_intersect_ray_includes_collision_shapes_on_request(test: TestRaycast, device: str):
+def test_intersect_ray_includes_collision_shapes_on_request(test: TestRaycast, device: str, backend="warp"):
     """Include collision-only shapes in the shape BVH when requested."""
     builder = newton.ModelBuilder()
     visible_cfg = newton.ModelBuilder.ShapeConfig(
@@ -901,6 +985,7 @@ def test_intersect_ray_includes_collision_shapes_on_request(test: TestRaycast, d
     out_shape_id = wp.empty(shape=3, dtype=wp.int32, device=device)
     newton.intersect_ray(
         model,
+        backend=backend,
         ray_origins=origins,
         ray_directions=directions,
         ray_worlds=worlds,
@@ -944,29 +1029,11 @@ add_function_test(
     test_ray_intersect_heightfield_scaled,
     devices=devices,
 )
-add_function_test(TestRaycast, "test_intersect_ray", test_intersect_ray, devices=devices)
-add_function_test(TestRaycast, "test_intersect_ray_global_world", test_intersect_ray_global_world, devices=devices)
-add_function_test(
-    TestRaycast,
-    "test_intersect_ray_includes_collision_shapes_on_request",
-    test_intersect_ray_includes_collision_shapes_on_request,
-    devices=devices,
-)
-add_function_test(
-    TestRaycast,
-    "test_intersect_ray_heightfield_uses_finalize_bvh",
-    test_intersect_ray_heightfield_uses_finalize_bvh,
-    devices=devices,
-)
-add_function_test(
-    TestRaycast,
-    "test_intersect_ray_heightfield_flat_at_min_z",
-    test_intersect_ray_heightfield_flat_at_min_z,
-    devices=devices,
-)
 
 
-def test_intersect_ray_skips_transparent_shapes_but_keeps_requested_colliders(test: TestRaycast, device: str):
+def test_intersect_ray_skips_transparent_shapes_but_keeps_requested_colliders(
+    test: TestRaycast, device: str, backend="warp"
+):
     """A zero-opacity shape is dropped by the VISIBLE mask but kept when selected through a collision flag."""
     builder = newton.ModelBuilder()
     cfg = newton.ModelBuilder.ShapeConfig(is_visible=True, has_shape_collision=True, has_particle_collision=False)
@@ -992,6 +1059,7 @@ def test_intersect_ray_skips_transparent_shapes_but_keeps_requested_colliders(te
     out_shape_id = wp.empty(shape=2, dtype=wp.int32, device=device)
     newton.intersect_ray(
         model,
+        backend=backend,
         ray_origins=origins,
         ray_directions=directions,
         ray_worlds=worlds,
@@ -1001,7 +1069,7 @@ def test_intersect_ray_skips_transparent_shapes_but_keeps_requested_colliders(te
     np.testing.assert_array_equal(out_shape_id.numpy(), np.array([solid, transparent]))
 
 
-def test_intersect_ray_misses_when_no_shape_is_selected(test: TestRaycast, device: str):
+def test_intersect_ray_misses_when_no_shape_is_selected(test: TestRaycast, device: str, backend="warp"):
     """An empty shape selection is a valid BVH, so every ray reports the documented miss."""
     builder = newton.ModelBuilder()
     cfg = newton.ModelBuilder.ShapeConfig(is_visible=True, has_shape_collision=False, has_particle_collision=False)
@@ -1018,6 +1086,7 @@ def test_intersect_ray_misses_when_no_shape_is_selected(test: TestRaycast, devic
     out_normal = wp.full(shape=1, value=wp.vec3(1.0, 1.0, 1.0), dtype=wp.vec3, device=device)
     newton.intersect_ray(
         model,
+        backend=backend,
         ray_origins=origins,
         ray_directions=directions,
         ray_worlds=worlds,
@@ -1032,17 +1101,32 @@ def test_intersect_ray_misses_when_no_shape_is_selected(test: TestRaycast, devic
 
 
 add_function_test(
-    TestRaycast,
-    "test_intersect_ray_skips_transparent_shapes_but_keeps_requested_colliders",
-    test_intersect_ray_skips_transparent_shapes_but_keeps_requested_colliders,
-    devices=devices,
+    TestRaycast, "test_intersect_ray_default_backend", test_intersect_ray_default_backend, devices=devices
 )
-add_function_test(
-    TestRaycast,
-    "test_intersect_ray_misses_when_no_shape_is_selected",
-    test_intersect_ray_misses_when_no_shape_is_selected,
-    devices=devices,
-)
+
+for backend in ("warp", "optix"):
+    backend_devices = devices if backend == "warp" else [d for d in devices if d.is_cuda]
+    for test_func in (
+        test_intersect_ray,
+        test_intersect_ray_global_world,
+        test_intersect_ray_heightfield_uses_finalize_bvh,
+        test_intersect_ray_heightfield_flat_at_min_z,
+        test_intersect_ray_includes_collision_shapes_on_request,
+        test_intersect_ray_skips_transparent_shapes_but_keeps_requested_colliders,
+        test_intersect_ray_misses_when_no_shape_is_selected,
+    ):
+        test = test_func
+        if backend == "optix":
+            test = unittest.skipUnless(importlib.util.find_spec("warp_optix") is not None, "requires warp-optix")(
+                test_func
+            )
+        add_function_test(
+            TestRaycast,
+            f"{test_func.__name__}_{backend}",
+            test,
+            devices=backend_devices,
+            backend=backend,
+        )
 
 
 if __name__ == "__main__":

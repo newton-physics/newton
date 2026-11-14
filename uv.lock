@@ -3036,6 +3036,9 @@ notebook = [
 onnx = [
     { name = "warp-nn", extra = ["onnx"] },
 ]
+optix = [
+    { name = "warp-optix", marker = "(python_full_version == '3.12.*' and platform_machine == 'AMD64' and sys_platform == 'linux') or (python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux') or (python_full_version == '3.12.*' and platform_machine == 'AMD64' and sys_platform == 'win32') or (python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'win32')" },
+]
 remesh = [
     { name = "open3d", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "pyfqmr" },
@@ -3188,8 +3191,9 @@ requires-dist = [
     { name = "viser", marker = "extra == 'notebook'", specifier = ">=1.1.1" },
     { name = "warp-lang", specifier = ">=1.17.0", index = "https://pypi.nvidia.com/" },
     { name = "warp-nn", extras = ["onnx"], marker = "extra == 'onnx'", specifier = "~=0.4.0" },
+    { name = "warp-optix", marker = "(python_full_version == '3.12.*' and platform_machine == 'AMD64' and sys_platform == 'linux' and extra == 'optix') or (python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'optix') or (python_full_version == '3.12.*' and platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'optix') or (python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'win32' and extra == 'optix')", specifier = "~=0.3.0" },
 ]
-provides-extras = ["sim", "onnx", "importers", "remesh", "examples", "rtx", "torch-cu12", "torch-cu13", "dev", "docs", "notebook"]
+provides-extras = ["optix", "sim", "onnx", "importers", "remesh", "examples", "rtx", "torch-cu12", "torch-cu13", "dev", "docs", "notebook"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "asv", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'", specifier = ">=0.6.4" }]
@@ -4379,6 +4383,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/6f/16/912b7225d56284859cd9a672827f18be43f8012f8b7b932bc4bd959a298e/pyopengl-3.1.10.tar.gz", hash = "sha256:c4a02d6866b54eb119c8e9b3fb04fa835a95ab802dd96607ab4cdb0012df8335", size = 1915580, upload-time = "2025-08-18T02:33:01.76Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/de/e4/1ba6f44e491c4eece978685230dde56b14d51a0365bc1b774ddaa94d14cd/pyopengl-3.1.10-py3-none-any.whl", hash = "sha256:794a943daced39300879e4e47bd94525280685f42dbb5a998d336cfff151d74f", size = 3194996, upload-time = "2025-08-18T02:32:59.902Z" },
+]
+
+[[package]]
+name = "pyoptix"
+version = "9.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/62/34/19c969b2c557c6244a3c83f74b61ad2d5aaf798a29926908a6252f9c9649/pyoptix-9.1.1.tar.gz", hash = "sha256:7255570544a5fdf2885998231172edc1978bce1fe883f86e9940a0ff2192f791", size = 8938965, upload-time = "2026-11-06T15:48:36.765Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9e/2e/653a40153814267dea886f870b29793b53b56e20d927abf6d1b85e226cbc/pyoptix-9.1.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0c29194525075859a845121f6e4b4a0c33e6735a58ff25a7c139cf4eb0bca65d", size = 809364, upload-time = "2026-11-06T15:48:25.641Z" },
+    { url = "https://files.pythonhosted.org/packages/97/0c/ca51bc9bdfccf21329dbdbb314162a52288f619e2f88940bbcd246faec9e/pyoptix-9.1.1-cp310-cp310-win_amd64.whl", hash = "sha256:16ee78d10161de4189ddc8c8c5a178f8a8bbf5a07a8f29ecab67b354b119b3d3", size = 463187, upload-time = "2026-11-06T15:48:27.587Z" },
+    { url = "https://files.pythonhosted.org/packages/42/17/dc884bf7042c79151ea266283d52e1574d93558e0d036f1a4ac3bfea6fd8/pyoptix-9.1.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:bf59a79889c753817636bc262388165866851dbd31950272e46e0706609e7ba2", size = 810731, upload-time = "2026-11-06T15:48:28.91Z" },
+    { url = "https://files.pythonhosted.org/packages/58/6b/df9610c61f3be0d14469197f96e43fbeeec390ac3f13dd8d42f0ca0bbfac/pyoptix-9.1.1-cp311-cp311-win_amd64.whl", hash = "sha256:7f810f340618421d05ab72938f1db24729683a5940fcd45129a758e7f6a0e908", size = 463931, upload-time = "2026-11-06T15:48:30.224Z" },
+    { url = "https://files.pythonhosted.org/packages/72/b0/da72e66b8ede0db8ab586a824c7aec584e6b9ee2243c884207868f8b45b3/pyoptix-9.1.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e8438e7a02b4b89333c6ba3e034d299ad40d62835b8792f3d9b4761e82c860a1", size = 818048, upload-time = "2026-11-06T15:48:31.455Z" },
+    { url = "https://files.pythonhosted.org/packages/46/39/5c41eb8b0f9a450bf6e3ab8afd42a92acd60298977e7211ac734a135962f/pyoptix-9.1.1-cp312-cp312-win_amd64.whl", hash = "sha256:822f9bc6280b04e950cf3dc8afa89650c41cb0bc97a5e58b5c5d15c011425ad3", size = 457918, upload-time = "2026-11-06T15:48:32.787Z" },
 ]
 
 [[package]]
@@ -5833,6 +5851,21 @@ wheels = [
 [package.optional-dependencies]
 onnx = [
     { name = "onnx" },
+]
+
+[[package]]
+name = "warp-optix"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" } },
+    { name = "pyoptix" },
+    { name = "warp-lang" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/db/90/f61ceaf0d85592296f611bf58fc469e7118a5b28be4bc5fcb4345427fe98/warp_optix-0.3.0.tar.gz", hash = "sha256:9695d5c81a88eb4d6297cb2af654658ce10cac504c11d5b4316b6059e836a348", size = 1028895, upload-time = "2026-11-11T09:13:50.484Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9e/85/e8c069138970d4283b41ef4c7e398f6a2b9a96dd8a83b5c7cd1cd9ffb730/warp_optix-0.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:add960e79449cda2ac6d0a86344717f8b74246d13345db456e1f785ffd276355", size = 499652, upload-time = "2026-11-11T09:13:47.547Z" },
+    { url = "https://files.pythonhosted.org/packages/37/4e/2dc092e601c3f999b8e9c744cb6d3636c2cd1fecece6b6e823a137acb47f/warp_optix-0.3.0-cp312-cp312-win_amd64.whl", hash = "sha256:a3038bcaf6d41489d70c6a026cfa8a2b8e6767e079dc48ead1b0245f5037f540", size = 470514, upload-time = "2026-11-11T09:13:49.001Z" },
 ]
 
 [[package]]
