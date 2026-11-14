@@ -374,6 +374,7 @@ PN = "PN"
 pnd = "pnd"
 
 [tool.typos.default.extend-identifiers]
+ABD = "ABD" # Affine Body Dynamics
 PNGs = "PNGs"
 Haa = "Haa"
 iy = "iy"

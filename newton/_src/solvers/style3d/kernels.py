@@ -4,16 +4,46 @@
 import warp as wp
 
 from ...geometry import ParticleFlags
+from ...sim import BodyFlags
+from .affine_body import affine_mass_multiply, inertia_to_second_moment
 
 
 @wp.kernel
-def deactivate_zero_mass_particles_kernel(
+def compute_solver_flags_kernel(
+    particle_count: int,
     particle_masses: wp.array[float],
     particle_flags: wp.array[wp.int32],
+    body_masses: wp.array[float],
+    body_flags: wp.array[wp.int32],
+    # outputs
+    solver_flags: wp.array[wp.int32],
 ):
+    """Build ParticleFlags for each particle and all four affine blocks per body."""
     tid = wp.tid()
-    if particle_masses[tid] <= 0.0:
-        particle_flags[tid] = particle_flags[tid] & ~ParticleFlags.ACTIVE
+    if tid < particle_count:
+        flags = particle_flags[tid]
+        if particle_masses[tid] <= 0.0:
+            flags = flags & ~ParticleFlags.ACTIVE
+        solver_flags[tid] = flags
+    else:
+        flags = wp.int32(0)
+        body = tid - particle_count
+        source_flags = body_flags[body]
+        if (
+            body_masses[body] > 0.0
+            and (source_flags & BodyFlags.DYNAMIC) != 0
+            and (source_flags & BodyFlags.KINEMATIC) == 0
+        ):
+            flags = ParticleFlags.ACTIVE
+        # Translate explicitly because the body and particle enums use different bit positions.
+        if (source_flags & BodyFlags.PROXY) != 0:
+            flags = flags | ParticleFlags.PROXY
+
+        start = particle_count + 4 * body
+        solver_flags[start + 0] = flags
+        solver_flags[start + 1] = flags
+        solver_flags[start + 2] = flags
+        solver_flags[start + 3] = flags
 
 
 @wp.func
@@ -153,7 +183,7 @@ def accumulate_dragging_pd_diag_kernel(
     faces: wp.array2d[wp.int32],
     particle_flags: wp.array[wp.int32],
     # outputs
-    pd_diags: wp.array[float],
+    pd_diag: wp.array[float],
 ):
     fid = face_index[0]
     if fid != -1:
@@ -161,17 +191,18 @@ def accumulate_dragging_pd_diag_kernel(
         face = wp.vec3i(faces[fid, 0], faces[fid, 1], faces[fid, 2])
 
         if particle_flags[face[0]] & ParticleFlags.ACTIVE:
-            pd_diags[face[0]] += spring_stiff * coord[0]
+            pd_diag[face[0]] += spring_stiff * coord[0]
 
         if particle_flags[face[1]] & ParticleFlags.ACTIVE:
-            pd_diags[face[1]] += spring_stiff * coord[1]
+            pd_diag[face[1]] += spring_stiff * coord[1]
 
         if particle_flags[face[2]] & ParticleFlags.ACTIVE:
-            pd_diags[face[2]] += spring_stiff * coord[2]
+            pd_diag[face[2]] += spring_stiff * coord[2]
 
 
 @wp.kernel
 def init_step_kernel(
+    particle_count: int,
     dt: float,
     gravity: wp.array[wp.vec3],
     particle_world: wp.array[wp.int32],
@@ -179,33 +210,60 @@ def init_step_kernel(
     v_curr: wp.array[wp.vec3],
     x_curr: wp.array[wp.vec3],
     x_prev: wp.array[wp.vec3],
-    pd_diags: wp.array[float],
+    pd_diag: wp.array[float],
     particle_masses: wp.array[float],
     particle_flags: wp.array[wp.int32],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    body_flags: wp.array[wp.int32],
     # outputs
     x_inertia: wp.array[wp.vec3],
-    static_A_diags: wp.array[float],
+    A_diag_base: wp.array[float],
     dx: wp.array[wp.vec3],
+    affine_mass_off_diag: wp.array[wp.vec3],
 ):
+    """Initialize particle and affine-body inertia data for one time step."""
     tid = wp.tid()
-    x_last = x_curr[tid]
-    x_prev[tid] = x_last
+    if tid < particle_count:
+        x_last = x_curr[tid]
+        x_prev[tid] = x_last
 
-    if not particle_flags[tid] & ParticleFlags.ACTIVE:
-        x_inertia[tid] = x_prev[tid]
-        static_A_diags[tid] = 0.0
-        dx[tid] = wp.vec3(0.0)
+        if not particle_flags[tid] & ParticleFlags.ACTIVE:
+            x_inertia[tid] = x_prev[tid]
+            A_diag_base[tid] = 0.0
+            dx[tid] = wp.vec3(0.0)
+        else:
+            v_prev = v_curr[tid]
+            mass = particle_masses[tid]
+            A_diag_base[tid] = pd_diag[tid] + mass / (dt * dt)
+            world_idx = particle_world[tid]
+            world_g = gravity[world_idx]
+            x_inertia[tid] = x_last + v_prev * dt + (world_g + f_ext[tid] / mass) * (dt * dt)
+            dx[tid] = v_prev * dt
     else:
-        v_prev = v_curr[tid]
-        mass = particle_masses[tid]
-        static_A_diags[tid] = pd_diags[tid] + mass / (dt * dt)
-        world_idx = particle_world[tid]
-        world_g = gravity[world_idx]
-        x_inertia[tid] = x_last + v_prev * dt + (world_g + f_ext[tid] / mass) * (dt * dt)
-        dx[tid] = v_prev * dt
+        body = tid - particle_count
+        start = particle_count + 4 * body
+        is_kinematic = (body_flags[body] & BodyFlags.KINEMATIC) != 0
+        active = body_mass[body] > 0.0 and (is_kinematic or (body_flags[body] & BodyFlags.DYNAMIC) != 0)
+        mass = float(0.0)
+        moment = wp.mat33(0.0)
+        if active:
+            mass = body_mass[body] / (dt * dt)
+            moment = inertia_to_second_moment(body_inertia[body]) / (dt * dt)
 
-        # temp
-        # x_curr[tid] = x_last + v_prev * dt
+        # Cache the symmetric mass coupling once per step for all PCG products.
+        affine_mass_off_diag[body] = wp.vec3(moment[0, 1], moment[0, 2], moment[1, 2])
+
+        for i in range(4):
+            row = start + i
+            x_prev[row] = x_curr[row]
+            dx[row] = wp.vec3(0.0)
+            if body_mass[body] <= 0.0:
+                x_inertia[row] = x_curr[row]
+            diagonal = mass
+            if i > 0:
+                diagonal = moment[i - 1, i - 1]
+            A_diag_base[row] = diagonal
 
 
 @wp.kernel
@@ -213,50 +271,91 @@ def init_rhs_kernel(
     dt: float,
     x_curr: wp.array[wp.vec3],
     x_inertia: wp.array[wp.vec3],
+    particle_count: int,
     particle_masses: wp.array[float],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    body_flags: wp.array[int],
     # outputs
     rhs: wp.array[wp.vec3],
 ):
+    """Initialize M (x_inertia - x_curr) / dt^2 with one thread per particle or body."""
     tid = wp.tid()
-    rhs[tid] = (x_inertia[tid] - x_curr[tid]) * particle_masses[tid] / (dt * dt)
+
+    if tid < particle_count:
+        rhs[tid] = (x_inertia[tid] - x_curr[tid]) * particle_masses[tid] / (dt * dt)
+        return
+
+    body = tid - particle_count
+    start = particle_count + 4 * body
+    if body_mass[body] <= 0.0 or (
+        (body_flags[body] & BodyFlags.DYNAMIC) == 0 and (body_flags[body] & BodyFlags.KINEMATIC) == 0
+    ):
+        rhs[start + 0] = wp.vec3(0.0)
+        rhs[start + 1] = wp.vec3(0.0)
+        rhs[start + 2] = wp.vec3(0.0)
+        rhs[start + 3] = wp.vec3(0.0)
+    else:
+        inv_dt2 = 1.0 / (dt * dt)
+        rhs_com, rhs_a0, rhs_a1, rhs_a2 = affine_mass_multiply(
+            body_mass[body],
+            body_inertia[body],
+            x_inertia[start] - x_curr[start],
+            x_inertia[start + 1] - x_curr[start + 1],
+            x_inertia[start + 2] - x_curr[start + 2],
+            x_inertia[start + 3] - x_curr[start + 3],
+        )
+        rhs[start + 0] = rhs_com * inv_dt2
+        rhs[start + 1] = rhs_a0 * inv_dt2
+        rhs[start + 2] = rhs_a1 * inv_dt2
+        rhs[start + 3] = rhs_a2 * inv_dt2
 
 
 @wp.kernel
 def prepare_jacobi_preconditioner_kernel(
-    static_A_diags: wp.array[float],
+    particle_count: int,
+    A_diag_base: wp.array[float],
     contact_hessian_diags: wp.array[wp.mat33],
     particle_flags: wp.array[wp.int32],
     # outputs
-    inv_A_diags: wp.array[wp.mat33],
+    A_diag: wp.array[wp.mat33],
+    inv_A_diag: wp.array[wp.mat33],
 ):
+    """Add the base diagonal and invert the full diagonal for active DOFs.
+
+    A_diag must contain freshly evaluated constraint diagonals for all DOFs.
+    Cloth self-contact diagonals remain in the matrix-free product.
+    """
     tid = wp.tid()
-    diag = wp.identity(3, float) * static_A_diags[tid]
-    if particle_flags[tid] & ParticleFlags.ACTIVE:
+    diag = wp.identity(3, float) * A_diag_base[tid] + A_diag[tid]
+    A_diag[tid] = diag
+
+    if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
+        inv_A_diag[tid] = wp.mat33(0.0)
+        return
+    # Cloth contacts stay in the matrix-free product, but also enter preconditioning.
+    if tid < contact_hessian_diags.shape[0]:
         diag += contact_hessian_diags[tid]
-    inv_A_diags[tid] = wp.inverse(diag) if static_A_diags[tid] > 0.0 else wp.identity(3, float) * 0.0
-
-
-@wp.kernel
-def prepare_jacobi_preconditioner_no_contact_hessian_kernel(
-    static_A_diags: wp.array[float],
-    # outputs
-    inv_A_diags: wp.array[wp.mat33],
-):
-    tid = wp.tid()
-    diag = wp.identity(3, float) * static_A_diags[tid]
-    inv_A_diags[tid] = wp.inverse(diag) if static_A_diags[tid] > 0.0 else wp.identity(3, float) * 0.0
+    # Constraints can make an affine block invertible even when its mass diagonal is zero.
+    # Scale the full block to avoid overflow in the float32 inverse.
+    scale = wp.max(wp.max(wp.abs(diag[0, 0]), wp.abs(diag[1, 1])), wp.abs(diag[2, 2]))
+    if scale > 0.0:
+        inv_scale = 1.0 / scale
+        inv_A_diag[tid] = wp.inverse(diag * inv_scale) * inv_scale
+    else:
+        inv_A_diag[tid] = wp.mat33(0.0)
 
 
 @wp.kernel
 def PD_jacobi_step_kernel(
     rhs: wp.array[wp.vec3],
     x_in: wp.array[wp.vec3],
-    inv_diags: wp.array[wp.mat33],
+    inv_A_diag: wp.array[wp.mat33],
     # outputs
     x_out: wp.array[wp.vec3],
 ):
     tid = wp.tid()
-    x_out[tid] = x_in[tid] + inv_diags[tid] * rhs[tid]
+    x_out[tid] = x_in[tid] + inv_A_diag[tid] * rhs[tid]
 
 
 @wp.kernel
@@ -272,11 +371,15 @@ def nonlinear_step_kernel(
 
 
 @wp.kernel
-def update_velocity(
+def update_velocity_kernel(
     dt: float,
+    particle_count: int,
     prev_pos: wp.array[wp.vec3],
     pos: wp.array[wp.vec3],
     vel: wp.array[wp.vec3],
 ):
-    particle = wp.tid()
-    vel[particle] = 0.998 * (pos[particle] - prev_pos[particle]) / dt
+    tid = wp.tid()
+    if tid < particle_count:
+        vel[tid] = 0.998 * (pos[tid] - prev_pos[tid]) / dt
+    else:
+        vel[tid] = (pos[tid] - prev_pos[tid]) / dt

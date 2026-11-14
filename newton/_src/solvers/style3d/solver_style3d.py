@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
+from enum import IntFlag
 from typing import Any
 
 import warp as wp
@@ -13,11 +14,13 @@ from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
 from ...sim import Contacts, Control, Model, ModelBuilder, State
 from ..solver import SolverBase
+from .affine_body import AffineBody
 from .builder import PDMatrixBuilder, _compute_max_neighbors
 from .collision import Collision
+from .contact import Contact
 from .kernels import (
     accumulate_dragging_pd_diag_kernel,
-    deactivate_zero_mass_particles_kernel,
+    compute_solver_flags_kernel,
     eval_bend_kernel,
     eval_drag_force_kernel,
     eval_stretch_kernel,
@@ -25,8 +28,7 @@ from .kernels import (
     init_step_kernel,
     nonlinear_step_kernel,
     prepare_jacobi_preconditioner_kernel,
-    prepare_jacobi_preconditioner_no_contact_hessian_kernel,
-    update_velocity,
+    update_velocity_kernel,
 )
 from .linear_solver import PcgSolver, SparseMatrixELL
 
@@ -57,11 +59,31 @@ def _warn_legacy_attribute(name: str, config_name: str) -> None:
 
 
 class SolverStyle3D(SolverBase):
-    r"""Projective dynamics based cloth solver.
+    r"""Implicit solver for cloth and free rigid bodies using affine body dynamics.
+
+    Select :attr:`Dynamics.DEFORMABLE` (the default), :attr:`Dynamics.AFFINE_BODY`,
+    or :attr:`Dynamics.ALL` to advance cloth, rigid bodies, or both together.
+    Joint constraints are not supported. See the :doc:`Style3D solver guide
+    </solvers/style3d>` for setup, rigidity, and contact parameters.
+
+    With affine body dynamics enabled, rigid-rigid and particle-rigid contacts
+    use a normal penalty, closing-only damping, and Coulomb-limited viscous friction.
+    The contact tangent holds the normal load and friction gain fixed to remain symmetric
+    positive semidefinite and resist slip reversal overshoot. Contact candidates
+    and normals come from the supplied :class:`~newton.Contacts` and remain
+    fixed during each step.
+
+    :attr:`Dynamics.ALL` couples particles and affine bodies in one linear
+    system. Particle-rigid contacts use :attr:`Model.soft_contact_ke`,
+    :attr:`Model.soft_contact_kd`, and :attr:`Model.soft_contact_kf`; friction
+    mixes :attr:`Model.soft_contact_mu` with the shape coefficient geometrically.
+    Only particle soft contacts are supported, not edge or triangle contacts.
+    Deformable-only solves retain the one-way response to prescribed bodies.
 
     References:
         1. Baraff, D. & Witkin, A. "Large Steps in Cloth Simulation."
         2. Liu, T. et al. "Fast Simulation of Mass-Spring Systems."
+        3. Lei Lan, et al. "Affine Body Dynamics: Fast, Stable and Intersection-free Simulation of Stiff Materials."
 
     Implicit-Euler method solves the following non-linear equation:
 
@@ -123,6 +145,21 @@ class SolverStyle3D(SolverBase):
 
     """
 
+    class Dynamics(IntFlag):
+        """Select dynamics to advance, combining flags with bitwise OR (``|``)."""
+
+        NONE = 0
+        """Select no dynamics."""
+
+        DEFORMABLE = 1 << 0
+        """Advance deformable particles, including cloth."""
+
+        AFFINE_BODY = 1 << 1
+        """Advance rigid bodies using affine body dynamics."""
+
+        ALL = DEFORMABLE | AFFINE_BODY
+        """Enable all supported dynamics."""
+
     @dataclass(kw_only=True)
     class Config:
         """Runtime options for :class:`SolverStyle3D`.
@@ -145,6 +182,13 @@ class SolverStyle3D(SolverBase):
 
         linear_iterations: int = 10
         """Number of PCG iterations per non-linear iteration, capped by PCG capacity (999 by default)."""
+
+        affine_rigidity_ratio: float = 1e2
+        """Dimensionless SO(3) stiffness ratio relative to mean directional inertia.
+
+        Zero disables the penalty. See :doc:`/solvers/style3d` for the stiffness
+        formula and its distinction from contact stiffness.
+        """
 
         drag_spring_stiff: float = 1e2
         """Stiffness of the mouse-dragging spring [N/m]."""
@@ -228,6 +272,7 @@ class SolverStyle3D(SolverBase):
         linear_iterations: int = _LEGACY_UNSET,
         drag_spring_stiff: float = _LEGACY_UNSET,
         enable_mouse_dragging: bool = _LEGACY_UNSET,
+        dynamics: Dynamics = Dynamics.DEFORMABLE,
     ):
         """Initialize the Style3D solver.
 
@@ -237,7 +282,9 @@ class SolverStyle3D(SolverBase):
             Pass their values through ``config=SolverStyle3D.Config(...)`` instead.
 
         Args:
-            model: The :class:`~newton.Model` containing Style3D attributes to integrate.
+            model: The :class:`~newton.Model` to integrate. Deformable dynamics require
+                Style3D custom attributes; call :meth:`register_custom_attributes`
+                before building the model.
             config: Runtime options. If ``None``, use :class:`Config` defaults with
                 any supplied legacy keyword options. The solver keeps this object
                 publicly as :attr:`config`; changes take effect on the next step.
@@ -246,10 +293,19 @@ class SolverStyle3D(SolverBase):
             linear_iterations: Deprecated keyword option for :attr:`Config.linear_iterations`.
             drag_spring_stiff: Deprecated keyword option for :attr:`Config.drag_spring_stiff`.
             enable_mouse_dragging: Deprecated keyword option for :attr:`Config.enable_mouse_dragging`.
+            dynamics: Dynamics to advance, selected with :class:`Dynamics` flags.
+                Combine flags with bitwise OR (``|``). Defaults to
+                :attr:`Dynamics.DEFORMABLE` for deformable particles, including cloth.
+                Use :attr:`Dynamics.AFFINE_BODY` to advance rigid bodies using affine
+                body dynamics, :attr:`Dynamics.ALL` to select all dynamics,
+                or :attr:`Dynamics.NONE` to select none.
 
         Raises:
             TypeError: If ``config`` is not a :class:`Config` or ``None``, or if
                 a configuration is combined with legacy keyword options.
+            AttributeError: If ``dynamics`` is :attr:`Dynamics.DEFORMABLE` and the
+                model is missing Style3D custom attributes.
+            ValueError: If ``dynamics`` contains unsupported flags.
         """
 
         legacy_options = {
@@ -278,47 +334,62 @@ class SolverStyle3D(SolverBase):
                 stacklevel=2,
             )
 
-        super().__init__(model)
-        if not hasattr(model, "style3d"):
+        if dynamics == SolverStyle3D.Dynamics.DEFORMABLE and not hasattr(model, "style3d"):
             raise AttributeError(
                 "Style3D custom attributes are missing from the model. "
                 "Call SolverStyle3D.register_custom_attributes() before building the model."
             )
-        self.style3d = model.style3d
-        # Keep solver-specific activity constraints out of the shared model.
-        self._particle_flags = wp.clone(model.particle_flags)
-        if model.particle_count > 0:
-            wp.launch(
-                deactivate_zero_mass_particles_kernel,
-                dim=model.particle_count,
-                inputs=[model.particle_mass],
-                outputs=[self._particle_flags],
-                device=self.device,
-            )
-        self.collision: Collision | None = Collision(model)  # set None to disable
-        self.linear_solver = PcgSolver(model.particle_count, self.device)
+        elif int(dynamics) & ~int(SolverStyle3D.Dynamics.ALL):
+            raise ValueError(f"Unsupported dynamics flags: {dynamics!r}.")
+
+        enable_deformable = bool(dynamics & SolverStyle3D.Dynamics.DEFORMABLE)
+        enable_affine_body = bool(dynamics & SolverStyle3D.Dynamics.AFFINE_BODY)
+
+        super().__init__(model)
+        self._style3d_attr = getattr(model, "style3d", None)
+        self.collision = Collision(model) if enable_deformable else None  # set None to disable
+        self.dynamics = dynamics
         self.config = config
 
+        # Number of DOF blocks in the linear system, with three scalar DOFs per block.
+        self._particle_count = model.particle_count if enable_deformable else 0
+        self._affine_body_count = model.body_count if enable_affine_body else 0
+        self._dof_block_count = self._particle_count + self._affine_body_count * 4
+        self._affine_body = AffineBody(model) if enable_affine_body else None
+        self._linear_solver = PcgSolver(self._dof_block_count, self.device)
+        self._contact = Contact(model, self._particle_count) if enable_affine_body else None
+
+        # ParticleFlags for every particle and affine block, separate from model flags.
+        self._particle_flags = wp.zeros(self._dof_block_count, dtype=int, device=self.device)
+
         # Fixed PD matrix
-        self.pd_non_diags = SparseMatrixELL()
-        self.pd_diags = wp.zeros(model.particle_count, dtype=float, device=self.device)
+        self._pd_off_diag = SparseMatrixELL()
+        self._pd_diag = wp.zeros(self._dof_block_count, dtype=float, device=self.device)
         self._precompute(model)
 
         # Non-linear equation variables
-        self.dx = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
-        self.rhs = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
-        self.x_prev = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
-        self.x_inertia = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
+        self._x = wp.zeros(self._dof_block_count, dtype=wp.vec3, device=self.device)
+        self._v = wp.zeros(self._dof_block_count, dtype=wp.vec3, device=self.device)
+        self._dx = wp.zeros(self._dof_block_count, dtype=wp.vec3, device=self.device)
+        self._rhs = wp.zeros(self._dof_block_count, dtype=wp.vec3, device=self.device)
+        self._x_prev = wp.zeros(self._dof_block_count, dtype=wp.vec3, device=self.device)
+        self._x_inertia = wp.zeros(self._dof_block_count, dtype=wp.vec3, device=self.device)
 
-        # Static part of A_diag, full A_diag, and inverse of A_diag
-        self.static_A_diags = wp.zeros(model.particle_count, dtype=float, device=self.device)
-        self.inv_A_diags = wp.zeros(model.particle_count, dtype=wp.mat33, device=self.device)
-        self.A_diags = wp.zeros(model.particle_count, dtype=wp.mat33, device=self.device)
+        # Per-step scalar mass/PD diagonal, excluding nonlinear contributions.
+        self._A_diag_base = wp.zeros(self._dof_block_count, dtype=float, device=self.device)
+        # Assembled diagonal blocks, including shape contacts but excluding cloth self-contacts.
+        self._A_diag = wp.zeros(self._dof_block_count, dtype=wp.mat33, device=self.device)
+        # Per-body (S_01, S_02, S_12) / dt^2, refreshed alongside the mass diagonal.
+        self._affine_mass_off_diag = wp.zeros(self._affine_body_count, dtype=wp.vec3, device=self.device)
+        # Inverse full diagonal blocks for Jacobi preconditioning.
+        self._inv_A_diag = wp.zeros(self._dof_block_count, dtype=wp.mat33, device=self.device)
+        # Matrix-free contribution to A x beyond the assembled base matrix.
+        self._matrix_free_Ax = wp.zeros(self._dof_block_count, dtype=wp.vec3, device=self.device)
 
         # Drag info
-        self.drag_pos = wp.zeros(1, dtype=wp.vec3, device=self.device)
-        self.drag_index = wp.array([-1], dtype=int, device=self.device)
-        self.drag_bary_coord = wp.zeros(1, dtype=wp.vec3, device=self.device)
+        self._drag_pos = wp.zeros(1, dtype=wp.vec3, device=self.device)
+        self._drag_index = wp.array([-1], dtype=int, device=self.device)
+        self._drag_bary_coord = wp.zeros(1, dtype=wp.vec3, device=self.device)
 
     @override
     def step(
@@ -333,13 +404,21 @@ class SolverStyle3D(SolverBase):
     ) -> None:
         """Advance the Style3D solver by one time step.
 
-        The solver performs non-linear projective dynamics iterations with
-        optional collision handling. During the solve, positions in
-        ``state_in`` are updated in-place to the current iterate; the final
-        positions and velocities are written to ``state_out``.
+        The solver performs non-linear projective dynamics iterations in internal
+        buffers with optional collision handling. Final positions and velocities
+        for the selected dynamics are written to ``state_out``. Kinematic and
+        zero-mass body outputs remain owned by the caller.
+
+        With affine body dynamics enabled, positive-mass kinematic bodies use
+        rigid-body integration of ``state_in`` to predict their contact poses.
+        The caller must supply velocities consistent with the supplied forces,
+        model gravity and inertia, and ``dt``, so the predictor reproduces the
+        externally prescribed end pose, including rotation. The external driver
+        owns the corresponding ``state_out`` body poses and velocities. See
+        :ref:`style3d-externally-driven-bodies` for the integration contract.
 
         Args:
-            state_in: Input :class:`newton.State` (positions updated in-place).
+            state_in: Input :class:`newton.State`.
             state_out: Output :class:`newton.State` with the final state.
             control: :class:`newton.Control` input (currently unused).
             contacts: :class:`newton.Contacts` used for collision response.
@@ -355,184 +434,216 @@ class SolverStyle3D(SolverBase):
         self.validate_observables(observables, contacts)
         self._require_unreduced_contacts(contacts)
 
-        if self.config.iterations < 1:
+        if self.dynamics == SolverStyle3D.Dynamics.NONE:
+            return
+        elif self.config.iterations < 1:
             raise ValueError(f"Config.iterations must be at least 1, got {self.config.iterations}.")
 
-        # Model masses and flags may change between solver steps.
-        wp.copy(self._particle_flags, self.model.particle_flags)
-        if self.model.particle_count > 0:
-            wp.launch(
-                deactivate_zero_mass_particles_kernel,
-                dim=self.model.particle_count,
-                inputs=[self.model.particle_mass],
-                outputs=[self._particle_flags],
-                device=self.device,
-            )
+        self._to_internal_state(state_in, dt)
+        particle_q = self._x[: self._particle_count]
+        particle_qd = self._v[: self._particle_count]
 
         if self.collision is not None:
-            self.collision.frame_begin(state_in.particle_q, state_in.particle_qd, dt)
+            self.collision.frame_begin(particle_q, particle_qd, dt)
 
         wp.launch(
             kernel=init_step_kernel,
-            dim=self.model.particle_count,
+            dim=self._particle_count + self._affine_body_count,
             inputs=[
+                self._particle_count,
                 dt,
                 self.model.gravity,
                 self.model.particle_world,
-                state_in.particle_f,
-                state_in.particle_qd,
-                state_in.particle_q,
-                self.x_prev,
-                self.pd_diags,
+                state_in.particle_f if self._particle_count > 0 else self._x[:0],
+                particle_qd,
+                self._x,
+                self._x_prev,
+                self._pd_diag,
                 self.model.particle_mass,
                 self._particle_flags,
+                self.model.body_mass,
+                self.model.body_inertia,
+                self.model.body_flags,
             ],
-            outputs=[
-                self.x_inertia,
-                self.static_A_diags,
-                self.dx,
-            ],
+            outputs=[self._x_inertia, self._A_diag_base, self._dx, self._affine_mass_off_diag],
             device=self.device,
         )
 
-        if self.config.enable_mouse_dragging:
+        if self._particle_count > 0 and self.config.enable_mouse_dragging:
             wp.launch(
                 accumulate_dragging_pd_diag_kernel,
                 dim=1,
                 inputs=[
                     self.config.drag_spring_stiff,
-                    self.drag_index,
-                    self.drag_bary_coord,
+                    self._drag_index,
+                    self._drag_bary_coord,
                     self.model.tri_indices,
                     self._particle_flags,
                 ],
-                outputs=[self.static_A_diags],
+                outputs=[self._A_diag_base],
                 device=self.device,
             )
 
         for _iter in range(self.config.iterations):
             wp.launch(
                 init_rhs_kernel,
-                dim=self.model.particle_count,
+                dim=self._particle_count + self._affine_body_count,
                 inputs=[
                     dt,
-                    state_in.particle_q,
-                    self.x_inertia,
+                    self._x,
+                    self._x_inertia,
+                    self._particle_count,
                     self.model.particle_mass,
+                    self.model.body_mass,
+                    self.model.body_inertia,
+                    self.model.body_flags,
                 ],
-                outputs=[self.rhs],
+                outputs=[self._rhs],
                 device=self.device,
             )
 
-            wp.launch(
-                eval_stretch_kernel,
-                dim=len(self.model.tri_areas),
-                inputs=[
-                    state_in.particle_q,
-                    self.model.tri_areas,
-                    self.model.tri_poses,
-                    self.model.tri_indices,
-                    self.style3d.tri_aniso_ke,
-                ],
-                outputs=[self.rhs],
-                device=self.device,
-            )
-
-            wp.launch(
-                eval_bend_kernel,
-                dim=len(self.style3d.edge_rest_area),
-                inputs=[
-                    state_in.particle_q,
-                    self.style3d.edge_rest_area,
-                    self.style3d.edge_bending_cot,
-                    self.model.edge_indices,
-                    self.model.edge_bending_properties,
-                ],
-                outputs=[self.rhs],
-                device=self.device,
-            )
-
-            if self.config.enable_mouse_dragging:
+            if self._particle_count > 0:
                 wp.launch(
-                    eval_drag_force_kernel,
-                    dim=1,
+                    eval_stretch_kernel,
+                    dim=self.model.tri_count,
                     inputs=[
-                        self.config.drag_spring_stiff,
-                        self.drag_index,
-                        self.drag_pos,
-                        self.drag_bary_coord,
+                        particle_q,
+                        self.model.tri_areas,
+                        self.model.tri_poses,
                         self.model.tri_indices,
-                        state_in.particle_q,
+                        self._style3d_attr.tri_aniso_ke,
                     ],
-                    outputs=[self.rhs],
+                    outputs=[self._rhs],
                     device=self.device,
                 )
+
+                wp.launch(
+                    eval_bend_kernel,
+                    dim=len(self._style3d_attr.edge_rest_area),
+                    inputs=[
+                        particle_q,
+                        self._style3d_attr.edge_rest_area,
+                        self._style3d_attr.edge_bending_cot,
+                        self.model.edge_indices,
+                        self.model.edge_bending_properties,
+                    ],
+                    outputs=[self._rhs],
+                    device=self.device,
+                )
+
+                if self.config.enable_mouse_dragging:
+                    wp.launch(
+                        eval_drag_force_kernel,
+                        dim=1,
+                        inputs=[
+                            self.config.drag_spring_stiff,
+                            self._drag_index,
+                            self._drag_pos,
+                            self._drag_bary_coord,
+                            self.model.tri_indices,
+                            particle_q,
+                        ],
+                        outputs=[self._rhs],
+                        device=self.device,
+                    )
 
             if self.collision is not None:
                 self.collision.accumulate_contact_force(
                     dt,
                     _iter,
-                    state_in,
-                    state_out,
                     contacts,
-                    self.rhs,
-                    self.x_prev,
-                    self.static_A_diags,
-                )
-                wp.launch(
-                    prepare_jacobi_preconditioner_kernel,
-                    dim=self.model.particle_count,
-                    inputs=[
-                        self.static_A_diags,
-                        self.collision.contact_hessian_diagonal(),
-                        self._particle_flags,
-                    ],
-                    outputs=[self.inv_A_diags],
-                    device=self.device,
-                )
-            else:
-                wp.launch(
-                    prepare_jacobi_preconditioner_no_contact_hessian_kernel,
-                    dim=self.model.particle_count,
-                    inputs=[self.static_A_diags],
-                    outputs=[self.inv_A_diags],
-                    device=self.device,
+                    state_in.body_q,
+                    state_out.body_q,
+                    particle_q,
+                    self._rhs[: self._particle_count],
+                    self._x_prev[: self._particle_count],
+                    self._A_diag_base[: self._particle_count],
+                    include_body_contacts=self._contact is None,
                 )
 
-            self.linear_solver.solve(
-                self.pd_non_diags,
-                self.static_A_diags,
-                self.dx if _iter == 0 else None,
-                self.rhs,
-                self.inv_A_diags,
-                self.dx,
-                self.config.linear_iterations,
-                None if self.collision is None else self.collision.hessian_multiply,
-            )
+            self._A_diag[: self._particle_count].zero_()
+            if self._affine_body is not None:
+                self._affine_body.eval_orthogonality(
+                    self._x[self._particle_count :],
+                    self._rhs[self._particle_count :],
+                    self._A_diag[self._particle_count :],
+                    self.config.affine_rigidity_ratio,
+                    dt,
+                )
 
-            if self.collision is not None:
-                self.collision.linear_iteration_end(self.dx)
+            if self._contact is not None:
+                self._contact.eval_contacts(
+                    contacts,
+                    self._x,
+                    self._x_prev,
+                    self._x_inertia,
+                    self._particle_flags,
+                    self._rhs,
+                    self._A_diag,
+                    dt,
+                )
 
             wp.launch(
-                nonlinear_step_kernel,
-                dim=self.model.particle_count,
-                inputs=[state_in.particle_q],
-                outputs=[state_out.particle_q, self.dx],
+                prepare_jacobi_preconditioner_kernel,
+                dim=self._dof_block_count,
+                inputs=[
+                    self._particle_count,
+                    self._A_diag_base,
+                    self.collision.contact_hessian_diagonal() if self.collision is not None else self._A_diag[:0],
+                    self._particle_flags,
+                ],
+                outputs=[self._A_diag, self._inv_A_diag],
                 device=self.device,
             )
 
-            state_in.particle_q.assign(state_out.particle_q)
+            self._linear_solver.solve(
+                self._pd_off_diag,
+                self._A_diag,
+                self._dx if _iter == 0 else None,
+                self._rhs,
+                self._inv_A_diag,
+                self._dx,
+                self.config.linear_iterations,
+                self._matrix_free_multiply,
+            )
+
+            if self.collision is not None:
+                self.collision.linear_iteration_end(self._dx[: self._particle_count])
+
+            wp.launch(
+                nonlinear_step_kernel,
+                dim=self._dof_block_count,
+                inputs=[self._x],
+                outputs=[self._x, self._dx],
+                device=self.device,
+            )
 
         wp.launch(
-            kernel=update_velocity,
-            dim=self.model.particle_count,
-            inputs=[dt, self.x_prev, state_out.particle_q],
-            outputs=[state_out.particle_qd],
+            kernel=update_velocity_kernel,
+            dim=self._dof_block_count,
+            inputs=[dt, self._particle_count, self._x_prev, self._x],
+            outputs=[self._v],
             device=self.device,
         )
 
         if self.collision is not None:
-            self.collision.frame_end(state_out.particle_q, state_out.particle_qd, dt)
+            self.collision.frame_end(particle_q, particle_qd, dt)
+
+        self._from_internal_state(state_out, dt)
+
+    def _matrix_free_multiply(self, x: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
+        """Return the matrix-free contribution to A x, excluding the assembled base matrix."""
+        if self.collision is not None:
+            self.collision.hessian_multiply(x[: self._particle_count], self._matrix_free_Ax[: self._particle_count])
+        else:
+            self._matrix_free_Ax[: self._particle_count].zero_()
+        if self._affine_body is not None:
+            self._affine_body.off_diag_multiply(
+                x[self._particle_count :], self._affine_mass_off_diag, self._matrix_free_Ax[self._particle_count :]
+            )
+        if self._contact is not None:
+            self._contact.off_diag_multiply(x, self._matrix_free_Ax)
+        return self._matrix_free_Ax
 
     def rebuild_bvh(self, state: State):
         if self.collision is not None:
@@ -589,7 +700,7 @@ class SolverStyle3D(SolverBase):
 
     def _precompute(self, model: Model):
         with wp.ScopedTimer("SolverStyle3D::precompute()"):
-            if (
+            if self._particle_count > 0 and (
                 not hasattr(model, "style3d")
                 or not hasattr(model.style3d, "tri_aniso_ke")
                 or not hasattr(model.style3d, "edge_rest_area")
@@ -600,33 +711,70 @@ class SolverStyle3D(SolverBase):
                     "Call SolverStyle3D.register_custom_attributes() before building the model."
                 )
 
-            tri_indices = model.tri_indices.numpy()
-            tri_poses = model.tri_poses.numpy().tolist()
-            tri_areas = model.tri_areas.numpy().tolist()
-            edge_indices = model.edge_indices.numpy()
-            edge_bending_properties = model.edge_bending_properties.numpy().tolist()
-            tri_aniso_ke = model.style3d.tri_aniso_ke.numpy().tolist()
-            edge_rest_area = model.style3d.edge_rest_area.numpy().tolist()
-            edge_bending_cot = model.style3d.edge_bending_cot.numpy().tolist()
+            if self._particle_count > 0:
+                tri_indices = model.tri_indices.numpy()
+                tri_poses = model.tri_poses.numpy().tolist()
+                tri_areas = model.tri_areas.numpy().tolist()
+                edge_indices = model.edge_indices.numpy()
+                edge_bending_properties = model.edge_bending_properties.numpy().tolist()
+                tri_aniso_ke = model.style3d.tri_aniso_ke.numpy().tolist()
+                edge_rest_area = model.style3d.edge_rest_area.numpy().tolist()
+                edge_bending_cot = model.style3d.edge_bending_cot.numpy().tolist()
 
             def assemble(max_neighbors):
                 """Assemble from scratch so failed attempts never contribute partial entries."""
-                matrix = PDMatrixBuilder(model.particle_count, max_neighbor=max_neighbors)
-                matrix.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
-                matrix.add_bend_constraints(edge_indices, edge_bending_properties, edge_rest_area, edge_bending_cot)
+                matrix = PDMatrixBuilder(self._dof_block_count, max_neighbor=max_neighbors)
+                if self._particle_count > 0:
+                    matrix.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
+                    matrix.add_bend_constraints(edge_indices, edge_bending_properties, edge_rest_area, edge_bending_cot)
                 return matrix
 
             try:
                 pd_matrix_builder = assemble(32)
             except ValueError:
                 # Only overflowing meshes pay for counting stretch and bending connections.
-                max_neighbors = _compute_max_neighbors(model.particle_count, tri_indices, edge_indices)
-                pd_matrix_builder = assemble(max_neighbors)
-            self.pd_diags, self.pd_non_diags.num_nz, self.pd_non_diags.nz_ell = pd_matrix_builder.finalize(self.device)
+                if self._particle_count > 0:
+                    max_neighbors = _compute_max_neighbors(self._dof_block_count, tri_indices, edge_indices)
+                    pd_matrix_builder = assemble(max_neighbors)
+            self._pd_diag, self._pd_off_diag.num_nz, self._pd_off_diag.nz_ell = pd_matrix_builder.finalize(self.device)
+
+    def _to_internal_state(self, state: State, dt: float):
+        """Populate internal solver state and refresh flags for all DOF blocks."""
+        if self._particle_count > 0:
+            wp.copy(self._x, state.particle_q, count=self._particle_count)
+            wp.copy(self._v, state.particle_qd, count=self._particle_count)
+        if self._dof_block_count > 0:
+            wp.launch(
+                compute_solver_flags_kernel,
+                dim=self._particle_count + self._affine_body_count,
+                inputs=[
+                    self._particle_count,
+                    self.model.particle_mass,
+                    self.model.particle_flags,
+                    self.model.body_mass,
+                    self.model.body_flags,
+                ],
+                outputs=[self._particle_flags],
+                device=self.device,
+            )
+        if self._affine_body_count > 0:
+            self._affine_body.to_internal_state(
+                state, self._x[self._particle_count :], self._x_inertia[self._particle_count :], dt
+            )
+
+    def _from_internal_state(self, state: State, dt: float):
+        """Write solved positions and velocities to the output state."""
+        if self._particle_count > 0:
+            wp.copy(state.particle_q, self._x, count=self._particle_count)
+            wp.copy(state.particle_qd, self._v, count=self._particle_count)
+        if self._affine_body_count > 0:
+            self._affine_body.from_internal_state(
+                state, self._x[self._particle_count :], self._v[self._particle_count :], dt
+            )
 
     def _update_drag_info(self, index: int, pos: wp.vec3, bary_coord: wp.vec3):
         """Should be invoked when state changed."""
         # print([index, pos, bary_coord])
-        self.drag_bary_coord.fill_(bary_coord)
-        self.drag_index.fill_(index)
-        self.drag_pos.fill_(pos)
+        self._drag_bary_coord.fill_(bary_coord)
+        self._drag_index.fill_(index)
+        self._drag_pos.fill_(pos)

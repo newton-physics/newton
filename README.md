@@ -905,6 +905,20 @@ python -m newton.examples --describe robot_omniwheel
     </td>
   </tr>
   <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_style3d_balls_dropped_into_bag.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_style3d_balls_dropped_into_bag.jpg" alt="Style3D Plastic Bag">
+      </a>
+    </td>
+    <td colspan="2"></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples style3d_balls_dropped_into_bag</code>
+    </td>
+    <td colspan="2"></td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Contacts Examples</h3></td>
   </tr>
   <tr>

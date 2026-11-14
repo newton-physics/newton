@@ -1,0 +1,1 @@
+Add `--solver style3d` to the basic shapes, Dzhanibekov, balance bird, domino spiral, and pyramid examples, and add `style3d_balls_dropped_into_bag` to demonstrate five rigid balls falling into a suspended cloth bag at 60 FPS with two substeps.

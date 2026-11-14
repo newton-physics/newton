@@ -42,7 +42,7 @@ def ell_mat_vec_mul(
 
 @wp.kernel
 def eval_residual_kernel(
-    A_non_diag: SparseMatrixELL,
+    A_off_diag: SparseMatrixELL,
     A_diag: wp.array[Any],
     x: wp.array[wp.vec3],
     b: wp.array[wp.vec3],
@@ -51,7 +51,7 @@ def eval_residual_kernel(
 ):
     tid = wp.tid()
     Ax = A_diag[tid] * x[tid]
-    Ax += ell_mat_vec_mul(A_non_diag.num_nz, A_non_diag.nz_ell, x, tid)
+    Ax += ell_mat_vec_mul(A_off_diag.num_nz, A_off_diag.nz_ell, x, tid)
     r[tid] = b[tid] - Ax
 
 
@@ -62,7 +62,7 @@ wp.overload(eval_residual_kernel, {"A_diag": wp.array[wp.mat33]})
 
 @wp.kernel
 def eval_residual_kernel_with_additional_Ax(
-    A_non_diag: SparseMatrixELL,
+    A_off_diag: SparseMatrixELL,
     A_diag: wp.array[Any],
     x: wp.array[wp.vec3],
     b: wp.array[wp.vec3],
@@ -72,7 +72,7 @@ def eval_residual_kernel_with_additional_Ax(
 ):
     tid = wp.tid()
     Ax = A_diag[tid] * x[tid] + additional_Ax[tid]
-    Ax += ell_mat_vec_mul(A_non_diag.num_nz, A_non_diag.nz_ell, x, tid)
+    Ax += ell_mat_vec_mul(A_off_diag.num_nz, A_off_diag.nz_ell, x, tid)
     r[tid] = b[tid] - Ax
 
 
@@ -99,14 +99,14 @@ wp.overload(array_mul_kernel, {"a": wp.array[wp.mat33]})
 
 @wp.kernel
 def ell_mat_vec_mul_kernel(
-    M_non_diag: SparseMatrixELL,
+    M_off_diag: SparseMatrixELL,
     M_diag: wp.array[Any],
     x: wp.array[wp.vec3],
     # outputs
     Mx: wp.array[wp.vec3],
 ):
     tid = wp.tid()
-    Mx[tid] = (M_diag[tid] * x[tid]) + ell_mat_vec_mul(M_non_diag.num_nz, M_non_diag.nz_ell, x, tid)
+    Mx[tid] = (M_diag[tid] * x[tid]) + ell_mat_vec_mul(M_off_diag.num_nz, M_off_diag.nz_ell, x, tid)
 
 
 # Forward-declare instances of the generic kernel to support graph capture on CUDA <12.3 drivers
@@ -181,7 +181,7 @@ def step_cg_kernel(
 def generate_test_data_kernel(
     dim: int,
     diag_term: float,
-    A_non_diag: SparseMatrixELL,
+    A_off_diag: SparseMatrixELL,
     A_diag: wp.array[Any],
     b: wp.array[wp.vec3],
     x0: wp.array[wp.vec3],
@@ -195,19 +195,19 @@ def generate_test_data_kernel(
     A_diag[tid] = diag_term
 
     if tid == 0:
-        A_non_diag.num_nz[tid] = 1
-        A_non_diag.nz_ell[0, tid].value = -1.0
-        A_non_diag.nz_ell[0, tid].column_index = 1
+        A_off_diag.num_nz[tid] = 1
+        A_off_diag.nz_ell[0, tid].value = -1.0
+        A_off_diag.nz_ell[0, tid].column_index = 1
     elif tid == dim - 1:
-        A_non_diag.num_nz[tid] = 1
-        A_non_diag.nz_ell[0, tid].value = -1.0
-        A_non_diag.nz_ell[0, tid].column_index = dim - 2
+        A_off_diag.num_nz[tid] = 1
+        A_off_diag.nz_ell[0, tid].value = -1.0
+        A_off_diag.nz_ell[0, tid].column_index = dim - 2
     else:
-        A_non_diag.num_nz[tid] = 2
-        A_non_diag.nz_ell[0, tid].value = -1.0
-        A_non_diag.nz_ell[0, tid].column_index = tid + 1
-        A_non_diag.nz_ell[1, tid].value = -1.0
-        A_non_diag.nz_ell[1, tid].column_index = tid - 1
+        A_off_diag.num_nz[tid] = 2
+        A_off_diag.nz_ell[0, tid].value = -1.0
+        A_off_diag.nz_ell[0, tid].column_index = tid + 1
+        A_off_diag.nz_ell[1, tid].value = -1.0
+        A_off_diag.nz_ell[1, tid].column_index = tid - 1
 
 
 def array_inner(
@@ -261,7 +261,7 @@ class PcgSolver:
 
     def step1_update_r(
         self,
-        A_non_diag: SparseMatrixELL,
+        A_off_diag: SparseMatrixELL,
         A_diag: wp.array[Any],
         b: wp.array[wp.vec3],
         x: wp.array[wp.vec3] = None,  # Pass `None` if x[:] == 0.0
@@ -274,7 +274,7 @@ class PcgSolver:
             wp.launch(
                 eval_residual_kernel,
                 dim=self.dim,
-                inputs=[A_non_diag, A_diag, x, b],
+                inputs=[A_off_diag, A_diag, x, b],
                 outputs=[self.r],
                 device=self.device,
             )
@@ -282,7 +282,7 @@ class PcgSolver:
             wp.launch(
                 eval_residual_kernel_with_additional_Ax,
                 dim=self.dim,
-                inputs=[A_non_diag, A_diag, x, b, additional_Ax],
+                inputs=[A_off_diag, A_diag, x, b, additional_Ax],
                 outputs=[self.r],
                 device=self.device,
             )
@@ -304,7 +304,7 @@ class PcgSolver:
 
     def step5_update_Ap(
         self,
-        A_non_diag: SparseMatrixELL,
+        A_off_diag: SparseMatrixELL,
         A_diag: wp.array[Any],
         additional_Ap: wp.array[wp.vec3] = None,
     ):
@@ -312,7 +312,7 @@ class PcgSolver:
             wp.launch(
                 ell_mat_vec_mul_kernel,
                 dim=self.dim,
-                inputs=[A_non_diag, A_diag, self.p],
+                inputs=[A_off_diag, A_diag, self.p],
                 outputs=[self.Ap],
                 device=self.device,
             )
@@ -320,7 +320,7 @@ class PcgSolver:
             wp.launch(
                 ell_mat_vec_mul_add_kernel,
                 dim=self.dim,
-                inputs=[A_non_diag, A_diag, self.p, additional_Ap],
+                inputs=[A_off_diag, A_diag, self.p, additional_Ap],
                 outputs=[self.Ap],
                 device=self.device,
             )
@@ -339,7 +339,7 @@ class PcgSolver:
 
     def solve(
         self,
-        A_non_diag: SparseMatrixELL,
+        A_off_diag: SparseMatrixELL,
         A_diag: wp.array[Any],
         x0: wp.array[wp.vec3],  # Pass `None` means x0[:] == 0.0
         b: wp.array[wp.vec3],
@@ -357,10 +357,10 @@ class PcgSolver:
             x1.assign(x0)
 
         if additional_multiplier is None:
-            self.step1_update_r(A_non_diag, A_diag, b, x0)
+            self.step1_update_r(A_off_diag, A_diag, b, x0)
         else:
             additional_Ax = additional_multiplier(x0) if x0 is not None else None
-            self.step1_update_r(A_non_diag, A_diag, b, x0, additional_Ax)
+            self.step1_update_r(A_off_diag, A_diag, b, x0, additional_Ax)
 
         for iter in range(iterations):
             self.step2_update_z(inv_M)
@@ -368,10 +368,10 @@ class PcgSolver:
             self.step4_update_p(iter)
 
             if additional_multiplier is None:
-                self.step5_update_Ap(A_non_diag, A_diag)
+                self.step5_update_Ap(A_off_diag, A_diag)
             else:
                 additional_Ap = additional_multiplier(self.p)
-                self.step5_update_Ap(A_non_diag, A_diag, additional_Ap)
+                self.step5_update_Ap(A_off_diag, A_diag, additional_Ap)
 
             self.step6_update_pTAp(iter)
             self.step7_update_x_r(x1, iter)
@@ -382,19 +382,19 @@ if __name__ == "__main__":
     dim = 100000
     diag_term = 5.0
 
-    A_non_diag = SparseMatrixELL()
+    A_off_diag = SparseMatrixELL()
     A_diag = wp.zeros(dim, dtype=wp.float32)
-    A_non_diag.num_nz = wp.zeros(dim, dtype=wp.int32)
-    A_non_diag.nz_ell = wp.zeros(shape=(2, dim), dtype=NonZeroEntry)
+    A_off_diag.num_nz = wp.zeros(dim, dtype=wp.int32)
+    A_off_diag.nz_ell = wp.zeros(shape=(2, dim), dtype=NonZeroEntry)
     b = wp.zeros(dim, dtype=wp.vec3)
     x0 = wp.zeros(dim, dtype=wp.vec3)
     x1 = wp.zeros(dim, dtype=wp.vec3)
-    wp.launch(generate_test_data_kernel, dim=dim, inputs=[dim, diag_term], outputs=[A_non_diag, A_diag, b, x0])
+    wp.launch(generate_test_data_kernel, dim=dim, inputs=[dim, diag_term], outputs=[A_off_diag, A_diag, b, x0])
 
     inv_M = wp.array([1.0 / diag_term] * dim, dtype=float)
 
     solver = PcgSolver(dim, device="cuda:0")
-    solver.solve(A_non_diag, A_diag, x0, b, inv_M, x1, iterations=30)
+    solver.solve(A_off_diag, A_diag, x0, b, inv_M, x1, iterations=30)
 
     rTr = wp.zeros(1, dtype=float)
     array_inner(solver.r, solver.r, rTr.ptr)

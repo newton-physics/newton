@@ -3,7 +3,7 @@
 
 import warp as wp
 
-from newton import Contacts, Model, State
+from newton import Contacts, Model
 from newton._src.solvers.style3d.collision.bvh import BvhEdge, BvhTri
 from newton._src.solvers.style3d.collision.kernels import (
     eval_body_contact_kernel,
@@ -44,7 +44,6 @@ class Collision:
         self.broad_phase_ef = wp.array(shape=(32, model.edge_count), dtype=int, device=self.model.device)
         self.broad_phase_vf = wp.array(shape=(32, model.particle_count), dtype=int, device=self.model.device)
 
-        self.Hx = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.model.device)
         self.contact_hessian_diags = wp.zeros(model.particle_count, dtype=wp.mat33, device=self.model.device)
 
         self.edge_bvh.build(model.particle_q, self.model.edge_indices, self.radius)
@@ -123,12 +122,15 @@ class Collision:
         self,
         dt: float,
         _iter: int,
-        state_in: State,
-        state_out: State,
         contacts: Contacts,
+        body_q_0: wp.array[wp.transform],
+        body_q_1: wp.array[wp.transform],
+        particle_q: wp.array[wp.vec3],
         particle_forces: wp.array[wp.vec3],
         particle_q_prev: wp.array[wp.vec3],
         particle_stiff: wp.array[wp.vec3] = None,
+        *,
+        include_body_contacts: bool = True,
     ):
         """
         Evaluates contact forces and the diagonal of the Hessian for implicit time integration.
@@ -138,25 +140,29 @@ class Collision:
 
         Args:
             dt: Time step.
-            state_in: Current simulation state (input).
-            state_out: Next simulation state (output).
             contacts: Contact data structure containing contact information.
+            body_q_0: Current body transform
+            body_q_1: Next body transform
+            particle_q: Current position
             particle_forces: Output array for computed contact forces.
             particle_q_prev: Previous positions for velocity-based damping.
             particle_stiff: Optional stiffness array for particles.
+            include_body_contacts: Include the legacy particle-only response when
+                rigid contacts are not assembled by the shared solver.
         """
-        contacts._assert_particle_only_soft_contacts("SolverStyle3D")
+        if contacts is not None:
+            contacts._assert_particle_only_soft_contacts("SolverStyle3D")
         thickness = 2.0 * self.radius
         self.contact_hessian_diags.zero_()
 
         if self.stiff_vf > 0:
             wp.launch(
                 handle_vertex_triangle_contacts_kernel,
-                dim=len(state_in.particle_q),
+                dim=len(particle_q),
                 inputs=[
                     thickness,
                     self.stiff_vf,
-                    state_in.particle_q,
+                    particle_q,
                     self.model.tri_indices,
                     self.broad_phase_vf,
                     particle_stiff,
@@ -172,7 +178,7 @@ class Collision:
                 inputs=[
                     thickness,
                     self.stiff_ee,
-                    state_in.particle_q,
+                    particle_q,
                     self.model.edge_indices,
                     self.broad_phase_ee,
                     particle_stiff,
@@ -188,7 +194,7 @@ class Collision:
                 inputs=[
                     thickness,
                     self.stiff_ef,
-                    state_in.particle_q,
+                    particle_q,
                     self.model.tri_indices,
                     self.model.edge_indices,
                     self.broad_phase_ef,
@@ -198,13 +204,16 @@ class Collision:
                 device=self.model.device,
             )
 
+        if not include_body_contacts or contacts is None:
+            return
+
         wp.launch(
             kernel=eval_body_contact_kernel,
             dim=self.body_contact_max,
             inputs=[
                 dt,
                 particle_q_prev,
-                state_in.particle_q,
+                particle_q,
                 # body-particle contact
                 self.model.soft_contact_ke,
                 self.model.soft_contact_kd,
@@ -216,8 +225,8 @@ class Collision:
                 contacts.soft_contact_max,
                 self.model.shape_material_mu,
                 self.model.shape_body,
-                state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
-                state_in.body_q if self.integrate_with_external_rigid_solver else None,
+                body_q_1 if self.integrate_with_external_rigid_solver else body_q_0,
+                body_q_0 if self.integrate_with_external_rigid_solver else None,
                 self.model.body_qd,
                 self.model.body_com,
                 contacts.soft_contact_shape,
@@ -237,16 +246,15 @@ class Collision:
         """
         return self.contact_hessian_diags
 
-    def hessian_multiply(self, x: wp.array[wp.vec3]):
-        """Computes the Hessian-vector product for implicit integration."""
+    def hessian_multiply(self, x: wp.array[wp.vec3], Hx: wp.array[wp.vec3]) -> None:
+        """Write the particle contact Hessian-vector product into caller-owned storage."""
         wp.launch(
             hessian_multiply_kernel,
             dim=self.model.particle_count,
             inputs=[self.contact_hessian_diags, x],
-            outputs=[self.Hx],
+            outputs=[Hx],
             device=self.model.device,
         )
-        return self.Hx
 
     def linear_iteration_end(self, dx: wp.array[wp.vec3]):
         """Displacement constraints"""
