@@ -47,7 +47,7 @@ from ..geometry.contact_data import (
     contact_passes_gap_check,
     contact_passes_speculative_gap_check,
     contact_separation,
-    contact_sort_shape_index_bits,
+    contact_sort_key_layout,
     make_contact_sort_key_with_bits,
     prepare_speculative_contact,
 )
@@ -2727,15 +2727,21 @@ class NarrowPhase:
             else CONTACT_SORT_CONVEX_SUB_KEY_BITS
         )
         # Sort keys are written only in deterministic mode; external AABBs give the shape count.
+        # Past the packed key's shape limit the keys hold only the sub-key and the
+        # sorter adds a stable pass on the shape pair.
+        self._contact_sort_split_pair_key = False
         if not deterministic:
             self._contact_sort_shape_index_bits = 0
         elif self.external_aabb:
-            self._contact_sort_shape_index_bits = contact_sort_shape_index_bits(
+            self._contact_sort_shape_index_bits, self._contact_sort_split_pair_key = contact_sort_key_layout(
                 self.shape_aabb_lower.shape[0], self._contact_sort_sub_key_bits
             )
         else:
             # launch() checks the shape count against this width.
             self._contact_sort_shape_index_bits = CONTACT_SORT_DEFAULT_SHAPE_INDEX_BITS
+        self._contact_sort_key_shape_index_bits = (
+            0 if self._contact_sort_split_pair_key else self._contact_sort_shape_index_bits
+        )
         self.shape_voxel_resolution = shape_voxel_resolution
 
         # Determine the writer function
@@ -3024,7 +3030,10 @@ class NarrowPhase:
                 self._sort_key_array = wp.zeros(det_capacity, dtype=wp.int64, device=device)
                 self._contact_sorter = ContactSorter(
                     det_capacity,
-                    key_bit_count=self._contact_sort_sub_key_bits + 2 * self._contact_sort_shape_index_bits,
+                    key_bit_count=self._contact_sort_sub_key_bits + 2 * self._contact_sort_key_shape_index_bits,
+                    pair_shape_index_bits=(
+                        self._contact_sort_shape_index_bits if self._contact_sort_split_pair_key else 0
+                    ),
                     device=device,
                 )
             else:
@@ -4224,7 +4233,7 @@ class NarrowPhase:
 
         writer_data = ContactWriterData()
         writer_data.contact_max = contact_max
-        writer_data.shape_index_bits = self._contact_sort_shape_index_bits
+        writer_data.shape_index_bits = self._contact_sort_key_shape_index_bits
         writer_data.sub_key_bits = self._contact_sort_sub_key_bits
         writer_data.contact_count = contact_count
         writer_data.contact_pair = contact_pair

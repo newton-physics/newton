@@ -240,6 +240,9 @@ class _MatchData:
 
     # Current frame (sorted).
     new_keys: wp.array[wp.int64]
+    # Low 32 bits tell the contacts of one shape pair apart; the packed keys
+    # themselves, or the sub-keys when the sorter ran a separate pair pass.
+    new_tiebreak_keys: wp.array[wp.int64]
     new_point0: wp.array[wp.vec3]
     new_point1: wp.array[wp.vec3]
     new_shape0: wp.array[wp.int32]
@@ -362,7 +365,7 @@ def _match_contacts_kernel(data: _MatchData):
         # 32 bits.  Using the sort key (instead of ``tid``) keeps the
         # winner invariant under the non-deterministic unsorted slot
         # assignment that the narrow phase gives us via ``wp.atomic_add``.
-        wp.atomic_min(data.prev_claim, best_idx, _pack_claim(best_dist_sq, target_key))
+        wp.atomic_min(data.prev_claim, best_idx, _pack_claim(best_dist_sq, data.new_tiebreak_keys[tid]))
     else:
         # Pair range exists but no contact within thresholds.
         data.match_index[tid] = MATCH_BROKEN
@@ -371,7 +374,7 @@ def _match_contacts_kernel(data: _MatchData):
 @wp.kernel(enable_backward=False)
 def _resolve_claims_kernel(
     match_index: wp.array[wp.int32],
-    sort_keys: wp.array[wp.int64],
+    tiebreak_keys: wp.array[wp.int64],
     prev_claim: wp.array[wp.int64],
     prev_was_matched: wp.array[wp.int32],
     new_count: wp.array[wp.int32],
@@ -394,7 +397,7 @@ def _resolve_claims_kernel(
         return  # already MATCH_NOT_FOUND or MATCH_BROKEN
 
     winner_key_low = prev_claim[cand] & wp.int64(0xFFFFFFFF)
-    my_key_low = sort_keys[tid] & wp.int64(0xFFFFFFFF)
+    my_key_low = tiebreak_keys[tid] & wp.int64(0xFFFFFFFF)
     if winner_key_low == my_key_low:
         if has_report != 0:
             prev_was_matched[cand] = wp.int32(1)
@@ -654,6 +657,10 @@ class ContactMatcher:
         world_count: Number of local worlds.
         shape_index_bits: Number of sort-key bits reserved for each shape index.
         sub_key_bits: Number of low sort-key bits reserved for the per-pair contact sub-key.
+            When the sorter runs a separate pair pass, pass its
+            :attr:`~ContactSorter.pair_shape_index_bits` as ``shape_index_bits``
+            and ``0`` here, since its sorted keys are bare pair keys; pass its
+            sorted sub-keys as ``tiebreak_keys`` to :meth:`match`.
         pos_threshold: World-space distance threshold [m] between the
             previous and current contact midpoints
             ``0.5 * (world(point0) + world(point1))``.  Contacts whose midpoint
@@ -823,6 +830,7 @@ class ContactMatcher:
         *,
         buffer_id: int,
         match_generation_out: wp.array[wp.int32],
+        tiebreak_keys: wp.array[wp.int64] | None = None,
         device: Devicelike = None,
     ) -> None:
         """Match current sorted contacts against last frame's sorted contacts.
@@ -856,6 +864,10 @@ class ContactMatcher:
                 contact generation of this buffer that ``match_index_out``
                 refers to, or ``-1`` when the previous frame was saved from
                 another buffer or never saved.
+            tiebreak_keys: Sorted keys whose low 32 bits tell the contacts of
+                one shape pair apart (use
+                :attr:`ContactSorter.sorted_tiebreak_keys_view`).  Defaults
+                to ``sort_keys``.
             device: Device to launch on.
         """
         data = _MatchData()
@@ -870,7 +882,10 @@ class ContactMatcher:
         data.reset_world_mask = self._reset_world_mask
         data.shape_world = self._shape_world
         data.world_count = self._world_count
+        if tiebreak_keys is None:
+            tiebreak_keys = sort_keys
         data.new_keys = sort_keys
+        data.new_tiebreak_keys = tiebreak_keys
         data.new_point0 = point0
         data.new_point1 = point1
         data.new_shape0 = shape0
@@ -894,7 +909,7 @@ class ContactMatcher:
             dim=self._capacity,
             inputs=[
                 match_index_out,
-                sort_keys,
+                tiebreak_keys,
                 self._prev_claim,
                 self._prev_was_matched,
                 contact_count,
