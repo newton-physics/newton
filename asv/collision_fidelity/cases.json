@@ -1,0 +1,4063 @@
+{
+  "schema_version": 2,
+  "case_count": 45,
+  "contact_policy": {
+    "name": "elasticity-cap",
+    "version": 1,
+    "max_ratio": 10.0,
+    "tet_policy": "numeric"
+  },
+  "cases": [
+    {
+      "case_id": "r5_franka_patch_contact_v2",
+      "scene_id": "r5_franka_patch_contact_v2",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_patch",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30,
+        "self_contact_capacity": 512
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka grippers \u2014 cloth patch",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:patch"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r5_franka_patch_contact_v2"
+      }
+    },
+    {
+      "case_id": "r7_h1_towel",
+      "scene_id": "r7_h1_towel",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_towel",
+      "runner": "h1",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30,
+        "self_contact_capacity": 512
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 15.53436829769565,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 6.442184148847824,
+      "hold_end": 7.942184148847824,
+      "stationary_windows": [
+        [
+          6.442184148847824,
+          7.942184148847824
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        15.53436829769565
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Explicit public initial state and original command keyframes. No solver history is restored."
+      ],
+      "transport_windows": [
+        [
+          3.442184148847824,
+          6.442184148847824
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.942184148847824,
+          15.53436829769565
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Two H1 hands \u2014 towel",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "initial_state_fixture": "assets/h1/r7_h1_towel.npz",
+      "self_contact_capacity": 512,
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:unitree_h1",
+          "fixture:r7_h1_towel",
+          "procedural:towel"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r7_h1_towel"
+      }
+    },
+    {
+      "case_id": "r7_h1_sheet",
+      "scene_id": "r7_h1_sheet",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_sheet",
+      "runner": "h1",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 15.53436829769565,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 6.442184148847824,
+      "hold_end": 7.942184148847824,
+      "stationary_windows": [
+        [
+          6.442184148847824,
+          7.942184148847824
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        15.53436829769565
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Explicit public initial state and original command keyframes. No solver history is restored."
+      ],
+      "transport_windows": [
+        [
+          3.442184148847824,
+          6.442184148847824
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.942184148847824,
+          15.53436829769565
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Two H1 hands \u2014 sheet",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "initial_state_fixture": "assets/h1/r7_h1_sheet.npz",
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:unitree_h1",
+          "fixture:r7_h1_sheet",
+          "procedural:sheet"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r7_h1_sheet"
+      }
+    },
+    {
+      "case_id": "r5_franka_trousers",
+      "scene_id": "r5_franka_trousers",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_trousers",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka grippers \u2014 trousers",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:trousers"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r5_franka_trousers"
+      }
+    },
+    {
+      "case_id": "r5_franka_dress",
+      "scene_id": "r5_franka_dress",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_dress",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30,
+        "self_contact_capacity": 512
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka grippers \u2014 dress",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "self_contact_capacity": 512,
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:dress"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r5_franka_dress"
+      }
+    },
+    {
+      "case_id": "r5_franka_tshirt_contact_v2",
+      "scene_id": "r5_franka_tshirt_contact_v2",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_tshirt",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka grippers \u2014 T-shirt",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:tshirt"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r5_franka_tshirt_contact_v2"
+      }
+    },
+    {
+      "case_id": "r5_franka_skirt_contact_v2",
+      "scene_id": "r5_franka_skirt_contact_v2",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_skirt",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka grippers \u2014 skirt",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:skirt"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r5_franka_skirt_contact_v2"
+      }
+    },
+    {
+      "case_id": "r5_franka_tote_contact_v2",
+      "scene_id": "r5_franka_tote_contact_v2",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_tote",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka gripper \u2014 tote handles",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:tote"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r5_franka_tote_contact_v2"
+      }
+    },
+    {
+      "case_id": "r5_franka_pouch_contact_v2",
+      "scene_id": "r5_franka_pouch_contact_v2",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_pouch",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka gripper \u2014 pouch edge",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:pouch"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r5_franka_pouch_contact_v2"
+      }
+    },
+    {
+      "case_id": "r7_h1_gusset_bag",
+      "scene_id": "r7_h1_gusset_bag",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_gusset_bag",
+      "runner": "h1",
+      "kwargs": {
+        "iterations": 100,
+        "substeps": 10
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 100,
+      "duration_s": 13.1,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 4.0,
+      "hold_end": 5.5,
+      "stationary_windows": [
+        [
+          4.0,
+          5.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        13.1
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Prepared body-rim contact. No acquisition or handle-loop release claim. Only the 100-iteration control is selected.",
+        "Explicit public initial state and original command keyframes. No solver history is restored."
+      ],
+      "transport_windows": [
+        [
+          0.5,
+          4.0
+        ]
+      ],
+      "place_release_windows": [
+        [
+          5.5,
+          13.1
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Two H1 hands \u2014 prepared gusset-bag rim",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "initial_state_fixture": "assets/h1/r7_h1_gusset_bag.npz",
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:unitree_h1",
+          "fixture:r7_h1_gusset_bag",
+          "procedural:gusset_bag"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r7_h1_gusset_bag"
+      }
+    },
+    {
+      "case_id": "j3_h1_jacket",
+      "scene_id": "j3_h1_jacket",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "j1_cached_jacket",
+      "runner": "h1",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 100
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 100,
+      "duration_s": 21.5,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 7.5,
+      "hold_end": 9.5,
+      "stationary_windows": [
+        [
+          7.5,
+          9.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        21.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Explicit public initial state and original command keyframes. No solver history is restored."
+      ],
+      "transport_windows": [
+        [
+          3.0,
+          7.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          9.5,
+          21.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Two H1 hands \u2014 native jacket",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "initial_state_fixture": "assets/h1/j3_h1_jacket.npz",
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:unitree_h1",
+          "fixture:j3_h1_jacket",
+          "bundled:cached_jacket_native.npz"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "j3_h1_jacket"
+      }
+    },
+    {
+      "case_id": "r6_franka_pad",
+      "scene_id": "r6_franka_pad",
+      "family": "Robot manipulation",
+      "collection_group": "Soft bodies",
+      "original_case": "r1_solid_pad",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka gripper \u2014 soft pad",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:pad"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r6_franka_pad"
+      }
+    },
+    {
+      "case_id": "r6_allegro_block",
+      "scene_id": "r6_allegro_block",
+      "family": "Robot manipulation",
+      "collection_group": "Soft bodies",
+      "original_case": "r1_solid_block",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Allegro hand \u2014 soft block",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:wonik_allegro",
+          "procedural:block"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r6_allegro_block"
+      }
+    },
+    {
+      "case_id": "r6_allegro_sphere",
+      "scene_id": "r6_allegro_sphere",
+      "family": "Robot manipulation",
+      "collection_group": "Soft bodies",
+      "original_case": "r1_solid_sphere",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Allegro hand \u2014 soft sphere",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:wonik_allegro",
+          "procedural:sphere"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r6_allegro_sphere"
+      }
+    },
+    {
+      "case_id": "r6_franka_capsule",
+      "scene_id": "r6_franka_capsule",
+      "family": "Robot manipulation",
+      "collection_group": "Soft bodies",
+      "original_case": "r1_solid_capsule",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 100
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 100,
+      "duration_s": 11.5,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka gripper \u2014 soft capsule",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:capsule"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r6_franka_capsule"
+      }
+    },
+    {
+      "case_id": "r6_franka_torus",
+      "scene_id": "r6_franka_torus",
+      "family": "Robot manipulation",
+      "collection_group": "Soft bodies",
+      "original_case": "r1_solid_torus",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka gripper \u2014 soft torus",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:torus"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r6_franka_torus"
+      }
+    },
+    {
+      "case_id": "r6_franka_branched",
+      "scene_id": "r6_franka_branched",
+      "family": "Robot manipulation",
+      "collection_group": "Soft bodies",
+      "original_case": "r1_solid_branched",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka gripper \u2014 branched solid",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:branched"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r6_franka_branched"
+      }
+    },
+    {
+      "case_id": "m3_franka_tote_empty",
+      "scene_id": "m3_franka_tote_empty",
+      "family": "Robot manipulation",
+      "collection_group": "Bags and payloads",
+      "original_case": "m1_tote_empty",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 40,
+        "closed_opening": 0.003,
+        "grip_z_offset": 0.0,
+        "grip_x": 0.04
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 40,
+      "duration_s": 9.0,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 4.0,
+      "hold_end": 5.5,
+      "stationary_windows": [
+        [
+          4.0,
+          5.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "2026-11-04: reduce nominal finger opening from 4 mm to 3 mm. Keep mesh, material, friction, wrist motion and solver settings fixed. Preserve the earlier 4 mm results as the historical baseline.",
+        "2026-11-04: lower both pinch centers by 5 mm to put nearby coarse handle vertices inside the finite fingertip faces. The 3 mm closure-only repeat lost one handle late in the hold. Preserve those trials. Keep material, friction, robot geometry, motion offsets and solver settings fixed.",
+        "2026-11-04: center original finite fingertip faces on symmetric handle vertices 459/513. Use 5 mm nominal opening. Actual TCP centers move 14.144662 mm outward and 2.503933 mm upward from the archived 4 mm baseline. Keep relative motion, material, friction and solver settings fixed. Preserve all prior grip trials. The inward 460/514 candidate failed the initial palm collision audit and was not simulated.",
+        "2026-11-04: restore the original pinch pose with 3 mm opening after the offset and centered-pose trials failed to retain both handles reliably. This setting retained whole-bag support through the 60 s hold in 2 of 2 recordings, but both handles remained held in only 1 of 2. This is limited observed evidence, not reliable grip qualification. Preserve all trial outputs and optional pose parameters."
+      ],
+      "transport_windows": [
+        [
+          0.5,
+          4.0
+        ]
+      ],
+      "place_release_windows": [
+        [
+          5.5,
+          9.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka grippers \u2014 empty shopping bag",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:tote"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "m3_franka_tote_empty"
+      }
+    },
+    {
+      "case_id": "m3_franka_tote_2",
+      "scene_id": "m3_franka_tote_2",
+      "family": "Robot manipulation",
+      "collection_group": "Bags and payloads",
+      "original_case": "m1_tote_2",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 40
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 40,
+      "duration_s": 9.0,
+      "material_path": "cloth_and_tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 4.0,
+      "hold_end": 5.5,
+      "stationary_windows": [
+        [
+          4.0,
+          5.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          0.5,
+          4.0
+        ]
+      ],
+      "place_release_windows": [
+        [
+          5.5,
+          9.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka grippers \u2014 shopping bag with two blocks",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:tote",
+          "procedural:block",
+          "procedural:sphere"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "m3_franka_tote_2"
+      }
+    },
+    {
+      "case_id": "m3_franka_tote_2_spheres",
+      "scene_id": "m3_franka_tote_2_spheres",
+      "family": "Robot manipulation",
+      "collection_group": "Bags and payloads",
+      "original_case": "m1_tote_2_spheres_substeps16",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 40
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 40,
+      "duration_s": 9.0,
+      "material_path": "cloth_and_tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 4.0,
+      "hold_end": 5.5,
+      "stationary_windows": [
+        [
+          4.0,
+          5.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          0.5,
+          4.0
+        ]
+      ],
+      "place_release_windows": [
+        [
+          5.5,
+          9.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka grippers \u2014 shopping bag with two spheres",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:sphere",
+          "procedural:block",
+          "procedural:sphere"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "m3_franka_tote_2_spheres"
+      }
+    },
+    {
+      "case_id": "m3_franka_gusset_4",
+      "scene_id": "m3_franka_gusset_4",
+      "family": "Robot manipulation",
+      "collection_group": "Bags and payloads",
+      "original_case": "m1_gusset_4",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 40
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 40,
+      "duration_s": 9.0,
+      "material_path": "cloth_and_tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 4.0,
+      "hold_end": 5.5,
+      "stationary_windows": [
+        [
+          4.0,
+          5.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          0.5,
+          4.0
+        ]
+      ],
+      "place_release_windows": [
+        [
+          5.5,
+          9.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka grippers \u2014 gusset bag with four payloads",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:gusset_bag",
+          "procedural:block",
+          "procedural:sphere"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "m3_franka_gusset_4"
+      }
+    },
+    {
+      "case_id": "m2_franka_pouch",
+      "scene_id": "m2_franka_pouch",
+      "family": "Robot manipulation",
+      "collection_group": "Bags and payloads",
+      "original_case": "m1_pouch_empty_substeps16",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 40,
+        "self_contact_capacity": 512
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 40,
+      "duration_s": 10.0,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 4.5,
+      "hold_end": 6.0,
+      "stationary_windows": [
+        [
+          4.5,
+          6.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        10.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          0.5,
+          4.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          6.0,
+          10.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka grippers \u2014 prepared pouch",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "self_contact_capacity": 512,
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:pouch"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "m2_franka_pouch"
+      }
+    },
+    {
+      "case_id": "c6_crossed_cables_10substeps",
+      "scene_id": "c6_crossed_cables",
+      "family": "Cables",
+      "collection_group": "Cables",
+      "original_case": "c6_crossed_cables",
+      "runner": "cable",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 8
+      },
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 8,
+      "duration_s": 9.0,
+      "material_path": "rod_bodies_only",
+      "elasticity_treatment_applicable": false,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          1.5,
+          2.5
+        ],
+        [
+          4.5,
+          9.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Particle tri/tet elasticity treatment is a structural no-op; keep rigid contact and rod-joint settings identical."
+      ],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Crossed cables \u2014 sliding contact",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:cable_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "c6_crossed_cables_10substeps"
+      }
+    },
+    {
+      "case_id": "c7_cylinder_wrap_10substeps",
+      "scene_id": "c7_cylinder_wrap",
+      "family": "Cables",
+      "collection_group": "Cables",
+      "original_case": "c7_cylinder_wrap",
+      "runner": "cable",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 8
+      },
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 8,
+      "duration_s": 9.0,
+      "material_path": "rod_bodies_only",
+      "elasticity_treatment_applicable": false,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          1.0,
+          3.0
+        ],
+        [
+          7.0,
+          9.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Particle tri/tet elasticity treatment is a structural no-op; keep rigid contact and rod-joint settings identical."
+      ],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Cable wrapped around a cylinder",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:cable_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "c7_cylinder_wrap_10substeps"
+      }
+    },
+    {
+      "case_id": "c9_bundle_squeeze_withdraw",
+      "scene_id": "c9_bundle_squeeze_withdraw",
+      "family": "Robot manipulation",
+      "collection_group": "Cables",
+      "original_case": "c8_bundle_squeeze",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 24
+      },
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 24,
+      "duration_s": 9.0,
+      "material_path": "rod_bodies_only",
+      "elasticity_treatment_applicable": false,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.5,
+          4.5
+        ],
+        [
+          8.5,
+          9.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Particle tri/tet elasticity treatment is a structural no-op; keep rigid contact and rod-joint settings identical.",
+        "Original mass-zero pulling endpoint is an analytic fixture. No free-grasp retention criterion."
+      ],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Cable bundle \u2014 squeeze and withdraw",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:cable_robot_retrofit.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "c9_bundle_squeeze_withdraw"
+      }
+    },
+    {
+      "case_id": "c9_pile_pickup",
+      "scene_id": "c9_pile_pickup",
+      "family": "Robot manipulation",
+      "collection_group": "Cables",
+      "original_case": "c8_pile_pickup",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 24
+      },
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 24,
+      "duration_s": 9.0,
+      "material_path": "rod_bodies_only",
+      "elasticity_treatment_applicable": false,
+      "initial_hold_prepared": false,
+      "hold_start": 4.5,
+      "hold_end": 6.5,
+      "stationary_windows": [
+        [
+          4.5,
+          6.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Particle tri/tet elasticity treatment is a structural no-op; keep rigid contact and rod-joint settings identical."
+      ],
+      "transport_windows": [
+        [
+          2.5,
+          4.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          6.5,
+          9.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka gripper \u2014 cable pile",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:cable_robot_retrofit.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "c9_pile_pickup"
+      }
+    },
+    {
+      "case_id": "s1_cloth_2_10substeps",
+      "scene_id": "s1_cloth_2",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s1_cloth_2",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 20
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 20,
+      "duration_s": 7.0,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.0,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Cloth stack (2 layers)",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:soft_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "s1_cloth_2_10substeps"
+      }
+    },
+    {
+      "case_id": "s1_cloth_5_10substeps",
+      "scene_id": "s1_cloth_5",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s1_cloth_5",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 20
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 20,
+      "duration_s": 7.0,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.0,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Cloth stack (5 layers)",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:soft_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "s1_cloth_5_10substeps"
+      }
+    },
+    {
+      "case_id": "s1_cloth_10_10substeps",
+      "scene_id": "s1_cloth_10",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s1_cloth_10",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 20
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 20,
+      "duration_s": 7.0,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.0,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Cloth stack (10 layers)",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:soft_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "s1_cloth_10_10substeps"
+      }
+    },
+    {
+      "case_id": "s1_pads_2_10substeps",
+      "scene_id": "s1_pads_2",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s1_pads_2",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 20
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 20,
+      "duration_s": 7.0,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.0,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Soft-pad stack (2 layers)",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:soft_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "s1_pads_2_10substeps"
+      }
+    },
+    {
+      "case_id": "s1_pads_5_10substeps",
+      "scene_id": "s1_pads_5",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s1_pads_5",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 20
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 20,
+      "duration_s": 7.0,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.0,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Soft-pad stack (5 layers)",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:soft_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "s1_pads_5_10substeps"
+      }
+    },
+    {
+      "case_id": "s2_impact",
+      "scene_id": "s2_impact",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s2_impact",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 8,
+        "iterations": 10
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 8,
+      "substep_dt_s": 0.004166666666666667,
+      "iterations": 10,
+      "duration_s": 7.0,
+      "material_path": "cloth_and_tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          1.2,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Soft solid impacting cloth",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:soft_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "s2_impact"
+      }
+    },
+    {
+      "case_id": "s2_lower",
+      "scene_id": "s2_lower",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s2_lower",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 8,
+        "iterations": 10
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 8,
+      "substep_dt_s": 0.004166666666666667,
+      "iterations": 10,
+      "duration_s": 7.0,
+      "material_path": "cloth_and_tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.3,
+          2.8
+        ],
+        [
+          3.0,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Soft solid lowered onto cloth",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:soft_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "s2_lower"
+      }
+    },
+    {
+      "case_id": "s3_cloth_10substeps",
+      "scene_id": "s3_cloth",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s3_cloth",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 10
+      },
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 10,
+      "duration_s": 0.6,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [],
+      "dynamic_window": [
+        0.0,
+        0.6
+      ],
+      "applicability": {
+        "task_completion": false,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": false,
+        "stationary_stability": false,
+        "dynamic_response": true,
+        "release": false,
+        "analytic_freefall": true,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": false,
+        "friction_separation": false,
+        "dynamic": true
+      },
+      "notes": [
+        "Uniform-gravity proximity control; negligible strain is expected, so this is not an elasticity stress test."
+      ],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": false,
+        "soft_stability": false,
+        "friction_separation": false,
+        "dynamic": true
+      },
+      "input_version": 1,
+      "title": "Free-falling cloth",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:soft_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "s3_cloth_10substeps"
+      }
+    },
+    {
+      "case_id": "s3_pads_10substeps",
+      "scene_id": "s3_pads",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s3_pads",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 10
+      },
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 10,
+      "duration_s": 0.6,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [],
+      "dynamic_window": [
+        0.0,
+        0.6
+      ],
+      "applicability": {
+        "task_completion": false,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": false,
+        "stationary_stability": false,
+        "dynamic_response": true,
+        "release": false,
+        "analytic_freefall": true,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": false,
+        "friction_separation": false,
+        "dynamic": true
+      },
+      "notes": [
+        "Uniform-gravity proximity control; negligible strain is expected, so this is not an elasticity stress test."
+      ],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": false,
+        "soft_stability": false,
+        "friction_separation": false,
+        "dynamic": true
+      },
+      "input_version": 1,
+      "title": "Free-falling soft pad",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:soft_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "s3_pads_10substeps"
+      }
+    },
+    {
+      "case_id": "s4_pads",
+      "scene_id": "s4_pads",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s4_pads",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 8,
+        "iterations": 10
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 8,
+      "substep_dt_s": 0.004166666666666667,
+      "iterations": 10,
+      "duration_s": 9.0,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          1.8,
+          3.0
+        ],
+        [
+          4.4,
+          5.3
+        ],
+        [
+          7.5,
+          9.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Soft pads \u2014 fixed sliding displacement",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:soft_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "s4_pads"
+      }
+    },
+    {
+      "case_id": "s5_pack_4",
+      "scene_id": "s5_pack_4",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s5_pack_4",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 8,
+        "iterations": 10
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 8,
+      "substep_dt_s": 0.004166666666666667,
+      "iterations": 10,
+      "duration_s": 8.0,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.5,
+          4.5
+        ],
+        [
+          6.5,
+          8.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        8.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Soft-solid packing (4 objects)",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:soft_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "s5_pack_4"
+      }
+    },
+    {
+      "case_id": "s5_pack_8",
+      "scene_id": "s5_pack_8",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s5_pack_8",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 8,
+        "iterations": 10
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 8,
+      "substep_dt_s": 0.004166666666666667,
+      "iterations": 10,
+      "duration_s": 8.0,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.5,
+          4.5
+        ],
+        [
+          6.5,
+          8.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        8.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Soft-solid packing (8 objects)",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:soft_scenes.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "s5_pack_8"
+      }
+    },
+    {
+      "case_id": "r5_franka_towel_contact_v2",
+      "scene_id": "r5_franka_towel_contact_v2",
+      "family": "Robot manipulation",
+      "collection_group": "Robot matrix exemplar",
+      "original_case": null,
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Explicit Franka-matrix exemplar; H1 towel supersedes it only in the original collection row."
+      ],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka grippers \u2014 towel",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "self_contact_capacity": 512,
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "procedural:towel"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r5_franka_towel_contact_v2"
+      }
+    },
+    {
+      "case_id": "r2_franka_duck",
+      "scene_id": "r2_franka_duck",
+      "family": "Robot manipulation",
+      "collection_group": "Robot matrix exemplar",
+      "original_case": null,
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 5
+      },
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 5,
+      "duration_s": 16.2,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 9.0,
+      "hold_end": 11.0,
+      "stationary_windows": [
+        [
+          9.0,
+          11.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        16.2
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Shipped example dependency; self-contact remains disabled. Preserve Featherstone/IK motion and nested soft_solver."
+      ],
+      "transport_windows": [
+        [
+          7.0,
+          9.0
+        ]
+      ],
+      "place_release_windows": [
+        [
+          11.0,
+          16.2
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka arm \u2014 rubber duck",
+      "support": {
+        "status": "unsupported",
+        "reason": "Requires a second Featherstone dynamics solver and IK coupling; this suite runs unmodified VBD only."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "external:manipulation_objects/rubber_duck"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r2_franka_duck"
+      }
+    },
+    {
+      "case_id": "m2_franka_cable",
+      "scene_id": "m2_franka_cable",
+      "family": "Robot manipulation",
+      "collection_group": "Robot matrix exemplar",
+      "original_case": null,
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 24
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 24,
+      "duration_s": 11.0,
+      "material_path": "rod_bodies_only",
+      "elasticity_treatment_applicable": false,
+      "initial_hold_prepared": false,
+      "hold_start": 4.8,
+      "hold_end": 6.8,
+      "stationary_windows": [
+        [
+          4.8,
+          6.8
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Particle tri/tet elasticity treatment is a structural no-op; keep rigid contact and rod-joint settings identical."
+      ],
+      "transport_windows": [
+        [
+          1.6,
+          4.8
+        ]
+      ],
+      "place_release_windows": [
+        [
+          6.8,
+          11.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Franka gripper \u2014 cable",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:franka_emika_panda",
+          "builder:robot_cable_scene.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "m2_franka_cable"
+      }
+    },
+    {
+      "case_id": "r5_allegro_towel",
+      "scene_id": "r5_allegro_towel",
+      "family": "Robot manipulation",
+      "collection_group": "Robot matrix exemplar",
+      "original_case": null,
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Allegro hand \u2014 prepared towel",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:wonik_allegro",
+          "procedural:towel"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r5_allegro_towel"
+      }
+    },
+    {
+      "case_id": "r3_allegro_ground_sphere",
+      "scene_id": "r3_allegro_ground_sphere",
+      "family": "Robot manipulation",
+      "collection_group": "Robot matrix exemplar",
+      "original_case": null,
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 15
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 15,
+      "duration_s": 10.0,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 6.6,
+      "hold_end": 7.5,
+      "stationary_windows": [
+        [
+          6.6,
+          7.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        10.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          4.0,
+          6.6
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.5,
+          10.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Allegro hand \u2014 sphere on a table",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:wonik_allegro",
+          "procedural:sphere"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "r3_allegro_ground_sphere"
+      }
+    },
+    {
+      "case_id": "m2_allegro_cable",
+      "scene_id": "m2_allegro_cable",
+      "family": "Robot manipulation",
+      "collection_group": "Robot matrix exemplar",
+      "original_case": null,
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 24
+      },
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 24,
+      "duration_s": 11.0,
+      "material_path": "rod_bodies_only",
+      "elasticity_treatment_applicable": false,
+      "initial_hold_prepared": false,
+      "hold_start": 4.8,
+      "hold_end": 6.8,
+      "stationary_windows": [
+        [
+          4.8,
+          6.8
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Particle tri/tet elasticity treatment is a structural no-op; keep rigid contact and rod-joint settings identical."
+      ],
+      "transport_windows": [
+        [
+          1.6,
+          4.8
+        ]
+      ],
+      "place_release_windows": [
+        [
+          6.8,
+          11.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Allegro hand \u2014 cable",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "external:wonik_allegro",
+          "builder:robot_cable_scene.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "m2_allegro_cable"
+      }
+    },
+    {
+      "case_id": "s4_poker_cards_no_ball",
+      "scene_id": "s4_poker_cards_no_ball",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "cloth_poker_cards",
+      "runner": "poker",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 10
+      },
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666668,
+      "iterations": 10,
+      "duration_s": 65.0,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          5.0,
+          65.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        65.0
+      ],
+      "applicability": {
+        "task_completion": false,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [
+        "Based on the shipped cloth_poker_cards example at upstream main 351b9d9f.",
+        "The authored 20 substeps become 10 to meet the benchmark limit.",
+        "World-fixed platform preserves geometry and enables static-support overlap measurement.",
+        "Five seconds is a fixed settling allowance, not an equilibrium claim.",
+        "Keep this passive scene outside manipulation task-success counts."
+      ],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "input_version": 1,
+      "title": "Poker-card stack without a moving ball",
+      "support": {
+        "status": "supported",
+        "reason": "Public ModelBuilder, State, prescribed inputs and standard SolverVBD; construction validation is reported separately."
+      },
+      "assets": {
+        "manifest": "assets/manifest.json",
+        "references": [
+          "builder:poker_cards_scene.py"
+        ]
+      },
+      "source_recipe": {
+        "repository": "https://github.com/AnkaChan/newton",
+        "revision": "50045b89b546a9a791812fa8d22413e04be4f416",
+        "catalog_path": "experiments/collision_benchmark/cases.json",
+        "case_id": "s4_poker_cards_no_ball"
+      }
+    }
+  ]
+}
