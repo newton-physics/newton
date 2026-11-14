@@ -5653,6 +5653,45 @@ def _angular_friction_slows_rotation_without_sliding(test, device):
         test.assertLess(resisted, 0.7 * unresisted, msg=channel)
 
 
+def _rolling_friction_stores_no_torsional_couple(test, device):
+    """Verify a spin about a tilted contact normal leaves a rolling-only multiplier tangential."""
+    normal = np.ones(3) / math.sqrt(3.0)
+    radius = 0.5
+    mass = 500.0
+    ke = 1.0e7
+    mu_rolling = 1.0e-6
+    builder = newton.ModelBuilder(gravity=tuple(-9.81 * normal))
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, ke=ke, kd=0.0, mu=0.0, mu_torsional=0.0, mu_rolling=mu_rolling)
+    builder.add_shape_plane(plane=(*normal, 0.0), width=0.0, length=0.0, cfg=cfg)
+    body = builder.add_body(
+        xform=wp.transform(wp.vec3(*(normal * (radius - mass * 9.81 / ke))), wp.quat_identity()),
+        mass=mass,
+        inertia=wp.mat33(50.0 * np.eye(3)),
+        lock_inertia=True,
+    )
+    builder.add_shape_sphere(body, radius=radius, cfg=cfg)
+    builder.color()
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverVBD(model, iterations=2, rigid_compliant_alm=True)
+    state_in, state_out = model.state(), model.state()
+    velocity = state_in.body_qd.numpy()
+    velocity[body, 3:] = 20.0 * normal
+    state_in.body_qd.assign(velocity)
+
+    # The rolling rho is about 2e7 N*m/rad here, so a float32 residual of the spin would fill the limit.
+    for _ in range(4):
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, None, contacts, 1.0 / 600.0)
+        state_in, state_out = state_out, state_in
+        contact_normal = contacts.rigid_contact_normal.numpy()[0]
+        rolling_limit = mu_rolling * float(np.dot(solver.body_body_contact_lambda.numpy()[0], contact_normal))
+        test.assertGreater(rolling_limit, 0.0)
+        couple = solver.body_body_contact_lambda_angular.numpy()[0]
+        test.assertLess(abs(float(np.dot(couple, contact_normal))), 1.0e-3 * rolling_limit)
+
+
 def _torsional_friction_holds_against_stiff_drive(test, device):
     """Verify torsional friction resists a sub-limit articulated drive."""
     radius = 0.2
@@ -8056,6 +8095,12 @@ add_function_test(
     TestSolverVBD,
     "test_angular_friction_slows_rotation_without_sliding",
     _angular_friction_slows_rotation_without_sliding,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_rolling_friction_stores_no_torsional_couple",
+    _rolling_friction_stores_no_torsional_couple,
     devices=devices,
 )
 add_function_test(

@@ -1171,7 +1171,11 @@ def _solve_friction_disk_root(vh: float, vl: float, bound: float, ratio: float, 
 
 @wp.func
 def _project_friction_update_force_only(lam: wp.vec3, displacement: wp.vec3, n: wp.vec3, R: wp.mat22, limit: float):
-    """Project a dual force, using radial arithmetic for an exactly isotropic response."""
+    """Project a dual force, using radial arithmetic for an exactly isotropic response.
+
+    Callers remove normal displacement first; the isotropic branch projects it again before
+    scaling by rho to suppress residual normal roundoff.
+    """
     if limit <= 0.0:
         return wp.vec3(0.0)
     if R[0, 0] == R[0, 1]:
@@ -7742,10 +7746,13 @@ def create_update_duals_body_body_contacts(
                 lam_angular_new = wp.vec3(0.0)
                 if normal_load_ang > 0.0:
                     ang_disp = -_relative_angular_displacement(body_id_0, body_id_1, body_q, body_q_prev)
+                    ang_disp_n = wp.dot(ang_disp, n)
                     tor_lim = mu_torsional * normal_load_ang
-                    tor_trial = wp.dot(contact_lambda_angular[idx], n) + torsional_rho * wp.dot(ang_disp, n)
+                    tor_trial = wp.dot(contact_lambda_angular[idx], n) + torsional_rho * ang_disp_n
+                    # Remove the spin before the rolling projection scales its float32 residual by rho.
+                    rol_disp = ang_disp - n * ang_disp_n
                     rol_torque = _project_friction_update_force_only(
-                        contact_lambda_angular[idx], ang_disp, n, rolling_rho, mu_rolling * normal_load_ang
+                        contact_lambda_angular[idx], rol_disp, n, rolling_rho, mu_rolling * normal_load_ang
                     )
                     lam_angular_new = n * wp.clamp(tor_trial, -tor_lim, tor_lim) + rol_torque
                 if wp.static(refresh_angular_conditioning) and refresh_contact_angular_conditioning == 1:
