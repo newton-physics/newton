@@ -812,7 +812,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     body_dynamics_disabled_indices = wp.array(body_dynamics_disabled, dtype=int, device=device)
                     view.disable_body_dynamics(body_dynamics_disabled_indices)
                 if proxy_body_keep:
-                    view.mark_proxy_bodies(wp.array(sorted(proxy_body_keep), dtype=int, device=device))
+                    self._mark_view_proxy_bodies(view, wp.array(sorted(proxy_body_keep), dtype=int, device=device))
 
             if any_particle_owner:
                 proxy_particle_keep = self._entry_proxy_particle_keep_indices(cfg.name)
@@ -3847,7 +3847,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
             if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
                 self._refresh_body_inertial_view_overrides(entry)
-                entry.view.mark_proxy_bodies(entry.proxy_body_local_indices)
+                self._mark_view_proxy_bodies(entry.view, entry.proxy_body_local_indices)
 
             if flags & int(
                 ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
@@ -3909,6 +3909,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if flags & int(ModelFlags.TENDON_PROPERTIES) and "tendon" in attribute.name:
             return True
         return bool(flags & int(ModelFlags.ACTUATOR_PROPERTIES) and "actuator" in attribute.name)
+
+    def _mark_view_proxy_bodies(self, view: ModelView, body_indices: wp.array[int]) -> None:
+        """Mark proxy bodies in an entry view."""
+        view.mark_proxy_bodies(body_indices)
 
     def _refresh_body_inertial_view_overrides(self, entry: SolverEntry) -> None:
         """Refresh base ownership masks derived from parent body inertia."""

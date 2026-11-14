@@ -1079,7 +1079,7 @@ def test_world_reset_keeps_support_history_read_by_a_global_shape(test, device):
 
 
 def test_property_notification_wakes_only_changed_islands(test, device):
-    """Wake the island whose mass changed, and nothing for a notification without a change."""
+    """Wake the island whose mass or gravity scale changed, and nothing for a notification without a change."""
     model, pipeline, solver, states = _two_world_boxes(device)
     _advance(pipeline, solver, states, model.control(), 400)
     np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
@@ -1092,6 +1092,10 @@ def test_property_notification_wakes_only_changed_islands(test, device):
     solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
     _advance(pipeline, solver, states, model.control(), 1)
     np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 0])
+    model.body_gravity_scale.assign([1.0, 0.0])
+    solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+    _advance(pipeline, solver, states, model.control(), 1)
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 1])
 
 
 def test_frozen_patch_carry_matches_rebuild(test, device):

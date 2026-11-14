@@ -4441,6 +4441,58 @@ def Xform "NotPSD" (
         self.assertTrue(np.any(np.isclose(gravcomp, 0.0)))
 
     @requires("pxr.Usd")
+    def test_import_usd_gravity_scale(self):
+        """Import PhysX gravity exclusions as body gravity scales, leaving native gravcomp unchanged."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        authored = {
+            "Disabled": {"physxRigidBody:disableGravity": True},
+            "Enabled": {"physxRigidBody:disableGravity": False},
+            "Gravcomp": {"physxRigidBody:disableGravity": True, "mjc:gravcomp": 0.5},
+            "Default": {},
+        }
+        for i, (name, attributes) in enumerate(authored.items()):
+            prim = stage.DefinePrim(f"/{name}", "Xform")
+            prim.CreateAttribute("xformOp:translate", Sdf.ValueTypeNames.Double3).Set((2.0 * i, 0.0, 0.0))
+            prim.CreateAttribute("xformOpOrder", Sdf.ValueTypeNames.TokenArray).Set(["xformOp:translate"])
+            UsdPhysics.RigidBodyAPI.Apply(prim)
+            mass = UsdPhysics.MassAPI.Apply(prim)
+            mass.CreateMassAttr(1.0)
+            mass.CreateDiagonalInertiaAttr((0.01, 0.01, 0.01))
+            for attribute, value in attributes.items():
+                value_type = Sdf.ValueTypeNames.Bool if isinstance(value, bool) else Sdf.ValueTypeNames.Float
+                prim.CreateAttribute(attribute, value_type).Set(value)
+
+        resolvers = {
+            "newton": (None, {}),
+            "newton_physx": (
+                [newton.usd.SchemaResolverNewton(), newton.usd.SchemaResolverPhysx()],
+                {"Disabled": 0.0, "Gravcomp": 0.0},
+            ),
+        }
+        for case, (schema_resolvers, expected) in resolvers.items():
+            with self.subTest(resolvers=case):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(stage, schema_resolvers=schema_resolvers)
+                model = builder.finalize(device="cpu")
+                scales = dict(zip(model.body_label, model.body_gravity_scale.numpy(), strict=True))
+                gravcomp = dict(zip(model.body_label, model.mujoco.gravcomp.numpy(), strict=True))
+                for name in authored:
+                    self.assertEqual(scales[f"/{name}"], expected.get(name, 1.0), name)
+                    self.assertEqual(gravcomp[f"/{name}"], 0.5 if name == "Gravcomp" else 0.0, name)
+
+                # The imported scales reach the dynamics: one Featherstone step from rest.
+                state_0, state_1 = model.state(), model.state()
+                newton.solvers.SolverFeatherstone(model).step(state_0, state_1, None, None, 0.01)
+                gravity = model.gravity.numpy()[0]
+                for body, label in enumerate(model.body_label):
+                    expected_velocity = 0.01 * expected.get(label[1:], 1.0) * gravity
+                    np.testing.assert_allclose(state_1.body_qd.numpy()[body, :3], expected_velocity, atol=1.0e-5)
+
+    @requires("pxr.Usd")
     def test_joint_stiffness_damping(self):
         """Verify joint stiffness and damping are parsed correctly from USD."""
         from pxr import Usd

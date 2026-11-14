@@ -531,6 +531,7 @@ class Model:
         "body_mass": AttributeSpec(AttributeFrequency.BODY),
         "body_inv_mass": AttributeSpec(AttributeFrequency.BODY),
         "body_flags": AttributeSpec(AttributeFrequency.BODY),
+        "body_gravity_scale": AttributeSpec(AttributeFrequency.BODY),
         "body_f": AttributeSpec(AttributeFrequency.BODY),
         "body_label": AttributeSpec(AttributeFrequency.BODY),
         "body_world": AttributeSpec(AttributeFrequency.BODY, references=AttributeFrequency.WORLD),
@@ -1415,6 +1416,19 @@ class Model:
         """Rigid body inverse mass [1/kg], shape [body_count], float."""
         self.body_flags: wp.array[wp.int32] | None = None
         """Rigid body flags (:class:`~newton.BodyFlags`), shape [body_count], int."""
+        self.body_gravity_scale: wp.array[wp.float32] | None = None
+        """Scale of the gravity force on each rigid body [dimensionless], shape [body_count], float.
+
+        The gravity force on body ``b`` is ``body_gravity_scale[b] * body_mass[b] * gravity[body_world[b]]``:
+        ``1`` is normal gravity, ``0`` disables it, and any other finite value scales it.
+        :class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverSteel` and the inverse
+        dynamics functions remove the force from the body, so joint reactions such as ``body_parent_f``
+        exclude the removed weight. :class:`~newton.solvers.SolverMuJoCo` compensates it with MuJoCo's
+        gravity compensation, with the limitations listed there. The other rigid-body solvers raise
+        :class:`NotImplementedError` when a dynamic body they integrate has a scale other than ``1``. After
+        changing values in place, call ``notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)``
+        outside CUDA graph capture.
+        """
         self.body_label: list[str] = []
         """Rigid body labels, shape [body_count], str."""
         self.body_world: wp.array[wp.int32] | None = None

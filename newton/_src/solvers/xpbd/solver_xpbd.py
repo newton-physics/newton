@@ -198,6 +198,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             raise ValueError("SolverXPBD does not support JointType.ROD joints.")
 
         super().__init__(model=model)
+        self._validate_body_gravity_scale(applies_scale=False)
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         module_options = {
             "deterministic": effective_deterministic,
@@ -301,6 +302,11 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which model properties
                 changed.
         """
+        # A kinematic body made dynamic brings its scale into the dynamics.
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+            self._validate_body_gravity_scale(
+                applies_scale=False, scale_changed=bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES)
+            )
         self._ensure_restitution_module_options()
         self._apply_module_options()
         if flags & ModelFlags.TENDON_PROPERTIES:
