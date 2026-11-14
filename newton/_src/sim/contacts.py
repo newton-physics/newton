@@ -598,9 +598,9 @@ class Contacts:
 
         Fixed when :meth:`newton.CollisionPipeline.contacts` allocates the buffer
         from a pipeline with body-pair reduction whose scene has primitive or
-        convex contact pairs. Only such a pipeline can
-        collide into it, and solvers that are not validated for reduced contacts
-        reject it, eagerly or under CUDA graph capture alike.
+        convex contact pairs. The stamp records pipeline ownership and selection;
+        the kept rows use the ordinary contact layout accepted by built-in
+        Newton-contact consumers, eagerly and under CUDA graph capture alike.
 
         .. experimental::
         """

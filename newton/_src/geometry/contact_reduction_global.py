@@ -79,6 +79,7 @@ from .contact_reduction import (
     NUM_VOXEL_DEPTH_SLOTS,
     compute_voxel_index,
     float_flip,
+    float_unflip,
     get_slot,
     get_spatial_direction_2d,
     project_point_to_plane,
@@ -907,15 +908,21 @@ class GroupReductionConfig:
 
     Attributes:
         shape_group: Per-shape reduction-group ids, each at most ``MAX_GROUP_ID``.
-        cell_size: Spatial cell edge [m] on a normal bin's face plane.
+        cell_size: Legacy spatial cell edge [m], or zero for normalized coverage.
         hashtable_capacity: Requested group-table capacity (rounded up to a power of two).
         staging_capacity: Raw primitive and convex contacts staged per frame before reduction.
+        group_lower: Fixed body-local group AABB lower bounds for automatic coverage.
+        group_upper: Fixed body-local group AABB upper bounds for automatic coverage.
+        group_resolution: Normalized voxel resolutions; zero denotes no finite reference grid.
     """
 
     shape_group: Any
     cell_size: float
     hashtable_capacity: int
     staging_capacity: int
+    group_lower: Any = None
+    group_upper: Any = None
+    group_resolution: Any = None
 
 
 class GlobalContactReducer:
@@ -1121,6 +1128,9 @@ class GlobalContactReducer:
         if group_reduction is not None:
             self.shape_group = wp.array(group_reduction.shape_group, dtype=wp.int32, device=device)
             self.cell_size = float(group_reduction.cell_size)
+            self.group_lower = wp.array(group_reduction.group_lower, dtype=wp.vec3, device=device)
+            self.group_upper = wp.array(group_reduction.group_upper, dtype=wp.vec3, device=device)
+            self.group_resolution = wp.array(group_reduction.group_resolution, dtype=wp.vec3i, device=device)
             self.group_contact_entry = wp.zeros(buffer_size, dtype=wp.int32, device=device)
             self.group_contact_gap = wp.zeros(buffer_size, dtype=wp.float32, device=device)
             self.group_contact_pos2d = wp.zeros(buffer_size, dtype=wp.vec2, device=device)
@@ -1246,6 +1256,9 @@ class GlobalContactReducer:
         data.shape_body = shape_body
         data.body_q = body_q
         data.cell_size = self.cell_size
+        data.group_lower = self.group_lower
+        data.group_upper = self.group_upper
+        data.group_resolution = self.group_resolution
         data.contact_entry = self.group_contact_entry
         data.contact_gap = self.group_contact_gap
         data.contact_pos2d = self.group_contact_pos2d
@@ -2293,7 +2306,11 @@ GROUP_CELL_COORD_BITS = 6
 GROUP_CELL_COORD_MAX = (1 << (GROUP_CELL_COORD_BITS - 1)) - 1
 GROUP_DEEPEST_SLOT = NUM_SPATIAL_DIRECTIONS
 GROUP_TOUCHING_SLOT_OFFSET = NUM_SPATIAL_DIRECTIONS + 1
-GROUP_VALUES_PER_KEY = 2 * NUM_SPATIAL_DIRECTIONS + 1
+GROUP_SHALLOWEST_SLOT = 2 * NUM_SPATIAL_DIRECTIONS + 1
+GROUP_VALUES_PER_KEY = GROUP_SHALLOWEST_SLOT + 1
+# Relative to the finite collider group's extent, above float32 reconstruction
+# noise in flat-patch probes. Varying-depth cells conservatively keep their rows.
+GROUP_DEPTH_TOLERANCE = 1.0e-5
 # A probe chain this long means the table is saturated for this frame; the whole
 # frame then keeps every contact rather than let scheduling pick which groups fit.
 GROUP_PROBE_BUDGET = 128
@@ -2301,6 +2318,7 @@ GROUP_PROBE_BUDGET = 128
 # Staged-contact markers in ``GroupReductionData.contact_entry``.
 GROUP_ENTRY_REJECTED = -2  # beyond the contact gap: never written
 GROUP_ENTRY_UNREGISTERED = -1  # probe budget exhausted: kept by the frame fallback
+GROUP_ENTRY_PASSTHROUGH = -3  # no finite reference grid or outside its fixed bounds
 
 # ``GroupReductionData.frame_state`` fields; ``finish_group_frame_kernel`` zeroes them for the next frame.
 GROUP_FRAME_FALLBACK = 0
@@ -2311,7 +2329,8 @@ GROUP_FRAME_OUTPUT_BASE = 2
 GROUP_FRAME_PROBE_FAILURES = 3
 GROUP_FRAME_CELL_CLAMPS = 4
 GROUP_FRAME_OUTRANKED = 5
-GROUP_FRAME_STATE_COUNT = 6
+GROUP_FRAME_COVERAGE_FALLBACK = 6
+GROUP_FRAME_STATE_COUNT = 7
 
 # ``GroupReductionData.stats`` (int64, whole-run) fields.
 GROUP_STAT_TOTAL_FRAMES = 0
@@ -2325,7 +2344,8 @@ GROUP_STAT_FALLBACK_FRAMES = 7
 GROUP_STAT_CELL_CLAMP_EVENTS = 8
 GROUP_STAT_OUTRANKED_DISCARDS = 9
 GROUP_STAT_INPUT_OVERFLOW_FRAMES = 10
-GROUP_STAT_COUNT = 11
+GROUP_STAT_COVERAGE_FALLBACK_CONTACTS = 11
+GROUP_STAT_COUNT = 12
 
 
 @wp.struct
@@ -2336,6 +2356,9 @@ class GroupReductionData:
     shape_body: wp.array[wp.int32]
     body_q: wp.array[wp.transform]
     cell_size: float
+    group_lower: wp.array[wp.vec3]
+    group_upper: wp.array[wp.vec3]
+    group_resolution: wp.array[wp.vec3i]
     # Indexed by staged contact ID.
     contact_entry: wp.array[wp.int32]
     contact_gap: wp.array[wp.float32]
@@ -2381,8 +2404,10 @@ def _group_pos_key(pos_2d: wp.vec2, cell_size: float) -> wp.uint64:
 
 
 @wp.func
-def _group_value(score: float, pos_key: wp.uint64) -> wp.uint64:
+def _group_value(score: float, pos_key: wp.uint64, normalized: bool = False) -> wp.uint64:
     """Pack ``(score, position key)`` so ``atomic_max`` ranks by score, then position."""
+    if normalized:
+        score = wp.round(score * 1048576.0) / 1048576.0
     return (wp.uint64(float_flip(score)) << wp.uint64(31)) | pos_key
 
 
@@ -2544,12 +2569,68 @@ def _register_group_contact(
 
     bin_id = get_slot(n_group)
     pos_2d = project_point_to_plane(bin_id, center - ref)
-    # Round to nearest so the reference body's origin is a cell center, not a corner.
+    # Explicit cell sizes retain the legacy projected grid. Automatic coverage
+    # uses the same fixed-budget body-local voxel mapping as SDF reduction.
     bound = float(GROUP_CELL_COORD_MAX + 1)
-    cx = wp.int32(wp.clamp(wp.floor(pos_2d[0] / group_data.cell_size + 0.5), -bound, bound))
-    cy = wp.int32(wp.clamp(wp.floor(pos_2d[1] / group_data.cell_size + 0.5), -bound, bound))
-    if wp.abs(cx) > GROUP_CELL_COORD_MAX or wp.abs(cy) > GROUP_CELL_COORD_MAX:
-        wp.atomic_add(group_data.frame_state, wp.static(GROUP_FRAME_CELL_CLAMPS), 1)
+    cx = int(0)
+    cy = int(0)
+    if group_data.cell_size > 0.0:
+        cx = wp.int32(wp.clamp(wp.floor(pos_2d[0] / group_data.cell_size + 0.5), -bound, bound))
+        cy = wp.int32(wp.clamp(wp.floor(pos_2d[1] / group_data.cell_size + 0.5), -bound, bound))
+        if wp.abs(cx) > GROUP_CELL_COORD_MAX or wp.abs(cy) > GROUP_CELL_COORD_MAX:
+            wp.atomic_add(group_data.frame_state, wp.static(GROUP_FRAME_CELL_CLAMPS), 1)
+    else:
+        reference_group = int(-1)
+        reference_body = int(-1)
+        extent = float(wp.inf)
+        # The smaller finite dynamic group supplies the grid, never an infinite
+        # ground plane. Group order makes equal-size choices deterministic.
+        for endpoint in range(2):
+            group = ga
+            if endpoint == 1:
+                group = gb
+            body = b0
+            if group != g0:
+                body = b1
+            if body >= 0 and group_data.group_resolution[group][0] > 0:
+                size = group_data.group_upper[group] - group_data.group_lower[group]
+                candidate_extent = wp.max(size[0], wp.max(size[1], size[2]))
+                if candidate_extent > 0.0 and candidate_extent < extent:
+                    reference_group = group
+                    reference_body = body
+                    extent = candidate_extent
+        if reference_group < 0:
+            group_data.contact_entry[contact_id] = wp.static(GROUP_ENTRY_PASSTHROUGH)
+            return
+        pose = group_data.body_q[reference_body]
+        # Bin the reference body's surface witness, rather than the midpoint
+        # in empty space between speculative contacts. Otherwise a hovering
+        # foot falls outside its own bounds and cannot be reduced at all.
+        witness = center - n * (0.5 * gap)
+        if reference_body == b1:
+            witness = center + n * (0.5 * gap)
+        local = wp.transform_point(wp.transform_inverse(pose), witness)
+        lower = group_data.group_lower[reference_group]
+        upper = group_data.group_upper[reference_group]
+        relative = (local - 0.5 * (lower + upper)) / extent
+        tolerance = wp.static(GROUP_DEPTH_TOLERANCE) * extent
+        # Speculative witnesses may lie outside the fixed body bounds. Keeping
+        # them is conservative and avoids clamping distinct regions together.
+        if (wp.min(local - lower) < -tolerance) or (wp.min(upper - local) < -tolerance):
+            group_data.contact_entry[contact_id] = wp.static(GROUP_ENTRY_PASSTHROUGH)
+            return
+        voxel = compute_voxel_index(local, lower, upper, group_data.group_resolution[reference_group])
+        cx = voxel % 32
+        cy = voxel / 32
+        pos_2d = project_point_to_plane(bin_id, wp.transform_vector(pose, relative))
+        # Match the position-key quantum before tie-breaking coincident contacts.
+        pos_2d = wp.vec2(wp.round(pos_2d[0] * 16384.0), wp.round(pos_2d[1] * 16384.0)) / 16384.0
+        gap = gap / extent
+        # Keep near-contact and speculative layers independent, as the SDF
+        # reducer does for its support and clearance representatives. Otherwise
+        # a remote speculative layer forces a flat touching patch to pass through.
+        if gap > wp.static(GROUP_DEPTH_TOLERANCE):
+            cy = cy + 4
     key = make_group_contact_key(ga, gb, bin_id, cx, cy)
     entry_idx = _group_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
     group_data.contact_entry[contact_id] = entry_idx
@@ -2561,10 +2642,16 @@ def _register_group_contact(
     group_data.contact_pos2d[contact_id] = pos_2d
 
     values = reducer_data.ht_values
-    pos_key = _group_pos_key(pos_2d, group_data.cell_size)
-    _group_update_slot(entry_idx, wp.static(GROUP_DEEPEST_SLOT), _group_value(-gap, pos_key), values)
+    key_scale = group_data.cell_size
+    if key_scale == 0.0:
+        key_scale = 2.0
+    pos_key = _group_pos_key(pos_2d, key_scale)
+    normalized = group_data.cell_size == 0.0
+    _group_update_slot(entry_idx, wp.static(GROUP_DEEPEST_SLOT), _group_value(-gap, pos_key, normalized), values)
+    if group_data.cell_size == 0.0:
+        _group_update_slot(entry_idx, wp.static(GROUP_SHALLOWEST_SLOT), _group_value(gap, pos_key, normalized), values)
     for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
-        value = _group_value(wp.dot(pos_2d, get_spatial_direction_2d(dir_i)), pos_key)
+        value = _group_value(wp.dot(pos_2d, get_spatial_direction_2d(dir_i)), pos_key, normalized)
         _group_update_slot(entry_idx, dir_i, value, values)
         if gap <= 0.0:
             _group_update_slot(entry_idx, wp.static(GROUP_TOUCHING_SLOT_OFFSET) + dir_i, value, values)
@@ -2622,13 +2709,25 @@ def _group_contact_won(
     values = reducer_data.ht_values
     gap = group_data.contact_gap[contact_id]
     pos_2d = group_data.contact_pos2d[contact_id]
-    pos_key = _group_pos_key(pos_2d, group_data.cell_size)
+    key_scale = group_data.cell_size
+    if key_scale == 0.0:
+        key_scale = 2.0
+    pos_key = _group_pos_key(pos_2d, key_scale)
     deepest = values[_group_slot(entry_idx, wp.static(GROUP_DEEPEST_SLOT))]
-    my_depth = _group_value(-gap, pos_key)
+    if group_data.cell_size == 0.0:
+        shallowest = values[_group_slot(entry_idx, wp.static(GROUP_SHALLOWEST_SLOT))]
+        if shallowest != wp.uint64(0):
+            min_gap = -float_unflip(wp.uint32(deepest >> wp.uint64(31)))
+            max_gap = float_unflip(wp.uint32(shallowest >> wp.uint64(31)))
+            if max_gap - min_gap > wp.static(GROUP_DEPTH_TOLERANCE):
+                wp.atomic_add(group_data.frame_state, wp.static(GROUP_FRAME_COVERAGE_FALLBACK), 1)
+                return True
+    normalized = group_data.cell_size == 0.0
+    my_depth = _group_value(-gap, pos_key, normalized)
     won = deepest == my_depth
     beaten = my_depth > deepest
     for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
-        value = _group_value(wp.dot(pos_2d, get_spatial_direction_2d(dir_i)), pos_key)
+        value = _group_value(wp.dot(pos_2d, get_spatial_direction_2d(dir_i)), pos_key, normalized)
         slot_value = values[_group_slot(entry_idx, dir_i)]
         if slot_value == value:
             won = True
@@ -2667,7 +2766,7 @@ def create_export_group_contacts_kernel(writer_func: Any):
             entry_idx = group_data.contact_entry[contact_id]
             if entry_idx == wp.static(GROUP_ENTRY_REJECTED):
                 continue
-            keep = keep_all
+            keep = keep_all or entry_idx == wp.static(GROUP_ENTRY_PASSTHROUGH)
             if entry_idx >= 0:
                 won = _group_contact_won(contact_id, reducer_data, group_data)
                 keep = keep or won
@@ -2715,6 +2814,7 @@ def finish_group_frame_kernel(
     stats[wp.static(GROUP_STAT_OUTRANKED_DISCARDS)] = stats[wp.static(GROUP_STAT_OUTRANKED_DISCARDS)] + wp.int64(
         frame[wp.static(GROUP_FRAME_OUTRANKED)]
     )
+    stats[wp.static(GROUP_STAT_COVERAGE_FALLBACK_CONTACTS)] += wp.int64(frame[wp.static(GROUP_FRAME_COVERAGE_FALLBACK)])
     if buffer_overflows[0] > 0:
         stats[wp.static(GROUP_STAT_INPUT_OVERFLOW_FRAMES)] = stats[
             wp.static(GROUP_STAT_INPUT_OVERFLOW_FRAMES)

@@ -56,9 +56,12 @@ rather than inferring speedup from contact count alone.
 Depth is ranked with the canonical signed effective-surface separation
 ``dot(normal, point1 - point0) - margin0 - margin1``.  It picks the depth
 representative and its sign gates the touching slot family; it never biases
-the ordering inside a spatial slot.  The reduction still has an explicit
-spatial-cell length scale, and no depth classification can leave a patch
-without footprint support.
+the ordering inside a spatial slot. Automatic coverage shares the SDF reducer's
+normalized voxel mapping and grid sizing on fixed body-local group bounds.
+Near-contact and speculative layers have independent cells. Cells whose
+separation varies by more than ``1e-5`` of the reference extent
+keep all their contacts. An explicit ``cell_size`` retains the legacy
+projected grid and its length scale.
 
 Reduction never crosses a normal bin, so multi-patch configurations (a body
 touching floor and wall at once) keep representatives of every patch.  On
@@ -72,14 +75,11 @@ geometry only.  On curved or mesh support (flat analytic planes are immune) the
 score differences between a patch's near-symmetric contacts are curvature-sized,
 so the winners can hand off between steps.
 
-**XPBD is not a supported consumer.** XPBD predicts body poses before deciding
-which speculative candidates are active, while the reduction selects footprint
-representatives from the pre-prediction contact geometry. A spatial winner can
-therefore remain speculative after prediction while a discarded interior
-candidate becomes penetrating. Increasing XPBD iterations reduced a curved-foot
-rocking residual in one characterization scene but did not establish a
-class-wide selection invariant, so XPBD rejects reduced buffers. Steel is
-the supported solver.
+**Solver-independent contact rows.** Like mesh/SDF reduction, this selects
+ordinary contact rows before solving; every built-in Newton-contact consumer
+accepts them. Automatic coverage guards both touching and speculative depth
+variation, since position-based solvers may activate candidates after predicting
+motion. Explicit legacy grids retain their original selection approximation.
 
 **Known characteristic -- torsional patch friction.** During twist, friction at
 every contact is saturated at ``mu*N_i``, so the resisting torque is
@@ -105,9 +105,11 @@ import numpy as np
 import warp as wp
 
 from ..sim.model import Model
+from .contact_reduction import NUM_SPATIAL_DIRECTIONS, compute_voxel_resolution_from_aabb
 from .contact_reduction_global import (
     GROUP_STAT_CELL_CLAMP_EVENTS,
     GROUP_STAT_COUNT,
+    GROUP_STAT_COVERAGE_FALLBACK_CONTACTS,
     GROUP_STAT_FALLBACK_FRAMES,
     GROUP_STAT_INPUT_OVERFLOW_FRAMES,
     GROUP_STAT_MAX_CONTACTS_IN,
@@ -282,7 +284,7 @@ def build_reduction_group_pair_upper_bound(shape_body, shape_world, shape_active
 
 def build_group_reduction_config(
     model,
-    cell_size: float,
+    cell_size: float | None,
     hashtable_size_factor: float,
     material_attributes,
     shape_pairs,
@@ -292,7 +294,7 @@ def build_group_reduction_config(
 
     Args:
         model: The simulation model.
-        cell_size: Spatial cell edge [m].
+        cell_size: Legacy spatial cell edge [m], or ``None`` for normalized coverage.
         hashtable_size_factor: Multiplier on the derived group-table capacity.
         material_attributes: Per-shape attributes that split groups (see :func:`build_reduction_groups`).
         shape_pairs: The explicit broad phase's pair list, or ``None`` for SAP and NXN.
@@ -351,11 +353,64 @@ def build_group_reduction_config(
     capacity_request = max(1024, int(capacity_request))
     config = GroupReductionConfig(
         shape_group=shape_group,
-        cell_size=float(np.float32(cell_size)),
+        cell_size=0.0 if cell_size is None else float(np.float32(cell_size)),
         hashtable_capacity=capacity_request,
         staging_capacity=staging_capacity,
+        **(build_group_voxel_grids(model, shape_group) if cell_size is None else {}),
     )
     return config, group_pair_bound, capacity_request
+
+
+def build_group_voxel_grids(model, shape_group) -> dict:
+    """Fit the SDF reduction grid to each finite collider group's fixed body-local bounds.
+
+    Allocate by shape count so material regrouping can refresh arrays in place,
+    including arrays referenced by a captured collision graph. Infinite planes
+    cannot supply a reference grid; contacts without a finite reference pass through.
+    """
+    count = model.shape_count
+    lower = np.full((count, 3), np.inf, dtype=np.float32)
+    upper = np.full((count, 3), -np.inf, dtype=np.float32)
+    resolution = np.zeros((count, 3), dtype=np.int32)
+    shape_type = model.shape_type.numpy()
+    finite = (model.shape_body.numpy() >= 0) & ~np.isin(
+        shape_type, (int(GeoType.PLANE), int(GeoType.MESH), int(GeoType.HFIELD))
+    )
+    finite &= ((model.shape_flags.numpy() & int(ShapeFlags.COLLIDE_SHAPES)) != 0) & (
+        model.shape_collision_group.numpy() != 0
+    )
+    transforms = model.shape_transform.numpy()[finite].astype(np.float64)
+    lo = model.shape_collision_aabb_lower.numpy()[finite].astype(np.float64)
+    hi = model.shape_collision_aabb_upper.numpy()[finite].astype(np.float64)
+    # Rotate AABB centers and half-extents in a batch instead of visiting corners.
+    x, y, z, w = transforms[:, 3:].T
+    rotations = np.stack(
+        (
+            1 - 2 * (y * y + z * z),
+            2 * (x * y - z * w),
+            2 * (x * z + y * w),
+            2 * (x * y + z * w),
+            1 - 2 * (x * x + z * z),
+            2 * (y * z - x * w),
+            2 * (x * z - y * w),
+            2 * (y * z + x * w),
+            1 - 2 * (x * x + y * y),
+        ),
+        axis=1,
+    ).reshape(-1, 3, 3)
+    centers = np.einsum("nij,nj->ni", rotations, (lo + hi) * 0.5) + transforms[:, :3]
+    extents = np.einsum("nij,nj->ni", np.abs(rotations), (hi - lo) * 0.5)
+    groups = np.asarray(shape_group)[finite]
+    np.minimum.at(lower, groups, centers - extents)
+    np.maximum.at(upper, groups, centers + extents)
+    for group in np.unique(groups):
+        # Each cell already keeps a full footprint, unlike the SDF grid's one
+        # depth sample. A coarse budget avoids multiplying small manifolds.
+        resolution[group] = compute_voxel_resolution_from_aabb(lower[group], upper[group], NUM_SPATIAL_DIRECTIONS)
+    valid = np.all(np.isfinite(lower) & np.isfinite(upper), axis=1)
+    lower[~valid] = 0.0
+    upper[~valid] = 0.0
+    return {"group_lower": lower, "group_upper": upper, "group_resolution": resolution}
 
 
 class BodyPairReduction:
@@ -373,10 +428,13 @@ class BodyPairReduction:
         self.group_pair_bound = group_pair_bound
         self.hashtable_capacity_request = capacity_request
 
-    def refresh_groups(self, shape_group):
+    def refresh_groups(self, shape_group, model=None):
         """Replace the per-shape reduction-group ids."""
         if self.reducer is not None:
             self.reducer.shape_group.assign(shape_group)
+            if self.reducer.cell_size == 0.0:
+                for name, values in build_group_voxel_grids(model, shape_group).items():
+                    getattr(self.reducer, name).assign(values)
 
     @property
     def verify(self) -> bool:
@@ -405,6 +463,8 @@ class BodyPairReduction:
             ``max_hashtable_entries`` / ``hashtable_capacity`` / ``hashtable_load``: peak
             distinct (group pair, bin, cell) entries against the table.
             ``input_overflow_frames``: frames whose contacts overflowed the staging buffer.
+            ``coverage_fallback_contacts``: automatic-grid contacts retained because
+            their cell contains materially different separations (includes slot winners).
         """
         self._raise_if_capturing("stats()")
         v = np.zeros(GROUP_STAT_COUNT, dtype=np.int64) if self.reducer is None else self.reducer.group_stats.numpy()
@@ -420,6 +480,7 @@ class BodyPairReduction:
             "hashtable_capacity": capacity,
             "hashtable_load": entries / capacity if capacity else 0.0,
             "input_overflow_frames": int(v[GROUP_STAT_INPUT_OVERFLOW_FRAMES]),
+            "coverage_fallback_contacts": int(v[GROUP_STAT_COVERAGE_FALLBACK_CONTACTS]),
             "fallback_frames": int(v[GROUP_STAT_FALLBACK_FRAMES]),
             "total_frames": int(v[GROUP_STAT_TOTAL_FRAMES]),
             "sum_contacts_in": int(v[GROUP_STAT_SUM_CONTACTS_IN]),

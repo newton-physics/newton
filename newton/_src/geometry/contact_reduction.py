@@ -57,6 +57,7 @@ See Also:
     hashtable-based approach used for mesh-mesh (SDF) collisions.
 """
 
+import numpy as np
 import warp as wp
 
 # =====================================================================
@@ -112,6 +113,14 @@ uint32_t mask = (uint32_t)(-(int)(i >> 31)) | 0x80000000;
 return i ^ mask;
 """)
 def float_flip(f: float) -> wp.uint32: ...
+
+
+@wp.func_native("""
+uint32_t mask = (f >> 31) ? 0x80000000 : 0xFFFFFFFF;
+uint32_t bits = f ^ mask;
+return reinterpret_cast<float&>(bits);
+""")
+def float_unflip(f: wp.uint32) -> float: ...
 
 
 # =====================================================================
@@ -450,12 +459,16 @@ def compute_voxel_index(
     size = aabb_upper - aabb_lower
     # Normalize position to [0, 1]
     rel = wp.vec3(0.0, 0.0, 0.0)
-    if size[0] > 1e-6:
+    if size[0] > 0.0:
         rel = wp.vec3((pos_local[0] - aabb_lower[0]) / size[0], rel[1], rel[2])
-    if size[1] > 1e-6:
+    if size[1] > 0.0:
         rel = wp.vec3(rel[0], (pos_local[1] - aabb_lower[1]) / size[1], rel[2])
-    if size[2] > 1e-6:
+    if size[2] > 0.0:
         rel = wp.vec3(rel[0], rel[1], (pos_local[2] - aabb_lower[2]) / size[2])
+
+    # Stabilize cell boundaries against float32 reconstruction of scaled copies.
+    # This is a dimensionless grid, independent of the scene's length units.
+    rel = wp.vec3(wp.round(rel[0] * 1048576.0), wp.round(rel[1] * 1048576.0), wp.round(rel[2] * 1048576.0)) / 1048576.0
 
     # Clamp to [0, 1) and map to voxel indices
     nx = resolution[0]
@@ -467,3 +480,23 @@ def compute_voxel_index(
     vz = wp.clamp(int(rel[2] * float(nz)), 0, nz - 1)
 
     return vx + vy * nx + vz * nx * ny
+
+
+def compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget=NUM_VOXEL_DEPTH_SLOTS):
+    """Fit an approximately cubic reduction grid using aspect ratios, without a length threshold.
+
+    Degenerate axes get one cell. Normalize before computing volume so very
+    small and large geometries receive the same resolution.
+    """
+    size = np.asarray(aabb_upper, dtype=np.float64) - np.asarray(aabb_lower, dtype=np.float64)
+    largest = float(np.max(size))
+    if largest <= 0.0 or not np.all(np.isfinite(size)):
+        return 1, 1, 1
+    relative = size / largest
+    active = relative > 0.0
+    edge = np.exp((np.sum(np.log(relative[active])) - np.log(voxel_budget)) / np.count_nonzero(active))
+    # Clip before integer conversion; very slender shapes can request huge grids.
+    resolution = np.clip(np.rint(relative / edge), 1, voxel_budget).astype(np.int32)
+    while int(np.prod(resolution)) > voxel_budget:
+        resolution[np.argmax(resolution)] -= 1
+    return tuple(int(n) for n in resolution)

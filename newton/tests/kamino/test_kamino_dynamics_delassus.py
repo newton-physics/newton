@@ -988,11 +988,14 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         data: DataKamino,
         delassus: BlockSparseMatrixFreeDelassusOperator,
         jacobians: SparseSystemJacobians,
+        *,
+        capture_first_product: bool = False,
     ):
         """Checks the different matrix-vector products provided by the sparse Delassus operator."""
         rng = np.random.default_rng(seed=self.seed)
 
         def run_check(use_regularization: bool, use_preconditioner: bool, mask_worlds: bool):
+            nonlocal capture_first_product
             delassus_sizes = data.info.num_total_cts.numpy()
             jac_row_start = jacobians._J_cts.bsm.row_start.numpy()
 
@@ -1048,7 +1051,16 @@ class TestDelassusOperatorSparse(unittest.TestCase):
             world_mask = wp.from_numpy(mask_np, dtype=wp.bool, device=self.default_device)
 
             # Compute different products (simple matvec, gemv, and gemv with beta = 0.0)
-            delassus.matvec(input_vec, output_vec_matmul, world_mask)
+            if capture_first_product and self.default_device.is_cuda and wp.is_conditional_graph_supported():
+                # The first regularized application must work inside a conditional
+                # body without a warmup that could hide lazy placeholder allocations.
+                condition = wp.ones(1, dtype=wp.int32, device=self.default_device)
+                with wp.ScopedCapture(device=self.default_device) as capture:
+                    wp.capture_if(condition, lambda: delassus.matvec(input_vec, output_vec_matmul, world_mask))
+                wp.capture_launch(capture.graph)
+            else:
+                delassus.matvec(input_vec, output_vec_matmul, world_mask)
+            capture_first_product = False
             delassus.gemv(input_vec, output_vec_gemv, world_mask, alpha, beta)
             delassus.gemv(input_vec, output_vec_gemv_zero, world_mask, alpha, 0.0)
 
@@ -1472,6 +1484,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         self._check_delassus_diagonal(model, data, delassus, jacobians)
 
     def test_10_delassus_operator_vector_product(self):
+        """Compare sparse products to dense references, including first use in a conditional graph."""
         # Model constants
         max_world_contacts = 12
 
@@ -1499,7 +1512,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         )
 
         # Check that the Delassus operator represents the actual Delassus matrix
-        self._check_delassus_matrix_vector_product(model, data, delassus, jacobians)
+        self._check_delassus_matrix_vector_product(model, data, delassus, jacobians, capture_first_product=True)
 
     def test_11_homogeneous_delassus_operator_vector_product(self):
         # Model constants

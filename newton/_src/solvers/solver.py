@@ -1111,19 +1111,16 @@ class SolverBase:
         """
         self._normalize_reset_world_mask(world_mask)
 
-    supports_body_pair_reduced_contacts: bool = False
-    """Whether this solver's default configuration accepts body-pair-reduced contacts.
+    supports_body_pair_reduced_contacts: bool = True
+    """Whether this solver accepts the collision pipeline's body-pair-reduced contacts.
 
-    A :class:`newton.CollisionPipeline` built with ``body_pair_reduction``
-    compacts rigid contacts to each patch's depth and sampled footprint
-    representatives and, when the scene has primitive or convex contact pairs,
-    stamps the buffers it allocates (:attr:`Contacts.rigid_contact_body_pair_reduced`).  A solver may only
-    declare support after a conformance test demonstrates that it consumes
-    contact depth with the reducer's signed-separation convention.  The built-in
-    solvers that do not declare support raise in :meth:`step` when given a
-    stamped buffer, and :class:`SolverBase` rejects an owned pipeline that
-    stamps its buffers at construction.  A custom solver that does not declare
-    support should check the stamp itself.
+    Reduction selects ordinary :class:`newton.Contacts` rows, retaining their
+    shape ids, materials, normal convention, and body-local witnesses. Built-in
+    consumers accept these rows just as they accept mesh/SDF-reduced contacts;
+    the solver does not need a separate reduction implementation. Contact
+    placement and count can affect compliance and friction, as with mesh/SDF
+    reduction. A custom solver with a more restrictive contact contract may
+    explicitly set this capability to ``False``.
 
     .. experimental::
     """
@@ -1135,7 +1132,7 @@ class SolverBase:
         supports_body_pair_reduced_contacts: bool | None = None,
         configuration: str | None = None,
     ) -> None:
-        """Raise if ``contacts`` was allocated by a pipeline with body-pair reduction.
+        """Enforce an explicit opt-out from the pipeline's reduced contact rows.
 
         Args:
             contacts: Contact buffer the solver will consume.
