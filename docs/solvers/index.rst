@@ -215,6 +215,10 @@ formulation.
   :class:`~newton.solvers.SolverKamino`.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
   :class:`~newton.solvers.SolverMuJoCo`.
+  :class:`~newton.solvers.SolverVBD` consumes these properties for rigid-rigid contacts
+  in its default compliant-ALM mode, with separate Coulomb limits for sliding, torsion,
+  and rolling rather than one coupled cone. Sliding and rolling use full 2D
+  response metrics for conditioning; torsion uses its scalar response.
 - ``mu_static``: stored as :attr:`~newton.Model.shape_material_mu_static` and
   carried into :class:`~newton.solvers.SolverKamino`'s material tables, but no
   built-in solver distinguishes static from dynamic friction in its contact

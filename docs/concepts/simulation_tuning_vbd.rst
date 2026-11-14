@@ -102,12 +102,12 @@ can inherit ``model.vbd`` settings.
        last resort, see :ref:`vbd-jitter-pipeline`.
      - Runtime grows linearly. Does not fix a stiffness-ratio problem.
    * - ``friction_epsilon`` (1e-2)
-     - Threshold for small sliding speeds [m/s]. Sets particle friction
-       smoothing length to ``friction_epsilon`` x ``dt``; also regularizes
-       the compliant-ALM body-body friction solve.
-     - Particle friction chatters at rest.
-     - Slow particle creep under tangential load when large; affects
-       finite-iteration convergence for compliant-ALM body-body contacts.
+     - Threshold for small sliding speeds [m/s]. With the default contact mode,
+       sets the friction smoothing length to ``friction_epsilon`` x ``dt``
+       for particle and rigid-soft contacts.
+     - Particle or rigid-soft friction chatters at rest.
+     - Larger values permit slow creep under tangential load. Does not affect
+       compliant-ALM rigid-rigid contacts.
    * - ``dat_conservative_bound_relaxation`` (0.85)
      - Scale of both truncations: how close to its division plane a vertex may
        go, and the radius cap of 0.5 x this x query radius.
@@ -677,12 +677,15 @@ before increasing ``mu``. VBD mixes body-body ``ke`` and ``kd`` with an
 arithmetic mean and ``mu`` with a geometric mean, so one stiff shape can
 dominate normal stiffness while a shape with ``mu=0`` makes its pairs
 frictionless. Unexpected slip can also come from missing contacts or an
-incomplete solve. Leave ``friction_epsilon`` at its default initially;
-it does not change the Coulomb limit set by ``mu``.
+incomplete solve.
 
 **Body coloring.** VBD updates bodies in the same color group in parallel.
 Automatic coloring uses joint and tendon connections, but does not include
 contacts. Contacting bodies may share a color, which can slow convergence.
+Compliant-ALM contacts between two dynamic bodies of the same color use a
+doubled solve metric to bound their simultaneous corrections. This can improve
+stability in dense contact networks.
+Splitting the bodies into different colors removes the doubling.
 For small scenes with predictable contacts, consider splitting
 existing groups in ``builder.body_color_groups`` to separate frequently
 contacting bodies. Make these edits after ``builder.color()`` and before
