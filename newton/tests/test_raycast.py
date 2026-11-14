@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import unittest
 
 import numpy as np
@@ -670,8 +671,10 @@ def _make_intersection_model(device: str):
     return builder.finalize(device=device)
 
 
-def test_intersect_ray(test: TestRaycast, device: str):
+def test_intersect_ray(test: TestRaycast, device: str, backend: str = "warp"):
     model = _make_intersection_model(device)
+    if backend == "optix":
+        model.optix_build_shapes(model.state())
 
     origins = wp.array(
         np.array(
@@ -704,6 +707,7 @@ def test_intersect_ray(test: TestRaycast, device: str):
     out_normal = wp.empty(shape=3, dtype=wp.vec3, device=device)
     newton.intersect_ray(
         model,
+        backend=backend,
         ray_origins=origins,
         ray_directions=directions,
         ray_worlds=worlds,
@@ -727,6 +731,17 @@ def test_intersect_ray(test: TestRaycast, device: str):
         atol=1e-5,
     )
 
+    # Lowering the box takes effect after a refit.
+    state = model.state()
+    body_q = state.body_q.numpy()
+    body_q[1, 2] = -1.0
+    state.body_q.assign(body_q)
+    (model.optix_refit_shapes if backend == "optix" else model.bvh_refit_shapes)(state)
+    newton.intersect_ray(
+        model, backend=backend, ray_origins=origins, ray_directions=directions, ray_worlds=worlds, out_dist=out_dist
+    )
+    np.testing.assert_allclose(out_dist.numpy(), np.array([1.5, 2.5, -1.0], dtype=np.float32), atol=1e-5)
+
 
 def _make_global_world_model(device: str):
     """Two worlds each with a sphere, plus a global-world box shared by both."""
@@ -749,8 +764,10 @@ def _make_global_world_model(device: str):
     return builder.finalize(device=device), global_box, sphere0, sphere1
 
 
-def test_intersect_ray_global_world(test: TestRaycast, device: str):
+def test_intersect_ray_global_world(test: TestRaycast, device: str, backend: str = "warp"):
     model, global_box, sphere0, sphere1 = _make_global_world_model(device)
+    if backend == "optix":
+        model.optix_build_shapes(model.state())
 
     # Rays fired along -y toward each world's sphere and the global box.
     origins = wp.array(
@@ -779,6 +796,7 @@ def test_intersect_ray_global_world(test: TestRaycast, device: str):
     out_normal = wp.empty(shape=5, dtype=wp.vec3, device=device)
     newton.intersect_ray(
         model,
+        backend=backend,
         ray_origins=origins,
         ray_directions=directions,
         ray_worlds=worlds,
@@ -794,11 +812,13 @@ def test_intersect_ray_global_world(test: TestRaycast, device: str):
     )
 
 
-def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: str):
+def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: str, backend: str = "warp"):
     builder = newton.ModelBuilder()
     heightfield = Heightfield(data=np.zeros((2, 2), dtype=np.float32), nrow=2, ncol=2, hx=1.0, hy=1.0)
     shape_id = builder.add_shape_heightfield(heightfield=heightfield)
     model = builder.finalize(device=device)
+    if backend == "optix":
+        model.optix_build_shapes(model.state())
 
     test.assertEqual(model.bvh_shape_count_enabled, 1)
 
@@ -810,6 +830,7 @@ def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: 
 
     newton.intersect_ray(
         model,
+        backend=backend,
         ray_origins=origins,
         ray_directions=directions,
         ray_worlds=worlds,
@@ -945,6 +966,13 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestRaycast, "test_intersect_ray", test_intersect_ray, devices=devices)
+optix_devices = [d for d in devices if d.is_cuda] if importlib.util.find_spec("warp_optix") else []
+for test_func in (
+    test_intersect_ray,
+    test_intersect_ray_global_world,
+    test_intersect_ray_heightfield_uses_finalize_bvh,
+):
+    add_function_test(TestRaycast, f"{test_func.__name__}_optix", test_func, devices=optix_devices, backend="optix")
 add_function_test(TestRaycast, "test_intersect_ray_global_world", test_intersect_ray_global_world, devices=devices)
 add_function_test(
     TestRaycast,

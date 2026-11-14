@@ -47,6 +47,7 @@ _COLLISION_EDGE_DEPRECATION_MSG = (
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..actuators.batteries import BatteryBase
+    from ..geometry.optix import OptixShapes
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
 
@@ -1167,6 +1168,10 @@ class Model:
         """Local-space AABB per shape (min/max) for mesh and gaussian shapes, shape ``[shape_count, 2]`` [m]."""
         self.bvh_shape_world_transforms: wp.array[wp.transformf] | None = None
         """World-space shape transforms computed during shape BVH build/refit, shape ``[shape_count]`` [m, unitless quaternion]."""
+
+        self.optix_shapes: OptixShapes | None = None
+        """OptiX acceleration over selected shapes, the counterpart of :attr:`bvh_shapes` for
+        ``backend="optix"`` cameras and raycasts. Built by :meth:`optix_build_shapes`."""
 
         self.bvh_particles: wp.Bvh | None = None
         """BVH over particles. Built by :meth:`ModelBuilder.finalize` when particles are present."""
@@ -2420,6 +2425,170 @@ class Model:
             outputs=[self._bvh_shape_active_leaves],
             device=self.device,
         )
+
+    def optix_build_shapes(self, state: State, *, shape_flags: ShapeFlags = ShapeFlags.VISIBLE) -> None:
+        """Build or rebuild the OptiX shape acceleration stored on this model.
+
+        The OptiX counterpart of :meth:`bvh_build_shapes`, stored in :attr:`optix_shapes` and used
+        by ``backend="optix"`` cameras and raycasts. It is independent of the shape BVH and is not
+        built by :meth:`ModelBuilder.finalize`. Call it again after structural changes; for
+        ordinary state changes, use :meth:`optix_refit_shapes`. Shapes must stay within twice
+        their distance from the origin at build time.
+
+        Args:
+            state: Current simulation state with body transforms.
+            shape_flags: Mask of :class:`~newton.ShapeFlags`; a shape is
+                included if any of its flags are set in the mask.
+
+        Raises:
+            RuntimeError: If ``newton[optix]`` is not installed, or OptiX does not support the
+                model or device.
+        """
+        try:
+            from ..geometry import optix  # noqa: PLC0415
+        except ImportError as exc:
+            raise RuntimeError("Model.optix_build_shapes() requires the newton[optix] extra") from exc
+        from ..geometry.bvh import (  # noqa: PLC0415
+            SHAPE_BOUNDS_BLOCK_DIM,
+            compute_enabled_shapes,
+            compute_shape_bvh_bounds,
+            compute_shape_local_bounds,
+            compute_shape_world_transforms,
+        )
+        from ..geometry.types import GeoType  # noqa: PLC0415
+
+        optix.check_supported(self)
+        self.optix_shapes = None
+        device = self.device
+        shape_count = self.shape_count
+
+        enabled = wp.empty(shape_count, dtype=wp.uint32, device=device)
+        num_enabled = wp.zeros(1, dtype=wp.int32, device=device)
+        wp.launch(
+            kernel=compute_enabled_shapes,
+            dim=shape_count,
+            inputs=[
+                self.shape_type,
+                self.shape_flags,
+                int(shape_flags),
+                self.shape_opacity if self.shape_opacity is not None else wp.empty(0, dtype=wp.float32, device=device),
+                enabled,
+                num_enabled,
+            ],
+            device=device,
+        )
+        enabled = enabled[: int(num_enabled.numpy()[0])]
+        transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
+        if shape_count:
+            wp.launch(
+                kernel=compute_shape_world_transforms,
+                dim=shape_count,
+                inputs=[state.body_q, self.shape_body, self.shape_transform, transforms],
+                device=device,
+            )
+
+        # World-space bounds size the cell that holds each world.
+        local_bounds = wp.empty((shape_count, 2), dtype=wp.vec3f, device=device)
+        wp.launch_tiled(
+            kernel=compute_shape_local_bounds,
+            dim=shape_count,
+            block_dim=SHAPE_BOUNDS_BLOCK_DIM,
+            inputs=[self.shape_type, self.shape_source_ptr, self.gaussians_data, local_bounds],
+            device=device,
+        )
+        lowers = wp.zeros(enabled.shape[0], dtype=wp.vec3f, device=device)
+        uppers = wp.zeros(enabled.shape[0], dtype=wp.vec3f, device=device)
+        groups = wp.zeros(enabled.shape[0], dtype=wp.int32, device=device)
+        wp.launch(
+            kernel=compute_shape_bvh_bounds,
+            dim=enabled.shape[0],
+            inputs=[
+                enabled.shape[0],
+                self.world_count + 1,
+                self.shape_world,
+                enabled,
+                self.shape_type,
+                self.shape_scale,
+                transforms,
+                local_bounds,
+                lowers,
+                uppers,
+                groups,
+            ],
+            device=device,
+        )
+
+        types = self.shape_type.numpy() if shape_count else np.empty(0, dtype=np.int32)
+        # Convex hulls and heightfields are traced as their triangle meshes.
+        types = np.where(np.isin(types, (GeoType.CONVEX_MESH, GeoType.HFIELD)), GeoType.MESH, types).astype(np.int32)
+        enabled = enabled.numpy().astype(np.int32)
+        bounded = types[enabled] != GeoType.PLANE
+        radius = 0.0
+        if np.any(bounded):
+            radius = float(np.max(np.abs(np.concatenate((lowers.numpy()[bounded], uppers.numpy()[bounded])))))
+        enabled = np.sort(enabled)
+        shape_world = self.shape_world.numpy() if shape_count else np.empty(0, dtype=np.int32)
+        global_plane = (types[enabled] == GeoType.PLANE) & (shape_world[enabled] < 0)
+        instance_shapes = enabled[~global_plane]
+        grid = int(np.ceil((self.world_count + 1) ** (1.0 / 3.0)))
+        while grid**3 < self.world_count + 1:
+            grid += 1
+        geometry, traversables = optix.build_shape_geometry(self, enabled, types)
+        shapes = optix.OptixShapes(
+            id=0,
+            accel=None,
+            geometry=geometry,
+            shape_types=wp.array(types, dtype=wp.int32, device=device),
+            shape_world_transforms=transforms,
+            shape_traversables=traversables,
+            instance_shapes=wp.array(instance_shapes, dtype=wp.int32, device=device),
+            instances=wp.empty(len(instance_shapes), dtype=optix.wo.Instance, device=device),
+            planes=tuple(int(si) for si in enabled[global_plane]),
+            # Room for shapes to move; the padding also encloses the primitives' padded unit cube.
+            extent=max(2.0 * 1.01 * radius, 1.0),
+            grid=grid,
+            world_count=self.world_count,
+            has_global_instances=bool(np.any(shape_world[instance_shapes] < 0)),
+        )
+        optix.compute_optix_shape_instances_launch(self, shapes)
+        if shapes.has_instances:
+            shapes.accel = optix.wo.Accel(
+                [optix.wo.instances(shapes.instances, shapes.geometry)],
+                flags=optix.wo.BuildFlags.ALLOW_UPDATE | optix.wo.BuildFlags.PREFER_FAST_TRACE,
+            )
+            shapes.id = shapes.accel.id
+        self.optix_shapes = shapes
+
+    def optix_refit_shapes(self, state: State) -> None:
+        """Refit the OptiX shape acceleration stored on this model for the current state.
+
+        The OptiX counterpart of :meth:`bvh_refit_shapes`. Updates world-space shape transforms
+        from ``state.body_q`` and refits :attr:`optix_shapes` in place. It cannot be recorded in
+        a CUDA graph.
+
+        Args:
+            state: Current simulation state with body transforms.
+        """
+        from ..geometry.bvh import compute_shape_world_transforms  # noqa: PLC0415
+        from ..geometry.optix import compute_optix_shape_instances_launch  # noqa: PLC0415
+
+        shapes = self.optix_shapes
+        if shapes is None:
+            raise RuntimeError(
+                "Model.optix_refit_shapes() requires Model.optix_build_shapes() to have been called first."
+            )
+        if self.device.stream.is_capturing:
+            raise RuntimeError("Model.optix_refit_shapes() does not support CUDA graph capture")
+        if self.shape_count:
+            wp.launch(
+                kernel=compute_shape_world_transforms,
+                dim=self.shape_count,
+                inputs=[state.body_q, self.shape_body, self.shape_transform, shapes.shape_world_transforms],
+                device=self.device,
+            )
+        compute_optix_shape_instances_launch(self, shapes)
+        if shapes.accel is not None:
+            shapes.accel.refit()
 
     def _variant_row_options(self) -> tuple[np.ndarray, np.ndarray]:
         """Each variant row with each variant shape it can hold, on the host."""

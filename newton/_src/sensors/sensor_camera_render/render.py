@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -79,8 +77,10 @@ def _unpack_rgba(packed: wp.uint32):
     )
 
 
-def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_data: ClearData) -> wp.kernel:
-    compute_lighting = lighting.create_compute_lighting_function(config, state)
+def create_kernel(
+    config: RenderConfig, state: "RenderContext.RenderState", clear_data: ClearData, optix=None
+) -> wp.kernel:
+    compute_lighting = lighting.create_compute_lighting_function(config, state, optix)
     sample_texture = textures.create_sample_texture_function(config)
 
     if (
@@ -89,9 +89,9 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         or state.render_normal
         or (state.render_albedo and config.enable_textures)
     ):
-        raytrace_closest_hit = raytrace.create_closest_hit_function(config, state)
+        raytrace_closest_hit = raytrace.create_closest_hit_function(config, state, optix)
     else:
-        raytrace_closest_hit = raytrace.create_closest_hit_depth_only_function(config, state)
+        raytrace_closest_hit = raytrace.create_closest_hit_depth_only_function(config, state, optix)
 
     if config.output_color_space == ColorSpace.LINEAR:
         clear_data = ClearData(

@@ -32,6 +32,11 @@ dependencies = [
 
 [project.optional-dependencies]
 
+# Optional hardware-accelerated camera traversal.
+optix = [
+    "warp-optix~=0.3.0; python_version == '3.12' and (sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')",
+]
+
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
