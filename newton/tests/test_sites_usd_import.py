@@ -130,6 +130,70 @@ def Xform "World" {
                             model.shape_transform.numpy()[site_id, :3],
                             np.asarray(local_position, dtype=np.float32),
                         )
+                        # A rotated incoming transform moves the body, not the site's body-local offset.
+                        incoming = wp.transform((3.0, -1.0, 2.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7))
+                        builder = newton.ModelBuilder()
+                        builder.add_usd(stage, xform=incoming, load_visual_shapes=False)
+                        model = builder.finalize(device="cpu")
+                        np.testing.assert_allclose(
+                            model.shape_transform.numpy()[site_id, :3], local_position, atol=1.0e-7, rtol=0.0
+                        )
+
+    def test_site_matches_colocated_visual_on_sheared_articulated_body(self):
+        """A site and a visual at the same place share the builder's body frame under ancestor shear."""
+        stage = self._create_usd_stage(
+            """#usda 1.0
+(
+    upAxis = "Z"
+)
+def Xform "World" {
+    double3 xformOp:scale = (2, 3, 4)
+    uniform token[] xformOpOrder = ["xformOp:scale"]
+    def Xform "body" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysicsArticulationRootAPI"]
+    ) {
+        float physics:mass = 1.0
+        float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
+        double3 xformOp:translate = (0.5, -1.5, 2)
+        float xformOp:rotateZ = 45
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZ"]
+        def Sphere "site" (
+            prepend apiSchemas = ["MjcSiteAPI"]
+        ) {
+            double radius = 0.01
+            double3 xformOp:translate = (0.1, 0.2, 0.3)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+        def Sphere "visual" {
+            double radius = 0.01
+            double3 xformOp:translate = (0.1, 0.2, 0.3)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+        def Xform "child" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        ) {
+            float physics:mass = 1.0
+            float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
+            double3 xformOp:translate = (0, 0, 0.5)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+    def PhysicsRevoluteJoint "hinge" {
+        rel physics:body0 = </World/body>
+        rel physics:body1 = </World/body/child>
+        point3f physics:localPos0 = (0, 0, 0.5)
+        uniform token physics:axis = "Z"
+    }
+}
+"""
+        )
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        model = builder.finalize(device="cpu")
+        site_id = model.shape_label.index("/World/body/site")
+        visual_id = model.shape_label.index("/World/body/visual")
+        transforms = model.shape_transform.numpy()
+        np.testing.assert_allclose(transforms[site_id], transforms[visual_id], atol=1.0e-6, rtol=0.0)
 
     def test_parse_multiple_sites(self):
         """Test parsing multiple sites from USD."""
