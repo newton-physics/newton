@@ -557,6 +557,26 @@ def parse_usd(
     ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
     physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
+    # MuJoCo angle units (``mjc:compiler:angle``) are a scene-level compiler setting of the stage.
+    # A subtree import (``root_path``, e.g. one clone source of a larger scene) contains no
+    # PhysicsScene of its own, and a referenced asset's own scene lies outside its default prim,
+    # so joints resolve units from the stage's first PhysicsScene instead of the schema default.
+    # Only the units come from that scene; the lookup runs once, when the first joint is parsed.
+    units_scene_prim = physics_scene_prim
+    units_scene_pending = physics_scene_prim is None and root_path != "/"
+
+    def _units_scene_prim() -> Usd.Prim | None:
+        nonlocal units_scene_prim, units_scene_pending
+        if units_scene_pending:
+            units_scene_pending = False
+            prim_iter = iter(Usd.PrimRange.Stage(stage, Usd.TraverseInstanceProxies(Usd.PrimDefaultPredicate)))
+            for prim in prim_iter:
+                if any(re.match(pattern, str(prim.GetPath())) for pattern in ignore_paths):
+                    prim_iter.PruneChildren()
+                elif prim.IsA(UsdPhysics.Scene):
+                    units_scene_prim = prim
+                    break
+        return units_scene_prim
 
     legacy_rigid_object_types = (
         UsdPhysics.ObjectType.RigidBody,
@@ -1216,7 +1236,7 @@ def parse_usd(
             path_body_map=path_body_map,
             path_joint_map=path_joint_map,
             builder_custom_attr_joint=builder_custom_attr_joint,
-            physics_scene_prim=physics_scene_prim,
+            physics_scene_prim=_units_scene_prim(),
             usd_axis_to_axis=usd_axis_to_axis,
             DegreesToRadian=DegreesToRadian,
             default_joint_armature=default_joint_armature,
@@ -1253,7 +1273,7 @@ def parse_usd(
             path_joint_map=path_joint_map,
             merged_dof_offset=merged_dof_offset,
             builder_custom_attr_joint=builder_custom_attr_joint,
-            physics_scene_prim=physics_scene_prim,
+            physics_scene_prim=_units_scene_prim(),
             usd_axis_to_axis=usd_axis_to_axis,
             default_joint_velocity_limit=default_joint_velocity_limit,
             joint_drive_gains_scaling=joint_drive_gains_scaling,
