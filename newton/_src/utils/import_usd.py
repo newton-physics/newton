@@ -916,17 +916,28 @@ def parse_usd(
                 )
             return
 
-        prim_world_mat = _get_prim_world_mat(
-            prim,
-            articulation_root_xform,
-            incoming_world_xform if (parent_body_id == -1 or body_xform is not None) else None,
-        )
-        if body_xform is not None:
-            # Use the body transform used by the builder to avoid USD/physics pose mismatches.
-            body_world_mat = _xform_to_mat44(body_xform)
-            rel_mat = wp.inverse(body_world_mat) @ prim_world_mat
+        if is_site and body_xform is not None:
+            # Subtract world poses in USD double precision before the final
+            # Warp cast. Incoming/rebase rigid transforms cancel in body-local
+            # coordinates.
+            body_path = _get_rigid_body_ancestor_path(prim)
+            assert body_path is not None
+            body_prim = stage.GetPrimAtPath(body_path)
+            body_world = xform_cache.GetLocalToWorldTransform(body_prim).RemoveScaleShear()
+            site_world = xform_cache.GetLocalToWorldTransform(prim)
+            rel_mat = wp.mat44(np.asarray(site_world * body_world.GetInverse()).T)
         else:
-            rel_mat = prim_world_mat
+            prim_world_mat = _get_prim_world_mat(
+                prim,
+                articulation_root_xform,
+                incoming_world_xform if (parent_body_id == -1 or body_xform is not None) else None,
+            )
+            if body_xform is not None:
+                # Visuals follow the body transform actually used by the builder.
+                body_world_mat = _xform_to_mat44(body_xform)
+                rel_mat = wp.inverse(body_world_mat) @ prim_world_mat
+            else:
+                rel_mat = prim_world_mat
 
         xform_pos, xform_rot, scale = wp.transform_decompose(rel_mat)
         xform = wp.transform(xform_pos, xform_rot)
