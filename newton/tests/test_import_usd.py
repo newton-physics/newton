@@ -8950,7 +8950,12 @@ def Xform "Articulation" (
                         self.assertEqual(builder.joint_child[root_id], static_id)
                         self.assertEqual(builder.joint_articulation[root_id], -1)
                     model = builder.finalize(device="cpu")
-                    solver = SolverMuJoCo(model, use_mujoco_cpu=True, njmax=16, nconmax=0)
+                    if world_endpoint:
+                        solver = SolverMuJoCo(model, use_mujoco_cpu=True, njmax=16, nconmax=0)
+                    else:
+                        # The fixed static root sits outside any articulation.
+                        with self.assertWarnsRegex(newton.NewtonWarning, "outside articulations as standalone"):
+                            solver = SolverMuJoCo(model, use_mujoco_cpu=True, njmax=16, nconmax=0)
                     if not world_endpoint:
                         ref_q = SolverMuJoCo._build_ref_q(model)
                         ref_body_q = wp.zeros(model.body_count, dtype=wp.transform, device=model.device)
