@@ -3,13 +3,16 @@
 
 """Kamino: Tests for performance-profiles utilities"""
 
+import logging
 import unittest
 
 import numpy as np
 
 import newton._src.solvers.kamino._src.utils.profiles as profiles
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.tests import setup_tests, test_context
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -21,18 +24,18 @@ class TestUtilsPerformanceProfiles(unittest.TestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for verbose output
-        self.plots = test_context.verbose  # Set to True to generate plots
+        self.plots = False  # Set to True to generate plots
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_perfprof_minimal_data(self):
         # ns = 2 solvers, np = 1 problem

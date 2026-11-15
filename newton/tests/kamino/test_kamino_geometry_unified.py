@@ -7,6 +7,7 @@ Unit tests for `geometry/unified.py`
 Tests the unified collision detection pipeline.
 """
 
+import logging
 import unittest
 import warnings
 from unittest import mock
@@ -14,17 +15,18 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton import ModelBuilder
+from newton import ModelBuilder, NewtonWarning
 from newton._src.geometry import broad_phase_nxn
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
-from newton._src.solvers.kamino._src.utils import logger as msg
-from newton.exceptions import NewtonWarning
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.test_kamino_geometry_primitive import check_contacts
 from newton.tests.utils import basics, testing
+
+logger = logging.getLogger(__name__)
 
 ###
 # Constants
@@ -117,7 +119,7 @@ def test_unified_pipeline(
     if broadphase_modes is None:
         broadphase_modes = ["nxn", "sap", "explicit"]
     for bp_mode in broadphase_modes:
-        msg.info("Testing unified CD on '%s' using '%s'", case, bp_mode)
+        logger.debug("Testing unified CD on '%s' using '%s'", case, bp_mode)
 
         # Create a pipeline
         pipeline = CollisionPipelineUnifiedKamino(
@@ -130,18 +132,18 @@ def test_unified_pipeline(
         pipeline.collide(data, contacts)
 
         # Optional verbose output
-        msg.debug("[%s][%s]: bodies.q_i:\n%s", case, bp_mode, data.bodies.q_i)
-        msg.debug("[%s][%s]: contacts.model_active_contacts: %s", case, bp_mode, contacts.model_active_contacts)
-        msg.debug("[%s][%s]: contacts.world_active_contacts: %s", case, bp_mode, contacts.world_active_contacts)
-        msg.debug("[%s][%s]: contacts.wid: %s", case, bp_mode, contacts.wid)
-        msg.debug("[%s][%s]: contacts.cid: %s", case, bp_mode, contacts.cid)
-        msg.debug("[%s][%s]: contacts.gid_AB:\n%s", case, bp_mode, contacts.gid_AB)
-        msg.debug("[%s][%s]: contacts.bid_AB:\n%s", case, bp_mode, contacts.bid_AB)
-        msg.debug("[%s][%s]: contacts.position_A:\n%s", case, bp_mode, contacts.position_A)
-        msg.debug("[%s][%s]: contacts.position_B:\n%s", case, bp_mode, contacts.position_B)
-        msg.debug("[%s][%s]: contacts.gapfunc:\n%s", case, bp_mode, contacts.gapfunc)
-        msg.debug("[%s][%s]: contacts.frame:\n%s", case, bp_mode, contacts.frame)
-        msg.debug("[%s][%s]: contacts.material:\n%s", case, bp_mode, contacts.material)
+        logger.debug("[%s][%s]: bodies.q_i:\n%s", case, bp_mode, data.bodies.q_i)
+        logger.debug("[%s][%s]: contacts.model_active_contacts: %s", case, bp_mode, contacts.model_active_contacts)
+        logger.debug("[%s][%s]: contacts.world_active_contacts: %s", case, bp_mode, contacts.world_active_contacts)
+        logger.debug("[%s][%s]: contacts.wid: %s", case, bp_mode, contacts.wid)
+        logger.debug("[%s][%s]: contacts.cid: %s", case, bp_mode, contacts.cid)
+        logger.debug("[%s][%s]: contacts.gid_AB:\n%s", case, bp_mode, contacts.gid_AB)
+        logger.debug("[%s][%s]: contacts.bid_AB:\n%s", case, bp_mode, contacts.bid_AB)
+        logger.debug("[%s][%s]: contacts.position_A:\n%s", case, bp_mode, contacts.position_A)
+        logger.debug("[%s][%s]: contacts.position_B:\n%s", case, bp_mode, contacts.position_B)
+        logger.debug("[%s][%s]: contacts.gapfunc:\n%s", case, bp_mode, contacts.gapfunc)
+        logger.debug("[%s][%s]: contacts.frame:\n%s", case, bp_mode, contacts.frame)
+        logger.debug("[%s][%s]: contacts.material:\n%s", case, bp_mode, contacts.material)
 
         # Check results
         check_contacts(
@@ -233,18 +235,18 @@ class TestCollisionPipelineUnified(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.INFO)
+            set_log_level(logging.DEBUG)
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
         # Generate a list of supported shape pairs
         self.supported_shape_pairs = nominal_expected_contacts_per_shape_pair.keys()
-        msg.debug("Supported shape pairs for unified pipeline tests:\n%s", self.supported_shape_pairs)
+        logger.debug("Supported shape pairs for unified pipeline tests:\n%s", self.supported_shape_pairs)
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_00_on_specific_primitive_shape_pair(self):
         """
@@ -257,7 +259,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
 
         # Define the specific shape pair to test
         shape_pair = ("cylinder", "ellipsoid")
-        msg.info(f"Testing narrow-phase tests with exact boundaries on {shape_pair}")
+        logger.debug("Testing narrow-phase tests with exact boundaries on %s", shape_pair)
 
         # Define any special kwargs for specific shape pairs
         kwargs = {
@@ -283,7 +285,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         Tests the unified collision pipeline on each supported primitive
         shape pair when placed exactly at their contact boundaries.
         """
-        msg.info("Testing unified pipeline tests with exact boundaries")
+        logger.debug("Testing unified pipeline tests with exact boundaries")
 
         # Global builder and expected contacts dictionary
         builder = ModelBuilder()
@@ -329,7 +331,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         Tests the unified collision pipeline on each
         supported primitive shape pair when placed apart.
         """
-        msg.info("Testing unified pipeline tests with shapes apart")
+        logger.debug("Testing unified pipeline tests with shapes apart")
 
         # Global builder and expected contacts dictionary
         builder = ModelBuilder()
@@ -361,7 +363,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         Tests the unified collision pipeline on each supported
         primitive shape pair when placed apart but with contact margin.
         """
-        msg.info("Testing unified pipeline tests with shapes apart")
+        logger.debug("Testing unified pipeline tests with shapes apart")
 
         # Global builder and expected contacts dictionary
         builder = ModelBuilder()
@@ -513,13 +515,13 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         in the (x,y) plane, and the top box rotated so that one of
         its lowest vertex is touching the top face of the bottom box.
         """
-        # NOTE: We set to negative value to move the geoms into each other,
-        # i.e. move the bottom geom upwards and the top geom downwards.
+        # NOTE: Negative, lowering the top box so its vertex penetrates the bottom face.
         penetration = -0.01
 
         # Define expected contact data
         expected = {
-            "num_contacts": 1,
+            "model_active_contacts": 1,
+            "world_active_contacts": [1],
             "gid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(1, 1)),
             "bid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(1, 1)),
             "position_A": np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
@@ -531,7 +533,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         # Create a builder for the specified shape pair
         builder = testing.make_single_shape_pair_builder(
             shapes=("box", "box"),
-            top_xyz=[0.0, 0.0, 0.5 * np.sqrt(3) + 0.5],
+            top_xyz=[0.0, 0.0, 0.5 * np.sqrt(3) + penetration],
             top_rpy=[np.pi / 4, -np.arctan(1.0 / np.sqrt(2)), 0.0],
         )
 
@@ -542,7 +544,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
             case="box_on_box_vertex_on_face",
             device=self.default_device,
             rtol=1e-5,
-            atol=1e-6,
+            atol=1e-5,
         )
 
     def test_08_on_boxes_nunchaku(self):

@@ -1,22 +1,28 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example VBD Gripper — Soft 1x1 Grid (water-tight EDGE contact)
-#
-# A parallel-jaw gripper with CUBE finger pads clamps a horizontal soft 1x1
-# grid (a single quad split by one diagonal edge -> two triangles) at its
-# centre, then lifts and holds it in the air.
-#
-# The grid's four corner vertices sit far out in x (outside the jaws), so the
-# only mesh feature crossing the pinch centre is the interior DIAGONAL edge.
-# The legacy per-particle path finds no vertex between the jaws, so the grid is
-# gripped (and lifted) only with ``enable_rigid_soft_full_surface_contact=True``
-# via the water-tight soft-EDGE pass. With the flag off the grid slips out and
-# falls.
-#
-# Command: python -m newton.examples vbd_gripper_soft_grid
-###########################################################################
+"""Example VBD Gripper — Soft 1x1 Grid (water-tight EDGE contact)
+
+A parallel-jaw gripper with CUBE finger pads clamps a horizontal soft 1x1
+grid (a single quad split by one diagonal edge -> two triangles) at its
+centre, then lifts and holds it in the air.
+
+The grid's four corner vertices sit far out in x (outside the jaws), so the
+only mesh feature crossing the pinch centre is the interior DIAGONAL edge.
+The legacy per-particle path finds no vertex between the jaws, so the grid is
+gripped (and lifted) only with ``enable_rigid_soft_full_surface_contact=True``
+via the water-tight soft-EDGE pass. With the flag off the grid slips out and
+falls.
+
+Success criteria:
+- Cube finger pads close across the interior diagonal edge of a two-triangle grid whose corner
+  vertices lie outside the jaws.
+- The grid lifts with the gripper and remains held in the air during the hold phase, without
+  slipping through the fingers.
+
+Runs:
+- `python -m newton.examples vbd_gripper_soft_grid`
+"""
 
 from __future__ import annotations
 
@@ -225,7 +231,7 @@ class Example:
             axis=wp.vec3(0.0, 0.0, 1.0),
             target_ke=p["gantry_drive_ke"],
             target_kd=p["gantry_drive_kd"],
-            target_pos=grab_z,
+            target_q=grab_z,
             label="gantry_z_joint",
         )
         j_x = builder.add_joint_prismatic(
@@ -234,7 +240,7 @@ class Example:
             axis=wp.vec3(1.0, 0.0, 0.0),
             target_ke=p["gantry_drive_ke"],
             target_kd=p["gantry_drive_kd"],
-            target_pos=0.0,
+            target_q=0.0,
             label="gantry_x_joint",
         )
         j_left = builder.add_joint_prismatic(
@@ -244,7 +250,7 @@ class Example:
             child_xform=wp.transform(wp.vec3(0.0, 0.0, p["finger_z_offset"]), wp.quat_identity()),
             target_ke=p["finger_drive_ke"],
             target_kd=p["finger_drive_kd"],
-            target_pos=p["open_half_gap"],
+            target_q=p["open_half_gap"],
             label="left_finger_joint",
         )
         j_right = builder.add_joint_prismatic(
@@ -254,7 +260,7 @@ class Example:
             child_xform=wp.transform(wp.vec3(0.0, 0.0, p["finger_z_offset"]), wp.quat_identity()),
             target_ke=p["finger_drive_ke"],
             target_kd=p["finger_drive_kd"],
-            target_pos=p["open_half_gap"],
+            target_q=p["open_half_gap"],
             label="right_finger_joint",
         )
         builder.add_articulation([j_z, j_x, j_left, j_right], label="gripper")

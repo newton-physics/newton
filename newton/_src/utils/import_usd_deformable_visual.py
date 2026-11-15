@@ -26,7 +26,12 @@ import logging
 import numpy as np
 import warp as wp
 
-from .import_usd_deformable_utils import _DeformableImportContext, _world_matrix_reflects, _world_points
+from .import_usd_deformable_utils import (
+    _DeformableImportContext,
+    _has_graphics_material_subsets,
+    _world_matrix_reflects,
+    _world_points,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,8 +128,6 @@ def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources):
 
 def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
     """Import graphics payloads for every imported deformable body and embed them."""
-    from pxr import UsdShade
-
     from ..geometry.flags import ShapeFlags  # noqa: PLC0415
     from ..usd import utils as usd  # noqa: PLC0415
 
@@ -153,7 +156,10 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             # Proposal bind pose (or the mesh points), in the common world frame the
             # simulation geometry was imported in.
             try:
-                mesh, _, source_point_indices = usd.get_mesh(prim, load_uvs=True, return_source_point_indices=True)
+                # The bind pose replaces the loaded vertices, so the mesh inertia is never used.
+                mesh, _, source_point_indices = usd.get_mesh(
+                    prim, load_uvs=True, compute_inertia=False, return_source_point_indices=True
+                )
                 points = usd.get_deformable_bind_pose(prim)[source_point_indices]
             except (ValueError, IndexError) as exc:
                 # get_mesh indexes authored topology before checking it, hence IndexError.
@@ -162,14 +168,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             if len(mesh.vertices) == 0 or len(mesh.indices) == 0:
                 logger.warning("%s: graphics mesh has no geometry; skipping visual mesh.", path)
                 continue
-            if any(
-                subset.GetIndicesAttr().Get()
-                and any(
-                    rel.GetName().startswith("material:binding") and rel.GetTargets()
-                    for rel in subset.GetPrim().GetRelationships()
-                )
-                for subset in UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets()
-            ):
+            if _has_graphics_material_subsets(prim):
                 logger.warning(
                     "%s: graphics material subsets are not supported; using only the mesh-level material.", path
                 )
@@ -254,7 +253,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                     )
                     # Unused visual vertices do not replace a segment's capsule.
                     parents = builder._deformable_visual_meshes[index]["parent"]
-                    skinned_bodies.update(parents[vertex] for vertex in indices)
+                    skinned_bodies.update(np.unique(parents[indices]).tolist())
             except ValueError as exc:
                 logger.warning("%s: could not embed visual mesh; skipping (%s)", path, exc)
                 continue
@@ -264,6 +263,6 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                 logger.info("  Embedded visual mesh %s (%d verts) in %s %s.", path, len(world_verts), family, sim_path)
 
     if ctx.hide_collision_shapes:
-        for shape, body in enumerate(builder.shape_body):
-            if body in skinned_bodies:
+        for body in skinned_bodies:
+            for shape in builder.body_shapes[body]:
                 builder.shape_flags[shape] &= ~ShapeFlags.VISIBLE

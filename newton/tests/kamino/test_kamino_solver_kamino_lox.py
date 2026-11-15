@@ -505,7 +505,7 @@ class TestSolverKaminoLOX(_LOXTestCase):
 
         solver.step(state_previous, state_next, model.control(), dt=None)
 
-        gravity = model.gravity.vector.numpy()[: model.size.num_worlds]
+        gravity = model.gravity.numpy()[: model.size.num_worlds]
         body_world = model.bodies.wid.numpy()
         expected_velocity = time_step[body_world, None] * gravity[body_world]
         np.testing.assert_allclose(state_next.u_i.numpy()[:, :3], expected_velocity, rtol=0.0, atol=5.0e-4)

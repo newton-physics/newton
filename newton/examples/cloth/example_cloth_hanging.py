@@ -1,15 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Sim Cloth Hanging
-#
-# This simulation demonstrates a simple cloth hanging behavior. A planar cloth
-# mesh is fixed on one side and hangs under gravity, colliding with the ground.
-#
-# Command: python -m newton.examples cloth_hanging (--solver [semi_implicit, style3d, xpbd, vbd])
-#
-###########################################################################
+"""Example Sim Cloth Hanging
+
+This simulation demonstrates a simple cloth hanging behavior. A planar cloth
+mesh is fixed on one side and hangs under gravity, colliding with the ground.
+
+Success criteria:
+- For each solver variant, a hanging piece of cloth appears and drops to the ground plane.
+- The cloth is much longer than wide.
+- The cloth is moving until reaching a stable state.
+- It is expected that the behavior is slightly different with every solver.
+
+Runs:
+- `python -m newton.examples cloth_hanging --width 128 --height 16 --solver semi_implicit`
+- `python -m newton.examples cloth_hanging --width 128 --height 16 --solver style3d`
+- `python -m newton.examples cloth_hanging --width 128 --height 16 --solver xpbd`
+- `python -m newton.examples cloth_hanging --width 128 --height 16 --solver vbd`
+"""
 
 import warp as wp
 
@@ -20,6 +28,7 @@ from newton.solvers import style3d
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the hanging cloth scene with the selected solver."""
         self.args = args
 
         # setup simulation parameters first
@@ -121,7 +130,7 @@ class Example:
         elif self.solver_type == "style3d":
             self.solver = newton.solvers.SolverStyle3D(
                 model=self.model,
-                iterations=self.iterations,
+                config=newton.solvers.SolverStyle3D.Config(iterations=self.iterations),
             )
         elif self.solver_type == "xpbd":
             self.solver = newton.solvers.SolverXPBD(

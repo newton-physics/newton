@@ -43,6 +43,30 @@ Revolute ``mjc:ref`` and ``mjc:springref`` instead follow the PhysicsScene's
 ``mjc:compiler:angle`` setting (degrees by default). The importer converts these
 values to radians or radians/s.
 
+**USD joint direction:** Newton imports ``physics:body0`` as the parent body and
+``physics:body1`` as the child body. UsdPhysics measures the joint position from
+the ``physics:body0`` joint frame to the ``physics:body1`` joint frame. If
+``physics:body1`` is not an imported rigid body, for example because it is empty
+(the world) or a static prim, the importer swaps the two ends: the world becomes
+the parent and ``physics:body0`` becomes the child. The swap reverses the
+direction in which the joint position is measured, so the importer negates the
+axis of a swapped revolute or prismatic joint. Limits, drive targets, initial
+joint state, and other per-joint values keep their authored signs, and
+``joint_q`` equals the authored joint position. For these joints,
+:attr:`newton.Model.joint_axis` holds the negated authored axis.
+
+The importer reverses a swapped D6 joint, or single-axis joints merged into one
+D6 joint, the same way when the joint has no rotational axis, or one rotational
+axis with every translational axis parallel to it. Negating three translational
+axes flips their handedness, so a swapped D6 joint with X, Y, and Z translational
+axes gets a left-handed axis set, which :class:`~newton.solvers.SolverKamino`
+rejects. Newton cannot reverse any other swapped D6 or merged joint. It keeps
+the authored axes and emits a :class:`~newton.NewtonWarning`, because
+any limits, drives, or initial state may act in the mirrored direction. Author
+the joint with the rigid body as ``physics:body1`` to avoid this. A swapped spherical joint keeps its axes, so its ``joint_q`` holds the
+inverse of the authored joint rotation. This does not change its motion, because
+Newton imports no limits or drives for spherical joints.
+
 Particle Simulation Geometry
 ----------------------------
 
@@ -69,7 +93,7 @@ The importer uses standard point and material representations:
   precedence and follows normal indexed, inherited, and interpolation rules.
   Widths become radii using ``width / 2`` after stage units and the prim's
   uniform world scale are applied. Non-uniform scale and shear are rejected.
-* ``physics:masses`` supplies per-point masses and takes precedence over
+* ``newton:masses`` supplies per-point masses and takes precedence over
   ``PhysicsDeformableBodyAPI`` mass or density and material density. Its length
   must match ``points``. A body-total ``physics:mass`` is otherwise distributed
   using the density-derived particle weights.
@@ -81,7 +105,7 @@ The importer uses standard point and material representations:
   Until the solver stores absolute damping directly, the importer divides it by
   the resolved Young's modulus. ``newton:mpm:initialPlasticVolumeStrain`` seeds
   the per-particle ``mpm:particle_Jp`` state and is preserved by solver resets.
-* When ``physics:masses`` is unauthored, mass uses a cubical MPM support volume:
+* When ``newton:masses`` is unauthored, mass uses a cubical MPM support volume:
   ``mass = density * transformed_width**3``. If widths are absent, Newton uses
   :attr:`newton.ModelBuilder.default_particle_radius` and a support width of
   twice that radius.
@@ -128,15 +152,11 @@ vertices; the indices preserve that relationship.
    )
    vertex_data = authored_point_data[point_indices]
 
-The ``return_source_point_indices`` option always returns
-``(mesh, uv_indices, source_point_indices)``.
-The second item is ``None`` unless UV indices are requested and available.
-The source-point mapping is always third, including when both mappings are
-requested. Without this option, existing return values are unchanged.
-
-The ``return_source_point_indices`` option requires a single mesh prim. It is
-not available when merging a stage or file. See the function's return table
-for all combinations.
+With this option, :func:`newton.usd.get_mesh` always returns
+``(mesh, uv_indices, source_point_indices)``, where ``uv_indices`` is ``None``
+unless UV indices were requested and are available. The option requires a
+single mesh prim and is not available when merging a stage or file; see the
+function's return table for all combinations.
 
 Deformable Bodies
 -----------------
@@ -149,7 +169,7 @@ Deformable Bodies
    compatibility fallbacks for proposal names Newton has already released; using one emits
    a ``DeprecationWarning`` that names its replacement.
 
-   The packaged ``newton-usd-schemas`` 0.5.x dependency registers Newton's extension schemas,
+   The packaged ``newton-usd-schemas`` 0.6.x dependency registers Newton's extension schemas,
    but not these proposed core deformable APIs. Until AOUSD publishes them, the importer
    discovers their applied-schema tokens and attributes directly; no package upgrade is needed
    for this proposal revision.
@@ -315,6 +335,7 @@ The first release deliberately supports a narrow, predictable set of inputs:
 * Hard cable-to-xform point attachments, and hard cable-to-cable junctions whose initial
   points coincide. See cable attachment positions below for cases where initial and rest
   segment lengths differ.
+* Cloth/volume ``point`` to rigid-body ``xform`` attachments, including hard constraints in VBD.
 * ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
   of their two sources (imported cables, rigid bodies, or collider prims; a count of ``0`` or
   an empty counts array selects all elements). Cloth and volume element sources warn and are
@@ -337,33 +358,9 @@ Anything outside this set warns and is skipped, or is recorded as unsupported in
 attributes. It never silently becomes a different physical model. In particular: disabled
 (``physics:bodyEnabled = false``) and kinematic (``physics:kinematicEnabled = true``)
 deformables are skipped, malformed topology or curves are skipped, and compliant
-(finite-stiffness) attachments and non-coincident cable junctions are kept as data but not
+(finite-stiffness) cable attachments and non-coincident cable junctions are kept as data but not
 imported. Dynamic and static friction belong to collision geometry and are not mapped onto
 the deformable collision approximation yet.
-
-Reading a deformable bind pose
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. experimental::
-   :func:`newton.usd.get_deformable_bind_pose` follows the AOUSD proposal.
-
-Read the reference points used to bind visual geometry:
-
-.. code-block:: python
-
-   import newton.usd
-
-   visual = stage.GetPrimAtPath("/World/SoftBody/Visual")
-   points = newton.usd.get_deformable_bind_pose(visual)
-
-The reader uses a ``PhysicsDeformablePoseAPI`` instance with purpose
-``bindPose``, or the geometry's default-time points when none is authored.
-It does not substitute rest-shape points or an animated sample. Multiple
-bind poses and malformed data raise an error.
-
-The returned array owns its storage. Points remain in authored order, local
-coordinates, and stage length units. Apply transforms and unit conversion
-separately. These are not render vertices split at UV or normal seams.
 
 Limitations
 ~~~~~~~~~~~
@@ -403,10 +400,14 @@ Known gaps of the experimental importer, tracked as follow-ups:
   Import does not call :func:`~newton.eval_fk`. If the application calls it, FK enforces
   the articulation's root attachment and can translate a cable rooted at an endpoint.
   Attachments outside articulations remain for the solver to enforce.
-* **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
-  preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
-  hardening them would change the authored physics); only hard attachments (unauthored or
-  infinite stiffness; damping does not affect hardness) become joints.
+* **Springy cable attachments** -- cable attachments with a finite stiffness are not simulated.
+  They are preserved in ``path_attachment_attrs`` with their authored stiffness and damping
+  (silently hardening them would change the authored physics); only hard cable attachments
+  (unauthored or infinite stiffness; damping does not affect hardness) become joints.
+* **Cloth/volume attachment targets** -- only ``point`` sites attached to an ``xform`` under an
+  imported rigid body are imported. Other site types and targets with no rigid body (static
+  xforms, the world) warn and are preserved in ``path_attachment_attrs`` with an
+  ``unsupported_reason``. Hard attachments require both endpoints in :class:`~newton.solvers.SolverVBD`.
 * **Body state** -- ``startsAsleep`` and ``simulationOwner`` are not read. Kinematic
   deformables are skipped rather than simulated.
 * **Per-element materials** -- ``GeomSubset`` physics material bindings warn and are
@@ -419,9 +420,8 @@ Known gaps of the experimental importer, tracked as follow-ups:
   collision in Newton yet: they warn and import colliding. A welded cable graph shares one
   shape configuration, so any collision-enabled member curve makes the whole graph collide
   (mixed authoring warns).
-* **Collision and graphics geometry** -- graphics Mesh prims can follow their owning
-  simulation geometry; see :ref:`usd-deformable-visual-import`. Other PointBased
-  graphics are skipped with a diagnostic instead of becoming frozen rigid shapes. A dedicated
+* **Collision and graphics geometry** -- graphics Mesh prims can import as visual meshes; see
+  :ref:`usd-deformable-visual-import` for what is imported and skipped. A dedicated
   point-based collider (every one warns) only toggles the simulation geometry's collision
   as described above and never becomes a separate rigid shape. Deformable-owned geometry
   is owned exclusively by the deformable importer: when a
@@ -452,8 +452,10 @@ proposal-marked deformables use the final 1000 kg/m³ fallback rather than
 TetMesh keeps ``ModelBuilder.default_tet_density`` for compatibility. Cable element volumes use
 resolved rest lengths and physical thickness: ``V = L_rest * pi * diameter**2 / 4``.
 Density-derived masses and total-mass weights use these rest volumes, as the proposal requires.
-Explicit segment masses still apply directly. Newton retains its capsule inertia approximation,
-scaled to each resolved segment mass.
+Explicit segment masses still apply directly. Newton computes solid-cylinder inertia from
+each resolved segment mass, radius and rest length, using the same assignment as native
+:meth:`~newton.ModelBuilder.add_rod`. Collision shapes remain capsules;
+``ModelBuilder.default_shape_cfg.is_solid`` does not apply to cables.
 
 Cloth element volumes use rest triangle areas and geometry thickness. Volume deformables use
 rest tetrahedron volumes. Typed mass conversion and total-mass distribution use these same volumes.
@@ -507,9 +509,30 @@ The joint connects the cable segment body (for an interior cable point, one flan
 body -- each site is a single point-point constraint) to the target: an xform, a rigid body
 (kinematic bodies included), or the world frame. The created joints are returned in
 ``path_attachment_map``. Every parsed attachment, including unsupported ones, is described in
-``path_attachment_attrs``. A finite attachment stiffness cannot be represented yet, so
-compliant attachments warn and are preserved as metadata instead of becoming joints. Attachments on cloth or volume sites warn and are kept in
-``path_attachment_attrs`` until Newton has a constraint for them.
+``path_attachment_attrs``. A finite cable attachment stiffness cannot be represented yet, so
+compliant cable attachments warn and are preserved as metadata instead of becoming joints.
+
+When ``src0`` is an imported cloth or volume deformable, ``type0`` is ``point``, ``type1`` is
+``xform`` under an imported rigid body, each ``indices0`` simulation
+point becomes one particle-body attachment (see
+:meth:`~newton.ModelBuilder.add_attachment_particle_body`) to the ``coords1`` anchor in the
+``src1`` xform frame. The authored stiffness, damping, and ``attachmentEnabled`` state are kept,
+including disabled attachments and zero stiffness. The created attachment indices are listed
+under ``attachment_particle_body_indices`` in that prim's ``path_attachment_attrs`` entry.
+Unauthored or infinite stiffness creates a hard point constraint in
+:class:`~newton.solvers.SolverVBD`, with damping ignored. Finite stiffness creates a compliant
+attachment. See :ref:`Particle-body attachments` for solver support and convergence limits.
+
+With ``override_root_xform=True``, only the articulation is moved to the import ``xform``.
+Cloth and volume deformables keep their composed USD pose. The attachment anchor is
+still correct in the body frame, but the deformable and the anchor start apart, so the
+attachment pulls them together on the first step.
+
+For these experimental cloth/volume attachments, Newton interprets finite
+``physics:stiffness`` as a point-spring stiffness [N/m] and ``physics:damping`` as an absolute
+damping coefficient [N·s/m], matching the builder API. The pinned proposal describes attachment
+stiffness in force/area units; that dimensional discrepancy remains unresolved. The importer
+preserves the authored numeric values and does not derive an area-dependent conversion.
 
 A ``point``->``point`` attachment between two imported cables can be a weld. Welding happens
 only when the attachment is **hard** (no authored stiffness, or infinite; authored damping
@@ -572,6 +595,30 @@ see :ref:`deformable-objects-welded-usd-graphs` for per-curve lookup.
 
    Solver tuning that is not part of the supported AOUSD schemas or a documented Newton schema
    extension is not imported; supply it on the builder or model after import.
+
+Reading a deformable bind pose
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   :func:`newton.usd.get_deformable_bind_pose` follows the AOUSD proposal.
+
+Read the reference points used to bind visual geometry:
+
+.. code-block:: python
+
+   import newton.usd
+
+   visual = stage.GetPrimAtPath("/World/SoftBody/Visual")
+   points = newton.usd.get_deformable_bind_pose(visual)
+
+The reader uses a ``PhysicsDeformablePoseAPI`` instance with purpose
+``bindPose``, or the geometry's default-time points when none is authored.
+It does not substitute rest-shape points or an animated sample. Multiple
+bind poses and malformed data raise an error.
+
+The returned array owns its storage. Points remain in authored order, local
+coordinates, and stage length units. Apply transforms and unit conversion
+separately. These are not render vertices split at UV or normal seams.
 
 Finding deformable visual geometry
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -647,10 +694,12 @@ this builder after import; it does not track copies made by later composition or
 replication. Imported meshes use their graphics prim path as their initial label;
 ``world`` identifies each copy. USD namespaces are not rebased automatically.
 
-Embeddings are computed at import time. Authored per-vertex embedding weights,
-Gaussian graphics, and other PointBased graphics are not imported by this path.
+Embeddings are computed at import time; authored per-vertex embedding weights
+are not imported. PointBased graphics other than meshes are skipped with a
+diagnostic and never become rigid shapes, and Gaussian graphics are not
+imported by this path.
 Triangle bindings discard normal offsets; vertices outside a volume are
-clamped as described in the :doc:`visualization guide </guide/visualization>`.
+clamped as described in the :ref:`visualization guide <deformable-visual-meshes>`.
 
 Material Color Spaces
 ---------------------
@@ -666,7 +715,11 @@ to display/sRGB. If the attribute has authored ``colorSpace`` metadata or
 inherits a color space through ``UsdColorSpaceAPI``, Newton uses
 ``Usd.ColorSpaceAPI.ComputeColorSpaceName`` to determine the effective color
 space. Linear/raw color spaces are converted to display/sRGB; display/sRGB
-colors such as ``srgb_rec709_scene`` are kept as authored.
+colors such as ``srgb_rec709_scene`` are kept as authored. Authored color
+components outside [0, 1] are clamped and non-finite colors are ignored; Newton
+logs each case at ``WARNING`` on the ``newton`` logger with the path of the
+attribute the value came from (see :ref:`diagnostics`). Imported opacity is
+handled the same way.
 
 Texture inputs are handled similarly at the color-texture boundary. Newton reads
 ``UsdUVTexture.sourceColorSpace`` first, falls back to color-space metadata on

@@ -18,7 +18,7 @@ from warp._src import types as warp_types
 from ..core.types import override
 from ..geometry import Mesh
 from ..geometry.deformable_visual import DeformableVisualMesh
-from ..sim import Model, State
+from ..sim import Model, ModelFlags, State
 from ..sim.shape_contact_pairs import _ShapeContactPairs
 from .viewer import ViewerBase
 
@@ -488,6 +488,13 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
                 attributes["deformable_visual_meshes"] = attributes.pop("_deformable_visual_meshes", ())
                 attributes["deformable_visual_mesh_count"] = len(attributes["deformable_visual_meshes"])
                 attributes.pop("_deformable_visual_skin_batches", None)
+            elif isinstance(obj, Model.AttributeNamespace):
+                # Runtime compatibility hooks are not model state; record the canonical arrays instead.
+                attributes = {
+                    name: value
+                    for name, value in attributes.items()
+                    if name not in ("_deprecated_aliases", "_removed_attributes")
+                }
             return {
                 "__type__": obj.__class__.__name__,
                 "__module__": obj.__class__.__module__,
@@ -1499,6 +1506,14 @@ class ViewerFile(ViewerBase):
             opacity: Optional display opacity in [0, 1].
         """
         pass
+
+    @override
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        if flags & ModelFlags.SHAPE_TYPE_AND_SOURCE and self._shape_geometry_changed():
+            raise NotImplementedError(
+                "ViewerFile does not support shape geometry changes such as body variant selection."
+            )
+        super().notify_model_changed(flags)
 
     @override
     def log_instances(

@@ -13,6 +13,7 @@ from newton import ModelFlags
 from newton._src.solvers.mujoco.constants import HINGE_CONNECT_HALF_SPAN
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 class Sim:
@@ -345,6 +346,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
             assert_anchors(changed_connect_anchor_leafbody1)
 
 
+@requires(*MUJOCO_MODULES)
 class TestConnectConstraintJointMuJoCoWarp(TestConnectConstraintWithSimStepBase, unittest.TestCase):
     def _num_worlds(self):
         return 2
@@ -361,6 +363,7 @@ class TestConnectConstraintJointMuJoCoWarp(TestConnectConstraintWithSimStepBase,
         )
 
 
+@requires(*MUJOCO_MODULES)
 class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, unittest.TestCase):
     def _num_worlds(self):
         return 1
@@ -755,7 +758,65 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
     def test_loop_joint_connect_constraint(self):
         self._test_loop_joint_connect_constraint()
 
+    def test_ball_loop_joint_connect_anchor_off_reference_pose(self):
+        """Keep the authored child anchor of a ball loop joint that is open at the reference pose.
 
+        The anchors sit 0.5 m apart in world space at the zero pose, so a reference-pose projection would give
+        ``(-0.8, 0, 0)`` instead of the authored ``(-0.3, 0, 0)``. Notifications that recompute MuJoCo constants must
+        not reset it either.
+        """
+        anchor_a = wp.vec3(0.2, 0.0, 0.0)
+        anchor_b = wp.vec3(-0.3, 0.0, 0.0)
+        inertia_mat = self._inertia_matrix()
+
+        builder = self._new_mujoco_builder()
+        root = builder.add_link(mass=1.0, inertia=inertia_mat)
+        root_joint = builder.add_joint_fixed(parent=-1, child=root)
+        body_a = builder.add_link(mass=1.0, inertia=inertia_mat)
+        joint_a = builder.add_joint_revolute(parent=root, child=body_a, axis=2)
+        body_b = builder.add_link(mass=1.0, inertia=inertia_mat)
+        joint_b = builder.add_joint_revolute(
+            parent=root,
+            child=body_b,
+            axis=2,
+            parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_joint_ball(
+            parent=body_a,
+            child=body_b,
+            parent_xform=wp.transform(anchor_a, wp.quat_identity()),
+            child_xform=wp.transform(anchor_b, wp.quat_identity()),
+        )
+        builder.add_articulation(joints=[root_joint, joint_a, joint_b])
+        all_worlds_builder = newton.ModelBuilder(gravity=wp.vec3(0.0), up_axis=1)
+        all_worlds_builder.add_world(builder)
+        sim = self._finalize_sim(all_worlds_builder)
+
+        def assert_anchors(msg):
+            eq_data = [sim.solver.mjw_model.eq_data.numpy()[0][0]]
+            if sim.solver.use_mujoco_cpu:
+                eq_data.append(sim.solver.mj_model.eq_data[0])
+            for data in eq_data:
+                np.testing.assert_allclose(data[0:3], list(anchor_a), atol=1e-5, err_msg=msg)
+                np.testing.assert_allclose(data[3:6], list(anchor_b), atol=1e-5, err_msg=msg)
+
+        self.assertEqual(sim.solver.mj_model.neq, 1)
+        assert_anchors("after construction")
+
+        body_mass = sim.model.body_mass.numpy()
+        body_mass[body_b] = 2.0
+        sim.model.body_mass.assign(body_mass)
+        for flag in (
+            ModelFlags.BODY_INERTIAL_PROPERTIES,
+            ModelFlags.BODY_PROPERTIES,
+            ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES,
+            ModelFlags.ACTUATOR_PROPERTIES,
+        ):
+            sim.solver.notify_model_changed(flag)
+            assert_anchors(f"after {flag!r}")
+
+
+@requires(*MUJOCO_MODULES)
 class TestLoopJointConnectConstraintMuJoCoWarp(TestLoopJointConnectConstraintBase, unittest.TestCase):
     def _create_solver(self, model):
         return SolverMuJoCo(
@@ -768,6 +829,7 @@ class TestLoopJointConnectConstraintMuJoCoWarp(TestLoopJointConnectConstraintBas
         )
 
 
+@requires(*MUJOCO_MODULES)
 class TestLoopJointConnectConstraintMuJoCoCPU(TestLoopJointConnectConstraintBase, unittest.TestCase):
     def _create_solver(self, model):
         return SolverMuJoCo(
@@ -945,6 +1007,7 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
             )
 
 
+@requires(*MUJOCO_MODULES)
 class TestMixedWeldAndConnectMuJoCoWarp(TestMixedWeldAndConnectLoopJointBase, unittest.TestCase):
     def _create_solver(self, model):
         return SolverMuJoCo(
@@ -957,6 +1020,7 @@ class TestMixedWeldAndConnectMuJoCoWarp(TestMixedWeldAndConnectLoopJointBase, un
         )
 
 
+@requires(*MUJOCO_MODULES)
 class TestMixedWeldAndConnectMuJoCoCPU(TestMixedWeldAndConnectLoopJointBase, unittest.TestCase):
     def _create_solver(self, model):
         return SolverMuJoCo(
@@ -1129,6 +1193,7 @@ class TestConnectAnchorRefPoseBase(TestEqualityConstraintWithSimStepBase):
                 self.assertAlmostEqual(float(measured_joint_q[w * nq_per_world + k]), 0.0, places=4)
 
 
+@requires(*MUJOCO_MODULES)
 class TestConnectAnchorRefPoseMuJoCoWarp(TestConnectAnchorRefPoseBase, unittest.TestCase):
     def _num_worlds(self):
         return 2
@@ -1145,6 +1210,7 @@ class TestConnectAnchorRefPoseMuJoCoWarp(TestConnectAnchorRefPoseBase, unittest.
         )
 
 
+@requires(*MUJOCO_MODULES)
 class TestConnectAnchorRefPoseMuJoCoCPU(TestConnectAnchorRefPoseBase, unittest.TestCase):
     def _num_worlds(self):
         return 1

@@ -12,7 +12,6 @@ from unittest import mock
 
 import numpy as np
 import warp as wp
-from packaging.version import Version
 
 import newton
 import newton.tests.unittest_utils
@@ -21,13 +20,19 @@ from newton._src.solvers.solver import _set_module_options_if_changed
 from newton._src.solvers.vbd import particle_vbd_kernels, vbd_coupling_kernels
 from newton._src.solvers.xpbd import kernels as xpbd_kernels
 from newton._src.solvers.xpbd import tendon_kernels as xpbd_tendon_kernels
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    requires,
+    warp_version_at_least,
+)
 
 DETERMINISTIC_MODE = wp.DeterministicMode.RUN_TO_RUN
 
 # Warp 1.19 rejects MuJoCo Warp kernels that read and atomically update one array
 # (_accumulate_subtreemass, _qLD_acc) in deterministic mode.
-_MUJOCO_WARP_DETERMINISM_UNSUPPORTED = Version(wp.__version__) >= Version("1.19.0.dev0")
+_MUJOCO_WARP_DETERMINISM_UNSUPPORTED = warp_version_at_least("1.19.0.dev0")
 
 
 def _skip_unsupported_mujoco_determinism(test):
@@ -328,6 +333,7 @@ class TestSolverDeterminismOptions(unittest.TestCase):
             _set_module_options_if_changed(options, module=xpbd_kernels)
         set_module_options.assert_not_called()
 
+    @requires(*MUJOCO_MODULES)
     def test_mujoco_generated_kernel_cache_tracks_determinism(self):
         from mujoco_warp._src import warp_util
 

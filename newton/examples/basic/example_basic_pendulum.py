@@ -1,16 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Pendulum
-#
-# Shows how to set up a simulation of a simple double pendulum using the
-# newton.ModelBuilder() class.
-#
-# Command: python -m newton.examples basic_pendulum --solver xpbd
-#          python -m newton.examples basic_pendulum --solver kamino
-#
-###########################################################################
+"""Example Basic Pendulum
+
+Shows how to set up a simulation of a simple double pendulum using the
+newton.ModelBuilder() class.
+
+Success criteria:
+- The two-link pendulum swings back and forth with both joints connected.
+- Motion stays bounded and in the pendulum plane without explosive separation.
+
+Runs:
+- `python -m newton.examples basic_pendulum`
+- `python -m newton.examples basic_pendulum --solver xpbd`
+- `python -m newton.examples basic_pendulum --solver kamino`
+"""
 
 import warp as wp
 
@@ -79,13 +83,13 @@ class Example:
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model,
-                dynamics_solver="dvi",
+                dynamics_solver="scc",
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
-            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
-            solver_config.dvi.max_alternating_iterations = 8
-            solver_config.dvi.bilateral_solve_interval = 8
+            solver_config.scc.bilateral_solver_type = "LLTBRCM"
+            solver_config.scc.max_alternating_iterations = 8
+            solver_config.scc.bilateral_solve_interval = 8
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model)

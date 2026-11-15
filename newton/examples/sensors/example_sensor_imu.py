@@ -1,6 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Visualize body-frame accelerometer readings as colors on three oriented cubes.
+
+Success criteria:
+- Three cubes with X, Y, and Z face markings drop to the ground in different orientations.
+- After settling, the color depends on which body axis is aligned with gravity and is consistent
+  across cubes.
+- Right-drag and reorient a cube, then release and let it settle; its color changes consistently
+  with the new orientation.
+
+Runs:
+- `python -m newton.examples sensor_imu`
+"""
+
 import numpy as np
 import warp as wp
 from pxr import Usd
@@ -110,11 +123,11 @@ class Example:
 
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
             solver_config.use_collision_detector = True
             solver_config.integrator = "moreau"
-            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.scc.max_alternating_iterations = 8
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100)

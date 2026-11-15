@@ -10,7 +10,7 @@ import unittest
 import warnings
 
 import newton
-from newton.exceptions import NewtonDeprecationWarning, NewtonWarning
+from newton import NewtonDeprecationWarning, NewtonWarning
 
 _NEWTON_ROOT = pathlib.Path(newton.__file__).parent
 
@@ -36,8 +36,8 @@ class TestWarningCategories(unittest.TestCase):
         self.assertEqual([type(w.message) for w in caught], [NewtonDeprecationWarning])
 
     def test_library_warnings_use_newton_categories(self):
-        """Require a newton.exceptions category for every warning Newton emits."""
-        allowed = set(newton.exceptions.__all__)
+        """Require a Newton category for every warning Newton emits."""
+        allowed = {n for n in newton.__all__ if isinstance(c := getattr(newton, n), type) and issubclass(c, Warning)}
         offenders = []
         for relative, tree in _library_sources():
             for node in ast.walk(tree):
@@ -47,7 +47,7 @@ class TestWarningCategories(unittest.TestCase):
                 category = next((k.value for k in node.keywords if k.arg == "category"), category)
                 if category is None or ast.unparse(category).rpartition(".")[2] not in allowed:
                     offenders.append(f"{relative}:{node.lineno}")
-        self.assertEqual(offenders, [], "use a newton.exceptions warning category")
+        self.assertEqual(offenders, [], "use a Newton warning category")
 
 
 class _RecordingHandler(logging.Handler):
@@ -107,19 +107,20 @@ class TestLoggingDefaults(unittest.TestCase):
 
     def test_kamino_messages_follow_newton_logger(self):
         """Route Kamino messages through the newton logger and its level without configuring logging."""
-        from newton._src.solvers.kamino._src.utils import logger as msg  # noqa: PLC0415
+        from newton._src.solvers.kamino._src.utils.logger import reset_log_level  # noqa: PLC0415
 
-        msg.reset_log_level()  # undo a level an earlier test may have set
+        reset_log_level()  # undo a level an earlier test may have set
         newton_logger = logging.getLogger("newton")
         self.addCleanup(newton_logger.setLevel, newton_logger.level)
 
+        logger = logging.getLogger("newton._src.solvers.kamino._src.core.model")
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            msg.warning("kamino problem")
-            msg.info("kamino detail")
-            msg.notif("kamino status")
+            logger.warning("kamino problem")
+            logger.debug("kamino detail")
+            logger.info("kamino status")
             newton_logger.setLevel(logging.DEBUG)
-            msg.info("kamino detail on request")
+            logger.debug("kamino detail on request")
 
         self.assertEqual(logging.getLogger().handlers, [])
         self.assertEqual(stdout.getvalue(), "kamino status\nkamino detail on request\n")
