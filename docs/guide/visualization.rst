@@ -563,6 +563,41 @@ the visual to the prototype before replication. Global drivers and visuals
 can both be created in global scope. Attachment to a different world is
 rejected before a shape is added.
 
+An external importer can attach Gaussians after adding the simulation mesh.
+The mesh vertices and Gaussian centers, orientations, and scales must use the
+same rest coordinate frame. This small example uses already-transformed data:
+
+.. testcode:: deformable-visual-gaussian
+
+    prototype = newton.ModelBuilder()
+    tet_start = prototype.tet_count
+    prototype.add_soft_mesh(
+        pos=(0.0, 0.0, 0.0), rot=wp.quat_identity(), scale=1.0, vel=(0.0, 0.0, 0.0),
+        vertices=[(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)], indices=[0, 1, 2, 3],
+        density=100.0, k_mu=1.0e4, k_lambda=1.0e4, k_damp=0.0,
+    )
+    gaussian = newton.Gaussian(positions=[[0.25, 0.25, 0.25]], scales=[[0.1, 0.1, 0.1]])
+    visual_index = prototype.add_deformable_visual_gaussian(
+        gaussian, kind="tetrahedron", tet_range=(tet_start, prototype.tet_count),
+        label="toy/splats",
+    )
+    builder = newton.ModelBuilder()
+    builder.replicate(prototype, 2)
+
+This creates the render-only Gaussian shape; do not also call
+:meth:`~newton.ModelBuilder.add_shape_gaussian` for the same visual.
+The returned index identifies the visual in this prototype, not in every
+later composed model.
+
+To reuse a precomputed binding, supply both ``parent`` and ``weights``.
+``parent`` has one **tetrahedron index**, in the builder's index space, per
+Gaussian. It does not contain the tetrahedron's four particle indices.
+For local tetrahedron IDs, add ``tet_start``. Each row of ``weights`` has four
+non-negative values that sum to one, ordered like that tetrahedron's particle
+indices. If an importer stores four particle IDs per sample, first find the
+matching tetrahedron and reorder the weights. Omit both arguments to let
+Newton compute the binding.
+
 Both paths share :class:`~newton.geometry.DeformableVisuals`. Allocate it once and update
 it after simulation. A viewer or camera can also evaluate its own buffers when
 no shared result is supplied.
@@ -578,6 +613,15 @@ no shared result is supplied.
     viewer.log_state(state)
     camera.update(state, camera_transforms, camera_rays,
                   deformable_visuals=visuals, color_image=rgb)
+
+External renderers can read ``visuals.gaussian_transforms`` and
+``visuals.gaussian_scales`` on the device. Use
+:meth:`~newton.geometry.DeformableVisuals.get_gaussian_transforms` and
+:meth:`~newton.geometry.DeformableVisuals.get_gaussian_scales` for one visual.
+Each transform contains a center and orientation; a Warp kernel can extract
+the center with ``wp.transform_get_translation`` without a host copy.
+Create the shared output and camera for the same Model, and finish reading the
+output before the next update overwrites it.
 
 The camera's normal shape/particle BVH update requirements still apply; see
 :meth:`~newton.sensors.SensorCamera.update`. Visual evaluation reuses fixed
