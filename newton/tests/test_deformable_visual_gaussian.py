@@ -940,7 +940,7 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
             np.testing.assert_allclose(depth_image.numpy(), direct_depth, atol=1e-6)
 
     def test_camera_keeps_replicated_gaussians_independent(self):
-        """Render one independently deformed Gaussian field in each world."""
+        """Match direct and shared camera output across independent world resets."""
         prototype = _soft_builder()
         tet_indices = np.asarray(prototype.tet_indices, dtype=np.int32).reshape(-1, 4)
         rest_particles = np.asarray(prototype.particle_q, dtype=np.float32)
@@ -958,37 +958,92 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
         )
         builder = newton.ModelBuilder()
         builder.replicate(prototype, 2)
-        model = builder.finalize()
-        state = model.state()
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                state = model.state()
+                rest = state.particle_q.numpy().copy()
+                moved = rest.copy()
+                world_zero = model.particle_world.numpy() == 0
+                moved[world_zero, 0] = center[0, 0] + 1.5 * (moved[world_zero, 0] - center[0, 0])
+                moved[world_zero, 2] += 0.4
 
-        moved = state.particle_q.numpy()
-        particle_world = model.particle_world.numpy()
-        moved[particle_world == 0, 2] += 0.4
-        state.particle_q.assign(moved)
+                sensor = SensorCamera(
+                    model,
+                    deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
+                    default_render_config=SensorCamera.RenderConfig(
+                        enable_particles=False,
+                        gaussians_mode=SensorCamera.GaussianRenderMode.QUALITY,
+                        max_distance=10.0,
+                    ),
+                )
+                width = height = 32
+                camera_rays = sensor.compute_camera_rays_pinhole(
+                    width, height, device=device, camera_fov=math.radians(40.0)
+                )
+                camera = wp.transformf(wp.vec3f(float(center[0, 0]), float(center[0, 1]), 2.0), wp.quat_identity())
+                camera_transforms = wp.array([camera, camera], dtype=wp.transformf, device=device)
+                depth_image = sensor.allocate_image_depth(model.world_count, width, height)
+                rgb = sensor.allocate_image_color_hdr(model.world_count, width, height)
+                sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image, hdr_color_image=rgb)
+                rest_depth, rest_rgb = depth_image.numpy().copy(), rgb.numpy().copy()
+                self.assertTrue(np.all(rest_depth[:, height // 2, width // 2] > 0.0))
 
-        sensor = SensorCamera(
-            model,
-            deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
-            default_render_config=SensorCamera.RenderConfig(
-                enable_particles=False,
-                gaussians_mode=SensorCamera.GaussianRenderMode.QUALITY,
-                max_distance=10.0,
-            ),
-        )
-        width = 32
-        height = 32
-        camera_rays = sensor.compute_camera_rays_pinhole(
-            width, height, device=model.device, camera_fov=math.radians(40.0)
-        )
-        camera = wp.transformf(wp.vec3f(float(center[0, 0]), float(center[0, 1]), 2.0), wp.quat_identity())
-        camera_transforms = wp.array([camera, camera], dtype=wp.transformf, device=model.device)
-        depth_image = sensor.allocate_image_depth(model.world_count, width, height)
+                visuals = newton.geometry.DeformableVisuals(model)
+                visuals.update(state)
+                sensor.update(
+                    state,
+                    camera_transforms,
+                    camera_rays,
+                    depth_image=depth_image,
+                    hdr_color_image=rgb,
+                    deformable_visuals=visuals,
+                )
+                graph = None
+                if device.is_cuda:
+                    with wp.ScopedCapture(device=device) as capture:
+                        visuals.update(state)
+                        sensor.update(
+                            state,
+                            camera_transforms,
+                            camera_rays,
+                            depth_image=depth_image,
+                            hdr_color_image=rgb,
+                            deformable_visuals=visuals,
+                        )
+                    graph = capture.graph
 
-        sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
-        depth = depth_image.numpy()[:, height // 2, width // 2]
-
-        self.assertTrue(np.all(depth > 0.0))
-        self.assertAlmostEqual(float(depth[1] - depth[0]), 0.4, delta=0.1)
+                for phase, positions in (("deform", moved), ("reset", rest)):
+                    with self.subTest(phase=phase):
+                        state.particle_q.assign(positions)
+                        if graph is None:
+                            visuals.update(state)
+                            sensor.update(
+                                state,
+                                camera_transforms,
+                                camera_rays,
+                                depth_image=depth_image,
+                                hdr_color_image=rgb,
+                                deformable_visuals=visuals,
+                            )
+                        else:
+                            wp.capture_launch(graph)
+                        shared_depth, shared_rgb = depth_image.numpy().copy(), rgb.numpy().copy()
+                        sensor.update(
+                            state, camera_transforms, camera_rays, depth_image=depth_image, hdr_color_image=rgb
+                        )
+                        np.testing.assert_allclose(depth_image.numpy(), shared_depth, atol=1e-6)
+                        np.testing.assert_allclose(rgb.numpy(), shared_rgb, atol=1e-6)
+                        np.testing.assert_allclose(shared_depth[1], rest_depth[1], atol=1e-6)
+                        np.testing.assert_allclose(shared_rgb[1], rest_rgb[1], atol=1e-6)
+                        if phase == "deform":
+                            depth = shared_depth[:, height // 2, width // 2]
+                            self.assertTrue(np.all(depth > 0.0))
+                            self.assertAlmostEqual(float(depth[1] - depth[0]), 0.4, delta=0.1)
+                            self.assertGreater(float(np.max(np.abs(shared_rgb[0] - rest_rgb[0]))), 1e-3)
+                        else:
+                            np.testing.assert_allclose(shared_depth[0], rest_depth[0], atol=1e-6)
+                            np.testing.assert_allclose(shared_rgb[0], rest_rgb[0], atol=1e-6)
 
 
 if __name__ == "__main__":
