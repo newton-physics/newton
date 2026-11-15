@@ -44,6 +44,8 @@ Example::
 
 .. rubric:: Functions
 
+.. autofunction:: add_actuator_dcmotor
+
 .. autofunction:: add_actuator_general
 
 .. autofunction:: add_actuator_motor

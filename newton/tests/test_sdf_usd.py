@@ -22,7 +22,7 @@ from pathlib import Path
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices, requires
 
 CUBE_POINTS = [
     (-0.5, -0.5, -0.5),
@@ -88,6 +88,7 @@ def _add_collision_mesh(stage, path):
     return mesh
 
 
+@requires("pxr.Usd")
 class TestSDFUSDParsing(unittest.TestCase):
     """Tests for SDF attribute parsing from USD."""
 
@@ -557,9 +558,9 @@ class TestSDFUSDParsing(unittest.TestCase):
             full_edge_count = len(builder.shape_source[s1].edges)
 
             model = builder.finalize(device=device)
-            # The simplified edges land in model.shape_edge_range / model.mesh_edge_indices
+            # The simplified edges land in model._shape_edge_range / model._mesh_edge_indices
             # (rigid collision edges), not model.edge_count (cloth bending edges).
-            _, simplified_edge_count = model.shape_edge_range.numpy()[s1]
+            _, simplified_edge_count = model._shape_edge_range.numpy()[s1]
             simplified_edge_count = int(simplified_edge_count)
             # The simplified set is strictly smaller than the full edge list on
             # a typical cube (default 0.1° threshold drops co-planar edges).

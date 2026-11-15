@@ -11,7 +11,6 @@ import numpy as np
 import warp as wp
 from warp._src.types import Any
 
-from .....core.types import Axis, AxisType
 from .types import (
     mat34f,
     mat63f,
@@ -39,29 +38,6 @@ FLOAT32_EPS = wp.constant(wp.float32(np.finfo(np.float32).eps))
 
 I_3 = wp.constant(wp.mat33f(1, 0, 0, 0, 1, 0, 0, 0, 1))
 """ The 3x3 identity matrix."""
-
-
-###
-# Rotation matrices
-###
-
-
-def axis_to_mat33(axis: AxisType) -> wp.mat33f:
-    """Return a 3x3 frame matrix whose first column is the unit vector for ``axis``.
-
-    The remaining two columns are the standard basis vectors cycled so the matrix
-    is a permutation of the identity (i.e. a proper rotation).
-
-    Args:
-        axis: Axis identifier (:class:`Axis`, string, or int) to use as the first
-            column of the output matrix.
-    """
-    a = Axis.from_any(axis)
-    if a == Axis.X:
-        return wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-    if a == Axis.Y:
-        return wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
-    return wp.mat33f(0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0)
 
 
 ###
@@ -94,33 +70,6 @@ def G_of(q: wp.quatf) -> mat34f:
     G[2, 2] = q.w
     G[2, 3] = -q.z
     return G
-
-
-@wp.func
-def H_of(q: wp.quatf) -> mat34f:
-    """
-    Computes the H matrix from a quaternion.
-
-    Args:
-        q: The quaternion.
-
-    Returns:
-        The H matrix.
-    """
-    H = mat34f(0.0)
-    H[0, 0] = q.w
-    H[0, 1] = q.z
-    H[0, 2] = -q.y
-    H[0, 3] = -q.x
-    H[1, 0] = -q.z
-    H[1, 1] = q.w
-    H[1, 2] = q.x
-    H[1, 3] = -q.y
-    H[2, 0] = q.y
-    H[2, 1] = -q.x
-    H[2, 2] = q.w
-    H[2, 3] = -q.z
-    return H
 
 
 @wp.func
@@ -249,6 +198,13 @@ def quat_twist_angle(q: wp.quatf, axis: wp.vec3f) -> wp.float32:
 ###
 # Unit Quaternions
 ###
+
+# NOTE: These helpers simplify quaternion rotation using the unit-norm
+# assumption, but in a different polynomial form than ``wp.quat_rotate`` and
+# ``wp.quat_to_matrix``. The forms agree on unit quaternions but differ
+# elsewhere. The forward kinematics solver evaluates them on non-normalized
+# quaternions and pairs them with the hand-derived Jacobians below, so they
+# must not be replaced by the Warp builtins.
 
 
 @wp.func
@@ -533,6 +489,16 @@ def compute_gyroscopic_torque(
     if L_i_n_len > 0.0:
         L_i_n *= wp.length(L_i) / L_i_n_len
     return (L_i_n - L_i) / dt
+
+
+@wp.func
+def has_singular_inertia(inv_m_i: wp.float32, inv_i_I_i: wp.mat33f) -> bool:
+    """Whether a body has a zero inverse mass or a singular inverse inertia.
+
+    The inverse inertia must be the body-frame one, since the determinant of its rotation to the
+    world frame is not exactly zero in floating point.
+    """
+    return inv_m_i == 0.0 or wp.determinant(inv_i_I_i) == 0.0
 
 
 @wp.func

@@ -20,12 +20,14 @@ from ._tile_builtins import (
 ###
 
 __all__ = [
+    "flag_failed_llt_factors",
     "llt_blocked_factorize",
     "llt_blocked_solve",
     "llt_blocked_solve_inplace",
     "make_llt_blocked_factorize_kernel",
     "make_llt_blocked_solve_inplace_kernel",
     "make_llt_blocked_solve_kernel",
+    "shift_failed_llt_factors",
 ]
 
 
@@ -76,6 +78,39 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ###
 # Kernels
 ###
+
+
+@wp.kernel
+def flag_failed_llt_factors(
+    dim: wp.array[wp.int32],
+    ld: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    L: wp.array[wp.float32],
+    retry_dim: wp.array[wp.int32],
+):
+    """Select blocks with a non-finite pivot for refactorization.
+
+    Sets ``retry_dim`` to the dimension of each such block and leaves it unchanged for the
+    others, which should start at zero. Launch with shape ``(num_blocks, max_dim)``.
+    """
+    world, row = wp.tid()
+    n = dim[world]
+    if row < n and not wp.isfinite(L[mio[world] + row * ld[world] + row]):
+        retry_dim[world] = n
+
+
+@wp.kernel
+def shift_failed_llt_factors(
+    ld: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    retry_dim: wp.array[wp.int32],
+    shift: wp.float32,
+    A: wp.array[wp.float32],
+):
+    """Add ``shift`` to the diagonal of the blocks selected by :func:`flag_failed_llt_factors`."""
+    world, row = wp.tid()
+    if row < retry_dim[world]:
+        A[mio[world] + row * ld[world] + row] += shift
 
 
 @cache

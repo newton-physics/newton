@@ -1,23 +1,48 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
 import sys
 import time
+from functools import lru_cache
 
 import warp as wp
 
-from .._src.utils import logger as msg
+logger = logging.getLogger(__name__)
 
 ###
 # Example Paths
 ###
 
 
+@lru_cache(maxsize=1)
 def get_examples_output_path() -> str:
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "output")
-    if not os.path.exists(path):
-        os.makedirs(path)
+    """Return the preferred folder for example outputs, resolved once per session.
+    The returned path is not created on disk.
+
+    Prefers ``<package>/newton/_src/solvers/kamino/examples/output/`` (git-ignored
+    in cloned checkouts), and falls back to ``<cwd>/kamino_examples_output/`` when
+    the package folder is not writable (e.g. a pip-installed package in a read-only
+    site-packages). The resolved path is cached so later cwd changes do not split
+    outputs across folders, and a notification is emitted on the first call.
+    """
+    pkg_dir = os.path.dirname(os.path.realpath(__file__))
+    # Probe write access with a per-PID file. ``os.access`` is race-free but
+    # unreliable on Windows (never consults the ACL for a directory; returns
+    # True for e.g. ``C:\Program Files``) and ``tempfile.TemporaryFile`` would
+    # busy-loop on an ACL-restricted dir because ``_mkstemp_inner`` retries up
+    # to ``TMP_MAX`` times when ``os.access`` says the dir is writable. Direct
+    # ``os.open`` fails fast with ``PermissionError``.
+    probe_path = os.path.join(pkg_dir, f".kamino_write_probe.{os.getpid()}")
+    try:
+        fd = os.open(probe_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        os.unlink(probe_path)
+        path = os.path.join(pkg_dir, "output")
+    except OSError:
+        path = os.path.join(os.getcwd(), "kamino_examples_output")
+    logger.info("Kamino examples output folder: %s", path)
     return path
 
 
@@ -28,14 +53,14 @@ def get_examples_output_path() -> str:
 
 def run_headless(example, progress: bool = True):
     """Run the simulation in headless mode for a fixed number of steps."""
-    msg.notif(f"Running for {example.max_steps} steps...")
+    logger.info("Running for %s steps...", example.max_steps)
     start_time = time.time()
     for i in range(example.max_steps):
         example.step_once()
         wp.synchronize()
         if progress:
             print_progress_bar(i + 1, example.max_steps, start_time, prefix="Progress", suffix="")
-    msg.notif("Finished headless run")
+    logger.info("Finished headless run")
 
 
 def print_progress_bar(iteration, total, start_time, length=40, prefix="", suffix=""):

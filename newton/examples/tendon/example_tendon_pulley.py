@@ -1,17 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Tendon Pulley
-#
-# Simplest tendon demonstration: a fixed anchor point with a cable
-# attached to a hanging weight.  The tendon acts as a unilateral
-# distance constraint — the weight swings freely under gravity like
-# a pendulum on a string.
-#
-# Command: python -m newton.examples tendon_pulley
-#
-###########################################################################
+"""Example Tendon Pulley
+
+Simplest tendon demonstration: a fixed anchor point with a cable
+attached to a hanging weight.  The tendon acts as a unilateral
+distance constraint — the weight swings freely under gravity like
+a pendulum on a string.
+
+Success criteria:
+- A box-shaped weight hangs from a fixed anchor and swings under gravity like a pendulum on a
+  string.
+- The tendon limits the weight's distance from the anchor while allowing it to swing freely, without
+  explosive stretching or disconnection.
+
+Runs:
+- `python -m newton.examples tendon_pulley`
+"""
 
 import numpy as np
 import warp as wp
@@ -103,6 +108,15 @@ class Example:
             if hasattr(self.viewer, "renderer"):
                 self.viewer.renderer.show_wireframe_overlay = True
 
+        self.capture()
+
+    def capture(self):
+        self.graph = None
+        if self.model.device.is_cuda and not wp.config.verify_cuda:
+            with wp.ScopedCapture(device=self.model.device) as capture:
+                self.simulate()
+            self.graph = capture.graph
+
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -113,7 +127,10 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        self.simulate()
+        if self.graph is not None:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
 
     def test_post_step(self):

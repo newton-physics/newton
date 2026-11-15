@@ -11,7 +11,7 @@ capstan slip through the guide friction coefficient.
 import warp as wp
 
 from ...sim.tendon import TendonGuideType
-from ..tendon_kernels import tendon_material_tension, tendon_segment_length_rate
+from ..tendon_kernels import tendon_body_pose, tendon_material_tension, tendon_segment_length_rate
 
 
 @wp.kernel
@@ -112,19 +112,30 @@ def solve_tendon_stretch(
     guide_type_l = tendon_guide_type[guide_l]
     guide_type_r = tendon_guide_type[guide_r]
 
-    pose_l = body_q[body_l]
-    pose_r = body_q[body_r]
-    vel_l = wp.spatial_top(body_qd[body_l])  # linear velocity
-    omega_l = wp.spatial_bottom(body_qd[body_l])  # angular velocity
-    vel_r = wp.spatial_top(body_qd[body_r])
-    omega_r = wp.spatial_bottom(body_qd[body_r])
-
-    com_l = body_com[body_l]
-    com_r = body_com[body_r]
-    m_inv_l = body_inv_mass[body_l]
-    m_inv_r = body_inv_mass[body_r]
-    I_inv_l = body_inv_inertia[body_l]
-    I_inv_r = body_inv_inertia[body_r]
+    pose_l = tendon_body_pose(body_q, body_l)
+    pose_r = tendon_body_pose(body_q, body_r)
+    vel_l = wp.vec3(0.0)
+    omega_l = wp.vec3(0.0)
+    vel_r = wp.vec3(0.0)
+    omega_r = wp.vec3(0.0)
+    com_l = wp.vec3(0.0)
+    com_r = wp.vec3(0.0)
+    m_inv_l = float(0.0)
+    m_inv_r = float(0.0)
+    I_inv_l = wp.mat33(0.0)
+    I_inv_r = wp.mat33(0.0)
+    if body_l >= 0:
+        vel_l = wp.spatial_top(body_qd[body_l])
+        omega_l = wp.spatial_bottom(body_qd[body_l])
+        com_l = body_com[body_l]
+        m_inv_l = body_inv_mass[body_l]
+        I_inv_l = body_inv_inertia[body_l]
+    if body_r >= 0:
+        vel_r = wp.spatial_top(body_qd[body_r])
+        omega_r = wp.spatial_bottom(body_qd[body_r])
+        com_r = body_com[body_r]
+        m_inv_r = body_inv_mass[body_r]
+        I_inv_r = body_inv_inertia[body_r]
 
     x_l = wp.transform_point(pose_l, seg_attachment_l_local[seg])
     x_r = wp.transform_point(pose_r, seg_attachment_r_local[seg])
@@ -223,14 +234,17 @@ def solve_tendon_stretch(
     ang_delta_r = angular_r * d_lambda
 
     if body_l == body_r:
-        wp.atomic_add(
-            body_deltas,
-            body_l,
-            wp.spatial_vector(lin_delta_l + lin_delta_r, ang_delta_l + ang_delta_r),
-        )
+        if body_l >= 0:
+            wp.atomic_add(
+                body_deltas,
+                body_l,
+                wp.spatial_vector(lin_delta_l + lin_delta_r, ang_delta_l + ang_delta_r),
+            )
     else:
-        wp.atomic_add(body_deltas, body_l, wp.spatial_vector(lin_delta_l, ang_delta_l))
-        wp.atomic_add(body_deltas, body_r, wp.spatial_vector(lin_delta_r, ang_delta_r))
+        if body_l >= 0:
+            wp.atomic_add(body_deltas, body_l, wp.spatial_vector(lin_delta_l, ang_delta_l))
+        if body_r >= 0:
+            wp.atomic_add(body_deltas, body_r, wp.spatial_vector(lin_delta_r, ang_delta_r))
 
 
 @wp.kernel
@@ -250,8 +264,9 @@ def solve_tendon_slip(
     seg_compliance: wp.array[float],
     seg_material_tension: wp.array[float],
     seg_damping_tension: wp.array[float],
-    seg_delta_lambda: wp.array[float],
-    relaxation: float,
+    seg_lambda: wp.array[float],
+    dt: float,
+    guide_spin_impulse: wp.array[wp.vec3],
     # outputs
     body_deltas: wp.array[wp.spatial_vector],
 ):
@@ -264,7 +279,12 @@ def solve_tendon_slip(
     guide_idx = wp.tid()
     if tendon_guide_type[guide_idx] != int(TendonGuideType.ROLLER):
         return
+    body = tendon_guide_body[guide_idx]
+    if body < 0:
+        return
     if not tendon_guide_active[guide_idx]:
+        wp.atomic_add(body_deltas, body, wp.spatial_vector(wp.vec3(0.0), -guide_spin_impulse[guide_idx]))
+        guide_spin_impulse[guide_idx] = wp.vec3(0.0)
         return
 
     radius = tendon_guide_radius[guide_idx]
@@ -272,7 +292,6 @@ def solve_tendon_slip(
     seg_right = tendon_guide_cone_seg_r[guide_idx]
     if radius <= 0.0 or seg_left < 0 or seg_right < 0:
         return
-    body = tendon_guide_body[guide_idx]
     pose = body_q[body]
     center = wp.transform_point(pose, tendon_guide_offset[guide_idx])
     normal = wp.transform_vector(pose, tendon_guide_axis[guide_idx])
@@ -301,11 +320,15 @@ def solve_tendon_slip(
     damping_tension_r = seg_damping_tension[seg_right] if compliance_r > 0.0 else 0.0
     force_l = wp.max(seg_material_tension[seg_left] + damping_tension_l, 0.0)
     force_r = wp.max(seg_material_tension[seg_right] + damping_tension_r, 0.0)
+    # An inextensible span carries tension in its constraint multiplier;
+    # dividing residual stretch by near-zero compliance cannot recover it.
+    if compliance_l <= 0.0:
+        force_l = wp.max(-seg_lambda[seg_left] / dt, 0.0)
+    if compliance_r <= 0.0:
+        force_r = wp.max(-seg_lambda[seg_right] / dt, 0.0)
 
     force_sum = force_l + force_r
-    force_diff = wp.abs(force_l - force_r)
     allowed_diff = beta * force_sum
-    scale = wp.min(1.0, allowed_diff / wp.max(force_diff, 1.0e-8))
 
     # Stretch retains center-motion torque; add only friction-limited spin
     # about the roller center here.
@@ -319,7 +342,7 @@ def solve_tendon_slip(
         n = diff / dist
         r = x_r - center
         angular = wp.cross(r, n)
-        candidate = angular * seg_delta_lambda[seg_left]
+        candidate = angular * seg_lambda[seg_left]
         spin_delta = spin_delta + normal * wp.dot(candidate, normal)
 
     x_l = seg_attachment_l[seg_right]
@@ -330,8 +353,14 @@ def solve_tendon_slip(
         n = diff / dist
         r = x_l - center
         angular = -wp.cross(r, n)
-        candidate = angular * seg_delta_lambda[seg_right]
+        candidate = angular * seg_lambda[seg_right]
         spin_delta = spin_delta + normal * wp.dot(candidate, normal)
 
-    spin_delta = spin_delta * scale * beta
+    # Bound the accumulated reaction, not each iteration's increment. This
+    # also retracts a previous reaction when the cable unloads. Lambda has
+    # impulse units, so convert the capstan force bound using dt.
+    bound = radius * dt * allowed_diff
+    spin_total = normal * wp.clamp(wp.dot(spin_delta, normal), -bound, bound)
+    spin_delta = spin_total - guide_spin_impulse[guide_idx]
+    guide_spin_impulse[guide_idx] = spin_total
     wp.atomic_add(body_deltas, body, wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), spin_delta))

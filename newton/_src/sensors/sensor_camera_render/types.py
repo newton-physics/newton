@@ -81,6 +81,26 @@ class AntiAliasing(enum.IntEnum):
     """
 
 
+class DeformableSurfaceMode(enum.IntEnum):
+    """Which deformable surfaces a :class:`~newton.sensors.SensorCamera` uploads and renders.
+
+    Visual meshes can overlap the simulation surface or lie inside it. Drawing both may
+    hide parts of the visual mesh. The choice is made when the sensor is constructed.
+
+    .. experimental::
+
+        This option may change without a formal deprecation cycle while deformable visual
+        support is experimental.
+    """
+
+    BOTH = 0
+    """Render the simulation triangles (cloth and soft-body surfaces) and the visual meshes, as the viewers do."""
+    SIMULATION_ONLY = 1
+    """Render the simulation triangles only; the model's visual meshes are left out."""
+    VISUAL_ONLY = 2
+    """Render the visual meshes only; every simulation triangle is left out, including surfaces without a visual mesh."""
+
+
 class TextureProjectionMode(enum.IntEnum):
     """Projection mode for texture-mapped shapes without authored UVs."""
 
@@ -99,7 +119,7 @@ class RenderConfig:
     """Include shapes that belong to no specific world."""
 
     enable_textures: bool = False
-    """Enable texture-mapped rendering for shapes."""
+    """Enable texture-mapped rendering for shapes and skinned meshes."""
 
     texture_projection_mode: TextureProjectionMode = TextureProjectionMode.CUBIC
     """Projection mode for texture-mapped shapes without UVs."""
@@ -119,9 +139,8 @@ class RenderConfig:
     enable_particles: bool = True
     """Enable standalone particle rendering.
 
-    Particles referenced by rendered triangle or tetrahedral deformable topology
-    are rendered by the triangle mesh path and are not emitted as particle
-    spheres.
+    When the model has simulation triangles, particles referenced by them or by
+    tetrahedra are not emitted as spheres, even when that surface is hidden.
     """
 
     enable_backface_culling: bool = True

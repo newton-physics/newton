@@ -40,6 +40,9 @@ class FastExampleQuadrupedXPBD:
     def setup(self):
         self.num_frames = 1000
         self.example = _create_example(self.num_frames, world_count=200)
+        # Keep one-time device work out of the samples.
+        self.example.step()
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

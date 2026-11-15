@@ -15,37 +15,45 @@ _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 
-class RemovedAttribute:
-    """Data descriptor that turns a removed attribute into a hard error.
+def warn_deprecation(message: str) -> None:
+    """Emit a deprecation warning at the caller outside Newton internals.
+
+    Skip internal forwarding frames so proxies such as ModelView preserve the
+    warning's user-code location on Python versions without skip_file_prefixes.
+    """
+    frame = inspect.currentframe()
+    stacklevel = 1
+    try:
+        while frame is not None and frame.f_globals.get("__name__", "").startswith("newton._src."):
+            stacklevel += 1
+            frame = frame.f_back
+    finally:
+        del frame
+    warnings.warn(message, NewtonDeprecationWarning, stacklevel=stacklevel)
+
+
+class UnavailableAttribute:
+    """Data descriptor that turns an unavailable attribute into a hard error.
 
     Deleting an attribute outright is silent on assignment: ``obj.old_name =
     value`` simply creates an unused instance attribute, so code written
     against the old API keeps running while its writes are ignored. Shadowing
     the name with a data descriptor makes reads, writes, and deletes raise
-    :class:`AttributeError` naming the replacement instead.
+    :class:`AttributeError` with migration guidance instead.
 
     Reads raise :class:`AttributeError`, so ``hasattr()`` reports ``False`` and
     ``getattr(obj, name, default)`` still falls back to *default*.
     """
 
-    __slots__ = ("_message", "_removed_in", "_replacement")
+    __slots__ = ("_message",)
 
-    def __init__(self, replacement: str, *, removed_in: str) -> None:
+    def __init__(self, message: str) -> None:
         """Initialize the descriptor.
 
         Args:
-            replacement: Name of the attribute to use instead, unqualified.
-            removed_in: Newton release that removed the attribute.
+            message: Error message raised on every access.
         """
-        self._replacement = replacement
-        self._removed_in = removed_in
-        self._message = f"This attribute was removed in Newton {removed_in}; use {replacement} instead."
-
-    def __set_name__(self, owner: type, name: str) -> None:
-        self._message = (
-            f"{owner.__name__}.{name} was removed in Newton {self._removed_in}; "
-            f"use {owner.__name__}.{self._replacement} instead."
-        )
+        self._message = message
 
     def __get__(self, instance: object, owner: type | None = None) -> Any:
         raise AttributeError(self._message)
@@ -55,6 +63,29 @@ class RemovedAttribute:
 
     def __delete__(self, instance: object) -> None:
         raise AttributeError(self._message)
+
+
+class RemovedAttribute(UnavailableAttribute):
+    """Data descriptor that turns a removed attribute into a hard error naming its replacement."""
+
+    __slots__ = ("_removed_in", "_replacement")
+
+    def __init__(self, replacement: str, *, removed_in: str) -> None:
+        """Initialize the descriptor.
+
+        Args:
+            replacement: Name of the attribute to use instead, unqualified.
+            removed_in: Newton release that removed the attribute.
+        """
+        super().__init__(f"This attribute was removed in Newton {removed_in}; use {replacement} instead.")
+        self._replacement = replacement
+        self._removed_in = removed_in
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._message = (
+            f"{owner.__name__}.{name} was removed in Newton {self._removed_in}; "
+            f"use {owner.__name__}.{self._replacement} instead."
+        )
 
 
 def deprecate_nonkeyword_arguments(func: Callable[_P, _R]) -> Callable[_P, _R]:

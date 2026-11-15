@@ -284,36 +284,40 @@ class TestDownloadAssets(unittest.TestCase):
         """Retry a transient fetch from a clean temporary directory."""
         ref = self.work.head.commit.hexsha
         real_init = git.Repo.init
-        attempts = 0
-        incomplete_repo = mock.Mock()
-        incomplete_repo.git.fetch.side_effect = git.exc.GitCommandError(
-            "git fetch",
-            128,
-            stderr=b"error: RPC failed; HTTP 503\nfatal: expected 'packfile'",
-        )
-
-        def flaky_init(path, *args, **kwargs):
-            nonlocal attempts
-            attempts += 1
-            path = Path(path)
-            if attempts == 1:
-                path.mkdir(parents=True)
-                (path / "partial").write_text("incomplete", encoding="utf-8")
-                return incomplete_repo
-            self.assertFalse(path.exists())
-            return real_init(path, *args, **kwargs)
-
-        with (
-            mock.patch("git.Repo.init", side_effect=flaky_init),
-            mock.patch("newton._src.utils.download_assets.time.sleep") as mock_sleep,
+        for stderr in (
+            b"error: RPC failed; HTTP 503\nfatal: expected 'packfile'",
+            b"fatal: unable to access 'https://github.com/example/assets.git/': Could not resolve host: github.com",
+            b"fatal: unable to access 'https://github.com/example/assets.git/': Failed to connect to github.com port 443",
+            b"fatal: unable to access 'https://github.com/example/assets.git/': Connection timed out",
         ):
-            path = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref=ref)
+            with self.subTest(stderr=stderr):
+                clear_git_cache(self.cache_dir)
+                attempts = 0
+                incomplete_repo = mock.Mock()
+                incomplete_repo.git.fetch.side_effect = git.exc.GitCommandError("git fetch", 128, stderr=stderr)
 
-        self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
-        self.assertEqual(attempts, 2)
-        incomplete_repo.git.fetch.assert_called_once_with("origin", ref, "--depth=1", "--filter=blob:none")
-        incomplete_repo.close.assert_called_once()
-        mock_sleep.assert_called_once_with(1.0)
+                def flaky_init(path, *args, incomplete_repo=incomplete_repo, **kwargs):
+                    nonlocal attempts
+                    attempts += 1
+                    path = Path(path)
+                    if attempts == 1:
+                        path.mkdir(parents=True)
+                        (path / "partial").write_text("incomplete", encoding="utf-8")
+                        return incomplete_repo
+                    self.assertFalse(path.exists())
+                    return real_init(path, *args, **kwargs)
+
+                with (
+                    mock.patch("git.Repo.init", side_effect=flaky_init),
+                    mock.patch("newton._src.utils.download_assets.time.sleep") as mock_sleep,
+                ):
+                    path = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref=ref)
+
+                self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+                self.assertEqual(attempts, 2)
+                incomplete_repo.git.fetch.assert_called_once_with("origin", ref, "--depth=1", "--filter=blob:none")
+                incomplete_repo.close.assert_called_once()
+                mock_sleep.assert_called_once_with(1.0)
 
     def test_transient_clone_error_retries_from_clean_temp_dir(self):
         """Retry a transient clone from a clean temporary directory."""

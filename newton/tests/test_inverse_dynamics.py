@@ -15,6 +15,7 @@ import warp as wp
 
 import newton
 from newton.solvers.experimental.coupled import ModelView
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 class _PassiveOutput(IntFlag):
@@ -1703,6 +1704,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 np.testing.assert_allclose(measured_linear, expected_linear, atol=1e-5, rtol=1e-5)
                 np.testing.assert_allclose(measured_angular, expected_angular, atol=1e-5, rtol=1e-5)
 
+    @requires(*MUJOCO_MODULES)
     def test_coriolis_fixed_root_chain_with_com_offsets(self):
         """Verify Coriolis comp force for a fixed-root revolute chain with non-zero link CoMs.
 
@@ -1978,7 +1980,7 @@ class TestMassMatrix(TestInverseDynamicsBase):
         world = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
         self._add_armature_chain(world, label="chain")
         scene = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
-        scene.replicate(world, world_count=2)
+        scene.replicate(world, copy_count=2)
         model, state = self._finalize_armature_model(scene, articulation_count=2)
         self.assertEqual(model.articulation_count, 2)
 
@@ -2780,18 +2782,22 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                         joint_qdd_observed = (state_next.joint_qd.numpy() - joint_qd_full) / dt
                         np.testing.assert_allclose(joint_qdd_observed, joint_qdd_target, atol=1e-3, rtol=1e-3)
 
+    @requires(*MUJOCO_MODULES)
     def test_inverse_dynamics_force_baseline(self):
         """Manipulator equation with zero gravity and zero initial DOF velocities."""
         self._test_inverse_dynamics_force(non_zero_gravity=False, non_zero_initial_dof_velocities=False)
 
+    @requires(*MUJOCO_MODULES)
     def test_inverse_dynamics_force_with_gravity(self):
         """Manipulator equation with non-zero gravity (g(q) is non-trivial)."""
         self._test_inverse_dynamics_force(non_zero_gravity=True, non_zero_initial_dof_velocities=False)
 
+    @requires(*MUJOCO_MODULES)
     def test_inverse_dynamics_force_with_velocity(self):
         """Manipulator equation with non-zero initial DOF velocities (C(q, q_dot)*q_dot is non-trivial)."""
         self._test_inverse_dynamics_force(non_zero_gravity=False, non_zero_initial_dof_velocities=True)
 
+    @requires(*MUJOCO_MODULES)
     def test_inverse_dynamics_force_with_gravity_and_velocity(self):
         """Manipulator equation with non-zero gravity and non-zero initial DOF velocities."""
         self._test_inverse_dynamics_force(non_zero_gravity=True, non_zero_initial_dof_velocities=True)
@@ -3428,7 +3434,7 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
 
         # Replicate to 2 worlds → 4 articulations: [A0, B0, A1, B1].
         scene = newton.ModelBuilder()
-        scene.replicate(world, world_count=2)
+        scene.replicate(world, copy_count=2)
         model = scene.finalize(device=self.device)
         self.assertEqual(model.articulation_count, 4)
 
@@ -3630,7 +3636,7 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         _add_two_link_pendulum(world, m_first=1.0, m_second=2.0, label="A")
         _add_two_link_pendulum(world, m_first=3.0, m_second=5.0, label="B")
         scene = newton.ModelBuilder()
-        scene.replicate(world, world_count=2)
+        scene.replicate(world, copy_count=2)
         model = scene.finalize(device=self.device)
 
         joint_q = [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]

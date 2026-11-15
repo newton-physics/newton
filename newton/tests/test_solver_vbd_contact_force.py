@@ -73,12 +73,15 @@ def _expected_soft_contact_wrenches(
     body_qd,
     dt,
     friction_epsilon,
+    damping_bidirectional=True,
 ):
     """Evaluate the documented body-particle contact law in NumPy for every active soft contact.
 
     Reproduces the law from model data alone: the mixed contact material (arithmetic-mean ke/kd,
-    geometric-mean mu of the global soft material and the shape material) at full stiffness, absolute
-    damping while the contact point approaches the surface, and regularized isotropic Coulomb friction
+    geometric-mean mu of the global soft material and the shape material) at full stiffness, damping
+    on the normal relative motion (while the contact point approaches the surface and, with
+    ``damping_bidirectional``, the ``SolverVBD`` default, also while it separates), and regularized
+    isotropic Coulomb friction
     on the slip between the barycentric soft point and the shape surface over the step. Returns the
     force on the shape's body and its torque about the body COM (world origin for static shapes) as an
     array of shape ``(count, 6)``.
@@ -142,7 +145,7 @@ def _expected_soft_contact_wrenches(
         force = n * f_n
         u = (x - x_prev) - bv * dt
         u_n = float(np.dot(n, u))
-        if u_n < 0.0:
+        if damping_bidirectional or u_n < 0.0:
             force = force - (kd / dt) * n * u_n
         u_t = u - n * u_n
         slip = float(np.linalg.norm(u_t))
@@ -580,7 +583,21 @@ def test_vbd_soft_contact_force_edge_records_match_law(test, device):
         friction_epsilon=friction_epsilon,
     )
     count, rows = _active_soft_rows(contacts, observables)
-    scale = float(np.max(np.abs(expected)))
+    # The records separate, so the two-sided damper cancels most of the penalty. Take the tolerance
+    # scale from the law without that damping, not from the small remainder.
+    undamped = _expected_soft_contact_wrenches(
+        model,
+        contacts,
+        particle_q=state_out.particle_q.numpy(),
+        particle_q_prev=particle_q_prev,
+        body_q=None,
+        body_q_prev=None,
+        body_qd=None,
+        dt=dt,
+        friction_epsilon=friction_epsilon,
+        damping_bidirectional=False,
+    )
+    scale = float(np.max(np.abs(undamped)))
     test.assertGreater(scale, 1.0)
     np.testing.assert_allclose(rows, expected, rtol=2.0e-4, atol=2.0e-4 * scale)
 

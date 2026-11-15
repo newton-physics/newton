@@ -497,16 +497,19 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None, depth_certif
                     point_b = alpha * v1.B + beta * v2.B + gamma * v3.B
                     # Symmetric contacts often project marginally outside the
                     # portal; only reject extrapolations that move a witness.
-                    clamped = wp.vec3(wp.max(alpha, 0.0), wp.max(beta, 0.0), wp.max(gamma, 0.0))
-                    clamped /= clamped[0] + clamped[1] + clamped[2]
-                    offset_a = point_a - (clamped[0] * vert_a(v1) + clamped[1] * vert_a(v2) + clamped[2] * vert_a(v3))
-                    offset_b = point_b - (clamped[0] * v1.B + clamped[1] * v2.B + clamped[2] * v3.B)
-                    if wp.max(wp.length_sq(offset_a), wp.length_sq(offset_b)) > COLLIDE_EPSILON * COLLIDE_EPSILON:
-                        # The normal projection can lie outside an MPR portal.
-                        # Restart along its normal from inside the enclosing tetrahedron.
-                        # Reuse the first tetrahedron's inscribed ball on later retries.
-                        next_seed = portal_retry_seed(v0, v1, v2, v3, normal, seed)
-                        return hit, point_a, point_b, normal, penetration, next_seed, False
+                    if alpha < 0.0 or beta < 0.0 or gamma < 0.0:
+                        clamped = wp.vec3(wp.max(alpha, 0.0), wp.max(beta, 0.0), wp.max(gamma, 0.0))
+                        clamped /= clamped[0] + clamped[1] + clamped[2]
+                        offset_a = point_a - (
+                            clamped[0] * vert_a(v1) + clamped[1] * vert_a(v2) + clamped[2] * vert_a(v3)
+                        )
+                        offset_b = point_b - (clamped[0] * v1.B + clamped[1] * v2.B + clamped[2] * v3.B)
+                        if wp.max(wp.length_sq(offset_a), wp.length_sq(offset_b)) > COLLIDE_EPSILON * COLLIDE_EPSILON:
+                            # The normal projection can lie outside an MPR portal.
+                            # Restart along its normal from inside the enclosing tetrahedron.
+                            # Reuse the first tetrahedron's inscribed ball on later retries.
+                            next_seed = portal_retry_seed(v0, v1, v2, v3, normal, seed)
+                            return hit, point_a, point_b, normal, penetration, next_seed, False
 
                     # Positive barycentric weights alone do not certify a
                     # boundary face when refinement runs out of iterations.

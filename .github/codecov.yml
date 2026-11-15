@@ -3,8 +3,18 @@ coverage:
     project: off
     patch: off
 
-comment:
-  layout: "diff, flags, files"
+comment: false
+
+flag_management:
+  individual_flags:
+    # CPU and GPU coverage come from separate workflow runs, and either can
+    # be missing for a commit: GPU tests skip docs-only pushes and can fail
+    # to start on EC2. Carry a missing flag's last coverage forward so the
+    # total does not drop to one platform's coverage.
+    - name: cpu
+      carryforward: true
+    - name: gpu
+      carryforward: true
 
 fixes:
   - "/var/snap/amazon-ssm-agent/[0-9]+/::"

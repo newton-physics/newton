@@ -150,6 +150,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         enable_restitution: bool = False,
         tendon_max_sweeps: int = 256,
         tendon_settle_tol: float = 1.0e-3,
+        tendon_settle_atol: float = 1.0e-6,
         tendon_activation_tol: float = 2.0e-3,
         deterministic: wp.DeterministicMode | None = None,
     ):
@@ -182,7 +183,11 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             enable_restitution: Whether to apply restitution to rigid and particle-shape contacts after the
                 positional solve. Defaults to ``False``.
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per solver iteration.
-            tendon_settle_tol: Relative tension-change tolerance for stopping capstan material relaxation.
+            tendon_settle_tol: Relative final capstan-force residual tolerance [dimensionless].
+                Zero disables early-out; must be finite and nonnegative.
+            tendon_settle_atol: Absolute final capstan-force residual tolerance [N].
+                Combined with the relative tolerance; must be finite and nonnegative.
+                Ignored when ``tendon_settle_tol`` is zero.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel module. Pass a :class:`warp.DeterministicMode`, or
@@ -205,6 +210,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.iterations = iterations
         self.tendon_max_sweeps = tendon_max_sweeps
         self.tendon_settle_tol = tendon_settle_tol
+        self.tendon_settle_atol = tendon_settle_atol
         self.tendon_activation_tol = tendon_activation_tol
 
         self.soft_body_relaxation = soft_body_relaxation
@@ -241,6 +247,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._body_delta_counter = 0
 
         self._init_tendon_state(model)
+        self._tendon_guide_spin_impulse = wp.zeros(model.tendon_guide_count, dtype=wp.vec3, device=model.device)
 
         if model.particle_count > 1 and model.particle_grid is not None:
             # reserve space for the particle hash grid
@@ -469,6 +476,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._ensure_restitution_module_options()
         self._apply_module_options()
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
@@ -633,14 +641,20 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                     body_q_pre_solve = wp.clone(state_out.body_q)
                     body_qd_pre_solve = wp.clone(state_out.body_qd)
 
+            # Reset multipliers per step; only autodiff needs fresh iteration outputs.
             spring_constraint_lambdas = None
             if model.spring_count:
-                spring_constraint_lambdas = wp.empty_like(model.spring_rest_length)
+                spring_constraint_lambdas = wp.zeros_like(model.spring_rest_length, requires_grad=requires_grad)
             edge_constraint_lambdas = None
             if model.edge_count:
-                edge_constraint_lambdas = wp.empty_like(model.edge_rest_angle)
+                edge_constraint_lambdas = wp.zeros_like(model.edge_rest_angle, requires_grad=requires_grad)
+            tet_constraint_lambdas = None
+            if model.tet_count:
+                tet_constraint_lambdas = wp.zeros(
+                    model.tet_count * 2, dtype=float, device=model.device, requires_grad=requires_grad
+                )
 
-            if model.tendon_segment_count > 0 and body_q is not None:
+            if model.tendon_segment_count > 0:
                 self._load_tendon_history(state_in)
                 self._snapshot_tendon_step_state()
                 # Route activation is based on the accepted pose at the start
@@ -649,6 +663,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self._prepare_tendon_route(model, state_in.body_q)
                 self._rebaseline_tendon_geometry(state_in.body_q)
                 self.tendon_segment_lambda.zero_()
+                self._tendon_guide_spin_impulse.zero_()
                 self.tendon_segment_material_tension.zero_()
 
             for i in range(self.iterations):
@@ -727,7 +742,9 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
                         # distance constraints
                         if model.spring_count:
-                            spring_constraint_lambdas.zero_()
+                            spring_constraint_lambdas_next = (
+                                wp.empty_like(spring_constraint_lambdas) if requires_grad else spring_constraint_lambdas
+                            )
                             wp.launch(
                                 kernel=solve_springs,
                                 dim=model.spring_count,
@@ -742,13 +759,16 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     dt,
                                     spring_constraint_lambdas,
                                 ],
-                                outputs=[particle_deltas],
+                                outputs=[spring_constraint_lambdas_next, particle_deltas],
                                 device=model.device,
                             )
+                            spring_constraint_lambdas = spring_constraint_lambdas_next
 
                         # bending constraints
                         if model.edge_count:
-                            edge_constraint_lambdas.zero_()
+                            edge_constraint_lambdas_next = (
+                                wp.empty_like(edge_constraint_lambdas) if requires_grad else edge_constraint_lambdas
+                            )
                             wp.launch(
                                 kernel=bending_constraint,
                                 dim=model.edge_count,
@@ -762,12 +782,16 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     dt,
                                     edge_constraint_lambdas,
                                 ],
-                                outputs=[particle_deltas],
+                                outputs=[edge_constraint_lambdas_next, particle_deltas],
                                 device=model.device,
                             )
+                            edge_constraint_lambdas = edge_constraint_lambdas_next
 
                         # tetrahedral FEM
                         if model.tet_count:
+                            tet_constraint_lambdas_next = (
+                                wp.empty_like(tet_constraint_lambdas) if requires_grad else tet_constraint_lambdas
+                            )
                             wp.launch(
                                 kernel=solve_tetrahedra,
                                 dim=model.tet_count,
@@ -781,10 +805,12 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     model.tet_materials,
                                     dt,
                                     self.soft_body_relaxation,
+                                    tet_constraint_lambdas,
                                 ],
-                                outputs=[particle_deltas],
+                                outputs=[tet_constraint_lambdas_next, particle_deltas],
                                 device=model.device,
                             )
+                            tet_constraint_lambdas = tet_constraint_lambdas_next
 
                         particle_q, particle_qd = self._apply_particle_deltas(
                             model, state_in, state_out, particle_deltas, dt
@@ -957,7 +983,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
                         body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
 
-                    if model.tendon_segment_count > 0 and body_q is not None:
+                    if model.tendon_segment_count > 0:
                         wp.launch(
                             kernel=update_tendon_attachments,
                             dim=model.tendon_segment_count,
@@ -1007,6 +1033,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 model.tendon_guide_body,
                                 model.tendon_guide_type,
                                 model.tendon_guide_radius,
+                                model.tendon_guide_orientation,
                                 model.tendon_guide_offset,
                                 model.tendon_guide_axis,
                                 self.tendon_segment_rest_length,
@@ -1021,7 +1048,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 self.tendon_segment_active_damping,
                                 self.tendon_guide_active,
                                 self.tendon_guide_active_step,
-                                self.tendon_guide_route_rest_length,
                                 self.tendon_segment_attachment_l,
                                 self.tendon_segment_attachment_r,
                                 self.tendon_segment_length,
@@ -1040,14 +1066,18 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 1,
                                 self.tendon_max_sweeps,
                                 self.tendon_settle_tol,
+                                self.tendon_settle_atol,
+                                0,
+                                self._tendon_guide_material_transfer,
                             ],
                             device=model.device,
                         )
 
-                        if requires_grad:
-                            body_deltas = wp.zeros_like(body_deltas)
-                        else:
-                            body_deltas.zero_()
+                        if model.body_count:
+                            if requires_grad:
+                                body_deltas = wp.zeros_like(body_deltas)
+                            else:
+                                body_deltas.zero_()
 
                         wp.launch(
                             kernel=solve_tendon_stretch,
@@ -1082,12 +1112,12 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                             device=model.device,
                         )
 
-                        body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
-
-                        if requires_grad:
-                            body_deltas = wp.zeros_like(body_deltas)
-                        else:
-                            body_deltas.zero_()
+                        if model.body_count:
+                            body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
+                            if requires_grad:
+                                body_deltas = wp.zeros_like(body_deltas)
+                            else:
+                                body_deltas.zero_()
 
                         wp.launch(
                             kernel=solve_tendon_slip,
@@ -1108,16 +1138,18 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 self.tendon_segment_active_compliance,
                                 self.tendon_segment_material_tension,
                                 self.tendon_segment_damping_tension,
-                                self.tendon_segment_delta_lambda,
-                                self.joint_linear_relaxation,
+                                self.tendon_segment_lambda,
+                                dt,
+                                self._tendon_guide_spin_impulse,
                             ],
                             outputs=[body_deltas],
                             device=model.device,
                         )
 
-                        body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
+                        if model.body_count:
+                            body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
 
-            if model.tendon_segment_count > 0 and body_q is not None:
+            if model.tendon_segment_count > 0:
                 # The final tendon correction changes the accepted route after
                 # the last in-iteration geometry and tension evaluation.
                 wp.launch(
@@ -1167,6 +1199,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.tendon_guide_body,
                         model.tendon_guide_type,
                         model.tendon_guide_radius,
+                        model.tendon_guide_orientation,
                         model.tendon_guide_offset,
                         model.tendon_guide_axis,
                         self.tendon_segment_rest_length,
@@ -1181,7 +1214,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.tendon_segment_active_damping,
                         self.tendon_guide_active,
                         self.tendon_guide_active_step,
-                        self.tendon_guide_route_rest_length,
                         self.tendon_segment_attachment_l,
                         self.tendon_segment_attachment_r,
                         self.tendon_segment_length,
@@ -1200,6 +1232,9 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         1,
                         self.tendon_max_sweeps,
                         self.tendon_settle_tol,
+                        self.tendon_settle_atol,
+                        1,
+                        self._tendon_guide_material_transfer,
                     ],
                     device=model.device,
                 )

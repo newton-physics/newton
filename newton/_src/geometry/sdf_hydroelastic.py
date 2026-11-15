@@ -648,9 +648,9 @@ class HydroelasticSDF:
             # Chunk scratch for the count-aware prefix scans, so each scan only
             # touches the active records instead of the full worst-case buffer.
             self.iso_scan_scratch = [
-                wp.zeros(_scan_scratch_size(level_input, device), dtype=wp.int32) for level_input in self.input_sizes
+                wp.zeros(_scan_scratch_size(level_input, device), dtype=wp.int64) for level_input in self.input_sizes
             ]
-            self.broad_scan_scratch = wp.zeros(_scan_scratch_size(self.max_num_shape_pairs, device), dtype=wp.int32)
+            self.broad_scan_scratch = wp.zeros(_scan_scratch_size(self.max_num_shape_pairs, device), dtype=wp.int64)
             self.iso_buffer_records = [wp.empty((self.max_num_blocks_broad,), dtype=wp.vec3ui)] + [
                 wp.empty((self.iso_max_dims[i],), dtype=wp.vec3ui) for i in range(4)
             ]

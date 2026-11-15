@@ -57,7 +57,11 @@ size. The Fit gates below add depth for large proposals.
 #. **Tests:** Would each new test fail without the change, for the failure
    mode it claims? Could an existing test, class, or fixture be extended
    instead? Are the model, step count, and device matrix as small as
-   possible?
+   possible? Could the test be flaky because of numerical sensitivity,
+   hardware or device differences, concurrency, execution order, timing, or
+   nondeterminism? For numerical assertions, are tolerances justified by the
+   quantity's scale and precision and by measurements on the relevant
+   execution paths?
 #. **Cost:** What does the change add to the default path? Setup, import,
    memory, and steady-state costs need evidence even when the change is not
    about performance.
@@ -223,6 +227,9 @@ for incompatible changes.
 Check the repository obligations relevant to the change, including:
 
 - focused regression coverage and documentation;
+- tests that need optional dependencies declare all of them with
+  ``requires()``, so they skip rather than fail where those dependencies are
+  not installed;
 - schema/importer coverage, compatible schema-package versions, and deferrals;
 - diagnostics that follow the error, warning, and logging rules, including
   Newton warning categories and module loggers instead of ``print()``;

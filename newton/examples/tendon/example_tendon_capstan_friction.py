@@ -1,33 +1,42 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Tendon Capstan Friction
-#
-# Three side-by-side asymmetric Atwood machines with
-# different capstan friction coefficients on the pulley:
-#
-#   Left:   mu = 0.0   (frictionless)
-#   Center: mu = 0.40  (subcritical — visible partial grip)
-#   Right:  mu = 10.0  (no-slip)
-#
-# Each pulley is a dynamic body on a hinge joint, free to rotate about Y.
-# The Euler-Eytelwein capstan equation bounds the tension ratio across
-# a frictional contact: T_tight / T_slack <= exp(mu * theta).
-#
-# For dynamic pulleys with mu>0 the cable grips the pulley (stick mode).
-# The XPBD constraint solver couples the pulley's rotational inertia
-# I/R^2 to the system through the shared body.  The capstan bound
-# activates only when the required tension ratio exceeds exp(mu*theta).
-# The pulleys use explicit high inertia and the vertically constrained
-# weights keep a fixed orientation and remain on their respective sides.
-# With dynamic pulleys, low finite friction spins the pulley only partially.
-# The red tab on each pulley marks rim rotation; the frictionless pulley
-# should translate the cable without spinning.
-#
-# Command: python -m newton.examples tendon_capstan_friction
-#
-###########################################################################
+"""Example Tendon Capstan Friction
+
+Three side-by-side asymmetric Atwood machines with
+different capstan friction coefficients on the pulley:
+
+  Left:   mu = 0.0   (frictionless)
+  Center: mu = 0.40  (subcritical — visible partial grip)
+  Right:  mu = 10.0  (no-slip)
+
+Each pulley is a dynamic body on a hinge joint, free to rotate about Y.
+The Euler-Eytelwein capstan equation bounds the tension ratio across
+a frictional contact: T_tight / T_slack <= exp(mu * theta).
+
+For dynamic pulleys with mu>0 the cable grips the pulley (stick mode).
+The XPBD constraint solver couples the pulley's rotational inertia
+I/R^2 to the system through the shared body.  The capstan bound
+activates only when the required tension ratio exceeds exp(mu*theta).
+The pulleys use explicit high inertia and the vertically constrained
+weights keep a fixed orientation and remain on their respective sides.
+With dynamic pulleys, low finite friction spins the pulley only partially.
+The red tab on each pulley marks rim rotation; the frictionless pulley
+should translate the cable without spinning.
+
+Success criteria:
+- Three side-by-side pulley systems compare friction coefficients of 0.0, 0.40, and 10.0 from left
+  to right.
+- The heavier weights descend and the lighter weights rise along their vertical tracks, remaining on
+  their respective sides.
+- Before payload contact, the frictionless pulley stays nearly stationary, the middle pulley rotates
+  partially, and the high-friction pulley rotates more than the middle one.
+- Red rim markers make the different pulley rotations visible; the cable routes remain bounded
+  without abrupt weight jumps.
+
+Runs:
+- `python -m newton.examples tendon_capstan_friction`
+"""
 
 import numpy as np
 import warp as wp
@@ -226,6 +235,15 @@ class Example:
             if hasattr(self.viewer, "renderer"):
                 self.viewer.renderer.show_wireframe_overlay = True
 
+        self.capture()
+
+    def capture(self):
+        self.graph = None
+        if self.model.device.is_cuda and not wp.config.verify_cuda:
+            with wp.ScopedCapture(device=self.model.device) as capture:
+                self.simulate()
+            self.graph = capture.graph
+
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -236,9 +254,11 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        self.simulate()
+        if self.graph is not None:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
-        self._record_motion_sample()
 
     @staticmethod
     def _hinge_y_angle(q):
@@ -275,6 +295,7 @@ class Example:
             )
 
     def test_post_step(self):
+        self._record_motion_sample()
         assert_tendon_total_length(self, rel_tol=0.60)
         body_q = self.state_0.body_q.numpy()
         assert np.isfinite(body_q).all(), "Dynamic capstan produced non-finite body state"

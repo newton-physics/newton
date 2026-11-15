@@ -4,6 +4,7 @@
 from .types import (
     AntiAliasing,
     ClearData,
+    DeformableSurfaceMode,
     GaussianRenderMode,
     LightType,
     MeshData,
@@ -18,6 +19,7 @@ from .utils import Utils
 __all__ = [
     "AntiAliasing",
     "ClearData",
+    "DeformableSurfaceMode",
     "GaussianRenderMode",
     "LightType",
     "MeshData",

@@ -307,7 +307,7 @@ class TestSelection(unittest.TestCase):
 
         # scene with one ant per world
         single_ant_per_world_scene = newton.ModelBuilder()
-        single_ant_per_world_scene.replicate(ant, world_count=W)
+        single_ant_per_world_scene.replicate(ant, copy_count=W)
         single_ant_per_world_model = single_ant_per_world_scene.finalize()
 
         single_ant_per_world_view = ArticulationView(single_ant_per_world_model, "ant")
@@ -346,7 +346,7 @@ class TestSelection(unittest.TestCase):
         for i in range(A):
             multi_ant_world.add_builder(ant, xform=wp.transform((0.0, 0.0, 1.0 + i), wp.quat_identity()))
         multi_ant_per_world_scene = newton.ModelBuilder()
-        multi_ant_per_world_scene.replicate(multi_ant_world, world_count=W)
+        multi_ant_per_world_scene.replicate(multi_ant_world, copy_count=W)
         multi_ant_per_world_model = multi_ant_per_world_scene.finalize()
 
         multi_ant_per_world_view = ArticulationView(multi_ant_per_world_model, "ant")
@@ -428,7 +428,7 @@ class TestSelection(unittest.TestCase):
         scene = newton.ModelBuilder()
         # add a ground plane first so shape indices are offset
         scene.add_shape_plane()
-        scene.replicate(robot, world_count=W)
+        scene.replicate(robot, copy_count=W)
         model = scene.finalize()
 
         # exclude the middle link to make shape indices non-contiguous: [0, 2]
@@ -452,6 +452,7 @@ class TestSelection(unittest.TestCase):
                 )
 
     def test_eval_fk_translated_joint_chain_uses_view_mask(self):
+        """Intersect view and joint masks while preserving unselected parent and articulation state."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
         def add_translated_chain(label: str, x_offset: float):
@@ -527,9 +528,9 @@ class TestSelection(unittest.TestCase):
         state_next.joint_qd.assign(qd)
         view.eval_fk(state_next)
 
-        body_q = state.body_q.numpy().reshape(-1, 7)
+        body_q = state.body_q.numpy().reshape(-1, 7).copy()
         body_q_next = state_next.body_q.numpy().reshape(-1, 7)
-        body_qd = state.body_qd.numpy().reshape(-1, 6)
+        body_qd = state.body_qd.numpy().reshape(-1, 6).copy()
 
         origin_vel_fd = (body_q_next[target_slider, :3] - body_q[target_slider, :3]) / dt
         origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, target_slider)
@@ -540,6 +541,22 @@ class TestSelection(unittest.TestCase):
         assert_np_equal(body_q[other_slider], sentinel_q[other_slider], tol=0.0)
         assert_np_equal(body_qd[other_base], sentinel_qd[other_base], tol=0.0)
         assert_np_equal(body_qd[other_slider], sentinel_qd[other_slider], tol=0.0)
+
+        # Stale root coordinates must not overwrite its current body state.
+        q[q_start[target_j0]] = -1.2
+        qd[qd_start[target_j0]] = -2.0
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        state.body_q.assign(sentinel_q)
+        state.body_qd.assign(sentinel_qd)
+        state.body_q[target_base : target_base + 1].assign(body_q[target_base : target_base + 1])
+        state.body_qd[target_base : target_base + 1].assign(body_qd[target_base : target_base + 1])
+        joint_mask = wp.array(
+            [joint != target_j0 for joint in range(model.joint_count)], dtype=bool, device=model.device
+        )
+        view.eval_fk(state, joint_mask=joint_mask)
+        assert_np_equal(state.body_q.numpy(), body_q, tol=1.0e-6)
+        assert_np_equal(state.body_qd.numpy(), body_qd, tol=1.0e-6)
 
     def test_selection_mask(self):
         # load articulation
@@ -558,7 +575,7 @@ class TestSelection(unittest.TestCase):
         for i in range(num_per_world):
             world.add_builder(ant, xform=wp.transform((0.0, 0.0, 1.0 + i), wp.quat_identity()))
         scene = newton.ModelBuilder()
-        scene.replicate(world, world_count=world_count)
+        scene.replicate(world, copy_count=world_count)
         model = scene.finalize()
 
         view = ArticulationView(model, "ant")
@@ -1549,7 +1566,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
         W = 4  # num worlds
         scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        scene.replicate(individual_builder, world_count=W)
+        scene.replicate(individual_builder, copy_count=W)
         model = scene.finalize()
 
         view = ArticulationView(model, "two_prismatic_links")
@@ -1573,7 +1590,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
         W = 2  # num worlds
         scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        scene.replicate(individual_builder, world_count=W)
+        scene.replicate(individual_builder, copy_count=W)
         model = scene.finalize()
 
         view = ArticulationView(model, "two_prismatic_links")
@@ -1667,7 +1684,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
         # Replicate to multiple worlds
         W = 2  # num worlds
         scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        scene.replicate(multi_robot_world, world_count=W)
+        scene.replicate(multi_robot_world, copy_count=W)
         model = scene.finalize()
 
         # Select all articulations
@@ -1733,7 +1750,7 @@ class TestSelectionMuJoCoActuators(unittest.TestCase):
         robot = newton.ModelBuilder()
         robot.add_mjcf(self.ACTUATOR_MJCF)
         scene = newton.ModelBuilder()
-        scene.replicate(robot, world_count=2)
+        scene.replicate(robot, copy_count=2)
         model = scene.finalize()
         control = model.control()
 
@@ -1757,7 +1774,7 @@ class TestSelectionMuJoCoActuators(unittest.TestCase):
         world.add_mjcf(self.ACTUATOR_MJCF)
 
         scene = newton.ModelBuilder()
-        scene.replicate(world, world_count=2)
+        scene.replicate(world, copy_count=2)
         model = scene.finalize()
 
         assert_np_equal(model.custom_frequency_articulation["mujoco:actuator"].numpy(), np.arange(6))
@@ -2284,6 +2301,92 @@ def _check_attribute_access_after_capture(test, device, layout, scenario):
     replay(*capture_access(), offset=500.0)
 
 
+# Articulations interleaved with others within a world
+
+
+_ACTUATED_HINGE_MJCF = """
+<mujoco model="robot">
+  <worldbody>
+    <body name="link">
+      <joint name="hinge" type="hinge"/>
+      <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="drive" joint="hinge"/>
+  </actuator>
+</mujoco>
+"""
+
+# Selected articulation ids per world: the other articulations sit at different places between them.
+_INTERLEAVED_ORDERS = (("robot", "other", "robot", "other", "other", "robot"), ("robot", "robot", "other", "robot"))
+_INTERLEAVED_IDS = np.array([[0, 2, 5], [6, 7, 9]])
+
+
+def test_interleaved_articulations_within_worlds(test, device):
+    """Gather and scatter articulations whose rows are irregularly spaced within each world."""
+    scene = newton.ModelBuilder()
+    for order in _INTERLEAVED_ORDERS:
+        world = newton.ModelBuilder()
+        for index, kind in enumerate(order):
+            body = world.add_link(label=f"{kind}_{index}/body", mass=1.0)
+            world.add_articulation([world.add_joint_free(child=body)], label=f"{kind}_{index}")
+            world.add_shape_sphere(body=body, radius=0.1)
+        scene.add_world(world)
+    model = scene.finalize(device=device)
+    view = ArticulationView(model, "robot_*", verbose=False, homogeneous=False)
+    assert_np_equal(view.articulation_ids.numpy(), _INTERLEAVED_IDS)
+    test.assertTrue(view.uses_explicit_model_indices)
+
+    # one body, shape and free joint per articulation, so body rows are articulation ids
+    masses = np.arange(model.body_count, dtype=np.float32) + 10.0
+    model.body_mass.assign(masses)
+    assert_np_equal(view.get_attribute("body_mass", model).numpy()[..., 0], masses[_INTERLEAVED_IDS])
+    q = np.arange(model.joint_coord_count, dtype=np.float32)
+    model.joint_q.assign(q)
+    q_rows = _INTERLEAVED_IDS[..., None] * 7 + np.arange(7)
+    assert_np_equal(view.get_dof_positions(model).numpy(), q[q_rows])
+
+    values = np.arange(1.0, 7.0, dtype=np.float32).reshape(2, 3, 1)
+    view.set_attribute("body_mass", model, values, mask=[False, True])
+    expected = masses.copy()
+    expected[_INTERLEAVED_IDS[1]] = values[1, :, 0]
+    assert_np_equal(model.body_mass.numpy(), expected)
+    view.set_attribute("body_mass", model, values)
+    expected[_INTERLEAVED_IDS.ravel()] = values.ravel()
+    assert_np_equal(model.body_mass.numpy(), expected)
+
+
+def test_custom_frequency_interleaved_within_worlds(test, device):
+    """Address a custom frequency whose rows are irregularly spaced within each world."""
+    robot = newton.ModelBuilder()
+    robot.add_mjcf(_ACTUATED_HINGE_MJCF)
+    other = newton.ModelBuilder()
+    other.add_mjcf(_ACTUATED_HINGE_MJCF.replace('model="robot"', 'model="other"'))
+    scene = newton.ModelBuilder()
+    for order in _INTERLEAVED_ORDERS:
+        world = newton.ModelBuilder()
+        for kind in order:
+            world.add_builder(robot if kind == "robot" else other)
+        scene.add_world(world)
+    model = scene.finalize(device=device)
+    control = model.control()
+    view = ArticulationView(model, "robot", verbose=False, homogeneous=False)
+    assert_np_equal(view.articulation_ids.numpy(), _INTERLEAVED_IDS)
+    test.assertEqual(view.custom_frequency_counts["mujoco:actuator"], 1)
+    test.assertTrue(view.frequency_layouts["mujoco:actuator"].uses_explicit_model_indices)
+
+    # one actuator per articulation, so actuator rows are articulation ids
+    ctrl = np.arange(model.articulation_count, dtype=np.float32) + 10.0
+    control.mujoco.ctrl.assign(ctrl)
+    assert_np_equal(view.get_attribute("mujoco.ctrl", control).numpy()[..., 0], ctrl[_INTERLEAVED_IDS])
+    values = -np.arange(1.0, 7.0, dtype=np.float32).reshape(2, 3, 1)
+    view.set_attribute("mujoco.ctrl", control, values, mask=[True, False])
+    expected = ctrl.copy()
+    expected[_INTERLEAVED_IDS[0]] = values[0, :, 0]
+    assert_np_equal(control.mujoco.ctrl.numpy(), expected)
+
+
 class TestSelectionSparseWorlds(unittest.TestCase):
     pass
 
@@ -2299,6 +2402,8 @@ for _test in (
     test_sparse_world_gradients,
     test_sparse_world_custom_frequency,
     test_irregular_custom_frequency_requires_non_homogeneous,
+    test_interleaved_articulations_within_worlds,
+    test_custom_frequency_interleaved_within_worlds,
 ):
     add_function_test(TestSelectionSparseWorlds, _test.__name__, _test, devices=devices)
 for _test in (test_sparse_world_getters_capture_cold, test_attribute_access_after_capture_before_replay):

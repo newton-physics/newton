@@ -17,7 +17,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.solvers.xpbd import kernels as xpbd_kernels
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 def test_particle_particle_friction_uses_relative_velocity(test, device):
@@ -383,6 +383,72 @@ def test_optional_control_and_contacts(test, device):
     solver.step(state_in, state_out, control=None, contacts=None, dt=1.0 / 60.0)
 
     test.assertLess(float(state_out.particle_q.numpy()[0, 1]), 1.0)
+
+
+def test_elastic_spring_compliance_is_iteration_independent(test, device):
+    """Preserve analytical spring compliance and its gradient across iterations."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.0)
+    builder.add_particle(pos=(1.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
+    builder.add_spring(0, 1, ke=10.0, kd=0.0, control=0.0)
+
+    model = builder.finalize(device=device, requires_grad=True)
+    solver = newton.solvers.SolverXPBD(model, iterations=4)
+
+    # Both buffer-lifetime paths must preserve x = 1 + 1 / (1 + ke * dt**2).
+    for requires_grad in (False, True):
+        with test.subTest(requires_grad=requires_grad):
+            state_in = model.state(requires_grad=requires_grad)
+            state_out = model.state(requires_grad=requires_grad)
+            state_in.particle_q.assign([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)])
+            if requires_grad:
+                with mock.patch.object(wp.config, "verify_autograd_array_access", True):
+                    with wp.Tape() as tape:
+                        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+                    output_grad = wp.array([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+                    tape.backward(grads={state_out.particle_q: output_grad})
+                test.assertAlmostEqual(float(model.spring_stiffness.grad.numpy()[0]), -1.0 / 121.0, places=5)
+            else:
+                solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+            test.assertAlmostEqual(float(state_out.particle_q.numpy()[1, 0]), 21.0 / 11.0, places=5)
+
+
+def test_elastic_bending_compliance_is_iteration_independent(test, device):
+    """Verify converged bending constraints preserve finite compliance."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for position, mass in (
+        ((0.0, 1.0, 0.0), 0.0),
+        ((0.0, -1.0, 0.0), 1.0),
+        ((0.0, 0.0, 0.0), 0.0),
+        ((1.0, 0.0, 0.0), 0.0),
+    ):
+        builder.add_particle(pos=wp.vec3(*position), vel=wp.vec3(0.0), mass=mass, radius=0.0)
+    builder.add_edge(0, 1, 2, 3, edge_ke=10.0, edge_kd=0.0)
+
+    model = builder.finalize(device=device)
+    state_in = model.state()
+    state_out = model.state()
+    solver = newton.solvers.SolverXPBD(model)
+
+    def solve(iterations: int) -> float:
+        state_in.particle_q.assign([(0.0, 1.0, 0.0), (0.0, -1.0, 1.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)])
+        state_in.particle_qd.zero_()
+        solver.iterations = iterations
+        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+        return float(state_out.particle_q.numpy()[1, 2])
+
+    four_iterations = solve(iterations=4)
+    eight_iterations = solve(iterations=8)
+
+    for value in (four_iterations, eight_iterations):
+        test.assertGreater(value, 0.0)
+        test.assertLess(value, 1.0)
+    test.assertAlmostEqual(
+        eight_iterations,
+        four_iterations,
+        places=5,
+        msg="Converged nonlinear iterations must not make a compliant bending edge artificially rigid.",
+    )
 
 
 def test_particle_particle_friction_with_relative_motion(test, device):
@@ -1668,12 +1734,14 @@ def test_xpbd_contact_force_zero_when_no_contact(test, device):
     dt = 1.0 / 60.0
     state_in.clear_forces()
     collision_pipeline.collide(state_in, contacts)
+    # Seed the buffer so the step has to clear it
+    observables.contact_f.fill_(wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0))
     solver.step(state_in, state_out, control, contacts, dt, observables=observables)
 
-    ncontacts = int(contacts.rigid_contact_count.numpy()[0])
-    if ncontacts > 0:
-        forces = observables.contact_f.numpy()[:ncontacts]
-        np.testing.assert_allclose(forces, 0.0, atol=1e-6, err_msg="No contact force expected in free-fall")
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+    np.testing.assert_allclose(
+        observables.contact_f.numpy(), 0.0, atol=1e-6, err_msg="No contact force expected in free-fall"
+    )
 
 
 def test_xpbd_contact_force_zero_when_not_touching(test, device):
@@ -2137,6 +2205,7 @@ def test_xpbd_parent_f_centripetal_zero_g(test, device):
     )
 
 
+@requires(*MUJOCO_MODULES)
 def test_xpbd_parent_f_consistent_across_solvers(test, device):
     """XPBD's ``body_parent_f`` must match MuJoCo / Featherstone for a static pendulum.
 
@@ -2670,6 +2739,22 @@ add_function_test(
     TestSolverXPBD,
     "test_optional_control_and_contacts",
     test_optional_control_and_contacts,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_elastic_spring_compliance_is_iteration_independent",
+    test_elastic_spring_compliance_is_iteration_independent,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_elastic_bending_compliance_is_iteration_independent",
+    test_elastic_bending_compliance_is_iteration_independent,
     devices=devices,
     check_output=False,
 )

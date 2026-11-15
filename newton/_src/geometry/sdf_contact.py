@@ -26,10 +26,10 @@ from .kernels import mesh_query_point_sign, resolve_mesh_sign_method
 
 # Upper bound (mesh-local units) on the closest-point search for the mesh sign
 # queries below. It is not a physical contact range: culling uses the tight
-# ``_SDF_QUERY_RADIUS_SLACK * threshold`` bounds, and these queries only run at
-# points the narrow phase already placed near the surface, so the bound is
-# never binding. The queries operate in mesh-local coordinates (per-shape scale
-# is divided out), so there is no global unit to tie it to; 1e11 is effectively
+# ``_SDF_QUERY_RADIUS_SLACK * threshold`` bounds, with a full-query retry for
+# bounded misses inside the mesh bounds. The queries operate in mesh-local
+# coordinates (per-shape scale is divided out), so there is no global unit to
+# tie it to; 1e11 is effectively
 # unbounded for any asset under any unit convention (~8x Earth's diameter in
 # millimeters). Going much larger is unsafe: Warp's mesh queries square
 # ``max_dist`` internally, and the no-hit branches return it as a sentinel that
@@ -400,6 +400,33 @@ def sample_sdf_using_mesh(
         return wp.length(world_pos - closest) * res.sign
 
     return max_dist
+
+
+@wp.func
+def sample_mesh_sdf_for_culling(
+    mesh_id: wp.uint64,
+    point: wp.vec3,
+    max_dist: float,
+    sign_method: int,
+    boundary_flags: wp.array[wp.uint8],
+    boundary_start: int,
+    shape_scale: wp.vec3,
+    aabb_lower: wp.vec3,
+    aabb_upper: wp.vec3,
+) -> float:
+    """Keep a bounded closest-point miss from hiding deep interior edges.
+
+    A failed bounded query establishes unsigned distance only. Inside the
+    shape-local bounds, retry before interpreting that miss as exterior.
+    Outside those bounds the usual bounded cull remains unchanged.
+    """
+    distance = sample_sdf_using_mesh(mesh_id, point, max_dist, sign_method, boundary_flags, boundary_start)
+    local_point = wp.cw_mul(point, shape_scale)
+    if distance == max_dist and wp.min(local_point - aabb_lower) >= 0.0 and wp.min(aabb_upper - local_point) >= 0.0:
+        distance = sample_sdf_using_mesh(
+            mesh_id, point, _MESH_QUERY_MAX_DIST, sign_method, boundary_flags, boundary_start
+        )
+    return distance
 
 
 @wp.func
@@ -936,9 +963,9 @@ def _create_sdf_contact_funcs(
         edges much shorter than the target precision exit Brent in 0
         queries (the midpoint is already accurate enough).
 
-        After the interior search, evaluates the more promising endpoint
-        (the one closer to the unconverged bracket boundary) so that vertex
-        contacts at edge corners are not missed.
+        After the interior search, evaluates both endpoints. Nonconvex SDFs
+        can have multiple wells along an edge, so a local Brent bracket
+        cannot exclude either endpoint from containing a deeper minimum.
 
         The endpoint result is zero for an interior winner, one for ``v0``,
         and two for ``v1`` so duplicate corner contacts can honor edge ownership.
@@ -1097,14 +1124,16 @@ def _create_sdf_contact_funcs(
                     v_brent = u
                     fv = fu
 
-        # Check endpoints only while Brent's bracket still includes them.
-        # Once a bound has moved inward, Brent has already excluded that
-        # endpoint from containing the minimum.
+        # Brent's bracket only describes the local interior search. Always
+        # retain endpoint coverage, including for nonconvex distance fields.
         best_endpoint = int(0)
         best_t = x
         best_f = fx
-        if a == 0.0:
-            f_end = _sample_sdf_at_t(
+        endpoint_values = wp.vec2(0.0)
+        if wp.static(use_texture_sdf_only and not enable_heightfields):
+            endpoint_values = wp.static(sample_pair)(texture_sdf, v0, v1)
+        else:
+            endpoint_values[0] = _sample_sdf_at_t(
                 texture_sdf,
                 sdf_mesh_id,
                 v0,
@@ -1118,12 +1147,7 @@ def _create_sdf_contact_funcs(
                 hfd_sdf,
                 elevation_data,
             )
-            if f_end < best_f:
-                best_t = 0.0
-                best_f = f_end
-                best_endpoint = 1
-        if b == 1.0:
-            f_end = _sample_sdf_at_t(
+            endpoint_values[1] = _sample_sdf_at_t(
                 texture_sdf,
                 sdf_mesh_id,
                 v0,
@@ -1137,10 +1161,14 @@ def _create_sdf_contact_funcs(
                 hfd_sdf,
                 elevation_data,
             )
-            if f_end < best_f:
-                best_t = 1.0
-                best_f = f_end
-                best_endpoint = 2
+        if endpoint_values[0] < best_f:
+            best_t = 0.0
+            best_f = endpoint_values[0]
+            best_endpoint = 1
+        if endpoint_values[1] < best_f:
+            best_t = 1.0
+            best_f = endpoint_values[1]
+            best_endpoint = 2
 
         p = v0 + edge_dir * best_t
 
@@ -1284,6 +1312,34 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     use_identity_sdf_scale: bool = False,
     deterministic_reduction: bool = False,
 ):
+    """Create a mesh-mesh (or heightfield-mesh) SDF contact kernel.
+
+    The edges of each shape in a pair are tested against the other shape's
+    SDF, in two passes with the roles swapped.
+
+    Args:
+        writer_func: Contact writer function called for each generated contact.
+        enable_heightfields: When False, heightfield code paths are compiled out.
+        reduce_contacts: If True, return the variant that feeds the global
+            contact reducer.
+        speculative: Enable speculative contact admission.
+        use_precomputed_edge_data: Read mesh edges from precomputed unscaled
+            edge data instead of the mesh vertex and index buffers.
+        use_texture_sdf_only: Compile out the BVH fallback; every mesh SDF must
+            have a texture representation.
+        use_identity_sdf_scale: Compile out SDF scale conversions; requires
+            ``use_texture_sdf_only``.
+        deterministic_reduction: Use deterministic contact reduction. Only
+            applies when ``reduce_contacts`` is True.
+
+    Returns:
+        The mesh-SDF contact kernel, or its global-reduction variant when
+        ``reduce_contacts`` is True.
+
+    Raises:
+        ValueError: If ``use_identity_sdf_scale`` is set without
+            ``use_texture_sdf_only``.
+    """
     if use_identity_sdf_scale and not use_texture_sdf_only:
         raise ValueError("identity SDF scale specialization requires texture-only SDFs")
     # The reducer mode is tested inside fully unrolled directional loops. Keep
@@ -1475,6 +1531,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 edge_range_tri = shape_edge_range[tri_shape]
                 num_edges = get_edge_count(tri_type, edge_range_tri, hfd_tri)
 
+                # Required barrier before the reset: a warp still evaluating the
+                # previous pass's exit test would otherwise read the new value,
+                # re-enter that loop, and spin, because only thread 0 advances
+                # ``progress``.
+                wp.tile_stack_clear(edge_stack)
                 wp.tile_scatter_masked(progress, 0, 0, t == 0)
 
                 sdf_is_heightfield = sdf_is_hfield
@@ -1486,9 +1547,12 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 # ``block_dim`` accepted edges via cooperative pushes,
                 # (b) fully drains the stack, processing every accepted
                 # edge through ``do_edge_sdf_collision``, and
-                # (c) explicitly clears the stack as a defensive,
-                # uniformly-called cooperative barrier before the next
-                # outer iteration. Draining is essential: a single
+                # (c) clears the stack (already empty), a uniformly-called
+                # block barrier before the exit test. Thread 0 alone
+                # writes ``progress`` and every warp reads it, so each
+                # write must follow a barrier after the last reads: the
+                # push before each advance, and the clear before the reset
+                # at the start of each pass. Draining is essential: a single
                 # ``tile_stack_pop`` only removes ``block_dim`` items, so
                 # if the inner push loop overshot (the push gate caps
                 # pre-push count at ``block_dim - 1`` but the cooperative
@@ -1547,13 +1611,16 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 midpoint_sdf = sample_sdf_heightfield(hfd_sdf, heightfield_elevations, bsphere_center)
                                 add_edge = midpoint_sdf <= threshold
                             elif wp.static(not use_texture_sdf_only) and use_bvh_for_sdf:
-                                midpoint_sdf = sample_sdf_using_mesh(
+                                midpoint_sdf = sample_mesh_sdf_for_culling(
                                     mesh_id_sdf,
                                     bsphere_center,
                                     _SDF_QUERY_RADIUS_SLACK * threshold,
                                     sdf_mesh_query_type,
                                     mesh_boundary_flags,
                                     sdf_boundary_start,
+                                    mesh_scale_sdf,
+                                    _shape_collision_aabb_lower[sdf_shape],
+                                    _shape_collision_aabb_upper[sdf_shape],
                                 )
                                 add_edge = midpoint_sdf <= threshold
                             else:
@@ -1580,9 +1647,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     # loop until empty — a single pop followed by
                     # ``tile_stack_clear`` would silently discard any
                     # accepted edges that overflowed the prior push. The
-                    # trailing ``tile_stack_clear`` (after this drain) is
-                    # a defensive no-op barrier; see the comment block
-                    # above the outer ``while``.
+                    # trailing ``tile_stack_clear`` (after this drain) then
+                    # acts only as a barrier; see the comment block above
+                    # the outer ``while``.
                     while wp.tile_stack_count(edge_stack) > 0:
                         popped, edge_slot = wp.tile_stack_pop(edge_stack)
                         my_edge_idx = popped.edge_idx
@@ -1728,7 +1795,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 sdf_mesh_margin = shape_data[shape_b][3]
 
                                 contact_data = ContactData()
-                                contact_data.contact_point_center = point_world
+                                contact_data.contact_point_center = point_world - 0.5 * dist * direction_world
                                 contact_data.contact_normal_a_to_b = contact_normal
                                 contact_data.contact_distance = dist
                                 contact_data.radius_eff_a = 0.0
@@ -1745,14 +1812,15 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                                 writer_func(contact_data, writer_data, -1)
 
-                    # Defensive cooperative reset before the next outer
-                    # iteration. The drain loop above already left the
-                    # stack empty, so this is logically a no-op, but it
-                    # is a uniformly-called barrier that pairs cleanly
-                    # with the inner push loop and matches the original
-                    # ``push -> pop -> clear`` pattern that empirically
-                    # avoided a deadlock in deterministic mesh-mesh
-                    # scenes (see ``example_basic_shapes6_determinism``).
+                    # Cooperative reset before the next outer iteration.
+                    # The drain loop above already left the stack empty,
+                    # so this serves as a uniformly-called barrier that
+                    # pairs with the inner push loop and matches the
+                    # original ``push -> pop -> clear`` pattern that
+                    # empirically avoided a deadlock in deterministic
+                    # mesh-mesh scenes (see
+                    # ``example_basic_shapes6_determinism``). The reset of
+                    # ``progress`` relies on the barrier before it.
                     wp.tile_stack_clear(edge_stack)
 
     # Return early if contact reduction is disabled
@@ -1950,6 +2018,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 edge_start = block_in_pair * chunk_size
                 edge_end = wp.min(edge_start + chunk_size, num_edges)
 
+                # Barrier before the reset; see ``mesh_sdf_collision_kernel``.
+                wp.tile_stack_clear(edge_stack)
                 wp.tile_scatter_masked(progress, 0, edge_start, t == 0)
 
                 sdf_is_heightfield = sdf_is_hfield
@@ -2009,13 +2079,16 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 midpoint_sdf = sample_sdf_heightfield(hfd_sdf, heightfield_elevations, bsphere_center)
                                 add_edge = midpoint_sdf <= threshold
                             elif wp.static(not use_texture_sdf_only) and use_bvh_for_sdf:
-                                midpoint_sdf = sample_sdf_using_mesh(
+                                midpoint_sdf = sample_mesh_sdf_for_culling(
                                     mesh_id_sdf,
                                     bsphere_center,
                                     _SDF_QUERY_RADIUS_SLACK * threshold,
                                     sdf_mesh_query_type,
                                     mesh_boundary_flags,
                                     sdf_boundary_start,
+                                    mesh_scale_sdf,
+                                    shape_collision_aabb_lower[sdf_shape],
+                                    shape_collision_aabb_upper[sdf_shape],
                                 )
                                 add_edge = midpoint_sdf <= threshold
                             else:
@@ -2040,8 +2113,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     # Drain the stack completely — see the matching loop
                     # in ``mesh_sdf_collision_kernel`` for why a single
                     # pop would silently drop overflowed accepted edges.
-                    # The trailing ``tile_stack_clear`` is a defensive
-                    # no-op barrier (see that same comment block).
+                    # The trailing ``tile_stack_clear`` then acts only as
+                    # a barrier (see that same comment block).
                     while wp.tile_stack_count(edge_stack) > 0:
                         popped, edge_slot = wp.tile_stack_pop(edge_stack)
                         my_edge_idx = popped.edge_idx
@@ -2185,6 +2258,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         direction_world = wp.vec3(0.0, 1.0, 0.0)
 
                                 contact_normal = -direction_world if mode == 0 else direction_world
+                                contact_center = point_world - 0.5 * dist * direction_world
                                 position_local_tri = wp.quat_rotate_inv(
                                     wp.transform_get_rotation(X_tri_ws),
                                     point_world - wp.transform_get_translation(X_tri_ws),
@@ -2207,11 +2281,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 contact_id = _export_and_reduce_contact_centered_two_spatial_depths(
                                     shape_a,
                                     shape_b,
-                                    point_world,
+                                    contact_center,
                                     contact_normal,
                                     dist,
                                     (my_edge_idx << 2) | (mode << 1),
-                                    point_world - midpoint,
+                                    contact_center - midpoint,
                                     inner_spatial_depth,
                                     outer_spatial_depth,
                                     position_local_tri,
@@ -2226,7 +2300,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         export_and_reduce_predictive_contact(
                                             shape_a,
                                             shape_b,
-                                            point_world,
+                                            contact_center,
                                             contact_normal,
                                             dist,
                                             margin_sum,
@@ -2242,10 +2316,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             reducer_data,
                                         )
 
-                    # Defensive cooperative reset before the next outer
-                    # iteration — see the matching ``tile_stack_clear``
-                    # call in ``mesh_sdf_collision_kernel`` for
-                    # rationale.
+                    # Cooperative reset before the next outer iteration —
+                    # see the matching ``tile_stack_clear`` call in
+                    # ``mesh_sdf_collision_kernel``.
                     wp.tile_stack_clear(edge_stack)
 
     return mesh_sdf_collision_global_reduce_kernel

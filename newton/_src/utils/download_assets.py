@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # commit.  Update these SHAs when assets change upstream and the new versions
 # have been validated against Newton's test suite.
 NEWTON_ASSETS_URL = "https://github.com/newton-physics/newton-assets.git"
-NEWTON_ASSETS_REF = "f8fb7abcbeba2318814a74f3eeb02780ad7925d6"
+NEWTON_ASSETS_REF = "ac1f172b6f53915f9b81aa9ccd765ae792cc264c"
 
 MENAGERIE_URL = "https://github.com/google-deepmind/mujoco_menagerie.git"
 MENAGERIE_REF = "da76818e269b82289eba39808e2fb91d679d6994"
@@ -35,6 +35,9 @@ _HTTP_SERVER_ERROR_RE = re.compile(r"\bhttp 5\d\d\b", re.IGNORECASE)
 _GIT_DOWNLOAD_ATTEMPTS = 3
 _GIT_DOWNLOAD_RETRY_DELAY = 1.0
 _TRANSIENT_GIT_ERROR_PATTERNS = (
+    "could not resolve host",
+    "failed to connect to",
+    "timed out",
     "rpc failed",
     "early eof",
     "the remote end hung up",
