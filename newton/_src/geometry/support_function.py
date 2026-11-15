@@ -152,7 +152,10 @@ def triangle_normal_valid(geom: GenericShapeData, point: wp.vec3, normal: wp.vec
         return True
     ab, ac = geom.scale, geom.auxiliary
     face = wp.normalize(wp.cross(ab, ac))
-    if wp.length_sq(wp.cross(normal, face)) <= 1.0e-10:
+    # Portal convergence controls distance, not angle. Near a resting hull,
+    # its normal can differ from the supporting face by a fraction of a
+    # milliradian. Preserve that face support at internal triangle edges.
+    if wp.length_sq(wp.cross(normal, face)) <= 1.0e-6:
         return True
     aa, bb, cc = wp.dot(ab, ab), wp.dot(ab, ac), wp.dot(ac, ac)
     denominator = aa * cc - bb * bb

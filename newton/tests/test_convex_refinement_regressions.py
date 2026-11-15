@@ -367,6 +367,65 @@ def test_refinement_triangle_box_seam(test, device):
     test.assertGreater(float(np.max(np.linalg.norm(normals[:, :2], axis=1))), 0.1)
 
 
+def test_refinement_triangle_hull_seam_support(test, device):
+    """Retain near-face support for a beveled hull crossing a flat mesh seam."""
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(density=0.0, gap=0.002)
+    # Retain the factory-scale coordinates: world-transform roundoff contributes
+    # to the nearly vertical portal normal at the seam.
+    belt = newton.Mesh(
+        np.array(
+            [
+                [1.2278625, 0.04005, 0.005],
+                [1.2278625, -0.04005, 0.005],
+                [2.0464375, -0.04005, 0.005],
+                [2.0464375, 0.04005, 0.005],
+            ],
+            dtype=np.float32,
+        ),
+        [0, 1, 2, 0, 2, 3],
+        compute_inertia=False,
+    )
+    builder.add_shape_mesh(
+        -1,
+        mesh=belt,
+        cfg=cfg,
+        xform=wp.transform(wp.vec3(54.5125, 28.616438, 0.945), wp.quat(0, 0, -0.70710677, 0.70710677)),
+    )
+    angles = np.arange(21) * (2.0 * np.pi / 21)
+    vertices = np.array(
+        [
+            (radius * np.cos(angle), radius * np.sin(angle), z)
+            for radius, z in ((0.025605, 0.0), (0.028303897, 0.0015), (0.030505, 0.016))
+            for angle in angles
+        ],
+        dtype=np.float32,
+    )
+    hull = newton.Mesh(vertices, [0, 1, 2], compute_inertia=False).compute_convex_hull()
+    body = builder.add_body(
+        xform=wp.transform(
+            wp.vec3(54.5123558, 26.8382854, 0.949995875),
+            wp.quat(-0.0002334115, 0.0003483940, 0.991417944, 0.130729795),
+        ),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    builder.add_shape_convex_hull(body, mesh=hull, cfg=cfg)
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts, state = pipeline.contacts(), model.state()
+    poses = state.body_q.numpy()
+    for offset in (-0.003, 0.0, 0.003):
+        with test.subTest(offset=offset):
+            poses[body, 1] = 26.8382854 + offset
+            state.body_q.assign(poses)
+            pipeline.collide(state, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0, "flat seam removed the hull's support")
+            normals = contacts.rigid_contact_normal.numpy()[:count]
+            test.assertTrue(np.all(normals[:, 2] > 0.9999))
+
+
 def test_refinement_triangle_box_tilted_rest(test, device):
     """Keep a slightly tilted mesh resting on a wide box at its true depth.
 
@@ -649,6 +708,7 @@ for function in (
     test_refinement_unconverged_query_separation,
     test_refinement_triangle_box_depth,
     test_refinement_triangle_box_seam,
+    test_refinement_triangle_hull_seam_support,
     test_refinement_triangle_box_tilted_rest,
     test_refinement_triangle_thin_box_face,
     test_refinement_triangle_box_tilted_face,
