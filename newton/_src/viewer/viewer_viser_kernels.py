@@ -7,12 +7,23 @@ import warp as wp
 
 
 @wp.kernel
-def detect_shape_opacity_changes(
-    shape_opacities: wp.array[wp.float32],
-    previous_shape_opacities: wp.array[wp.float32],
+def detect_shape_appearance_changes(
+    colors: wp.array[wp.vec3],
+    opacities: wp.array[wp.float32],
+    slot_to_shape: wp.array[wp.int32],
+    packed_colors: wp.array[wp.vec3],
+    packed_opacities: wp.array[wp.float32],
     changed: wp.array[wp.int32],
 ):
-    """Set a device flag when any packed shape opacity changed."""
+    """Repack appearance and detect edits in one pass, using the existing batch buffers."""
     tid = wp.tid()
-    if shape_opacities[tid] != previous_shape_opacities[tid]:
-        wp.atomic_add(changed, 0, 1)
+    shape = slot_to_shape[tid]
+    color = colors[shape]
+    previous = packed_colors[tid]
+    opacity = wp.clamp(opacities[shape], 0.0, 1.0)
+    if color[0] != previous[0] or color[1] != previous[1] or color[2] != previous[2]:
+        wp.atomic_max(changed, 0, 1)
+    if opacity != packed_opacities[tid]:
+        wp.atomic_max(changed, 1, 1)
+    packed_colors[tid] = color
+    packed_opacities[tid] = opacity

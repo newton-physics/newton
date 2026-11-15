@@ -134,6 +134,17 @@ class TestViewerViserInteraction(unittest.TestCase):
         }
         handles = {name: self.viewer._scene_handles[name] for name in original}
         self.assertTrue(original)
+        from newton._src.viewer.viewer_viser import to_numpy  # noqa: PLC0415
+
+        with mock.patch("newton._src.viewer.viewer_viser.to_numpy", wraps=to_numpy) as transfer:
+            self.viewer.log_state(state)
+        transforms = [call.args[0] for call in transfer.call_args_list if call.args[0].dtype == wp.transform]
+        self.assertEqual(sum(len(array) for array in transforms), model.body_count)
+        positions = {name: handle.batched_positions.copy() for name, handle in handles.items()}
+        self.viewer.set_layer_transform(self.viewer.layer.layer_id, (3.0, 0.0, 0.0))
+        self.viewer.log_state(state)
+        for name, position in positions.items():
+            np.testing.assert_allclose(handles[name].batched_positions, np.add(position, (3.0, 0.0, 0.0)))
         self.viewer.show_visual = False
         self.viewer.show_collision = False
         self.viewer.log_state(state)
