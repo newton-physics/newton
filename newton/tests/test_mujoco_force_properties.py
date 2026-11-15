@@ -13,8 +13,8 @@ import warp as wp
 
 import newton
 from newton import ModelFlags
-from newton._src.solvers.mujoco import solver_mujoco
 from newton._src.solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
+from newton._src.solvers.mujoco.kernels import update_dof_force_properties_kernel, update_tendon_properties_kernel
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
@@ -62,50 +62,46 @@ def _make_model(
 
 @requires(*MUJOCO_MODULES)
 class TestMuJoCoForceProperties(unittest.TestCase):
-    def test_deterministic_damping_updates(self):
-        """Compile Newton's MuJoCo kernels deterministically and preserve actuator damping."""
-        # MuJoCo-Warp has separate determinism limitations; keep its modules at their defaults.
-        with (
-            patch.object(solver_mujoco, "_mujoco_warp_deterministic_modules", return_value=[]),
-            wp.ScopedDevice("cpu"),
-        ):
-            builder = newton.ModelBuilder()
-            builder.add_mjcf(
-                """
-                <mujoco>
-                  <worldbody><body>
-                    <joint name="hinge" damping="0.2"/>
-                    <geom type="sphere" size="0.1" mass="1"/>
-                  </body></worldbody>
-                  <tendon><fixed name="drive" damping="0.3">
-                    <joint joint="hinge" coef="1"/>
-                  </fixed></tendon>
-                  <actuator>
-                    <motor joint="hinge" damping="0.7" gear="3"/>
-                    <motor tendon="drive" damping="0.5" gear="2"/>
-                  </actuator>
-                </mujoco>
-                """,
-                ctrl_direct=True,
-            )
-            model = builder.finalize(device="cpu")
-            solver = SolverMuJoCo(
-                model,
-                disable_contacts=True,
-                deterministic=wp.DeterministicMode.RUN_TO_RUN,
-            )
-            self.assertEqual(
-                wp.get_module_options(module=solver_mujoco.kernels)["deterministic"],
-                wp.DeterministicMode.RUN_TO_RUN,
-            )
-            # Actuator damping is folded into passive damping with the squared gear ratio.
-            np.testing.assert_allclose(solver.mjw_model.dof_damping.numpy(), [[0.2 + 0.7 * 3.0**2]])
-            np.testing.assert_allclose(solver.mjw_model.tendon_damping.numpy(), [[0.3 + 0.5 * 2.0**2]])
-            model.joint_damping.fill_(0.4)
-            model.mujoco.tendon_damping.fill_(0.6)
-            solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.TENDON_PROPERTIES)
-            np.testing.assert_allclose(solver.mjw_model.dof_damping.numpy(), [[0.4 + 0.7 * 3.0**2]])
-            np.testing.assert_allclose(solver.mjw_model.tendon_damping.numpy(), [[0.6 + 0.5 * 2.0**2]])
+    def test_deterministic_dof_damping(self):
+        """Compile the production DOF kernel deterministically and sum actuator damping."""
+        # Use a unique module so this test does not change the solver's module options.
+        kernel = wp.kernel(update_dof_force_properties_kernel.func, module="unique", enable_backward=False)
+        wp.set_module_options({"deterministic": wp.DeterministicMode.RUN_TO_RUN}, module=kernel.module)
+        with wp.ScopedDevice("cpu"):
+            mapping = wp.array([[0]], dtype=wp.int32)
+            friction = wp.array([0.1], dtype=float)
+            damping = wp.array([0.2], dtype=float)
+            actuator_damping = wp.array([6.3], dtype=float)
+            friction_out = wp.zeros((1, 1), dtype=float)
+            damping_out = wp.zeros((1, 1), dtype=float)
+            for joint_damping in (0.2, 0.4):
+                damping.fill_(joint_damping)
+                wp.launch(
+                    kernel,
+                    dim=(1, 1),
+                    inputs=[mapping, friction, damping, actuator_damping, None, None],
+                    outputs=[friction_out, damping_out, None, None],
+                )
+                np.testing.assert_allclose(damping_out.numpy(), [[joint_damping + 6.3]])
+
+    def test_deterministic_tendon_damping(self):
+        """Compile the production tendon kernel deterministically and sum actuator damping."""
+        kernel = wp.kernel(update_tendon_properties_kernel.func, module="unique", enable_backward=False)
+        wp.set_module_options({"deterministic": wp.DeterministicMode.RUN_TO_RUN}, module=kernel.module)
+        with wp.ScopedDevice("cpu"):
+            mapping = wp.array([[0]], dtype=wp.int32)
+            damping = wp.array([0.3], dtype=float)
+            actuator_damping = wp.array([2.0], dtype=float)
+            damping_out = wp.zeros((1, 1), dtype=float)
+            for tendon_damping in (0.3, 0.6):
+                damping.fill_(tendon_damping)
+                wp.launch(
+                    kernel,
+                    dim=(1, 1),
+                    inputs=[mapping, None, damping, actuator_damping] + [None] * 9,
+                    outputs=[None, damping_out] + [None] * 9,
+                )
+                np.testing.assert_allclose(damping_out.numpy(), [[tendon_damping + 2.0]])
 
     def test_inertial_and_reference_updates_preserve_pending_limit_parameters(self):
         """Recompute limits from published parameters until a force notification arrives."""
