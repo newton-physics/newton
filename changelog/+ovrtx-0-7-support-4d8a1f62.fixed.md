@@ -1,0 +1,1 @@
+Support OVRTX 0.7 and OVStage 0.4 in `ViewerRTX`, including typed token and material-path writes and column-based borrowed-stage reads, while preserving compatibility with the previously validated dependency pairs.

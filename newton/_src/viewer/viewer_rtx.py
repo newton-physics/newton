@@ -1045,10 +1045,14 @@ void main() {
                         read.wait()
                         group = read.fetch_next()
                         while group is not None:
-                            rows = np.from_dlpack(group.dlpack(0)).reshape(-1, 4, 4)
-                            for local in range(group.prim_count):
-                                out[group.prim_index(local)] = rows[local]
-                            stage.release_group(group)
+                            try:
+                                # OVStage 0.4 stores each attribute's data in a column.
+                                column = group.columns[0] if hasattr(group, "columns") else group
+                                rows = np.from_dlpack(column.dlpack(0)).reshape(-1, 4, 4)
+                                for local in range(group.prim_count):
+                                    out[group.prim_index(local)] = rows[column.data_row_index(local)]
+                            finally:
+                                stage.release_group(group)
                             group = read.fetch_next()
             finally:
                 paths.destroy_path_list(path_list)
@@ -2296,7 +2300,9 @@ void main() {
 
         semantic = ovstage.AttributeSemantic.MATRIX if is_matrix else 0
         if isinstance(values, (list, tuple)) and values and isinstance(values[0], str):
-            values = np.asarray([self._ovstage_paths.intern_token(value) for value in values], dtype=np.uint64)
+            tokens = [self._ovstage_paths.intern_token(value) for value in values]
+            # OVStage 0.4 uses typed tokens; tensor payloads still carry raw uint64 IDs.
+            values = np.asarray([getattr(token, "raw_id", token) for token in tokens], dtype=np.uint64)
             semantic = ovstage.AttributeSemantic.TOKEN_ID
 
         query = self._get_ovstage_query(prim_paths)
@@ -2632,12 +2638,12 @@ void main() {
                 self._runtime_material_paths.add(material_path)
         self._apply_ovstage_population_changes()
         for mesh_path, material_path, uvs in updates:
-            target = self._runtime_prim_paths[material_path]
+            target = self._ovstage_paths.intern_path(self._runtime_prim_paths[material_path])
             self._ovstage.write_attribute(
                 self._get_ovstage_query([mesh_path]),
                 "material:binding",
                 ordinal=self._ovstage_ordinal,
-                tensors=np.array([self._ovstage_paths.intern_path(target)], dtype=np.uint64),
+                tensors=np.array([getattr(target, "raw_id", target)], dtype=np.uint64),
                 is_array=True,
                 semantic=ovstage.AttributeSemantic.RELATIONSHIP_PATH_ID,
             ).wait()

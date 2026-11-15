@@ -261,12 +261,16 @@ def Xform "World"
             self.ovstage.OrdinalRange.latest(self.viewer._ovstage_ordinal),
         ) as read:
             group = read.fetch_next()
-            data_rows = np.from_dlpack(group.dlpack(0)).copy()
-            values = [data_rows[group.data_row_index(index)] for index in range(group.data_count)]
-            self.viewer._ovstage.release_group(group)
+            try:
+                column = group.columns[0] if hasattr(group, "columns") else group
+                data_rows = np.from_dlpack(column.dlpack(0)).copy()
+                values = [data_rows[column.data_row_index(index)] for index in range(group.prim_count)]
+            finally:
+                self.viewer._ovstage.release_group(group)
 
+        token_type = type(attribute)
         self.assertEqual(
-            [self.viewer._ovstage_paths.token_to_string(int(value)) for value in values],
+            [self.viewer._ovstage_paths.token_to_string(token_type(int(value))) for value in values],
             ["inherited", "invisible"],
         )
 
@@ -291,8 +295,11 @@ def Xform "World"
             self.ovstage.OrdinalRange.latest(self.viewer._ovstage_ordinal),
         ) as read:
             group = read.fetch_next()
-            values = np.from_dlpack(group.dlpack(0)).copy()
-            self.viewer._ovstage.release_group(group)
+            try:
+                column = group.columns[0] if hasattr(group, "columns") else group
+                values = np.from_dlpack(column.dlpack(0)).copy()
+            finally:
+                self.viewer._ovstage.release_group(group)
 
         self.assertEqual(values.shape, points.shape)
         self.assertEqual(values.dtype, points.dtype)
@@ -314,7 +321,6 @@ def Xform "World"
         runtime_path = self.viewer._replace_runtime_prim("/World/RuntimeMarker")
         self.assertTrue(self.viewer._ovstage_population_dirty)
         self.assertEqual(runtime_path, "/World/RuntimeMarker_rtx_1")
-        self.assertIsInstance(self.viewer._runtime_prim_handles["/World/RuntimeMarker"], int)
         self.viewer._ovstage_ordinal = 2
         self.viewer._apply_ovstage_population_changes()
         self.assertFalse(self.viewer._ovstage_population_dirty)
@@ -730,7 +736,8 @@ class TestViewerRTXRendering(unittest.TestCase):
                                         group = read.fetch_next()
                                         self.assertIsNotNone(group)
                                         try:
-                                            self.assertTrue(bool(np.from_dlpack(group.dlpack(0)).reshape(-1)[0]))
+                                            column = group.columns[0] if hasattr(group, "columns") else group
+                                            self.assertTrue(bool(np.from_dlpack(column.dlpack(0)).reshape(-1)[0]))
                                         finally:
                                             viewer._ovstage.release_group(group)
                         viewer.clear_model()
@@ -1008,7 +1015,8 @@ class TestViewerRTXRendering(unittest.TestCase):
                     group = read.fetch_next()
                     self.assertIsNotNone(group)
                     try:
-                        value = bool(np.from_dlpack(group.dlpack(0)).reshape(-1)[0])
+                        column = group.columns[0] if hasattr(group, "columns") else group
+                        value = bool(np.from_dlpack(column.dlpack(0)).reshape(-1)[0])
                     finally:
                         viewer._ovstage.release_group(group)
                 self.assertFalse(value, f"frame {frame_index}")
@@ -1154,11 +1162,15 @@ def Xform "World"
         stage, model = self._borrowed_scene()
         viewer = ViewerRTX(headless=True, async_rendering=False, ovstage=stage)
         try:
-            authored = viewer._read_borrowed_world_matrices(["/World/Body"])
+            paths = ["/World/missing", "/World/Body", "/World"]
+            authored = viewer._read_borrowed_world_matrices(paths)
+            self.assertTrue(np.isnan(authored[0]).all())
+            np.testing.assert_allclose(authored[1, 3, :3], [1.0, 2.0, 3.5])
+            np.testing.assert_allclose(authored[2, 3, :3], [0.0, 0.0, 0.5])
             viewer.set_model(model)
             viewer.begin_frame(0.0)
             viewer.end_frame()
-            np.testing.assert_allclose(viewer._read_borrowed_world_matrices(["/World/Body"]), authored, atol=1.0e-5)
+            np.testing.assert_allclose(viewer._read_borrowed_world_matrices(paths), authored, atol=1.0e-5)
         finally:
             viewer.close()
 
