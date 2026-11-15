@@ -70,8 +70,11 @@ _DRIVE_LIMIT_MODE_DRIVE = wp.constant(3)
 _SMALL_LENGTH_EPS = wp.constant(1.0e-9)
 """Small length tolerance (e.g., segment length checks)"""
 
-_METRIC_EIGENGAP_TOLERANCE = wp.constant(8.0 * 1.1920929e-7)
-"""Trace-relative tolerance for a near-isotropic conditioning approximation."""
+_METRIC_RELATIVE_EIGENGAP_TOLERANCE = wp.constant(8.0 * 1.1920929e-7)
+"""Trace-relative eigenvalue-gap cutoff for approximating a contact tangent metric as isotropic."""
+
+_SQRT3_UPPER = wp.constant(1.7320509)
+"""Float32 upper bound on sqrt(3), used for the quick friction-limit check."""
 
 _USE_SMALL_ANGLE_APPROX = wp.constant(True)
 """If True use first-order small-angle rotation approximation; if False use closed-form rotation update.
@@ -1076,7 +1079,7 @@ def _pack_tangent_metric(R: wp.mat22):
     high = wp.max(a, c) + 0.5 * (gap - wp.abs(a - c))
     # Approximate near-isotropic SPD conditioning with high*I.
     # The cutoff gives about 2e-6 relative spectral error in exact arithmetic.
-    if gap <= _METRIC_EIGENGAP_TOLERANCE * (a + c) or determinant <= 0.0 or high <= 0.0:
+    if gap <= _METRIC_RELATIVE_EIGENGAP_TOLERANCE * (a + c) or determinant <= 0.0 or high <= 0.0:
         return wp.mat22(high, high, 1.0, 0.0)
     low = wp.min(high, determinant / high)
     axis = wp.vec2(0.5 * (gap + wp.abs(a - c)), b)
@@ -1131,6 +1134,8 @@ def _project_friction_disk_metric(trial: wp.vec3, n: wp.vec3, R: wp.mat22, limit
 def _project_friction_update(lam: wp.vec3, displacement: wp.vec3, n: wp.vec3, R: wp.mat22, limit: float):
     """Project the ALM friction trial ``lam + R displacement`` onto the Coulomb disk in the ``R^-1`` metric.
 
+    Return the projected reaction (force or torque) and a positive-semidefinite
+    secant metric for the body solve.
     One tangent basis serves the trial, the projection and the secant metric.
     """
     if limit <= 0.0:
@@ -1171,8 +1176,9 @@ def _solve_friction_disk_root(vh: float, vl: float, bound: float, ratio: float, 
 
 @wp.func
 def _project_friction_update_force_only(lam: wp.vec3, displacement: wp.vec3, n: wp.vec3, R: wp.mat22, limit: float):
-    """Project a dual force, using radial arithmetic for an exactly isotropic response.
+    """Return the projected reaction of :func:`_project_friction_update` without its secant metric.
 
+    An exactly isotropic response uses radial clipping.
     Callers remove normal displacement first; the isotropic branch projects it again before
     scaling by rho to suppress residual normal roundoff.
     """
@@ -1184,7 +1190,7 @@ def _project_friction_update_force_only(lam: wp.vec3, displacement: wp.vec3, n: 
         lam_t = lam - n * wp.dot(n, lam)
         tangent_iso = lam_t + rho_iso * disp_t
         largest_iso = wp.max(wp.abs(tangent_iso[0]), wp.max(wp.abs(tangent_iso[1]), wp.abs(tangent_iso[2])))
-        if 1.7320509 * largest_iso <= limit:
+        if _SQRT3_UPPER * largest_iso <= limit:
             return tangent_iso
         mag_iso = wp.max(limit, largest_iso)
         sc_iso = tangent_iso / mag_iso
@@ -1197,7 +1203,7 @@ def _project_friction_update_force_only(lam: wp.vec3, displacement: wp.vec3, n: 
     trial = lam + (eh * (R[0, 0] * wp.dot(eh, displacement)) + el * (R[0, 1] * wp.dot(el, displacement)))
     tangent = trial - n * wp.dot(n, trial)
     largest = wp.max(wp.abs(tangent[0]), wp.max(wp.abs(tangent[1]), wp.abs(tangent[2])))
-    if 1.7320509 * largest <= limit:
+    if _SQRT3_UPPER * largest <= limit:
         return tangent
     magnitude = wp.max(limit, largest)
     scaled = tangent / magnitude
@@ -1227,17 +1233,18 @@ def _project_friction_update_force_only(lam: wp.vec3, displacement: wp.vec3, n: 
 
 @wp.func
 def _project_friction_disk_axes(trial: wp.vec3, n: wp.vec3, R: wp.mat22, eh: wp.vec3, el: wp.vec3, limit: float):
-    """Projection of :func:`_project_friction_disk_metric` given the metric's world-space eigenaxes.
+    """Project ``trial`` onto the Coulomb disk in the ``R^-1`` metric, given ``R``'s world eigenaxes ``eh``, ``el``.
 
-    Normalize force/torque units before squaring. The scaled root stays
-    bounded as a positive capacity decays toward zero during dual updates.
+    Return the projected reaction and a positive-semidefinite secant metric for the body solve.
+    Normalize force/torque units before squaring, so the scaled root stays
+    bounded as a positive ``limit`` decays toward zero.
     """
     if limit <= 0.0:
         return wp.vec3(0.0), wp.mat33(0.0)
     tangent = trial - n * wp.dot(n, trial)
     largest = wp.max(wp.abs(tangent[0]), wp.max(wp.abs(tangent[1]), wp.abs(tangent[2])))
-    # |t| <= sqrt(3) max|t_i| accepts most sticking trials without a division.
-    if 1.7320509 * largest <= limit:
+    # ||t|| <= sqrt(3) * max|t_i| allows an early return without division.
+    if _SQRT3_UPPER * largest <= limit:
         return tangent, _world_tangent_metric(R, eh, el)
     magnitude = wp.max(limit, largest)
     scaled = tangent / magnitude
@@ -1372,7 +1379,7 @@ def _project_angular_friction(
 
 
 @wp.func
-def evaluate_angular_contact_friction(
+def evaluate_rigid_contact_angular_friction(
     body_id_0: int,
     body_id_1: int,
     body_q: wp.array[wp.transform],
@@ -1903,7 +1910,7 @@ def get_body_adjacent_joint_id(adjacency: RigidForceElementAdjacencyInfo, body: 
 
 
 @wp.func
-def _evaluate_rigid_contact_endpoint(
+def _evaluate_rigid_contact_for_body(
     is_body_a: bool,
     body_a_index: int,
     body_b_index: int,
@@ -1932,14 +1939,15 @@ def _evaluate_rigid_contact_endpoint(
     X_wb: wp.transform,
     contact_damping_bidirectional: bool,
 ):
-    """Evaluate the contact force, torque, and 3x3 Hessian blocks of one endpoint of an active contact.
+    """Evaluate normal/sliding contact force, torque, and 3x3 Hessian blocks for one body of an active contact.
 
     Legacy hard and compliant ALM contacts use displacement-based projected
     Coulomb friction; legacy soft contact uses velocity-based IPC friction.
 
     The caller applies the normal law and activity rule and passes ``normal_primal_k``, ``f_n``,
     ``lam_n`` and ``contact_lam_eff``, then adds the angular (torsional/rolling) friction torque and metric.
-    The body solve evaluates its own endpoint; :func:`evaluate_rigid_contact_from_collision` evaluates both.
+    The body solve calls this for its own body; :func:`evaluate_rigid_contact_normal_sliding`
+    calls it for both bodies.
 
     Returns:
         5-tuple: (force, torque, H_ll, H_al, H_aa) on body a if ``is_body_a`` else on body b.
@@ -2026,7 +2034,7 @@ def _evaluate_rigid_contact_endpoint(
 
 
 @wp.func
-def evaluate_rigid_contact_from_collision(
+def evaluate_rigid_contact_normal_sliding(
     body_a_index: int,
     body_b_index: int,
     body_q: wp.array[wp.transform],
@@ -2058,6 +2066,9 @@ def evaluate_rigid_contact_from_collision(
     Coulomb friction; legacy soft contact uses velocity-based IPC friction.
     Normal damping acts on a closing gap only, or in both directions when
     ``contact_damping_bidirectional`` is set.
+
+    Torsional and rolling friction contribute separate pure torques;
+    see :func:`evaluate_rigid_contact_angular_friction`.
 
     Returns:
         10-tuple: (force_a, torque_a, H_ll_a, H_al_a, H_aa_a,
@@ -2105,7 +2116,7 @@ def evaluate_rigid_contact_from_collision(
         X_wb = body_q[body_b_index]
         body_b_com_local = body_com[body_b_index]
 
-    force_a, torque_a, h_ll, h_al_a, h_aa_a = _evaluate_rigid_contact_endpoint(
+    force_a, torque_a, h_ll, h_al_a, h_aa_a = _evaluate_rigid_contact_for_body(
         True,
         body_a_index,
         body_b_index,
@@ -2134,7 +2145,7 @@ def evaluate_rigid_contact_from_collision(
         X_wb,
         contact_damping_bidirectional,
     )
-    force_b, torque_b, _h_ll_b, h_al_b, h_aa_b = _evaluate_rigid_contact_endpoint(
+    force_b, torque_b, _h_ll_b, h_al_b, h_aa_b = _evaluate_rigid_contact_for_body(
         False,
         body_a_index,
         body_b_index,
@@ -5656,7 +5667,7 @@ def create_accumulate_body_body_contacts_per_body(compile_compliant_alm: bool = 
                 i += _NUM_CONTACT_THREADS_PER_BODY
                 continue
 
-            # Normal law and activity rule of evaluate_rigid_contact_from_collision; keep the two in step.
+            # Normal law and activity rule of evaluate_rigid_contact_normal_sliding; keep the two in step.
             normal_primal_k = normal_solve_weight
             contact_lam_eff = lam_vec
             if contact_compliant_alm == 1:
@@ -5685,7 +5696,7 @@ def create_accumulate_body_body_contacts_per_body(compile_compliant_alm: bool = 
             friction_mu = contact_material_mu[contact_idx]
             mu_torsional = friction_mu[1]
             mu_rolling = friction_mu[2]
-            force_own, torque_own, h_ll_own, h_al_own, h_aa_own = _evaluate_rigid_contact_endpoint(
+            force_own, torque_own, h_ll_own, h_al_own, h_aa_own = _evaluate_rigid_contact_for_body(
                 is_body_a,
                 b0,
                 b1,
@@ -5717,7 +5728,7 @@ def create_accumulate_body_body_contacts_per_body(compile_compliant_alm: bool = 
 
             # Contacts without angular friction skip its rho and multiplier loads.
             if contact_compliant_alm == 1 and (mu_torsional > 0.0 or mu_rolling > 0.0):
-                pure_torque_b, K_angular = evaluate_angular_contact_friction(
+                pure_torque_b, K_angular = evaluate_rigid_contact_angular_friction(
                     b0,
                     b1,
                     body_q,
@@ -5802,7 +5813,7 @@ def _evaluate_body_body_contact_slot(
     static shape, or both ``-1`` for an invalid slot), the offset-shifted world-space surface
     points, the force on body 0 with its torque about body 0's COM (the world origin for a static
     shape), the force on body 1, and its solved angular-friction couple. Forces use
-    :func:`evaluate_rigid_contact_from_collision`. Invalid slots return zeros; separated or
+    :func:`evaluate_rigid_contact_normal_sliding`. Invalid slots return zeros; separated or
     inactive contacts return zero forces with valid bodies and points.
     """
     zero = wp.vec3(0.0)
@@ -5876,7 +5887,7 @@ def _evaluate_body_body_contact_slot(
         _h_ll_1,
         _h_al_1,
         _h_aa_1,
-    ) = evaluate_rigid_contact_from_collision(
+    ) = evaluate_rigid_contact_normal_sliding(
         int(b0),
         int(b1),
         body_q,

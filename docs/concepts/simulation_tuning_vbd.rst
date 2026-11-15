@@ -684,8 +684,9 @@ Automatic coloring uses joint and tendon connections, but does not include
 contacts. Contacting bodies may share a color, which can slow convergence.
 Compliant-ALM contacts between two dynamic bodies of the same color use a
 doubled solve metric to bound their simultaneous corrections. This can improve
-stability in dense contact networks.
-Splitting the bodies into different colors removes the doubling.
+stability in dense contact networks, but those pairs may need more iterations.
+Bodies in different color groups are updated sequentially, so their contact
+solve metrics are not doubled.
 For small scenes with predictable contacts, consider splitting
 existing groups in ``builder.body_color_groups`` to separate frequently
 contacting bodies. Make these edits after ``builder.color()`` and before

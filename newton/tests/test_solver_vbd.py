@@ -62,11 +62,11 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     compute_kappa_and_jacobian,
     compute_rigid_contact_forces,
     evaluate_angular_constraint_force_hessian,
-    evaluate_angular_contact_friction,
     evaluate_body_particle_attachment_particle_force_hessian,
     evaluate_body_particle_contact,
     evaluate_linear_constraint_force_hessian,
-    evaluate_rigid_contact_from_collision,
+    evaluate_rigid_contact_angular_friction,
+    evaluate_rigid_contact_normal_sliding,
     init_body_body_contacts_alm,
     init_body_particle_contacts,
     place_dat_division_plane,
@@ -479,7 +479,7 @@ def _eval_compliant_sliding_contact_metric_kernel(
         _hessian_b,
         _hal_b,
         _haa_b,
-    ) = evaluate_rigid_contact_from_collision(
+    ) = evaluate_rigid_contact_normal_sliding(
         0,
         -1,
         body_q,
@@ -522,7 +522,7 @@ def _eval_angular_contact_friction_kernel(
     hessian_out: wp.array[wp.mat33],
 ):
     """Evaluate angular contact torque and its rotational metric."""
-    torque, hessian = evaluate_angular_contact_friction(
+    torque, hessian = evaluate_rigid_contact_angular_friction(
         -1,
         0,
         body_q,
@@ -902,7 +902,7 @@ def _eval_separating_contact_damping_kernel(
         h_ll_b_damped,
         _h_al_b_damped,
         _h_aa_b_damped,
-    ) = evaluate_rigid_contact_from_collision(
+    ) = evaluate_rigid_contact_normal_sliding(
         -1,
         0,
         body_q,
@@ -939,7 +939,7 @@ def _eval_separating_contact_damping_kernel(
         h_ll_b_undamped,
         _h_al_b_undamped,
         _h_aa_b_undamped,
-    ) = evaluate_rigid_contact_from_collision(
+    ) = evaluate_rigid_contact_normal_sliding(
         -1,
         0,
         body_q,
@@ -1218,7 +1218,7 @@ def _eval_rigid_contact_rigid_motion_kernel(
         _h_ll_b_damped,
         _h_al_b_damped,
         _h_aa_b_damped,
-    ) = evaluate_rigid_contact_from_collision(
+    ) = evaluate_rigid_contact_normal_sliding(
         rigid_body_a,
         rigid_body_b,
         rigid_body_q,
@@ -1255,7 +1255,7 @@ def _eval_rigid_contact_rigid_motion_kernel(
         _h_ll_b_undamped,
         _h_al_b_undamped,
         _h_aa_b_undamped,
-    ) = evaluate_rigid_contact_from_collision(
+    ) = evaluate_rigid_contact_normal_sliding(
         rigid_body_a,
         rigid_body_b,
         rigid_body_q,
@@ -7554,12 +7554,11 @@ class TestSolverVBD(unittest.TestCase):
             for module in (*fast_modules, rigid_vbd_kernels.create_update_duals_joint(True).module):
                 self.assertEqual(wp.get_module_options(module=module)["fast_math"], enable_fast_math)
             self.assertFalse(wp.get_module_options(module=rigid_vbd_kernels)["fast_math"])
-            self.assertFalse(
-                wp.get_module_options(
-                    module=rigid_vbd_kernels.create_accumulate_body_body_contacts_per_body(True).module
-                )["fast_math"]
-            )
-            for kernel in (compute_rigid_contact_forces, rigid_vbd_kernels.create_compute_rigid_contact_forces(True)):
+            for kernel in (
+                rigid_vbd_kernels.create_accumulate_body_body_contacts_per_body(True),
+                compute_rigid_contact_forces,
+                rigid_vbd_kernels.create_compute_rigid_contact_forces(True),
+            ):
                 self.assertFalse(wp.get_module_options(module=kernel.module)["fast_math"])
             for refresh in (False, True):
                 for compiled_alm in (False, True):
