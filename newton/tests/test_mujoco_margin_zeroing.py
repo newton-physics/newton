@@ -5,7 +5,8 @@
 
 ``SolverMuJoCo`` forwards authored geom and contact-pair margins unchanged on
 both the MuJoCo CPU and MuJoCo Warp backends across NATIVECCD and MULTICCD
-configurations, and updates them on ``ModelFlags.SHAPE_PROPERTIES``.
+configurations, and updates them at runtime on ``ModelFlags.SHAPE_PROPERTIES``
+on the MuJoCo Warp backend.
 """
 
 import unittest

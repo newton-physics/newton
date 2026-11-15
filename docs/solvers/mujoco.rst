@@ -853,8 +853,9 @@ Margin and gap mapping
 :attr:`~newton.Model.shape_margin` maps to MuJoCo
 ``geom_margin`` and :attr:`~newton.Model.shape_gap` maps to ``geom_gap``;
 authored contact-pair values similarly map to ``pair_margin`` and ``pair_gap``.
-The solver forwards margin and gap values at construction and runtime property
-updates on both the CPU and MuJoCo Warp backends. MuJoCo reports surface
+The solver forwards margin and gap values at construction on both the CPU and
+MuJoCo Warp backends; runtime property updates apply only to the MuJoCo Warp
+backend. MuJoCo reports surface
 distances in ``(margin, margin + gap]`` as inactive contacts without contact
 force. See :ref:`margin and gap semantics
 <margin-gap-semantics>` for Newton's contact geometry and MuJoCo's `margin and
