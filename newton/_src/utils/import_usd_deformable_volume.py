@@ -92,8 +92,6 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
 
     if not (root_prim and root_prim.IsValid()):
         return
-    radius_fallback_override_paths: list[str] = []
-    fallback_radius = 0.5 * _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
     for prim in ctx.prims.tetmeshes:
         path = str(prim.GetPath())
         if _is_ignored_path(path, ignore_paths):
@@ -318,14 +316,11 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
                 read_base_material=volume_material is None and tetmesh_for_builder.density is None,
             )
             add_soft_mesh_kwargs["density"] = resolved_density
-            # AOUSD authors no particle radius for volume deformables. Fall back to the same
-            # contact offset the cloth and cable importers use (half the AOUSD default
-            # thickness) instead of the builder-wide default, which can be as large as an
-            # object-sized soft body itself. The legacy bare-TetMesh path is unchanged
-            # and still follows builder.default_particle_radius.
-            if builder.default_particle_radius != _BUILDER_STOCK_PARTICLE_RADIUS:
-                radius_fallback_override_paths.append(path)
-            add_soft_mesh_kwargs["particle_radius"] = fallback_radius
+            # The volume proposal has no radius field. Use Newton's 0.5 mm fallback only
+            # for the stock builder value; preserve deliberate pre-import overrides.
+            # Bare TetMeshes must not evaluate this simulation-only unit conversion.
+            if builder.default_particle_radius == _BUILDER_STOCK_PARTICLE_RADIUS:
+                add_soft_mesh_kwargs["particle_radius"] = 0.5 * _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
 
         soft_p0, soft_t0 = builder.particle_count, builder.tet_count
         builder.add_soft_mesh(**add_soft_mesh_kwargs)
@@ -391,19 +386,3 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             logger.info(
                 "Added soft mesh %s with %s vertices and %s tetrahedra.", path, tetmesh.vertex_count, tetmesh.tet_count
             )
-
-    # One summary per import call, not one warning per prim, and pointed at the caller's
-    # add_usd() frame (stacklevel=4) so it identifies user code.
-    if radius_fallback_override_paths:
-        shown = ", ".join(radius_fallback_override_paths[:5])
-        if len(radius_fallback_override_paths) > 5:
-            shown += f", and {len(radius_fallback_override_paths) - 5} more"
-        warnings.warn(
-            f"ModelBuilder.default_particle_radius ({builder.default_particle_radius:g}) no longer applies to "
-            f"simulation-API volume deformables; using the AOUSD proposal's half-default-thickness fallback "
-            f"({fallback_radius:g} stage units) for {shown}. To override, overwrite ModelBuilder.particle_radius "
-            f"over the soft body's particle range after add_usd() (the ranges are available in the path_soft_map "
-            f"result of add_usd(..., return_deformable_results=True)).",
-            NewtonWarning,
-            stacklevel=4,
-        )
