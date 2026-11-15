@@ -774,27 +774,22 @@ limitation.
 Hydroelastic material response
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-To use physical hydroelastic stiffness and damping, construct the solver with
+Enable physical hydroelastic stiffness and damping with
 ``use_mujoco_contacts=False, hydroelastic_force_space=True, cone="elliptic"``.
-Use ``HydroelasticSDF.Config(reduce_contacts=False)`` in the collision pipeline;
-the solver does not check this setting.
-The option defaults to ``False``, preserving existing tuning. It requires
-MuJoCo-Warp and Euler, implicit, or implicitfast integration; RK4, discrete,
-and pyramidal contacts are unsupported. No backend patch is needed.
+Set ``HydroelasticSDF.Config(reduce_contacts=False)`` in the collision pipeline;
+the solver does not check this setting. Use MuJoCo-Warp with Euler, implicit,
+or implicitfast integration. The option defaults to ``False`` to preserve
+existing tuning. Enabling it may require retuning.
 
 For sticking or frictionless contacts, normal stiffness is consistent across
-body masses and contact subdivision. Sliding couples the normal and friction
-forces through the cone. Friction remains regularized: slow creep is possible
-below the Coulomb limit, and its rate depends on contact subdivision.
-The mode bounds friction weights independently of soft normal springs while
-preserving the physical friction cone. Enabling it may require retuning.
-Reduced contacts and center-of-pressure matching are follow-up work.
+body masses and contact subdivision. Sliding couples normal and friction
+forces. Slow creep is possible below the friction limit and depends on
+contact subdivision.
 
-MuJoCo-Warp's raw contact frames have scaled tangent rows in this mode, with
-compensating sliding and rolling coefficients. Newton's world-frame contact
-forces retain their usual meaning. Consumers that assume unit tangent rows,
-such as raw MuJoCo contact sensors or the MuJoCo viewer, need special care.
-This is a construction-time solver option, not a USD or MJCF material setting.
+Backend contact frames have scaled tangent rows and compensating friction
+coefficients. Newton still reports forces in world coordinates. Raw MuJoCo
+sensors and viewers that assume unit tangent rows need special care.
+This is a construction-time option, not a USD or MJCF material setting.
 
 .. experimental::
 

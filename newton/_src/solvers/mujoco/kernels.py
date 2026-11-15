@@ -210,12 +210,7 @@ def convert_solref(ke: float, kd: float, d_width: float, d_r: float) -> wp.vec2:
 
 
 @wp.func
-def hydroelastic_solref(
-    stiffness: float,
-    damping: float,
-    invweight: float,
-    timestep: float,
-):
+def hydroelastic_solref(stiffness: float, damping: float, invweight: float, timestep: float):
     """Map a physical spring to MuJoCo's implicit contact regularization.
 
     Backward Euler gives R = 1 / (h * (kd + h * ke)) and
@@ -739,12 +734,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
                             normal_weight, invweight, solimp[1], ir, friction[0]
                         )
                         friction_weight = normal_weight * tangent_scale * tangent_scale / (ir * ir)
-                    solref, solimp = hydroelastic_solref(
-                        contact_ke,
-                        kd,
-                        invweight,
-                        opt_timestep[0],
-                    )
+                    solref, solimp = hydroelastic_solref(contact_ke, kd, invweight, opt_timestep[0])
                 elif solimp[1] < 1.0:
                     imp = solimp[1]
                     factor = _normal_contact_gain_factor(
@@ -944,18 +934,13 @@ def apply_hydroelastic_compliance_kernel(
     if adhesion_enabled:
         adhesion = contact_adhesion[cid]
 
-    # The elliptic solver assumes fixed ratios between normal and tangent
-    # regularizers. Preserve that metric and the authored friction slopes.
+    # Scale every tangent equally to preserve the elliptic metric. The converter
+    # already set its reference acceleration from the physical friction weight.
     ratio = compliance / efc_D[world, row]
     for axis in range(1, dim):
         tangent_row = contact_address[cid, axis]
         if tangent_row >= 0 and tangent_row < nefc[world]:
-            old_D = efc_D[world, tangent_row]
-            # A per-row floor breaks the cone metric for small rolling or
-            # torsional weights. Apply the same scale to every axis.
-            new_D = old_D * ratio
-            efc_D[world, tangent_row] = new_D
-            # The converter already set aref from the physical friction weight.
+            efc_D[world, tangent_row] *= ratio
     efc_D[world, row] = compliance
     efc_aref[world, row] = (-ke * pos - kd_implicit * efc_vel[world, row] + adhesion) / compliance
 

@@ -4927,7 +4927,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._last_contact_timestep = (
             wp.zeros(1, dtype=float, device=self.device) if self._hydroelastic_force_space else None
         )
-        self._hydroelastic_contacts: Contacts | None = None
         self._pressure_contact: wp.array[bool] | None = None
         self._contacts_epoch = 0
         self._pressure_contact_key = (
@@ -5104,7 +5103,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raise ValueError("hydroelastic_force_space=True requires cone='elliptic'.")
 
     @event_scope
-    def _mujoco_warp_step(self):
+    def _mujoco_warp_step(self, contacts: Contacts | None):
         if not self._use_speculative_contacts and not self._hydroelastic_force_space:
             self._mujoco_warp.step(self.mjw_model, self.mjw_data)
             return
@@ -5139,7 +5138,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         self._mujoco_warp.step1(model, data)
         if self._hydroelastic_force_space:
-            self._apply_hydroelastic_compliance(model, data)
+            self._apply_hydroelastic_compliance(model, data, contacts)
         if self._use_speculative_contacts:
             wp.launch(
                 speculative.set_contact_targets,
@@ -5279,7 +5278,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Always clear d.overflow before the step so observables.overflow
                 # reflects only the current step (d.overflow uses |= accumulation).
                 self.mjw_data.overflow.zero_()
-                self._mujoco_warp_step()
+                self._mujoco_warp_step(contacts)
                 self._update_newton_state(
                     self.model, state_out, self.mjw_data, state_prev=state_in, observables=observables
                 )
@@ -5731,10 +5730,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
-    def _apply_hydroelastic_compliance(self, model: MjWarpModel, data: MjWarpData) -> None:
+    def _apply_hydroelastic_compliance(self, model: MjWarpModel, data: MjWarpData, contacts: Contacts | None) -> None:
         """Apply physical hydroelastic compliance before the backend constraint solve."""
         disabled = self._mujoco_warp.DisableBit.CONSTRAINT | self._mujoco_warp.DisableBit.CONTACT
-        contacts = self._hydroelastic_contacts
         if model.opt.disableflags & disabled or contacts is None or contacts.rigid_contact_stiffness is None:
             return
         wp.launch(
@@ -5767,8 +5765,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
     def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
-        if self._hydroelastic_force_space:
-            self._hydroelastic_contacts = contacts
         if self._use_speculative_contacts:
             # The conversion fast path reuses material properties. Restore
             # them before conversion, retaining dim=1 until contact forces
