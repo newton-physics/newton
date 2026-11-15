@@ -233,14 +233,13 @@ The first release deliberately supports a narrow, predictable set of inputs:
   implied by the proposal thickness. Thickness controls density volume, collision radius, and any
   stiffness derived from the isotropic material.
 
-  Volumes author no contact radius, so simulation TetMeshes fall back to the same physical
-  0.5 mm radius implied by the proposal's 1 mm thickness default (``0.0005 / metersPerUnit``
-  in stage units) instead of ``ModelBuilder.default_particle_radius``. To use a different
-  radius, overwrite :attr:`newton.ModelBuilder.particle_radius` over the soft body's particle
-  range after ``add_usd()``. If ``ModelBuilder.default_particle_radius`` was changed from its
-  stock value, the import emits one warning per ``add_usd()`` call because that setting no
-  longer reaches these prims. Bare TetMeshes without the simulation API keep using
-  ``ModelBuilder.default_particle_radius``.
+  Volumes author no contact radius, so simulation TetMeshes use a
+  Newton-specific 0.5 mm radius fallback (``0.0005 / metersPerUnit`` in stage units) when
+  ``ModelBuilder.default_particle_radius`` has its stock value. This is Newton's fallback,
+  not a volume-radius default from the proposal. To use a different radius, set
+  :attr:`newton.ModelBuilder.default_particle_radius` before ``add_usd()`` or overwrite
+  :attr:`newton.ModelBuilder.particle_radius` over the soft body's particle range afterward.
+  Bare TetMeshes without the simulation API continue to use the builder default directly.
 
   Poisson's ratios in ``(-1, 0.5)`` retain their authored value. Newton approximates ``0.5`` and
   legacy values in ``(0.5, 1)`` as ``0.499`` with a warning; values in the latter interval are a
