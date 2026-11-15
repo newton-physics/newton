@@ -4037,7 +4037,7 @@ def test_mesh_convex_midphase_queries_margin_shell(test, device):
     test.assertGreater(contact_count, 0)
 
 
-def test_rigid_mesh_contacts_export_surface_velocity(test, device):
+def test_rigid_mesh_contacts_export_surface_velocity(test, device, convex=False):
     """Transform and export a varying mesh velocity field at contacts."""
     vertices = np.array(
         [
@@ -4049,6 +4049,11 @@ def test_rigid_mesh_contacts_export_surface_velocity(test, device):
         dtype=np.float32,
     )
     indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+    if convex:
+        hull = newton.Mesh.create_box(1.0, 1.0, 0.1, duplicate_vertices=True)
+        vertices = hull.vertices.copy()
+        vertices[:, 2] -= 0.1
+        indices = hull.indices
     mesh = newton.Mesh(vertices, indices, compute_inertia=False, enable_surface_velocity=True)
     mesh_xform = wp.transform(
         wp.vec3(0.4, -0.3, 0.0),
@@ -4059,7 +4064,8 @@ def test_rigid_mesh_contacts_export_surface_velocity(test, device):
     velocity_local = vertices.copy()
 
     builder = newton.ModelBuilder()
-    mesh_shape = builder.add_shape_mesh(body=-1, xform=mesh_xform, mesh=mesh, scale=mesh_scale)
+    add_mesh = builder.add_shape_convex_hull if convex else builder.add_shape_mesh
+    mesh_shape = add_mesh(body=-1, xform=mesh_xform, mesh=mesh, scale=mesh_scale)
     sphere_body = builder.add_body(xform=wp.transform(wp.vec3(*contact_point_world[:2], 0.09), wp.quat_identity()))
     sphere_shape = builder.add_shape_sphere(
         body=sphere_body,
@@ -4078,6 +4084,7 @@ def test_rigid_mesh_contacts_export_surface_velocity(test, device):
     shape1 = contacts.rigid_contact_shape1.numpy()[:count]
     point0 = contacts.rigid_contact_point0.numpy()[:count]
     point1 = contacts.rigid_contact_point1.numpy()[:count]
+    test.assertIsNotNone(contacts.rigid_contact_surface_velocity)
     contact_velocity = contacts.rigid_contact_surface_velocity.numpy()[:count]
     for i in range(count):
         mesh_point = point1[i] if shape1[i] == mesh_shape else point0[i]
@@ -4092,6 +4099,15 @@ add_function_test(
     "test_rigid_mesh_contacts_export_surface_velocity",
     test_rigid_mesh_contacts_export_surface_velocity,
     devices=get_test_devices(),
+)
+
+
+add_function_test(
+    TestMeshConvexMidphase,
+    "test_rigid_convex_contacts_export_surface_velocity",
+    test_rigid_mesh_contacts_export_surface_velocity,
+    devices=get_test_devices(),
+    convex=True,
 )
 
 

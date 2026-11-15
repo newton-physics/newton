@@ -373,7 +373,7 @@ def _mesh_surface_velocity(
     shape_mesh_properties: wp.array[int],
 ) -> wp.vec3:
     """Interpolate a mesh shape's local surface velocity at a world-space point."""
-    if shape_type[shape] != GeoType.MESH or not (shape_mesh_properties[shape] & int(MeshProperties.SURFACE_VELOCITY)):
+    if not (shape_mesh_properties[shape] & int(MeshProperties.SURFACE_VELOCITY)):
         return wp.vec3(0.0)
 
     mesh_id = shape_source_ptr[shape]
