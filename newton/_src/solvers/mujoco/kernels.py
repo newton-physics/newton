@@ -215,10 +215,6 @@ def hydroelastic_solref(
     damping: float,
     invweight: float,
     timestep: float,
-    condim: int,
-    friction: vec5,
-    impratio_invsqrt: float,
-    elliptic: bool,
 ):
     """Map a physical spring to MuJoCo's implicit contact regularization.
 
@@ -226,12 +222,6 @@ def hydroelastic_solref(
     aref = -R * (ke * separation + (kd + h * ke) * velocity).
     Scaling impedance with compliance makes split quadrature weights additive.
     """
-    # Pyramidal edges act in parallel in the normal direction. Match the
-    # effective normal regularizer, including MuJoCo's friction-cone scaling.
-    if not elliptic and condim > 1:
-        mu2 = friction[0] * friction[0]
-        invweight *= (1.0 + mu2) * mu2 * impratio_invsqrt * impratio_invsqrt / float(condim - 1)
-
     damping_implicit = wp.max(damping, 0.0) + timestep * stiffness
     compliance_scaled = invweight * timestep * damping_implicit
     # This reciprocal form also handles very stiff contacts without inf / inf.
@@ -244,6 +234,24 @@ def hydroelastic_solref(
         1.0,
     )
     return solref, vec5(imp, imp, 0.001, 1.0, 0.5)
+
+
+@wp.func
+def _hydroelastic_tangent_scale(
+    normal_weight: float,
+    invweight: float,
+    impedance: float,
+    impratio_invsqrt: float,
+    friction: float,
+) -> float:
+    """Bound friction weights without changing the physical Coulomb cone."""
+    imp = wp.clamp(impedance, MJ_MINIMP, MJ_MAXIMP)
+    impratio = 1.0 / (impratio_invsqrt * impratio_invsqrt)
+    regular = imp / ((1.0 - imp) * invweight)
+    # Soft springs still need friction that holds. Bound high-impratio weights
+    # as well, to avoid losing the body mass in the float32 constraint solve.
+    weight = wp.max(regular, wp.min(impratio * normal_weight, wp.max(impratio * regular, normal_weight)))
+    return wp.min(wp.sqrt(weight / (impratio * normal_weight)), wp.max(friction / MJ_MINMU, 1.0))
 
 
 @wp.func
@@ -512,14 +520,15 @@ def convert_newton_contacts_to_mjwarp_kernel(
     tid_to_cid: wp.array[wp.int32],
     last_contact_timestep: wp.array[float],
     pressure_contact: wp.array[bool],
-    pressure_contact_generation: wp.array[int],
+    pressure_contact_key: wp.array[int],
     hydroelastic_force_space: bool,
+    contacts_epoch: int,
 ):
     # nacon_out is scratch storage, initialized to zero by the solver and
     # reset by _sync_nacon_count after each pass.
     #
     # When the contact generation matches the last full pass (and the timestep
-    # also matches in force-space mode), the kernel takes a
+    # and buffer identity also match in force-space mode), the kernel takes a
     # fast path that only recomputes the body-q-dependent fields (dist, pos)
     # and resets efc_address.  All other MJWarp contact fields (frame,
     # friction, solref, solimp, condim, geom, worldid, includemargin) are
@@ -533,7 +542,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
     last_gen = last_contact_generation[0]
     needs_full = gen != last_gen
     if hydroelastic_force_space:
-        needs_full = needs_full or opt_timestep[0] != last_contact_timestep[0]
+        needs_full = (
+            needs_full or opt_timestep[0] != last_contact_timestep[0] or contacts_epoch != pressure_contact_key[1]
+        )
 
     if needs_full:
         # ── FULL PATH ────────────────────────────────────────────────────
@@ -606,7 +617,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
             rigid_contact_margin0[tid] - shape_margin[shape_a],
             rigid_contact_margin1[tid] - shape_margin[shape_b],
         )
-        if hydroelastic_force_space and gen != pressure_contact_generation[0]:
+        if hydroelastic_force_space and (gen != pressure_contact_key[0] or contacts_epoch != pressure_contact_key[1]):
             # Positive-separation hydro contacts carry a compatibility activation
             # stiffness, not a pressure quadrature weight. Classify using Newton's
             # margin-relative separation before filtering immovable pairs, and
@@ -654,6 +665,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     friction[0] = wp.max(MJ_MINMU, friction[0])
                     friction[1] = wp.max(MJ_MINMU, friction[1])
 
+        kf = float(-1.0)
         # Resolve frictionless rows before selecting the normal-gain factor.
         if shape_material_kf and is_elliptic:
             kf1 = shape_material_kf[shape_a]
@@ -703,6 +715,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
                         1.0,
                     )
 
+        tangent_scale = float(1.0)
+        friction_weight = float(0.0)
         # Per-contact properties take precedence over shape materials. In the
         # opt-in hydroelastic mode, compliance scales with the quadrature weight
         # rather than imposing an independent per-triangle clock.
@@ -717,15 +731,19 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     and (shape_flags[shape_b] & ShapeFlags.HYDROELASTIC) != 0
                 )
                 if hydroelastic and pressure_contact[tid]:
+                    if is_elliptic and condim > 1:
+                        h = opt_timestep[0]
+                        normal_weight = wp.max(h * (wp.max(kd, 0.0) + h * contact_ke), MJ_MINVAL)
+                        ir = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+                        tangent_scale = _hydroelastic_tangent_scale(
+                            normal_weight, invweight, solimp[1], ir, friction[0]
+                        )
+                        friction_weight = normal_weight * tangent_scale * tangent_scale / (ir * ir)
                     solref, solimp = hydroelastic_solref(
                         contact_ke,
                         kd,
                         invweight,
                         opt_timestep[0],
-                        condim,
-                        friction,
-                        opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]],
-                        is_elliptic,
                     )
                 elif solimp[1] < 1.0:
                     imp = solimp[1]
@@ -748,7 +766,14 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     solref = wp.vec2(timeconst, dampratio)
 
         # Use the final normal impedance when mapping the authored friction slope.
-        if shape_material_kf and is_elliptic:
+        if friction_weight > 0.0:
+            # Express the friction slope in physical coordinates. Direct-format
+            # solreffriction avoids the normal row's refsafe/time-constant limits.
+            rate = 1.0 / opt_timestep[0]
+            if kf > 0.0:
+                rate = wp.min(rate, kf * (invweight + 1.0 / friction_weight))
+            solreffriction = wp.vec2(0.0, -rate * solimp[1])
+        elif shape_material_kf and is_elliptic:
             if kf > 0.0:
                 invw = body_invweight0[worldid, mj_body_a][0] + body_invweight0[worldid, mj_body_b][0]
                 ir = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
@@ -758,6 +783,19 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     timeconst = 2.0 / denom
                     if wp.isfinite(timeconst):
                         solreffriction = wp.vec2(timeconst, 1.0)
+
+        if tangent_scale != 1.0:
+            # MuJoCo Warp uses these rows in both J and world-frame force export.
+            # Reciprocal friction scaling preserves the cone. Torsion uses the
+            # unscaled normal; sliding and rolling use the scaled tangents.
+            frame = wp.matrix_from_rows(frame[0], tangent_scale * frame[1], tangent_scale * frame[2])
+            friction = vec5(
+                friction[0] / tangent_scale,
+                friction[1] / tangent_scale,
+                friction[2],
+                friction[3] / tangent_scale,
+                friction[4] / tangent_scale,
+            )
 
         cid = wp.atomic_add(nacon_out, 0, 1)
         if cid >= naconmax:
@@ -860,7 +898,6 @@ def apply_hydroelastic_compliance_kernel(
     tid_to_cid: wp.array[int],
     nacon: wp.array[int],
     timestep: wp.array[float],
-    elliptic: bool,
     contact_dim: wp.array[int],
     contact_world: wp.array[int],
     contact_address: wp.array2d[int],
@@ -869,10 +906,6 @@ def apply_hydroelastic_compliance_kernel(
     speculative_clearance: wp.array[float],
     contact_adhesion: wp.array[float],
     adhesion_enabled: bool,
-    refsafe: bool,
-    contact_geom: wp.array[wp.vec2i],
-    geom_body: wp.array[int],
-    body_invweight: wp.array2d[wp.vec2],
     nefc: wp.array[int],
     efc_vel: wp.array2d[float],
     efc_D: wp.array2d[float],
@@ -911,43 +944,20 @@ def apply_hydroelastic_compliance_kernel(
     if adhesion_enabled:
         adhesion = contact_adhesion[cid]
 
-    if elliptic or dim == 1:
-        # The elliptic solver assumes fixed ratios between normal and tangent
-        # regularizers. Preserve that metric and the authored friction slopes.
-        ratio = compliance / efc_D[world, row]
-        geoms = contact_geom[cid]
-        invweight_world = world % body_invweight.shape[0]
-        invweight = (
-            body_invweight[invweight_world, geom_body[geoms[0]]][0]
-            + body_invweight[invweight_world, geom_body[geoms[1]]][0]
-        )
-        for axis in range(1, dim):
-            tangent_row = contact_address[cid, axis]
-            if tangent_row >= 0 and tangent_row < nefc[world]:
-                old_D = efc_D[world, tangent_row]
-                # A per-row floor breaks the cone metric for small rolling or
-                # torsional weights. Apply the same scale to every axis.
-                new_D = old_D * ratio
-                efc_D[world, tangent_row] = new_D
-                # Preserve the existing free-contact inverse-weight approximation
-                # (including refsafe), rather than just preserving D * aref.
-                efc_aref[world, tangent_row] *= (invweight + 1.0 / new_D) / (invweight + 1.0 / old_D)
-                if refsafe:
-                    # The native time-constant limit permits beta > 1/h when
-                    # impedance is small. Bound row relaxation independently of
-                    # impedance so high impratio cannot amplify sliding velocity.
-                    limit = wp.abs(efc_vel[world, tangent_row]) / h
-                    efc_aref[world, tangent_row] = wp.clamp(efc_aref[world, tangent_row], -limit, limit)
-        efc_D[world, row] = compliance
-        efc_aref[world, row] = (-ke * pos - kd_implicit * efc_vel[world, row] + adhesion) / compliance
-    else:
-        # The pyramid's edge rows share one normal force and penetration.
-        edge_count = 2 * (dim - 1)
-        for edge in range(edge_count):
-            edge_row = contact_address[cid, edge]
-            if edge_row >= 0 and edge_row < nefc[world]:
-                efc_D[world, edge_row] = compliance / float(edge_count)
-                efc_aref[world, edge_row] = (-ke * pos - kd_implicit * efc_vel[world, edge_row] + adhesion) / compliance
+    # The elliptic solver assumes fixed ratios between normal and tangent
+    # regularizers. Preserve that metric and the authored friction slopes.
+    ratio = compliance / efc_D[world, row]
+    for axis in range(1, dim):
+        tangent_row = contact_address[cid, axis]
+        if tangent_row >= 0 and tangent_row < nefc[world]:
+            old_D = efc_D[world, tangent_row]
+            # A per-row floor breaks the cone metric for small rolling or
+            # torsional weights. Apply the same scale to every axis.
+            new_D = old_D * ratio
+            efc_D[world, tangent_row] = new_D
+            # The converter already set aref from the physical friction weight.
+    efc_D[world, row] = compliance
+    efc_aref[world, row] = (-ke * pos - kd_implicit * efc_vel[world, row] + adhesion) / compliance
 
 
 @wp.kernel(enable_backward=False)
@@ -960,13 +970,16 @@ def _sync_nacon_count(
     last_contact_generation: wp.array[wp.int32],
     opt_timestep: wp.array[float],
     last_contact_timestep: wp.array[float],
-    pressure_contact_generation: wp.array[int],
+    pressure_contact_key: wp.array[int],
+    contacts_epoch: int,
 ):
     """Publish the compacted count and reset scratch storage for the next pass."""
     gen = contact_generation[0]
     needs_full = gen != last_contact_generation[0]
     if last_contact_timestep:
-        needs_full = needs_full or opt_timestep[0] != last_contact_timestep[0]
+        needs_full = (
+            needs_full or opt_timestep[0] != last_contact_timestep[0] or contacts_epoch != pressure_contact_key[1]
+        )
     if needs_full:
         nacon[0] = contact_count[0]
         last_nacon_count[0] = contact_count[0]
@@ -975,8 +988,9 @@ def _sync_nacon_count(
         nacon[0] = last_nacon_count[0]
     contact_count[0] = 0
     ncollision[0] = 0
-    if pressure_contact_generation:
-        pressure_contact_generation[0] = gen
+    if pressure_contact_key:
+        pressure_contact_key[0] = gen
+        pressure_contact_key[1] = contacts_epoch
     if last_contact_timestep:
         last_contact_timestep[0] = opt_timestep[0]
 

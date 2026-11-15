@@ -4573,8 +4573,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             hydroelastic_force_space: Opt into experimental physical hydroelastic stiffness
                 instead of the legacy acceleration-space response. Defaults to False
                 to preserve existing tuning. Requires Newton contacts on MuJoCo-Warp
-                with Euler, implicit, or implicitfast integration; RK4 is unsupported.
-                Set at construction only.
+                with elliptic contacts and Euler, implicit, or implicitfast integration.
+                Use unreduced hydroelastic contacts. Set at construction only.
             include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
@@ -4929,8 +4929,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         self._hydroelastic_contacts: Contacts | None = None
         self._pressure_contact: wp.array[bool] | None = None
-        self._pressure_contact_generation = (
-            wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
+        self._contacts_epoch = 0
+        self._pressure_contact_key = (
+            wp.full(2, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
             if self._hydroelastic_force_space
             else None
         )
@@ -5031,8 +5032,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._contact_tid_to_cid = wp.full(self.mjw_data.naconmax, -1, dtype=wp.int32, device=self.device)
             if self._hydroelastic_force_space:
                 self._pressure_contact = wp.zeros(self.mjw_data.naconmax, dtype=bool, device=self.device)
-                if self.mjw_model.opt.integrator == self._mujoco_warp.IntegratorType.RK4:
-                    raise ValueError("hydroelastic_force_space=True does not support RK4; use implicitfast or Euler.")
+                self._check_hydroelastic_options()
         self._initial_model_sync = False
         self._update_data_interval = 1 if update_data_interval is None else update_data_interval
         self._step = 0
@@ -5092,14 +5092,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         with self._scoped_deterministic_config():
             yield
 
+    def _check_hydroelastic_options(self):
+        """Reject options that cannot provide the force-space contact response."""
+        opt = self.mjw_model.opt
+        integrators = self._mujoco_warp.IntegratorType
+        if opt.integrator not in (integrators.EULER, integrators.IMPLICIT, integrators.IMPLICITFAST):
+            raise ValueError(
+                "hydroelastic_force_space=True does not support RK4 or discrete; use implicitfast or Euler."
+            )
+        if opt.cone != self._mujoco_warp.ConeType.ELLIPTIC:
+            raise ValueError("hydroelastic_force_space=True requires cone='elliptic'.")
+
     @event_scope
     def _mujoco_warp_step(self):
         if not self._use_speculative_contacts and not self._hydroelastic_force_space:
             self._mujoco_warp.step(self.mjw_model, self.mjw_data)
             return
         model, data = self.mjw_model, self.mjw_data
-        if self._hydroelastic_force_space and model.opt.integrator == self._mujoco_warp.IntegratorType.RK4:
-            raise ValueError("hydroelastic_force_space=True does not support RK4; use implicitfast or Euler.")
+        if self._hydroelastic_force_space:
+            self._check_hydroelastic_options()
         contact = data.contact
         if self._use_speculative_contacts:
             if model.opt.integrator not in (
@@ -5740,7 +5751,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._contact_tid_to_cid,
                 data.nacon,
                 model.opt.timestep,
-                model.opt.cone == self._mujoco_warp.ConeType.ELLIPTIC,
                 data.contact.dim,
                 data.contact.worldid,
                 data.contact.efc_address,
@@ -5749,10 +5759,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._speculative_clearance if self._use_speculative_contacts else None,
                 data.contact.adhesion,
                 model.flg_adhesion,
-                not (model.opt.disableflags & self._mujoco_warp.DisableBit.REFSAFE),
-                data.contact.geom,
-                model.geom_bodyid,
-                model.body_invweight0,
                 data.nefc,
                 data.efc.vel,
             ],
@@ -5818,8 +5824,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         contacts_id = id(contacts.contact_generation)
         if self._last_contacts_id != contacts_id or self._last_rigid_contact_max != contacts.rigid_contact_max:
             self._invalidate_contact_fast_path()
-            if self._pressure_contact_generation is not None:
-                self._pressure_contact_generation.fill_(_GENERATION_SENTINEL)
+            # Pass the buffer identity by value; a captured reset would reclassify
+            # cached speculative contacts on every graph replay.
+            self._contacts_epoch += 1
             self._last_contacts_id = contacts_id
             self._last_rigid_contact_max = contacts.rigid_contact_max
 
@@ -5892,8 +5899,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._contact_tid_to_cid,
                 self._last_contact_timestep,
                 self._pressure_contact,
-                self._pressure_contact_generation,
+                self._pressure_contact_key,
                 self._hydroelastic_force_space,
+                self._contacts_epoch,
             ],
             device=model.device,
             block_dim=block_dim,
@@ -5916,7 +5924,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._last_contact_generation,
                 self.mjw_model.opt.timestep,
                 self._last_contact_timestep,
-                self._pressure_contact_generation,
+                self._pressure_contact_key,
+                self._contacts_epoch,
             ],
             device=model.device,
         )

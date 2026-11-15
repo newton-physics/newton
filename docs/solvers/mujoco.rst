@@ -772,15 +772,28 @@ accuracy as bodies move, and the solver warns at construction. Use
 limitation.
 
 Hydroelastic material response
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The default preserves the legacy hydroelastic response and existing tuning.
-To opt into experimental physical stiffness that is consistent across body
-masses and contact subdivision, construct the solver with
-``use_mujoco_contacts=False, hydroelastic_force_space=True``.
-The opt-in may require material and timestep retuning. It uses MuJoCo-Warp's
-existing split-step API with Euler, implicit, or implicitfast integration;
-RK4 is unsupported in this mode. No backend patch is required.
+To use physical hydroelastic stiffness and damping, construct the solver with
+``use_mujoco_contacts=False, hydroelastic_force_space=True, cone="elliptic"``.
+Use ``HydroelasticSDF.Config(reduce_contacts=False)`` in the collision pipeline;
+the solver does not check this setting.
+The option defaults to ``False``, preserving existing tuning. It requires
+MuJoCo-Warp and Euler, implicit, or implicitfast integration; RK4, discrete,
+and pyramidal contacts are unsupported. No backend patch is needed.
+
+For sticking or frictionless contacts, normal stiffness is consistent across
+body masses and contact subdivision. Sliding couples the normal and friction
+forces through the cone. Friction remains regularized: slow creep is possible
+below the Coulomb limit, and its rate depends on contact subdivision.
+The mode bounds friction weights independently of soft normal springs while
+preserving the physical friction cone. Enabling it may require retuning.
+Reduced contacts and center-of-pressure matching are follow-up work.
+
+MuJoCo-Warp's raw contact frames have scaled tangent rows in this mode, with
+compensating sliding and rolling coefficients. Newton's world-frame contact
+forces retain their usual meaning. Consumers that assume unit tangent rows,
+such as raw MuJoCo contact sensors or the MuJoCo viewer, need special care.
 This is a construction-time solver option, not a USD or MJCF material setting.
 
 .. experimental::
