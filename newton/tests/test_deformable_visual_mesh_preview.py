@@ -28,7 +28,7 @@ from newton.tests._usd_deformable_test_utils import (
     _author_deformable_element_array,
     _deformable_stage,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
+from newton.tests.unittest_utils import assert_np_equal, requires
 from newton.utils import load_texture
 
 
@@ -749,7 +749,7 @@ class TestDeformableVisualMeshCameraRecorder(unittest.TestCase):
         self.assertFalse(recorder.is_active)
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestDeformableVisualMeshCameraParity(unittest.TestCase):
     """The checked-in AOUSD scene matches its procedural reference scene."""
 

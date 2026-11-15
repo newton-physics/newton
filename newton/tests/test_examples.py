@@ -17,7 +17,6 @@ CUDA device.
 """
 
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -39,16 +38,18 @@ import newton.examples
 import newton.tests.unittest_utils
 from newton.examples.robot.example_robot_cartpole import Example as RobotCartpoleExample
 from newton.tests.unittest_utils import (
-    USD_AVAILABLE,
+    MUJOCO_MODULES,
     NewtonTestCase,
     add_function_test,
     get_selected_cuda_test_devices,
     get_test_devices,
+    has_module,
+    missing_modules,
+    requires,
     sanitize_identifier,
 )
 from newton.viewer import ViewerNull
 
-_HAS_ONNX_RUNTIME = importlib.util.find_spec("onnx") is not None and importlib.util.find_spec("warp_nn") is not None
 _PXR_WORK_THREAD_LIMIT_OUTPUT_RE = (
     r"(?s)#+\n#  PXR_WORK_THREAD_LIMIT is overridden to '1'\.  Default is '0'\.  #\n#+\n?"
 )
@@ -61,19 +62,21 @@ _WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
     r"\(in function init_cuda_driver, [^\n]*cuda_util\.cpp:\d+\)"
     r")\n?"
 )
+# Optional rich console prefix of an INFO log record
+_INFO_LOG_PREFIX_RE = r"(?:\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}\]\[[\w.-]+\.py:\d+\]\[INFO\]: )?"
 _ASSET_CACHE_REFRESH_OUTPUT_RE = (
-    r"(?:New version of [^\n]+ found "
+    rf"(?:{_INFO_LOG_PREFIX_RE}New version of [^\n]+ found "
     r"\(cached: [0-9a-f]{8}, latest: [0-9a-f]{8}\)\. Refreshing\.\.\.\n)?"
 )
 _NEWTON_ASSET_DOWNLOAD_OUTPUT_RE = (
-    _ASSET_CACHE_REFRESH_OUTPUT_RE + r"Cloning https://github\.com/newton-physics/newton-assets\.git "
-    r"\(ref: [0-9a-f]{40}\)\.\.\.\n"
-    r"Successfully downloaded folder to: [^\n]+\n?"
+    _ASSET_CACHE_REFRESH_OUTPUT_RE
+    + _INFO_LOG_PREFIX_RE
+    + r"Cloning https://github\.com/newton-physics/newton-assets\.git "
+    r"\(ref: [0-9a-f]{40}\)\.\.\.\n" + _INFO_LOG_PREFIX_RE + r"Successfully downloaded folder to: [^\n]+\n?"
 )
 _ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE = (
-    _ASSET_CACHE_REFRESH_OUTPUT_RE + r"Cloning https://github\.com/isaac-sim/IsaacGymEnvs\.git "
-    r"\(ref: main\)\.\.\.\n"
-    r"Successfully downloaded folder to: [^\n]+\n?"
+    _ASSET_CACHE_REFRESH_OUTPUT_RE + _INFO_LOG_PREFIX_RE + r"Cloning https://github\.com/isaac-sim/IsaacGymEnvs\.git "
+    r"\(ref: main\)\.\.\.\n" + _INFO_LOG_PREFIX_RE + r"Successfully downloaded folder to: [^\n]+\n?"
 )
 _NUT_BOLT_DOWNLOAD_START_OUTPUT_RE = r"Downloading nut/bolt assets\.\.\.\n?"
 _NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE = r"Assets downloaded to: [^\n]+\n?"
@@ -211,12 +214,9 @@ def add_example_test(
                     variant.get("test_options", {}),
                     variant.get("test_options_cuda" if is_cuda else "test_options_cpu", {}),
                 )
-                onnx_required = options.pop("onnx_required", False)
-                torch_required = options.pop("torch_required", False)
-                if (onnx_required or torch_required) and not _HAS_ONNX_RUNTIME:
-                    test.skipTest("onnx or warp-nn not installed")
-                if options.pop("usd_required", False) and not USD_AVAILABLE:
-                    test.skipTest("Requires usd-core")
+                missing = missing_modules(options.pop("requires", ()))
+                if missing:
+                    test.skipTest(f"Requires {', '.join(missing)}")
                 timeout = options.pop("test_timeout", 600)
                 allow_deprecations = options.pop("allow_deprecation_warnings", False)
                 argv = ["--device", str(device), "--test", "--quiet"]
@@ -235,7 +235,7 @@ def add_example_test(
                                 os.path.dirname(__file__), f"outputs/{name}_{sanitize_identifier(device)}.usd"
                             ),
                         )
-                        if USD_AVAILABLE
+                        if has_module("pxr.Usd")
                         else "None"
                     )
                     if stage_path:
@@ -494,9 +494,33 @@ class TestExampleOutputRegexes(unittest.TestCase):
 
         self.assertEqual(unmatched_output, unexpected_output)
 
+    def test_asset_download_output_is_allowed_in_both_console_formats(self):
+        """Allow asset download log records in the plain and rich console formats."""
+        lines = (
+            "New version of newton-assets found (cached: 0123abcd, latest: 4567cdef). Refreshing...",
+            f"Cloning https://github.com/newton-physics/newton-assets.git (ref: {'a' * 40})...",
+            "Successfully downloaded folder to: /cache/newton-assets",
+        )
+        rich_prefix = "[2026-11-02 10:15:42,108][download_assets.py:423][INFO]: "
+
+        for prefix in ("", rich_prefix):
+            with self.subTest(prefix=prefix):
+                output = "".join(prefix + line + "\n" for line in lines)
+                unmatched_output = re.sub(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "", output, flags=re.MULTILINE)
+                self.assertEqual(unmatched_output, "")
+
+        output = "".join("[unexpected][fields][INFO]: " + line + "\n" for line in lines)
+        unmatched_output = re.sub(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "", output, flags=re.MULTILINE)
+        self.assertNotEqual(unmatched_output, "")
+
 
 cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test on multiple GPUs to save time
-test_devices = get_test_devices(mode="basic")
+# CPU CI runs the CPU example variants, so hosts with a GPU run examples on CUDA only. Set
+# NEWTON_TEST_CPU_EXAMPLES=1 (or CUDA_VISIBLE_DEVICES=) to run the CPU variants on a GPU host.
+if cuda_test_devices and os.environ.get("NEWTON_TEST_CPU_EXAMPLES") != "1":
+    test_devices = cuda_test_devices
+else:
+    test_devices = get_test_devices(mode="basic")
 
 
 class TestBasicExamples(NewtonTestCase):
@@ -521,7 +545,7 @@ add_basic_example_test(
     name="basic.example_recording",
     devices=test_devices,
     use_viewer=True,
-    test_options={"num-frames": 120, "world-count": 8},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 120, "world-count": 8},
 )
 
 add_example_batch(
@@ -550,7 +574,9 @@ add_example_batch(
     ],
 )
 
-add_basic_example_test(name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
+add_basic_example_test(
+    name="basic.example_basic_viewer", devices=test_devices, use_viewer=True, test_options={"requires": ("pxr.Usd",)}
+)
 
 add_example_batch(
     TestBasicExamples,
@@ -573,7 +599,11 @@ add_example_batch(
     variants=[
         {
             "devices": test_devices,
-            "test_options": {"num-frames": 120, "solver": solver},
+            "test_options": {
+                "num-frames": 120,
+                "solver": solver,
+                "requires": MUJOCO_MODULES if solver == "mujoco" else (),
+            },
             "test_suffix": solver,
         }
         for solver in ("featherstone", "semi_implicit", "xpbd", "mujoco", "vbd")
@@ -586,19 +616,19 @@ add_example_batch(
     variants=[
         {
             "devices": test_devices,
-            "test_options": {"num-frames": 150, "solver": "xpbd"},
+            "test_options": {"requires": ("pxr.Usd",), "num-frames": 150, "solver": "xpbd"},
             "test_suffix": "xpbd",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 150, "solver": "kamino"},
+            "test_options": {"requires": ("pxr.Usd",), "num-frames": 150, "solver": "kamino"},
             "test_suffix": "kamino",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": test_devices,
-            "test_options": {"num-frames": 150, "solver": "vbd"},
+            "test_options": {"requires": ("pxr.Usd",), "num-frames": 150, "solver": "vbd"},
             "test_suffix": "vbd",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
@@ -634,25 +664,26 @@ add_example_batch(
     variants=[
         {
             "devices": test_devices,
-            "test_options": {"num-frames": 100, "solver": "xpbd"},
+            "test_options": {"num-frames": 600, "solver": "xpbd"},
+            "test_options_cpu": {"num-frames": 100},
             "test_suffix": "xpbd",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 100, "solver": "vbd"},
+            "test_options": {"num-frames": 600, "solver": "vbd"},
             "test_suffix": "vbd",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 100, "solver": "mujoco"},
+            "test_options": {"num-frames": 600, "solver": "mujoco", "requires": MUJOCO_MODULES},
             "test_suffix": "mujoco",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 100, "solver": "kamino"},
+            "test_options": {"num-frames": 600, "solver": "kamino"},
             "test_suffix": "kamino",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
@@ -664,7 +695,11 @@ add_example_batch(
     variants=[
         {"devices": test_devices, "test_options": {"num-frames": 230, "solver": "vbd"}, "test_suffix": "vbd"},
         {"devices": test_devices, "test_options": {"num-frames": 230, "solver": "xpbd"}, "test_suffix": "xpbd"},
-        {"devices": test_devices, "test_options": {"num-frames": 230, "solver": "mujoco"}, "test_suffix": "mujoco"},
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 230, "solver": "mujoco", "requires": MUJOCO_MODULES},
+            "test_suffix": "mujoco",
+        },
         {
             "devices": cuda_test_devices,
             "test_options": {"num-frames": 230, "solver": "kamino"},
@@ -677,7 +712,7 @@ add_basic_example_test(
     name="basic.example_basic_multi_solver_overlay",
     devices=test_devices,
     use_viewer=True,
-    test_options={"num-frames": 50},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 50},
     allow_output_regexes=[(_KAMINO_NON_FLOATING_ROOT_WARNING_RE, "stderr")],
 )
 
@@ -796,7 +831,7 @@ add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_bending",
     devices=test_devices,
-    test_options={"num-frames": 400},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 400},
     use_viewer=True,
 )
 add_example_batch(
@@ -821,7 +856,7 @@ add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_style3d",
     devices=cuda_test_devices,
-    test_options={},
+    test_options={"requires": ("pxr.Usd",)},
     test_options_cuda={"num-frames": 32},
     use_viewer=True,
 )
@@ -829,7 +864,7 @@ add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_h1",
     devices=cuda_test_devices,
-    test_options={},
+    test_options={"requires": ("pxr.Usd",)},
     test_options_cuda={"num-frames": 32},
     use_viewer=True,
 )
@@ -837,14 +872,14 @@ add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_franka",
     devices=cuda_test_devices,
-    test_options={"num-frames": 50},
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada"), "num-frames": 50},
     use_viewer=True,
 )
 add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_twist",
     devices=cuda_test_devices,
-    test_options={"num-frames": 100},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 100},
     use_viewer=True,
 )
 add_example_test(
@@ -858,7 +893,7 @@ add_example_test(
     TestClothExamples,
     name="vbd.example_cloth_stiff_material_hanging",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 360},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 360},
     use_viewer=True,
 )
 add_example_test(
@@ -896,10 +931,8 @@ class TestRobotExamples(unittest.TestCase):
     pass
 
 
+@requires("pxr.Usd")
 def _test_robot_cartpole_capture_matches_eager(test, device):
-    if not USD_AVAILABLE:
-        test.skipTest("Requires USD")
-
     args = SimpleNamespace(world_count=1, solver="kamino")
     with wp.ScopedDevice(device):
         with patch.object(RobotCartpoleExample, "capture", lambda example: setattr(example, "graph", None)):
@@ -942,7 +975,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_cartpole",
     devices=test_devices,
-    test_options={"usd_required": True, "num-frames": 100},
+    test_options={"requires": ("pxr.Usd", *MUJOCO_MODULES), "num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
@@ -950,14 +983,14 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_c_walk",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "onnx_required": True},
+    test_options={"requires": ("pxr.Usd", "onnx", "warp_nn", "trimesh", "collada", *MUJOCO_MODULES), "num-frames": 500},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_d",
     devices=test_devices,
-    test_options={"usd_required": True, "num-frames": 500},
+    test_options={"requires": ("pxr.Usd", *MUJOCO_MODULES), "num-frames": 500},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
@@ -965,7 +998,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_d",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "world-count": 1, "solver": "kamino"},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 500, "world-count": 1, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
 )
@@ -973,14 +1006,14 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_g1",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500},
+    test_options={"requires": ("pxr.Usd", *MUJOCO_MODULES), "num-frames": 500},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_g1",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "world-count": 4, "solver": "kamino"},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 500, "world-count": 4, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
 )
@@ -988,14 +1021,14 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_h1",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500},
+    test_options={"requires": ("pxr.Usd", *MUJOCO_MODULES), "num-frames": 500},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_h1",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "world-count": 4, "solver": "kamino"},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 500, "world-count": 4, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
 )
@@ -1003,21 +1036,21 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_omniwheel",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 500},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_asroballet",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "onnx_required": True},
+    test_options={"requires": ("onnx", "warp_nn", *MUJOCO_MODULES), "num-frames": 500},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_asroballet",
     devices=cuda_test_devices,
-    test_options={"controller": "lqr", "num-frames": 500},
+    test_options={"requires": ("scipy", *MUJOCO_MODULES), "controller": "lqr", "num-frames": 500},
     use_viewer=True,
     test_suffix="LQR",
 )
@@ -1025,7 +1058,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_ur10",
     devices=test_devices,
-    test_options={"usd_required": True, "num-frames": 500},
+    test_options={"requires": ("pxr.Usd", *MUJOCO_MODULES), "num-frames": 500},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
@@ -1033,7 +1066,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_ur10",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 100, "world-count": 2, "solver": "kamino"},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 100, "world-count": 2, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
 )
@@ -1041,14 +1074,14 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500},
+    test_options={"requires": ("pxr.Usd", *MUJOCO_MODULES), "num-frames": 500, "world-count": 18},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "world-count": 1, "solver": "kamino"},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 500, "world-count": 2, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
 )
@@ -1056,7 +1089,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_panda_hydro",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 720},
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada", *MUJOCO_MODULES), "num-frames": 720},
     use_viewer=True,
 )
 
@@ -1071,39 +1104,61 @@ add_example_batch(
     variants=[
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 500, "onnx_required": True, "robot": "g1_29dof"},
+            "test_options": {
+                "requires": ("onnx", "warp_nn", "pxr.Usd", *MUJOCO_MODULES),
+                "num-frames": 500,
+                "robot": "g1_29dof",
+            },
             "test_options_cpu": {"num-frames": 10},
             "test_suffix": "G1_29dof",
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 500, "onnx_required": True, "robot": "g1_23dof"},
+            "test_options": {
+                "requires": ("onnx", "warp_nn", "pxr.Usd", *MUJOCO_MODULES),
+                "num-frames": 500,
+                "robot": "g1_23dof",
+            },
             "test_suffix": "G1_23dof",
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 500, "onnx_required": True, "robot": "g1_23dof", "physx": True},
+            "test_options": {
+                "requires": ("onnx", "warp_nn", "pxr.Usd", *MUJOCO_MODULES),
+                "num-frames": 500,
+                "robot": "g1_23dof",
+                "physx": True,
+            },
             "test_suffix": "G1_23dof_Physx",
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 500, "onnx_required": True, "robot": "anymal"},
+            "test_options": {
+                "requires": ("onnx", "warp_nn", "pxr.Usd", *MUJOCO_MODULES),
+                "num-frames": 500,
+                "robot": "anymal",
+            },
             "test_suffix": "Anymal",
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 500, "onnx_required": True, "robot": "anymal", "physx": True},
+            "test_options": {
+                "requires": ("onnx", "warp_nn", "pxr.Usd", *MUJOCO_MODULES),
+                "num-frames": 500,
+                "robot": "anymal",
+                "physx": True,
+            },
             "test_suffix": "Anymal_Physx",
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"onnx_required": True},
+            "test_options": {"requires": ("onnx", "warp_nn", "pxr.Usd", *MUJOCO_MODULES)},
             "test_options_cuda": {"num-frames": 500, "robot": "go2"},
             "test_suffix": "Go2",
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"onnx_required": True},
+            "test_options": {"requires": ("onnx", "warp_nn", "pxr.Usd", *MUJOCO_MODULES)},
             "test_options_cuda": {"num-frames": 500, "robot": "go2", "physx": True},
             "test_suffix": "Go2_Physx",
         },
@@ -1119,7 +1174,7 @@ add_example_test(
     TestAdvancedRobotExamples,
     name="mpm.example_mpm_anymal",
     devices=cuda_test_devices,
-    test_options={"num-frames": 100, "onnx_required": True},
+    test_options={"requires": ("onnx", "warp_nn", "trimesh", "collada", *MUJOCO_MODULES), "num-frames": 100},
     allow_output_regexes=[(_ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE, "stderr")],
     use_viewer=True,
 )
@@ -1129,11 +1184,25 @@ class TestIKExamples(unittest.TestCase):
     pass
 
 
-add_example_test(TestIKExamples, name="ik.example_ik_franka", devices=test_devices, use_viewer=True)
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_franka",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"requires": ("git", "trimesh", "collada")},
+)
 
-add_example_test(TestIKExamples, name="ik.example_ik_h1", devices=test_devices, use_viewer=True)
+add_example_test(
+    TestIKExamples, name="ik.example_ik_h1", devices=test_devices, use_viewer=True, test_options={"requires": ("git",)}
+)
 
-add_example_test(TestIKExamples, name="ik.example_ik_custom", devices=cuda_test_devices, use_viewer=True)
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_custom",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"requires": ("git", "trimesh", "collada")},
+)
 
 add_example_test(
     TestIKExamples,
@@ -1141,6 +1210,7 @@ add_example_test(
     test_options_cuda={"world-count": 16, "num-frames": 2000},
     devices=cuda_test_devices,
     use_viewer=True,
+    test_options={"requires": ("git", "trimesh", "collada", *MUJOCO_MODULES)},
 )
 
 
@@ -1152,7 +1222,7 @@ add_example_test(
     TestMuJoCoExamples,
     name="mujoco.example_mujoco_sleeping",
     devices=cuda_test_devices,
-    test_options={"stack-count": 2, "num-frames": 300},
+    test_options={"requires": MUJOCO_MODULES, "stack-count": 2, "num-frames": 300},
     use_viewer=True,
 )
 
@@ -1165,7 +1235,7 @@ add_example_test(
     TestSteelExamples,
     name="steel.example_steel_determinism_arms",
     devices=cuda_test_devices,
-    test_options={"num-frames": 20},
+    test_options={"requires": ("git", "trimesh", "collada"), "num-frames": 20},
     use_viewer=True,
 )
 
@@ -1186,7 +1256,7 @@ add_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_articulations",
     devices=test_devices,
-    test_options={"num-frames": 100},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
@@ -1202,7 +1272,7 @@ add_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_cartpole",
     devices=test_devices,
-    test_options={"num-frames": 100},
+    test_options={"requires": ("pxr.Usd", *MUJOCO_MODULES), "num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
@@ -1210,7 +1280,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_cartpole",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 100, "world-count": 2, "solver": "kamino"},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 100, "world-count": 2, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
 )
@@ -1218,7 +1288,7 @@ add_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_cartpole",
     devices=cuda_test_devices,
-    test_options={"num-frames": 100, "world-count": 2, "solver": "kamino"},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 100, "world-count": 2, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
 )
@@ -1226,7 +1296,7 @@ add_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_materials",
     devices=test_devices,
-    test_options={"num-frames": 100},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
@@ -1242,7 +1312,7 @@ add_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_multiple",
     devices=test_devices,
-    test_options={"num-frames": 100},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
@@ -1314,7 +1384,7 @@ add_diffsim_example_test(
 add_diffsim_example_test(
     name="diffsim.example_diffsim_bear",
     devices=test_devices,
-    test_options={"usd_required": True, "num-frames": 4 * 120, "sim-steps": 120},  # train_iters * sim_steps
+    test_options={"requires": ("pxr.Usd",), "num-frames": 4 * 120, "sim-steps": 120},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 2, "sim-steps": 10},
     use_viewer=True,
 )
@@ -1328,14 +1398,14 @@ add_example_test(
     TestSensorExamples,
     name="sensors.example_sensor_contact",
     devices=test_devices,
-    test_options={"num-frames": 160},  # required for ball to reach plate
+    test_options={"requires": ("pxr.Usd", *MUJOCO_MODULES), "num-frames": 160},  # required for ball to reach plate
     use_viewer=True,
 )
 add_example_test(
     TestSensorExamples,
     name="sensors.example_sensor_contact",
     devices=cuda_test_devices,
-    test_options={"num-frames": 160, "solver": "kamino"},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 160, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
 )
@@ -1344,7 +1414,7 @@ add_example_test(
     TestSensorExamples,
     name="sensors.example_sensor_camera",
     devices=cuda_test_devices,
-    test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada"), "num-frames": 4 * 36},  # train_iters * sim_steps
     use_viewer=True,
 )
 
@@ -1361,7 +1431,7 @@ add_example_test(
     name="sensors.example_deformable_visual_mesh_camera",
     devices=cuda_test_devices,
     test_options={
-        "usd_required": True,
+        "requires": ("pxr.Usd",),
         "num-frames": 2,
         "camera-width": 64,
         "camera-height": 64,
@@ -1376,7 +1446,7 @@ add_example_test(
     name="sensors.example_deformable_visual_gaussian",
     devices=cuda_test_devices,
     # Cover impact and settling, not just the initial free fall.
-    test_options={"usd_required": True, "num-frames": 300, "camera-width": 64, "camera-height": 64},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 300, "camera-width": 64, "camera-height": 64},
     use_viewer=True,
 )
 
@@ -1384,14 +1454,14 @@ add_example_test(
     TestSensorExamples,
     name="sensors.example_sensor_imu",
     devices=test_devices,
-    test_options={"num-frames": 200},  # allow cubes to settle
+    test_options={"requires": ("pxr.Usd", *MUJOCO_MODULES), "num-frames": 200},  # allow cubes to settle
     use_viewer=True,
 )
 add_example_test(
     TestSensorExamples,
     name="sensors.example_sensor_imu",
     devices=cuda_test_devices,
-    test_options={"num-frames": 200, "solver": "kamino"},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 200, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
 )
@@ -1413,7 +1483,7 @@ add_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_granular",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 5, "from_usd": True},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 5, "from_usd": True},
     use_viewer=True,
     test_suffix="authored_usd",
 )
@@ -1453,7 +1523,7 @@ add_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_twoway_coupling",
     devices=cuda_test_devices,
-    test_options={"num-frames": 80},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 80},
     use_viewer=True,
 )
 
@@ -1493,7 +1563,7 @@ add_example_test(
 add_basic_example_test(
     name="basic.example_basic_plotting",
     devices=test_devices,
-    test_options={"num-frames": 200},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 200},
     use_viewer=True,
     expect_output_regexes=[(_BASIC_PLOTTING_OUTPUT_RE, "stdout")],
     allow_output_regexes=[(_MATPLOTLIB_FONT_CACHE_OUTPUT_RE, "stderr")],
@@ -1605,7 +1675,7 @@ add_contact_example_test(
 add_contact_example_test(
     name="contacts.example_nut_bolt_sdf",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120, "world-count": 1},
+    test_options={"requires": ("trimesh", *MUJOCO_MODULES), "num-frames": 120, "world-count": 1},
     use_viewer=True,
     expect_output_regexes=[
         (_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE, "stdout"),
@@ -1616,7 +1686,7 @@ add_contact_example_test(
 add_contact_example_test(
     name="contacts.example_nut_bolt_sdf",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120, "world-count": 1, "solver": "kamino"},
+    test_options={"requires": ("trimesh",), "num-frames": 120, "world-count": 1, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
     expect_output_regexes=[
@@ -1628,7 +1698,7 @@ add_contact_example_test(
 add_contact_example_test(
     name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120, "world-count": 1},
+    test_options={"requires": ("trimesh", *MUJOCO_MODULES), "num-frames": 120, "world-count": 1},
     use_viewer=True,
     expect_output_regexes=[
         (_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE, "stdout"),
@@ -1639,7 +1709,7 @@ add_contact_example_test(
 add_contact_example_test(
     name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120, "world-count": 1, "solver": "kamino"},
+    test_options={"requires": ("trimesh",), "num-frames": 120, "world-count": 1, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
     expect_output_regexes=[
@@ -1651,7 +1721,7 @@ add_contact_example_test(
 add_contact_example_test(
     name="contacts.example_brick_stacking",
     devices=cuda_test_devices,
-    test_options={"num-frames": 1200},
+    test_options={"requires": ("git", "trimesh", "collada", *MUJOCO_MODULES), "num-frames": 1200},
     use_viewer=True,
     allow_output_regexes=[(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
@@ -1732,7 +1802,13 @@ add_example_batch(
         },
         {
             "devices": test_devices,
-            "test_options": {"num-frames": 2, "solver": "coupled", "rigid-solver": "mjc", "vbd-iterations": 1},
+            "test_options": {
+                "num-frames": 2,
+                "solver": "coupled",
+                "rigid-solver": "mjc",
+                "vbd-iterations": 1,
+                "requires": MUJOCO_MODULES,
+            },
             "test_suffix": "coupled_mjc",
         },
     ],
@@ -1741,7 +1817,7 @@ add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_vbd_admm_solver",
     devices=test_devices,
-    test_options={"num-frames": 30},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 30},
     use_viewer=True,
 )
 add_example_test(
@@ -1755,7 +1831,7 @@ add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_kamino_mujoco_admm_solver",
     devices=["cpu"],
-    test_options={"num-frames": 30, "world-count": 4},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 30, "world-count": 4},
     use_viewer=True,
 )
 add_example_test(
@@ -1770,6 +1846,7 @@ add_example_test(
     name="multiphysics.example_mujoco_franka_vbd_cable_admm_solver",
     devices=cuda_test_devices,
     test_options={
+        "requires": ("git", "trimesh", "collada", *MUJOCO_MODULES),
         "num-frames": 2,
         "world-count": 1,
         "substeps": 1,
@@ -1785,28 +1862,35 @@ add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_mpm_coupled_solver",
     devices=cuda_test_devices,
-    test_options={"num-frames": 2, "rigid-substeps": 1, "proxy-iterations": 1},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 2, "rigid-substeps": 1, "proxy-iterations": 1},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_vbd_coupled_solver",
     devices=test_devices,
-    test_options={"num-frames": 2, "proxy-iterations": 1},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 2, "proxy-iterations": 1},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_xpbd_coupled_solver",
     devices=test_devices,
-    test_options={"num-frames": 2, "proxy-iterations": 1},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 2, "proxy-iterations": 1},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_proxy_joint_gripper",
     devices=test_devices,
-    test_options={"num-frames": 120},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_franka_cable_ik_pick_place",
+    devices=cuda_test_devices,
+    test_options={"requires": ("git", "trimesh", "collada", *MUJOCO_MODULES)},
     use_viewer=True,
 )
 add_example_test(
@@ -1907,35 +1991,36 @@ add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_basic_fourbar",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 120},
     use_viewer=True,
 )
 add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_basic_heterogeneous",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 120},
     use_viewer=True,
 )
 add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_basic_dr_testmech",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120},
+    test_options={"requires": ("git", "pxr.Usd"), "num-frames": 120},
     use_viewer=True,
 )
 add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_robot_dr_legs",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120},
+    test_options={"requires": ("git", "pxr.Usd"), "num-frames": 120},
     use_viewer=True,
 )
 add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_robot_anymal_d",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500},
+    # The robot comes to rest after about 65 frames.
+    test_options={"requires": ("git", "pxr.Usd"), "num-frames": 150},
     use_viewer=True,
 )
 for example_name, num_frames in (
@@ -1946,7 +2031,7 @@ for example_name, num_frames in (
         TestKaminoExamples,
         name=example_name,
         devices=cuda_test_devices,
-        test_options={"num-frames": num_frames, "dynamics-solver": "lox"},
+        test_options={"requires": ("git", "pxr.Usd"), "num-frames": num_frames, "dynamics-solver": "lox"},
         use_viewer=True,
         test_suffix="lox",
     )
@@ -1960,7 +2045,7 @@ add_example_test(
     TestControllersExamples,
     name="controllers.example_controller_joint_impedance_heterogeneous",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120},
+    test_options={"requires": MUJOCO_MODULES, "num-frames": 120},
     use_viewer=True,
 )
 add_example_test(
@@ -1975,14 +2060,14 @@ add_example_test(
     TestControllersExamples,
     name="controllers.example_controller_operational_space_hybrid_force_motion",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 600},
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada", *MUJOCO_MODULES), "num-frames": 600},
     use_viewer=True,
 )
 add_example_test(
     TestControllersExamples,
     name="controllers.example_controller_differential_ik",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 100},
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada"), "num-frames": 100},
     use_viewer=True,
 )
 
@@ -1995,7 +2080,17 @@ add_example_test(
     TestUSDDependentExamples,
     name="softbody.example_softbody_franka",
     devices=cuda_test_devices,
-    test_options={"usd_required": True},
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada")},
+    use_viewer=True,
+)
+# 120 frames reaches the first engagement (~1.0 s) and holds the panel well past the seal settling,
+# so test_final can assert that the pads latched and the seal quality stayed healthy. test_final is valid
+# for any run length, but the default plays the whole ~26 s recording, which is too slow for CI.
+add_example_test(
+    TestUSDDependentExamples,
+    name="surface_gripper.example_surface_gripper",
+    devices=cuda_test_devices,
+    test_options={"requires": ("pxr.Usd", *MUJOCO_MODULES), "num-frames": 120},
     use_viewer=True,
 )
 for example_name in (
@@ -2008,7 +2103,7 @@ for example_name in (
         TestUSDDependentExamples,
         name=example_name,
         devices=cuda_test_devices,
-        test_options={"usd_required": True},
+        test_options={"requires": ("pxr.Usd",)},
         use_viewer=True,
     )
 

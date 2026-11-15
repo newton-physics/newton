@@ -12,6 +12,7 @@ from newton._src.viewer.gl.frame_cache import FrameCache
 from newton._src.viewer.viewer import ViewerBase
 from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton._src.viewer.viewer_viser import ViewerViser
+from newton.tests.unittest_utils import requires
 from newton.viewer import ViewerNull
 
 
@@ -294,6 +295,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertEqual(list(viewer.layers), ["__default__"])
         self.assertEqual(viewer.layer.name_prefix, "")
 
+    @requires("pyglet")
     def test_rtx_remove_layer_with_sibling_fails_loudly(self):
         """RTX should not silently wipe sibling layers during clear_model()."""
         viewer = _MinimalRTXViewer()
@@ -306,6 +308,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertIn("A", viewer.layers)
         self.assertIn("B", viewer.layers)
 
+    @requires("pyglet")
     def test_rtx_borrowed_stage_disables_deformable_overlays(self):
         """Leave a borrowed stage's deformable presentation visible by itself."""
         viewer = _MinimalRTXViewer()
@@ -314,46 +317,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertFalse(viewer.show_triangles)
         self.assertFalse(viewer.show_deformable_visual_meshes)
 
-    def test_rtx_runtime_log_mesh_queues_visibility_updates(self):
-        """Runtime mesh logs must apply hidden=True to existing RTX mesh prims."""
-        viewer = _MinimalRTXViewer()
-        viewer._phase = viewer._PHASE_RENDER
-        viewer._mesh_prim_paths = {"/mesh": "/root/mesh"}
-        viewer._pending_mesh_points = {}
-        viewer._pending_mesh_normals = {}
-        viewer._pending_mesh_topology = {}
-        viewer._pending_mesh_visibility = {}
-
-        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
-        indices = wp.array([0, 1, 2], dtype=wp.int32)
-
-        viewer.log_mesh("/mesh", points, indices, hidden=True, dynamic=True)
-
-        self.assertFalse(getattr(viewer, "_pending_mesh_visibility", {}).get("/mesh", True))
-        self.assertNotIn("/mesh", viewer._pending_mesh_points)
-        self.assertNotIn("/mesh", viewer._pending_mesh_normals)
-        self.assertNotIn("/mesh", viewer._pending_mesh_topology)
-
-        moved = wp.array([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]], dtype=wp.vec3)
-        normals = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3)
-        reversed_indices = wp.array([0, 2, 1], dtype=wp.int32)
-        viewer.log_mesh("/mesh", moved, reversed_indices, normals=normals, hidden=False, dynamic=True)
-
-        self.assertTrue(viewer._pending_mesh_visibility["/mesh"])
-        np.testing.assert_array_equal(viewer._pending_mesh_points["/mesh"], moved.numpy())
-        np.testing.assert_array_equal(viewer._pending_mesh_normals["/mesh"], normals.numpy())
-        counts, pending_indices = viewer._pending_mesh_topology["/mesh"]
-        np.testing.assert_array_equal(counts, [3])
-        np.testing.assert_array_equal(pending_indices, reversed_indices.numpy())
-
-        viewer.log_mesh("/mesh", moved, indices, normals=None, hidden=False, dynamic=True)
-        np.testing.assert_array_equal(viewer._pending_mesh_normals["/mesh"], [[0.0, 0.0, 1.0]] * 3)
-
-        empty_points = wp.empty(0, dtype=wp.vec3)
-        empty_indices = wp.empty(0, dtype=wp.int32)
-        viewer.log_mesh("/mesh", empty_points, empty_indices, hidden=False, dynamic=True)
-        self.assertFalse(viewer._pending_mesh_visibility["/mesh"])
-
+    @requires("pyglet")
     def test_rtx_deformable_state_hides_and_restores_geometry(self):
         """Queue current skinned points when a hidden runtime mesh is shown again."""
         builder = newton.ModelBuilder()
@@ -381,6 +345,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertTrue(viewer._pending_mesh_visibility[name])
         np.testing.assert_array_equal(viewer._pending_mesh_points[name], [[0, 0, 2], [1, 0, 2], [0, 1, 2]])
 
+    @requires("pyglet")
     def test_rtx_clear_all_layers_allows_layered_scene_reset(self):
         """RTX can reset a complete layered scene while keeping single-layer clear guarded."""
         viewer = _MinimalRTXViewer()

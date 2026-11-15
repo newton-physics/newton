@@ -11,13 +11,13 @@ bidiagonalization estimates them for every component at once on the device; its 
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
 
 from ...core.types import to_warp_int32_array
-from ...utils import logger as msg
 from .seed_kernels import (
     _CERTIFICATION_CANDIDATES,
     SEED_STATUS_NO_POSITIVE_EIGENVALUE,
@@ -36,6 +36,8 @@ from .seed_kernels import (
 )
 from .system import LOXSystem
 from .types import StructuralRows
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -323,7 +325,12 @@ def estimate_joint_penalty_scale(
             SEED_STATUS_NO_POSITIVE_EIGENVALUE: "structural Delassus has no resolvable positive eigenvalue",
             SEED_STATUS_NOT_REPRESENTABLE: "structural ALM penalty seed is not representable in float32",
         }[int(status_host[block])]
-        msg.warning(
-            f"LOX joint penalty seed failed for {failed.size} component(s), which take the scale "
-            f"{min_ratio:g}. First: world {system.block_world_host[block]} component {block}: {reason}."
+        logger.warning(
+            "LOX joint penalty seed failed for %d component(s), which take the scale %g. "
+            "First: world %s component %d: %s.",
+            failed.size,
+            min_ratio,
+            system.block_world_host[block],
+            block,
+            reason,
         )

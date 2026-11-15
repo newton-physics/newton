@@ -296,7 +296,8 @@ class Example:
     def _add_cable(self, builder: newton.ModelBuilder, x_offset: float):
         num_elements = 36
         length = 1.8
-        radius = 0.035
+        # Match the USD scene's float-valued thickness for identical mass and inertia.
+        radius = float(np.float32(0.035))
         z0 = 1.55
         nodes = np.stack(
             [

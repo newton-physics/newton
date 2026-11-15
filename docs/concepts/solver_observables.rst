@@ -148,8 +148,17 @@ post-constraint RNE stage independently of sensors.
 With ``use_mujoco_cpu=True``, body and contact observables are exported
 from the step's input dynamics, including with RK4; use the input state for
 contact positions. Body observables require Euler, RK4, implicit, or implicitfast
-integration. ``CONTACT_F`` requires ``use_mujoco_contacts=True`` and, like
-the ``SolverMuJoCo.ObservableKind.QFRC_*`` kinds, supports any integrator; overflow observable requests are rejected.
+integration. ``CONTACT_F``, like the ``SolverMuJoCo.ObservableKind.QFRC_*`` kinds,
+supports any integrator; overflow observable requests are rejected.
+
+:class:`~newton.solvers.SolverSteel` accounts ``BODY_PARENT_F`` from the step's solved
+motion, including its contact, friction, spin and loop-closure impulses, so loads carried by a
+subtree reach the joints that support it; see the solver's documentation for the cases it leaves
+out. Like :class:`~newton.solvers.SolverMuJoCo`, it reconstructs the wrench from the bodies' rigid
+inertia, without joint armature, so a dynamic joint's projected wrench is its generalized load
+(``joint_f``, explicit passive spring and damping forces, and joint-space rows) less
+``armature * qdd``. :class:`~newton.solvers.SolverFeatherstone` reports the start-of-step inverse
+dynamics at zero joint acceleration instead.
 
 :class:`~newton.solvers.SolverSteel` reports only the linear part of each rigid
 contact force; the torque part is zero. Contacts without solved rows, such as rows
@@ -231,7 +240,12 @@ MuJoCo overflow diagnostics
 
 :class:`~newton.solvers.SolverMuJoCo` exposes
 :attr:`~newton.solvers.SolverMuJoCo.ObservableKind.OVERFLOW` through
-``observables.overflow``, an ``int32`` array with shape ``(model.world_count,)``.
+``observables.overflow``, an ``int32`` array with shape ``(model.world_count + 1,)``.
+Entries follow the Newton world whose options each MuJoCo world uses. A single
+MuJoCo world reports in entry ``0`` when world ``0`` owns bodies, also if it
+simulates global bodies too, and otherwise in the final entry for global world
+``-1``, as in models built without :meth:`~newton.ModelBuilder.begin_world`.
+Separate MuJoCo worlds leave the final entry zero.
 It reports capacity overflow after a step without synchronizing the device in
 the solver. Requesting it requires ``use_mujoco_cpu=False``.
 
@@ -457,8 +471,10 @@ the force on the soft contact point, and distribute it to the record's particles
 final configuration of the step -- the forces the last iteration balanced -- not time-step
 averages; records without penetration are zero.
 
-For soft contacts this is the penalty law at the final per-contact stiffness, damping while
-the contact point approaches the surface, and regularized Coulomb friction on the step's slip,
+For soft contacts this is the penalty law at the final per-contact stiffness, damping on the
+normal gap rate (while the contact point approaches the surface and, with the default
+``soft_contact_damping_bidirectional=True``, while it separates), and regularized Coulomb
+friction on the step's slip,
 bounded by the elastic normal load. Body-body contacts use the compliant ALM or legacy AVBD
 contact law with its multipliers. Both evaluations retain the step-start pose history used
 by the iterations.

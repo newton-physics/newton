@@ -159,7 +159,15 @@ USD exports replacement image arrays to separate files. Unchanged arrays reuse
 their existing file. Material bindings are not time-sampled: the export uses
 the last assigned texture, not a texture animation. RTX updates the material
 binding after any in-flight render finishes, without replacing mesh geometry.
+RTX applies UVs supplied with a replacement image, including to its instances.
+Changing only UVs while reusing the same image object or file path is not
+supported.
 These updates are intended for occasional appearance changes, not video textures.
+Distinct image contents create separate PNG files. USD keeps those files next
+to the exported stage. RTX keeps them in its private temporary directory until
+the viewer closes, so many unique replacements can use substantial disk space
+during a session. Reuse a fixed set of image arrays or file paths for bounded
+texture variation.
 
 :class:`~newton.viewer.ViewerFile` records deformable visual meshes and
 simulation state without evaluating them. JSON and binary recordings rebuild
@@ -727,7 +735,7 @@ OpenGL Viewer
 ~~~~~~~~~~~~~
 
 Newton provides :class:`~newton.viewer.ViewerGL`, a simple OpenGL viewer for interactive real-time visualization of simulations.
-The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed.
+The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed, and a graphics driver that supports OpenGL 3.3 or newer.
 
 .. code-block:: python
 
@@ -872,12 +880,13 @@ and cone heads; their ``width`` specifies the shaft radius in meters.
 This installs ``ovrtx`` 0.5.1.385782 or newer (the NVIDIA OVRTX renderer), ``ovstage`` 0.2.1.385922 or newer
 for runtime scene management, and ``usd-core``, in addition to ``pyglet`` for the window.
 
-ViewerRTX has been validated with the following renderer configuration:
+ViewerRTX has been validated with the following renderer configurations:
 
-- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency and GPU CI; Isaac Lab 3.0)
+- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency CI; Isaac Lab 3.0)
+- ``ovrtx==0.6.0.1791947691`` with ``ovstage==0.3.0.1791986420`` (locked GPU CI configuration)
 
-Only the exact configuration above is part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
-together; OVRTX 0.5.1 fails to start with OVStage 0.2.0.
+Only the exact pairs above are part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
+together to one of these pairs. Mixed release pairs are unvalidated; OVRTX 0.5.1 fails to start with OVStage 0.2.0.
 
 .. code-block:: python
 

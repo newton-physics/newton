@@ -15,6 +15,7 @@ import warp as wp
 
 from newton._src.geometry.contact_reduction import (
     _POLYHEDRON_BINS,
+    _POLYHEDRON_NORMALS_DATA,
     FACE_NORMALS,
     MAX_CONTACTS_PER_PAIR,
     NORMAL_BINNING_POLYHEDRON,
@@ -107,7 +108,7 @@ def test_compute_num_reduction_slots(test, device):
 
 
 def test_get_slot_axis_aligned_normals(test, device):
-    """Test get_slot with axis-aligned normals."""
+    """Keep axis-aligned normals and nearby ground and wall normals in valid, stable bins."""
     test_normals = [
         wp.vec3(0.0, 1.0, 0.0),  # +Y (top)
         wp.vec3(0.0, -1.0, 0.0),  # -Y (bottom)
@@ -128,33 +129,83 @@ def test_get_slot_axis_aligned_normals(test, device):
         test.assertGreaterEqual(slot, 0, f"Slot {i} is negative")
         test.assertLess(slot, NUM_NORMAL_BINS, f"Slot {i} exceeds max ({NUM_NORMAL_BINS})")
 
+    # Require the same clearance around every coordinate axis. Keep thresholds
+    # just inside the geometric margins to allow for the rounded table entries.
+    protected_degrees = {"hexahedron": 44.0, "octahedron": 19.0, "dodecahedron": 14.0, "icosahedron": 14.0}
+    axes = np.asarray(test_normals)
+
+    # Check every table on CI even when only one configuration is compiled.
+    for polyhedron, values in _POLYHEDRON_NORMALS_DATA.items():
+        with test.subTest(polyhedron=polyhedron):
+            tilt = np.deg2rad(protected_degrees[polyhedron])
+            tilted_normals = []
+            for axis in axes:
+                tangent_axes = np.eye(3)[axis == 0.0]
+                for angle in np.linspace(0.0, 2.0 * np.pi, 32, endpoint=False):
+                    tangent = np.cos(angle) * tangent_axes[0] + np.sin(angle) * tangent_axes[1]
+                    tilted_normals.append(np.cos(tilt) * axis + np.sin(tilt) * tangent)
+            tilted_normals = np.asarray(tilted_normals, dtype=np.float32)
+            if polyhedron == NORMAL_BINNING_POLYHEDRON:
+                configured_tilted_normals = tilted_normals
+            faces = np.asarray(values, dtype=np.float32).reshape(-1, 3)
+            best_faces = (axes @ faces.T).argmax(axis=1)
+            # Bound the whole cone, including directions between the samples:
+            # a bin boundary is perpendicular to the difference of its faces.
+            margins = []
+            for axis, best in zip(axes, best_faces, strict=True):
+                differences = faces[best] - np.delete(faces, best, axis=0)
+                distances = differences @ axis / np.linalg.norm(differences, axis=1)
+                margin = np.rad2deg(np.arcsin(np.clip(distances, -1.0, 1.0))).min()
+                test.assertGreater(margin, protected_degrees[polyhedron])
+                margins.append(margin)
+            test.assertLess(np.ptp(margins), 1.0e-4, "Axis clearances must agree within table rounding error")
+            expected = np.repeat(best_faces[:, None], 32, axis=1)
+            np.testing.assert_array_equal((tilted_normals @ faces.T).argmax(axis=1).reshape(6, 32), expected)
+
+    normals = wp.array(configured_tilted_normals, dtype=wp.vec3, device=device)
+    slots = wp.empty(len(configured_tilted_normals), dtype=int, device=device)
+    wp.launch(_get_slot_kernel, dim=len(configured_tilted_normals), inputs=[normals, slots], device=device)
+    np.testing.assert_array_equal(slots.numpy().reshape(6, 32), np.repeat(slots_np[:, None], 32, axis=1))
+
 
 def test_get_slot_matches_best_face_normal(test, device):
-    """Test that get_slot returns the face with highest dot product."""
+    """Match exhaustive normal selection, including both sides of cap-pruning boundaries."""
     rng = np.random.default_rng(42)
-    test_normals_np = rng.standard_normal((50, 3)).astype(np.float32)
+    test_normals_np = rng.standard_normal((4096, 3)).astype(np.float32)
     test_normals_np /= np.linalg.norm(test_normals_np, axis=1, keepdims=True)
+    random_count = len(test_normals_np)
 
-    test_normals = [wp.vec3(n[0], n[1], n[2]) for n in test_normals_np]
-    normals = wp.array(test_normals, dtype=wp.vec3, device=device)
-    slots = wp.zeros(len(test_normals), dtype=int, device=device)
+    cap_axis = np.array(
+        (-0.20209268, 0.94502682, 0.25706587)
+        if NORMAL_BINNING_POLYHEDRON == "dodecahedron"
+        else (0.29269405, 0.29269407, -0.91030784)
+    )
+    cap_axis /= np.linalg.norm(cap_axis)
+    u = np.cross(cap_axis, (1.0, 0.0, 0.0))
+    u /= np.linalg.norm(u)
+    v = np.cross(cap_axis, u)
+    angles = np.linspace(0.0, 2.0 * np.pi, 32, endpoint=False)
+    tangents = np.cos(angles)[:, None] * u + np.sin(angles)[:, None] * v
+    boundary_normals = []
+    for threshold in (-0.65, 0.0, 0.65):
+        for offset in (-1.0e-6, 0.0, 1.0e-6):
+            height = threshold + offset
+            boundary_normals.extend(height * cap_axis + np.sqrt(1.0 - height**2) * tangents)
+    test_normals_np = np.concatenate((test_normals_np, boundary_normals)).astype(np.float32)
+    normals = wp.array(test_normals_np, dtype=wp.vec3, device=device)
+    slots = wp.zeros(len(test_normals_np), dtype=int, device=device)
 
-    wp.launch(_get_slot_kernel, dim=len(test_normals), inputs=[normals, slots], device=device)
+    wp.launch(_get_slot_kernel, dim=len(test_normals_np), inputs=[normals, slots], device=device)
 
     slots_np = slots.numpy()
 
     face_normals = np.array([[FACE_NORMALS[i, j] for j in range(3)] for i in range(NUM_NORMAL_BINS)])
 
-    for i in range(len(test_normals_np)):
-        normal = test_normals_np[i]
-        result_slot = slots_np[i]
-
-        dots = face_normals @ normal
-        cpu_best_slot = np.argmax(dots)
-
-        test.assertEqual(
-            result_slot, cpu_best_slot, f"Normal {i}: result slot {result_slot} != expected slot {cpu_best_slot}"
-        )
+    test.assertTrue(np.all((slots_np >= 0) & (slots_np < NUM_NORMAL_BINS)))
+    dots = test_normals_np @ face_normals.T
+    np.testing.assert_array_equal(slots_np[:random_count], dots[:random_count].argmax(axis=1))
+    # Equidistant faces can trade places under device rounding.
+    np.testing.assert_allclose(dots[np.arange(len(slots_np)), slots_np], dots.max(axis=1), rtol=0.0, atol=2.0e-7)
 
 
 # =============================================================================

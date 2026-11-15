@@ -31,6 +31,7 @@ from newton.solvers.experimental.coupled import (
     SolverCoupled,
     SolverCoupledADMM,
 )
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 @wp.kernel(enable_backward=False)
@@ -781,6 +782,7 @@ class TestAdmmSmoke(unittest.TestCase):
                     else:
                         SolverCoupledADMM(model, entries, config)
 
+    @requires(*MUJOCO_MODULES)
     def test_construct_and_step_no_attachments(self):
         model, rs, re, _ = _build_cloth_rigid_scene()
         solver = _make_solver(model, rs, re, admm_iters=1)
@@ -789,6 +791,7 @@ class TestAdmmSmoke(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(body_q)))
         self.assertTrue(np.all(np.isfinite(particle_q)))
 
+    @requires(*MUJOCO_MODULES)
     def test_admm_iters_idempotent_with_no_coupling(self):
         """With gamma=0 and no attachments the iteration count should not
         change the result (no coupling = idempotent outer loop)."""
@@ -804,6 +807,7 @@ class TestAdmmSmoke(unittest.TestCase):
         np.testing.assert_allclose(part_a, part_b, atol=1e-6)
 
 
+@requires(*MUJOCO_MODULES)
 class TestAdmmProximal(unittest.TestCase):
     """Proximal terms affect constrained DOFs only."""
 
@@ -1206,6 +1210,13 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
 
         self.assertLess(final_gap, 0.5 * initial_gap)
 
+        model.attachment_particle_body_stiffness.fill_(math.inf)
+        with self.assertRaisesRegex(ValueError, "Hard particle-body attachments require both endpoints.*SolverVBD"):
+            _make_semi_body_particle_solver(model)
+        model.attachment_particle_body_enabled.fill_(False)
+        disabled = _make_semi_body_particle_solver(model)
+        self.assertEqual(disabled._admm_rp_groups, [])
+
     def test_deprecated_helper_preserves_legacy_attachment_row(self):
         """Keep the deprecated ADMM helper compatible with its custom-row layout."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -1229,6 +1240,16 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
             SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_FREQUENCY,
             model.custom_frequency_counts,
         )
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+        with self.assertWarns(DeprecationWarning):
+            SolverCoupledADMM.add_body_particle_attachment(builder, body, particle, stiffness=math.inf)
+        builder.color()
+        model = builder.finalize(device="cpu")
+        with self.assertRaisesRegex(ValueError, "is hard; use ModelBuilder.add_attachment_particle_body"):
+            _make_semi_body_particle_solver(model)
 
     def test_single_unsupported_entry_attachment_is_reported(self):
         """Warn when a same-entry solver cannot apply a model attachment."""
@@ -1336,6 +1357,7 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         np.testing.assert_array_equal(group.lambda_.numpy()[1], lambda_before[1])
 
 
+@requires(*MUJOCO_MODULES)
 class TestAdmmExternalForces(unittest.TestCase):
     """External forces set on ``state_in.body_f`` / ``particle_f`` by the
     caller (e.g. a viewer gizmo) must reach the sub-solvers."""

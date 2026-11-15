@@ -290,10 +290,11 @@ the experimental API.
 Particle-body attachments cover interfaces that cannot be represented by a
 model joint because one endpoint is a particle. The coupler reads the model
 attachment rows described under :ref:`Particle-body attachments` and owns those
-whose body and particle endpoints belong to different entries; rows owned
+with finite stiffness whose body and particle endpoints belong to different entries; rows owned
 entirely by one entry are left to that entry's solver. The coupler logs a warning
-if that solver does not support attachments or if an endpoint is owned by no
-entry. Rows authored under the legacy ``coupling:body_particle_attachment``
+for finite attachments if that solver does not support attachments or if an endpoint is owned by no
+entry. Hard attachments require model-owned rows with both endpoints in one VBD entry;
+other arrangements raise an error. Rows authored under the legacy ``coupling:body_particle_attachment``
 custom frequency are also consumed by ADMM, so importers that write those
 attributes keep working; these legacy rows remain invisible to
 :class:`~newton.solvers.SolverVBD`.
@@ -428,7 +429,7 @@ one iteration; a standalone Steel on a ``ModelView`` keeps these options. The
 coupler routes contacts and sums coupling forces with atomics, so the contact
 order that run-to-run mode relies on is not fixed inside it. Acting as a proxy
 destination raises :class:`NotImplementedError` on the first coupled step.
-Coupled use is validated with ``solve_mode="matrix_free"`` and the
+Coupled use is validated with ``solve_mode="serial"`` and the
 ``"immediate"`` articulated contact response. Set ``model.rigid_contact_max`` to the capacity of
 the coupled contact buffer before constructing the coupled solver, because Steel
 sizes its contact scratch from the model.

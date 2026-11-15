@@ -3,7 +3,6 @@
 
 """Tests for Gaussian visual payloads embedded in deformable bodies."""
 
-import importlib.util
 import json
 import math
 import tempfile
@@ -15,7 +14,7 @@ import warp as wp
 
 import newton
 from newton.sensors import SensorCamera
-from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
+from newton.tests.unittest_utils import get_test_devices, has_module, requires
 from newton.viewer import ViewerFile, ViewerNull
 
 
@@ -240,7 +239,7 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
         self.assertEqual(visible, [ordinary])
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
     """USD Gaussian graphics embedded in a volume deformable."""
 
@@ -575,7 +574,7 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         self.assertGreater(np.max(np.ptp(expected_rgb, axis=-1)), 0.01)
         for suffix in (".json", ".bin"):
             with self.subTest(format=suffix), tempfile.TemporaryDirectory() as directory:
-                if suffix == ".bin" and importlib.util.find_spec("cbor2") is None:
+                if suffix == ".bin" and not has_module("cbor2"):
                     self.skipTest("CBOR recording requires optional cbor2")
                 path = str(Path(directory) / f"recording{suffix}")
                 recorder = ViewerFile(path, auto_save=False)

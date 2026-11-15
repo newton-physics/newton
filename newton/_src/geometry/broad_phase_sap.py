@@ -567,7 +567,7 @@ class BroadPhaseSAP:
                 segmented sorting; a single segment uses equivalent ordinary radix sorting.
                 Use ``"tile"`` for tile-based
                 sorting via ``wp.tile_sort``, or ``"auto"`` to use one of
-                three bounded tile sizes for medium-sized worlds.
+                five bounded tile sizes for worlds with up to 512 shapes.
             tile_block_dim: Block dimension for tile-based sorting (optional, auto-calculated if None).
                 If None, will be set to next power of 2 >= ``max_shapes_per_world``, capped at 512.
                 Minimum value is 32 (required by wp.tile_sort). If provided, will be clamped to [32, 1024].
@@ -621,14 +621,18 @@ class BroadPhaseSAP:
             self.max_shapes_per_world = max(self.max_shapes_per_world, num_shapes)
             start_idx = end_idx
 
-        # The collision pipeline uses auto mode. Restrict it to three fixed
+        # The collision pipeline uses auto mode. Restrict it to five fixed
         # tile sizes so arbitrary model sizes cannot create arbitrary kernel
-        # variants, and keep padding at or below 2x. Small and large worlds retain
-        # the general segmented sort.
+        # variants. Small worlds avoid segmented-sort overhead with 32/64 tiles;
+        # empty and large worlds retain the general segmented sort.
         if self.sort_type == "auto":
-            if 64 <= self.max_shapes_per_world <= 512:
+            if 1 <= self.max_shapes_per_world <= 512:
                 self.sort_type = "tile"
-                if self.max_shapes_per_world <= 128:
+                if self.max_shapes_per_world <= 32:
+                    self.max_shapes_per_world = 32
+                elif self.max_shapes_per_world < 64:
+                    self.max_shapes_per_world = 64
+                elif self.max_shapes_per_world <= 128:
                     self.max_shapes_per_world = 128
                 elif self.max_shapes_per_world <= 256:
                     self.max_shapes_per_world = 256
@@ -755,13 +759,7 @@ class BroadPhaseSAP:
         if shape_count < 0 or shape_count > shape_lower.shape[0]:
             raise ValueError(f"shape_count must be in [0, {shape_lower.shape[0]}], got {shape_count}")
 
-        # If no gaps provided, pass empty array (kernel will use 0.0 gaps)
-        if shape_gap is None:
-            shape_gap = wp.empty(0, dtype=wp.float32, device=device)
-        if shape_body is None:
-            shape_body = wp.empty(0, dtype=wp.int32, device=device)
-        if body_flags is None:
-            body_flags = wp.empty(0, dtype=wp.int32, device=device)
+        # Warp passes None arrays as zero-sized descriptors to the kernels.
         if shape_displacement is not None and shape_displacement.shape[0] != shape_lower.shape[0]:
             raise ValueError(
                 "shape_displacement length must match the shape bounds "
@@ -777,9 +775,9 @@ class BroadPhaseSAP:
                 )
             projection_limit = sort_axis_displacement_limit
 
-        # Exclusion filter: empty array and 0 when not provided or empty
+        # Exclusion filter: null array and 0 when not provided or empty
         if filter_pairs is None or filter_pairs.shape[0] == 0:
-            filter_pairs_arr = wp.empty(0, dtype=wp.vec2i, device=device)
+            filter_pairs_arr = None
             n_filter = 0
         else:
             filter_pairs_arr = filter_pairs

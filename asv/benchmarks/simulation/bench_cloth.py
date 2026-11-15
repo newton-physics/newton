@@ -48,7 +48,7 @@ DEFORMABLE_RIGID_CASES = (
     ("cone", "cone", 32, 64, 16, False),
     ("ellipsoid", "ellipsoid", 32, 64, 16, False),
     ("mesh_sdf", "mesh", 32, 64, 16, False),
-    ("mesh_high_poly_fallback", "mesh_high_poly", 64, 256, 1, False),
+    ("mesh_high_poly_fallback", "mesh_high_poly", 64, 32, 1, False),
     ("infinite_plane", "plane", 64, 128, 1, False),
     ("finite_plane", "finite_plane", 64, 128, 1, False),
     ("heightfield", "heightfield", 64, 128, 1, False),
@@ -209,6 +209,9 @@ class FastDeformableSelfCollision:
         with wp.ScopedCapture(device=device) as capture:
             self._detect()
         self.graph = capture.graph
+        # Keep one-time device work out of the samples.
+        wp.capture_launch(self.graph)
+        wp.synchronize_device()
 
     def _detect(self):
         self.detector.refit(self.model.particle_q)
@@ -227,6 +230,7 @@ class DeformableRigidCollision:
 
     params = (DEFORMABLE_RIGID_CASES,)
     param_names = ["case"]
+    rounds = 1
     repeat = 3
     number = 1
     warmup_count = 2
@@ -237,6 +241,11 @@ class DeformableRigidCollision:
         device = wp.get_device()
         if not device.is_cuda:
             raise SkipNotImplemented
+
+        # ASV repeats setup per sample; collision-only graph replays preserve state.
+        if getattr(self, "_case", None) == case:
+            return
+        self._case = None
 
         _name, kind, resolution, world_count, shape_count, sparse = case
         builder = newton.ModelBuilder()
@@ -268,6 +277,7 @@ class DeformableRigidCollision:
         with wp.ScopedCapture(device=device) as capture:
             self.pipeline.collide(self.state, self.contacts)
         self.graph = capture.graph
+        self._case = case
 
     def _verify_contact_capacity(self):
         """Reject truncated warmup results before capturing the timed collision graph."""
@@ -288,10 +298,9 @@ class DeformableRigidCollision:
 
 
 class DeformableRigidCollisionScale(DeformableRigidCollision):
-    """Sample GPU-saturating deformable-rigid scales once per revision."""
+    """Benchmark GPU-saturating deformable-rigid scales."""
 
     params = (DEFORMABLE_RIGID_SCALE_CASES,)
-    repeat = 1
     warmup_count = 1
     launch_count = 3
 
@@ -300,6 +309,7 @@ class FastDeformableRigidCoarseCloth(DeformableRigidCollision):
     """Guard collision latency for small replicated deformable scenes."""
 
     params = (COARSE_CLOTH_RIGID_CASES,)
+    rounds = 2
     repeat = pr_gate_repeat(5)
 
 
@@ -307,6 +317,7 @@ class FastDeformableRigidCoarseClothVBD(DeformableRigidCollision):
     """Measure small-scene full-surface contact through the VBD solve."""
 
     params = (COARSE_CLOTH_VBD_CASES,)
+    rounds = 2
     repeat = pr_gate_repeat(5)
     launch_count = 5
     # This graph includes the solve; expose it only through time_simulate.
@@ -343,6 +354,9 @@ class FastDeformableRigidCoarseClothVBD(DeformableRigidCollision):
             self.pipeline.collide(self.state_in, self.contacts)
             self.solver.step(self.state_in, self.state_out, self.control, self.contacts, 1.0 / 120.0)
         self.graph = capture.graph
+        # Keep one-time device work out of the samples.
+        wp.capture_launch(self.graph)
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self, case):
@@ -362,7 +376,11 @@ class FastExampleClothManipulation:
             args = newton.examples.default_args()
         else:
             args = None
-        self.example = ExampleClothManipulation(ViewerNull(num_frames=self.num_frames), args)
+        self.example = ExampleClothManipulation(ViewerNull(num_frames=self.num_frames + 1), args)
+        # Keep one-time device work out of the samples.
+        self.example.step()
+        self.example.render()
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
@@ -381,7 +399,11 @@ class FastExampleClothTwist:
             args = newton.examples.default_args()
         else:
             args = None
-        self.example = ExampleClothTwist(ViewerNull(num_frames=self.num_frames), args)
+        self.example = ExampleClothTwist(ViewerNull(num_frames=self.num_frames + 1), args)
+        # Keep one-time device work out of the samples.
+        self.example.step()
+        self.example.render()
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

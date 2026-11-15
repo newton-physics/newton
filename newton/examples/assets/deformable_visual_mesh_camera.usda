@@ -37,7 +37,8 @@ def Xform "World"
             int[] curveVertexCounts = [37]
             rel material:binding:physics = </World/Materials/CablePhysics>
             token[] physics:deformablePose:bind:purposes = ["bindPose"]
-            uniform token physics:masses:elementType = "segment"
+            # Use material density instead of the referenced layer's old capsule masses.
+            float[] physics:masses = None
             float[] physics:thicknesses = [0.07]
             uniform token physics:thicknesses:elementType = "constant"
             uniform token type = "linear"
@@ -179,4 +180,3 @@ def Xform "World"
         }
     }
 }
-

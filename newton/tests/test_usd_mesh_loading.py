@@ -3,21 +3,23 @@
 
 """Tests for USD mesh extraction from stage, path, URL, and prim sources."""
 
+import math
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
 import newton.usd
-from newton.exceptions import NewtonDeprecationWarning
+from newton import NewtonDeprecationWarning
 from newton.sensors import SensorTiledCamera
 from newton.tests.unittest_utils import (
-    USD_AVAILABLE,
     assert_np_equal,
     ignore_sensor_tiled_camera_deprecation,
+    requires,
 )
 
 
@@ -85,7 +87,7 @@ def _define_folded_mesh(stage, path="/Fold", scheme=None):
     return mesh
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUsdMeshHelpers(unittest.TestCase):
     """Tests for loading Newton meshes from USD source variants."""
 
@@ -547,6 +549,112 @@ class TestUsdMeshHelpers(unittest.TestCase):
 
         self.assertIsNotNone(mesh.normals)
         np.testing.assert_allclose(mesh.normals[0], np.array([0.0, 1.0, 0.0], dtype=np.float32), atol=1e-6)
+
+
+def _scalar_cluster_split_groups(
+    split_groups,
+    starts,
+    group_sizes,
+    group_vertices,
+    order,
+    grouped_dirs,
+    grouped_uvs,
+    provisional_of_corner,
+    *,
+    first_id,
+    cos_thresh,
+):
+    """Cluster each split vertex group with the original one-corner-at-a-time loop."""
+    next_id = first_id
+    split_creation, split_vertices, split_dir_sums, split_uvs = [], [], [], []
+    for group in split_groups:
+        begin = int(starts[group])
+        end = begin + int(group_sizes[group])
+        source_vertex = int(group_vertices[group])
+        clusters = []
+        for corner in range(begin, end):
+            dir_x, dir_y, dir_z = (float(value) for value in grouped_dirs[corner])
+            corner_uv = None if grouped_uvs is None else tuple(grouped_uvs[corner].tolist())
+            for cluster in clusters:
+                sum_x, sum_y, sum_z = cluster[0], cluster[1], cluster[2]
+                scale = max(math.sqrt(sum_x * sum_x + sum_y * sum_y + sum_z * sum_z), 1e-30)
+                if (sum_x * dir_x + sum_y * dir_y + sum_z * dir_z) / scale < cos_thresh:
+                    continue
+                if corner_uv is not None and cluster[3] != corner_uv:
+                    continue
+                cluster[0] = sum_x + dir_x
+                cluster[1] = sum_y + dir_y
+                cluster[2] = sum_z + dir_z
+                provisional_of_corner[corner] = cluster[4]
+                break
+            else:
+                clusters.append([dir_x, dir_y, dir_z, corner_uv, next_id])
+                provisional_of_corner[corner] = next_id
+                split_creation.append(int(order[corner]))
+                split_vertices.append(source_vertex)
+                if corner_uv is not None:
+                    split_uvs.append(corner_uv)
+                next_id += 1
+        split_dir_sums.extend((cluster[0], cluster[1], cluster[2]) for cluster in clusters)
+    uvs = None
+    if grouped_uvs is not None:
+        uvs = np.asarray(split_uvs, dtype=grouped_uvs.dtype).reshape(-1, grouped_uvs.shape[1])
+    return (
+        np.asarray(split_creation, dtype=np.int64),
+        np.asarray(split_vertices, dtype=np.int64),
+        np.asarray(split_dir_sums, dtype=np.float64).reshape(-1, 3),
+        uvs,
+    )
+
+
+class TestSplitCornersIntoVertices(unittest.TestCase):
+    """Batched clustering of split vertices must reproduce the sequential greedy loop exactly."""
+
+    def test_matches_sequential_greedy_clustering(self):
+        """Reproduce the sequential greedy loop bit for bit on fuzzed corner sets."""
+        from newton._src.usd import _mesh_loading  # noqa: PLC0415
+
+        rng = np.random.default_rng(11)
+        for case in range(400):
+            # Few vertices give high-valence groups that need many clustering rounds.
+            vertex_count = int(rng.integers(1, 4 if case % 3 == 0 else 40))
+            corner_count = int(rng.integers(1, 200))
+            indices = rng.integers(0, vertex_count, corner_count).astype(np.int32 if case % 2 else np.int64)
+            points = rng.normal(size=(vertex_count, 3)).astype(np.float32)
+            base = rng.normal(size=(int(rng.integers(1, 6)), 3))
+            noise = rng.choice([0.0, 1.0e-7, 0.05, 0.5])
+            dirs = base[rng.integers(0, len(base), corner_count)] + rng.normal(scale=noise, size=(corner_count, 3))
+            dirs = (dirs / np.linalg.norm(dirs, axis=1, keepdims=True)).astype(np.float32 if case % 4 else np.float64)
+            uvs = None
+            if case % 5 != 0:
+                uvs = rng.integers(0, 3, size=(corner_count, int(rng.integers(1, 3)))).astype(np.float32) * 0.5
+                uvs[rng.random(corner_count) < 0.2, 0] = -0.0
+            if case % 7 == 0:
+                dirs[rng.random(corner_count) < 0.1] = np.nan
+                if uvs is not None:
+                    uvs[rng.random(corner_count) < 0.1, 0] = np.nan
+            threshold = float(rng.choice([0.0, 30.0, 45.0, 90.0, 180.0, rng.uniform(0.0, 180.0)]))
+
+            with mock.patch.object(_mesh_loading, "_cluster_split_groups", _scalar_cluster_split_groups):
+                expected = _mesh_loading._split_corners_into_vertices(points, indices, dirs, uvs, threshold)
+            # Vary the batch budget and the sequential-tail cutoff so groups run across many
+            # batches, entirely in lockstep rounds, entirely one corner at a time, or both.
+            slots = 8 if case % 2 else _mesh_loading._CLUSTER_CHUNK_SLOTS
+            sequential_groups = (0, 2, _mesh_loading._CLUSTER_SEQUENTIAL_GROUPS, 1 << 30)[(case // 2) % 4]
+            with (
+                mock.patch.object(_mesh_loading, "_CLUSTER_CHUNK_SLOTS", slots),
+                mock.patch.object(_mesh_loading, "_CLUSTER_SEQUENTIAL_GROUPS", sequential_groups),
+            ):
+                actual = _mesh_loading._split_corners_into_vertices(points, indices, dirs, uvs, threshold)
+            for name, want, got in zip(
+                ("points", "indices", "normals", "uvs", "sources"), expected, actual, strict=True
+            ):
+                with self.subTest(case=case, output=name):
+                    if want is None:
+                        self.assertIsNone(got)
+                        continue
+                    self.assertEqual(got.dtype, want.dtype)
+                    np.testing.assert_array_equal(got, want)
 
 
 if __name__ == "__main__":

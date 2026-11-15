@@ -99,7 +99,6 @@ class Example:
             bend_damping=bend_damping,
             label="straight_rest_helix_initial",
             color=(0.95, 0.35, 0.12),
-            body_frame_origin="com",
         )
 
         right_rest_points = _create_helix_points(
@@ -129,7 +128,6 @@ class Example:
             bend_damping=bend_damping,
             label="helix_rest_straight_initial",
             color=(0.15, 0.65, 1.0),
-            body_frame_origin="com",
         )
         self.cable_bodies = [left_bodies, right_bodies]
 
@@ -142,7 +140,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -169,7 +166,7 @@ class Example:
 
     def simulate(self):
         """Advance the simulation by one frame."""
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.collision_pipeline.collide(self.state_0, self.contacts)
@@ -180,7 +177,12 @@ class Example:
                 self.contacts,
                 self.sim_dt,
             )
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            # With an odd substep count, copy instead of swapping on the last
+            # substep so every CUDA graph replay starts from state_0.
+            if self.sim_substeps % 2 == 1 and substep == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         """Advance the example by one frame."""
