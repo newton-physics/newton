@@ -929,6 +929,9 @@ The table below shows MuJoCo attribute remapping examples, including both direct
    * - ``mjc:gap``
      - ``gap``
      - Direct mapping
+   * - ``mjc:inertia``
+     - ``mesh_inertia``
+     - Mesh collider inertia mode (``"legacy"``, ``"exact"``, ``"convex"``, or ``"shell"``), defaulting to ``"legacy"`` when ``MjcMeshCollisionAPI`` is applied; other USD meshes keep Newton's exact signed-volume inertia. Computed after shape scale (picking limited convex hulls before scale via ``mjc:maxhullvert`` or ``newton:maxHullVertices``).
 
 **Example USD with remapped attributes:**
 

@@ -1784,6 +1784,51 @@ class TestSchemaResolver(unittest.TestCase):
         shell_idx = builder.shape_label.index("/xform/collider")
         self.assertFalse(builder.shape_is_solid[shell_idx])
 
+    def test_mjc_mesh_inertia(self):
+        """Test mesh_inertia resolution: MjcMeshCollisionAPI default, authored mjc:inertia, and priority."""
+        from newton._src.usd._resolution_policy import _resolve_mesh_inertia  # noqa: PLC0415
+
+        usda = """#usda 1.0
+        def Xform "World" {
+            def Mesh "PlainMesh" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+            ) {}
+            def Mesh "MjcDefaultMesh" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MjcMeshCollisionAPI"]
+            ) {}
+            def Mesh "MjcAuthoredMesh" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MjcMeshCollisionAPI"]
+            ) {
+                uniform token mjc:inertia = "shell"
+            }
+            def Mesh "ConflictMesh" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MjcMeshCollisionAPI"]
+            ) {
+                uniform token newton:massModel = "shell"
+                uniform token mjc:inertia = "convex"
+                uniform int mjc:maxhullvert = 12
+            }
+        }
+        """
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usda)
+
+        plain = stage.GetPrimAtPath("/World/PlainMesh")
+        mjc_default = stage.GetPrimAtPath("/World/MjcDefaultMesh")
+        mjc_authored = stage.GetPrimAtPath("/World/MjcAuthoredMesh")
+        conflict = stage.GetPrimAtPath("/World/ConflictMesh")
+
+        resolver_mjc = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
+        self.assertIsNone(resolver_mjc.get_value(plain, PrimType.SHAPE, "mesh_inertia"))
+        self.assertEqual(resolver_mjc.get_value(mjc_default, PrimType.SHAPE, "mesh_inertia"), "legacy")
+        self.assertEqual(resolver_mjc.get_value(mjc_authored, PrimType.SHAPE, "mesh_inertia"), "shell")
+        self.assertEqual(resolver_mjc.schema_attrs["mjc"]["/World/MjcAuthoredMesh"]["mjc:inertia"], "shell")
+        self.assertEqual(_resolve_mesh_inertia(conflict, resolver_mjc, verbose=False), ("convex", 12))
+
+        resolver_newton = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverMjc()])
+        self.assertEqual(_resolve_mesh_inertia(mjc_default, resolver_newton, verbose=False), ("legacy", 0))
+        self.assertEqual(_resolve_mesh_inertia(conflict, resolver_newton, verbose=False), (None, 0))
+
     def test_contact_response_attrs(self):
         """Test ke/kd/kf/ka resolution on materials via PrimType.MATERIAL."""
 

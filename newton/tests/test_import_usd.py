@@ -15229,5 +15229,368 @@ add_function_test(
 )
 
 
+class TestUsdMjcMeshInertia(unittest.TestCase):
+    """USD ``mjc:inertia`` modes on ``MjcMeshCollisionAPI`` meshes match native MuJoCo."""
+
+    # Two disjoint tetrahedra: legacy, exact, convex, and shell all produce distinct mass properties.
+    VERTICES = np.concatenate(
+        (
+            np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+            np.array([[3.0, 0.5, 0.0], [4.0, 0.5, 0.0], [3.0, 1.5, 0.0], [3.0, 0.5, 1.0]]),
+        )
+    )
+    FACES = (
+        np.concatenate((np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]),) * 2) + np.repeat([0, 4], 4)[:, None]
+    )
+
+    @staticmethod
+    def _build_usd_mesh_stage(
+        vertices: np.ndarray,
+        faces: np.ndarray | None,
+        *,
+        apply_mjc_api: bool = True,
+        inertia_mode: str | None = None,
+        maxhullvert: int | None = None,
+        scale: tuple[float, float, float] | None = None,
+        collider_mass: float | None = None,
+        collider_density: float | None = None,
+        body_mass: float | None = None,
+        visible: bool = False,
+    ):
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        if body_mass is not None:
+            UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr().Set(float(body_mass))
+
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/Mesh")
+        if not visible:
+            mesh.CreatePurposeAttr(UsdGeom.Tokens.guide)
+        mesh.CreatePointsAttr([Gf.Vec3f(*map(float, v)) for v in vertices])
+        if faces is None or len(faces) == 0:
+            mesh.CreateFaceVertexCountsAttr([])
+            mesh.CreateFaceVertexIndicesAttr([])
+        else:
+            mesh.CreateFaceVertexCountsAttr([3] * len(faces))
+            mesh.CreateFaceVertexIndicesAttr([int(idx) for idx in np.asarray(faces).reshape(-1)])
+        if scale is not None:
+            mesh.AddScaleOp().Set(Gf.Vec3f(*map(float, scale)))
+
+        prim = mesh.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(prim)
+        UsdPhysics.MeshCollisionAPI.Apply(prim)
+        if apply_mjc_api:
+            prim.AddAppliedSchema("MjcMeshCollisionAPI")
+        if inertia_mode is not None:
+            prim.CreateAttribute("mjc:inertia", Sdf.ValueTypeNames.Token).Set(inertia_mode)
+        if maxhullvert is not None:
+            prim.CreateAttribute("mjc:maxhullvert", Sdf.ValueTypeNames.Int).Set(int(maxhullvert))
+        if collider_mass is not None:
+            UsdPhysics.MassAPI.Apply(prim).CreateMassAttr().Set(float(collider_mass))
+        if collider_density is not None:
+            UsdPhysics.MassAPI.Apply(prim).CreateDensityAttr().Set(float(collider_density))
+        return stage
+
+    @staticmethod
+    def _import_stage(stage, resolvers=None) -> newton.ModelBuilder:
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        if resolvers is None:
+            resolvers = [usd.SchemaResolverMjc(), usd.SchemaResolverNewton()]
+        builder.add_usd(stage, schema_resolvers=resolvers)
+        return builder
+
+    def _assert_matches_native_mjcf(
+        self,
+        builder: newton.ModelBuilder,
+        mjcf: str,
+        *,
+        body_idx: int = 0,
+        mj_body_idx: int = 1,
+    ) -> None:
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        rotation = np.zeros(9)
+        mujoco.mju_quat2Mat(rotation, native.body_iquat[mj_body_idx])
+        rotation = rotation.reshape(3, 3)
+        expected_inertia = rotation @ np.diag(native.body_inertia[mj_body_idx]) @ rotation.T
+        np.testing.assert_allclose(builder.body_mass[body_idx], native.body_mass[mj_body_idx], rtol=1e-5)
+        np.testing.assert_allclose(builder.body_com[body_idx], native.body_ipos[mj_body_idx], atol=1e-5)
+        inertia_atol = max(1e-6, 1e-6 * float(np.max(np.abs(expected_inertia))))
+        np.testing.assert_allclose(
+            np.array(builder.body_inertia[body_idx]).reshape(3, 3),
+            expected_inertia,
+            rtol=1e-5,
+            atol=inertia_atol,
+        )
+
+    def _inline_mjcf(
+        self,
+        *,
+        mesh_attributes: str = "",
+        geom_attributes: str = "",
+        vertices: np.ndarray | None = None,
+        faces: np.ndarray | None = (),
+    ) -> str:
+        verts = self.VERTICES if vertices is None else vertices
+        vertex_str = " ".join(map(str, verts.flat))
+        if faces is None:
+            face_attr = ""
+        else:
+            face_arr = self.FACES if isinstance(faces, tuple) else faces
+            face_attr = f'face="{" ".join(map(str, face_arr.flat))}"'
+        return f"""<mujoco><asset>
+          <mesh name="mesh" vertex="{vertex_str}" {face_attr} {mesh_attributes}/></asset>
+          <worldbody><body name="body"><freejoint/><geom type="mesh" mesh="mesh" {geom_attributes}/></body></worldbody>
+        </mujoco>"""
+
+    @requires("pxr.Usd", "scipy", *MUJOCO_MODULES)
+    def test_mjc_mesh_inertia_modes_and_non_mjc_default(self):
+        """MjcMeshCollisionAPI defaults to legacy and supports all 4 modes; plain USD meshes stay exact."""
+        for mode in (None, "legacy", "exact", "convex", "shell"):
+            for visible in (False, True):
+                with self.subTest(mode=mode, visible=visible):
+                    stage = self._build_usd_mesh_stage(self.VERTICES, self.FACES, inertia_mode=mode, visible=visible)
+                    builder = self._import_stage(stage)
+                    mjcf = self._inline_mjcf(mesh_attributes=f'inertia="{mode}"' if mode else "")
+                    self._assert_matches_native_mjcf(builder, mjcf)
+                    self.assertEqual(builder.shape_is_solid[0], mode != "shell")
+
+        # Ordinary USD meshes without MjcMeshCollisionAPI must keep exact inertia even with SchemaResolverMjc.
+        plain_stage = self._build_usd_mesh_stage(self.VERTICES, self.FACES, apply_mjc_api=False)
+        plain_builder = self._import_stage(plain_stage)
+        self._assert_matches_native_mjcf(plain_builder, self._inline_mjcf(mesh_attributes='inertia="exact"'))
+
+    @requires("pxr.Usd", "scipy", *MUJOCO_MODULES)
+    def test_mjc_mesh_inertia_scales_mass_overrides_and_point_clouds(self):
+        """Apply mjc:inertia after shape scale (picking limited hulls before scale) and through MassAPI."""
+        from scipy.spatial import ConvexHull
+
+        # 60-vertex irregular cloud where limited hull selection depends on running qhull before scale.
+        index = np.arange(60)
+        z = 1.0 - (2.0 * index + 1.0) / 60.0
+        azimuth = index * np.pi * (3.0 - np.sqrt(5.0))
+        radius = 0.7 + 0.3 * ((index * 0.618034) % 1.0)
+        rho = np.sqrt(1.0 - z**2)
+        cloud_vertices = (radius[:, None] * np.stack((rho * np.cos(azimuth), rho * np.sin(azimuth), z), axis=1)).astype(
+            np.float32
+        )
+        cloud_faces = ConvexHull(cloud_vertices.astype(np.float64)).simplices
+
+        for scale in ((0.5, 0.5, 0.5), (2.0, 0.5, 1.5), (-2.0, 0.5, 1.5)):
+            scale_str = f"{scale[0]} {scale[1]} {scale[2]}"
+            for mode in ("legacy", "exact", "convex", "shell"):
+                with self.subTest(scale=scale, mode=mode):
+                    stage = self._build_usd_mesh_stage(self.VERTICES, self.FACES, inertia_mode=mode, scale=scale)
+                    builder = self._import_stage(stage)
+                    self._assert_matches_native_mjcf(
+                        builder,
+                        self._inline_mjcf(mesh_attributes=f'inertia="{mode}" scale="{scale_str}"'),
+                    )
+
+            with self.subTest(scale=scale, limited_hull=12):
+                stage = self._build_usd_mesh_stage(
+                    cloud_vertices, cloud_faces, inertia_mode="convex", maxhullvert=12, scale=scale
+                )
+                builder = self._import_stage(stage)
+                self._assert_matches_native_mjcf(
+                    builder,
+                    self._inline_mjcf(
+                        mesh_attributes=f'inertia="convex" maxhullvert="12" scale="{scale_str}"',
+                        vertices=cloud_vertices,
+                        faces=cloud_faces,
+                    ),
+                )
+
+        # Collider MassAPI mass and density overrides on legacy and shell modes.
+        for mode in ("legacy", "shell"):
+            with self.subTest(mode=mode, override="collider_mass"):
+                stage = self._build_usd_mesh_stage(
+                    self.VERTICES, self.FACES, inertia_mode=mode, scale=(2.0, 0.5, 1.5), collider_mass=3.0
+                )
+                builder = self._import_stage(stage)
+                self._assert_matches_native_mjcf(
+                    builder,
+                    self._inline_mjcf(
+                        mesh_attributes=f'inertia="{mode}" scale="2.0 0.5 1.5"', geom_attributes='mass="3.0"'
+                    ),
+                )
+            with self.subTest(mode=mode, override="collider_density"):
+                stage = self._build_usd_mesh_stage(
+                    self.VERTICES, self.FACES, inertia_mode=mode, scale=(2.0, 0.5, 1.5), collider_density=500.0
+                )
+                builder = self._import_stage(stage)
+                self._assert_matches_native_mjcf(
+                    builder,
+                    self._inline_mjcf(
+                        mesh_attributes=f'inertia="{mode}" scale="2.0 0.5 1.5"', geom_attributes='density="500.0"'
+                    ),
+                )
+            with self.subTest(mode=mode, override="body_mass"):
+                stage = self._build_usd_mesh_stage(
+                    self.VERTICES, self.FACES, inertia_mode=mode, scale=(2.0, 0.5, 1.5), body_mass=5.0
+                )
+                builder = self._import_stage(stage)
+                self._assert_matches_native_mjcf(
+                    builder,
+                    self._inline_mjcf(
+                        mesh_attributes=f'inertia="{mode}" scale="2.0 0.5 1.5"', geom_attributes='mass="5.0"'
+                    ),
+                )
+
+        # 0-face point-cloud USD mesh builds hull faces via MuJoCo's hull rules.
+        for mode, hullvert in (("legacy", None), ("shell", None), ("convex", 12)):
+            with self.subTest(point_cloud_mode=mode, hullvert=hullvert):
+                stage = self._build_usd_mesh_stage(
+                    cloud_vertices,
+                    None,
+                    inertia_mode=mode,
+                    maxhullvert=hullvert,
+                    scale=(2.0, 0.5, 1.5),
+                    collider_density=1.0,
+                )
+                builder = self._import_stage(stage)
+                hull_attr = f'maxhullvert="{hullvert}"' if hullvert else ""
+                self._assert_matches_native_mjcf(
+                    builder,
+                    self._inline_mjcf(
+                        mesh_attributes=f'inertia="{mode}" {hull_attr} scale="2.0 0.5 1.5"',
+                        geom_attributes='density="1.0"',
+                        vertices=cloud_vertices,
+                        faces=None,
+                    ),
+                )
+
+    @requires("pxr.Usd", "scipy", *MUJOCO_MODULES)
+    def test_mjc_mesh_inertia_instancing_and_cache(self):
+        """Instance proxies sharing a prototype support distinct scales while caching equal scales."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        import newton._src.utils.import_mjcf as import_mjcf  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+        proto = stage.CreateClassPrim("/Proto")
+        mesh = UsdGeom.Mesh.Define(stage, "/Proto/Mesh")
+        mesh.CreatePurposeAttr(UsdGeom.Tokens.guide)
+        mesh.CreatePointsAttr([Gf.Vec3f(*map(float, v)) for v in self.VERTICES])
+        mesh.CreateFaceVertexCountsAttr([3] * len(self.FACES))
+        mesh.CreateFaceVertexIndicesAttr([int(idx) for idx in self.FACES.reshape(-1)])
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim())
+        mesh.GetPrim().AddAppliedSchema("MjcMeshCollisionAPI")
+        mesh.GetPrim().CreateAttribute("mjc:inertia", Sdf.ValueTypeNames.Token).Set("shell")
+
+        scales = ((1.0, 1.0, 1.0), (2.0, 0.5, 1.5), (2.0, 0.5, 1.5))
+        for i, s in enumerate(scales):
+            body = UsdGeom.Xform.Define(stage, f"/Body{i}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            inst = stage.DefinePrim(f"/Body{i}/Inst", "Xform")
+            inst.GetReferences().AddInternalReference(proto.GetPath())
+            inst.SetInstanceable(True)
+            UsdGeom.Xformable(inst).AddScaleOp().Set(Gf.Vec3f(*s))
+
+        calls: list[str] = []
+        original = import_mjcf._mesh_mass_properties
+
+        def counting(*args, **kwargs):
+            calls.append(args[2])
+            return original(*args, **kwargs)
+
+        import_mjcf._mesh_mass_properties = counting
+        try:
+            builder = self._import_stage(stage)
+        finally:
+            import_mjcf._mesh_mass_properties = original
+
+        # Two distinct scales across three instances -> computed twice, cached on the third.
+        self.assertEqual(calls, ["shell", "shell"])
+        for i, s in enumerate(scales):
+            self._assert_matches_native_mjcf(
+                builder,
+                self._inline_mjcf(mesh_attributes=f'inertia="shell" scale="{s[0]} {s[1]} {s[2]}"'),
+                body_idx=i,
+            )
+
+    @requires("pxr.Usd", "scipy", *MUJOCO_MODULES)
+    def test_mjc_mesh_inertia_warnings_and_validation(self):
+        """Reject unknown modes, warn on zero-volume meshes, and warn on inconsistent exact orientation."""
+        bad_stage = self._build_usd_mesh_stage(self.VERTICES, self.FACES, inertia_mode="solid")
+        with self.assertRaisesRegex(ValueError, "unsupported mjc:inertia 'solid'"):
+            self._import_stage(bad_stage)
+
+        # Flat square away from origin: legacy and convex warn and add no mass; shell matches MuJoCo.
+        square = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]])
+        triangles = np.array([[0, 1, 2], [0, 2, 3]])
+        for mode in (None, "convex"):
+            for collider_density in (None, 500.0):
+                with self.subTest(mode=mode, collider_density=collider_density):
+                    stage = self._build_usd_mesh_stage(
+                        square, triangles, inertia_mode=mode, collider_density=collider_density
+                    )
+                    with self.assertLogs("newton", level="WARNING") as logs:
+                        builder = self._import_stage(stage)
+                    self.assertIn("adds no mass", "\n".join(logs.output))
+                    self.assertEqual(builder.body_mass[0], 0.0)
+
+        shell_stage = self._build_usd_mesh_stage(square, triangles, inertia_mode="shell")
+        shell_builder = self._import_stage(shell_stage)
+        self._assert_matches_native_mjcf(
+            shell_builder,
+            self._inline_mjcf(
+                mesh_attributes='inertia="shell"',
+                geom_attributes='contype="0" conaffinity="0"',
+                vertices=square,
+                faces=triangles,
+            ),
+        )
+
+        # Inconsistent orientation warns on exact, stays silent on legacy.
+        flipped = self.FACES[:4].copy()
+        flipped[3] = flipped[3][::-1]
+        exact_stage = self._build_usd_mesh_stage(self.VERTICES[:4], flipped, inertia_mode="exact")
+        with self.assertLogs("newton", level="WARNING") as logs:
+            self._import_stage(exact_stage)
+        self.assertIn("inconsistent orientation", "\n".join(logs.output))
+
+        legacy_stage = self._build_usd_mesh_stage(self.VERTICES[:4], flipped, inertia_mode="legacy")
+        with self.assertNoLogs("newton", level="WARNING"):
+            self._import_stage(legacy_stage)
+
+    @requires("pxr.Usd", "mujoco_usd_converter", "trimesh", *MUJOCO_MODULES)
+    def test_mujoco_usd_converter_mesh_inertia_roundtrip(self):
+        """MjcPhysics USD stages exported by mujoco_usd_converter match native MuJoCo."""
+        import mujoco_usd_converter  # noqa: PLC0415
+
+        obj = "".join(f"v {x} {y} {z}\n" for x, y, z in self.VERTICES)
+        obj += "".join(f"f {a + 1} {b + 1} {c + 1}\n" for a, b, c in self.FACES)
+        for mode, geom_attr in (("legacy", ""), ("legacy", 'mass="2.5"'), ("exact", "")):
+            with self.subTest(mode=mode, geom_attr=geom_attr), tempfile.TemporaryDirectory() as tmpdir:
+                obj_path = os.path.join(tmpdir, "mesh.obj")
+                xml_path = os.path.join(tmpdir, "model.xml")
+                out_dir = os.path.join(tmpdir, "usd")
+                with open(obj_path, "w", encoding="utf-8") as f:
+                    f.write(obj)
+                mjcf = f"""<mujoco><asset>
+                  <mesh name="mesh" file="mesh.obj" inertia="{mode}" scale="2 0.5 1.5"/></asset>
+                  <worldbody><body name="body"><freejoint/>
+                    <geom type="mesh" mesh="mesh" {geom_attr}/></body></worldbody>
+                </mujoco>"""
+                with open(xml_path, "w", encoding="utf-8") as f:
+                    f.write(mjcf)
+                asset = mujoco_usd_converter.Converter().convert(xml_path, out_dir)
+                builder = self._import_stage(asset.path)
+                self._assert_matches_native_mjcf(builder, mjcf.replace('file="mesh.obj"', f'file="{obj_path}"'))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)
