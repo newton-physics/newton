@@ -59,6 +59,7 @@ class TestDeformableVisualMeshNamespaces(unittest.TestCase):
             )
 
 
+@requires("pxr.Usd")
 class TestDeformableVisualMeshUSDImport(unittest.TestCase):
     """AOUSD graphics-geometry discovery: hierarchy, bind poses, ownership."""
 
@@ -648,6 +649,7 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         self.assertEqual(model.body_count, 2)
         self.assertEqual(model.deformable_visual_mesh_count, 0)
 
+    @requires("PIL.Image")
     def test_uvs_and_texture_colors_survive_import(self):
         """Visual import preserves UVs and the mesh reader's display-space pixels."""
         from PIL import Image
