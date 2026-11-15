@@ -41,6 +41,7 @@ BOX_SUPPORT_DEADBAND = 1.0e-10
 _CENTERED_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
 # Hull certification is independent of the support-walk lookup-table resolution.
 _CONVEX_HULL_VALID = wp.constant(1 << 16)
+_MESH_COPLANAR_EDGES = wp.constant(1 << 17)
 _CONVEX_SUPPORT_RESOLUTION_MASK = wp.constant((1 << 16) - 1)
 
 TRIANGLE_PRISM_EXTRUSION = 1.0
@@ -130,6 +131,49 @@ class GenericShapeData:
     center: wp.vec3  # Precomputed local AABB center for convex seed initialization.
     bounds_half: wp.vec3  # Optional enclosing local AABB half-extents for penetration bounds.
     shape_index: int  # Index for optional model-owned support-map acceleration data.
+    smooth_edges: int  # Mesh triangle AB/BC/CA edges with coplanar manifold neighbors.
+
+
+@wp.func
+def triangle_smooth_edges(metadata: wp.vec4i, topology: wp.array[int], triangle: int, scale: wp.vec3) -> int:
+    mask = int(0)
+    if metadata[3] & _MESH_COPLANAR_EDGES:
+        mask = topology[metadata[2] + triangle]
+        if scale[0] * scale[1] * scale[2] < 0.0:
+            mask = ((mask & 1) << 2) | (mask & 2) | ((mask & 4) >> 2)
+    return mask
+
+
+@wp.func
+def triangle_normal_valid(geom: GenericShapeData, point: wp.vec3, normal: wp.vec3) -> bool:
+    """Reject normals supported only by an artificial coplanar triangle feature."""
+    mask = geom.smooth_edges
+    if mask == 0:
+        return True
+    ab, ac = geom.scale, geom.auxiliary
+    face = wp.normalize(wp.cross(ab, ac))
+    if wp.length_sq(wp.cross(normal, face)) <= 1.0e-10:
+        return True
+    aa, bb, cc = wp.dot(ab, ab), wp.dot(ab, ac), wp.dot(ac, ac)
+    denominator = aa * cc - bb * bb
+    if denominator <= 0.0:
+        return True
+    u = (cc * wp.dot(point, ab) - bb * wp.dot(point, ac)) / denominator
+    v = (aa * wp.dot(point, ac) - bb * wp.dot(point, ab)) / denominator
+    # Match MPR's world-distance witness accuracy, rather than using a
+    # dimensionless barycentric tolerance that varies with triangle size.
+    tolerance = 1.0e-5 * wp.max(1.0, wp.length(point))
+    area = wp.sqrt(denominator)
+    edge_ab = wp.abs(v) * area <= tolerance * wp.sqrt(aa)
+    edge_bc = wp.abs(1.0 - u - v) * area <= tolerance * wp.length(ac - ab)
+    edge_ca = wp.abs(u) * area <= tolerance * wp.sqrt(cc)
+    if edge_ab and edge_ca:
+        return (mask & 5) != 5
+    if edge_ab and edge_bc:
+        return (mask & 3) != 3
+    if edge_bc and edge_ca:
+        return (mask & 6) != 6
+    return not ((edge_ab and (mask & 1) != 0) or (edge_bc and (mask & 2) != 0) or (edge_ca and (mask & 4) != 0))
 
 
 @wp.func

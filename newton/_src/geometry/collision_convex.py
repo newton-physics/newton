@@ -22,6 +22,7 @@ from .mpr import create_solve_mpr, create_support_map_function
 from .multicontact import create_build_manifold
 from .penetration import create_solve_box_penetration
 from .simplex_solver import GJK_CUTOFF_TOLERANCE, coordinate_scale, create_solve_closest_distance
+from .support_function import triangle_normal_valid
 
 
 @wp.struct
@@ -254,6 +255,13 @@ def create_solve_convex_multi_contact(
                 max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
 
+        if not triangle_normal_valid(geom_a, point_a, normal) or not triangle_normal_valid(
+            geom_b,
+            wp.quat_rotate_inv(relative_orientation_b, point_b - relative_position_b),
+            wp.quat_rotate_inv(relative_orientation_b, -normal),
+        ):
+            return 0
+
         if skip_multi_contact or signed_distance > contact_threshold:
             # Transform to world space only for the single-contact early-out.
             point = 0.5 * (point_a + point_b)
@@ -392,6 +400,13 @@ def create_solve_convex_single_contact(
                 data_provider,
                 max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
+
+        if not triangle_normal_valid(geom_a, point_a, normal) or not triangle_normal_valid(
+            geom_b,
+            wp.quat_rotate_inv(relative_orientation_b, point_b - relative_position_b),
+            wp.quat_rotate_inv(relative_orientation_b, -normal),
+        ):
+            return 0
 
         # Transform results back to world space (once).
         point = 0.5 * (point_a + point_b)

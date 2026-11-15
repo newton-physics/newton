@@ -96,6 +96,7 @@ from ..geometry.support_function import (
     support_map_accelerated,
     support_map_lean,
     support_map_lean_accelerated,
+    triangle_smooth_edges,
 )
 from ..geometry.types import GeoType
 from ..geometry.utils import _scan_scratch_size
@@ -2108,6 +2109,9 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(
                 mesh_scale_a = wp.vec3(scale_data_a[0], scale_data_a[1], scale_data_a[2])
                 X_ws_a = shape_transform[shape_a]
                 shape_data_a, v0_world = get_triangle_shape_from_mesh(mesh_id_a, mesh_scale_a, X_ws_a, tri_idx)
+                shape_data_a.smooth_edges = triangle_smooth_edges(
+                    shape_support_data[shape_a], support_neighbors, tri_idx, mesh_scale_a
+                )
 
             # Extract shape B data
             pos_b, quat_b, shape_data_b, _scale_b, margin_offset_b = extract_shape_data(

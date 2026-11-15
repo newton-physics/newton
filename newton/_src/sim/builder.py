@@ -82,7 +82,7 @@ from ..geometry.inertia import (
 )
 from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
-from ..geometry.support_function import _CONVEX_HULL_VALID
+from ..geometry.support_function import _CONVEX_HULL_VALID, _MESH_COPLANAR_EDGES
 from ..geometry.types import Heightfield, _ConvexSupportData, _normalize_texture_input
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex_hull, remesh_mesh
 from ..math import quat_between_vectors_robust
@@ -286,6 +286,37 @@ def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
 
 _CONVEX_SUPPORT_MIN_VERTICES = 256
 _CONVEX_SUPPORT_LUT_RESOLUTION = 32
+
+
+def _coplanar_triangle_edges(source: Mesh) -> np.ndarray:
+    """Mark manifold interior edges shared by consistently wound coplanar faces."""
+    vertices, remap = np.unique(np.asarray(source.vertices, dtype=np.float64), axis=0, return_inverse=True)
+    triangles = remap[np.asarray(source.indices).reshape(-1, 3)]
+    masks = np.zeros(len(triangles), dtype=np.int32)
+    if len(triangles) < 2:
+        return masks
+    points = vertices[triangles]
+    normals = np.cross(points[:, 1] - points[:, 0], points[:, 2] - points[:, 0])
+    lengths = np.linalg.norm(normals, axis=1)
+    normals /= np.maximum(lengths[:, None], np.finfo(np.float64).tiny)
+    edges = np.stack((triangles, np.roll(triangles, -1, axis=1)), axis=-1).reshape(-1, 2)
+    keys = np.sort(edges, axis=1)
+    order = np.lexsort((keys[:, 1], keys[:, 0]))
+    sorted_keys = keys[order]
+    starts = np.r_[0, np.flatnonzero(np.any(sorted_keys[1:] != sorted_keys[:-1], axis=1)) + 1]
+    counts = np.diff(np.r_[starts, len(order)])
+    starts = starts[counts == 2]
+    first, second = order[starts], order[starts + 1]
+    a, b = first // 3, second // 3
+    valid = (
+        (lengths[a] > 0.0)
+        & (lengths[b] > 0.0)
+        & np.all(edges[first] == edges[second, ::-1], axis=1)
+        & (np.sum(normals[a] * normals[b], axis=1) > 1.0 - 1.0e-12)
+    )
+    np.bitwise_or.at(masks, a[valid], 1 << (first[valid] % 3))
+    np.bitwise_or.at(masks, b[valid], 1 << (second[valid] % 3))
+    return masks
 
 
 def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> tuple[list[set[int]], np.ndarray] | None:
@@ -16522,6 +16553,7 @@ class ModelBuilder:
             support_offset_chunks = []
             support_neighbor_chunks = []
             support_cache = {}
+            triangle_cache = {}
             lut_offset = 0
             vertex_offset = 0
             neighbor_offset = 0
@@ -16554,6 +16586,29 @@ class ModelBuilder:
                             neighbor_offset += len(tables.neighbors)
                         support_cache[source_key] = packed
                     shape_support_data[shape_idx] = support_cache[source_key]
+
+            # Triangle meshes store per-triangle coplanar-edge masks in the
+            # neighbor storage so contacts can skip artificial seam features.
+            colliding_mesh_indices = np.flatnonzero(
+                (shape_type_arr == GeoType.MESH) & ((shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0)
+            )
+            for shape_idx in colliding_mesh_indices.tolist():
+                source = generated_shape_sources[shape_idx]
+                if isinstance(source, Mesh):
+                    source_key = hash(source)
+                    if source_key not in triangle_cache:
+                        owner = self.shape_source[shape_idx]
+                        masks = owner._coplanar_edge_masks
+                        if masks is None:
+                            masks = _coplanar_triangle_edges(source)
+                            owner._coplanar_edge_masks = masks
+                        packed = (-1, -1, -1, 0)
+                        if np.any(masks):
+                            packed = (-1, -1, neighbor_offset, _MESH_COPLANAR_EDGES)
+                            support_neighbor_chunks.append(masks)
+                            neighbor_offset += len(masks)
+                        triangle_cache[source_key] = packed
+                    shape_support_data[shape_idx] = triangle_cache[source_key]
 
             m._shape_support_data = wp.array(shape_support_data, dtype=wp.vec4i, device=device)
             m._convex_support_lut = wp.array(

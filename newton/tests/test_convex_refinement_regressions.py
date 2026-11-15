@@ -294,9 +294,6 @@ def test_refinement_triangle_box_seam(test, device):
     vertices = np.array([[-0.2, -0.2, 0.0], [0.2, -0.2, 0.0], [0.2, 0.2, 0.0], [-0.2, 0.2, 0.0]], dtype=np.float32)
     box_pose = wp.transform(wp.vec3(0.0, 0.0, height), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), pitch))
     expected_depth = half[0] * np.sin(pitch) + half[2] * np.cos(pitch) - height
-    # Besides the mesh face, a triangle's seam can contact the tilted box edge.
-    # Its normal is perpendicular to the diagonal and the box's rotated X edge.
-    edge_normal = wp.normalize(wp.vec3(-np.sin(pitch), np.sin(pitch), -np.cos(pitch)))
     frames = (
         wp.transform_identity(),
         wp.transform(wp.vec3(0.3, -0.2, 0.4), wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 0.4, 0.2)), 0.35)),
@@ -319,12 +316,7 @@ def test_refinement_triangle_box_seam(test, device):
                 ground=pose,
             )
             rotation = wp.transform_get_rotation(frame)
-            expected_normals = np.array(
-                [
-                    wp.quat_rotate(rotation, wp.vec3(0.0, 0.0, -1.0)),
-                    wp.quat_rotate(rotation, edge_normal),
-                ]
-            )
+            expected_normals = np.array([wp.quat_rotate(rotation, wp.vec3(0.0, 0.0, -1.0))])
             error = np.linalg.norm(normals[:, None, :] - expected_normals[None, :, :], axis=2)
             np.testing.assert_allclose(np.min(error, axis=1), 0.0, atol=1.0e-5)
             depths = np.sum((pa - pb) * normals, axis=1)
@@ -333,6 +325,46 @@ def test_refinement_triangle_box_seam(test, device):
             np.testing.assert_allclose(local_mesh[:, 2], 0.0, atol=1.0e-5)
             local_box = np.array([wp.transform_point(wp.transform_inverse(pose), wp.vec3(point)) for point in pa])
             np.testing.assert_allclose(np.max(np.abs(local_box) - half, axis=1), 0.0, atol=1.0e-5)
+
+    # A single triangle's diagonal is a real boundary, not an internal seam.
+    # A nearby box at the plane's height must still see its lateral normal.
+    for indices in ([0, 1, 2], [0, 1, 2, 0, 2, 3]):
+        for mirrored in (False, True):
+            with test.subTest(boundary=len(indices) == 3, mirrored=mirrored):
+                scale = np.array([-1.0 if mirrored else 1.0, 1.0, 1.0])
+                center = np.array([-0.1005, 0.0, 0.0 if len(indices) == 3 else 0.04998])
+                center *= scale
+                _, _, normals = _contacts(
+                    test,
+                    device,
+                    np.full(3, 0.05),
+                    vertices,
+                    indices,
+                    wp.transform_identity(),
+                    scale,
+                    triangle=True,
+                    ground=wp.transform(wp.vec3(center), wp.quat_identity()),
+                )
+                if len(indices) == 3:
+                    test.assertGreater(float(np.max(np.linalg.norm(normals[:, :2], axis=1))), 0.9)
+                else:
+                    np.testing.assert_allclose(normals[:, :2], 0.0, atol=2.0e-5)
+
+    # Joining a sloped neighbor creates a physical crease, not a smooth seam.
+    creased = vertices.copy()
+    creased[3, 2] = -0.2
+    _, _, normals = _contacts(
+        test,
+        device,
+        np.full(3, 0.05),
+        creased,
+        [0, 1, 2, 0, 2, 3],
+        wp.transform_identity(),
+        np.ones(3),
+        triangle=True,
+        ground=wp.transform(wp.vec3(-0.1005, 0.0, 0.0), wp.quat_identity()),
+    )
+    test.assertGreater(float(np.max(np.linalg.norm(normals[:, :2], axis=1))), 0.1)
 
 
 def test_refinement_triangle_box_tilted_rest(test, device):
