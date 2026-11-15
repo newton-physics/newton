@@ -1671,6 +1671,18 @@ def _rigid_contact_conditioning_uses_world_pair_mobility(test, device):
         # Tangent: diag(2, 20); retain both inverse-response eigenvalues.
         np.testing.assert_allclose(rho.numpy()[0], [0.5, 0.05, 1.0 / 18.0, 0.25], rtol=1.0e-6)
 
+        # Very heavy bodies: rho must scale with mass instead of overflowing float32.
+        body_inv_mass.fill_(1.0e-20)
+        body_inv_inertia.assign(1.0e-20 * body_inv_inertia.numpy())
+        wp.launch(
+            _eval_contact_pair_conditioning_kernel,
+            dim=1,
+            inputs=[shape_body, body_q, body_com, body_inv_mass, body_inv_inertia],
+            outputs=[rho],
+            device=device,
+        )
+        np.testing.assert_allclose(rho.numpy()[0], [0.5e20, 0.05e20, 1.0e20 / 18.0, 0.25e20], rtol=1.0e-6)
+
 
 def _friction_disk_projection_matches_metric_oracle(test, device):
     """Verify both friction projectors against the metric oracle and retain PSD solve metrics."""
@@ -1709,6 +1721,10 @@ def _friction_disk_projection_matches_metric_oracle(test, device):
     trials = np.vstack((trials, [2.0, 1.0, 0.0]))
     metrics_2d = np.concatenate((metrics_2d, [[[3.0, 0.0], [0.0, 1.0]]]))
     limits = np.append(limits, 1.0e-25)
+    # Changing metric units must not overflow or underflow the metric's eigenvalue gap.
+    trials = np.vstack((trials, [2.0, 1.0, 0.0], [2.0, 1.0, 0.0]))
+    metrics_2d = np.concatenate((metrics_2d, [[[4.0e20, 0.0], [0.0, 1.0e20]], [[4.0e-25, 0.0], [0.0, 1.0e-25]]]))
+    limits = np.append(limits, [1.0, 1.0])
     rotation = np.array([[1.0, 0.0, 0.0], [0.0, 0.8, 0.6], [0.0, -0.6, 0.8]])
     normals = np.tile(rotation[:, 2], (len(trials), 1)).astype(np.float32)
 
@@ -1735,17 +1751,20 @@ def _friction_disk_projection_matches_metric_oracle(test, device):
             expected.append(trial)
             expected_metrics.append(metric)
             continue
+        # Bisect in unit metric scale; the projected force is unchanged and the solve metric scales back.
+        unit = np.abs(metric).max()
+        unit_metric = metric / unit
         lower, upper = 0.0, 1.0
-        while np.linalg.norm(np.linalg.solve(np.eye(2) + upper * metric, trial)) > limit:
+        while np.linalg.norm(np.linalg.solve(np.eye(2) + upper * unit_metric, trial)) > limit:
             upper *= 2.0
         for _ in range(80):
             middle = 0.5 * (lower + upper)
-            if np.linalg.norm(np.linalg.solve(np.eye(2) + middle * metric, trial)) > limit:
+            if np.linalg.norm(np.linalg.solve(np.eye(2) + middle * unit_metric, trial)) > limit:
                 lower = middle
             else:
                 upper = middle
-        expected.append(np.linalg.solve(np.eye(2) + upper * metric, trial))
-        expected_metrics.append(np.linalg.solve(np.eye(2) + upper * metric, metric))
+        expected.append(np.linalg.solve(np.eye(2) + upper * unit_metric, trial))
+        expected_metrics.append(unit * np.linalg.solve(np.eye(2) + upper * unit_metric, unit_metric))
 
     expected_world = np.column_stack((expected, np.zeros(len(trials)))) @ rotation.T
     # Normalize by capacity so tiny-force failures cannot hide under an absolute tolerance.

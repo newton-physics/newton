@@ -76,6 +76,9 @@ _METRIC_RELATIVE_EIGENGAP_TOLERANCE = wp.constant(8.0 * 1.1920929e-7)
 _SQRT3_UPPER = wp.constant(1.7320509)
 """Float32 upper bound on sqrt(3), used for the quick friction-limit check."""
 
+_FLOAT32_MIN_NORMAL = wp.constant(1.1754944e-38)
+"""Smallest positive normal float32 value."""
+
 _USE_SMALL_ANGLE_APPROX = wp.constant(True)
 """If True use first-order small-angle rotation approximation; if False use closed-form rotation update.
 
@@ -1071,17 +1074,32 @@ def _pack_tangent_metric(R: wp.mat22):
     a = R[0, 0]
     b = R[0, 1]
     c = R[1, 1]
+    # Scale by the largest entry so the squared terms below stay within float32 range.
+    magnitude = wp.max(wp.abs(a), wp.max(wp.abs(b), wp.abs(c)))
+    if magnitude == 0.0:
+        return wp.mat22(0.0, 0.0, 1.0, 0.0)
+    a /= magnitude
+    b /= magnitude
+    c /= magnitude
     determinant = a * c - b * b
-    # Recover cancellation-sensitive determinants before the isotropic fallback.
-    if b != 0.0 and determinant <= 1.0e-3 * (b * b):
-        determinant = float(wp.float64(a) * wp.float64(c) - wp.float64(b) * wp.float64(b))
     gap = wp.sqrt(wp.max((a - c) * (a - c) + 4.0 * b * b, 0.0))
     high = wp.max(a, c) + 0.5 * (gap - wp.abs(a - c))
+    if high <= 0.0:
+        return wp.mat22(high * magnitude, high * magnitude, 1.0, 0.0)
+
+    low = (determinant / high) * magnitude
+    # Recover cancellation or underflow from the original entries.
+    if determinant <= _FLOAT32_MIN_NORMAL or (b != 0.0 and determinant <= 1.0e-3 * (b * b)):
+        low = float(
+            (wp.float64(R[0, 0]) * wp.float64(R[1, 1]) - wp.float64(R[0, 1]) * wp.float64(R[0, 1]))
+            / (wp.float64(high) * wp.float64(magnitude))
+        )
+    high *= magnitude
     # Approximate near-isotropic SPD conditioning with high*I.
     # The cutoff gives about 2e-6 relative spectral error in exact arithmetic.
-    if gap <= _METRIC_RELATIVE_EIGENGAP_TOLERANCE * (a + c) or determinant <= 0.0 or high <= 0.0:
+    if gap <= _METRIC_RELATIVE_EIGENGAP_TOLERANCE * (a + c) or low <= 0.0:
         return wp.mat22(high, high, 1.0, 0.0)
-    low = wp.min(high, determinant / high)
+    low = wp.min(high, low)
     axis = wp.vec2(0.5 * (gap + wp.abs(a - c)), b)
     if c > a:
         axis = wp.vec2(b, 0.5 * (gap + wp.abs(a - c)))
@@ -1105,17 +1123,10 @@ def _world_tangent_metric(R: wp.mat22, eh: wp.vec3, el: wp.vec3):
 @wp.func
 def _tangent_response_rho(a: float, b: float, c: float, scale: float):
     """Invert [[a, b], [b, c]] and cache rho's eigenvalues and tangent-frame axis."""
-    determinant = a * c - b * b
-    if a > 0.0 and c > 0.0 and b != 0.0 and determinant <= 1.0e-3 * (b * b):
-        # Invert the eigenvalues directly: forming a float32 inverse can lose its small eigenvalue.
-        mobility = _pack_tangent_metric(wp.mat22(a, b, b, c))
-        if mobility[0, 1] > 0.0:
-            return wp.mat22(scale / mobility[0, 1], scale / mobility[0, 0], -mobility[1, 1], mobility[1, 0])
-    if a > 0.0 and c > 0.0 and determinant > 0.0:
-        return _pack_tangent_metric((scale / determinant) * wp.mat22(c, -b, -b, a))
-    largest = 0.5 * (a + c + wp.sqrt(wp.max((a - c) * (a - c) + 4.0 * b * b, 0.0)))
-    if largest > 0.0:
-        return wp.mat22(scale / largest, scale / largest, 1.0, 0.0)
+    # Invert the eigenvalues without forming a potentially overflowing determinant.
+    mobility = _pack_tangent_metric(wp.mat22(a, b, b, c))
+    if mobility[0, 1] > 0.0:
+        return wp.mat22(scale / mobility[0, 1], scale / mobility[0, 0], -mobility[1, 1], mobility[1, 0])
     return wp.mat22(0.0)
 
 
@@ -8069,7 +8080,6 @@ values are ``2**(e - 23)`` apart. Because ``_FLOAT32_EPS = 2**-23``, the
 product ``_FLOAT32_EPS * abs(S) = m * 2**(e - 23)`` is between one and two
 such spacings.
 """
-_FLOAT32_MIN_NORMAL = wp.constant(1.1754944e-38)
 DAT_ULP_FACTOR = wp.constant(4.0)
 """Keep the DAT separation band roughly four to eight float32 spacings wide when needed."""
 
