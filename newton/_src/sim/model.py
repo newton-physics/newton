@@ -2554,6 +2554,7 @@ class Model:
             instances=wp.empty(len(instance_shapes), dtype=optix.wo.Instance, device=device),
             shape_radii=wp.array(radii, dtype=wp.float32, device=device),
             overflow=wp.zeros(1, dtype=wp.int32, device=device),
+            overflow_host=wp.zeros(1, dtype=wp.int32, device="cpu", pinned=True),
             planes=tuple(int(si) for si in enabled[global_plane]),
             # Room for shapes to move.
             extent=max(2.0 * float(reach[bounded].max(initial=0.0)), 1.0),
@@ -2565,7 +2566,7 @@ class Model:
         if shapes.has_instances:
             shapes.accel = optix.wo.Accel(
                 [optix.wo.instances(shapes.instances, shapes.geometry)],
-                flags=optix.wo.BuildFlags.ALLOW_UPDATE | optix.wo.BuildFlags.PREFER_FAST_TRACE,
+                flags=optix.wo.BuildFlags.ALLOW_UPDATE | optix.wo.BuildFlags.PREFER_FAST_BUILD,
             )
             shapes.id = shapes.accel.id
         self.optix_shapes = shapes
@@ -2603,14 +2604,17 @@ class Model:
                 inputs=[state.body_q, self.shape_body, self.shape_transform, shapes.shape_world_transforms],
                 device=self.device,
             )
-        shapes.overflow.zero_()
         compute_optix_shape_instances_launch(self, shapes)
-        if shapes.overflow.numpy()[0]:
+        # Check the overflow flag after enqueueing the refit, so the GPU is not left idle.
+        wp.copy(shapes.overflow_host, shapes.overflow)
+        copied = self.device.stream.record_event()
+        if shapes.accel is not None:
+            shapes.accel.refit()
+        wp.synchronize_event(copied)
+        if shapes.overflow_host.numpy()[0]:
             raise RuntimeError(
                 "A shape moved outside its OptiX world cell; rebuild with Model.optix_build_shapes(state)."
             )
-        if shapes.accel is not None:
-            shapes.accel.refit()
 
     def _variant_row_options(self) -> tuple[np.ndarray, np.ndarray]:
         """Each variant row with each variant shape it can hold, on the host."""

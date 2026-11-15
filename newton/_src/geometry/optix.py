@@ -59,7 +59,9 @@ class OptixShapes:
     instances: wp.array[wo.Instance]
     """OptiX instance of each shape in :attr:`instance_shapes`."""
     overflow: wp.array[wp.int32]
-    """Set by the instance kernel when a shape leaves its cell."""
+    """Set by the instance kernel when a shape leaves its cell, and never cleared."""
+    overflow_host: wp.array[wp.int32]
+    """Pinned host copy of :attr:`overflow`, read after each refit is enqueued."""
     planes: tuple[int, ...]
     """Global planes, intersected analytically."""
     grid: int
