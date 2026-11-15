@@ -31,6 +31,7 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.solvers import SolverMuJoCo
 from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.kamino import setup_tests, test_context
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 ###
 # Test helpers
@@ -508,6 +509,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
         np.testing.assert_array_equal(kamino_model.bodies.is_immovable.numpy(), [0, 0])
         self.assertGreater(int(kamino_model.joints.num_kinematic_cts.numpy().sum()), 0)
 
+    @requires(*MUJOCO_MODULES)
     def test_piles_rest_on_mujoco_proxies(self):
         """Keep piles of MuJoCo and Kamino cubes at rest when Kamino is the proxy destination.
 

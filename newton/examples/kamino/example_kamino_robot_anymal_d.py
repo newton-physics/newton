@@ -6,7 +6,8 @@
 Shows how to simulate Anymal D with multiple worlds using SolverKamino.
 
 Success criteria:
-- ANYmal D robots stand on the ground.
+- ANYmal D robots drop onto the ground and hold an upright stance on straight legs, with
+  their bases about 0.67 m above the ground, instead of folding down.
 - Right-drag the robot and release it; its articulation stays connected and collides with the
   ground.
 
@@ -15,6 +16,7 @@ Runs:
 - `python -m newton.examples kamino_robot_anymal_d --world-count 16`
 """
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -50,6 +52,19 @@ class Example:
             enable_self_collisions=True,
             hide_collision_shapes=True,
         )
+
+        # The ANYmal D USD authors no drive gains, so hold the leg joints at the
+        # imported (zero) stance with explicit PD position drives. Without
+        # them the actuators are passive and the robot collapses onto the ground.
+        for joint_id, joint_type in enumerate(robot_builder.joint_type):
+            if joint_type != newton.JointType.REVOLUTE:
+                continue
+            dof_start = robot_builder.joint_qd_start[joint_id]
+            dof_end = dof_start + robot_builder.joint_dof_dim[joint_id][0] + robot_builder.joint_dof_dim[joint_id][1]
+            for dof_id in range(dof_start, dof_end):
+                robot_builder.joint_target_ke[dof_id] = 150.0
+                robot_builder.joint_target_kd[dof_id] = 5.0
+                robot_builder.joint_target_mode[dof_id] = int(newton.JointTargetMode.POSITION)
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
@@ -169,6 +184,24 @@ class Example:
             "all bodies are above the ground",
             lambda q, qd: q[2] > -0.006,
         )
+        # A collapsed robot also lies above the ground at rest, so check the stance itself:
+        # each base must stay upright near the ~0.67 m standing height and each leg joint
+        # must stay close to its zero position target.
+        joint_child = self.model.joint_child.numpy()
+        base_bodies = [int(joint_child[j]) for j in self.model.articulation_start.numpy()[:-1]]
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "robot bases hold the upright standing height",
+            lambda q, qd: q[2] > 0.6 and wp.quat_rotate(wp.transform_get_rotation(q), wp.vec3(0.0, 0.0, 1.0))[2] > 0.95,
+            indices=base_bodies,
+        )
+        joint_q = self.state_0.joint_q.numpy()
+        joint_type = self.model.joint_type.numpy()
+        joint_q_start = self.model.joint_q_start.numpy()
+        leg_q = joint_q[joint_q_start[:-1][joint_type == int(newton.JointType.REVOLUTE)]]
+        max_leg_error = float(np.max(np.abs(leg_q)))
+        assert max_leg_error < 0.15, f"Leg joints left the standing stance: max |q| = {max_leg_error:.3f} rad"
         # Only check velocities on CUDA, where example tests run enough frames to settle.
         # Short CPU smoke runs may still be falling when they finish.
         if self.device.is_cuda:

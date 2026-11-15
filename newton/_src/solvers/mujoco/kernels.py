@@ -1645,11 +1645,11 @@ def apply_mjc_body_f_kernel(
     """Apply Newton body forces to MuJoCo xfrc_applied array.
 
     Iterates over MuJoCo bodies [world, mjc_body], looks up the Newton body
-    index, and copies its force.
+    index, and copies its force (zero if ``body_f`` is not given).
     """
     world, mjc_body = wp.tid()
     newton_body = mjc_body_to_newton[world, mjc_body]
-    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
+    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0 or not body_f:
         xfrc_applied[world, mjc_body] = wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0))
         return
 
