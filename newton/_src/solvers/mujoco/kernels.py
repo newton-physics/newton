@@ -515,7 +515,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
     tid_to_cid: wp.array[wp.int32],
     last_contact_timestep: wp.array[float],
     pressure_contact: wp.array[bool],
-    pressure_contact_key: wp.array[int],
+    pressure_contact_generation: wp.array[int],
+    last_contacts_epoch: wp.array[int],
     hydroelastic_force_space: bool,
     contacts_epoch: int,
 ):
@@ -538,7 +539,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     needs_full = gen != last_gen
     if hydroelastic_force_space:
         needs_full = (
-            needs_full or opt_timestep[0] != last_contact_timestep[0] or contacts_epoch != pressure_contact_key[1]
+            needs_full or opt_timestep[0] != last_contact_timestep[0] or contacts_epoch != last_contacts_epoch[0]
         )
 
     if needs_full:
@@ -612,12 +613,13 @@ def convert_newton_contacts_to_mjwarp_kernel(
             rigid_contact_margin0[tid] - shape_margin[shape_a],
             rigid_contact_margin1[tid] - shape_margin[shape_b],
         )
-        if hydroelastic_force_space and (gen != pressure_contact_key[0] or contacts_epoch != pressure_contact_key[1]):
+        if hydroelastic_force_space and pressure_contact_generation and gen != pressure_contact_generation[tid]:
             # Positive-separation hydro contacts carry a compatibility activation
             # stiffness, not a pressure quadrature weight. Classify using Newton's
             # margin-relative separation before filtering immovable pairs, and
             # retain the distinction across cached substeps and timestep changes.
             pressure_contact[tid] = dist < shape_margin[shape_a] + shape_margin[shape_b]
+            pressure_contact_generation[tid] = gen
 
         if a_immovable and b_immovable:
             tid_to_cid[tid] = -1
@@ -955,7 +957,7 @@ def _sync_nacon_count(
     last_contact_generation: wp.array[wp.int32],
     opt_timestep: wp.array[float],
     last_contact_timestep: wp.array[float],
-    pressure_contact_key: wp.array[int],
+    last_contacts_epoch: wp.array[int],
     contacts_epoch: int,
 ):
     """Publish the compacted count and reset scratch storage for the next pass."""
@@ -963,7 +965,7 @@ def _sync_nacon_count(
     needs_full = gen != last_contact_generation[0]
     if last_contact_timestep:
         needs_full = (
-            needs_full or opt_timestep[0] != last_contact_timestep[0] or contacts_epoch != pressure_contact_key[1]
+            needs_full or opt_timestep[0] != last_contact_timestep[0] or contacts_epoch != last_contacts_epoch[0]
         )
     if needs_full:
         nacon[0] = contact_count[0]
@@ -973,10 +975,8 @@ def _sync_nacon_count(
         nacon[0] = last_nacon_count[0]
     contact_count[0] = 0
     ncollision[0] = 0
-    if pressure_contact_key:
-        pressure_contact_key[0] = gen
-        pressure_contact_key[1] = contacts_epoch
     if last_contact_timestep:
+        last_contacts_epoch[0] = contacts_epoch
         last_contact_timestep[0] = opt_timestep[0]
 
 

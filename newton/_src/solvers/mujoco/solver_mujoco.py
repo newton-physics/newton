@@ -4927,10 +4927,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._last_contact_timestep = (
             wp.zeros(1, dtype=float, device=self.device) if self._hydroelastic_force_space else None
         )
-        self._pressure_contact: wp.array[bool] | None = None
         self._contacts_epoch = 0
-        self._pressure_contact_key = (
-            wp.full(2, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
+        self._last_contacts_epoch = (
+            wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
             if self._hydroelastic_force_space
             else None
         )
@@ -5030,7 +5029,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._create_inverse_shape_mapping()
             self._contact_tid_to_cid = wp.full(self.mjw_data.naconmax, -1, dtype=wp.int32, device=self.device)
             if self._hydroelastic_force_space:
-                self._pressure_contact = wp.zeros(self.mjw_data.naconmax, dtype=bool, device=self.device)
                 self._check_hydroelastic_options()
         self._initial_model_sync = False
         self._update_data_interval = 1 if update_data_interval is None else update_data_interval
@@ -5740,7 +5738,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dim=min(contacts.rigid_contact_max, data.naconmax),
             inputs=[
                 contacts.rigid_contact_count,
-                self._pressure_contact,
+                contacts._hydroelastic_pressure_contact,
                 contacts.rigid_contact_shape0,
                 contacts.rigid_contact_shape1,
                 self.model.shape_flags,
@@ -5820,8 +5818,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         contacts_id = id(contacts.contact_generation)
         if self._last_contacts_id != contacts_id or self._last_rigid_contact_max != contacts.rigid_contact_max:
             self._invalidate_contact_fast_path()
-            # Pass the buffer identity by value; a captured reset would reclassify
-            # cached speculative contacts on every graph replay.
+            # Track buffer switches on device so graph replay refreshes backend rows.
             self._contacts_epoch += 1
             self._last_contacts_id = contacts_id
             self._last_rigid_contact_max = contacts.rigid_contact_max
@@ -5894,8 +5891,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
                 self._last_contact_timestep,
-                self._pressure_contact,
-                self._pressure_contact_key,
+                contacts._hydroelastic_pressure_contact if self._hydroelastic_force_space else None,
+                contacts._hydroelastic_pressure_generation if self._hydroelastic_force_space else None,
+                self._last_contacts_epoch,
                 self._hydroelastic_force_space,
                 self._contacts_epoch,
             ],
@@ -5920,7 +5918,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._last_contact_generation,
                 self.mjw_model.opt.timestep,
                 self._last_contact_timestep,
-                self._pressure_contact_key,
+                self._last_contacts_epoch,
                 self._contacts_epoch,
             ],
             device=model.device,

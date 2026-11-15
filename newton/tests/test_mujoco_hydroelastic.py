@@ -165,6 +165,9 @@ class TestMuJoCoHydroelastic(unittest.TestCase):
             q[2] = 0.105
             state_in.joint_q.assign(q)
             newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+            # First use in a discarded capture must not lose cache initialization.
+            with wp.ScopedCapture():
+                solver.step(state_in, state_out, None, contacts, dt)
             with wp.ScopedCapture() as capture:
                 solver.step(state_in, state_out, None, contacts, dt)
             wp.capture_launch(capture.graph)
@@ -174,6 +177,18 @@ class TestMuJoCoHydroelastic(unittest.TestCase):
             wp.capture_launch(capture.graph)
             velocities.append(state_out.body_qd.numpy())
             if enabled:
+                other = _contacts(2)
+                for captured in (False, True):
+                    with self.subTest(captured=captured):
+                        if captured:
+                            with wp.ScopedCapture() as other_capture:
+                                solver.step(state_in, state_out, None, other, dt)
+                            wp.capture_launch(other_capture.graph)
+                            wp.capture_launch(capture.graph)
+                        else:
+                            solver.step(state_in, state_out, None, other, dt)
+                            solver.step(state_in, state_out, None, contacts, dt)
+                        np.testing.assert_allclose(state_out.body_qd.numpy(), velocities[-1], atol=1.0e-6, rtol=1.0e-5)
                 contacts.contact_generation.fill_(2)
                 contacts.rigid_contact_stiffness.fill_(1.0e4)
                 solver.step(state_in, state_out, None, contacts, dt)

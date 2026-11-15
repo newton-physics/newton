@@ -344,6 +344,17 @@ class Contacts:
                 self.rigid_contact_friction = None
                 """Per-contact friction coefficient [dimensionless], shape (rigid_contact_max,), dtype float."""
 
+            # Cache the meaning of hydroelastic stiffness across solver/buffer reuse.
+            # Per-row generations also allow solvers with different contact capacities.
+            self._hydroelastic_pressure_contact = (
+                wp.zeros(rigid_contact_max, dtype=bool) if self.per_contact_shape_properties else None
+            )
+            self._hydroelastic_pressure_generation = (
+                wp.full(rigid_contact_max, GENERATION_SENTINEL, dtype=wp.int32)
+                if self.per_contact_shape_properties
+                else None
+            )
+
             # Contact matching index — filled by the collision pipeline when
             # contact_matching is enabled.
             self.contact_matching = contact_matching
