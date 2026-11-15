@@ -3888,9 +3888,6 @@ class TestMuJoCoSolverGeomProperties(unittest.TestCase):
 
         Confirms that shape properties are propagated during solver initialization
         and after runtime updates across multiple worlds.
-
-        Uses use_mujoco_contacts=False because geom_margin is kept at zero
-        when MuJoCo handles collisions (NATIVECCD compatibility, #2106).
         """
         num_worlds = 2
         template_builder = newton.ModelBuilder()
@@ -9810,8 +9807,6 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         # Verify custom attribute counts
         self.assertEqual(model.custom_frequency_counts.get("mujoco:pair", 0), total_pairs)
 
-        # use_mujoco_contacts=False so pair margin/gap are restored from
-        # custom attributes (with True, they stay zero for NATIVECCD compat #2106).
         solver = SolverMuJoCo(model, separate_worlds=True, iterations=1, use_mujoco_contacts=False)
 
         # Verify MuJoCo has the pairs (only from template world, which is world 0)
@@ -9961,7 +9956,8 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             "pair_solref should have changed after update!",
         )
 
-        with self.assertWarnsRegex(UserWarning, r"zeroed for NATIVECCD/MULTICCD"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             mujoco_contacts_solver = SolverMuJoCo(
                 model,
                 separate_worlds=True,
@@ -9972,21 +9968,23 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             mujoco_contacts_solver.mjw_model.pair_gap.numpy(),
             new_gap.reshape(world_count, pairs_per_world),
         )
-        np.testing.assert_array_equal(
+        np.testing.assert_allclose(
             mujoco_contacts_solver.mjw_model.pair_margin.numpy(),
-            np.zeros_like(mujoco_contacts_solver.mjw_model.pair_margin.numpy()),
+            new_margin.reshape(world_count, pairs_per_world),
         )
 
         final_gap = new_gap + 0.01
+        final_margin = new_margin + 0.005
         model.mujoco.pair_gap.assign(wp.array(final_gap, dtype=wp.float32, device=model.device))
+        model.mujoco.pair_margin.assign(wp.array(final_margin, dtype=wp.float32, device=model.device))
         mujoco_contacts_solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
         np.testing.assert_allclose(
             mujoco_contacts_solver.mjw_model.pair_gap.numpy(),
             final_gap.reshape(world_count, pairs_per_world),
         )
-        np.testing.assert_array_equal(
+        np.testing.assert_allclose(
             mujoco_contacts_solver.mjw_model.pair_margin.numpy(),
-            np.zeros_like(mujoco_contacts_solver.mjw_model.pair_margin.numpy()),
+            final_margin.reshape(world_count, pairs_per_world),
         )
 
     @requires(*MUJOCO_MODULES)
