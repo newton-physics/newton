@@ -1586,6 +1586,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         enable_timers: bool = False,
     ):
         super().__init__(model)
+        self._raise_if_kinematic_particles()
         if model._has_body_variants:
             # The collider merges every particle-colliding shape of a body at setup.
             raise NotImplementedError("SolverImplicitMPM does not support body variants.")

@@ -27,6 +27,12 @@ def _set_module_options_if_changed(options: dict[str, Any], module: Any) -> bool
     return False
 
 
+@wp.func
+def particle_is_kinematic(flags: wp.int32) -> bool:
+    k = wp.int32(ParticleFlags.ACTIVE) | wp.int32(ParticleFlags.KINEMATIC)
+    return (flags & k) == k
+
+
 @wp.kernel
 def integrate_particles(
     x: wp.array[wp.vec3],
@@ -38,6 +44,7 @@ def integrate_particles(
     gravity: wp.array[wp.vec3],
     dt: float,
     v_max: float,
+    target_q: wp.array[wp.vec3],
     x_new: wp.array[wp.vec3],
     v_new: wp.array[wp.vec3],
 ):
@@ -46,6 +53,13 @@ def integrate_particles(
 
     if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
         x_new[tid] = x0
+        return
+    if particle_flags[tid] & ParticleFlags.KINEMATIC:
+        x1 = x0
+        if target_q:
+            x1 = target_q[tid]
+        x_new[tid] = x1
+        v_new[tid] = (x1 - x0) / dt
         return
 
     v0 = v[tid]
@@ -1054,17 +1068,24 @@ class SolverBase:
         state_in: State,
         state_out: State,
         dt: float,
+        control: Control | None = None,
     ) -> None:
         """
         Integrate the particles of the model.
+
+        Particles flagged :attr:`~newton.ParticleFlags.KINEMATIC` move to
+        :attr:`Control.particle_target_q <newton.Control.particle_target_q>`, or hold
+        their position if no target is given.
 
         Args:
             model: The model to integrate.
             state_in: The input state.
             state_out: The output state.
             dt: The time step (typically in seconds).
+            control: Optional control providing kinematic particle targets.
         """
         if model.particle_count:
+            target_q = None if control is None else control.particle_target_q
             wp.launch(
                 kernel=integrate_particles,
                 dim=model.particle_count,
@@ -1078,10 +1099,20 @@ class SolverBase:
                     model.gravity,
                     dt,
                     model.particle_max_velocity,
+                    target_q,
                 ],
                 outputs=[state_out.particle_q, state_out.particle_qd],
                 device=model.device,
             )
+
+    def _raise_if_kinematic_particles(self) -> None:
+        """Raise ``NotImplementedError`` if any particle sets :attr:`~newton.ParticleFlags.KINEMATIC`."""
+        model = self.model
+        if not model.particle_count or model.particle_flags is None:
+            return
+        flags = model.particle_flags.numpy()
+        if (flags & int(ParticleFlags.KINEMATIC)).any():
+            raise NotImplementedError(f"{type(self).__name__} does not support ParticleFlags.KINEMATIC particles.")
 
     def reset(
         self,

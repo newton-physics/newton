@@ -5129,5 +5129,67 @@ class TestSolverCoupledProxyPipelineCapacity(unittest.TestCase):
         self.assertTrue(np.any(observables.contact_f.numpy()[:count, 2] != 0.0))
 
 
+class _ParticleTargetRecordingCopySolver(_StepCountingCopySolver):
+    """Copy solver that records the entry-local particle targets it receives."""
+
+    def step(self, state_in, state_out, control, contacts, dt):
+        target_q = control.particle_target_q
+        self.particle_target_q = None if target_q is None else target_q.numpy().copy()
+        super().step(state_in, state_out, control, contacts, dt)
+
+
+class TestSolverCoupledKinematicParticles(unittest.TestCase):
+    def _model(self):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        for i in range(3):
+            builder.add_particle(pos=(float(i), 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+        builder.particle_flags[2] |= int(ParticleFlags.KINEMATIC)
+        return builder.finalize(device="cpu")
+
+    def test_particle_targets_are_gathered_per_entry(self):
+        """Forward global particle targets to every particle-owning entry."""
+        model = self._model()
+        coupled = SolverCoupled(
+            model,
+            [
+                SolverCoupled.Entry("a", _ParticleTargetRecordingCopySolver, particles=[0, 1]),
+                SolverCoupled.Entry("b", _ParticleTargetRecordingCopySolver, particles=[2]),
+            ],
+        )
+        control = model.control()
+        targets = np.array([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [6.0, 7.0, 8.0]], dtype=np.float32)
+        control.particle_target_q.assign(targets)
+        coupled.step(model.state(), model.state(), control, None, 0.01)
+        np.testing.assert_array_equal(coupled._entries["a"].solver.particle_target_q, targets)
+        np.testing.assert_array_equal(coupled._entries["b"].solver.particle_target_q, targets)
+
+    def test_substepped_entry_rejects_kinematic_particles(self):
+        """Refuse substeps > 1 for an entry owning KINEMATIC particles, since targets are not interpolated."""
+        model = self._model()
+        with self.assertRaises(NotImplementedError):
+            SolverCoupled(
+                model,
+                [
+                    SolverCoupled.Entry("a", _StepCountingCopySolver, particles=[0, 1]),
+                    SolverCoupled.Entry("b", _StepCountingCopySolver, particles=[2], substeps=2),
+                ],
+            )
+        SolverCoupled(
+            model,
+            [
+                SolverCoupled.Entry("a", _StepCountingCopySolver, particles=[0, 1], substeps=2),
+                SolverCoupled.Entry("b", _StepCountingCopySolver, particles=[2]),
+            ],
+        )
+
+    def test_mark_proxy_particles_rejects_kinematic(self):
+        """Refuse to turn a KINEMATIC particle into a coupling proxy."""
+        view = ModelView(self._model(), "test")
+        with self.assertRaises(ValueError):
+            view.mark_proxy_particles(wp.array([2], dtype=int, device="cpu"))
+        view.mark_proxy_particles(wp.array([0], dtype=int, device="cpu"))
+        self.assertTrue(view.particle_flags.numpy()[0] & int(ParticleFlags.PROXY))
+
+
 if __name__ == "__main__":
     unittest.main()
