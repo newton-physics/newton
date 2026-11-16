@@ -5080,7 +5080,11 @@ class TestParentCollisionFilterWeldGroups(unittest.TestCase):
             with self.subTest(ring=ring):
                 builder = newton.ModelBuilder()
                 bodies = [self._link(builder, 1.0 + 0.1 * i)[0] for i in range(ring)]
-                builder.add_articulation([builder.add_joint_fixed(bodies[i - 1], bodies[i]) for i in range(ring)])
+                with warnings.catch_warnings():
+                    # A two-body ring is two parallel joints, which add_joint() warns about.
+                    warnings.filterwarnings("ignore", "Adding a FIXED joint .* another joint already connects")
+                    joints = [builder.add_joint_fixed(bodies[i - 1], bodies[i]) for i in range(ring)]
+                builder.add_articulation(joints)
                 with self.assertRaisesRegex(ValueError, "form a cycle"):
                     builder.finalize(device="cpu")
 

@@ -3231,6 +3231,7 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
                 self.assertEqual((min(hand, finger), max(hand, finger)) in excludes, hand_filters)
                 self.assertEqual((min(parent, child), max(parent, child)) in excludes, pair_filters)
 
+    @requires(*MUJOCO_MODULES)
     def test_collapsed_fixed_joints_keep_parent_filters_in_mujoco(self):
         """Collapsing fixed joints keeps the parent-child filters, as MuJoCo's own rule does.
 
