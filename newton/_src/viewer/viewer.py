@@ -2911,13 +2911,12 @@ class ViewerBase(ABC):
             and geo_scale[0] * geo_scale[1] * geo_scale[2] < 0.0
         )
 
-        # check whether we can instance an already created shape with the same geometry.
-        # For the mirrored variant of a mesh-class shape, the cached geometry is
-        # independent of the actual scale magnitude (scale is applied at instance
-        # time), so we collapse the magnitude in the cache key. Combined with the
-        # ``mirror`` bit this guarantees at most one extra cached entry per source
-        # mesh, irrespective of how many distinct signed scales share that source.
-        hash_scale = (1.0, 1.0, 1.0) if mirror else tuple(geo_scale)
+        # Mesh scale belongs to the instance, not its uploaded vertices. Share
+        # each source across scales, with one extra winding-flipped prototype
+        # for mirrored instances. Primitive dimensions remain baked in geometry.
+        hash_scale = (
+            (1.0, 1.0, 1.0) if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else tuple(geo_scale)
+        )
         geo_hash = self._hash_geometry(
             int(geo_type),
             hash_scale,
