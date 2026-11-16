@@ -13,6 +13,7 @@ from unittest.mock import patch
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.geometry.aggregation import ContactAggregation
@@ -30,6 +31,7 @@ from newton.tests.kamino.test_kamino_solver_kamino_joint_friction import (
 from newton.tests.kamino.test_kamino_solvers_scc import _build_five_box_stack
 from newton.tests.kamino.utils.make import make_containers, update_containers
 from newton.tests.kamino.utils.solver_configs import make_scc_dense_config, make_scc_sparse_config
+from newton.tests.unittest_utils import requires
 from newton.tests.utils import basics
 from newton.viewer import ViewerNull
 
@@ -979,6 +981,7 @@ class TestSCCAPGDDynamics(unittest.TestCase):
                     weight = float(model.body_mass.numpy().sum() * 9.81)
                     self.assertAlmostEqual(float(force[2] / weight), 1.0, delta=0.02)
 
+    @requires("git", "pxr.Usd")
     def test_dr_legs_support_and_reset(self):
         """Support DR Legs after impact and remain stable after a tipped-pose reset."""
         if not wp.is_cuda_available():
@@ -1053,4 +1056,5 @@ class TestSCCAPGDDynamics(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     unittest.main()

@@ -66,6 +66,8 @@ published citation when available and retain an accessible preprint link.
 
 - **RoboMMT: Learning Stable Tracking of Modulated Expressive and Interactive Robot Motion**. *T. Hielscher, K. O. Arras*. October 2026. [arXiv:2610.26414](https://arxiv.org/abs/2610.26414)
 
+- **HolidayFactory 1.0: Simulating, Generating, and Evaluating Industrial Robot Tasks**. *Holiday Robotics*. November 2026. [arXiv:2611.11789](https://arxiv.org/abs/2611.11789)
+
 - **Probabilistic Physics Digital Twin for Human-Robot Interaction**. *Y. Hu, H. Chandirasekar, A. Kushwaha, J. King, Z.-T. Chen*. October 2026. [arXiv:2610.19336](https://arxiv.org/abs/2610.19336)
 
 - **GM-Loco: Terrain-Adaptive Humanoid Locomotion on Granular Media**. *J. Kamohara, F. Wu, A. N. Zong, D. I. Goldman, Y. Nakka, S. Hutchinson, Y. Zhao*. September 2026. [arXiv:2609.10286](https://arxiv.org/abs/2609.10286)

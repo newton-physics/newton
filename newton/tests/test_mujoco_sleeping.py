@@ -11,6 +11,7 @@ import warp as wp
 import newton
 from newton import ModelFlags
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 def _build_sleep_model(world_count: int = 1, *, register_custom_attributes: bool = False) -> newton.Model:
@@ -109,6 +110,7 @@ def _build_selective_wake_model() -> newton.Model:
     return builder.finalize()
 
 
+@requires(*MUJOCO_MODULES)
 class TestMuJoCoSleeping(unittest.TestCase):
     def _make_sim(self, *, world_count: int = 1, **solver_kwargs):
         model = _build_sleep_model(world_count)

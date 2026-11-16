@@ -11,6 +11,7 @@ import weakref
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.linalg.blas import (
     block_sparse_ATA_inv_diagonal_2d,
     block_sparse_gemv,
@@ -978,6 +979,7 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests
