@@ -85,11 +85,11 @@ jobs:
           version: "0.13.5"
           prune-cache: true
       - name: Test dependency resolution (Python 3.11)
-        run: uv sync --dry-run --python 3.11 --extra dev
+        run: uv sync --locked --dry-run --python 3.11 --extra dev --extra notebook
       - name: Test dependency resolution (Python 3.12)
-        run: uv sync --dry-run --python 3.12 --extra dev
+        run: uv sync --locked --dry-run --python 3.12 --extra dev --extra notebook
       - name: Test dependency resolution (Python 3.13)
-        run: uv sync --dry-run --python 3.13 --extra dev
+        run: uv sync --locked --dry-run --python 3.13 --extra dev --extra notebook
       - name: Test dependency resolution (Python 3.14)
         run: uv sync --locked --dry-run --python 3.14 --extra dev --extra notebook
 
