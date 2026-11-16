@@ -3,7 +3,6 @@
 
 """Exercise native MuJoCo Warp determinism before construction-time constants."""
 
-import sys
 import unittest
 from unittest import mock
 
@@ -45,10 +44,10 @@ def _check_native_configuration(device_name, disable_first=False):
     """Enable the backend option before constants and keep solver options independent."""
     test = unittest.TestCase()
     device = wp.get_device(device_name)
-    test.assertFalse("mujoco_warp" in sys.modules, "MJWarp must not be imported before setting the global mode")
-    wp.config.deterministic = wp.DeterministicMode.RUN_TO_RUN
     import mujoco_warp as mjw
     from mujoco_warp._src import smooth
+
+    test.assertEqual(wp.get_module_options(smooth)["deterministic"], wp.DeterministicMode.RUN_TO_RUN)
 
     # A backend-owned record bound must survive Newton construction and updates.
     wp.set_module_options({"deterministic_max_records": 17}, module=smooth)
@@ -206,6 +205,7 @@ def test_native_configuration(test, device):
                 "_check_native_configuration",
                 str(device),
                 disable_first,
+                deterministic_mode=wp.DeterministicMode.RUN_TO_RUN,
                 module_name="newton.tests.test_mujoco_native_determinism",
             )
 
@@ -215,11 +215,21 @@ class TestMuJoCoNativeDeterminism(unittest.TestCase):
 
 
 add_function_test(
-    TestMuJoCoNativeDeterminism, "test_native_configuration", test_native_configuration, devices=get_test_devices()
+    TestMuJoCoNativeDeterminism,
+    "test_native_configuration",
+    test_native_configuration,
+    devices=get_test_devices(),
+    requires=("mujoco", "mujoco_warp"),
 )
 
 
-add_function_test(TestMuJoCoNativeDeterminism, "test_native_rollout", test_native_rollout, devices=get_test_devices())
+add_function_test(
+    TestMuJoCoNativeDeterminism,
+    "test_native_rollout",
+    test_native_rollout,
+    devices=get_test_devices(),
+    requires=("mujoco", "mujoco_warp"),
+)
 
 
 add_function_test(
@@ -227,6 +237,7 @@ add_function_test(
     "test_native_newton_contacts_rollout",
     test_native_rollout,
     devices=get_test_devices(),
+    requires=("mujoco", "mujoco_warp"),
     use_mujoco_contacts=False,
 )
 
