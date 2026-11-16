@@ -2411,18 +2411,35 @@ def test_multiworld_masked_reset_uses_external_collider_body_world(test, device)
     np.testing.assert_array_equal(external_body_world, (0, 1))
 
     # Particle models whose own body-to-world map differs from the collider model's:
-    # global bodies, then no bodies at all. The global-body case runs first so that a
-    # regression fails on an assertion before the zero-body case reads out of bounds.
-    for particle_body_count in (2, 0):
+    # global bodies with mismatched/matching counts, then no bodies at all.
+    # Reject invalid pose counts before a masked reset can read out of bounds.
+    for particle_body_count, separate_worlds in ((3, True), (2, True), (0, True), (2, False)):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
         for _ in range(particle_body_count):
             builder.add_body()
-        model = _make_two_world_particle_model(device, builder=builder)
+        if separate_worlds:
+            model = _make_two_world_particle_model(device, builder=builder)
+        else:
+            # External collider worlds do not share the single-world solver namespace.
+            SolverImplicitMPM.register_custom_attributes(builder)
+            builder.add_world(_make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0)))
+            model = builder.finalize(device=device)
         np.testing.assert_array_equal(model.body_world.numpy(), np.full(particle_body_count, -1))
 
-        solver = SolverImplicitMPM(model, _make_mpm_config())
+        config = _make_mpm_config()
+        config.separate_worlds = separate_worlds
+        if not separate_worlds:
+            config.collider_basis = "pic"
+            config.strain_basis = "pic"
+        solver = SolverImplicitMPM(model, config)
         solver.setup_collider(model=external_model)
         state = model.state()
+        if particle_body_count == 3:
+            previous = solver._last_step_data.body_q_prev.numpy().copy()
+            for mask in (None, wp.array((True, True, True), dtype=wp.bool, device=device)):
+                with test.assertRaisesRegex(ValueError, r"state.body_q has shape .* expected \(2,\)"):
+                    solver.reset(state, world_mask=mask)
+                np.testing.assert_array_equal(solver._last_step_data.body_q_prev.numpy(), previous)
         state.body_q = wp.clone(external_model.body_q)
         solver.reset(state)
 
@@ -2432,11 +2449,17 @@ def test_multiworld_masked_reset_uses_external_collider_body_world(test, device)
         marker = np.zeros_like(body_q)
         body_q_prev = solver._last_step_data.body_q_prev
 
-        for world_mask, selected_world in (((False, True, False), 1), ((False, False, True), -1)):
+        masks = (
+            (((False, True, False), 1), ((False, False, True), -1))
+            if separate_worlds
+            else (((True, True), -1), ((True, False), 0), ((False, True), -1))
+        )
+        reset_worlds = external_body_world if separate_worlds else np.full(external_model.body_count, -1)
+        for world_mask, selected_world in masks:
             body_q_prev.assign(marker)
             solver.reset(state, world_mask=wp.array(world_mask, dtype=wp.bool, device=device))
             expected = marker.copy()
-            expected[external_body_world == selected_world] = body_q[external_body_world == selected_world]
+            expected[reset_worlds == selected_world] = body_q[reset_worlds == selected_world]
             np.testing.assert_array_equal(
                 body_q_prev.numpy(),
                 expected,

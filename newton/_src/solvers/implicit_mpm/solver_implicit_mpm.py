@@ -1968,11 +1968,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 device=device,
             )
 
-        if self.model.body_count > 0:
+        collider_body_world = self._mpm_model.collider_body_world
+        collider_body_count = 0 if collider_body_world is None else collider_body_world.shape[0]
+        if collider_body_count > 0 or state.body_q is not None:
             self._validate_reset_array(
                 state.body_q,
                 name="body_q",
-                shape=(self.model.body_count,),
+                shape=(collider_body_count,),
                 dtype=wp.transform,
                 device=device,
             )
@@ -2120,10 +2122,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         a valid reset boundary, and the previous-collider-pose cache is
         refreshed from ``state``. When present, the final mask entry selects
         global particle-backed history and collider poses whose world index is
-        ``-1``.
+        ``-1``. External collider models on shared grids use this global entry
+        because their world indices need not match the solver model.
 
         Args:
-            state: Simulation state whose MPM history is modified in place.
+            state: Simulation state whose MPM history is modified in place. Its
+                body poses must match the body array of the configured collider model.
             world_mask: Optional one-dimensional Warp boolean mask on the
                 model device with shape ``(model.world_count + 1,)``. The final
                 entry selects global objects whose world index is ``-1``. If
