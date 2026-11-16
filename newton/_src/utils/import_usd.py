@@ -305,6 +305,8 @@ def parse_usd(
             :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
             damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+            A USD ``MjcActuator`` in MuJoCo's position or velocity shape on a DOF whose drive has both gains zero sets
+            the mode from its own gains instead of :attr:`~newton.JointTargetMode.EFFORT`, and a warning is logged.
         legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
             where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
@@ -3083,6 +3085,13 @@ def parse_usd(
             return attr.default if value is None else value
 
         converted = 0
+        # DOFs whose target mode was already set by an MjcActuator row in this
+        # loop, so a position + velocity pair on one DOF is not mistaken for a
+        # UsdPhysics drive.
+        mjc_target_dofs: set[int] = set()
+        # DOFs whose MjcActuator gains were merged into a UsdPhysics drive's,
+        # reported once after all rows are merged.
+        drive_merged_dofs: dict[int, str] = {}
 
         for row in range(mjc_actuator_count):
             target_path = _row("mujoco:actuator_target_label", row)
@@ -3124,6 +3133,24 @@ def parse_usd(
                 continue
 
             current_mode = builder.joint_target_mode[dof]
+            if current_mode == int(JointTargetMode.EFFORT):
+                # A UsdPhysics drive with zero stiffness and damping set EFFORT.
+                # SolverMuJoCo builds no joint-target actuator for EFFORT, so
+                # keeping it would drop the authored MjcActuator. The drive adds
+                # no gains, so the MjcActuator's gains define the target mode.
+                # The drive's targets and maxForce were already applied to the
+                # DOF and are kept, as for a drive with gains.
+                logger.warning(
+                    "Joint '%s' has a UsdPhysics drive with zero stiffness and damping and an MjcActuator; "
+                    "the MjcActuator's gains are used instead of EFFORT mode. The drive's targets and "
+                    "maxForce still apply.",
+                    target_path,
+                )
+                builder.joint_target_mode[dof] = int(JointTargetMode.NONE)
+                current_mode = int(JointTargetMode.NONE)
+            if dof not in mjc_target_dofs and current_mode != int(JointTargetMode.NONE):
+                drive_merged_dofs[dof] = target_path
+            mjc_target_dofs.add(dof)
             if is_position:
                 builder.joint_target_ke[dof] = kp
                 if current_mode == int(JointTargetMode.VELOCITY):
@@ -3148,6 +3175,17 @@ def parse_usd(
             )
 
             converted += 1
+
+        for dof, joint_path in drive_merged_dofs.items():
+            logger.warning(
+                "Joint '%s' has both a UsdPhysics drive and an MjcActuator; their gains are merged, each "
+                "MjcActuator gain replacing the drive's matching gain (mode %s, ke=%g, kd=%g). Remove one of "
+                "them to use the other alone.",
+                joint_path,
+                JointTargetMode(builder.joint_target_mode[dof]).name,
+                builder.joint_target_ke[dof],
+                builder.joint_target_kd[dof],
+            )
 
         if verbose and converted > 0:
             logger.info("Mapped %s MuJoCo USD actuator(s) to joint targets", converted)

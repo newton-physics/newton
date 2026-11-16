@@ -5327,6 +5327,9 @@ class ModelBuilder:
                 :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+                A USD ``MjcActuator`` in MuJoCo's position or velocity shape on a DOF whose drive has both gains zero
+                sets the mode from its own gains instead of :attr:`~newton.JointTargetMode.EFFORT`, and a warning is
+                logged.
             legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
                 where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
