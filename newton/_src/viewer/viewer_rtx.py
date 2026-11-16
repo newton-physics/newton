@@ -1039,6 +1039,9 @@ void main() {
         with ovstage.PathDictionary(stage) as paths:
             path_list = paths.create_path_list_from_strings(list(prim_paths))
             try:
+                indices_by_path = {}
+                for index, path in enumerate(paths.get_paths(path_list)):
+                    indices_by_path.setdefault(path, []).append(index)
                 token = paths.intern_token("omni:fabric:worldMatrix")
                 with stage.query_from_path_list(path_list) as query:
                     with stage.read_attributes(query, [token], ordinal_range) as read:
@@ -1049,8 +1052,11 @@ void main() {
                                 # OVStage 0.4 stores each attribute's data in a column.
                                 column = group.columns[0] if hasattr(group, "columns") else group
                                 rows = np.from_dlpack(column.dlpack(0)).reshape(-1, 4, 4)
+                                # Prim indices refer to the group's list, which may differ from the query.
+                                group_paths = paths.get_paths(group.prim_list)
                                 for local in range(group.prim_count):
-                                    out[group.prim_index(local)] = rows[column.data_row_index(local)]
+                                    path = group_paths[group.prim_index(local)]
+                                    out[indices_by_path[path]] = rows[column.data_row_index(local)]
                             finally:
                                 stage.release_group(group)
                             group = read.fetch_next()

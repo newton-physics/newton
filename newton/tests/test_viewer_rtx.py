@@ -1162,15 +1162,23 @@ def Xform "World"
         stage, model = self._borrowed_scene()
         viewer = ViewerRTX(headless=True, async_rendering=False, ovstage=stage)
         try:
-            paths = ["/World/missing", "/World/Body", "/World"]
+            paths = ["/World/missing", "/World/Body", "/World", "/World/Body"]
             authored = viewer._read_borrowed_world_matrices(paths)
             self.assertTrue(np.isnan(authored[0]).all())
             np.testing.assert_allclose(authored[1, 3, :3], [1.0, 2.0, 3.5])
             np.testing.assert_allclose(authored[2, 3, :3], [0.0, 0.0, 0.5])
+            np.testing.assert_array_equal(authored[3], authored[1])
             viewer.set_model(model)
             viewer.begin_frame(0.0)
             viewer.end_frame()
-            np.testing.assert_allclose(viewer._read_borrowed_world_matrices(paths), authored, atol=1.0e-5)
+            # Read real groups whose prim list differs from the requested order.
+            with (
+                viewer._ovstage_paths.create_path_list_from_strings(["/World", "/World/Body"]) as compact_paths,
+                mock.patch.object(
+                    stage, "query_from_path_list", return_value=stage.query_from_path_list(compact_paths)
+                ),
+            ):
+                np.testing.assert_allclose(viewer._read_borrowed_world_matrices(paths), authored, atol=1.0e-5)
         finally:
             viewer.close()
 
