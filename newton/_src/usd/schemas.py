@@ -500,16 +500,6 @@ def _mjc_joint_effort_limit(prim: Usd.Prim) -> float | None:
     return None
 
 
-def _mjc_mesh_inertia(prim: Usd.Prim) -> str | None:
-    """Read ``mjc:inertia`` or fall back to ``"legacy"`` on ``MjcMeshCollisionAPI`` prims."""
-    val = usd.get_attribute(prim, "mjc:inertia")
-    if val is not None:
-        return str(val)
-    if prim and prim.IsValid() and usd.has_applied_api_schema(prim, "MjcMeshCollisionAPI"):
-        return "legacy"
-    return None
-
-
 class SchemaResolverMjc(SchemaResolver):
     """Schema resolver for MuJoCo USD attributes."""
 
@@ -543,12 +533,7 @@ class SchemaResolverMjc(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("mjc:maxhullvert", -1),
-            "mesh_inertia": SchemaAttribute(
-                "mjc:inertia",
-                None,
-                usd_value_getter=_mjc_mesh_inertia,
-                attribute_names=("mjc:inertia",),
-            ),
+            "mesh_inertia": SchemaAttribute("mjc:inertia", None, str),
             # Collision margin/gap: identity mapping to shape_margin/shape_gap
             # under MuJoCo 3.9 (parse_usd handles legacy_margin_gap).
             "margin": SchemaAttribute("mjc:margin", 0.0),

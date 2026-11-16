@@ -1801,6 +1801,11 @@ class TestSchemaResolver(unittest.TestCase):
             ) {
                 uniform token mjc:inertia = "shell"
             }
+            def Mesh "MjcShellInertiaMesh" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MjcMeshCollisionAPI"]
+            ) {
+                uniform bool mjc:shellinertia = 1
+            }
             def Mesh "ConflictMesh" (
                 prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MjcMeshCollisionAPI"]
             ) {
@@ -1816,17 +1821,22 @@ class TestSchemaResolver(unittest.TestCase):
         plain = stage.GetPrimAtPath("/World/PlainMesh")
         mjc_default = stage.GetPrimAtPath("/World/MjcDefaultMesh")
         mjc_authored = stage.GetPrimAtPath("/World/MjcAuthoredMesh")
+        mjc_shellinertia = stage.GetPrimAtPath("/World/MjcShellInertiaMesh")
         conflict = stage.GetPrimAtPath("/World/ConflictMesh")
 
         resolver_mjc = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
         self.assertIsNone(resolver_mjc.get_value(plain, PrimType.SHAPE, "mesh_inertia"))
-        self.assertEqual(resolver_mjc.get_value(mjc_default, PrimType.SHAPE, "mesh_inertia"), "legacy")
+        self.assertIsNone(resolver_mjc.get_value(mjc_default, PrimType.SHAPE, "mesh_inertia"))
+        self.assertEqual(_resolve_mesh_inertia(mjc_default, resolver_mjc, verbose=False), ("legacy", 0))
         self.assertEqual(resolver_mjc.get_value(mjc_authored, PrimType.SHAPE, "mesh_inertia"), "shell")
         self.assertEqual(resolver_mjc.schema_attrs["mjc"]["/World/MjcAuthoredMesh"]["mjc:inertia"], "shell")
+        # Authored mjc:shellinertia without mjc:inertia defers to _resolve_shape_shell rather than implicit legacy.
+        self.assertEqual(_resolve_mesh_inertia(mjc_shellinertia, resolver_mjc, verbose=False), (None, 0))
         self.assertEqual(_resolve_mesh_inertia(conflict, resolver_mjc, verbose=False), ("convex", 12))
 
         resolver_newton = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverMjc()])
         self.assertEqual(_resolve_mesh_inertia(mjc_default, resolver_newton, verbose=False), ("legacy", 0))
+        self.assertEqual(_resolve_mesh_inertia(mjc_shellinertia, resolver_newton, verbose=False), (None, 0))
         self.assertEqual(_resolve_mesh_inertia(conflict, resolver_newton, verbose=False), (None, 0))
 
     def test_contact_response_attrs(self):

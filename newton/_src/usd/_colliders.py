@@ -160,7 +160,8 @@ def _parse_colliders(
         tuple[str, tuple[float, float, float], str, int],
         tuple[float, np.ndarray, np.ndarray] | None,
     ] = {}
-    exact_orientation_checked: set[str] = set()
+    # Maps geometry path -> whether the mesh has authored faces (after one-time orientation check).
+    exact_orientation_checked: dict[str, bool] = {}
 
     def _get_mjc_mesh_inertia(
         prim: Usd.Prim,
@@ -179,21 +180,28 @@ def _parse_colliders(
         if key in mjc_mesh_inertia_cache:
             return mjc_mesh_inertia_cache[key]
 
-        hull_mesh = visuals.get_mesh_cached(prim, load_uvs=False, load_normals=False)
+        if mode == "exact":
+            has_faces = exact_orientation_checked.get(geom_path)
+            if has_faces is None:
+                hull_mesh = visuals.get_mesh_cached(prim, load_uvs=False, load_normals=False, compute_inertia=False)
+                has_faces = len(hull_mesh.indices) >= 3
+                exact_orientation_checked[geom_path] = has_faces
+                if has_faces:
+                    hull_vertices = np.asarray(hull_mesh.vertices, dtype=np.float64)
+                    faces = np.asarray(hull_mesh.indices, dtype=np.int64).reshape(-1, 3)
+                    if import_mjcf._has_inconsistent_orientation(hull_vertices, faces):
+                        logger.warning(
+                            "USD mesh %r has faces with inconsistent orientation, which MuJoCo rejects for "
+                            'mjc:inertia="exact"; Newton uses its exact signed volume anyway.',
+                            str(prim.GetPath()),
+                        )
+            if has_faces:
+                mjc_mesh_inertia_cache[key] = None
+                return None
+
+        hull_mesh = visuals.get_mesh_cached(prim, load_uvs=False, load_normals=False, compute_inertia=False)
         hull_vertices = np.asarray(hull_mesh.vertices, dtype=np.float64)
         faces = np.asarray(hull_mesh.indices, dtype=np.int64).reshape(-1, 3)
-
-        if mode == "exact" and len(faces) > 0:
-            if geom_path not in exact_orientation_checked:
-                exact_orientation_checked.add(geom_path)
-                if import_mjcf._has_inconsistent_orientation(hull_vertices, faces):
-                    logger.warning(
-                        "USD mesh %r has faces with inconsistent orientation, which MuJoCo rejects for "
-                        'mjc:inertia="exact"; Newton uses its exact signed volume anyway.',
-                        str(prim.GetPath()),
-                    )
-            mjc_mesh_inertia_cache[key] = None
-            return None
 
         scale_np = np.asarray(scale_key, dtype=np.float64)
         scaled_vertices = hull_vertices * scale_np
@@ -526,14 +534,24 @@ def _parse_colliders(
                     # the collider itself is visible, or it is viewport geometry whose
                     # authored topology is about to be split off as a visual shape.
                     maxhullvert = collider_properties.maxhullvert
+                    compute_mesh_inertia = unit_mass_properties is None and collider_is_enabled
                     if collider_is_visible or splits_off_visual_copy:
                         # Drawn colliders should render with the same visual material metadata
                         # as visual-only mesh imports.
-                        mesh = visuals.get_mesh_with_visual_material(prim, path_name=path, maxhullvert=maxhullvert)
+                        mesh = visuals.get_mesh_with_visual_material(
+                            prim,
+                            path_name=path,
+                            maxhullvert=maxhullvert,
+                            compute_inertia=compute_mesh_inertia,
+                        )
                     else:
                         # Not viewport-drawn, but the viewer still draws these under show_collision /
                         # show_static, so the mesh still carries the resolved material.
-                        mesh = visuals.get_mesh_with_material(prim, maxhullvert=maxhullvert)
+                        mesh = visuals.get_mesh_with_material(
+                            prim,
+                            maxhullvert=maxhullvert,
+                            compute_inertia=compute_mesh_inertia,
+                        )
                     # add_shape_mesh() rejects SDF cfg fields on meshes; strip them and
                     # write the SDF intent to the builder lists, deferring the build to finalize().
                     mesh_shape_params = dict(shape_params)

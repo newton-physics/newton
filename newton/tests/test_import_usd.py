@@ -15367,6 +15367,25 @@ class TestUsdMjcMeshInertia(unittest.TestCase):
         plain_builder = self._import_stage(plain_stage)
         self._assert_matches_native_mjcf(plain_builder, self._inline_mjcf(mesh_attributes='inertia="exact"'))
 
+        # Authored mjc:shellinertia=true (with no mjc:inertia) on an MjcMeshCollisionAPI mesh must preserve
+        # Newton's shell mass model and shell thickness rather than falling back to solid legacy inertia.
+        from pxr import Sdf
+
+        shell_api_stage = self._build_usd_mesh_stage(self.VERTICES[:4], self.FACES[:4])
+        mesh_prim = shell_api_stage.GetPrimAtPath("/Body/Mesh")
+        mesh_prim.CreateAttribute("mjc:shellinertia", Sdf.ValueTypeNames.Bool).Set(True)
+        mesh_prim.ApplyAPI("NewtonMassAPI")
+        mesh_prim.CreateAttribute("newton:shellThickness", Sdf.ValueTypeNames.Float).Set(0.02)
+        shell_api_builder = self._import_stage(shell_api_stage)
+        ref_stage = self._build_usd_mesh_stage(self.VERTICES[:4], self.FACES[:4], apply_mjc_api=False)
+        ref_prim = ref_stage.GetPrimAtPath("/Body/Mesh")
+        ref_prim.ApplyAPI("NewtonMassAPI")
+        ref_prim.CreateAttribute("newton:massModel", Sdf.ValueTypeNames.Token).Set("shell")
+        ref_prim.CreateAttribute("newton:shellThickness", Sdf.ValueTypeNames.Float).Set(0.02)
+        ref_builder = self._import_stage(ref_stage)
+        self.assertFalse(shell_api_builder.shape_is_solid[0])
+        self.assertAlmostEqual(shell_api_builder.body_mass[0], ref_builder.body_mass[0], places=5)
+
     @requires("pxr.Usd", "scipy", *MUJOCO_MODULES)
     def test_mjc_mesh_inertia_scales_mass_overrides_and_point_clouds(self):
         """Apply mjc:inertia after shape scale (picking limited hulls before scale) and through MassAPI."""
@@ -15472,6 +15491,7 @@ class TestUsdMjcMeshInertia(unittest.TestCase):
         """Instance proxies sharing a prototype support distinct scales while caching equal scales."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
+        import newton._src.geometry.inertia as geom_inertia  # noqa: PLC0415
         import newton._src.utils.import_mjcf as import_mjcf  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
@@ -15481,7 +15501,6 @@ class TestUsdMjcMeshInertia(unittest.TestCase):
 
         proto = stage.CreateClassPrim("/Proto")
         mesh = UsdGeom.Mesh.Define(stage, "/Proto/Mesh")
-        mesh.CreatePurposeAttr(UsdGeom.Tokens.guide)
         mesh.CreatePointsAttr([Gf.Vec3f(*map(float, v)) for v in self.VERTICES])
         mesh.CreateFaceVertexCountsAttr([3] * len(self.FACES))
         mesh.CreateFaceVertexIndicesAttr([int(idx) for idx in self.FACES.reshape(-1)])
@@ -15500,24 +15519,64 @@ class TestUsdMjcMeshInertia(unittest.TestCase):
             UsdGeom.Xformable(inst).AddScaleOp().Set(Gf.Vec3f(*s))
 
         calls: list[str] = []
+        exact_calls = 0
         original = import_mjcf._mesh_mass_properties
+        original_exact = geom_inertia.compute_inertia_mesh
 
         def counting(*args, **kwargs):
             calls.append(args[2])
             return original(*args, **kwargs)
 
+        def counting_exact(*args, **kwargs):
+            nonlocal exact_calls
+            exact_calls += 1
+            return original_exact(*args, **kwargs)
+
         import_mjcf._mesh_mass_properties = counting
+        geom_inertia.compute_inertia_mesh = counting_exact
         try:
             builder = self._import_stage(stage)
         finally:
             import_mjcf._mesh_mass_properties = original
+            geom_inertia.compute_inertia_mesh = original_exact
 
-        # Two distinct scales across three instances -> computed twice, cached on the third.
+        # Two distinct scales across three visible instances -> computed twice, cached on the third,
+        # and native exact Warp mesh integration is skipped completely (0 calls).
         self.assertEqual(calls, ["shell", "shell"])
+        self.assertEqual(exact_calls, 0)
         for i, s in enumerate(scales):
             self._assert_matches_native_mjcf(
                 builder,
                 self._inline_mjcf(mesh_attributes=f'inertia="shell" scale="{s[0]} {s[1]} {s[2]}"'),
+                body_idx=i,
+            )
+
+        # Visible exact-mode instances run native exact integration once for the shared geometry
+        # and validate orientation once across differently scaled instances.
+        mesh.GetPrim().GetAttribute("mjc:inertia").Set("exact")
+        exact_calls = 0
+        orient_calls = 0
+        original_orient = import_mjcf._has_inconsistent_orientation
+
+        def counting_orient(*args, **kwargs):
+            nonlocal orient_calls
+            orient_calls += 1
+            return original_orient(*args, **kwargs)
+
+        geom_inertia.compute_inertia_mesh = counting_exact
+        import_mjcf._has_inconsistent_orientation = counting_orient
+        try:
+            exact_builder = self._import_stage(stage)
+        finally:
+            geom_inertia.compute_inertia_mesh = original_exact
+            import_mjcf._has_inconsistent_orientation = original_orient
+
+        self.assertEqual(exact_calls, 1)
+        self.assertEqual(orient_calls, 1)
+        for i, s in enumerate(scales):
+            self._assert_matches_native_mjcf(
+                exact_builder,
+                self._inline_mjcf(mesh_attributes=f'inertia="exact" scale="{s[0]} {s[1]} {s[2]}"'),
                 body_idx=i,
             )
 

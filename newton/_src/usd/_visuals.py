@@ -92,24 +92,38 @@ class _UsdVisuals:
             self.uv_primvar_name_cache[prim_path] = _resolve_material_uv_primvar_name(prim)
         return _geometry_path(prim), self.uv_primvar_name_cache[prim_path]
 
-    def get_mesh_cached(self, prim: Usd.Prim, *, load_uvs: bool = False, load_normals: bool = False) -> Mesh:
+    def get_mesh_cached(
+        self,
+        prim: Usd.Prim,
+        *,
+        load_uvs: bool = False,
+        load_normals: bool = False,
+        compute_inertia: bool = True,
+    ) -> Mesh:
         """Load and cache mesh data to avoid repeated expensive USD mesh extraction.
 
         Instance proxies of one USD prototype share the cache entry, since their
         geometry is authored once in the prototype.
         """
         key = (*self._get_geometry_key(prim, load_uvs), load_uvs, load_normals)
-        if key in self.mesh_cache:
-            return self.mesh_cache[key]
+        mesh = self.mesh_cache.get(key)
+        if mesh is None:
+            # Normal/UV expansion can change topology, so cache each representation separately.
+            mesh = usd.get_mesh(
+                prim,
+                load_uvs=load_uvs,
+                load_normals=load_normals,
+                load_visual_materials=False,
+                compute_inertia=compute_inertia,
+            )
+            self.mesh_cache[key] = mesh
+        elif compute_inertia and not mesh.has_inertia:
+            from ..geometry.inertia import compute_inertia_mesh  # noqa: PLC0415
 
-        # Normal/UV expansion can change topology, so cache each representation separately.
-        mesh = usd.get_mesh(
-            prim,
-            load_uvs=load_uvs,
-            load_normals=load_normals,
-            load_visual_materials=False,
-        )
-        self.mesh_cache[key] = mesh
+            mesh.mass, mesh.com, mesh.inertia, _ = compute_inertia_mesh(
+                1.0, mesh._vertices, mesh._indices, is_solid=mesh.is_solid
+            )
+            mesh.has_inertia = True
         return mesh
 
     def apply_visual_material(self, mesh: Mesh, material_props: dict[str, Any]) -> None:
@@ -135,6 +149,7 @@ class _UsdVisuals:
         load_uvs: bool = False,
         load_normals: bool = False,
         maxhullvert: int | None = None,
+        compute_inertia: bool = True,
     ) -> Mesh:
         """Return a cached mesh carrying the prim's resolved visual material.
 
@@ -147,24 +162,38 @@ class _UsdVisuals:
             load_uvs: Whether to load the material-selected UV set.
             load_normals: Whether to load normals.
             maxhullvert: Hull-vertex limit to store on the mesh, or ``None`` for the default.
+            compute_inertia: Whether the returned mesh needs native signed-volume inertia.
         """
         material_props = self.get_material_props_cached(prim)
         geometry_key = self._get_geometry_key(prim, load_uvs)
-        key = (*geometry_key, load_uvs, load_normals, maxhullvert, _material_key(material_props))
+        key = (*geometry_key, load_uvs, load_normals, maxhullvert, compute_inertia, _material_key(material_props))
         mesh = self.material_mesh_cache.get(key)
         if mesh is None:
-            mesh = self.get_mesh_cached(prim, load_uvs=load_uvs, load_normals=load_normals).copy()
+            mesh = self.get_mesh_cached(
+                prim, load_uvs=load_uvs, load_normals=load_normals, compute_inertia=compute_inertia
+            ).copy()
             self.apply_visual_material(mesh, material_props)
             if maxhullvert is not None:
                 mesh.maxhullvert = maxhullvert
             self.material_mesh_cache[key] = mesh
         return mesh
 
-    def get_mesh_with_visual_material(self, prim: Usd.Prim, *, path_name: str, maxhullvert: int | None = None) -> Mesh:
+    def get_mesh_with_visual_material(
+        self,
+        prim: Usd.Prim,
+        *,
+        path_name: str,
+        maxhullvert: int | None = None,
+        compute_inertia: bool = True,
+    ) -> Mesh:
         """Load a renderable mesh without changing physics mass properties."""
         texture = self.get_material_props_cached(prim).get("texture")
         mesh = self.get_mesh_with_material(
-            prim, load_uvs=texture is not None, load_normals=True, maxhullvert=maxhullvert
+            prim,
+            load_uvs=texture is not None,
+            load_normals=True,
+            maxhullvert=maxhullvert,
+            compute_inertia=compute_inertia,
         )
         if mesh.texture is not None and mesh.uvs is None:
             logger.debug("Mesh %s has a texture but no UV coordinates; texture sampling is disabled.", path_name)
