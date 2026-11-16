@@ -27,7 +27,7 @@ step itself applies ``-b``. Without it, ``b`` is zero and
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import numpy as np
@@ -49,7 +49,7 @@ __all__ = ["ImplicitOptions", "JointSpaceResponse"]
 class ImplicitOptions:
     """Configuration for implicit actuation; see :meth:`Actuator.set_effort_mode_implicit`."""
 
-    class WarmStart(str, Enum):
+    class WarmStart(StrEnum):
         """Initial impulse guess for the Newton solve."""
 
         EXPLICIT = "explicit"

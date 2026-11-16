@@ -50,12 +50,12 @@ def _collect_metrics_dr_legs(robot, world_count, num_frames, samples, use_policy
     )
 
 
-class G1DVI:
-    """Measure steady G1 DVI frames for small and large batches.
+class G1SCC:
+    """Measure steady G1 SCC frames for small and large batches.
 
     Reuse the warmed simulation across samples to amortize model construction
     and graph capture. Keep this benchmark outside the fast PR gate; run it
-    explicitly with ``uvx --with virtualenv asv run --bench G1DVI``.
+    explicitly with ``uvx --with virtualenv asv run --bench G1SCC``.
     """
 
     version = "2"  # Measure consecutive samples from one warmed simulation.
@@ -278,7 +278,7 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
-        "G1DVI": G1DVI,
+        "G1SCC": G1SCC,
         "FastDRLegs": FastDRLegs,
         "FastMetricsDRLegs": FastMetricsDRLegs,
         "KpiDRLegs": KpiDRLegs,

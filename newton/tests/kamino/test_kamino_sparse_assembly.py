@@ -12,12 +12,12 @@ import warp as wp
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
-from newton._src.solvers.kamino._src.solvers.dvi.sparse import (
+from newton._src.solvers.kamino._src.solvers.scc.sparse import (
     _build_sparse_bilateral_pairs,
     _build_sparse_bilateral_row_nzb_topology,
     group_bilateral_pairs,
 )
-from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
+from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _build_sparse_bilateral_block,
     _set_sparse_bilateral_diagonal,
 )

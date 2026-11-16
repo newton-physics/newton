@@ -830,37 +830,8 @@ def _resolve_deformable_density(
     return _AOUSD_DEFAULT_DENSITY * linear_unit**3
 
 
-def _set_body_mass(builder: ModelBuilder, b: int, m: float) -> None:
-    """Set body ``b``'s mass and scale its inertia tensor to match (keeps the segment's shape)."""
-    orig = builder.body_mass[b]
-    if orig > 0.0:
-        builder.body_inertia[b] = builder.body_inertia[b] * (m / orig)
-    elif m > 0.0:
-        # No original mass to scale from (e.g. a zero preexisting mass): rebuild the inertia
-        # from the segment's capsule geometry at the new mass. Scaling by m/orig would zero
-        # the tensor and poison its inverse below.
-        from ..geometry.inertia import compute_inertia_capsule  # noqa: PLC0415
-
-        shapes = builder.body_shapes[b]
-        if shapes:
-            radius = float(builder.shape_scale[shapes[0]][0])
-            half_height = float(builder.shape_scale[shapes[0]][1])
-            unit_mass, _, unit_inertia = compute_inertia_capsule(1.0, radius, half_height)
-            if unit_mass > 0.0:
-                builder.body_inertia[b] = unit_inertia * (m / unit_mass)
-    else:
-        builder.body_inertia[b] = wp.mat33(0.0)
-    builder.body_mass[b] = m
-    builder.body_inv_mass[b] = (1.0 / m) if m > 0.0 else 0.0
-    # Guard the inverse on the tensor, not just the mass: a singular inertia (shapeless or
-    # degenerate segment) must not produce a non-finite inverse.
-    invertible = m > 0.0 and abs(float(wp.determinant(builder.body_inertia[b]))) > 0.0
-    builder.body_inv_inertia[b] = wp.inverse(builder.body_inertia[b]) if invertible else wp.mat33(0.0)
-
-
 def _set_cable_body_radius(builder: ModelBuilder, body: int, radius: float) -> None:
-    """Set one cable segment's collision radius and rebuild its capsule inertia."""
-    from ..geometry.inertia import compute_inertia_capsule  # noqa: PLC0415
+    """Set one cable segment's collision radius and rebuild its cylinder inertia."""
     from ..geometry.utils import compute_shape_radius  # noqa: PLC0415
 
     shapes = builder.body_shapes[body]
@@ -872,14 +843,7 @@ def _set_cable_body_radius(builder: ModelBuilder, body: int, radius: float) -> N
     builder.shape_collision_radius[shape] = compute_shape_radius(
         builder.shape_type[shape], builder.shape_scale[shape], builder.shape_source[shape]
     )
-    mass = float(builder.body_mass[body])
-    unit_mass, _, unit_inertia = compute_inertia_capsule(1.0, radius, half_height)
-    if mass > 0.0 and unit_mass > 0.0:
-        builder.body_inertia[body] = unit_inertia * (mass / unit_mass)
-        builder.body_inv_inertia[body] = wp.inverse(builder.body_inertia[body])
-    else:
-        builder.body_inertia[body] = wp.mat33(0.0)
-        builder.body_inv_inertia[body] = wp.mat33(0.0)
+    builder._set_rod_segment_mass(body, float(builder.body_mass[body]))
 
 
 def _element_masses_from_points_ragged(
@@ -1180,7 +1144,7 @@ def _apply_cable_masses(
 
     for bodies, masses in resolved_runs:
         for body, mass in zip(bodies, masses, strict=True):
-            _set_body_mass(builder, body, mass)
+            builder._set_rod_segment_mass(body, mass)
     return authored
 
 

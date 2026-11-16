@@ -266,7 +266,7 @@ class Example:
             is_kinematic=True,
             label="conveyor_belt",
         )
-        # Keep the smooth render mesh while avoiding an oversized mesh-contact system in DVI.
+        # Keep the smooth render mesh while avoiding an oversized mesh-contact system in SCC.
         belt_mesh_cfg = belt_cfg
         if solver_type == "kamino":
             belt_mesh_cfg = belt_cfg.copy()
@@ -399,7 +399,7 @@ class Example:
             )
         elif solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
             solver_config.use_collision_detector = True
             # The full bag set can briefly exceed 256 contacts at segment seams.
@@ -407,8 +407,8 @@ class Example:
             solver_config.collision_detector.max_contacts_per_pair = 4
             solver_config.collision_detector.max_triangle_pairs = 16384
             solver_config.integrator = "moreau"
-            solver_config.dvi.max_alternating_iterations = 1
-            solver_config.dvi.bilateral_solve_interval = 1
+            solver_config.scc.max_alternating_iterations = 1
+            solver_config.scc.bilateral_solve_interval = 1
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model)

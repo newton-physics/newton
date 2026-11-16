@@ -5590,6 +5590,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.model.body_world,
                 self.mjc_body_to_newton,
                 body_gravcomp,
+                self._option_world,
             ],
             outputs=[out_body_acceleration],
             device=self.model.device,
@@ -5971,13 +5972,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.jnt_actfrcrange[:] = self.mjw_model.jnt_actfrcrange.numpy()[0]
             if flags & ModelFlags.ACTUATOR_PROPERTIES and self.mjc_actuator_ctrl_source is not None:
                 self.mj_model.actuator_ctrlrange[:] = self.mjw_model.actuator_ctrlrange.numpy()[0]
-                # Joint-target rows are owned by the DOF force notification.
+                self.mj_model.actuator_forcerange[:] = self.mjw_model.actuator_forcerange.numpy()[0]
+                # Joint-target gains are owned by the DOF force notification.
                 ctrl_direct = self.mjc_actuator_ctrl_source.numpy() == SolverMuJoCo.CtrlSource.CTRL_DIRECT
                 for name in (
                     "actuator_gainprm",
                     "actuator_biasprm",
                     "actuator_dynprm",
-                    "actuator_forcerange",
                     "actuator_actrange",
                     "actuator_gear",
                     "actuator_cranklength",
@@ -6157,9 +6158,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return hasattr(data, "nworld")
 
     def _apply_mjc_control(self, model: Model, state: State, control: Control | None, mj_data: MjWarpData | MjData):
-        if control is None or control.joint_f is None:
-            if state.body_f is None:
-                return
+        # Without applied forces only xfrc_applied is written, to clear the previous step's forces.
+        apply_control = (control is not None and control.joint_f is not None) or state.body_f is not None
+        if not apply_control:
+            control = None
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         single_world_template = False
         if is_mjwarp:
@@ -6241,27 +6243,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 device=model.device,
             )
 
-        if state.body_f is not None:
-            # Launch over MuJoCo bodies
-            nbody = self.mjc_body_to_newton.shape[1]
-            wp.launch(
-                apply_mjc_body_f_kernel,
-                dim=(nworld, nbody),
-                inputs=[
-                    self.mjc_body_to_newton,
-                    model.body_flags,
-                    state.body_f,
-                    model.body_mass,
-                    model.body_world,
-                    model.gravity,
-                    self.mjw_model.body_gravcomp,
-                    self._option_world,
-                ],
-                outputs=[
-                    xfrc,
-                ],
-                device=model.device,
-            )
+        # Runs every step, also without body forces: the free-joint kernel below adds to xfrc_applied.
+        nbody = self.mjc_body_to_newton.shape[1]
+        wp.launch(
+            apply_mjc_body_f_kernel,
+            dim=(nworld, nbody),
+            inputs=[
+                self.mjc_body_to_newton,
+                model.body_flags,
+                state.body_f,
+            ],
+            outputs=[
+                xfrc,
+            ],
+            device=model.device,
+        )
         if control is not None and control.joint_f is not None:
             # Free/DISTANCE joint forces are applied via xfrc_applied to preserve COM-wrench semantics.
             nbody = self.mjc_body_to_newton.shape[1]
@@ -6281,8 +6277,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         if not is_mjwarp:
             mj_data.xfrc_applied = xfrc.numpy()
-            mj_data.ctrl[:] = ctrl.numpy().flatten()
-            mj_data.qfrc_applied[:] = qfrc.numpy()
+            if apply_control:
+                mj_data.ctrl[:] = ctrl.numpy().flatten()
+                mj_data.qfrc_applied[:] = qfrc.numpy()
 
     def _update_mjc_data(
         self,
@@ -7076,6 +7073,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
 
         self._option_world = self._resolve_option_world(model, separate_worlds)
+
+        if not separate_worlds and self._option_world == 0:
+            # The single MuJoCo world uses world 0's gravity, which kinematic bodies ignore.
+            kinematic = (model.body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0
+            gravity = model.gravity.numpy()
+            if np.any((model.body_world.numpy() == -1) & ~kinematic) and not np.array_equal(gravity[0], gravity[-1]):
+                raise ValueError(
+                    "SolverMuJoCo simulates the bodies of global world -1 and world 0 in one MuJoCo world, which "
+                    f"has one gravity, but got {gravity[-1]} for global world -1 and {gravity[0]} for world 0. "
+                    "Set both to the same value, or move the dynamic global bodies into world 0."
+                )
 
         # Validate model compatibility with separate_worlds mode
         if separate_worlds:
@@ -11538,8 +11546,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _update_actuator_properties(self):
         """Update actuator properties in the MuJoCo model.
 
-        JOINT_TARGET actuators take gains from joint target arrays, but their control ranges still come from the
-        corresponding MuJoCo actuator custom attributes.
+        JOINT_TARGET gains come from joint arrays; control and authored force ranges come from actuator attributes.
         """
         if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_actuator_idx is None:
             return
@@ -11589,6 +11596,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 actuator_dynprm,
                 actuator_ctrlrange,
                 actuator_forcerange,
+                getattr(mujoco_attrs, "actuator_has_forcerange", None),
                 actuator_actrange,
                 actuator_gear,
                 actuator_cranklength,

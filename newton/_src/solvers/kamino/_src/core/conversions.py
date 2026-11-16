@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from enum import IntEnum
 from typing import TYPE_CHECKING
 
@@ -42,7 +43,6 @@ from .types import mat63f, to_warp_int32_array, vec6f
 
 if TYPE_CHECKING:
     from ..core.model import ModelKamino, ModelKaminoInfo
-import logging
 
 logger = logging.getLogger(__name__)
 
