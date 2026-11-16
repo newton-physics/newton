@@ -283,8 +283,8 @@ def test_deep_articulation(test, device):
 def test_empty_articulation_selection(test, device):
     model = _build_heterogeneous_model(device)
     state = model.state()
-    body_q = state.body_q.numpy()
-    body_qd = state.body_qd.numpy()
+    body_q = state.body_q.numpy().copy()
+    body_qd = state.body_qd.numpy().copy()
 
     newton.eval_fk(
         model,

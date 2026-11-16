@@ -111,6 +111,17 @@ Collision frequency
    frequent updates. See :ref:`collision-frequency-in-the-simulation-loop` for
    loop patterns.
 
+   For rigid contacts with fast motion, consider the experimental
+   :class:`CollisionSubstepScheduler` instead of a fixed collision interval.
+   It preserves velocity-guided speculative contacts and refreshes them based on
+   observed shape velocity changes, travel, and the maximum refresh interval.
+   Rotating shapes and observed velocity changes require one-substep prediction
+   horizons; gravity and impacts may require checks every substep. It preserves
+   every solver substep.
+   See :ref:`tuning-adaptive-collision-detection` for
+   configuration, solver requirements, overflow diagnostics, and the limits of
+   this alternative to full continuous collision detection.
+
 Solver-Specific Knobs
 ---------------------
 

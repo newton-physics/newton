@@ -116,6 +116,11 @@ step. `orientation` determines which signed side of the neighboring bypass
 span engages the roller. `tendon_activation_tol` on the solver adds a
 radius-relative activation gap to prevent state chattering near tangency.
 
+A candidate can cross zero wrap during a step before the next routing update
+bypasses it. Material bookkeeping uses signed wrap arcs during this transition
+so that splitting and merging spans does not create or remove cable material.
+This does not make negative wraps a supported persistent route.
+
 Dynamic routing currently supports isolated rolling candidates only.
 Consecutive dynamic roller guides, endpoint candidates, and route reordering
 are not supported.
@@ -270,6 +275,17 @@ and reject unsupported semantics rather than silently discard them.
   diagnostic from the accepted pose. The diagnostic does not repair the route.
 - Dynamic candidates cannot change their authored order or attach between
   non-neighboring guides.
+- Circular neighbors with parallel axes use an exact common tangent, including
+  when their centers are axially offset. Overlapping circles
+  can have a valid external tangent; an internal tangent requires their center
+  distance projected into the roller plane to exceed the sum of their radii.
+  A dynamic guide with a missing or collapsed initial bypass starts inactive.
+  Later undefined bypasses preserve its previous active state. Tilted-axis bypass
+  tangents use an iterative solve; if it does not converge within the geometric and float32
+  precision tolerance, routing emits a diagnostic, keeps the previous active
+  state, and retries at the next substep. An impossible accepted roller span
+  emits a diagnostic; preserving its previous attachment points does not make
+  that geometry physically valid.
 - Native tendon data is not imported from USD/MuJoCo.
 - Tendon actuation is not part of {class}`~newton.Control`, and tendon
   diagnostics are solver-owned rather than part of {class}`~newton.State`.

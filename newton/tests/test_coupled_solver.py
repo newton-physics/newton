@@ -3143,7 +3143,7 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
                 wp.launch(
                     eval_mujoco_coupling_gravity_acceleration_kernel,
                     dim=3,
-                    inputs=[gravity, body_world, mjc_body_to_newton, body_gravcomp],
+                    inputs=[gravity, body_world, mjc_body_to_newton, body_gravcomp, 0],
                     outputs=[acceleration],
                     device=device,
                 )
@@ -3280,6 +3280,20 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
             np.array([[0.0, 0.0, -7.5], [0.0, 0.0, -5.0], [0.0, 0.0, -2.5]], dtype=np.float32),
             atol=1.0e-6,
         )
+
+        # A global body that shares the MuJoCo world with world 0 follows world 0's gravity.
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.begin_world()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.end_world()
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model=model, iterations=1, disable_contacts=True)
+        model.set_gravity((0.0, 0.0, -4.0), world=-1)
+        solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+        body_acceleration = wp.empty(model.body_count, dtype=wp.vec3, device=model.device)
+        solver.coupling_eval_gravity_acceleration(body_acceleration, None)
+        np.testing.assert_allclose(body_acceleration.numpy(), [[0.0, 0.0, -10.0]] * 2, atol=1.0e-6)
 
 
 def _coupled_vbd_reset_preserves_pose_history(test, device):

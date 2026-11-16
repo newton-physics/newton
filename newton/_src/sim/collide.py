@@ -3151,6 +3151,7 @@ class CollisionPipeline:
             speculative_active = False
             search_gap = model.shape_gap
 
+        shape_gap = model.shape_gap
         # Rigid contact detection -- broad phase + narrow phase.
         # These kernels hardcode record_tape=False internally so they are
         # never captured on an active wp.Tape.  The differentiable
@@ -3176,7 +3177,7 @@ class CollisionPipeline:
                 model.shape_collision_radius,
                 model.shape_source_ptr,
                 model.shape_margin,
-                model.shape_gap,
+                shape_gap,
                 model.shape_collision_aabb_lower,
                 model.shape_collision_aabb_upper,
                 model.shape_flags,
@@ -3209,7 +3210,7 @@ class CollisionPipeline:
                     model.shape_collision_aabb_lower,
                     model.shape_collision_aabb_upper,
                     model.shape_collision_radius,
-                    model.shape_gap,
+                    shape_gap,
                     collision_update_dt,
                     max_speculative_extension,
                 ],
@@ -3291,7 +3292,7 @@ class CollisionPipeline:
         writer_data.sub_key_bits = self._contact_sort_sub_key_bits
         writer_data.body_q = state.body_q
         writer_data.shape_body = model.shape_body
-        writer_data.shape_gap = model.shape_gap
+        writer_data.shape_gap = shape_gap
         writer_data.contact_count = contacts.rigid_contact_count
         writer_data.out_shape0 = contacts.rigid_contact_shape0
         writer_data.out_shape1 = contacts.rigid_contact_shape1
@@ -3335,7 +3336,7 @@ class CollisionPipeline:
             )
         if self._speculative_enabled:
             narrow_phase_extension_kwargs.update(
-                shape_base_gap=model.shape_gap,
+                shape_base_gap=shape_gap,
                 shape_linear_velocity=self._shape_linear_velocity,
                 shape_angular_velocity=self._shape_angular_velocity,
                 collision_update_dt=collision_update_dt,
