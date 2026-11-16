@@ -278,6 +278,8 @@ class ConstraintStabilizationConfig(ConfigBase):
     delta: float = 1.0e-6
     """
     Contact penetration margin used for unilateral contact constraints.\n
+    Contacts within this distance [m] of touching get no stabilization bias, and external
+    contacts separated by no more than it are never culled as speculative.\n
     Must be non-negative.\n
     Defaults to `1.0e-6`.
     """
@@ -487,7 +489,8 @@ class ConstrainedDynamicsConfig(ConfigBase):
 
     cull_speculative_contacts: bool = True
     """
-    Whether to cull speculative (= separated) contacts in the dynamics solve.
+    Whether to cull speculative contacts, i.e. external contacts separated by more than
+    :attr:`ConstraintStabilizationConfig.delta`, in the dynamics solve.
     These contacts have occasionally led to numerical instabilities, and
     can yield inaccurate restitutive impacts.
 
