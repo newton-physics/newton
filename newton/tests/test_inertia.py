@@ -22,6 +22,55 @@ from newton.tests.unittest_utils import assert_np_equal
 
 
 class TestInertia(unittest.TestCase):
+    def test_compound_body_rotated_offset_inertia(self):
+        """Accumulate asymmetric shapes about their shared center of mass."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        masses, centers, inertias = [], [], []
+        shapes = (
+            ((0.1, 0.2, 0.3), 200.0, (0.4, -0.2, 0.8), (0.3, -0.4, 0.7)),
+            ((0.4, 0.1, 0.2), 700.0, (-0.3, 0.6, 0.1), (-0.8, 0.2, -0.5)),
+            ((0.2, 0.3, 0.1), 1500.0, (0.7, 0.3, -0.2), (0.1, 0.9, 0.4)),
+        )
+        for half, density, center, angles in shapes:
+            quat = wp.quat_rpy(*angles)
+            builder.add_shape_box(
+                body,
+                xform=wp.transform(center, quat),
+                hx=half[0],
+                hy=half[1],
+                hz=half[2],
+                cfg=newton.ModelBuilder.ShapeConfig(density=density),
+            )
+            mass = 8.0 * np.prod(half) * density
+            diagonal = mass / 3.0 * (np.sum(np.square(half)) - np.square(half))
+            # Independent float64 quaternion rotation and parallel-axis oracle.
+            x, y, z, w = np.asarray(quat, dtype=np.float64)
+            rotation = np.array(
+                [
+                    [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                    [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                    [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+                ]
+            )
+            masses.append(mass)
+            centers.append(center)
+            inertias.append(rotation @ np.diag(diagonal) @ rotation.T)
+            total = sum(masses)
+            com = np.average(centers, axis=0, weights=masses)
+            expected = np.zeros((3, 3))
+            for shape_mass, shape_com, shape_inertia in zip(masses, centers, inertias, strict=True):
+                offset = np.asarray(shape_com) - com
+                expected += shape_inertia + shape_mass * (np.dot(offset, offset) * np.eye(3) - np.outer(offset, offset))
+            self.assertAlmostEqual(builder.body_mass[body], total, delta=total * 1e-6)
+            np.testing.assert_allclose(builder.body_com[body], com, atol=1e-7, rtol=1e-6)
+            np.testing.assert_allclose(
+                np.asarray(builder.body_inertia[body]).reshape(3, 3), expected, atol=1e-6, rtol=3e-6
+            )
+            np.testing.assert_allclose(
+                np.asarray(builder.body_inv_inertia[body]).reshape(3, 3), np.linalg.inv(expected), atol=1e-6, rtol=3e-6
+            )
+
     def test_cube_mesh_inertia(self):
         # Unit cube
         vertices = [

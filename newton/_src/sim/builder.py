@@ -14109,36 +14109,35 @@ class ModelBuilder:
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
         if i == -1:
             return
-
-        # find new COM
-        new_mass = self.body_mass[i] + m
-
-        if new_mass == 0.0:  # no mass
+        old_mass = self.body_mass[i]
+        new_mass = old_mass + m
+        if new_mass == 0.0:
             return
-
-        new_com = (self.body_com[i] * self.body_mass[i] + p * m) / new_mass
-
-        # shift inertia to new COM
-        com_offset = new_com - self.body_com[i]
-        shape_offset = new_com - p
-
-        new_inertia = transform_inertia(
-            self.body_mass[i], self.body_inertia[i], com_offset, wp.quat_identity()
-        ) + transform_inertia(m, inertia, shape_offset, q)
-
+        # Keep host accumulation in float32, matching the builder's Warp values.
+        # The existing body tensor already uses the body frame; only the new
+        # shape tensor needs rotation before the parallel-axis shifts.
+        old_com = np.asarray(self.body_com[i], dtype=np.float32)
+        shape_com = np.asarray(p, dtype=np.float32)
+        new_com = (old_com * np.float32(old_mass) + shape_com * np.float32(m)) / np.float32(new_mass)
+        com_offset = new_com - old_com
+        shape_offset = new_com - shape_com
+        rotation = np.asarray(wp.quat_to_matrix(q)).reshape(3, 3)
+        identity = np.eye(3, dtype=np.float32)
+        old_inertia = np.asarray(self.body_inertia[i]).reshape(3, 3)
+        shape_inertia = np.asarray(inertia).reshape(3, 3)
+        combined = (
+            old_inertia
+            + np.float32(old_mass) * (np.dot(com_offset, com_offset) * identity - np.outer(com_offset, com_offset))
+        ) + (
+            rotation @ shape_inertia @ rotation.T
+            + np.float32(m) * (np.dot(shape_offset, shape_offset) * identity - np.outer(shape_offset, shape_offset))
+        )
+        new_inertia = wp.mat33(combined)
         self.body_mass[i] = new_mass
         self.body_inertia[i] = new_inertia
-        self.body_com[i] = new_com
-
-        if new_mass > 0.0:
-            self.body_inv_mass[i] = 1.0 / new_mass
-        else:
-            self.body_inv_mass[i] = 0.0
-
-        if any(x for x in new_inertia):
-            self.body_inv_inertia[i] = _inverse_inertia(new_inertia)
-        else:
-            self.body_inv_inertia[i] = new_inertia
+        self.body_com[i] = wp.vec3(new_com)
+        self.body_inv_mass[i] = 1.0 / new_mass if new_mass > 0.0 else 0.0
+        self.body_inv_inertia[i] = _inverse_inertia(new_inertia) if np.any(combined) else new_inertia
 
     def _validate_parent_body(self, parent_body: int, child: int) -> None:
         """
