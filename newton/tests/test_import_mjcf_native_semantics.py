@@ -3,7 +3,6 @@
 
 """Check ranges and deferred defaults against the native compiler."""
 
-import importlib.util
 import tempfile
 import unittest
 from contextlib import nullcontext
@@ -16,9 +15,10 @@ import newton
 from newton import NewtonWarning
 from newton._src.solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import requires
 
 
-@unittest.skipUnless(importlib.util.find_spec("mujoco"), "MuJoCo is required")
+@requires("mujoco")
 class TestImportMjcfNativeSemantics(unittest.TestCase):
     def test_damping_resolves_before_solver_construction(self):
         """Resolve composed damping at finalization while preserving overrides and builder intent."""

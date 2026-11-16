@@ -19,6 +19,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.types import (
     assign_to_warp_int32_array,
     to_warp_int32_array,
@@ -289,5 +290,6 @@ class TestAssignToWarpInt32Array(unittest.TestCase):
 ###
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     setup_tests()
     unittest.main(verbosity=2)

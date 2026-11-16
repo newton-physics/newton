@@ -37,6 +37,7 @@ newton.utils
    rasterize_mesh_to_heightfield
    remesh_mesh
    run_benchmark
+   setup_console_logging
    solidify_mesh
    string_to_warp
    validate_tet_mesh

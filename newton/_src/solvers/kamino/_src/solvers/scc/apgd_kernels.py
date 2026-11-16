@@ -11,7 +11,7 @@ masks select active correction solves, inner iterations, and trial steps.
 import warp as wp
 
 from ..padmm.math import project_to_coulomb_cone
-from .types import DVIConfigStruct, DVIStatus
+from .types import SCCConfigStruct, SCCStatus
 
 wp.set_module_options({"enable_backward": False})
 
@@ -74,7 +74,7 @@ def project_unilateral(
 def initialize_phase(
     dim: wp.array[wp.int32],
     njc: wp.array[wp.int32],
-    config: wp.array[DVIConfigStruct],
+    config: wp.array[SCCConfigStruct],
     block_iteration: wp.int32,
     operator_scale: wp.array[wp.float32],
     estimating: wp.array[wp.bool],
@@ -325,7 +325,7 @@ def check_descent(
     inner: wp.array[wp.bool],
     active: wp.array[wp.bool],
     condition: wp.array[wp.int32],
-    status: wp.array[DVIStatus],
+    status: wp.array[SCCStatus],
 ):
     """Check the quadratic upper bound and reject exhausted searches.
 
@@ -459,7 +459,7 @@ def accept_iteration(
     state: wp.array[APGDState],
     inner: wp.array[wp.bool],
     condition: wp.array[wp.int32],
-    status: wp.array[DVIStatus],
+    status: wp.array[SCCStatus],
 ):
     """Accept the step, restart unhelpful momentum, and test the inner QP residual."""
     wid = wp.tid()
@@ -544,7 +544,7 @@ def finish_correction(
     state: wp.array[APGDState],
     active: wp.array[wp.bool],
     condition: wp.array[wp.int32],
-    status: wp.array[DVIStatus],
+    status: wp.array[SCCStatus],
 ):
     """Stop only on the recomputed nonlinear residual or an explicit work limit."""
     wid = wp.tid()
@@ -593,7 +593,7 @@ def scatter_solution(
 
 
 @wp.kernel
-def finish_phase(phase: wp.array[wp.bool], state: wp.array[APGDState], status: wp.array[DVIStatus]):
+def finish_phase(phase: wp.array[wp.bool], state: wp.array[APGDState], status: wp.array[SCCStatus]):
     """Expose line-search failure even when the previous iterate was feasible."""
     wid = wp.tid()
     if phase[wid] and state[wid].failed != 0:
@@ -604,7 +604,7 @@ def finish_phase(phase: wp.array[wp.bool], state: wp.array[APGDState], status: w
 
 
 @wp.kernel
-def guard_convergence(status: wp.array[DVIStatus]):
+def guard_convergence(status: wp.array[SCCStatus]):
     """Prevent a failed APGD line search from being reported as converged."""
     wid = wp.tid()
     info = status[wid]

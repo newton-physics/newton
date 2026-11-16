@@ -3,7 +3,6 @@
 
 """Compare the direct native import experiment with independently compiled MJCF."""
 
-import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,9 +14,10 @@ import warp as wp
 import newton
 from newton._src.solvers.mujoco.import_mjcf_native import parse_mjcf as import_mjcf_direct
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import requires
 
 
-@unittest.skipUnless(importlib.util.find_spec("mujoco"), "MuJoCo is required")
+@requires("mujoco")
 class TestImportMjcfDirect(unittest.TestCase):
     def test_native_defaults_without_xml_bridge(self):
         """Resolve inherited actuator/material defaults without the legacy parser."""

@@ -4,7 +4,6 @@
 """Exercise the independent native MJCF builder entry point."""
 
 import builtins
-import importlib.util
 import os
 import struct
 import tempfile
@@ -25,6 +24,7 @@ from newton._src.utils.texture import normalize_texture
 from newton.solvers import SolverMuJoCo, SolverXPBD
 from newton.tests import test_import_mjcf
 from newton.tests.test_mujoco_general_actuators import MJCF_SLIDERCRANK_ACTUATOR
+from newton.tests.unittest_utils import requires
 
 MJCF_BALL_ACTUATORS = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="ball">
@@ -95,7 +95,7 @@ def _assert_mesh_geometry(test, builder, vertices, faces=None, *, normals=None, 
         np.testing.assert_allclose(mesh.uvs, np.asarray(uvs)[vertex_ids], atol=1e-6)
 
 
-@unittest.skipUnless(importlib.util.find_spec("mujoco"), "MuJoCo is required")
+@requires("mujoco")
 class TestImportMjcfNative(unittest.TestCase):
     def assert_roundtrip(self, xml, fields, **kwargs):
         """Compare native parameters after converting through the builder."""
@@ -441,7 +441,7 @@ class TestImportMjcfNative(unittest.TestCase):
         edited = SolverMuJoCo(builder.finalize())
         np.testing.assert_allclose(edited.mj_model.hfield_size[0], [2, 6, 2, 1])
 
-    @unittest.skipUnless(importlib.util.find_spec("pxr"), "USD is required")
+    @requires("pxr")
     def test_concave_mesh_usd_collision_parity(self):
         """Preserve concavity, inertia, and contact response across mesh coordinate frames."""
         if not wp.is_cuda_available():

@@ -15,7 +15,7 @@ from .sparse_kernels import _subgroup_sum, _unilateral_nzb_offsets
 if TYPE_CHECKING:
     from ...dynamics.dual import DualProblem
     from .joint_blocks import JointBlockSolver
-    from .sparse import SparseDVIPath
+    from .sparse import SparseSCCPath
 
 wp.set_module_options({"enable_backward": False})
 
@@ -197,7 +197,7 @@ class PackedCoupling:
     """
 
     @classmethod
-    def create(cls, path: SparseDVIPath, blocks: JointBlockSolver | None) -> PackedCoupling | None:
+    def create(cls, path: SparseSCCPath, blocks: JointBlockSolver | None) -> PackedCoupling | None:
         """Select compact storage only for supported saturated joint-block solves."""
         if path.size.num_worlds < 2048 or blocks is None or blocks._persistent or blocks._body_seeds is None:
             return None
@@ -208,7 +208,7 @@ class PackedCoupling:
             return None
         return cls(path, blocks, slots=slots)
 
-    def __init__(self, path: SparseDVIPath, blocks: JointBlockSolver, *, slots: int | None = None):
+    def __init__(self, path: SparseSCCPath, blocks: JointBlockSolver, *, slots: int | None = None):
         """Allocate topology-bounded cache storage before graph capture."""
         self._device = path.device
         self._worlds = path.size.num_worlds
@@ -223,7 +223,7 @@ class PackedCoupling:
         self.masks = wp.empty(self._worlds * self.width, dtype=wp.uint64, device=self._device)
         self.values = wp.empty(self._worlds * self.width * self.slots * 6, dtype=wp.float32, device=self._device)
 
-    def assemble(self, path: SparseDVIPath, problem: DualProblem) -> None:
+    def assemble(self, path: SparseSCCPath, problem: DualProblem) -> None:
         """Overwrite all active masks and coefficients after inequality mapping."""
         data, state, jacobian = problem.data, path.data.state, path.jacobians
         operator = problem.delassus
@@ -264,7 +264,7 @@ class PackedCoupling:
             device=self._device,
         )
 
-    def build_rhs(self, path: SparseDVIPath, problem: DualProblem) -> None:
+    def build_rhs(self, path: SparseSCCPath, problem: DualProblem) -> None:
         """Reuse cached coefficients for either initial or final bilateral solve."""
         data, state = problem.data, path.data.state
         wp.launch(

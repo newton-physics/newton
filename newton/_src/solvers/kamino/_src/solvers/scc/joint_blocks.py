@@ -26,7 +26,7 @@ from .sparse_kernels import _shuffle_lane_32, _unilateral_nzb_offsets
 
 if TYPE_CHECKING:
     from ...dynamics.dual import DualProblem
-    from .sparse import SparseDVIPath
+    from .sparse import SparseSCCPath
 
 wp.set_module_options({"enable_backward": False, "enable_mathdx_solver": False, "enable_mathdx_gemm": False})
 
@@ -36,7 +36,7 @@ _PERSISTENT_MAX_BLOCKS = 4096
 
 
 def _build_topology(
-    path: SparseDVIPath, pair_world: wp.array, pair_row: wp.array, pair_col: wp.array, *, allow_fill: bool = False
+    path: SparseSCCPath, pair_world: wp.array, pair_row: wp.array, pair_col: wp.array, *, allow_fill: bool = False
 ):
     """Build a static elimination schedule, optionally allowing bounded fill."""
     joints = path.model.joints
@@ -169,7 +169,7 @@ def _build_topology(
     }, "eligible homogeneous joint-block graph"
 
 
-def _build_body_masks(path: SparseDVIPath, metadata: dict) -> tuple[wp.array, wp.array] | None:
+def _build_body_masks(path: SparseSCCPath, metadata: dict) -> tuple[wp.array, wp.array] | None:
     """Find coupling seeds and forward-solve support shared by local body labels."""
     groups = metadata["ng"]
     if groups > 64:
@@ -788,7 +788,7 @@ def _build_levels(metadata: dict) -> dict:
     return levels
 
 
-def _build_assembly_template(path: SparseDVIPath, targets: np.ndarray, num_blocks: int) -> tuple | None:
+def _build_assembly_template(path: SparseSCCPath, targets: np.ndarray, num_blocks: int) -> tuple | None:
     """Share metadata only when every world's complete ordered contribution list agrees."""
     if not targets.size:
         return None
@@ -839,7 +839,7 @@ class JointBlockSolver:
     """
 
     @classmethod
-    def create(cls, path: SparseDVIPath, *, persistent: bool = False) -> JointBlockSolver | None:
+    def create(cls, path: SparseSCCPath, *, persistent: bool = False) -> JointBlockSolver | None:
         """Allocate a fixed schedule, allowing bounded fill for persistent solves."""
         if path.bilateral_nzb_pairs is None or not path.device.is_cuda:
             return None
@@ -848,7 +848,7 @@ class JointBlockSolver:
             return None
         return cls(path, metadata, persistent=persistent)
 
-    def __init__(self, path: SparseDVIPath, metadata: dict, *, persistent: bool = False):
+    def __init__(self, path: SparseSCCPath, metadata: dict, *, persistent: bool = False):
         self._persistent = persistent
         self._device = path.device
         self._info = path.data.bilateral_operator.info
@@ -911,7 +911,7 @@ class JointBlockSolver:
             device=self._device,
         )
 
-    def assemble(self, path: SparseDVIPath, problem: DualProblem) -> None:
+    def assemble(self, path: SparseSCCPath, problem: DualProblem) -> None:
         """Assemble normalized joint blocks directly from their body contributions."""
         state = path.data.state
         state.bilateral_preconditioner.zero_()
@@ -969,7 +969,7 @@ class JointBlockSolver:
                 device=self._device,
             )
 
-    def prepare(self, path: SparseDVIPath, problem: DualProblem) -> None:
+    def prepare(self, path: SparseSCCPath, problem: DualProblem) -> None:
         """Factor the already assembled, normalized joint blocks.
 
         Preserve its diagonal and regularization exactly. Unsupported dynamic
@@ -1101,7 +1101,7 @@ class JointBlockSolver:
             device=self._device,
         )
 
-    def response(self, path: SparseDVIPath, problem: DualProblem, *, coupling: PackedCoupling | None = None) -> None:
+    def response(self, path: SparseSCCPath, problem: DualProblem, *, coupling: PackedCoupling | None = None) -> None:
         """Whiten into compact response storage, omitting identity dummy rows."""
         state, schedule = path.data.state, self._schedule
         reach_inputs = [None] * 14
