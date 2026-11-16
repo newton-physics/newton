@@ -233,23 +233,52 @@ dynamic entities, so the global entry stays zero.
 The residual components ``r_p``, ``r_d``, and ``r_c`` and the iteration counts
 remain available through :attr:`~newton.solvers.SolverKamino.status`.
 
-:class:`~newton.solvers.SolverVBD` reports the largest local Newton decrement
-``f · H⁻¹ f`` [J] of each world from its last iteration, where ``f`` is the force
-and ``H`` the Hessian of the step's incremental potential for one particle, or the
-force and torque and 6x6 Hessian of one rigid body. It is twice the energy
-decrease a full local Newton step would predict, so it combines translational and
-rotational residuals in one unit and is zero at equilibrium. VBD has no
-convergence tolerance, so the value is absolute. Because each particle or body is
-sampled just before its own update in the last Gauss-Seidel sweep, the value
-trails the final iterate by part of a sweep. Hard joints and contacts contribute
-their augmented-Lagrangian multiplier terms to ``f``, so the value measures
-stationarity of the current subproblem rather than constraint violation.
+For :class:`~newton.solvers.SolverVBD`, each particle or rigid body is one block
+of the implicit Euler equations. A block's residual is
+
+.. math::
+
+   r(x) = \frac{M}{\Delta t^2}\,(x - x_{\mathrm{pred}}) - f(x),
+
+where :math:`x_{\mathrm{pred}}` is the inertial prediction and :math:`f`
+contains the remaining elastic, contact, joint, and attachment forces. For a
+rigid body, :math:`r` stacks the force and torque residuals and :math:`M` is
+its mass and rotational inertia. VBD reports, for each world, the largest
+stationarity residual
+
+.. math::
+
+   r_i^{\mathsf{T}} H_{ii}^{-1} r_i
+
+over its blocks :math:`i`, where :math:`H_{ii}` is the block's Hessian
+(3x3 for particles, 6x6 for bodies). Inertia is included in both :math:`r_i` and
+:math:`H_{ii}`. The value is the squared :math:`H^{-1}`-norm of the residual: zero
+exactly when the block is stationary, and in energy units [J], which puts
+translational and rotational residuals on one scale. It is twice the energy decrease
+that a full local Newton step would predict. VBD has no convergence tolerance, so
+the value is absolute.
+
+Each block is sampled in the final sweep, just before its own update. It therefore
+sees the current sweep's positions for blocks of earlier colors and the previous
+sweep's positions for blocks of later colors, so the value trails the final iterate
+by part of a sweep.
+
+Constraints that use augmented-Lagrangian (AVBD) handling, such as hard joints,
+contacts, and particle-body attachments, contribute both their penalty term
+:math:`k\,C` and their multiplier term :math:`\lambda` to :math:`f`. The value
+therefore measures stationarity of the current AVBD subproblem, whose multipliers
+and penalties VBD updates during the step. A small value alone does not establish
+that the constraints are satisfied; measure the constraint violation separately when
+that matters.
+
 Particles whose Hessian is nearly singular skip their update and do not
 contribute; rigid bodies regularize their angular Hessian and always contribute.
-Non-finite decrements or particle Hessians report infinity. Global particles and bodies, including every entity of a model built
-without :meth:`~newton.ModelBuilder.begin_world`, report in the final entry.
-With ``iterations=0`` the array is zero, and with
-``integrate_with_external_rigid_solver=True`` only particles contribute.
+Non-finite residuals or particle Hessians report infinity. Global particles and
+bodies, including every entity of a model built without
+:meth:`~newton.ModelBuilder.begin_world`, report in the final entry. With
+``iterations=0`` the array is zero, and with
+``integrate_with_external_rigid_solver=True`` only particles contribute. VBD also
+records this value for every iteration; see :ref:`vbd_residual_history`.
 
 Solver-specific observables
 ---------------------------
@@ -287,6 +316,35 @@ Pass a collection even for one kind, such as ``{"body_qdd"}``. Bare strings and
 unknown names are rejected. ``ObservableKind`` is not iterable; query
 ``solver.supported_observables`` for the names accepted by the configured backend.
 An inherited name does not imply support for that observable.
+
+.. _vbd_residual_history:
+
+VBD residual history
+^^^^^^^^^^^^^^^^^^^^
+
+:class:`~newton.solvers.SolverVBD` exposes
+:attr:`~newton.solvers.SolverVBD.ObservableKind.SOLVER_RESIDUAL_HISTORY` through
+``observables.solver_residual_history``, a ``float32`` array with shape
+``(solver.iterations, model.world_count + 1)``. Row ``k`` holds the
+:ref:`stationarity residual <solver_residual_observable>` of each world sampled
+during iteration ``k``, so ``history[:, w]`` is world ``w``'s convergence curve and
+the last row equals ``SOLVER_RESIDUAL``:
+
+.. code-block:: python
+
+   solver = newton.solvers.SolverVBD(model, iterations=10)
+   observables = solver.observables({solver.ObservableKind.SOLVER_RESIDUAL_HISTORY})
+   solver.step(state_in, state_out, control, contacts, dt, observables=observables)
+   history = observables.solver_residual_history.numpy()  # (10, world_count + 1)
+
+Each row measures the subproblem of its own iteration. VBD updates AVBD
+multipliers and penalties during the step and may rerun collision detection
+between iterations, so the curve need not decrease monotonically.
+
+A step that receives the container overwrites every row, including during graph
+replay. Allocate the container after setting ``solver.iterations``; a step raises
+``ValueError`` if the row count no longer matches. Recording every iteration adds
+one atomic maximum per particle and body per iteration.
 
 .. _steel_sleep_observable:
 

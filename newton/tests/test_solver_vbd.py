@@ -9100,10 +9100,19 @@ add_function_test(
 )
 
 
-def _vbd_world_residual(model, iterations: int, use_contacts: bool, nan_particle: bool = False) -> np.ndarray:
-    """Step ``model`` a few times and return the final per-world VBD residual."""
+def _vbd_world_residual(
+    model, iterations: int, use_contacts: bool, nan_particle: bool = False, with_history: bool = False
+):
+    """Step ``model`` a few times and return the final per-world VBD residual.
+
+    With ``with_history``, also request the per-iteration history and return
+    ``(residual, history)``.
+    """
     solver = newton.solvers.SolverVBD(model, iterations=iterations)
-    observables = solver.observables({solver.ObservableKind.SOLVER_RESIDUAL})
+    kinds = {solver.ObservableKind.SOLVER_RESIDUAL}
+    if with_history:
+        kinds.add(solver.ObservableKind.SOLVER_RESIDUAL_HISTORY)
+    observables = solver.observables(kinds)
     pipeline = newton.CollisionPipeline(model) if use_contacts else None
     contacts = pipeline.contacts() if use_contacts else None
     state_0, state_1 = model.state(), model.state()
@@ -9117,15 +9126,19 @@ def _vbd_world_residual(model, iterations: int, use_contacts: bool, nan_particle
             pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, 1.0 / 240.0, observables=observables)
         state_0, state_1 = state_1, state_0
+    if with_history:
+        return observables.solver_residual.numpy(), observables.solver_residual_history.numpy()
     return observables.solver_residual.numpy()
 
 
 def test_solver_residual_decreases_with_iterations(test, device):
-    """Report per-world Newton decrements that shrink with more VBD iterations.
+    """Report per-world stationarity residuals that shrink with more VBD iterations.
 
     A cloth built without worlds is global and reports in the final entry, and a
-    NaN particle reports infinity instead of being dropped by the maximum. A
-    two-world rigid stack on a shared static ground reports in its local entries.
+    NaN particle reports infinity instead of being dropped by the maximum. The
+    per-iteration history ends with the reported residual and rejects a changed
+    iteration count. A two-world rigid stack on a shared static ground reports in
+    its local entries.
     """
     with wp.ScopedDevice(device):
         cloth_builder = newton.ModelBuilder()
@@ -9156,12 +9169,22 @@ def test_solver_residual_decreases_with_iterations(test, device):
         stack = stack_builder.finalize(device=device)
 
     few = _vbd_world_residual(cloth, 2, use_contacts=False)
-    many = _vbd_world_residual(cloth, 10, use_contacts=False)
+    many, history = _vbd_world_residual(cloth, 10, use_contacts=False, with_history=True)
     test.assertEqual(few.shape, (cloth.world_count + 1,))
     test.assertEqual(few[0], 0.0)
     test.assertGreater(few[-1], 0.0)
     test.assertLess(many[-1], 0.1 * few[-1])
+    test.assertEqual(history.shape, (10, cloth.world_count + 1))
+    np.testing.assert_array_equal(history[-1], many)
+    test.assertGreater(history[0, -1], history[-1, -1])
     test.assertEqual(_vbd_world_residual(cloth, 2, use_contacts=False, nan_particle=True)[-1], np.inf)
+
+    solver = newton.solvers.SolverVBD(cloth, iterations=2)
+    observables = solver.observables({solver.ObservableKind.SOLVER_RESIDUAL_HISTORY})
+    solver.iterations = 3
+    state = cloth.state()
+    with test.assertRaisesRegex(ValueError, "solver_residual_history has 2 rows"):
+        solver.step(state, cloth.state(), cloth.control(), None, 1.0 / 240.0, observables=observables)
 
     few = _vbd_world_residual(stack, 2, use_contacts=True)
     many = _vbd_world_residual(stack, 10, use_contacts=True)

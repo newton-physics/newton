@@ -5360,10 +5360,13 @@ def compute_body_particle_contact_forces(
 
 @wp.func
 def record_world_residual(world_residual: wp.array[float], world: int, decrement: float):
-    """Raise a world's residual to a local Newton decrement ``f · H⁻¹ f`` [J].
+    """Raise a world's residual to a block's stationarity residual ``rᵀ H⁻¹ r`` [J].
 
-    Global world ``-1`` uses the final entry of the ``(world_count + 1,)`` array.
-    Non-finite decrements record infinity, because ``atomic_max`` drops NaN.
+    ``r`` is the block's residual of the implicit Euler equations, including inertia,
+    and ``H`` its Hessian. The solve kernels hold the force ``f = -r``, so callers pass
+    ``f · Δx`` with ``Δx = H⁻¹ f``, which is equal. Global world ``-1`` uses the final
+    entry of the ``(world_count + 1,)`` array. Non-finite values record infinity,
+    because ``atomic_max`` drops NaN.
     """
     w = world
     if w < 0:

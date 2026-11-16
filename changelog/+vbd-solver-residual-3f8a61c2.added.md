@@ -1,1 +1,1 @@
-Support `SolverBase.ObservableKind.SOLVER_RESIDUAL` in `SolverVBD` as the largest per-world local Newton decrement of the last iteration.
+Support `SolverBase.ObservableKind.SOLVER_RESIDUAL` in `SolverVBD` as the largest per-world stationarity residual `r^T H^-1 r` of the last iteration, and add `SolverVBD.ObservableKind.SOLVER_RESIDUAL_HISTORY` with the residual of every iteration.

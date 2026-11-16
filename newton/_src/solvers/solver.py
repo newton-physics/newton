@@ -887,7 +887,12 @@ class SolverBase:
             setattr(
                 observables,
                 name,
-                wp.zeros(count, dtype=spec.dtype, device=self.model.device, requires_grad=requires_grad),
+                wp.zeros(
+                    self._observable_shape(kind, count),
+                    dtype=spec.dtype,
+                    device=self.model.device,
+                    requires_grad=requires_grad,
+                ),
             )
         yield observables
 
@@ -951,6 +956,16 @@ class SolverBase:
                 )
         self._validate_native_contact_export(observables, contacts)
         observables._contact_layouts.update(dict.fromkeys(contact_fields, contacts))
+
+    def _observable_shape(self, kind: str, rows: int) -> tuple[int, ...]:
+        """Return the array shape allocated for observable ``kind``.
+
+        ``rows`` follows the field's declared frequency. Solvers override this
+        hook to add trailing or leading dimensions that depend on their
+        configuration, such as an iteration axis; the default is ``(rows,)``.
+        """
+        del kind
+        return (rows,)
 
     def _validate_native_contact_export(self, observables: SolverBase.Observables, contacts: Contacts) -> None:
         """Check that ``contacts`` can hold the contacts a native backend exports.
