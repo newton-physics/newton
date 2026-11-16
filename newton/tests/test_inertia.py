@@ -408,6 +408,16 @@ class TestInertia(unittest.TestCase):
         assert_np_equal(np.array(com), np.zeros(3), tol=1.0e-6)
         assert_np_equal(np.array(inertia), np.array(outer[2] - inner[2]), tol=1.0e-5)
 
+    def test_hollow_mesh_inertia_respects_thickness(self):
+        """Hollow mesh inertia must depend on the requested shell thickness."""
+        R, rho = 0.5, 1000.0
+        s = newton.Mesh.create_sphere(radius=R, num_latitudes=32, num_longitudes=32, compute_inertia=False)
+        hollow = newton.Mesh(s.vertices, s.indices, is_solid=False)
+        m1, _, _ = compute_inertia_shape(newton.GeoType.MESH, (1.0,) * 3, hollow, rho, is_solid=False, thickness=0.001)
+        m2, _, _ = compute_inertia_shape(newton.GeoType.MESH, (1.0,) * 3, hollow, rho, is_solid=False, thickness=0.01)
+        self.assertNotEqual(m1, m2)
+        self.assertGreater(m2, m1)
+
     def test_compute_inertia_shape_dispatcher(self):
         """Test compute_inertia_shape for primitive shapes against analytical formulas.
 
