@@ -66,6 +66,7 @@ if __name__ == "__main__":
         help="Whether to print detailed information during tests execution.",
     )
     args = parser.parse_args()
+    newton.utils.setup_console_logging()
 
     # Perform global setup (internal + public unit tests)
     setup_tests_internal(verbose=args.verbose, device=args.device, clear_cache=args.clear_cache)

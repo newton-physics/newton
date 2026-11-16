@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.solvers.scc.effort_limit_condensation import EffortLimitCondensation
 from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import make_compact_schur_pgs_kernel
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCStatus
@@ -233,4 +234,5 @@ class TestKaminoEffortLimitCondensation(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     unittest.main()
