@@ -185,7 +185,7 @@ def _scale_spec(spec: mujoco.MjSpec, scale: float) -> None:
             equality.data[10] *= scale
 
 
-def _add_joints(builder, model, selected, parent, body, local, label, attributes, armature_scale, convert_ball):
+def _add_joints(builder, model, selected, parent, body, local, label, convert_ball):
     import mujoco
 
     if not selected:
@@ -211,40 +211,19 @@ def _add_joints(builder, model, selected, parent, body, local, label, attributes
             parent_xform=local * anchor,
             child_xform=anchor,
             label=f"{label}/{name}",
-            damping=float(model.dof_damping[model.jnt_dofadr[first]]),
-            armature=float(model.dof_armature[model.jnt_dofadr[first]]) * armature_scale,
-            friction=float(model.dof_frictionloss[model.jnt_dofadr[first]]),
-            stiffness=float(model.jnt_stiffness[first]),
         )
         return joint, {first: builder.joint_qd_start[joint]}
     canonical_joint_cfg = ModelBuilder.JointDofConfig()
     ordered = sorted(selected, key=lambda j: model.jnt_type[j] != int(mujoco.mjtJoint.mjJNT_SLIDE))
-    linear, angular, custom = [], [], {}
-    for offset, j in enumerate(ordered):
-        d = int(model.jnt_dofadr[j])
+    linear, angular = [], []
+    for j in ordered:
         ref = float(model.qpos0[model.jnt_qposadr[j]])
-        values = attributes(
-            dof_ref=ref,
-            limit_margin=model.jnt_margin[j],
-            solimplimit=model.jnt_solimp[j],
-            solreffriction=model.dof_solref[d],
-            solimpfriction=model.dof_solimp[d],
-            jnt_actgravcomp=bool(model.jnt_actgravcomp[j]),
-        )
-        for key, value in values.items():
-            custom.setdefault(key, {})[offset] = value
         axis = ModelBuilder.JointDofConfig(
             axis=model.jnt_axis[j],
-            damping=float(model.dof_damping[d]),
-            stiffness=float(model.jnt_stiffness[j]),
             rest_q=float(model.qpos_spring[model.jnt_qposadr[j]]) - ref,
-            armature=float(model.dof_armature[d]) * armature_scale,
-            friction=float(model.dof_frictionloss[d]),
             actuator_mode=JointTargetMode.NONE,
             limit_lower=float(model.jnt_range[j, 0] - ref) if model.jnt_limited[j] else -MAXVAL,
             limit_upper=float(model.jnt_range[j, 1] - ref) if model.jnt_limited[j] else MAXVAL,
-            limit_ke=builder.default_joint_cfg.limit_ke,
-            limit_kd=builder.default_joint_cfg.limit_kd,
             effort_limit=float(np.max(np.abs(model.jnt_actfrcrange[j])))
             if model.jnt_actfrclimited[j]
             else canonical_joint_cfg.effort_limit,
@@ -264,10 +243,71 @@ def _add_joints(builder, model, selected, parent, body, local, label, attributes
         parent_xform=local * anchor,
         child_xform=anchor,
         label=f"{label}/{name}",
-        custom_attributes=custom,
     )
     start = builder.joint_qd_start[joint]
     return joint, {j: start + offset for offset, j in enumerate(ordered)}
+
+
+def _import_joint_parameters(
+    builder,
+    model,
+    source_joint,
+    native_joint,
+    dof,
+    attributes,
+    custom,
+    *,
+    armature_scale,
+    limit_mode,
+) -> None:
+    import mujoco
+
+    frequency = Model.AttributeFrequency
+    gains = (builder.default_joint_cfg.limit_ke, builder.default_joint_cfg.limit_kd)
+    count = _joint_dof_count(model.jnt_type[native_joint])
+    source_dof = int(model.jnt_dofadr[native_joint])
+    for k in range(count):
+        builder.joint_damping[dof + k] = float(model.dof_damping[source_dof + k])
+        builder.joint_stiffness[dof + k] = float(model.jnt_stiffness[native_joint])
+        builder.joint_armature[dof + k] = float(model.dof_armature[source_dof + k]) * armature_scale
+        builder.joint_friction[dof + k] = float(model.dof_frictionloss[source_dof + k])
+        if np.all(source_joint.springdamper > 0):
+            builder.custom_attributes["mujoco:native_joint_gain_baseline"].values[dof + k] = (
+                builder.joint_stiffness[dof + k],
+                builder.joint_damping[dof + k],
+            )
+            builder._add_model_finalizer(_finalize_native_core_parameters)
+        if model.jnt_type[native_joint] != mujoco.mjtJoint.mjJNT_FREE:
+            builder.joint_limit_ke[dof + k] = gains[0]
+            builder.joint_limit_kd[dof + k] = gains[1]
+    extra = attributes(
+        jnt_actgravcomp=bool(model.jnt_actgravcomp[native_joint]),
+        native_joint_type=int(model.jnt_type[native_joint]),
+        native_joint_springdamper=source_joint.springdamper,
+        native_joint_limited=int(source_joint.limited),
+        native_joint_actfrcrange=model.jnt_actfrcrange[native_joint],
+        native_joint_actfrclimited=int(source_joint.actfrclimited),
+        native_joint_effort_baseline=builder.joint_effort_limit[dof],
+        native_joint_effort_limited=bool(model.jnt_actfrclimited[native_joint]),
+        native_joint_dampingpoly=source_joint.damping[1:],
+        native_joint_stiffnesspoly=source_joint.stiffness[1:],
+        limit_margin=model.jnt_margin[native_joint],
+        solreflimit=model.jnt_solref[native_joint] if limit_mode == SOLREF_MODE_RAW else (0.0, 0.0),
+        solimplimit=model.jnt_solimp[native_joint],
+        solreflimit_mode=limit_mode,
+        solreflimit_gain_baseline=gains,
+        solreffriction=model.dof_solref[source_dof],
+        solimpfriction=model.dof_solimp[source_dof],
+    )
+    if count > 1:
+        extra.update(attributes(native_joint_range=model.jnt_range[native_joint]))
+    else:
+        extra.update(attributes(dof_ref=float(model.qpos0[model.jnt_qposadr[native_joint]])))
+    for key, value in extra.items():
+        for k in range(1 if key.startswith("mujoco:native_joint_") else count):
+            builder.custom_attributes[key].values[dof + k] = value
+    for k in range(count):
+        builder._process_custom_attributes(dof + k, custom(frequency.JOINT_DOF, source_joint), frequency.JOINT_DOF)
 
 
 def _color_texture(model, material_id):
@@ -318,6 +358,45 @@ def _mesh(model, mesh_id, material_id, maxhullvert):
         maxhullvert=maxhullvert,
         **material,
     )
+
+
+def _shape_geometry(model, spec, i, meshes, mesh_maxhullvert) -> tuple[np.ndarray, Mesh | Heightfield | None]:
+    import mujoco
+
+    kind = int(model.geom_type[i])
+    size = model.geom_size[i].copy()
+    src = None
+    if model.geom_type[i] == mujoco.mjtGeom.mjGEOM_SPHERE:
+        size[:] = size[0]
+    elif model.geom_type[i] in (mujoco.mjtGeom.mjGEOM_CAPSULE, mujoco.mjtGeom.mjGEOM_CYLINDER):
+        size[2] = size[0]
+    elif kind == int(mujoco.mjtGeom.mjGEOM_PLANE):
+        size[:] = 0
+    elif kind == int(mujoco.mjtGeom.mjGEOM_MESH):
+        mesh_id = int(model.geom_dataid[i])
+        material_id = int(model.geom_matid[i])
+        key = (mesh_id, material_id)
+        if key not in meshes:
+            native_maxhullvert = spec.meshes[mesh_id].maxhullvert
+            maxhullvert = native_maxhullvert if native_maxhullvert >= 4 else mesh_maxhullvert
+            meshes[key] = _mesh(model, mesh_id, material_id, maxhullvert)
+        src = meshes[key]
+        size[:] = 1
+    elif kind == int(mujoco.mjtGeom.mjGEOM_HFIELD):
+        h = int(model.geom_dataid[i])
+        rows, cols = int(model.hfield_nrow[h]), int(model.hfield_ncol[h])
+        adr = int(model.hfield_adr[h])
+        src = Heightfield(
+            data=model.hfield_data[adr : adr + rows * cols].reshape(rows, cols).copy(),
+            nrow=rows,
+            ncol=cols,
+            hx=model.hfield_size[h, 0],
+            hy=model.hfield_size[h, 1],
+            min_z=0.0,
+            max_z=model.hfield_size[h, 2],
+        )
+        size[:] = 1
+    return size, src
 
 
 def _import_options(builder, spec, attributes):
@@ -438,6 +517,107 @@ def _joint_target(builder, model, i, dof, bias, values, pending_damping, *, dof_
         )
     values["mujoco:ctrl_source"] = int(CtrlSource.JOINT_TARGET)
     values["mujoco:ctrl_type"] = int(CtrlType.POSITION if mode == JointTargetMode.POSITION else CtrlType.VELOCITY)
+
+
+def _import_actuators(
+    builder, spec, model, bodies, joints, tendons, sites, attributes, custom, prefix, bias, ctrl_direct
+) -> None:
+    import mujoco
+
+    actuator_start = builder._custom_frequency_counts.get("mujoco:actuator", 0)
+    skipped_actuators = 0
+    pending_damping: set[int] = set()
+    transmission_types = {int(native): int(newton) for newton, native in _transmission_types().items()}
+    targets = {
+        TrnType.JOINT: joints,
+        TrnType.JOINT_IN_PARENT: joints,
+        TrnType.TENDON: tendons,
+        TrnType.SITE: sites,
+        TrnType.BODY: {j: b for j, b in enumerate(bodies) if b >= 0},
+        TrnType.SLIDERCRANK: sites,
+    }
+    for i, actuator in enumerate(spec.actuators):
+        transmission = transmission_types[int(model.actuator_trntype[i])]
+        source_target, source_alt = map(int, model.actuator_trnid[i])
+        mapping = targets[transmission]
+        if source_target not in mapping or (
+            source_alt >= 0 and transmission in (TrnType.SITE, TrnType.SLIDERCRANK) and source_alt not in sites
+        ):
+            warnings.warn(
+                f"Actuator {model.actuator(i).name!r} targets an excluded element; skipping.",
+                NewtonWarning,
+                stacklevel=3,
+            )
+            skipped_actuators += 1
+            continue
+        target = mapping[source_target]
+        alternate = sites[source_alt] if source_alt >= 0 and transmission in (TrnType.SITE, TrnType.SLIDERCRANK) else -1
+        native_parameters = _read_native_parameters("actuator", actuator)
+        values = attributes(
+            native_actuator_target_kd=-1.0,
+            native_actuator_target_gear=1.0,
+            native_actuator_inheritrange_bounds=(0.0, 0.0),
+            actuator_label=f"{prefix}/{model.actuator(i).name or f'actuator_{i}'}",
+            ctrl_source=int(CtrlSource.CTRL_DIRECT),
+            ctrl_type=int(
+                CtrlType.DCMOTOR if model.actuator_gaintype[i] == mujoco.mjtGain.mjGAIN_DCMOTOR else CtrlType.GENERAL
+            ),
+            actuator_world=builder.current_world,
+            actuator_trntype=transmission,
+            actuator_trnid=(target, alternate),
+            actuator_gainprm=model.actuator_gainprm[i],
+            actuator_biasprm=bias[i],
+            actuator_dynprm=model.actuator_dynprm[i],
+            actuator_gear=model.actuator_gear[i],
+            actuator_dyntype=int(model.actuator_dyntype[i]),
+            actuator_gaintype=int(model.actuator_gaintype[i]),
+            actuator_biastype=int(model.actuator_biastype[i]),
+            actuator_actdim=int(actuator.actdim),
+            actuator_actearly=bool(model.actuator_actearly[i]),
+            actuator_lengthrange=actuator.lengthrange,
+            actuator_cranklength=model.actuator_cranklength[i],
+            actuator_ctrlspec=int(model.actuator_ctrlspec[i]),
+            actuator_damping=model.actuator_damping[i],
+            actuator_dampingpoly=model.actuator_dampingpoly[i],
+            actuator_armature=model.actuator_armature[i],
+            **native_parameters,
+        )
+        for name in ("ctrl", "force", "act"):
+            values.update(
+                attributes(
+                    **{
+                        f"actuator_{name}range": getattr(actuator, f"{name}range"),
+                        f"actuator_{name}limited": int(getattr(actuator, f"{name}limited")),
+                        f"actuator_has_{name}range": True,
+                    }
+                )
+            )
+        if (
+            not ctrl_direct
+            and transmission == TrnType.JOINT
+            and int(model.jnt_type[source_target])
+            in (int(mujoco.mjtJoint.mjJNT_HINGE), int(mujoco.mjtJoint.mjJNT_SLIDE), int(mujoco.mjtJoint.mjJNT_BALL))
+        ):
+            _joint_target(
+                builder,
+                model,
+                i,
+                target,
+                bias[i],
+                values,
+                pending_damping,
+                dof_count=3 if model.jnt_type[source_target] == mujoco.mjtJoint.mjJNT_BALL else 1,
+            )
+        if transmission == TrnType.JOINT and native_parameters["native_actuator_inheritrange"] > 0:
+            values.update(attributes(native_actuator_inheritrange_bounds=model.jnt_range[source_target]))
+        values.update(custom("mujoco:actuator", actuator))
+        if values.get("mujoco:native_actuator_inheritrange", 0) > 0:
+            builder._add_model_finalizer(_finalize_native_actuator_ranges)
+        builder.add_custom_values(**values)
+
+    imported_actuators = builder._custom_frequency_counts.get("mujoco:actuator", 0) - actuator_start
+    if imported_actuators + skipped_actuators != model.nu:
+        raise RuntimeError("Native MJCF conversion did not preserve all retained actuators.")
 
 
 def _tendons(builder, spec, model, joints, dofs, geoms, sites, attributes, custom):
@@ -1064,8 +1244,6 @@ def parse_mjcf(
                 body,
                 local,
                 label,
-                attributes,
-                armature_scale,
                 convert_3d_hinge_to_ball_joints,
             )
             mapped_dofs = [
@@ -1080,51 +1258,17 @@ def parse_mjcf(
             for native_joint, dof in mapping.items():
                 joints[native_joint] = dof
                 joint_ids[native_joint] = joint
-                source_joint = spec.joints[native_joint]
-                count = _joint_dof_count(model.jnt_type[native_joint])
-                source_dof = int(model.jnt_dofadr[native_joint])
-                for k in range(count):
-                    builder.joint_damping[dof + k] = float(model.dof_damping[source_dof + k])
-                    builder.joint_stiffness[dof + k] = float(model.jnt_stiffness[native_joint])
-                    builder.joint_armature[dof + k] = float(model.dof_armature[source_dof + k]) * armature_scale
-                    builder.joint_friction[dof + k] = float(model.dof_frictionloss[source_dof + k])
-                    if np.all(source_joint.springdamper > 0):
-                        builder.custom_attributes["mujoco:native_joint_gain_baseline"].values[dof + k] = (
-                            builder.joint_stiffness[dof + k],
-                            builder.joint_damping[dof + k],
-                        )
-                        builder._add_model_finalizer(_finalize_native_core_parameters)
-                    if model.jnt_type[native_joint] != mujoco.mjtJoint.mjJNT_FREE:
-                        builder.joint_limit_ke[dof + k] = gains[0]
-                        builder.joint_limit_kd[dof + k] = gains[1]
-                extra = attributes(
-                    jnt_actgravcomp=bool(model.jnt_actgravcomp[native_joint]),
-                    native_joint_type=int(model.jnt_type[native_joint]),
-                    native_joint_springdamper=source_joint.springdamper,
-                    native_joint_limited=int(source_joint.limited),
-                    native_joint_actfrcrange=model.jnt_actfrcrange[native_joint],
-                    native_joint_actfrclimited=int(source_joint.actfrclimited),
-                    native_joint_effort_baseline=builder.joint_effort_limit[dof],
-                    native_joint_effort_limited=bool(model.jnt_actfrclimited[native_joint]),
-                    native_joint_dampingpoly=source_joint.damping[1:],
-                    native_joint_stiffnesspoly=source_joint.stiffness[1:],
-                    limit_margin=model.jnt_margin[native_joint],
-                    solreflimit=(0.0, 0.0) if source_joint in default_limits else model.jnt_solref[native_joint],
-                    solimplimit=model.jnt_solimp[native_joint],
-                    solreflimit_mode=default_limit_mode if source_joint in default_limits else SOLREF_MODE_RAW,
-                    solreflimit_gain_baseline=gains,
-                    solreffriction=model.dof_solref[source_dof],
-                    solimpfriction=model.dof_solimp[source_dof],
+                _import_joint_parameters(
+                    builder,
+                    model,
+                    spec.joints[native_joint],
+                    native_joint,
+                    dof,
+                    attributes,
+                    custom,
+                    armature_scale=armature_scale,
+                    limit_mode=default_limit_mode if spec.joints[native_joint] in default_limits else SOLREF_MODE_RAW,
                 )
-                if count > 1:
-                    extra.update(attributes(native_joint_range=model.jnt_range[native_joint]))
-                for key, value in extra.items():
-                    for k in range(1 if key.startswith("mujoco:native_joint_") else count):
-                        builder.custom_attributes[key].values[dof + k] = value
-                for k in range(count):
-                    builder._process_custom_attributes(
-                        dof + k, custom(frequency.JOINT_DOF, source_joint), frequency.JOINT_DOF
-                    )
             if selected:
                 builder._process_custom_attributes(
                     joint, custom(frequency.JOINT, spec.joints[selected[0]]), frequency.JOINT
@@ -1190,41 +1334,11 @@ def parse_mjcf(
             or parse_visuals_as_colliders
             or (collider and kind == int(mujoco.mjtGeom.mjGEOM_PLANE) and 0 <= model.geom_group[i] <= 2)
         )
-        size = model.geom_size[i].copy()
-        src = None
-        if model.geom_type[i] == mujoco.mjtGeom.mjGEOM_SPHERE:
-            size[:] = size[0]
-        elif model.geom_type[i] in (mujoco.mjtGeom.mjGEOM_CAPSULE, mujoco.mjtGeom.mjGEOM_CYLINDER):
-            size[2] = size[0]
-        elif kind == int(mujoco.mjtGeom.mjGEOM_PLANE):
-            size[:] = 0
-        elif kind == int(mujoco.mjtGeom.mjGEOM_MESH):
-            mesh_id = int(model.geom_dataid[i])
-            material_id = int(model.geom_matid[i])
-            key = (mesh_id, material_id)
-            if key not in meshes:
-                native_maxhullvert = spec.meshes[mesh_id].maxhullvert
-                maxhullvert = native_maxhullvert if native_maxhullvert >= 4 else mesh_maxhullvert
-                meshes[key] = _mesh(model, mesh_id, material_id, maxhullvert)
-            src = meshes[key]
-            size[:] = 1
+        size, src = _shape_geometry(model, spec, i, meshes, mesh_maxhullvert)
+        if kind == int(mujoco.mjtGeom.mjGEOM_MESH):
             cfg.sdf_max_resolution = None
             cfg.sdf_target_voxel_size = None
             cfg.sdf_narrow_band_range = (-0.1, 0.1)
-        elif kind == int(mujoco.mjtGeom.mjGEOM_HFIELD):
-            h = int(model.geom_dataid[i])
-            rows, cols = int(model.hfield_nrow[h]), int(model.hfield_ncol[h])
-            adr = int(model.hfield_adr[h])
-            src = Heightfield(
-                data=model.hfield_data[adr : adr + rows * cols].reshape(rows, cols).copy(),
-                nrow=rows,
-                ncol=cols,
-                hx=model.hfield_size[h, 0],
-                hy=model.hfield_size[h, 1],
-                min_z=0.0,
-                max_z=model.hfield_size[h, 2],
-            )
-            size[:] = 1
         if use_material and not (isinstance(src, Mesh) and src.texture is not None):
             texture_id = _color_texture(model, material_id)
             if texture_id >= 0:
@@ -1293,103 +1407,12 @@ def parse_mjcf(
 
     tendons = _tendons(builder, spec, model, joint_ids, joints, geoms, sites, attributes, custom)
 
-    actuator_start = builder._custom_frequency_counts.get("mujoco:actuator", 0)
-    skipped_actuators = 0
-    pending_damping: set[int] = set()
-    transmission_types = {int(native): int(newton) for newton, native in _transmission_types().items()}
-    for i in range(model.nu):
-        transmission = transmission_types[int(model.actuator_trntype[i])]
-        source_target, source_alt = map(int, model.actuator_trnid[i])
-        mapping = {
-            TrnType.JOINT: joints,
-            TrnType.JOINT_IN_PARENT: joints,
-            TrnType.TENDON: tendons,
-            TrnType.SITE: sites,
-            TrnType.BODY: {j: b for j, b in enumerate(bodies) if b >= 0},
-            TrnType.SLIDERCRANK: sites,
-        }[transmission]
-        if source_target not in mapping or (
-            source_alt >= 0 and transmission in (TrnType.SITE, TrnType.SLIDERCRANK) and source_alt not in sites
-        ):
-            warnings.warn(
-                f"Actuator {model.actuator(i).name!r} targets an excluded element; skipping.",
-                NewtonWarning,
-                stacklevel=2,
-            )
-            skipped_actuators += 1
-            continue
-        target = mapping[source_target]
-        alternate = sites[source_alt] if source_alt >= 0 and transmission in (TrnType.SITE, TrnType.SLIDERCRANK) else -1
-        native_parameters = _read_native_parameters("actuator", spec.actuators[i])
-        values = attributes(
-            native_actuator_target_kd=-1.0,
-            native_actuator_target_gear=1.0,
-            native_actuator_inheritrange_bounds=(0.0, 0.0),
-            actuator_label=f"{prefix}/{model.actuator(i).name or f'actuator_{i}'}",
-            ctrl_source=int(CtrlSource.CTRL_DIRECT),
-            ctrl_type=int(
-                CtrlType.DCMOTOR if model.actuator_gaintype[i] == mujoco.mjtGain.mjGAIN_DCMOTOR else CtrlType.GENERAL
-            ),
-            actuator_world=builder.current_world,
-            actuator_trntype=transmission,
-            actuator_trnid=(target, alternate),
-            actuator_gainprm=model.actuator_gainprm[i],
-            actuator_biasprm=actuator_bias[i],
-            actuator_dynprm=model.actuator_dynprm[i],
-            actuator_gear=model.actuator_gear[i],
-            actuator_dyntype=int(model.actuator_dyntype[i]),
-            actuator_gaintype=int(model.actuator_gaintype[i]),
-            actuator_biastype=int(model.actuator_biastype[i]),
-            actuator_actdim=int(spec.actuators[i].actdim),
-            actuator_actearly=bool(model.actuator_actearly[i]),
-            actuator_lengthrange=spec.actuators[i].lengthrange,
-            actuator_cranklength=model.actuator_cranklength[i],
-            actuator_ctrlspec=int(model.actuator_ctrlspec[i]),
-            actuator_damping=model.actuator_damping[i],
-            actuator_dampingpoly=model.actuator_dampingpoly[i],
-            actuator_armature=model.actuator_armature[i],
-            **native_parameters,
-        )
-        for name in ("ctrl", "force", "act"):
-            values.update(
-                attributes(
-                    **{
-                        f"actuator_{name}range": getattr(spec.actuators[i], f"{name}range"),
-                        f"actuator_{name}limited": int(getattr(spec.actuators[i], f"{name}limited")),
-                        f"actuator_has_{name}range": True,
-                    }
-                )
-            )
-        if (
-            not ctrl_direct
-            and transmission == TrnType.JOINT
-            and int(model.jnt_type[source_target])
-            in (int(mujoco.mjtJoint.mjJNT_HINGE), int(mujoco.mjtJoint.mjJNT_SLIDE), int(mujoco.mjtJoint.mjJNT_BALL))
-        ):
-            _joint_target(
-                builder,
-                model,
-                i,
-                target,
-                actuator_bias[i],
-                values,
-                pending_damping,
-                dof_count=3 if model.jnt_type[source_target] == mujoco.mjtJoint.mjJNT_BALL else 1,
-            )
-        if transmission == TrnType.JOINT and native_parameters["native_actuator_inheritrange"] > 0:
-            values.update(attributes(native_actuator_inheritrange_bounds=model.jnt_range[source_target]))
-        values.update(custom("mujoco:actuator", spec.actuators[i]))
-        if values.get("mujoco:native_actuator_inheritrange", 0) > 0:
-            builder._add_model_finalizer(_finalize_native_actuator_ranges)
-        builder.add_custom_values(**values)
-
-    imported_actuators = builder._custom_frequency_counts.get("mujoco:actuator", 0) - actuator_start
-    if imported_actuators + skipped_actuators != model.nu:
-        raise RuntimeError("Native MJCF conversion did not preserve all retained actuators.")
-
-    groups = (
-        [[joint for group in root_joints.values() for joint in group]] if parent_body != -1 else root_joints.values()
+    _import_actuators(
+        builder, spec, model, bodies, joints, tendons, sites, attributes, custom, prefix, actuator_bias, ctrl_direct
     )
+
+    imported_joints = [joint for group in root_joints.values() for joint in group]
+    groups = [imported_joints] if parent_body != -1 else root_joints.values()
     for group in groups:
         label = prefix
         if parent_body == -1 and len(root_joints) > 1 and group:
@@ -1410,11 +1433,11 @@ def parse_mjcf(
             convert_mjc_equality_constraints,
             custom,
         )
-    add_mjcf_body_collision_filters(builder, [j for group in root_joints.values() for j in group], start_shape)
+    add_mjcf_body_collision_filters(builder, imported_joints, start_shape)
     _contacts(builder, spec, model, bodies, geoms, attributes, start_shape, enable_self_collisions, custom)
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
     elif collapse_massless_fixed_root:
-        collapse_massless_fixed_root_joints(builder, [j for group in root_joints.values() for j in group])
+        collapse_massless_fixed_root_joints(builder, imported_joints)
     if verbose:
         logger.info("Imported %s bodies and %s geoms using native MuJoCo.", sum(b >= 0 for b in bodies[1:]), len(geoms))
