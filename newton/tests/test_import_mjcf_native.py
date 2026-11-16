@@ -1184,6 +1184,66 @@ class TestImportMjcfNative(unittest.TestCase):
                     ),
                 )
 
+    def test_native_geared_scalar_targets(self):
+        """Fold scalar gears while preserving composed damping, inherited limits, and joint-space controls."""
+        import mujoco
+
+        xml = """<mujoco><compiler angle="radian"/><option gravity="0 0 0" timestep=".001" integrator="Euler"/>
+            <worldbody><body><joint name="p"/><geom size=".1" mass="1"/></body>
+            <body><joint name="v" type="slide"/><geom size=".1" mass="1"/></body>
+            <body><joint name="z"/><geom size=".1" mass="1"/></body>
+            <body name="arm"><joint name="r" ref=".2" range="{limits}"/>
+                <geom size=".1" mass="1"/>{payload}</body></worldbody>
+            <actuator><position joint="p" gear="3" kp="20" kv="2" damping=".4 .1 .2" armature="{armature}"/>
+                <position joint="r" gear="-2" kp="10" dampratio=".7" inheritrange=".8" forcerange="-2 3"/>
+                <velocity joint="v" gear="2" kv="3" ctrlrange="-.6 .8"/>
+                <position joint="z" gear="0" kp="10"/></actuator></mujoco>"""
+        payload = '<body pos=".2 0 .3"><geom size=".1" mass="2"/></body>'
+        for direct, cpu in ((False, False), (True, False), (False, True)):
+            with self.subTest(direct=direct, cpu=cpu):
+                armature = 0.02 if cpu else 0
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                builder.add_mjcf_native(xml.format(limits="-1 2", payload="", armature=armature), ctrl_direct=direct)
+                builder.add_mjcf_native(f"<mujoco><worldbody>{payload}</worldbody></mujoco>", parent_body=3)
+                builder.joint_limit_lower[3], builder.joint_limit_upper[3] = -0.8 - 0.2, 1.7 - 0.2
+                reference = mujoco.MjModel.from_xml_string(
+                    xml.format(limits="-.8 1.7", payload=payload, armature=armature)
+                )
+                np.testing.assert_array_equal(
+                    builder.custom_attributes["mujoco:ctrl_source"].values, [1, 1, 1, 1] if direct else [0, 0, 0, 1]
+                )
+                model = builder.finalize()
+                if not direct:
+                    np.testing.assert_allclose(model.joint_target_ke.numpy(), [180, 0, 0, 40])
+                    if not cpu:
+                        self.assertGreater(model.joint_target_kd.numpy()[3], 0)
+                    np.testing.assert_allclose(
+                        model.mujoco.actuator_ctrlrange.numpy()[1], np.sort(reference.actuator_ctrlrange[1] / -2)
+                    )
+                    np.testing.assert_allclose(model.mujoco.actuator_forcerange.numpy()[1], [-6, 4])
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                if not direct:
+                    np.testing.assert_allclose(
+                        model.joint_target_kd.numpy()[[0, 3, 1]],
+                        [18, -reference.actuator_biasprm[1, 2] * 4, 12],
+                        rtol=3e-5,
+                    )
+                expected = mujoco.MjData(reference)
+                expected.qpos[:] = [0.3, 0.2, 0.1, 0.6]
+                expected.qvel[:] = [0.2, 0.4, 0.1, 0.3]
+                expected.ctrl[:] = [0.5, 0.8, 2, 0.5]
+                state, output = model.state(), model.state()
+                state.joint_q.assign(expected.qpos - [0, 0, 0, 0.2])
+                state.joint_qd.assign(expected.qvel)
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                control = model.control()
+                control.mujoco.ctrl.assign(expected.ctrl)
+                control.joint_target_q.assign([0.5 / 3, 0, 0, 0.8 / -2 - 0.2])
+                control.joint_target_qd.assign([0, 1, 0, 0])
+                mujoco.mj_step(reference, expected)
+                solver.step(state, output, control, None, 0.001)
+                np.testing.assert_allclose(output.joint_qd.numpy(), expected.qvel, rtol=3e-5, atol=2e-6)
+
     def test_native_joint_target_history(self):
         """Match delayed commands after interpolation, buffer wrap, and ball expansion."""
         import mujoco

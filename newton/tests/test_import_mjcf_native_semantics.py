@@ -1108,20 +1108,28 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                         np.testing.assert_allclose(rebuilt.mj_model.jnt_range, [[0.25, 1.25]])
 
     def test_near_servo_parameters(self):
-        """Preserve general gains and gears that only approximately match a servo."""
+        """Preserve non-servo gains and fold near-unit scalar gears exactly."""
         import mujoco
 
-        for params in ('biasprm="0 -10.00008 -1"', 'biasprm="0 -10 -1" gear="1.000009"'):
+        for params, gear in (
+            ('biasprm="0 -10.00008 -1"', None),
+            ('biasprm="0 -10 -1" gear="1.000009"', 1.000009),
+        ):
             with self.subTest(params=params):
                 xml = f'<mujoco><worldbody><body><joint name="j"/><geom size=".1"/></body></worldbody><actuator><general joint="j" biastype="affine" gainprm="10" {params}/></actuator></mujoco>'
                 builder = newton.ModelBuilder()
                 builder.add_mjcf_native(xml)
                 solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
                 reference = mujoco.MjModel.from_xml_string(xml)
+                np.testing.assert_array_equal(solver.model.mujoco.ctrl_source.numpy(), int(gear is None))
                 for field in ("actuator_gainprm", "actuator_biasprm", "actuator_gear"):
-                    np.testing.assert_allclose(
-                        getattr(solver.mj_model, field), getattr(reference, field), rtol=1e-7, atol=1e-8
-                    )
+                    expected = getattr(reference, field).copy()
+                    if gear is not None:
+                        if field == "actuator_gear":
+                            expected[0, 0] = 1
+                        else:
+                            expected *= gear * gear
+                    np.testing.assert_allclose(getattr(solver.mj_model, field), expected, rtol=1e-7, atol=1e-8)
 
     def test_shortcut_defaults_and_zero_overrides(self):
         """Keep native shortcut defaults and explicit zero overrides through both control routes."""

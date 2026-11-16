@@ -377,11 +377,12 @@ def _joint_target(builder, model, i, dof, bias, values, pending_damping, *, dof_
     import mujoco
 
     gain = model.actuator_gainprm[i]
+    gear = float(model.actuator_gear[i, 0]) if dof_count == 1 else 1.0
     if (
         model.actuator_dyntype[i] != mujoco.mjtDyn.mjDYN_NONE
         or model.actuator_gaintype[i] != mujoco.mjtGain.mjGAIN_FIXED
         or model.actuator_biastype[i] != mujoco.mjtBias.mjBIAS_AFFINE
-        or (dof_count == 1 and not np.array_equal(model.actuator_gear[i], [1, 0, 0, 0, 0, 0]))
+        or (dof_count == 1 and (gear == 0 or np.any(model.actuator_gear[i, 1:])))
     ):
         return
     mode = _scalar_servo_mode(gain, bias)
@@ -396,6 +397,24 @@ def _joint_target(builder, model, i, dof, bias, values, pending_damping, *, dof_
             position_damping = -bias[2] if mode == JointTargetMode.POSITION else builder.joint_target_kd[axis]
             if position_damping != 0 or axis in pending_damping:
                 return
+    gear_sq = gear * gear
+    if gear != 1:
+        gain = gain * gear_sq
+        bias = bias.copy()
+        bias[:2] *= gear_sq
+        # Positive bias[2] is a dimensionless dampratio placeholder.
+        if bias[2] < 0:
+            bias[2] *= gear_sq
+        for name, array in (("gainprm", gain), ("biasprm", bias)):
+            key = f"mujoco:actuator_{name}"
+            values[key] = type(values[key])(*array)
+        for name, factor in (("ctrlrange", 1 / gear), ("forcerange", gear)):
+            key = f"mujoco:actuator_{name}"
+            values[key] = type(values[key])(*np.sort(np.asarray(values[key]) * factor))
+        for name in ("damping", "dampingpoly", "armature"):
+            values[f"mujoco:actuator_{name}"] *= gear_sq
+        values["mujoco:actuator_gear"] = type(values["mujoco:actuator_gear"])(1, 0, 0, 0, 0, 0)
+        values["mujoco:native_actuator_target_gear"] = gear
     for axis in range(dof, dof + dof_count):
         previous = builder.joint_target_mode[axis]
         if mode == JointTargetMode.POSITION:
@@ -404,7 +423,7 @@ def _joint_target(builder, model, i, dof, bias, values, pending_damping, *, dof_
                 builder.joint_target_kd[axis] = float(max(0.0, -bias[2]))
                 if bias[2] > 0:
                     pending_damping.add(axis)
-                    baseline = float(-model.actuator_biasprm[i, 2])
+                    baseline = float(-model.actuator_biasprm[i, 2] * gear_sq)
                     if dof_count == 3:
                         native_dof = model.jnt_dofadr[model.actuator_trnid[i, 0]]
                         baseline = float(2 * bias[2] * np.sqrt(gain[0] / model.dof_invweight0[native_dof]))
@@ -1304,6 +1323,8 @@ def parse_mjcf(
         native_parameters = _read_native_parameters("actuator", spec.actuators[i])
         values = attributes(
             native_actuator_target_kd=-1.0,
+            native_actuator_target_gear=1.0,
+            native_actuator_inheritrange_bounds=(0.0, 0.0),
             actuator_label=f"{prefix}/{model.actuator(i).name or f'actuator_{i}'}",
             ctrl_source=int(CtrlSource.CTRL_DIRECT),
             ctrl_type=int(

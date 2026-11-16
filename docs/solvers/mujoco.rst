@@ -248,7 +248,12 @@ force controls and angular ranges. Other solvers consume the Newton core
 representation; MuJoCo-only parameters require ``SolverMuJoCo``.
 
 With ``ctrl_direct=False``, representable scalar position/velocity servos use
-Newton joint targets. Position-only ``dampratio`` servos retain joint-target
+Newton joint targets. A nonzero scalar gear ``g`` on a hinge or slide servo is
+folded into its gains, explicit damping, and armature by ``g**2``. Force ranges multiply
+by ``g`` and control ranges divide by ``g``, sorting their endpoints for negative
+gears. Commands use joint units: ``target = ctrl / g`` (subtract the joint's
+reference coordinate for position targets). Zero and vector gears on scalar
+joints retain direct control. Position-only ``dampratio`` servos retain joint-target
 control: builder finalization publishes damping into ``joint_target_kd``
 using the assembled inertia and respecting explicit gain edits. Unsupported
 core-inertia cases remain deferred to ``SolverMuJoCo``. One position servo and
@@ -284,7 +289,7 @@ therefore produces six MuJoCo actuators, matching the legacy importer.
 With ``ctrl_direct=True``, each authored ball actuator remains one scalar
 actuator with its original ``gear`` and a slot in ``control.mujoco.ctrl``.
 
-For unit-gear scalar servos without activation dynamics, native import splits
+For scalar servos without activation dynamics, native import splits
 position/velocity pairs with position ``kv`` or ``dampratio`` damping this way: the
 first servo uses joint targets and the second uses its MJCF-order slot in
 ``control.mujoco.ctrl``. Set that direct-control slot for the second command;
@@ -934,7 +939,7 @@ notifications. Restoring the imported value restores the source limit. Each
 replicated world retains its own choice; untouched unlimited worlds stay
 unlimited when another world enables a limit.
 
-For native MJCF scalar position-only drives with ``dampratio`` and unit gear,
+For native MJCF scalar position-only drives with ``dampratio`` and nonzero scalar gear,
 :meth:`~newton.ModelBuilder.finalize` resolves :attr:`~newton.Model.joint_target_kd`
 from the composed articulation's reference-pose inertia, joint armature, and
 position gain. Ball drives resolve each Newton angular target axis separately.

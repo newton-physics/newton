@@ -189,6 +189,7 @@ def _finalize_native_actuator_ranges(builder: ModelBuilder, model: Model) -> Non
     lower, upper = model.joint_limit_lower.numpy(), model.joint_limit_upper.numpy()
     refs, source_bounds = attrs.dof_ref.numpy(), attrs.native_actuator_inheritrange_bounds.numpy()
     dynamics = attrs.actuator_dyntype.numpy()
+    target_gears = attrs.native_actuator_target_gear.numpy()
     control, activation = attrs.actuator_ctrlrange.numpy(), attrs.actuator_actrange.numpy()
     for row in np.flatnonzero(factors > 0):
         dof = targets[row]
@@ -204,7 +205,7 @@ def _finalize_native_actuator_ranges(builder: ModelBuilder, model: Model) -> Non
             continue
         center, radius = np.mean(bounds), (bounds[1] - bounds[0]) * factors[row] / 2
         ranges = activation if dynamics[row] == _ActuatorDynamicsType.INTEGRATOR else control
-        ranges[row] = [center - radius, center + radius]
+        ranges[row] = np.sort(np.array([center - radius, center + radius]) / target_gears[row])
         factors[row] = 0
     attrs.actuator_ctrlrange.assign(control)
     attrs.actuator_actrange.assign(activation)

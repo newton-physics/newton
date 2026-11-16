@@ -116,6 +116,7 @@ def _register_native_attributes(builder: ModelBuilder) -> None:
         ("native_equality_site1", "mujoco:equality_constraint", wp.int32, -1, "shape"),
         ("native_equality_site2", "mujoco:equality_constraint", wp.int32, -1, "shape"),
         ("native_actuator_target_kd", "mujoco:actuator", wp.float32, -1.0, None),
+        ("native_actuator_target_gear", "mujoco:actuator", wp.float32, 1.0, None),
         ("native_actuator_inheritrange_bounds", "mujoco:actuator", wp.vec2, (0.0, 0.0), None),
         ("native_joint_range", Model.AttributeFrequency.JOINT_DOF, wp.vec2, (0.0, 0.0), None),
         ("native_joint_gain_baseline", Model.AttributeFrequency.JOINT_DOF, wp.vec2, (-1.0, -1.0), None),
