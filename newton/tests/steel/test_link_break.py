@@ -16,7 +16,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverSteel
-from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, has_module
 
 AXIS_Y = wp.vec3(0.0, 1.0, 0.0)
 
@@ -259,7 +259,7 @@ def test_weld_loop_holds_a_hinge(test, device):
         )
         b.add_articulation([j0, j1])
         if weld:
-            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "another joint already connects these bodies"):
+            with test.assertWarnsRegex(newton.NewtonWarning, "another joint already connects these bodies"):
                 b.add_joint_fixed(
                     parent=l1,
                     child=l2,
@@ -565,7 +565,7 @@ class TestSteelLinkBreak(unittest.TestCase):
         """Warn when collapsing would open a link-break loop; collapse a joint-break loop and a MuJoCo weld quietly."""
         builder, *_ = _four_bar("link")
         with self.assertWarnsRegex(
-            newton.exceptions.NewtonWarning, r"does not preserve FIXED loop-closing joints \('coupler_weld'\)"
+            newton.NewtonWarning, r"does not preserve FIXED loop-closing joints \('coupler_weld'\)"
         ):
             builder.collapse_fixed_joints()
         builder, *_ = _four_bar("joint")
@@ -592,9 +592,9 @@ class TestSteelLinkBreak(unittest.TestCase):
             warnings.simplefilter("always")
             newton.ModelBuilder().add_mjcf(mjcf, collapse_fixed_joints=True)
         self.assertFalse([w for w in caught if "loop-closing" in str(w.message)])
-        if USD_AVAILABLE:
+        if has_module("pxr.Usd"):
             builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-            with self.assertWarnsRegex(newton.exceptions.NewtonWarning, r"does not preserve FIXED loop-closing joints"):
+            with self.assertWarnsRegex(newton.NewtonWarning, r"does not preserve FIXED loop-closing joints"):
                 builder.add_usd(_four_bar_link_break_stage(), collapse_fixed_joints=True)
 
 
@@ -608,13 +608,13 @@ for _name in (
     "test_weld_to_world_returns_the_short_way",
 ):
     add_function_test(TestSteelLinkBreak, _name, globals()[_name], devices=get_cuda_test_devices())
-if USD_AVAILABLE:
-    add_function_test(
-        TestSteelLinkBreak,
-        "test_link_break_four_bar_from_usd",
-        test_link_break_four_bar_from_usd,
-        devices=get_cuda_test_devices(),
-    )
+add_function_test(
+    TestSteelLinkBreak,
+    "test_link_break_four_bar_from_usd",
+    test_link_break_four_bar_from_usd,
+    devices=get_cuda_test_devices(),
+    requires=("pxr.Usd",),
+)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,8 @@ import contextlib
 import ctypes
 import ctypes.util
 import dataclasses
-import importlib.util
+import functools
+import importlib
 import io
 import linecache
 import os
@@ -23,8 +24,78 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-pxr = importlib.util.find_spec("pxr")
-USD_AVAILABLE = pxr is not None
+
+class BrokenTestDependencyError(RuntimeError):
+    """Not an ImportError, so a broken install fails tests instead of being skipped like a missing one."""
+
+
+@functools.cache
+def _import_error(name: str) -> ImportError | OSError | None:
+    try:
+        importlib.import_module(name)
+    except (ImportError, OSError) as exc:
+        return exc
+    return None
+
+
+def _broken_error(name: str) -> BrokenTestDependencyError | None:
+    exc = _import_error(name)
+    if exc is None:
+        return None
+    # Only the module itself or a parent package not being found means missing; anything else is a broken install.
+    if isinstance(exc, ModuleNotFoundError) and exc.name and (name == exc.name or name.startswith(exc.name + ".")):
+        return None
+    error = BrokenTestDependencyError(f"{name!r} is installed but fails to import: {exc}")
+    error.__cause__ = exc
+    return error
+
+
+def has_module(name: str) -> bool:
+    """Return whether ``name`` imports; unlike ``find_spec``, this rejects installs whose native libraries fail to load."""
+    return _import_error(name) is None
+
+
+MUJOCO_MODULES = ("mujoco", "mujoco_warp")
+
+
+def missing_modules(modules) -> list[str]:
+    """Return the ``modules`` that are not installed; raise if one is installed but fails to import."""
+    for module in modules:
+        error = _broken_error(module)
+        if error is not None:
+            raise error
+    return [module for module in modules if not has_module(module)]
+
+
+def _fail_with(error: BrokenTestDependencyError):
+    def raise_error(*args, **kwargs):
+        raise BrokenTestDependencyError(*error.args) from error.__cause__
+
+    def decorator(item):
+        if isinstance(item, type):
+            item.setUpClass = classmethod(raise_error)
+            return item
+        return functools.wraps(item)(raise_error)
+
+    return decorator
+
+
+def _skip_unless_modules(modules):
+    for module in modules:
+        error = _broken_error(module)
+        if error is not None:
+            return _fail_with(error)
+    missing = [module for module in modules if not has_module(module)]
+    return unittest.skipIf(bool(missing), f"Requires {', '.join(missing)}")
+
+
+def requires(*modules: str):
+    """Skip the decorated test, test function, or test class unless all ``modules`` import.
+
+    A module that is installed but fails to import fails the decorated tests instead, when they run.
+    """
+    return _skip_unless_modules(modules)
+
 
 MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?"
 
@@ -770,9 +841,16 @@ def create_test_func(func, device, check_output, **kwargs):
         else:
             func(self, device, **kwargs)
 
-    # Copy the __unittest_expecting_failure__ attribute from func to test_func
-    if hasattr(func, "__unittest_expecting_failure__"):
-        test_func.__unittest_expecting_failure__ = func.__unittest_expecting_failure__
+    # Copy unittest markers so expected failures and skips (e.g. from requires()) apply to the generated test.
+    for attr in ("__unittest_expecting_failure__", "__unittest_skip__", "__unittest_skip_why__"):
+        if hasattr(func, attr):
+            setattr(test_func, attr, getattr(func, attr))
+    # A skipped argument, such as a solver factory wrapped in requires(), skips the test before setup.
+    for value in kwargs.values():
+        if callable(value) and getattr(value, "__unittest_skip__", False):
+            test_func.__unittest_skip__ = True
+            test_func.__unittest_skip_why__ = value.__unittest_skip_why__
+            break
 
     return test_func
 
@@ -792,7 +870,9 @@ def sanitize_identifier(s):
         return re.sub(r"\W|^(?=\d)", "_", s)
 
 
-def add_function_test(cls, name, func, devices=None, check_output=True, **kwargs):
+def add_function_test(cls, name, func, devices=None, check_output=True, requires=(), **kwargs):
+    if requires:
+        func = _skip_unless_modules(requires)(func)
     if devices is None:
         setattr(cls, name, create_test_func(func, None, check_output, **kwargs))
     elif isinstance(devices, list):

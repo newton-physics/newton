@@ -15,7 +15,7 @@ def _quat_rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
 def node_xyz(body_q_row: np.ndarray, segment_length: float) -> np.ndarray:
     """Recover the start-node world position from a COM-centered capsule body state.
 
-    With ``body_frame_origin="com"`` the body origin sits at the capsule midpoint.
+    The rod body origin sits at the capsule midpoint.
     The start node is half a segment length behind that origin along local +Z.
     """
     p = np.asarray(body_q_row[:3], dtype=np.float64)

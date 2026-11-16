@@ -11,6 +11,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
@@ -155,8 +156,8 @@ class TestKinematicsConstraints(unittest.TestCase):
         logger.debug("contacts.world_active_contacts.ptr:  %s", contacts.world_active_contacts.ptr)
 
         # Check if the data info entity counters point to the same arrays as the limits and contacts containers
-        self.assertTrue(data.info.num_limits.ptr, limits.world_active_limits.ptr)
-        self.assertTrue(data.info.num_contacts.ptr, contacts.world_active_contacts.ptr)
+        self.assertEqual(data.info.num_limits.ptr, limits.world_active_limits.ptr)
+        self.assertEqual(data.info.num_contacts.ptr, contacts.world_active_contacts.ptr)
 
         # Extract numpy arrays from the model info
         model_max_limits = model.size.sum_of_max_limits
@@ -251,8 +252,8 @@ class TestKinematicsConstraints(unittest.TestCase):
         logger.debug("contacts.world_active_contacts.ptr:  %s", contacts.world_active_contacts.ptr)
 
         # Check if the data info entity counters point to the same arrays as the limits and contacts containers
-        self.assertTrue(data.info.num_limits.ptr, limits.world_active_limits.ptr)
-        self.assertTrue(data.info.num_contacts.ptr, contacts.world_active_contacts.ptr)
+        self.assertEqual(data.info.num_limits.ptr, limits.world_active_limits.ptr)
+        self.assertEqual(data.info.num_contacts.ptr, contacts.world_active_contacts.ptr)
 
     def test_04_heterogeneous_model_joint_constraint_rows(self):
         """Check contiguous world blocks and dynamic, kinematic, friction, and effort row order."""
@@ -308,6 +309,7 @@ class TestKinematicsConstraints(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

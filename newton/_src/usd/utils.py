@@ -125,18 +125,16 @@ def _get_raw_api_schemas(prim: Usd.Prim) -> list[str]:
     listop = prim.GetMetadata("apiSchemas")
     if listop is None:
         return []
-    return (
-        list(getattr(listop, "prependedItems", []))
-        + list(getattr(listop, "appendedItems", []))
-        + list(getattr(listop, "explicitItems", []))
-    )
+    return list(listop.GetAppliedItems())
 
 
 def get_applied_api_schemas(prim: Usd.Prim) -> list[str]:
-    """Return the API schema tokens applied to *prim*.
+    """Return the API schema tokens applied to *prim*, in authored order.
 
-    Falls back to raw ``apiSchemas`` list-op metadata when the schema plugin
-    is not loaded and :meth:`pxr.Usd.Prim.GetAppliedSchemas` returns nothing.
+    Combines the raw ``apiSchemas`` list-op metadata, which also holds tokens
+    whose schema plugin is not loaded, with
+    :meth:`pxr.Usd.Prim.GetAppliedSchemas`, which returns only schemas
+    registered with USD and adds the schemas they include.
 
     Args:
         prim: Prim to query.
@@ -144,8 +142,8 @@ def get_applied_api_schemas(prim: Usd.Prim) -> list[str]:
     Returns:
         Applied API schema tokens (e.g. ``["NewtonPDControlAPI"]``).
     """
-    schemas = list(prim.GetAppliedSchemas())
-    return schemas if schemas else _get_raw_api_schemas(prim)
+    schemas = _get_raw_api_schemas(prim)
+    return schemas + [name for name in prim.GetAppliedSchemas() if name not in schemas]
 
 
 def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
@@ -1486,6 +1484,18 @@ def load_physics_from_range(stage, root_paths, exclude_paths=()):
     if load is None:
         load = UsdPhysics.LoadUsdPhysicsFromRange
     return load(stage, list(root_paths), excludePaths=list(exclude_paths))
+
+
+def physics_parser_skips_disabled_bodies() -> bool:
+    """Whether the native physics parser treats disabled rigid bodies as unapplied.
+
+    From OpenUSD 26.11, the colliders and joints of a rigid body with
+    ``physics:rigidBodyEnabled = false`` resolve to the nearest enabled ancestor body, and
+    colliders without one are static. Earlier versions assign them to the disabled body.
+    """
+    from pxr import Usd
+
+    return Usd.GetVersion() >= (0, 26, 11)
 
 
 def _get_physics_material_density(material_prim) -> float | None:

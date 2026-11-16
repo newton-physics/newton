@@ -667,6 +667,12 @@ class BroadPhaseSAP:
         self.sap_sort_index = wp.zeros(2 * total_elements, dtype=wp.int32, device=device)
         self.sap_range = wp.zeros(total_elements, dtype=wp.int32, device=device)
         self.sap_cumulative_sum = wp.zeros(total_elements, dtype=wp.int32, device=device)
+        # Older Warp versions allocate internally and cannot capture SAP
+        # inside conditional bodies. Reuse storage when the API supports it.
+        self._scan_kwargs = {}
+        if hasattr(wp.utils, "array_scan_temp_storage_size"):
+            scan_bytes = wp.utils.array_scan_temp_storage_size(total_elements, self.sap_range.dtype, device)
+            self._scan_kwargs["temp_storage"] = wp.empty(scan_bytes, dtype=wp.uint8, device=device)
 
         # Segment indices for the multi-world segmented sort
         # [0, max_shapes_per_world, 2*max_shapes_per_world, ..., world_count*max_shapes_per_world]
@@ -855,7 +861,7 @@ class BroadPhaseSAP:
         )
 
         # Compute cumulative sum of ranges
-        wp.utils.array_scan(self.sap_range, self.sap_cumulative_sum, True)
+        wp.utils.array_scan(self.sap_range, self.sap_cumulative_sum, True, **self._scan_kwargs)
 
         # Estimate number of sweep threads
         total_elements = self.world_count * self.max_shapes_per_world

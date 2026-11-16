@@ -218,14 +218,14 @@ and at most one when the world satisfies every tolerance:
 - PADMM: ``max(r_p / primal_tolerance, r_d / dual_tolerance, r_c / compl_tolerance)``.
   PADMM additionally requires more than one iteration before it reports
   ``converged``.
-- DVI: ``max(r_p, r_d, r_c) / tolerance``, where ``r_d`` includes the bilateral
+- SCC: ``max(r_p, r_d, r_c) / tolerance``, where ``r_d`` includes the bilateral
   residual ``r_b``. A failed APGD line search reports infinity.
 - LOX: the largest tolerance-scaled residual of its last convergence check,
   including terms not reported in :attr:`~newton.solvers.SolverKamino.status`.
   Failed worlds report infinity. With ``fixed_iterations=True`` LOX skips the
   convergence check and does not support this observable.
 
-With a zero PADMM or DVI tolerance, a zero residual reports zero and any other
+With a zero PADMM or SCC tolerance, a zero residual reports zero and any other
 residual infinity. Non-finite residuals in
 :attr:`~newton.solvers.SolverKamino.status` report infinity. Kamino does not simulate global
 dynamic entities, so the global entry stays zero.
@@ -313,7 +313,12 @@ MuJoCo overflow diagnostics
 
 :class:`~newton.solvers.SolverMuJoCo` exposes
 :attr:`~newton.solvers.SolverMuJoCo.ObservableKind.OVERFLOW` through
-``observables.overflow``, an ``int32`` array with shape ``(model.world_count,)``.
+``observables.overflow``, an ``int32`` array with shape ``(model.world_count + 1,)``.
+Entries follow the Newton world whose options each MuJoCo world uses. A single
+MuJoCo world reports in entry ``0`` when world ``0`` owns bodies, also if it
+simulates global bodies too, and otherwise in the final entry for global world
+``-1``, as in models built without :meth:`~newton.ModelBuilder.begin_world`.
+Separate MuJoCo worlds leave the final entry zero.
 It reports capacity overflow after a step without synchronizing the device in
 the solver. Requesting it requires ``use_mujoco_cpu=False``.
 
@@ -539,10 +544,11 @@ the force on the soft contact point, and distribute it to the record's particles
 final configuration of the step -- the forces the last iteration balanced -- not time-step
 averages; records without penetration are zero.
 
-For soft contacts this is the penalty law at the final per-contact stiffness, damping while
-the contact point approaches the surface, and regularized Coulomb friction on the step's slip,
-bounded by the elastic normal load. Body-body contacts use the compliant ALM or legacy AVBD
-contact law with its multipliers. Both evaluations retain the step-start pose history used
+For soft contacts this is the penalty law at the contact's mixed material stiffness, damping
+on the normal gap rate (while the contact point approaches the surface and, with the default
+``soft_contact_damping_bidirectional=True``, while it separates), and regularized Coulomb
+friction on the step's slip, bounded by the elastic normal load. Body-body contacts use the
+compliant ALM contact law with its multipliers. Both evaluations retain the step-start pose history used
 by the iterations.
 
 Soft self-contact forces are not exported. :class:`~newton.sensors.SensorContact` reads the

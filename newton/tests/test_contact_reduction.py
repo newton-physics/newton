@@ -169,31 +169,43 @@ def test_get_slot_axis_aligned_normals(test, device):
 
 
 def test_get_slot_matches_best_face_normal(test, device):
-    """Test that get_slot returns the face with highest dot product."""
+    """Match exhaustive normal selection, including both sides of cap-pruning boundaries."""
     rng = np.random.default_rng(42)
-    test_normals_np = rng.standard_normal((2048, 3)).astype(np.float32)
+    test_normals_np = rng.standard_normal((4096, 3)).astype(np.float32)
     test_normals_np /= np.linalg.norm(test_normals_np, axis=1, keepdims=True)
+    random_count = len(test_normals_np)
 
-    test_normals = [wp.vec3(n[0], n[1], n[2]) for n in test_normals_np]
-    normals = wp.array(test_normals, dtype=wp.vec3, device=device)
-    slots = wp.zeros(len(test_normals), dtype=int, device=device)
+    cap_axis = np.array(
+        (-0.20209268, 0.94502682, 0.25706587)
+        if NORMAL_BINNING_POLYHEDRON == "dodecahedron"
+        else (0.29269405, 0.29269407, -0.91030784)
+    )
+    cap_axis /= np.linalg.norm(cap_axis)
+    u = np.cross(cap_axis, (1.0, 0.0, 0.0))
+    u /= np.linalg.norm(u)
+    v = np.cross(cap_axis, u)
+    angles = np.linspace(0.0, 2.0 * np.pi, 32, endpoint=False)
+    tangents = np.cos(angles)[:, None] * u + np.sin(angles)[:, None] * v
+    boundary_normals = []
+    for threshold in (-0.65, 0.0, 0.65):
+        for offset in (-1.0e-6, 0.0, 1.0e-6):
+            height = threshold + offset
+            boundary_normals.extend(height * cap_axis + np.sqrt(1.0 - height**2) * tangents)
+    test_normals_np = np.concatenate((test_normals_np, boundary_normals)).astype(np.float32)
+    normals = wp.array(test_normals_np, dtype=wp.vec3, device=device)
+    slots = wp.zeros(len(test_normals_np), dtype=int, device=device)
 
-    wp.launch(_get_slot_kernel, dim=len(test_normals), inputs=[normals, slots], device=device)
+    wp.launch(_get_slot_kernel, dim=len(test_normals_np), inputs=[normals, slots], device=device)
 
     slots_np = slots.numpy()
 
     face_normals = np.array([[FACE_NORMALS[i, j] for j in range(3)] for i in range(NUM_NORMAL_BINS)])
 
-    for i in range(len(test_normals_np)):
-        normal = test_normals_np[i]
-        result_slot = slots_np[i]
-
-        dots = face_normals @ normal
-        cpu_best_slot = np.argmax(dots)
-
-        test.assertEqual(
-            result_slot, cpu_best_slot, f"Normal {i}: result slot {result_slot} != expected slot {cpu_best_slot}"
-        )
+    test.assertTrue(np.all((slots_np >= 0) & (slots_np < NUM_NORMAL_BINS)))
+    dots = test_normals_np @ face_normals.T
+    np.testing.assert_array_equal(slots_np[:random_count], dots[:random_count].argmax(axis=1))
+    # Equidistant faces can trade places under device rounding.
+    np.testing.assert_allclose(dots[np.arange(len(slots_np)), slots_np], dots.max(axis=1), rtol=0.0, atol=2.0e-7)
 
 
 # =============================================================================
