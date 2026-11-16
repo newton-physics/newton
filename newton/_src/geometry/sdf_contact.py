@@ -1175,6 +1175,9 @@ def compute_mesh_mesh_edge_counts(
     shape_edge_range: wp.array[wp.vec2i],
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
+    shape_sdf_index: wp.array[wp.int32],
+    texture_sdf_table: wp.array[TextureSDFData],
+    minimum_edges_per_block: wp.array[wp.int32],
     edge_counts: wp.array[wp.int32],
     total_edge_count: wp.array[wp.int32],
     total_num_threads: int,
@@ -1191,6 +1194,7 @@ def compute_mesh_mesh_edge_counts(
         has_hfield = (pair_encoded[0] & SHAPE_PAIR_HFIELD_BIT) != 0
         pair = wp.vec2i(pair_encoded[0] & SHAPE_PAIR_INDEX_MASK, pair_encoded[1])
         pair_edges = int(0)
+        minimum_edges = wp.int32(256)
         for mode in range(2):
             is_hfield = has_hfield and mode == 0
             shape_idx = pair[mode]
@@ -1199,6 +1203,15 @@ def compute_mesh_mesh_edge_counts(
                 pair_edges += get_edge_count(GeoType.HFIELD, wp.vec2i(-1, 0), hfd)
             else:
                 pair_edges += shape_edge_range[shape_idx][1]
+                if not has_hfield:
+                    sdf_index = shape_sdf_index[shape_idx]
+                    if sdf_index < 0 or sdf_index >= texture_sdf_table.shape[0]:
+                        minimum_edges = wp.int32(64)
+                    elif texture_sdf_table[sdf_index].coarse_texture.width == 0:
+                        minimum_edges = wp.int32(64)
+        # BVH edge searches are expensive enough to benefit from finer work
+        # assignment. Keep texture and heightfield pairs at their existing budget.
+        minimum_edges_per_block[i] = minimum_edges
         edge_counts[i] = wp.int32(pair_edges)
         wp.atomic_add(total_edge_count, 0, pair_edges)
 
@@ -1207,6 +1220,7 @@ def compute_mesh_mesh_edge_counts(
 def compute_block_counts_from_weights(
     total_weight_arr: wp.array[wp.int32],
     weights: wp.array[wp.int32],
+    minimum_edges_per_block: wp.array[wp.int32],
     pair_count_arr: wp.array[int],
     max_pairs: int,
     target_blocks: int,
@@ -1224,7 +1238,7 @@ def compute_block_counts_from_weights(
         total_weight = total_weight_arr[0]
         weight_per_block = int(total_weight)
         if target_blocks > 0 and total_weight > 0:
-            weight_per_block = wp.max(256, total_weight // target_blocks)
+            weight_per_block = wp.max(minimum_edges_per_block[i], total_weight // target_blocks)
 
         w = int(weights[i])
         if weight_per_block > 0:
@@ -1279,6 +1293,8 @@ def compute_mesh_mesh_block_offsets_scan(
     shape_edge_range: wp.array[wp.vec2i],
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
+    shape_sdf_index: wp.array[wp.int32],
+    texture_sdf_table: wp.array[TextureSDFData],
     target_blocks: int,
     block_offsets: wp.array[wp.int32],
     block_counts: wp.array[wp.int32],
@@ -1307,6 +1323,9 @@ def compute_mesh_mesh_block_offsets_scan(
             shape_edge_range,
             shape_heightfield_index,
             heightfield_data,
+            shape_sdf_index,
+            texture_sdf_table,
+            block_offsets,  # temporary per-pair work budgets until the final scan
             block_counts,  # reuse as temp storage for edge counts
             total_edge_count,
             launch_threads,
@@ -1321,6 +1340,7 @@ def compute_mesh_mesh_block_offsets_scan(
         inputs=[
             total_edge_count,
             block_counts,  # still holds per-pair edge counts, including heightfield edges
+            block_offsets,  # per-pair minimum edges per block from the first stage
             shape_pairs_mesh_mesh_count,
             shape_pairs_mesh_mesh.shape[0],
             target_blocks,

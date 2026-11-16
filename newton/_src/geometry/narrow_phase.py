@@ -2175,6 +2175,7 @@ def compute_mesh_plane_vert_counts(
     shape_pairs_mesh_plane: wp.array[wp.vec2i],
     shape_pairs_mesh_plane_count: wp.array[int],
     shape_source: wp.array[wp.uint64],
+    minimum_vertices_per_block: wp.array[wp.int32],
     vert_counts: wp.array[wp.int32],
     total_vert_count: wp.array[wp.int32],
     total_num_threads: int,
@@ -2192,6 +2193,7 @@ def compute_mesh_plane_vert_counts(
         pair_verts = int(0)  # noqa: RUF046, RUF100 - explicit cast required by Warp codegen
         if mesh_id != wp.uint64(0):
             pair_verts = wp.mesh_get(mesh_id).points.shape[0]
+        minimum_vertices_per_block[i] = 256
         vert_counts[i] = wp.int32(pair_verts)
         wp.atomic_add(total_vert_count, 0, pair_verts)
 
@@ -2221,6 +2223,7 @@ def compute_mesh_plane_block_offsets_scan(
             shape_pairs_mesh_plane,
             shape_pairs_mesh_plane_count,
             shape_source,
+            block_offsets,  # temporary per-pair work budgets until the final scan
             block_counts,  # reuse as temp storage for vert counts
             total_vert_count,
             launch_threads,
@@ -2235,6 +2238,7 @@ def compute_mesh_plane_block_offsets_scan(
         inputs=[
             total_vert_count,
             block_counts,  # still holds vert counts
+            block_offsets,  # unchanged mesh-plane budget of 256 vertices per block
             shape_pairs_mesh_plane_count,
             shape_pairs_mesh_plane.shape[0],
             target_blocks,
@@ -4059,6 +4063,8 @@ class NarrowPhase:
                         shape_edge_range=shape_edge_range,
                         shape_heightfield_index=shape_heightfield_index,
                         heightfield_data=heightfield_data,
+                        shape_sdf_index=shape_sdf_index,
+                        texture_sdf_table=texture_sdf_data,
                         target_blocks=self.num_mesh_mesh_blocks,
                         block_offsets=self.mesh_mesh_block_offsets,
                         block_counts=self.mesh_mesh_block_counts,

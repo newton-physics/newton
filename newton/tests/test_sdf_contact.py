@@ -17,10 +17,12 @@ from newton._src.geometry.sdf_contact import (
     _sdf_rsqrt_rn,
     compute_block_counts_from_weights,
     compute_mesh_boundary_flags,
+    compute_mesh_mesh_edge_counts,
     mesh_sdf_contact_search_precision,
 )
 from newton._src.geometry.sdf_texture import TextureSDFData
 from newton._src.utils.heightfield import HeightfieldData
+from newton._src.utils.mesh import create_mesh_sphere
 from newton.sensors import SensorContact
 from newton.solvers.experimental.coupled import SolverCoupled
 from newton.tests.unittest_utils import (
@@ -1000,6 +1002,134 @@ class TestSDFContact(unittest.TestCase):
                     np.testing.assert_allclose(distances.numpy(), np.repeat(-0.2 * scales.numpy(), 2), rtol=1e-6)
                     np.testing.assert_array_equal(endpoints.numpy(), [1, 2, 1, 2, 1, 2])
 
+    def test_bvh_pair_work_budget_preserves_contacts(self) -> None:
+        """Distribute BVH edge searches without changing sorted physical contacts."""
+        devices = get_cuda_test_devices()
+        if not devices:
+            self.skipTest("CUDA work-distribution regression")
+        for device in devices:
+            with self.subTest(device=device), wp.ScopedDevice(device):
+                vertices, indices, _, _ = create_mesh_sphere(0.5, num_latitudes=6, num_longitudes=8)
+                mesh = newton.Mesh(vertices, indices)
+                builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+                for x in (0.0, 0.9):
+                    body = builder.add_body(xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()))
+                    builder.add_shape_mesh(body, mesh=mesh)
+                model = builder.finalize(device=device)
+                pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, deterministic=True)
+                state, contacts = model.state(), pipeline.contacts()
+                pipeline.collide(state, contacts)
+                narrow = pipeline.narrow_phase
+                weight = int(narrow.mesh_mesh_total_weight.numpy()[0])
+                blocks = int(narrow.mesh_mesh_block_counts.numpy()[0])
+                expected = (weight + max(64, weight // narrow.num_mesh_mesh_blocks) - 1) // max(
+                    64, weight // narrow.num_mesh_mesh_blocks
+                )
+                self.assertGreater(weight, 64)
+                self.assertEqual(blocks, expected)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                self.assertGreater(count, 0)
+                fields = ("shape0", "shape1", "point0", "point1", "normal", "margin0", "margin1")
+                reference = {
+                    field: getattr(contacts, "rigid_contact_" + field).numpy()[:count].copy() for field in fields
+                }
+                # One block covers the same edges with a different partition.
+                narrow.num_mesh_mesh_blocks = 1
+                pipeline.collide(state, contacts)
+                self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), count)
+                for field in fields:
+                    np.testing.assert_array_equal(
+                        getattr(contacts, "rigid_contact_" + field).numpy()[:count], reference[field], err_msg=field
+                    )
+
+    def test_mesh_plane_work_budget_preserves_contacts(self) -> None:
+        """Keep mesh-plane collision coverage and its original work budget."""
+        for device in get_test_devices():
+            with self.subTest(device=device), wp.ScopedDevice(device):
+                vertices, indices, _, _ = create_mesh_sphere(0.5, num_latitudes=16, num_longitudes=24)
+                builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+                body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.49), wp.quat_identity()))
+                builder.add_shape_mesh(body, mesh=newton.Mesh(vertices, indices))
+                builder.add_ground_plane()
+                model = builder.finalize(device=device)
+                pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, deterministic=True)
+                state, contacts = model.state(), pipeline.contacts()
+                pipeline.collide(state, contacts)
+                narrow = pipeline.narrow_phase
+                weight = int(narrow.mesh_plane_total_weight.numpy()[0])
+                budget = max(256, weight // narrow.num_mesh_plane_blocks)
+                self.assertEqual(int(narrow.mesh_plane_block_counts.numpy()[0]), (weight + budget - 1) // budget)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                self.assertGreater(count, 0)
+                fields = ("shape0", "shape1", "point0", "point1", "normal", "margin0", "margin1")
+                reference = {
+                    field: getattr(contacts, "rigid_contact_" + field).numpy()[:count].copy() for field in fields
+                }
+                narrow.num_mesh_plane_blocks = 1
+                pipeline.collide(state, contacts)
+                self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), count)
+                for field in fields:
+                    np.testing.assert_array_equal(
+                        getattr(contacts, "rigid_contact_" + field).numpy()[:count], reference[field], err_msg=field
+                    )
+
+    def test_mesh_work_budget_preserves_other_routes(self) -> None:
+        """Refine only BVH pairs, retaining adaptive, texture and heightfield budgets."""
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                texture = wp.Texture3D(np.zeros((2, 2, 2), dtype=np.float32), device=device)
+                textured = TextureSDFData()
+                textured.coarse_texture = texture
+                table = wp.array([textured, TextureSDFData()], dtype=TextureSDFData, device=device)
+                hfield = HeightfieldData()
+                hfield.nrow, hfield.ncol = 2, 2
+                pairs = wp.array(
+                    [[0, 1], [1, 2], [2, 3], [1, 4], [(1 << 30) | 5, 0], [(1 << 30) | 5, 1]],
+                    dtype=wp.vec2i,
+                    device=device,
+                )
+                count = wp.array([6], dtype=wp.int32, device=device)
+                weights = wp.empty(6, dtype=wp.int32, device=device)
+                minimum_edges = wp.empty(6, dtype=wp.int32, device=device)
+                total = wp.zeros(1, dtype=wp.int32, device=device)
+                wp.launch(
+                    compute_mesh_mesh_edge_counts,
+                    dim=2,
+                    inputs=[
+                        pairs,
+                        count,
+                        wp.array([[0, 1000]] * 6, dtype=wp.vec2i, device=device),
+                        wp.array([-1, -1, -1, -1, -1, 0], dtype=wp.int32, device=device),
+                        wp.array([hfield], dtype=HeightfieldData, device=device),
+                        wp.array([-1, 0, 0, 1, 100, -1], dtype=wp.int32, device=device),
+                        table,
+                        minimum_edges,
+                        weights,
+                        total,
+                        2,
+                    ],
+                    device=device,
+                )
+                np.testing.assert_array_equal(minimum_edges.numpy(), [64, 256, 64, 64, 256, 256])
+                np.testing.assert_array_equal(weights.numpy(), [2000, 2000, 2000, 2000, 1005, 1005])
+                blocks = wp.empty_like(weights)
+                wp.launch(
+                    compute_block_counts_from_weights,
+                    dim=2,
+                    inputs=[total, weights, minimum_edges, count, 6, 3008, blocks, 2],
+                    device=device,
+                )
+                np.testing.assert_array_equal(blocks.numpy(), [32, 8, 32, 32, 4, 4])
+                # A busy workload still uses its adaptive per-block share.
+                total.assign([6016000])
+                wp.launch(
+                    compute_block_counts_from_weights,
+                    dim=2,
+                    inputs=[total, weights, minimum_edges, count, 6, 3008, blocks, 2],
+                    device=device,
+                )
+                np.testing.assert_array_equal(blocks.numpy(), np.ones(6, dtype=np.int32))
+
     def test_block_count_scan_ignores_inactive_tail(self) -> None:
         """Keep active block offsets independent of stale inactive slots."""
         for device in get_test_devices():
@@ -1009,11 +1139,12 @@ class TestSDFContact(unittest.TestCase):
                 total_weight = wp.array([4096], dtype=wp.int32, device=device)
                 block_counts = wp.full(8, 77, dtype=wp.int32, device=device)
                 offsets = wp.empty_like(block_counts)
+                minimum_edges = wp.full(8, 256, dtype=wp.int32, device=device)
 
                 wp.launch(
                     compute_block_counts_from_weights,
                     dim=2,
-                    inputs=[total_weight, weights, pair_count, len(weights), 4, block_counts, 2],
+                    inputs=[total_weight, weights, minimum_edges, pair_count, len(weights), 4, block_counts, 2],
                     device=device,
                 )
                 wp.utils.array_scan(block_counts, offsets, inclusive=False)
@@ -1024,7 +1155,7 @@ class TestSDFContact(unittest.TestCase):
                 wp.launch(
                     compute_block_counts_from_weights,
                     dim=2,
-                    inputs=[total_weight, weights, pair_count, len(weights), 4, block_counts, 2],
+                    inputs=[total_weight, weights, minimum_edges, pair_count, len(weights), 4, block_counts, 2],
                     device=device,
                 )
                 wp.utils.array_scan(block_counts, offsets, inclusive=False)
