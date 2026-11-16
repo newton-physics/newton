@@ -1,0 +1,1 @@
+Name downloaded asset caches by the requested folder's full Git tree hash so identical contents share a directory across refs and unrelated repository changes. Preserve distinct content versions until the cache is cleared. Use the path returned by `newton.utils.download_asset()`; legacy cache directories remain untouched and assets are downloaded again on first use.

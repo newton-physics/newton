@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from ... import config
 
@@ -148,14 +149,42 @@ def _cleanup_stale_temp_dirs(cache_path: Path, base_prefix: str, max_age: float 
         pass
 
 
-def _find_cached_version(cache_path: Path, base_prefix: str) -> Path | None:
-    """Find an existing content-hash cache directory for the given prefix.
+def _cache_prefix(repo_name: str, folder_path: str) -> str:
+    """Escape folder separators without conflating paths such as a/b and a_b."""
+    return f"{repo_name}_{quote(folder_path, safe='')}"
 
-    Scans ``{cache_path}`` for directories matching ``{base_prefix}_*/``,
-    filters out temp directories (matching ``_p\\d+_t\\d+`` suffix), and
-    returns the match with the newest mtime.  Returns ``None`` if no match
-    is found.
-    """
+
+def _ref_key(git_url: str, folder_path: str, ref: str) -> str:
+    """Identify a request in metadata, independently of the content directory name."""
+    return hashlib.sha256(f"{git_url}\0{folder_path}\0{ref}".encode()).hexdigest()
+
+
+def _ref_path(cache_dir: Path, ref_key: str) -> Path:
+    return cache_dir / ".git" / "newton-refs" / ref_key
+
+
+def _read_cached_ref(cache_dir: Path, ref_key: str) -> str | None:
+    try:
+        commit = _ref_path(cache_dir, ref_key).read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return None
+    return commit if _SHA_RE.fullmatch(commit) else None
+
+
+def _write_cached_ref(cache_dir: Path, ref_key: str, commit: str) -> None:
+    """Atomically record a ref resolution without changing cached asset contents."""
+    path = _ref_path(cache_dir, ref_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = _temp_cache_path(path)
+    try:
+        temporary.write_text(commit, encoding="ascii")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _find_cached_version(cache_path: Path, base_prefix: str, ref_key: str) -> Path | None:
+    """Find the content directory most recently resolved for this exact request."""
     candidates = []
     try:
         for entry in cache_path.iterdir():
@@ -163,10 +192,10 @@ def _find_cached_version(cache_path: Path, base_prefix: str) -> Path | None:
             if not name.startswith(f"{base_prefix}_") or not entry.is_dir():
                 continue
             suffix = name[len(base_prefix) + 1 :]
-            if _TEMP_DIR_RE.search(suffix):
+            if not _SHA_RE.fullmatch(suffix) or _read_cached_ref(entry, ref_key) is None:
                 continue
             try:
-                mtime = entry.stat().st_mtime
+                mtime = _ref_path(entry, ref_key).stat().st_mtime
             except OSError:
                 continue
             candidates.append((mtime, entry))
@@ -214,11 +243,11 @@ def _find_parent_cache(
     folder_path: str,
     ref: str,
     git_url: str,
-) -> tuple[Path, Path] | None:
+) -> tuple[Path, Path, str] | None:
     """Check if folder_path exists inside an already-cached parent folder.
 
     For example, if folder_path is "unitree_g1/usd" and we have
-    "newton-assets_unitree_g1_<hash>" cached, return the paths.
+    "newton-assets_unitree_g1_<tree-hash>" cached, return the paths.
 
     Args:
         cache_path: The base cache directory
@@ -228,7 +257,7 @@ def _find_parent_cache(
         git_url: Full git URL for hash computation
 
     Returns:
-        Tuple of (parent_cache_folder, target_subfolder) if found, None otherwise.
+        Tuple of (parent_cache_folder, target_subfolder, parent_ref_key) if found, None otherwise.
     """
     parts = folder_path.split("/")
     if len(parts) <= 1:
@@ -238,45 +267,19 @@ def _find_parent_cache(
     parent_paths = ["/".join(parts[:i]) for i in range(1, len(parts))]
 
     for parent_path in parent_paths:
-        # Generate the cache folder name for this parent
-        parent_hash = hashlib.md5(f"{git_url}#{parent_path}#{ref}".encode()).hexdigest()[:8]
-        parent_folder_name = parent_path.replace("/", "_").replace("\\", "_")
-        base_prefix = f"{repo_name}_{parent_folder_name}_{parent_hash}"
+        parent_key = _ref_key(git_url, parent_path, ref)
+        base_prefix = _cache_prefix(repo_name, parent_path)
 
-        cached = _find_cached_version(cache_path, base_prefix)
+        cached = _find_cached_version(cache_path, base_prefix, parent_key)
         if cached is None:
             continue
 
         # Check if this parent cache contains our target
         target_in_parent = cached / folder_path
-        if target_in_parent.exists() and (cached / ".git").exists():
-            return (cached, target_in_parent)
+        if target_in_parent.is_dir():
+            return (cached, target_in_parent, parent_key)
 
     return None
-
-
-def _cleanup_old_versions(cache_path: Path, base_prefix: str, current_dir: Path) -> None:
-    """Best-effort removal of old content-hash directories after a new download.
-
-    Scans for directories matching *base_prefix* (excluding temp dirs and
-    *current_dir*) and removes them.  Failures are silently ignored.
-    """
-    try:
-        for entry in cache_path.iterdir():
-            if entry == current_dir or not entry.is_dir():
-                continue
-            name = entry.name
-            if not name.startswith(f"{base_prefix}_"):
-                continue
-            suffix = name[len(base_prefix) + 1 :]
-            if _TEMP_DIR_RE.search(suffix):
-                continue
-            try:
-                _safe_rmtree(entry)
-            except OSError:
-                pass
-    except OSError:
-        pass
 
 
 def download_git_folder(
@@ -288,9 +291,11 @@ def download_git_folder(
 ) -> Path:
     """Downloads a specific folder from a git repository into a local cache.
 
-    Uses content-addressed directories: each cached version includes the Git
-    commit SHA in its directory name.  When upstream publishes new assets the
-    SHA changes, producing a new directory — no in-place eviction is needed.
+    Cache directory names include the requested folder's full Git tree hash,
+    which covers file names, contents, and modes. Identical folder contents
+    share a directory across refs and commits, including commits that only
+    change other assets. Ref resolutions are stored separately as metadata.
+    Different contents remain available until :func:`clear_git_cache` is called.
 
     Args:
         git_url: The git repository URL (HTTPS or SSH).
@@ -331,83 +336,46 @@ def download_git_folder(
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
 
-    # Compute identity hash (stable across content changes)
-    identity_hash = hashlib.md5(f"{git_url}#{folder_path}#{ref}".encode()).hexdigest()[:8]
+    folder_path = folder_path.replace("\\", "/")
+    ref_key = _ref_key(git_url, folder_path, ref)
     repo_name = Path(git_url.rstrip("/")).stem.replace(".git", "")
-    folder_name = folder_path.replace("/", "_").replace("\\", "_")
-    base_prefix = f"{repo_name}_{folder_name}_{identity_hash}"
+    base_prefix = _cache_prefix(repo_name, folder_path)
 
     ttl_seconds = 3600
-    latest_commit = None  # reused across parent-cache check and primary resolution to avoid redundant ls-remote
-
-    # --- Parent folder optimization ---
-    if not force_refresh:
+    cached_key = ref_key
+    cached = _find_cached_version(cache_path, base_prefix, ref_key)
+    cached_target = cached / folder_path if cached is not None else None
+    if cached_target is not None and not cached_target.is_dir():
+        cached = None
+        cached_target = None
+    if cached is None and not force_refresh:
         parent_result = _find_parent_cache(cache_path, repo_name, folder_path, ref, git_url)
         if parent_result is not None:
-            parent_dir, target_in_parent = parent_result
-            try:
-                age = time.time() - parent_dir.stat().st_mtime
-            except OSError:
-                age = ttl_seconds + 1
-            if age < ttl_seconds:
-                return target_in_parent
+            cached, cached_target, cached_key = parent_result
 
-            # TTL expired — check remote
-            parent_sha_suffix = parent_dir.name.rsplit("_", 1)[-1]
-            latest_commit = _get_latest_commit_via_git(git_url, ref)
-            if latest_commit is None:
-                # Offline — touch mtime and return cached
-                try:
-                    os.utime(parent_dir, None)
-                except OSError:
-                    pass
-                return target_in_parent
-            if latest_commit[:8] == parent_sha_suffix:
-                try:
-                    os.utime(parent_dir, None)
-                except OSError:
-                    pass
-                return target_in_parent
-            # Parent is stale — fall through to download
-
-    # --- Resolution flow ---
-    cached = _find_cached_version(cache_path, base_prefix)
     if cached is not None and not force_refresh:
         try:
-            age = time.time() - cached.stat().st_mtime
+            age = time.time() - _ref_path(cached, cached_key).stat().st_mtime
         except OSError:
             age = ttl_seconds + 1
         if age < ttl_seconds:
-            return cached / folder_path
+            return cached_target
 
-    # Check remote for current commit (reuse result from parent check if available)
-    if latest_commit is None:
-        latest_commit = _get_latest_commit_via_git(git_url, ref)
+    latest_commit = _get_latest_commit_via_git(git_url, ref)
 
     if latest_commit is None:
         if cached is not None:
-            try:
-                os.utime(cached, None)
-            except OSError:
-                pass
-            return cached / folder_path
+            return cached_target
         raise RuntimeError(
             f"Cannot determine remote commit SHA for {git_url} (ref: {ref}) and no cached version exists."
         )
 
-    # Check if we already have this exact version
-    if cached is not None and not force_refresh:
-        cached_sha_suffix = cached.name.rsplit("_", 1)[-1]
-        if latest_commit[:8] == cached_sha_suffix:
-            try:
-                os.utime(cached, None)
-            except OSError:
-                pass
-            return cached / folder_path
+    if cached is not None and latest_commit == _read_cached_ref(cached, cached_key):
+        _write_cached_ref(cached, cached_key, latest_commit)
+        return cached_target
 
-    # --- Download into content-addressed directory ---
-    final_dir = cache_path / f"{base_prefix}_{latest_commit[:8]}"
-    temp_dir = _temp_cache_path(final_dir)
+    # The content hash is only known after fetching the requested tree.
+    temp_dir = _temp_cache_path(cache_path / f"{base_prefix}_{ref_key}")
 
     # Clean up orphaned temp directories
     _cleanup_stale_temp_dirs(cache_path, base_prefix)
@@ -417,7 +385,7 @@ def download_git_folder(
             logger.info(
                 "New version of %s found (cached: %s, latest: %s). Refreshing...",
                 folder_path,
-                cached.name.rsplit("_", 1)[-1],
+                (_read_cached_ref(cached, cached_key) or "unknown")[:8],
                 latest_commit[:8],
             )
         logger.info("Cloning %s (ref: %s)...", git_url, ref)
@@ -437,9 +405,10 @@ def download_git_folder(
                         repo.git.sparse_checkout("init")
                         repo.git.sparse_checkout("set", folder_path)
                         repo.git.fetch("origin", ref, "--depth=1", "--filter=blob:none")
-                        repo.git.checkout("FETCH_HEAD")
-                    finally:
+                    except BaseException:
                         repo.close()
+                        raise
+                    checkout_ref = "FETCH_HEAD"
                 else:
                     repo = gitpython.Repo.clone_from(
                         git_url,
@@ -449,11 +418,23 @@ def download_git_folder(
                         no_checkout=True,
                         multi_options=["--filter=blob:none", "--sparse"],
                     )
+                    checkout_ref = ref
+                try:
+                    commit = repo.commit(checkout_ref)
                     try:
+                        tree = commit.tree / folder_path
+                    except KeyError as e:
+                        raise RuntimeError(f"Folder '{folder_path}' not found in repository {git_url}") from e
+                    if tree.type != "tree":
+                        raise RuntimeError(f"'{folder_path}' is not a folder in repository {git_url}")
+                    final_dir = cache_path / f"{base_prefix}_{tree.hexsha}"
+                    # Avoid materializing unchanged files when another ref already cached them.
+                    if not (final_dir / folder_path).is_dir():
                         repo.git.sparse_checkout("set", folder_path)
-                        repo.git.checkout(ref)
-                    finally:
-                        repo.close()
+                        repo.git.checkout(checkout_ref)
+                    latest_commit = commit.hexsha
+                finally:
+                    repo.close()
                 break
             except GitCommandError as e:
                 if attempt == _GIT_DOWNLOAD_ATTEMPTS - 1 or not _is_transient_git_error(e):
@@ -462,24 +443,18 @@ def download_git_folder(
                 logger.info("Transient Git error. Retrying in %g seconds...", delay)
                 time.sleep(delay)
 
-        temp_target = temp_dir / folder_path
-        if not temp_target.exists():
-            raise RuntimeError(f"Folder '{folder_path}' not found in repository {git_url}")
-
-        # Place the finished download into its final location
-        _safe_rename(temp_dir, final_dir)
+        if not (final_dir / folder_path).is_dir():
+            if not (temp_dir / folder_path).is_dir():
+                raise RuntimeError(f"Folder '{folder_path}' not found in repository {git_url}")
+            _safe_rename(temp_dir, final_dir)
 
         if temp_dir.exists():
             # Another process already placed this exact version — use theirs
             _safe_rmtree(temp_dir)
 
-        # Set mtime to now for TTL tracking
-        os.utime(final_dir, None)
+        _write_cached_ref(final_dir, ref_key, latest_commit)
 
         logger.info("Successfully downloaded folder to: %s", final_dir / folder_path)
-
-        # Best-effort cleanup of old versions
-        _cleanup_old_versions(cache_path, base_prefix, final_dir)
 
         return final_dir / folder_path
 
@@ -526,6 +501,11 @@ def download_asset(
     ref: str | None = None,
 ) -> Path:
     """Download a specific folder from the newton-assets GitHub repository into a local cache.
+
+    The cache directory is named using the asset folder's full Git tree hash,
+    so identical contents share a directory across revisions. Older cache
+    formats are left untouched and are downloaded again on first use. Use the
+    returned path instead of constructing a cache directory name.
 
     Args:
         asset_folder: The folder within the repository to download (e.g., "assets/models")
