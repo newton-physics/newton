@@ -6870,7 +6870,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         self.assertEqual(solver.mj_model.nv, 2)
 
     def test_separate_worlds_deprecated(self):
-        """Warn on an explicit separate_worlds and reject multi-world models on the native CPU backend."""
+        """Warn on an explicit separate_worlds, keep its legacy behavior, and reject multi-world CPU models."""
         template_builder = newton.ModelBuilder()
         body = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
         template_builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
@@ -6885,8 +6885,21 @@ class TestMuJoCoConversion(unittest.TestCase):
             SolverMuJoCo(model, separate_worlds=True)
         self.assertEqual(cm.filename, __file__)
 
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "separate_worlds is deprecated"):
+            SolverMuJoCo(template_builder.finalize(), separate_worlds=False)
+
         with self.assertRaisesRegex(ValueError, "supports only single-world models"):
             SolverMuJoCo(model, use_mujoco_cpu=True)
+
+        # An explicit True still steps only the first world on the native CPU backend.
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "separate_worlds is deprecated"):
+            solver = SolverMuJoCo(model, separate_worlds=True, use_mujoco_cpu=True)
+        state_in, state_out = model.state(), model.state()
+        state_in.joint_qd.fill_(1.0)
+        solver.step(state_in, state_out, model.control(), None, 0.01)
+        joint_q = state_out.joint_q.numpy()
+        self.assertGreater(joint_q[0], 0.0)
+        self.assertEqual(joint_q[1], 0.0)
 
     def test_joint_transform_composition(self):
         """

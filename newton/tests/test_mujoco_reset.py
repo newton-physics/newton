@@ -133,8 +133,8 @@ class TestMuJoCoReset(unittest.TestCase):
                 for buffer in buffers:
                     np.testing.assert_array_equal(buffer, expected)
 
-    def test_native_cpu_masked_joint_reset_preserves_state(self):
-        """Preserve native MuJoCo coordinates when world 0 is unselected."""
+    def test_native_cpu_joint_reset_honors_world_mask(self):
+        """Reset Newton and native MuJoCo coordinates only when world 0 is selected."""
         self.model = _build_two_world_model(world_count=1)
         # TODO: remove with update_data_interval.
         with self.assertWarns(NewtonDeprecationWarning):
@@ -144,25 +144,34 @@ class TestMuJoCoReset(unittest.TestCase):
                 update_data_interval=0,
             )
         state = self.model.state()
+        default_qpos = solver.mj_data.qpos.copy()
+        default_qvel = solver.mj_data.qvel.copy()
         joint_q_before = np.arange(self.model.joint_coord_count, dtype=np.float32) + 30.0
         joint_qd_before = np.arange(self.model.joint_dof_count, dtype=np.float32) + 40.0
-        state.joint_q.assign(joint_q_before)
-        state.joint_qd.assign(joint_qd_before)
-        solver.mj_data.qpos[:] = np.arange(solver.mj_data.qpos.size) + 10.0
-        solver.mj_data.qvel[:] = np.arange(solver.mj_data.qvel.size) + 20.0
-        qpos_before = solver.mj_data.qpos.copy()
-        qvel_before = solver.mj_data.qvel.copy()
 
-        solver.reset(
-            state,
-            world_mask=wp.array((False, True), dtype=wp.bool, device=self.model.device),
-            flags=StateFlags.JOINT_Q | StateFlags.JOINT_QD,
-        )
+        for mask_values, selected in (((False, True), False), ((True, False), True)):
+            with self.subTest(mask=mask_values):
+                state.joint_q.assign(joint_q_before)
+                state.joint_qd.assign(joint_qd_before)
+                solver.mj_data.qpos[:] = np.arange(solver.mj_data.qpos.size) + 10.0
+                solver.mj_data.qvel[:] = np.arange(solver.mj_data.qvel.size) + 20.0
+                qpos_before = solver.mj_data.qpos.copy()
+                qvel_before = solver.mj_data.qvel.copy()
 
-        np.testing.assert_array_equal(solver.mj_data.qpos, qpos_before)
-        np.testing.assert_array_equal(solver.mj_data.qvel, qvel_before)
-        np.testing.assert_array_equal(state.joint_q.numpy(), joint_q_before)
-        np.testing.assert_array_equal(state.joint_qd.numpy(), joint_qd_before)
+                solver.reset(
+                    state,
+                    world_mask=wp.array(mask_values, dtype=wp.bool, device=self.model.device),
+                    flags=StateFlags.JOINT_Q | StateFlags.JOINT_QD,
+                )
+
+                np.testing.assert_array_equal(solver.mj_data.qpos, default_qpos if selected else qpos_before)
+                np.testing.assert_array_equal(solver.mj_data.qvel, default_qvel if selected else qvel_before)
+                np.testing.assert_array_equal(
+                    state.joint_q.numpy(), self.model.joint_q.numpy() if selected else joint_q_before
+                )
+                np.testing.assert_array_equal(
+                    state.joint_qd.numpy(), self.model.joint_qd.numpy() if selected else joint_qd_before
+                )
 
     def test_reset_all_worlds(self):
         """A ``None`` mask clears every world."""

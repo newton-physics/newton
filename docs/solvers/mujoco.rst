@@ -998,10 +998,11 @@ per-world mesh scales are compiled into the MuJoCo assets, so changing their
 recreate the solver to resize them. The solver validates
 compatibility at construction and raises ``ValueError`` on a mismatch.
 
-Bodies, joints, equality constraints, and mimic relationships cannot have
-a negative world index — assigning any of them to the global world
-raises ``ValueError``. Only shapes may live in the global world (-1);
-they are shared across all worlds without replication.
+In a multi-world model, bodies, joints, equality constraints, and mimic
+relationships cannot have a negative world index — assigning any of them to
+the global world raises ``ValueError``. Only shapes may live in the global
+world (-1); they are shared across all worlds without replication.
+Single-world models have no such restriction.
 
 
 Runtime state synchronization
