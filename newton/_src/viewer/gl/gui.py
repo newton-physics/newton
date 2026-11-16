@@ -170,6 +170,8 @@ class UI:
         window.push_handlers(
             on_key_press=lambda symbol, _modifiers: on_key(symbol, True),
             on_key_release=lambda symbol, _modifiers: on_key(symbol, False),
+            # A key released while unfocused reports no release.
+            on_deactivate=held_modifiers.clear,
             on_text=on_text,
             on_mouse_motion=on_mouse_position,
             # Button transitions belong to press/release; a press on every drag motion restarts cancelled drags.
