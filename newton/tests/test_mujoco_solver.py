@@ -14402,12 +14402,6 @@ def Xform "World"
         with self.assertRaisesRegex(ValueError, "nconmax"):
             SolverMuJoCo.create_from_usd(self._build_model(path), self._scene(path))
 
-    def test_invalid_deterministic_raises(self):
-        """Reject an unknown determinism token."""
-        path = self._write(_stage_source('uniform token newton:deterministic = "bogus"'))
-        with self.assertRaisesRegex(ValueError, "deterministic"):
-            SolverMuJoCo.create_from_usd(self._build_model(path), self._scene(path))
-
     def test_cpu_solver_values(self):
         """Check authored values on a real MuJoCo CPU solver."""
         try:
@@ -14421,7 +14415,6 @@ def Xform "World"
         uniform bool newton:mujoco:useMujocoContacts = true
         uniform int newton:mujoco:updateDataInterval = 2
         uniform int newton:mjwarp:njmax = -1
-        uniform token newton:deterministic = "runToRun"
         uniform int mjc:option:iterations = 7
         uniform int mjc:option:ls_iterations = 9
         uniform double mjc:option:tolerance = 1e-6
@@ -14443,7 +14436,6 @@ def Xform "World"
         self.assertTrue(solver.use_mujoco_cpu)
         self.assertTrue(solver._use_mujoco_contacts)
         self.assertEqual(solver.update_data_interval, 2)
-        self.assertEqual(solver._deterministic, wp.DeterministicMode.RUN_TO_RUN)
         # -1 requests the solver's automatic capacity, as if njmax were unauthored
         reference = SolverMuJoCo(model, use_mujoco_cpu=True)
         self.assertEqual(solver.mjw_data.njmax, reference.mjw_data.njmax)
@@ -14535,9 +14527,6 @@ def Xform "World"
         for name, argument in plain.items():
             with self.subTest(attribute=name):
                 self.assertEqual(scene.GetAttribute(f"newton:mujoco:{name}").Get(), parameters[argument].default)
-        # "inherit" is the schema's spelling of deterministic=None
-        self.assertEqual(scene.GetAttribute("newton:deterministic").Get(), "inherit")
-        self.assertIsNone(parameters["deterministic"].default)
 
     def test_unauthored_attributes_match_default_solver(self):
         """A scene that authors nothing yields the same solver as ``SolverMuJoCo(model)``."""

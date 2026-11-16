@@ -1387,10 +1387,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def create_from_usd(cls, model: Model, scene_prim: Usd.Prim | UsdPhysics.Scene, **overrides: Any) -> SolverMuJoCo:
         """Create a solver from a ``UsdPhysics.Scene`` that applies ``NewtonMuJoCoSceneAPI``.
 
-        The ``newton:mujoco:*`` and ``newton:mjwarp:*`` attributes of ``NewtonMuJoCoSceneAPI``,
-        the ``newton:deterministic`` attribute of ``NewtonSceneAPI``, and the
-        ``mjc:flag:contact``, ``mjc:flag:sensor``, and ``mjc:flag:multiccd`` flags authored on the
-        scene are passed to the constructor. Only authored values override the constructor
+        The ``newton:mujoco:*`` and ``newton:mjwarp:*`` attributes of ``NewtonMuJoCoSceneAPI``
+        and the ``mjc:flag:contact``, ``mjc:flag:sensor``, and ``mjc:flag:multiccd`` flags
+        authored on the scene are passed to the constructor. Only authored values override the constructor
         defaults; integer attributes authored as ``-1`` request the solver's automatic default.
 
         Args:
@@ -1451,25 +1450,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # -1 requests the solver's automatic default
             return None if value == -1 else int(value)
 
-        deterministic_modes = {
-            "inherit": None,
-            "notGuaranteed": wp.DeterministicMode.NOT_GUARANTEED,
-            "runToRun": wp.DeterministicMode.RUN_TO_RUN,
-            "gpuToGpu": wp.DeterministicMode.GPU_TO_GPU,
-        }
-        deterministic = authored("newton:deterministic")
-        if deterministic is not None and str(deterministic) not in deterministic_modes:
-            raise ValueError(
-                f"{scene_path}: newton:deterministic must be one of {sorted(deterministic_modes)}, "
-                f"got {deterministic!r}."
-            )
-
         kwargs: dict[str, Any] = {
             "njmax": authored_count("newton:mjwarp:njmax"),
             "njmax_nnz": authored_count("newton:mjwarp:njmax_nnz"),
             "nconmax": authored_count("newton:mjwarp:nconmax"),
             "nvmax": authored_count("newton:mjwarp:nvmax"),
-            "deterministic": None if deterministic is None else deterministic_modes[str(deterministic)],
             "update_data_interval": authored_count("newton:mujoco:updateDataInterval", minimum=0),
             "use_mujoco_cpu": authored_bool("newton:mujoco:useMujocoCpu"),
             "use_mujoco_contacts": authored_bool("newton:mujoco:useMujocoContacts"),
