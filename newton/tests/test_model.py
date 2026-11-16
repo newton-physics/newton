@@ -325,7 +325,8 @@ class TestGaussian(unittest.TestCase):
             path = os.path.join(directory, "splats.ply")
             with open(path, "wb") as file:
                 file.write(header.encode() + data.tobytes())
-            gaussian = newton.Gaussian.create_from_ply(path)
+            with patch_sys_module("open3d", None):  # importers no longer installs Open3D
+                gaussian = newton.Gaussian.create_from_ply(path)
 
         xyzw = data[:, [20, 21, 22, 19]]
         assert_np_equal(gaussian.positions, data[:, :3])
