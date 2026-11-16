@@ -5942,7 +5942,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if flags & ModelFlags.ACTUATOR_PROPERTIES:
             self._validate_compiled_actuator_gears()
         if (
-            flags & (ModelFlags.SHAPE_PROPERTIES | ModelFlags.MODEL_PROPERTIES)
+            flags & ModelFlags.SHAPE_PROPERTIES
+            and self._has_hydroelastic_shapes
             and not self._initial_model_sync
             and not self.model.device.is_capturing
         ):
