@@ -33,6 +33,86 @@ section at the bottom collects the most useful anchor points.
    GPU-resident analogues.
 
 
+.. _mujoco-determinism:
+
+Determinism
+-----------
+
+Select determinism at construction, before derived model constants are computed::
+
+    import warp as wp
+    from newton.solvers import SolverMuJoCo
+
+    solver = SolverMuJoCo(
+        model,
+        use_mujoco_contacts=True,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
+    )
+
+Newton uses ``mujoco_warp.DeterminismType`` to map
+``NOT_GUARANTEED`` to ``NONE`` and ``RUN_TO_RUN`` to ``ALL`` on
+``solver.mjw_model.opt.deterministic`` immediately after model upload.
+``None`` inherits the Warp global mode at construction. Stronger modes such
+as ``GPU_TO_GPU`` are rejected on this native path. This option controls
+MuJoCo Warp execution, not the ``use_mujoco_cpu=True`` backend.
+The native API is available in the supported MuJoCo Warp 3.17.0 release;
+the same integration is also tested with 4.0.0.
+
+The native backend selects its supported deterministic reductions and record
+bounds. Newton does not force Warp's global deterministic compilation onto
+every MJWarp kernel: that can fail on kernels that mix direct writes and
+atomic updates. Newton resets only the inherited ``deterministic`` option on
+MJWarp's source modules to ``NOT_GUARANTEED``, preserving backend-owned record
+bounds and other options. Native factories select deterministic reductions
+using the model flags. The temporary global configuration is restored on exit,
+including exceptions. Newton's contact-conversion kernels retain the requested
+Warp mode separately.
+
+In 3.17.0/4.0.0, ``ATOMICS`` selects backend-authored reduction paths in
+smooth dynamics (including mass/inertia and force accumulation), supported
+constraint/solver operations, passive forces, derivatives, sleeping, and
+selected sensors. This is per-kernel coverage, not a promise that every
+operation in those stages is deterministic. ``CONTACTS`` and ``CONSTRAINT``
+request the ordering hooks described below. Newton neither adds missing
+backend sorts nor broadens native atomic coverage with global compilation.
+
+.. important::
+
+   This is a request for the backend's available determinism features, **not
+   a certification of bitwise-identical trajectories**. MuJoCo Warp 4.0.0
+   exposes ``CONTACTS``, ``CONSTRAINT``, and ``ATOMICS`` bits, but its contact
+   and constraint sorting functions are still unimplemented hooks. Reading
+   back ``ALL`` only confirms configuration. See `MJWarp issue #1925
+   <https://github.com/google-deepmind/mujoco_warp/issues/1925>`_ and the
+   separate proposed `contact sorting #1923
+   <https://github.com/google-deepmind/mujoco_warp/pull/1923>`_ and
+   `constraint sorting #1924
+   <https://github.com/google-deepmind/mujoco_warp/pull/1924>`_ changes.
+   Newton does not include those patches or infer their presence from the enum.
+
+Downstream callers must account for the following boundaries:
+
+* With ``use_mujoco_contacts=False``, also construct
+  ``newton.CollisionPipeline(model, deterministic=True)`` and pass its contacts
+  to the solver. The solver flag does not configure collision generation;
+  deterministic input contacts and conversion alone do not fix missing
+  backend constraint ordering.
+* Keep the device, backend/Warp versions, world count/order, solver settings,
+  initial state, and control sequence fixed when testing repeatability.
+  Cross-device, cross-version, cross-batch-size, and arbitrary-model equality
+  are not promised. Contact/constraint overflow invalidates such a check.
+* Passing a small repeated-rollout test only establishes that tested workload.
+  Check finite state and zero overflow as well as equality; equal NaNs are
+  not successful deterministic simulation. Eager and CUDA Graph paths need
+  their own validation on the deployed GPU stack.
+* Set the mode on construction. Mutating ``mjw_model.opt.deterministic`` later
+  does not rebuild earlier constants or captured graphs. The solver option
+  does not seed downstream policy RNGs or make external controllers deterministic.
+* Warp global/module compilation options are shared process state. Scoped
+  restoration supports sequential calls, not concurrent threads changing
+  determinism options or compiling conflicting solver configurations.
+
+
 Joint types
 -----------
 

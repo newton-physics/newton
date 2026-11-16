@@ -216,7 +216,7 @@ formulation.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
   :class:`~newton.solvers.SolverMuJoCo`.
   :class:`~newton.solvers.SolverVBD` also supports these properties for
-  rigid-rigid contacts in its default compliant-ALM mode.
+  compliant-ALM rigid-rigid contacts.
 - ``mu_static``: stored as :attr:`~newton.Model.shape_material_mu_static` and
   carried into :class:`~newton.solvers.SolverKamino`'s material tables, but no
   built-in solver distinguishes static from dynamic friction in its contact
@@ -241,7 +241,7 @@ The maximal-coordinate solvers (:class:`~newton.solvers.SolverSemiImplicit`,
 :class:`~newton.solvers.SolverXPBD`, and :class:`~newton.solvers.SolverKamino`)
 enforce joints as pairwise body constraints but do not use the articulation kinematic-tree structure.
 :class:`~newton.solvers.SolverVBD` supports a subset of joint types through maximal-coordinate
-constraints, with unified compliant ALM by default and a deprecated legacy AVBD path.
+constraints, using a compliant augmented-Lagrangian (ALM) formulation.
 :class:`~newton.solvers.SolverStyle3D` and :class:`~newton.solvers.SolverImplicitMPM` do not support joints.
 
 **Joint types**
