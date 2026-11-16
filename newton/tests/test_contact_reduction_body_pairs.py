@@ -467,6 +467,25 @@ class TestBodyPairReductionCounts(unittest.TestCase):
         self.assertTrue(np.any((s0 == pad) | (s1 == pad)), "shallower touching pad lost every contact")
         self.assertGreater(pipeline._body_pair_reducer.stats()["coverage_fallback_contacts"], 0)
 
+    def test_default_reduces_margin_surface_contacts(self):
+        """Reduce a flat sphere patch whose margin surfaces extend beyond its core bounds."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.margin = 0.001
+        _sphere_grid_body(builder, (0.0, 0.0, 0.0095), n=9, spacing=0.03)
+        builder.add_ground_plane()
+        model = builder.finalize(device=wp.get_device())
+        state = model.state()
+        pipeline = _make_pipeline(model, True)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        stats = pipeline._body_pair_reducer.stats()
+        self.assertEqual(stats["sum_contacts_in"], 81)
+        self.assertGreater(stats["sum_contacts_kept"], 0)
+        self.assertLess(stats["sum_contacts_kept"], stats["sum_contacts_in"])
+        points = _world_points0(model, state, contacts)
+        np.testing.assert_allclose(points[:, :2].min(axis=0), (-0.12, -0.12), atol=1e-6)
+        np.testing.assert_allclose(points[:, :2].max(axis=0), (0.12, 0.12), atol=1e-6)
+
     def test_stats_doc_tracks_packed_cell_range(self):
         """Keep the public clamp telemetry contract aligned with its bit layout."""
         self.assertIn(f"+/-{GROUP_CELL_COORD_MAX} range", BodyPairReduction.stats.__doc__)
@@ -1023,7 +1042,9 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         state, out = model.state(), model.state()
         initial_z = float(state.body_q.numpy()[0, 2])
         solver.step(state, out, model.control(), None, DT)
-        self.assertGreater(pipeline._body_pair_reducer.stats()["total_frames"], 0)
+        stats = pipeline._body_pair_reducer.stats()
+        self.assertGreater(stats["total_frames"], 0)
+        self.assertLess(stats["sum_contacts_kept"], stats["sum_contacts_in"])
         self.assertTrue(np.isfinite(out.body_q.numpy()).all())
         # Without contact, semi-implicit gravity drops the foot by g * dt**2.
         self.assertGreater(float(out.body_q.numpy()[0, 2]), initial_z - 0.5 * 9.81 * DT * DT)
@@ -1248,11 +1269,14 @@ class TestBodyPairReductionGrouping(unittest.TestCase):
         transforms = model.shape_transform.numpy()
         transforms[1, 0] = 0.5
         model.shape_transform.assign(transforms)
+        margins = model.shape_margin.numpy()
+        margins[1] = 0.003
+        model.shape_margin.assign(margins)
         pipeline.refresh_body_pair_reduction_groups()
         self.assertEqual(reducer.group_lower.ptr, pointer)
         groups = reducer.shape_group.numpy()
         self.assertNotEqual(groups[0], groups[1])
-        np.testing.assert_allclose(reducer.group_lower.numpy()[groups[1]], (0.48, -0.02, -0.02), atol=1e-7)
+        np.testing.assert_allclose(reducer.group_lower.numpy()[groups[1]], (0.477, -0.023, -0.023), atol=1e-7)
         if graph is not None:
             wp.capture_launch(graph)
         else:

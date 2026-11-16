@@ -1343,8 +1343,8 @@ and their per-shape custom attributes match;
 ``BodyPairReductionConfig.material_attributes`` narrows
 the attributes that count. Call
 :meth:`~CollisionPipeline.refresh_body_pair_reduction_groups` after changing
-them or the local collider transforms at runtime; this also refreshes the
-fixed coverage bounds.
+them or the local collider transforms or margins at runtime; this also refreshes
+the fixed coverage bounds, including shape margins.
 
 Buffers from the pipeline's :meth:`~CollisionPipeline.contacts` are stamped
 :attr:`~Contacts.rigid_contact_body_pair_reduced` when the scene has primitive

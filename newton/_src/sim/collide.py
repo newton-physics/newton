@@ -2710,7 +2710,7 @@ class CollisionPipeline:
 
         Groups are built at construction.  Call this outside CUDA graph capture
         after changing ``shape_material_*``, a grouped per-shape attribute, or
-        local collider transforms. Automatic coverage bounds refresh in place.
+        local collider transforms or margins. Automatic coverage bounds refresh in place.
         No-op when body-pair reduction is disabled.
 
         .. experimental::

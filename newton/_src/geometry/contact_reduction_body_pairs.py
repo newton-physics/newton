@@ -400,6 +400,8 @@ def build_group_voxel_grids(model, shape_group) -> dict:
     ).reshape(-1, 3, 3)
     centers = np.einsum("nij,nj->ni", rotations, (lo + hi) * 0.5) + transforms[:, :3]
     extents = np.einsum("nij,nj->ni", np.abs(rotations), (hi - lo) * 0.5)
+    # Contacts lie on the margin-expanded surfaces, beyond the core AABBs.
+    extents += model.shape_margin.numpy()[finite, None]
     groups = np.asarray(shape_group)[finite]
     np.minimum.at(lower, groups, centers - extents)
     np.maximum.at(upper, groups, centers + extents)
