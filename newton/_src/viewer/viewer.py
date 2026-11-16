@@ -22,7 +22,13 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
-from ..core.host_transform import transform_add_translation, transform_from_array, transform_multiply
+from ..core.host_transform import (
+    quat_rotate_rows,
+    transform_add_translation,
+    transform_from_array,
+    transform_multiply,
+    transform_to_matrix,
+)
 from ..core.types import MAXVAL, Axis
 from ..exceptions import NewtonWarning
 from .kernels import (
@@ -692,6 +698,7 @@ class ViewerBase(ABC):
         """
         layer.model = None
         layer.model_changed = True
+        layer._last_state = None
 
         # Shape instance batches (shape hash -> ShapeInstances)
         layer._shape_instances = {}
@@ -847,6 +854,7 @@ class ViewerBase(ABC):
             self.clear_model()
 
         self.model = model
+        self._last_state = None
 
         self._visible_worlds = None
 
@@ -1329,6 +1337,7 @@ class ViewerBase(ABC):
             state: The current state of the simulation.
         """
 
+        self._last_state = state
         if self.model is None:
             return
 
@@ -2454,6 +2463,7 @@ class ViewerBase(ABC):
             self.model_shapes = []
 
             self.world_xforms = None
+            self._local_bounds: tuple[np.ndarray, np.ndarray] | None = None
             self.colors_changed: bool = False
             """Indicates that finalized
             ``ShapeInstances.colors`` changed and
@@ -2593,26 +2603,163 @@ class ViewerBase(ABC):
     def _hash_shape(self, geo_hash, shape_static, shape_flags, shape_transparent: bool = False) -> int:
         return hash((geo_hash, shape_static, shape_flags, bool(shape_transparent)))
 
-    def _should_show_shape(self, flags: int, is_static: bool, geo_type: int | None = None) -> bool:
+    def _get_scene_bounds(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """Bound displayed model geometry, excluding infinite planes.
+
+        Read device data only on demand when framing the camera. Shape batches
+        apply body, shape, world and layer transforms, and their model indices
+        already exclude hidden worlds.
+        """
+        self._save_active_layer_state()
+        lower = np.full(3, np.inf)
+        upper = np.full(3, -np.inf)
+        corners = np.array([[x, y, z] for x in (0, 1) for y in (0, 1) for z in (0, 1)], dtype=np.float32)
+
+        def include(points, radii=0.0):
+            nonlocal lower, upper
+            finite = np.isfinite(points).all(axis=1)
+            radii = np.broadcast_to(radii, points.shape)[finite]
+            points = points[finite]
+            if len(points):
+                lower = np.minimum(lower, (points - radii).min(axis=0))
+                upper = np.maximum(upper, (points + radii).max(axis=0))
+
+        for layer in self.layers.values():
+            model = layer.model
+            if model is None or not layer.visible:
+                continue
+            state = layer._last_state
+            if state is None:
+                state = model.state()
+            if model.shape_count:
+                local_lower = model.shape_collision_aabb_lower.numpy()
+                local_upper = model.shape_collision_aabb_upper.numpy()
+                shape_scales = model.shape_scale.numpy()
+                shape_margins = model.shape_margin.numpy()
+                shape_is_solid = model.shape_is_solid.numpy()
+                batches = [
+                    shapes
+                    for shapes in layer._shape_instances.values()
+                    if self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type, layer=layer)
+                ]
+                if layer.show_collision:
+                    batches.extend(layer._sdf_isomesh_instances.values())
+                for shapes in batches:
+                    if not len(shapes.model_shapes):
+                        continue
+                    # Some backends update their own packed transforms instead
+                    # of these batches during rendering. Refresh only on F.
+                    shapes.update(state, layer.world_offsets, layer.xform)
+                    indices = np.asarray(shapes.model_shapes, dtype=np.int32)
+                    visible = shapes.opacities.numpy() > 0.0
+                    if shapes.geo_type == newton.GeoType.PLANE:
+                        visible &= (shape_scales[indices, 0] > 0.0) & (shape_scales[indices, 1] > 0.0)
+                    indices = indices[visible]
+                    if not len(indices):
+                        continue
+                    transforms = shapes.world_xforms.numpy()[visible]
+                    if shapes._local_bounds is not None:
+                        lo, hi = shapes._local_bounds
+                        points = (lo + corners * (hi - lo))[None] * shapes.scales.numpy()[visible, None, :]
+                    else:
+                        lo, hi = local_lower[indices], local_upper[indices]
+                        if shapes.geo_type == newton.GeoType.PLANE:
+                            # Finite rendered planes use full width/length.
+                            hi = shape_scales[indices].copy() * 0.5
+                            hi[:, 2] = 0.0
+                            lo = -hi
+                        elif shapes.geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
+                            # Solidification extrudes along unit normals before instance scaling.
+                            shell = np.abs(shape_scales[indices] * shape_margins[indices, None])
+                            shell *= ~shape_is_solid[indices, None]
+                            lo, hi = lo - shell, hi + shell
+                        points = lo[:, None, :] + corners * (hi - lo)[:, None, :]
+                    points = quat_rotate_rows(transforms[:, None, 3:], points) + transforms[:, None, :3]
+                    include(points.reshape(-1, 3))
+
+            def world_visible(world, worlds=layer._visible_worlds):
+                return world < 0 or worlds is None or world in worlds
+
+            if layer.show_com or (layer.show_gaussians and layer._gaussian_instances):
+                body_poses = state.body_q.numpy() if model.body_count else None
+                offsets = layer.world_offsets.numpy() if layer.world_offsets is not None else None
+
+                def world_matrix(
+                    parent, xform, world, *, poses=body_poses, world_offsets=offsets, layer_xform=layer.xform
+                ):
+                    if parent >= 0:
+                        xform = transform_multiply(transform_from_array(poses[parent]), xform)
+                    if world_offsets is not None and 0 <= world < len(world_offsets):
+                        xform = transform_add_translation(xform, world_offsets[world])
+                    return transform_to_matrix(transform_multiply(layer_xform, xform))
+
+                if layer.show_com and model.body_count:
+                    coms = model.body_com.numpy()
+                    radius = 0.5 * layer.scene_scale * self._com_scale()
+                    for body, world in enumerate(model.body_world.numpy()):
+                        if world_visible(world):
+                            matrix = world_matrix(body, wp.transform(coms[body], wp.quat_identity()), world)
+                            include(matrix[None, :3, 3], radius)
+
+                if layer.show_gaussians:
+                    for _, gaussian, parent, xform, world, flags, static in layer._gaussian_instances:
+                        if not world_visible(world) or not self._should_show_shape(flags, static, layer=layer):
+                            continue
+                        indices = np.linspace(
+                            0, gaussian.count - 1, min(gaussian.count, layer.gaussians_max_points), dtype=np.intp
+                        )
+                        matrix = world_matrix(parent, xform, world)
+                        points = gaussian.positions[indices] @ matrix[:3, :3].T + matrix[:3, 3]
+                        # Match the spheres used by ViewerGL.log_gaussian().
+                        include(points, np.abs(np.mean(gaussian.scales[indices], axis=1))[:, None])
+
+            groups = layer._triangle_appearance_groups or []
+            if model.particle_count and (layer.show_particles or (layer.show_triangles and groups)):
+                points = state.particle_q.numpy()
+                matrix = transform_to_matrix(layer.xform)
+                points = points @ matrix[:3, :3].T + matrix[:3, 3]
+                if layer.show_triangles:
+                    for _, indices, _, opacity in groups:
+                        if opacity > 0.0:
+                            include(points[indices.numpy().reshape(-1)])
+                if layer.show_particles:
+                    active = np.ones(model.particle_count, dtype=bool)
+                    if model.particle_flags is not None:
+                        active = (model.particle_flags.numpy() & int(newton.ParticleFlags.ACTIVE)) != 0
+                    include(points[active], model.particle_radius.numpy()[active, None])
+
+            if layer.show_deformable_visual_meshes:
+                for mesh in model.deformable_visual_meshes:
+                    scratch = layer._deformable_visual_mesh_scratch.get(mesh.index)
+                    if scratch is not None and world_visible(mesh.world):
+                        # These evaluated vertices already include world and layer placement.
+                        include(scratch[0].numpy())
+
+        return (lower, upper) if np.isfinite(lower).all() else None
+
+    def _should_show_shape(
+        self, flags: int, is_static: bool, geo_type: int | None = None, *, layer: Layer | None = None
+    ) -> bool:
         """Determine if a shape should be visible based on current settings."""
+        settings = self if layer is None else layer
 
         # A dedicated ground toggle hides plane shapes (e.g. the ground plane).
-        if geo_type is not None and int(geo_type) == int(newton.GeoType.PLANE) and not self.show_ground:
+        if geo_type is not None and int(geo_type) == int(newton.GeoType.PLANE) and not settings.show_ground:
             return False
 
         has_collide_flag = bool(flags & int(newton.ShapeFlags.COLLIDE_SHAPES))
         has_visible_flag = bool(flags & int(newton.ShapeFlags.VISIBLE))
 
         # Static shapes override (e.g., for debugging)
-        if is_static and self.show_static:
+        if is_static and settings.show_static:
             return True
 
         # Shapes can be both collision AND visual (e.g., ground plane).
         # Show if either relevant toggle is enabled.
-        if has_collide_flag and self.show_collision:
+        if has_collide_flag and settings.show_collision:
             return True
 
-        if has_visible_flag and self.show_visual:
+        if has_visible_flag and settings.show_visual:
             return True
 
         # Hide if shape has no enabled flags
@@ -2844,10 +2991,6 @@ class ViewerBase(ABC):
         shape_geo_is_solid = self.model.shape_is_solid.numpy()
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
-        mujoco_attributes = getattr(self.model, "mujoco", None)
-        site_size_is_display = getattr(mujoco_attributes, "site_size_is_display", None)
-        if site_size_is_display is not None:
-            site_size_is_display = site_size_is_display.numpy()
         shape_world = self.model.shape_world.numpy()
         shape_display_color = self.model.shape_color.numpy() if self.model.shape_color is not None else None
         shape_display_opacity = self.model.shape_opacity.numpy() if self.model.shape_opacity is not None else None
@@ -2868,9 +3011,6 @@ class ViewerBase(ABC):
             geo_type = shape_geo_type[s]
             geo_scale = [float(v) for v in shape_geo_scale[s]]
             geo_src = shape_geo_src[s]
-
-            if geo_type == newton.GeoType.CYLINDER and site_size_is_display is not None and site_size_is_display[s]:
-                geo_scale[2] = 0.0
 
             # Gaussians bypass the mesh instancing pipeline; render as point clouds.
             if geo_type == newton.GeoType.GAUSSIAN:
@@ -2976,12 +3116,6 @@ class ViewerBase(ABC):
             solids = geometry["shape_is_solid"].numpy()
             flags = geometry["shape_flags"].numpy()
             sdf_index = geometry["_shape_sdf_index"].numpy()
-            site_size = model._variant_shape_custom.get("mujoco:site_size_is_display")
-            site_size = site_size[0].numpy() if site_size is not None else np.zeros(len(types), dtype=bool)
-            # Display-sized cylinder sites render without their half-height, as regular shapes do.
-            scales = np.where(
-                ((types == newton.GeoType.CYLINDER) & site_size.astype(bool))[:, None], scales * (1.0, 1.0, 0.0), scales
-            )
             self._variant_shape_render = {}
             self._variant_shape_render_args = (types, scales, margins, solids, flags, sdf_index)
             self._variant_shape_types = types
@@ -3129,6 +3263,7 @@ class ViewerBase(ABC):
             batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
             batch.geo_type = geo_type
             self._sdf_isomesh_instances[geo_hash] = batch
+            batch._local_bounds = (isomesh.vertices.min(axis=0), isomesh.vertices.max(axis=0))
         # Apply shape scale if not baked into SDF
         scale_baked = (
             bool(self._texture_sdf_host[sdf_idx]["scale_baked"]) if self._texture_sdf_host is not None else True

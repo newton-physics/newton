@@ -268,14 +268,34 @@ class TestTendonBuilder(unittest.TestCase):
             builder.add_articulation([joint])
         particle = builder.add_particle(pos=wp.vec3(1.0, 0.0, 0.0), vel=wp.vec3(), mass=1.0)
         builder.add_attachment_particle_body(particle=particle, body=particle_anchor)
+        # The retained attachment body can also receive a merged child's local anchor.
+        child_xform = wp.transform(wp.vec3(0.1, 0.2, 0.3), wp.quat_rpy(0.2, -0.3, 0.4))
+        child_pose = builder.body_q[particle_anchor] * child_xform
+        child = builder.add_link(xform=child_pose, mass=1.0, inertia=inertia)
+        builder.add_articulation([builder.add_joint_fixed(particle_anchor, child, parent_xform=child_xform)])
+        point = wp.vec3(0.2, -0.1, 0.3)
+        world_point = wp.transform_point(child_pose, point)
+        child_particle = builder.add_particle(pos=world_point, vel=wp.vec3(), mass=1.0)
+        builder.add_attachment_particle_body(particle=child_particle, body=child, body_point=point)
+        site = builder.add_site(child, xform=wp.transform(point))
         builder.add_tendon(
             [newton.TendonGuide(body=tendon_anchor), newton.TendonGuide(body=endpoint, compliance=1.0e-3)]
         )
 
-        builder.collapse_fixed_joints()
+        result = builder.collapse_fixed_joints()
         self.assertEqual(builder.body_count, 2)
         self.assertEqual(builder.tendon_guide_body, [-1, 1])
-        self.assertEqual(builder.attachment_particle_body_body, [0])
+        self.assertEqual(builder.attachment_particle_body_body, [0, 0])
+        self.assertEqual(result["body_remap"], {-1: -1, particle_anchor: 0, endpoint: 1})
+        self.assertEqual(result["body_merged_parent"], {tendon_anchor: -1, child: particle_anchor})
+        np.testing.assert_allclose(result["body_merged_transform"][child], child_xform, atol=2e-7)
+        np.testing.assert_allclose(
+            builder.attachment_particle_body_body_point[1], wp.transform_point(child_xform, point), atol=2e-7
+        )
+        self.assertEqual(builder.shape_body[site], 0)
+        np.testing.assert_allclose(
+            builder.shape_transform[site].p, builder.attachment_particle_body_body_point[1], atol=2e-7
+        )
         builder.color()
         for device in wp.get_devices():
             with self.subTest(device=device):
@@ -286,10 +306,10 @@ class TestTendonBuilder(unittest.TestCase):
                 np.testing.assert_allclose(output.body_q.numpy(), state.body_q.numpy(), atol=1.0e-6)
                 np.testing.assert_allclose(output.particle_q.numpy(), state.particle_q.numpy(), atol=1.0e-6)
                 self.assertEqual(model.tendon_count, 1)
-                self.assertEqual(model.attachment_particle_body_count, 1)
+                self.assertEqual(model.attachment_particle_body_count, 2)
 
     def test_collapse_preserves_guides_across_fixed_joint_chain(self):
-        """Compose local guide transforms across more than one collapsed joint."""
+        """Preserve guide, shape, and site frames through chained collapse and world merging."""
         builder = newton.ModelBuilder()
         inertia = wp.mat33(np.eye(3))
         root = builder.add_link(mass=1.0, inertia=inertia)
@@ -302,12 +322,45 @@ class TestTendonBuilder(unittest.TestCase):
         builder.add_joint_fixed(parent=root, child=middle, parent_xform=first)
         builder.add_joint_fixed(parent=middle, child=child, parent_xform=second)
         offset, axis = wp.vec3(0.2, 0.1, 0.0), wp.vec3(1.0, 0.0, 0.0)
+        local_pose = wp.transform(offset, wp.quat_rpy(0.1, 0.2, 0.3))
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+        child_shape = builder.add_shape_box(child, xform=local_pose, cfg=shape_cfg)
+        child_site = builder.add_site(child, xform=local_pose)
+        root_site = builder.add_site(root, xform=local_pose)
+        endpoint_site = builder.add_site(endpoint, xform=local_pose)
+        world_site = builder.add_site(-1, xform=local_pose)
+        expected_poses = [
+            child_pose * local_pose,
+            child_pose * local_pose,
+            local_pose,
+            builder.body_q[endpoint] * local_pose,
+            local_pose,
+        ]
+
+        def check_shape_frames(expected_bodies):
+            for shape, expected_body, expected_pose in zip(
+                (child_shape, child_site, root_site, endpoint_site, world_site),
+                expected_bodies,
+                expected_poses,
+                strict=True,
+            ):
+                self.assertEqual(builder.shape_body[shape], expected_body)
+                pose = builder.shape_transform[shape]
+                if expected_body >= 0:
+                    pose = builder.body_q[expected_body] * pose
+                np.testing.assert_allclose(pose, expected_pose, atol=2e-7)
+                self.assertIn(shape, builder.body_shapes[expected_body])
+
         builder.add_tendon(
             [newton.TendonGuide(body=child, offset=offset, axis=axis), newton.TendonGuide(body=endpoint)]
         )
         world_point = wp.transform_point(child_pose, offset)
         world_axis = wp.transform_vector(child_pose, axis)
-        builder.collapse_fixed_joints()
+        result = builder.collapse_fixed_joints()
+        self.assertEqual(result["body_remap"], {-1: -1, root: 0, endpoint: 1})
+        self.assertEqual(result["body_merged_parent"], {middle: root, child: root})
+        np.testing.assert_allclose(result["body_merged_transform"][child], child_pose, atol=2e-7)
+        check_shape_frames([0, 0, 0, 1, -1])
         self.assertEqual(builder.tendon_guide_body, [0, 1])
         retained_pose = builder.body_q[builder.tendon_guide_body[0]]
         np.testing.assert_allclose(
@@ -322,10 +375,12 @@ class TestTendonBuilder(unittest.TestCase):
         builder.add_joint_fixed(parent=-1, child=0)
         builder.collapse_fixed_joints()
         self.assertEqual(builder.tendon_guide_body, [-1, 0])
+        check_shape_frames([-1, -1, -1, 0, -1])
         np.testing.assert_allclose(builder.tendon_guide_offset[0], world_point, atol=2e-7)
         np.testing.assert_allclose(builder.tendon_guide_axis[0], world_axis, atol=2e-7)
         builder.collapse_fixed_joints()
         np.testing.assert_allclose(builder.tendon_guide_offset[0], world_point, atol=2e-7)
+        check_shape_frames([-1, -1, -1, 0, -1])
 
     def test_replicated_dynamic_guides_switch_independently(self):
         """Keep routing transitions, history slots, and masked resets within one world."""

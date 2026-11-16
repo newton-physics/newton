@@ -1262,21 +1262,9 @@ def mesh_vs_convex_midphase(
         if tri_index >= 0 and not _mesh_triangle_is_front_facing_local(mesh_id, center_in_bvh, tri_index):
             tri_index = -1
 
-        # Add this triangle pair to the output buffer if valid
-        # Store (mesh_shape, non_mesh_shape, tri_index) to guarantee mesh is always first
-        has_tri = 0
+        # Pair order is unconstrained; append without a block-wide scan and broadcast.
         if tri_index >= 0:
-            has_tri = 1
-        count_tile = wp.tile(has_tri)
-        inclusive_scan = wp.tile_scan_inclusive(count_tile)
-        offset = 0
-        if idx_in_thread_block == wp.block_dim() - 1:
-            offset = wp.atomic_add(triangle_pairs_count, 0, inclusive_scan[wp.block_dim() - 1])
-        offset_broadcast_tile = wp.tile(offset)
-        offset_broadcast = offset_broadcast_tile[wp.block_dim() - 1]
-
-        if tri_index >= 0:
-            out_idx = offset_broadcast + inclusive_scan[idx_in_thread_block] - has_tri
+            out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
             if out_idx < triangle_pairs.shape[0]:
                 triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
 

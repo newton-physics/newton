@@ -651,9 +651,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         :meth:`SolverMuJoCo.get_max_contact_count`. Otherwise, use the collision
         pipeline's contact storage.
 
-        With ``use_mujoco_cpu=True``, ``CONTACT_F`` requires
-        ``use_mujoco_contacts=True``.
-
         See :ref:`solver_observables` for allocation, backend limitations, and examples.
 
         .. experimental::
@@ -700,7 +697,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dtype=wp.int32,
             frequency=AttributeFrequency.WORLD,
         )
-        """Per-world capacity-overflow bitmask of :class:`SolverMuJoCo.OverflowBits` for the latest step, shape ``(world_count,)``."""
+        """Per-world capacity-overflow bitmask of :class:`SolverMuJoCo.OverflowBits` for the latest step, shape ``(world_count + 1,)``.
+
+        Entries follow the Newton world whose options each MuJoCo world uses. A single
+        MuJoCo world reports in entry ``0`` when world ``0`` owns bodies, also if it
+        simulates global bodies too, and otherwise in the final entry, for global world
+        ``-1``, as in models built without :meth:`~newton.ModelBuilder.begin_world`.
+        Separate MuJoCo worlds leave the final entry zero.
+        """
 
     class OverflowBits(IntFlag):
         """Bits of the per-world ``Observables.overflow`` bitmask.
@@ -757,8 +761,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         kinds = super().supported_observables
         if self.use_mujoco_cpu:
             kinds = kinds.difference({self.ObservableKind.OVERFLOW})
-            if not self._use_mujoco_contacts:
-                kinds = kinds.difference({self.ObservableKind.CONTACT_F})
             if self.mj_model.opt.integrator not in (
                 self._mujoco.mjtIntegrator.mjINT_EULER,
                 self._mujoco.mjtIntegrator.mjINT_RK4,
@@ -1049,6 +1051,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if enum_suffix in mapping:
             return mapping[enum_suffix]
         return int(lower_value)
+
+    @staticmethod
+    def _solref_value_transformer(value: str, context: dict[str, Any] | None = None) -> wp.vec2:
+        """Parse an MJCF solref-type value with MuJoCo's shorthand semantics.
+
+        MuJoCo keeps its default ``(0.02, 1.0)`` for missing trailing components, so
+        ``solreflimit="0.005"`` means ``(0.005, 1.0)``; ``MjSpec.to_xml()`` writes this form.
+        The generic custom-attribute parser pads from the attribute's registered default
+        instead, which for ``mujoco:solref`` and ``mujoco:solreflimit`` is the ``(0, 0)``
+        "not authored" sentinel: the shorthand would become dampratio 0.
+
+        ``parse_vec`` in ``import_mjcf.py`` applies the same rule to ``_SOLREF_SHORTHAND_KEYS``;
+        keep the two in step.
+        """
+        parts = [float(x) for x in str(value).split()]
+        if not 1 <= len(parts) <= 2:
+            raise ValueError(f"Expected 1 or 2 solref values, got {value!r}.")
+        return wp.vec2(*parts, *DEFAULT_LIMIT_SOLREF[len(parts) :])
 
     @staticmethod
     def _angle_value_transformer(value: str, context: dict[str, Any] | None) -> float:
@@ -1566,6 +1586,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # endregion custom frequencies
 
         # region geom attributes
+        # Deprecated in 1.8: no longer populated by the MJCF importer. ModelBuilder.add_shape
+        # zeroes scale[2] of tagged cylinder sites for compatibility.
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="site_size_is_display",
@@ -1696,6 +1718,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="mjc:solref",
                 mjcf_attribute_name="solref",
+                mjcf_value_transformer=cls._solref_value_transformer,
             )
         )
         builder.add_custom_attribute(
@@ -1753,6 +1776,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="mjc:solreflimit",
                 mjcf_attribute_name="solreflimit",
+                mjcf_value_transformer=cls._solref_value_transformer,
             )
         )
         builder.add_custom_attribute(
@@ -2040,6 +2064,30 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="mjc:option:ls_iterations",
                 mjcf_attribute_name="ls_iterations",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="noslip_iterations",
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,  # MuJoCo default: noslip off
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:noslip_iterations",
+                mjcf_attribute_name="noslip_iterations",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="noslip_tolerance",
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=1e-6,  # MuJoCo default
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:noslip_tolerance",
+                mjcf_attribute_name="noslip_tolerance",
             )
         )
         builder.add_custom_attribute(
@@ -4414,6 +4462,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ccd_iterations: int | None = None,
         sdf_iterations: int | None = None,
         sdf_initpoints: int | None = None,
+        noslip_iterations: int | None = None,
+        noslip_tolerance: float | None = None,
         solver: int | str | None = None,
         integrator: int | str | None = None,
         cone: int | str | None = None,
@@ -4480,6 +4530,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ccd_iterations: Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (35).
             sdf_iterations: Maximum SDF iterations. If None, uses model custom attribute or MuJoCo's default (10).
             sdf_initpoints: Number of SDF initialization points. If None, uses model custom attribute or MuJoCo's default (40).
+            noslip_iterations: Maximum noslip solver iterations; 0 disables the noslip solver. If None, uses model custom attribute or MuJoCo's default (0).
+            noslip_tolerance: Noslip solver tolerance for early termination. If None, uses model custom attribute or MuJoCo's default (1e-6).
             solver: Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("newton").
             integrator: Integrator type. Can be "euler", "rk4", "implicit", "implicitfast", or "discrete", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("implicitfast").
             cone: The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("pyramidal").
@@ -4493,7 +4545,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             wind: Wind velocity vector (x, y, z) for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0, 0, 0).
             magnetic: Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
             use_mujoco_cpu: If True, use MuJoCo's C implementation instead of `mujoco_warp`.
-            enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). If False, disable it. If None, use the model custom attribute or disable it by default. Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag.
+            enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). If False, disable it. If None, use the model custom attribute or disable it by default. Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag. With the MuJoCo Warp backend and ``use_mujoco_contacts=True``, all geom and pair margins are zeroed when the model has box geoms and NATIVECCD (the default) or multi-CCD is enabled, or has mesh geoms and multi-CCD is enabled; see *Margin zeroing* in the MuJoCo solver docs. The CPU backend keeps them.
             enable_sleeping: Whether to enable MuJoCo Warp's sleeping optimization. If None, uses the model custom attribute or defaults to False. Sleeping requires the GPU backend, the Newton solver, MuJoCo contact handling, island detection, and a non-RK4 integrator.
             nvmax: Maximum number of active degrees of freedom per world when sleeping is enabled. Must accommodate every initially awake degree of freedom. If None, allocates space for every degree of freedom, which is safe but provides no compact-solver memory savings.
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
@@ -4504,7 +4556,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 .. deprecated:: 1.8
                     Passing any value is deprecated; Data will always be updated on every step.
             save_to_mjcf: Optional path to save the generated MJCF model file.
-            use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
+            use_mujoco_contacts: If True, use MuJoCo collision detection. If False, use Newton-generated contacts
+                supplied to :meth:`step`. Must be True with ``use_mujoco_cpu=True``.
             use_speculative_contacts: Add frictionless normal constraints for separated Newton
                 contact candidates, bounding closing velocity by clearance divided by the physics timestep.
                 Requires ``use_mujoco_contacts=False``, the MuJoCo Warp backend, and Euler or implicitfast
@@ -4545,7 +4598,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         super().__init__(model)
         self._kinematic_switchable_roots = kinematic_switchable_roots
-        if use_speculative_contacts and (use_mujoco_contacts or use_mujoco_cpu):
+        if use_speculative_contacts and use_mujoco_contacts:
             raise ValueError("use_speculative_contacts=True requires Newton contacts on the MuJoCo Warp backend.")
         self._use_speculative_contacts = use_speculative_contacts
 
@@ -4763,17 +4816,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
 
-        if (use_mujoco_contacts or use_mujoco_cpu) and model._has_body_variants:
+        if use_mujoco_contacts and model._has_body_variants:
             # MuJoCo compiles one geom per shape; it cannot follow a variant row's shape.
             raise NotImplementedError(
-                "SolverMuJoCo supports body variants only with Newton contacts; "
-                "set use_mujoco_contacts=False and use_mujoco_cpu=False."
+                "SolverMuJoCo supports body variants only with Newton contacts; set use_mujoco_contacts=False."
             )
         self._use_mujoco_contacts = use_mujoco_contacts
         """Whether MuJoCo handles collision detection.
 
-        Controls margin zeroing: when True, geom/pair margins on the MuJoCo
-        model are kept at zero for NATIVECCD compatibility (#2106)."""
+        Controls margin zeroing: when True with the MuJoCo Warp backend, geom/pair
+        margins on the MuJoCo model are kept at zero for NATIVECCD compatibility (#2106)."""
 
         flags = {
             name: bool(getattr(mujoco_attrs, f"flag_{name}").numpy()[0])
@@ -4787,6 +4839,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             enable_multiccd = flags["multiccd"]
         if disable_contacts is None:
             disable_contacts = not flags["contact"]
+        if use_mujoco_cpu and not use_mujoco_contacts and not disable_contacts:
+            raise ValueError("use_mujoco_cpu=True requires use_mujoco_contacts=True.")
         if disable_sensors is None:
             disable_sensors = not flags["sensor"]
         flags.update(multiccd=enable_multiccd, contact=not disable_contacts, sensor=not disable_sensors)
@@ -4801,16 +4855,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             int(getattr(mujoco.mjtEnableBit, f"mjENBL_{name.upper()}")) for name in self._ENABLE_FLAGS if flags[name]
         )
 
-        # mujoco_warp.put_model() rejects non-zero margins on box-box pairs
-        # (default NATIVECCD path) or any box/mesh pair when MULTICCD is enabled.
-        # Skip the workaround entirely when no such geom types exist in the model.
+        # Earlier mujoco_warp releases rejected non-zero margins at put_model() on
+        # box-box pairs (default NATIVECCD path) and on box/mesh pairs with MULTICCD.
+        # MuJoCo Warp 3.17 accepts them, so the CPU backend keeps the authored margins
+        # (its put_model() call for mjw_model included); the Warp backend still zeroes
+        # them until its contacts with margins are validated on GPU. Skip the
+        # workaround when no such geom types exist in the model.
         shape_types_arr = model.shape_type.numpy()
         has_box = bool(np.any(shape_types_arr == GeoType.BOX))
         has_mesh = bool(np.any((shape_types_arr == GeoType.MESH) | (shape_types_arr == GeoType.CONVEX_MESH)))
-        self._zero_margins_for_native_ccd = (has_box and (flags["nativeccd"] or enable_multiccd)) or (
-            enable_multiccd and has_mesh
+        self._zero_margins_for_native_ccd = not use_mujoco_cpu and (
+            (has_box and (flags["nativeccd"] or enable_multiccd)) or (enable_multiccd and has_mesh)
         )
-        """True when the NATIVECCD/MULTICCD margin workaround applies (#2106)."""
+        """True when the MuJoCo Warp NATIVECCD/MULTICCD margin workaround applies (#2106)."""
 
         if enable_sleeping:
             enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
@@ -4819,7 +4876,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._canonical_bvh_aabb: np.ndarray | None = None
         self._canonical_body_ipos: np.ndarray | None = None
         self._canonical_body_iquat: np.ndarray | None = None
-        if use_mujoco_contacts or use_mujoco_cpu:
+        if use_mujoco_contacts:
             mujoco_attrs_for_warn = getattr(model, "mujoco", None)
             solref_mode_attr = (
                 getattr(mujoco_attrs_for_warn, "solref_mode", None) if mujoco_attrs_for_warn is not None else None
@@ -4827,19 +4884,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if solref_mode_attr is not None:
                 force_space_shapes = int(np.count_nonzero(solref_mode_attr.numpy() == SOLREF_MODE_FORCE_SPACE))
                 if force_space_shapes > 0:
-                    backends = [
-                        name
-                        for name, flag in (
-                            ("use_mujoco_contacts=True", use_mujoco_contacts),
-                            ("use_mujoco_cpu=True", use_mujoco_cpu),
-                        )
-                        if flag
-                    ]
                     warnings.warn(
                         f"{force_space_shapes} shape(s) have mujoco.solref_mode == SOLREF_MODE_FORCE_SPACE "
-                        f"but SolverMuJoCo is running with {', '.join(backends)}. The per-contact "
-                        "body_invweight0 override only fires on the Newton-contacts GPU path "
-                        "(use_mujoco_contacts=False); on this backend these shapes silently fall back to "
+                        "but SolverMuJoCo is running with use_mujoco_contacts=True. The per-contact "
+                        "body_invweight0 override only fires with Newton contacts "
+                        "(use_mujoco_contacts=False); with MuJoCo contacts these shapes silently fall back to "
                         "the legacy convert_solref(ke, kd, 1, 1) approximation and shape_material_ke/kd "
                         "will not behave as force-space gains. See "
                         "docs/solvers/mujoco.rst > 'Shape-material contact stiffness and damping'.",
@@ -4931,6 +4980,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ccd_iterations=ccd_iterations,
                 sdf_iterations=sdf_iterations,
                 sdf_initpoints=sdf_initpoints,
+                noslip_iterations=noslip_iterations,
+                noslip_tolerance=noslip_tolerance,
                 cone=cone,
                 jacobian=jacobian,
                 impratio=impratio,
@@ -4948,7 +4999,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 include_sites=include_sites,
                 skip_visual_only_geoms=skip_visual_only_geoms,
             )
-        if not use_mujoco_cpu and not use_mujoco_contacts:
+        if not use_mujoco_contacts:
             # Persistent mappings must be initialized outside step(), which may
             # first run inside a CUDA graph that is discarded without replay.
             self._create_inverse_shape_mapping()
@@ -4967,8 +5018,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 raise ValueError("use_speculative_contacts=True requires Euler or implicitfast integration.")
             self._allocate_speculative_contact_buffers()
         if (
-            not use_mujoco_cpu
-            and not use_mujoco_contacts
+            not use_mujoco_contacts
             and self.mj_model.opt.integrator == mujoco.mjtIntegrator.mjINT_RK4
             and not self.mj_model.opt.disableflags
             & (mujoco.mjtDisableBit.mjDSBL_CONTACT | mujoco.mjtDisableBit.mjDSBL_CONSTRAINT)
@@ -5196,6 +5246,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     else:
                         rigid_contact_count = self._zero_contact_count
                         rigid_contact_max = 0
+                    # Report each MuJoCo world in the entry of the Newton world it simulates; a
+                    # single world that simulates global entities reports in the global entry.
+                    overflow_out = observables.overflow
+                    overflow_out.zero_()
+                    if self._option_world < 0:
+                        world_count = self.model.world_count
+                        overflow_out = overflow_out[world_count : world_count + 1]
                     wp.launch(
                         collect_overflow_kernel,
                         dim=self.mjw_data.nworld,
@@ -5206,7 +5263,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             newton_contacts,
                             self.mjw_data.overflow,
                         ],
-                        outputs=[observables.overflow],
+                        outputs=[overflow_out],
                         device=self.model.device,
                     )
                 if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
@@ -5533,6 +5590,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.model.body_world,
                 self.mjc_body_to_newton,
                 body_gravcomp,
+                self._option_world,
             ],
             outputs=[out_body_acceleration],
             device=self.model.device,
@@ -5914,13 +5972,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.jnt_actfrcrange[:] = self.mjw_model.jnt_actfrcrange.numpy()[0]
             if flags & ModelFlags.ACTUATOR_PROPERTIES and self.mjc_actuator_ctrl_source is not None:
                 self.mj_model.actuator_ctrlrange[:] = self.mjw_model.actuator_ctrlrange.numpy()[0]
-                # Joint-target rows are owned by the DOF force notification.
+                self.mj_model.actuator_forcerange[:] = self.mjw_model.actuator_forcerange.numpy()[0]
+                # Joint-target gains are owned by the DOF force notification.
                 ctrl_direct = self.mjc_actuator_ctrl_source.numpy() == SolverMuJoCo.CtrlSource.CTRL_DIRECT
                 for name in (
                     "actuator_gainprm",
                     "actuator_biasprm",
                     "actuator_dynprm",
-                    "actuator_forcerange",
                     "actuator_actrange",
                     "actuator_gear",
                     "actuator_cranklength",
@@ -6100,9 +6158,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return hasattr(data, "nworld")
 
     def _apply_mjc_control(self, model: Model, state: State, control: Control | None, mj_data: MjWarpData | MjData):
-        if control is None or control.joint_f is None:
-            if state.body_f is None:
-                return
+        # Without applied forces only xfrc_applied is written, to clear the previous step's forces.
+        apply_control = (control is not None and control.joint_f is not None) or state.body_f is not None
+        if not apply_control:
+            control = None
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         single_world_template = False
         if is_mjwarp:
@@ -6184,26 +6243,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 device=model.device,
             )
 
-        if state.body_f is not None:
-            # Launch over MuJoCo bodies
-            nbody = self.mjc_body_to_newton.shape[1]
-            wp.launch(
-                apply_mjc_body_f_kernel,
-                dim=(nworld, nbody),
-                inputs=[
-                    self.mjc_body_to_newton,
-                    model.body_flags,
-                    state.body_f,
-                    model.body_mass,
-                    model.body_world,
-                    model.gravity,
-                    self.mjw_model.body_gravcomp,
-                ],
-                outputs=[
-                    xfrc,
-                ],
-                device=model.device,
-            )
+        # Runs every step, also without body forces: the free-joint kernel below adds to xfrc_applied.
+        nbody = self.mjc_body_to_newton.shape[1]
+        wp.launch(
+            apply_mjc_body_f_kernel,
+            dim=(nworld, nbody),
+            inputs=[
+                self.mjc_body_to_newton,
+                model.body_flags,
+                state.body_f,
+            ],
+            outputs=[
+                xfrc,
+            ],
+            device=model.device,
+        )
         if control is not None and control.joint_f is not None:
             # Free/DISTANCE joint forces are applied via xfrc_applied to preserve COM-wrench semantics.
             nbody = self.mjc_body_to_newton.shape[1]
@@ -6223,8 +6277,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         if not is_mjwarp:
             mj_data.xfrc_applied = xfrc.numpy()
-            mj_data.ctrl[:] = ctrl.numpy().flatten()
-            mj_data.qfrc_applied[:] = qfrc.numpy()
+            if apply_control:
+                mj_data.ctrl[:] = ctrl.numpy().flatten()
+                mj_data.qfrc_applied[:] = qfrc.numpy()
 
     def _update_mjc_data(
         self,
@@ -6801,8 +6856,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Export MuJoCo geometry, or map forces to unchanged Newton collision rows."""
         self._apply_module_options()
         if self.use_mujoco_cpu:
-            if not self._use_mujoco_contacts:
-                raise NotImplementedError("Contact export with use_mujoco_cpu=True requires use_mujoco_contacts=True.")
             self._populate_mjc_contact_observables(contacts, contact_f, warning_stacklevel=warning_stacklevel)
         else:
             # TODO: ensure that class invariants are preserved
@@ -6932,6 +6985,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ccd_iterations: int | None = None,
         sdf_iterations: int | None = None,
         sdf_initpoints: int | None = None,
+        noslip_iterations: int | None = None,
+        noslip_tolerance: float | None = None,
         njmax: int | None = None,  # number of constraints per world
         njmax_nnz: int | None = None,
         nconmax: int | None = None,
@@ -7017,6 +7072,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"Got world_count={model.world_count}. Use separate_worlds=True for multi-world models."
             )
 
+        self._option_world = self._resolve_option_world(model, separate_worlds)
+
+        if not separate_worlds and self._option_world == 0:
+            # The single MuJoCo world uses world 0's gravity, which kinematic bodies ignore.
+            kinematic = (model.body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0
+            gravity = model.gravity.numpy()
+            if np.any((model.body_world.numpy() == -1) & ~kinematic) and not np.array_equal(gravity[0], gravity[-1]):
+                raise ValueError(
+                    "SolverMuJoCo simulates the bodies of global world -1 and world 0 in one MuJoCo world, which "
+                    f"has one gravity, but got {gravity[-1]} for global world -1 and {gravity[0]} for world 0. "
+                    "Set both to the same value, or move the dynamic global bodies into world 0."
+                )
+
         # Validate model compatibility with separate_worlds mode
         if separate_worlds:
             self._validate_model_for_separate_worlds(model)
@@ -7089,14 +7157,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Get mujoco custom attributes once
         mujoco_attrs = getattr(model, "mujoco", None)
         if sleep_tolerance is None and mujoco_attrs and hasattr(mujoco_attrs, "sleep_tolerance"):
-            sleep_tolerance_values = mujoco_attrs.sleep_tolerance.numpy()
+            # Validate only the world entries MuJoCo reads.
+            option_worlds = self._option_worlds(model, separate_worlds)
+            sleep_tolerance_values = mujoco_attrs.sleep_tolerance.numpy()[option_worlds]
             invalid_sleep_tolerance = ~np.isfinite(sleep_tolerance_values) | (sleep_tolerance_values < 0.0)
             if np.any(invalid_sleep_tolerance):
                 first_invalid = int(np.flatnonzero(invalid_sleep_tolerance)[0])
                 value = sleep_tolerance_values[first_invalid]
                 raise ValueError(
                     "model.mujoco.sleep_tolerance values must be finite and non-negative; "
-                    f"got {value} at world {first_invalid}."
+                    f"got {value} at world {int(option_worlds[first_invalid])}."
                 )
 
         # Helper to resolve scalar option value
@@ -7106,8 +7176,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 overridden_options.add(name)
                 return constructor_value
             if mujoco_attrs and hasattr(mujoco_attrs, name):
-                # Read from index 0 (template world) for initialization
-                return float(getattr(mujoco_attrs, name).numpy()[0])
+                # Initialize from the option world: the template world, or the global world.
+                return float(getattr(mujoco_attrs, name).numpy()[self._option_world])
             return None
 
         # Helper to resolve vector option value
@@ -7117,8 +7187,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 overridden_options.add(name)
                 return constructor_value
             if mujoco_attrs and hasattr(mujoco_attrs, name):
-                # Read from index 0 (template world) for initialization
-                vec = getattr(mujoco_attrs, name).numpy()[0]
+                # Initialize from the option world: the template world, or the global world.
+                vec = getattr(mujoco_attrs, name).numpy()[self._option_world]
                 return tuple(vec)
             return None
 
@@ -7148,6 +7218,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             sdf_iterations = int(mujoco_attrs.sdf_iterations.numpy()[0])
         if sdf_initpoints is None and mujoco_attrs and hasattr(mujoco_attrs, "sdf_initpoints"):
             sdf_initpoints = int(mujoco_attrs.sdf_initpoints.numpy()[0])
+        if noslip_iterations is None and mujoco_attrs and hasattr(mujoco_attrs, "noslip_iterations"):
+            noslip_iterations = int(mujoco_attrs.noslip_iterations.numpy()[0])
+        if noslip_tolerance is None and mujoco_attrs and hasattr(mujoco_attrs, "noslip_tolerance"):
+            noslip_tolerance = float(mujoco_attrs.noslip_tolerance.numpy()[0])
 
         # Set defaults for numeric options if still None (use MuJoCo defaults)
         if iterations is None:
@@ -7182,7 +7256,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         spec = mujoco.MjSpec()
         spec.option.enableflags = enableflags
         spec.option.disableflags = disableflags
-        spec.option.gravity = np.array([*model.gravity.numpy()[0]])
+        spec.option.gravity = np.array([*model.gravity.numpy()[self._option_world]])
         spec.option.solver = solver
         spec.option.integrator = integrator
         spec.option.iterations = iterations
@@ -7197,6 +7271,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             spec.option.sdf_iterations = sdf_iterations
         if sdf_initpoints is not None:
             spec.option.sdf_initpoints = sdf_initpoints
+        if noslip_iterations is not None:
+            spec.option.noslip_iterations = noslip_iterations
+        if noslip_tolerance is not None:
+            spec.option.noslip_tolerance = noslip_tolerance
 
         # Set WORLD frequency options (use MuJoCo defaults if None)
         if impratio is not None:
@@ -7322,6 +7400,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         eq_constraint_relpose = get_custom_attribute("equality_constraint_relpose")
         eq_constraint_joint1 = get_custom_attribute("equality_constraint_joint1")
         eq_constraint_joint2 = get_custom_attribute("equality_constraint_joint2")
+        eq_constraint_joint1_dof = get_custom_attribute("equality_constraint_joint1_dof")
+        eq_constraint_joint2_dof = get_custom_attribute("equality_constraint_joint2_dof")
         eq_constraint_tendon1 = get_custom_attribute("equality_constraint_tendon1")
         eq_constraint_tendon2 = get_custom_attribute("equality_constraint_tendon2")
         eq_constraint_polycoef = get_custom_attribute("equality_constraint_polycoef")
@@ -7878,10 +7958,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
             ) or shape in mujoco_pair_contact_shapes
             if is_planar and self._use_mujoco_contacts and not disable_contacts and uses_mujoco_contacts:
+                if self.use_mujoco_cpu:
+                    hint = (
+                        "Replace the mesh with a plane, box, or a mesh with thickness; "
+                        "the MuJoCo CPU backend requires MuJoCo contacts."
+                    )
+                else:
+                    hint = (
+                        "Use use_mujoco_contacts=False so Newton's collision pipeline handles this mesh, "
+                        "or replace it with a plane/box/thick mesh."
+                    )
                 raise ValueError(
                     f"MuJoCo contact generation does not support planar mesh collider "
-                    f"{model.shape_label[shape]!r} (shape {shape}). Use use_mujoco_contacts=False so "
-                    "Newton's collision pipeline handles this mesh, or replace it with a plane/box/thick mesh."
+                    f"{model.shape_label[shape]!r} (shape {shape}). {hint}"
                 )
             shape_mesh_names[shape] = name
             return name
@@ -8748,6 +8837,39 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             objtype = int(eq_constraint_objtype[i])
             return fallback if objtype < 0 else objtype
 
+        def get_joint_equality_endpoint(i: int, endpoint: int, joint: int, dofs: np.ndarray | None) -> str:
+            dof = int(dofs[i]) if dofs is not None else -1
+            # An omitted joint2 fixes joint1 to the polynomial's constant term.
+            if joint < 0:
+                if dof >= 0:
+                    raise ValueError(f"Joint equality {i} endpoint {endpoint} selects DoF {dof} but has no joint.")
+                return ""
+            if joint_type[joint] in (JointType.BALL, JointType.FREE):
+                kind = "ball" if joint_type[joint] == JointType.BALL else "free"
+                raise ValueError(
+                    f"Joint equality {i} endpoint {endpoint} targets {kind} joint '{model.joint_label[joint]}'; "
+                    "MuJoCo joint equalities require a scalar hinge or slide joint. "
+                    "For MJCF hinge endpoints, disable convert_3d_hinge_to_ball_joints."
+                )
+            if dof >= 0:
+                first_dof = int(joint_qd_start[joint])
+                if not first_dof <= dof < first_dof + int(joint_dof_dim[joint].sum()):
+                    raise ValueError(
+                        f"Joint equality {i} endpoint {endpoint} selects DoF {dof}, which does not belong to "
+                        f"joint '{model.joint_label[joint]}'."
+                    )
+                mjc_joint = dof_to_mjc_joint[dof] if dof < len(dof_to_mjc_joint) else -1
+                if mjc_joint < 0:
+                    raise ValueError(f"Joint equality {i} endpoint {endpoint} DoF {dof} has no MuJoCo joint.")
+                return mjc_joint_names[mjc_joint]
+            if len(joint_axis_mapping.get(joint, ())) > 1:
+                raise ValueError(
+                    f"Joint equality {i} endpoint {endpoint} targets joint '{model.joint_label[joint]}', which "
+                    f"MuJoCo represents as several scalar joints; set "
+                    f"mujoco:equality_constraint_joint{endpoint}_dof to select one DoF."
+                )
+            return joint_mapping.get(joint, model.joint_label[joint].replace("/", "_"))
+
         def add_body_equality(i: int):
             objtype = get_eq_objtype(i, MJC_OBJ_BODY)
             if objtype == MJC_OBJ_BODY:
@@ -8785,10 +8907,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 eq = spec.add_equality()
                 eq.type = mujoco.mjtEq.mjEQ_JOINT
                 eq.active = eq_constraint_enabled[i]
-                j1_idx = int(eq_constraint_joint1[i])
-                j2_idx = int(eq_constraint_joint2[i])
-                eq.name1 = joint_mapping.get(j1_idx, model.joint_label[j1_idx].replace("/", "_"))
-                eq.name2 = joint_mapping.get(j2_idx, model.joint_label[j2_idx].replace("/", "_"))
+                eq.name1 = get_joint_equality_endpoint(i, 1, int(eq_constraint_joint1[i]), eq_constraint_joint1_dof)
+                eq.name2 = get_joint_equality_endpoint(i, 2, int(eq_constraint_joint2[i]), eq_constraint_joint2_dof)
                 eq.data[0:5] = eq_constraint_polycoef[i]
                 if eq_constraint_solref is not None:
                     eq.solref = eq_constraint_solref[i]
@@ -9967,12 +10087,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         mujoco_attrs = getattr(self.model, "mujoco", None)
         nworld = self.model.world_count
+        # A single MuJoCo world may simulate global entities; read its options from the global entry.
+        option_rows = slice(nworld, nworld + 1) if self._option_world < 0 else slice(0, nworld)
 
         # Helper to get WORLD frequency option array or None
         def get_option(name: str):
             if name in overridden_options or not mujoco_attrs or not hasattr(mujoco_attrs, name):
                 return None
-            return getattr(mujoco_attrs, name)
+            return getattr(mujoco_attrs, name)[option_rows]
 
         # Get all WORLD frequency scalar arrays
         newton_impratio = get_option("impratio")
@@ -11151,7 +11273,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _update_model_properties(self):
         """Update model properties including gravity in the MuJoCo model."""
         if self.use_mujoco_cpu:
-            self.mj_model.opt.gravity[:] = np.array([*self.model.gravity.numpy()[0]])
+            self.mj_model.opt.gravity[:] = np.array([*self.model.gravity.numpy()[self._option_world]])
         else:
             if hasattr(self, "mjw_data"):
                 wp.launch(
@@ -11159,6 +11281,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     dim=self.mjw_data.nworld,
                     inputs=[
                         self.model.gravity,
+                        self._option_world,
                     ],
                     outputs=[
                         self.mjw_model.opt.gravity,
@@ -11423,8 +11546,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _update_actuator_properties(self):
         """Update actuator properties in the MuJoCo model.
 
-        JOINT_TARGET actuators take gains from joint target arrays, but their control ranges still come from the
-        corresponding MuJoCo actuator custom attributes.
+        JOINT_TARGET gains come from joint arrays; control and authored force ranges come from actuator attributes.
         """
         if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_actuator_idx is None:
             return
@@ -11474,6 +11596,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 actuator_dynprm,
                 actuator_ctrlrange,
                 actuator_forcerange,
+                getattr(mujoco_attrs, "actuator_has_forcerange", None),
                 actuator_actrange,
                 actuator_gear,
                 actuator_cranklength,
@@ -11501,6 +11624,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 outputs=[self._actuator_dampratio],
                 device=self.model.device,
             )
+
+    @staticmethod
+    def _resolve_option_world(model: Model, separate_worlds: bool) -> int:
+        """Return the Newton world whose ``WORLD``-frequency options configure MuJoCo world 0.
+
+        Separate MuJoCo worlds map to Newton worlds by index. A single MuJoCo world
+        simulates world ``0`` and global entities, so it uses world ``0`` when that
+        world owns bodies and global world ``-1`` otherwise, such as in models built
+        without :meth:`~newton.ModelBuilder.begin_world`.
+        """
+        if separate_worlds or model.body_count == 0:
+            return 0
+        return 0 if bool(np.any(model.body_world.numpy() == 0)) else -1
+
+    def _option_worlds(self, model: Model, separate_worlds: bool) -> np.ndarray:
+        """Return the ``WORLD``-frequency entries MuJoCo reads, one per MuJoCo world."""
+        if separate_worlds:
+            return np.arange(model.world_count)
+        return np.array([self._option_world])
 
     def _validate_model_for_separate_worlds(self, model: Model) -> None:
         """Validate that the Newton model is compatible with MuJoCo's separate_worlds mode.
@@ -11689,6 +11831,36 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     f"Equality constraint types mismatch at position {c}: world 0 has type {types[0]}, "
                     f"but other worlds have types {types[1:].tolist()}."
                 )
+
+            # Joint equalities export world 0's joint names, so later worlds must target the same joints and DoFs.
+            dofs_per_world = model.joint_dof_count // world_count
+            for key, per_world in (
+                ("equality_constraint_joint1", joints_per_world),
+                ("equality_constraint_joint2", joints_per_world),
+                ("equality_constraint_joint1_dof", dofs_per_world),
+                ("equality_constraint_joint2_dof", dofs_per_world),
+            ):
+                refs = getattr(model.mujoco, key, None)
+                if refs is None or per_world == 0:
+                    continue
+                refs = refs.numpy().reshape(world_count, constraints_per_world)
+                worlds = np.arange(world_count)[:, None]
+                if np.any((refs >= 0) & (refs // per_world != worlds)):
+                    world, c = np.argwhere((refs >= 0) & (refs // per_world != worlds))[0]
+                    raise ValueError(
+                        f"Equality constraint {key.removeprefix('equality_constraint_')} at position {c} of world "
+                        f"{world} references index {refs[world, c]} of another world."
+                    )
+                local_refs = np.where(refs >= 0, refs % per_world, -1)
+                mismatches = local_refs != local_refs[0]
+                if np.any(mismatches):
+                    c = int(np.argmax(np.any(mismatches, axis=0)))
+                    raise ValueError(
+                        "SolverMuJoCo requires homogeneous worlds. "
+                        f"Equality constraint {key.removeprefix('equality_constraint_')} mismatch at position {c}: "
+                        f"world 0 references {local_refs[0, c]}, but other worlds reference "
+                        f"{local_refs[1:, c].tolist()}."
+                    )
 
             # Tendon equalities export world 0's tendon names, so later worlds must target the same tendons.
             tendon_world = getattr(model.mujoco, "tendon_world", None)

@@ -81,22 +81,27 @@ def _nxn_broadphase_precomputed_pairs(
 
 @wp.func
 def _get_lower_triangular_indices(index: int, matrix_size: int) -> tuple[int, int]:
-    total = (matrix_size * (matrix_size - 1)) >> 1
+    total = (wp.int64(matrix_size) * wp.int64(matrix_size - 1)) >> wp.int64(1)
     if index >= total:
         # In Warp, we can't throw, so return an invalid pair
         return -1, -1
+    if index < 0:
+        return -1, index + matrix_size
 
-    low = int(0)
-    high = matrix_size - 1
-    while low < high:
-        mid = (low + high) >> 1
-        count = (mid * (2 * matrix_size - mid - 1)) >> 1
-        if count <= index:
-            low = mid + 1
-        else:
-            high = mid
-    r = low - 1
-    f = (r * (2 * matrix_size - r - 1)) >> 1
+    # Invert the row prefix r * (2*n-r-1) / 2, then correct float rounding
+    # using exact integer prefixes. Widen products before multiplication.
+    b = wp.int64(2 * matrix_size - 1)
+    discriminant = b * b - wp.int64(8) * wp.int64(index)
+    r = wp.min(matrix_size - 2, wp.max(0, int(0.5 * (float(b) - wp.sqrt(float(discriminant))))))
+    f = int((wp.int64(r) * wp.int64(2 * matrix_size - r - 1)) >> wp.int64(1))
+    while f > index:
+        r -= 1
+        f = int((wp.int64(r) * wp.int64(2 * matrix_size - r - 1)) >> wp.int64(1))
+    next_f = f + matrix_size - r - 1
+    while next_f <= index:
+        r += 1
+        f = next_f
+        next_f = f + matrix_size - r - 1
     c = (index - f) + r + 1
     return r, c
 
@@ -299,7 +304,8 @@ class BroadPhaseAllPairs:
         start_idx = 0
         cumsum = 0
         for world_idx in range(world_count):
-            end_idx = slice_ends_np[world_idx]
+            # Use Python integers so the product cannot overflow before division.
+            end_idx = int(slice_ends_np[world_idx])
             # Number of geometries in this world (including shared geometries)
             num_geoms_in_world = end_idx - start_idx
             # Number of lower triangular elements for this world

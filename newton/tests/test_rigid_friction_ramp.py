@@ -29,9 +29,11 @@ import warp as wp
 
 import newton
 from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
     add_function_test,
     get_selected_cuda_test_devices,
     get_test_devices,
+    requires,
 )
 
 # --- Scene / sim configuration ---
@@ -160,9 +162,12 @@ def build_friction_grid(device, mus, angles_deg, contact_kf=0.0):
     return model, box_ids
 
 
-def simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, num_frames):
+def simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, num_frames, graph=None):
     dt_sub = SIM_DT / SIM_SUBSTEPS
     for _ in range(num_frames):
+        if graph is not None:
+            wp.capture_launch(graph)
+            continue
         for _ in range(SIM_SUBSTEPS):
             state_0.clear_forces()
             if contacts is not None:
@@ -170,6 +175,17 @@ def simulate(solver, model, state_0, state_1, control, collision_pipeline, conta
             solver.step(state_0, state_1, control, contacts, dt_sub)
             state_0, state_1 = state_1, state_0
     return state_0, state_1
+
+
+def capture_frame(solver, model, state_0, state_1, control, collision_pipeline, contacts):
+    """Capture one frame on CUDA; launch overhead dominates these small scenes."""
+    # An even substep count returns both states to their roles, so the graph replays as-is.
+    assert SIM_SUBSTEPS % 2 == 0
+    if not (model.device.is_cuda and wp.is_mempool_enabled(model.device)):
+        return None
+    with wp.ScopedCapture(model.device) as capture:
+        simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, 1)
+    return capture.graph
 
 
 def assert_grid_behavior(test, settle_q, final_q, final_qd, mus, angles_deg, box_ids, thresholds):
@@ -211,10 +227,15 @@ def test_friction_ramp(test, device, solver_fn, mus, angles_deg, thresholds, nat
         collision_pipeline = newton.CollisionPipeline(model)
         contacts = collision_pipeline.contacts()
 
-    state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, SETTLE_FRAMES)
+    graph = capture_frame(solver, model, state_0, state_1, control, collision_pipeline, contacts)
+    state_0, state_1 = simulate(
+        solver, model, state_0, state_1, control, collision_pipeline, contacts, SETTLE_FRAMES, graph
+    )
     settle_q = state_0.body_q.numpy().copy()
 
-    state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, MEASURE_FRAMES)
+    state_0, state_1 = simulate(
+        solver, model, state_0, state_1, control, collision_pipeline, contacts, MEASURE_FRAMES, graph
+    )
     final_q = state_0.body_q.numpy()
     final_qd = state_0.body_qd.numpy()
 
@@ -299,8 +320,9 @@ def test_friction_stopping_distance(
     contacts = collision_pipeline.contacts() if collision_pipeline is not None else None
 
     # Establish resting contacts so the measurement excludes landing impulses.
+    graph = capture_frame(solver, model, state_0, state_1, control, collision_pipeline, contacts)
     state_0, state_1 = simulate(
-        solver, model, state_0, state_1, control, collision_pipeline, contacts, STOPPING_SETTLE_FRAMES
+        solver, model, state_0, state_1, control, collision_pipeline, contacts, STOPPING_SETTLE_FRAMES, graph
     )
     initial_q = state_0.body_q.numpy().copy()
 
@@ -323,7 +345,9 @@ def test_friction_stopping_distance(
     t_stop_max = STOPPING_V0 / (min(STOPPING_MUS) * g)
     num_frames = int(math.ceil(1.5 * t_stop_max / SIM_DT))
 
-    state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, num_frames)
+    state_0, state_1 = simulate(
+        solver, model, state_0, state_1, control, collision_pipeline, contacts, num_frames, graph
+    )
 
     final_q = state_0.body_q.numpy().copy()
     final_qd = state_0.body_qd.numpy().copy()
@@ -331,7 +355,7 @@ def test_friction_stopping_distance(
     # A trailing displacement is insensitive to one-frame normal contact jitter
     # while still detecting residual sliding after the stopping-distance check.
     state_0, state_1 = simulate(
-        solver, model, state_0, state_1, control, collision_pipeline, contacts, STOPPING_REST_FRAMES
+        solver, model, state_0, state_1, control, collision_pipeline, contacts, STOPPING_REST_FRAMES, graph
     )
     rest_q = state_0.body_q.numpy()
     rest_qd = state_0.body_qd.numpy()
@@ -372,14 +396,14 @@ def test_friction_stopping_distance(
 # --- Solver matrix ---
 
 
-def _make_kamino_dvi_solver(model, *, unilateral_solver, sparse):
-    """Exercise DVI friction through the public solver with Newton contacts."""
+def _make_kamino_scc_solver(model, *, unilateral_solver, sparse):
+    """Exercise SCC friction through the public solver with Newton contacts."""
     config = newton.solvers.SolverKamino.Config(
-        dynamics_solver="dvi",
+        dynamics_solver="scc",
         sparse_jacobian=sparse,
         sparse_dynamics=sparse,
     )
-    config.dvi.unilateral_solver = unilateral_solver
+    config.scc.unilateral_solver = unilateral_solver
     return newton.solvers.SolverKamino(model, config=config)
 
 
@@ -402,15 +426,17 @@ _SOLVERS = {
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
     "mujoco_warp": {
-        "factory": lambda model: newton.solvers.SolverMuJoCo(
-            model,
-            use_mujoco_cpu=False,
-            njmax=800,
-            nconmax=500,
-            cone="elliptic",
-            impratio=10.0,
-            iterations=200,
-            ls_iterations=100,
+        "factory": requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(
+                model,
+                use_mujoco_cpu=False,
+                njmax=800,
+                nconmax=500,
+                cone="elliptic",
+                impratio=10.0,
+                iterations=200,
+                ls_iterations=100,
+            )
         ),
         "native_contacts": True,
         "mus": _DEFAULT_MUS,
@@ -422,16 +448,18 @@ _SOLVERS = {
     # Same config as mujoco_warp but consuming Newton CollisionPipeline
     # contacts — covers the elliptic + Newton-contacts constraint path.
     "mujoco_warp_newton_contacts": {
-        "factory": lambda model: newton.solvers.SolverMuJoCo(
-            model,
-            use_mujoco_cpu=False,
-            use_mujoco_contacts=False,
-            njmax=800,
-            nconmax=500,
-            cone="elliptic",
-            impratio=10.0,
-            iterations=200,
-            ls_iterations=100,
+        "factory": requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(
+                model,
+                use_mujoco_cpu=False,
+                use_mujoco_contacts=False,
+                njmax=800,
+                nconmax=500,
+                cone="elliptic",
+                impratio=10.0,
+                iterations=200,
+                ls_iterations=100,
+            )
         ),
         "mus": _DEFAULT_MUS,
         "angles_deg": _DEFAULT_ANGLES_DEG,
@@ -444,13 +472,15 @@ _SOLVERS = {
         "run_stopping_distance": False,
     },
     "mujoco_cpu": {
-        "factory": lambda model: newton.solvers.SolverMuJoCo(
-            model,
-            use_mujoco_cpu=True,
-            cone="elliptic",
-            impratio=10.0,
-            iterations=200,
-            ls_iterations=100,
+        "factory": requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(
+                model,
+                use_mujoco_cpu=True,
+                cone="elliptic",
+                impratio=10.0,
+                iterations=200,
+                ls_iterations=100,
+            )
         ),
         "native_contacts": True,
         "mus": _DEFAULT_MUS,
@@ -484,10 +514,10 @@ _SOLVERS = {
 
 for _backend in ("pgs", "apgd"):
     for _sparse in (False, True):
-        _name = f"kamino_dvi_{_backend}_{'sparse' if _sparse else 'dense'}"
+        _name = f"kamino_scc_{_backend}_{'sparse' if _sparse else 'dense'}"
         _SOLVERS[_name] = {
             **_SOLVERS["kamino"],
-            "factory": partial(_make_kamino_dvi_solver, unilateral_solver=_backend, sparse=_sparse),
+            "factory": partial(_make_kamino_scc_solver, unilateral_solver=_backend, sparse=_sparse),
         }
 
 

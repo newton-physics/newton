@@ -70,16 +70,14 @@ class TestSteelBodyPairReductionGate(unittest.TestCase):
     def test_steel_compliance_rejects_reduced_contacts(self):
         """Reject reduced contacts when Steel's compliant contact law is on."""
         if not wp.get_device().is_cuda:
-            self.skipTest("Steel contact compliance requires solve_mode='matrix_free', which requires CUDA")
+            self.skipTest("Steel contact compliance requires CUDA")
         model = self._foot_model()
         state_0, state_1 = model.state(), model.state()
         pipeline = _make_pipeline(model, True)
         contacts = pipeline.contacts()
         pipeline.collide(state_0, contacts)
         self.assertTrue(contacts.rigid_contact_body_pair_reduced)
-        solver = newton.solvers.SolverSteel(
-            model, solve_mode="matrix_free", contact_compliance=True, friction_anchor_beta=0.0
-        )
+        solver = newton.solvers.SolverSteel(model, contact_compliance=True, friction_anchor_beta=0.0)
         with self.assertRaisesRegex(ValueError, "contact_compliance=True"):
             solver.step(state_0, state_1, model.control(), contacts, DT)
 
@@ -97,9 +95,7 @@ class TestSteelBodyPairReductionGate(unittest.TestCase):
         control = model.control()
         pipeline = _make_pipeline(model, True, contact_matching="latest")
         contacts = pipeline.contacts()
-        solver = newton.solvers.SolverSteel(
-            model, solve_mode="matrix_free", contact_warmstart=True, friction_anchor_beta=0.0
-        )
+        solver = newton.solvers.SolverSteel(model, contact_warmstart=True, friction_anchor_beta=0.0)
         with wp.ScopedCapture(device) as capture:
             pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, DT)
@@ -200,11 +196,11 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
 
         Sequential PGS observes row order, so the sorted conformance cases do
         not establish support for ``CollisionPipeline(deterministic=False)``.
-        This exercises the default split solver with strict contact compaction.
+        This exercises the serial solve with point friction and strict contact compaction.
         """
         self._compare(
             lambda b: _free_jointed_foot(b, (0.0, 0.0, 0.05)),
-            lambda m: _undamped(newton.solvers.SolverSteel(m, solve_mode="split")),
+            lambda m: _undamped(newton.solvers.SolverSteel(m, friction_anchor_beta=0.0)),
             deterministic=False,
         )
 
@@ -221,37 +217,32 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
             return _free_jointed_foot(b, (0.0, 0.005, 0.09))
 
         self._compare(
-            build, lambda m: _undamped(newton.solvers.SolverSteel(m, solve_mode="split")), tol=2e-3, w_tol=0.15
+            build, lambda m: _undamped(newton.solvers.SolverSteel(m, friction_anchor_beta=0.0)), tol=2e-3, w_tol=0.15
         )
 
     def test_steel_contact_mode_conformance(self):
         """Settle identically on/off in every Steel contact mode.
 
         supports_body_pair_reduced_contacts is class-wide, so the evidence must cover
-        the dense and matrix-free contact paths, not only the default split
-        mode the other tests exercise (matrix-free additionally runs generated
-        native CUDA).
+        the dense articulated, free-body and propagation contact paths and both
+        solve modes, not only the point-friction serial solve the other tests exercise.
         """
         if not wp.get_device().is_cuda:
             self.skipTest("Steel contact-mode conformance is a CUDA-only merge gate")
 
+        # Use a non-free prismatic articulation for every propagation variant.
         configs = [
-            ("split", "immediate", 16, _prismatic_jointed_foot, "articulation"),
-            ("split", "immediate", 16, _free_jointed_foot, "free_body"),
+            ("serial", "immediate", 16, _prismatic_jointed_foot, "articulation"),
+            ("serial", "immediate", None, _free_jointed_foot, "free_body"),
+            ("serial", "propagation", 16, _prismatic_jointed_foot, "propagation"),
+            ("colored", "propagation", 16, _prismatic_jointed_foot, "propagation"),
         ]
-        # Matrix-free (and its propagation response family) is CUDA-only. Use
-        # a non-free prismatic articulation for every propagation variant.
-        configs += [
-            ("matrix_free", "immediate", None, _free_jointed_foot, "free_body"),
-            ("matrix_free", "propagation", 16, _prismatic_jointed_foot, "propagation"),
-            ("matrix_free", "propagation_colored", 16, _prismatic_jointed_foot, "propagation"),
-        ]
-        # Dense, propagation, and propagation_colored run 16 iterations. The
+        # Dense, propagation, and colored propagation run 16 iterations. The
         # ``None`` entry deliberately omits iterations and asserts the
         # default (12), rather than testing a stale assumed default.
         # At 8 iterations the UNREDUCED redundant set does not converge (dense
         # settles 5 mm high, plain/colored propagation 4.8 mm high at 0.01980;
-        # the REDUCED set and split land at the true 0.01500 at every
+        # the REDUCED set lands at the true 0.01500 at every
         # iteration count) -- redundant near-parallel rows hurt PGS
         # conditioning, the same effect as the stack-collapse case, and
         # reduction itself is what removes it.  The comparison must be against
@@ -291,7 +282,7 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
         that the resulting rows reached the intended CUDA kernel family.
         """
         if not wp.get_device().is_cuda:
-            self.skipTest("matrix-free propagation requires CUDA")
+            self.skipTest("the reduced same-articulation scene is a CUDA-only check")
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         _same_articulation_scissor(builder)
@@ -313,7 +304,6 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
 
         solver = newton.solvers.SolverSteel(
             model,
-            solve_mode="matrix_free",
             articulated_contact_response="propagation",
             propagation_same_articulation_rows=True,
             row_watermark=True,
@@ -450,7 +440,10 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
         )
 
         self._compare(
-            build_jointed, lambda m: _undamped(newton.solvers.SolverSteel(m, solve_mode="split")), tol=1e-3, w_tol=0.15
+            build_jointed,
+            lambda m: _undamped(newton.solvers.SolverSteel(m, friction_anchor_beta=0.0)),
+            tol=1e-3,
+            w_tol=0.15,
         )
 
 
@@ -467,7 +460,7 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
         control = model.control()
         pipeline = _make_pipeline(model, reduce_on)
         contacts = pipeline.contacts()
-        solver = newton.solvers.SolverSteel(model, solve_mode="split")
+        solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.0)
         solver._rigid_body_angular_damping.zero_()
         for _ in range(240):
             pipeline.collide(state_0, contacts)
@@ -508,7 +501,7 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
             control = model.control()
             pipeline = _make_pipeline(model, reduce_on)
             contacts = pipeline.contacts()
-            solver = newton.solvers.SolverSteel(model, solve_mode="split")
+            solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.0)
             solver._rigid_body_angular_damping.zero_()
             zs = []
             for _ in range(240):
@@ -527,7 +520,7 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
         # bounded touchdown transient: never punches through the resting height by > 2.5 mm
         self.assertGreater(float(z_on.min()), 0.015 - 2.5e-3)
 
-    @unittest.skipUnless(wp.is_cuda_available(), "Steel matrix-free solve requires CUDA")
+    @unittest.skipUnless(wp.is_cuda_available(), "ring-body rest check runs on CUDA")
     def test_speculative_ring_body_rests_still_with_steel(self):
         """Rest the ring body under 4 x 16 Steel: reduced must be as still as unreduced."""
         device = wp.get_cuda_device()
@@ -542,7 +535,6 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
             contacts = pipeline.contacts()
             solver = newton.solvers.SolverSteel(
                 model,
-                solve_mode="matrix_free",
                 iterations=16,
                 baumgarte=0.2,
                 contact_regularization=0.01,
@@ -592,7 +584,7 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
         control = model.control()
         pipeline = _make_pipeline(model, True, body_pair_verify=True)
         contacts = pipeline.contacts()
-        solver = newton.solvers.SolverSteel(model, solve_mode="split")
+        solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.0)
         solver._rigid_body_angular_damping.zero_()
         for _ in range(240):
             pipeline.collide(state_0, contacts)
@@ -653,7 +645,7 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
             mf_capacity = 3 * max(c_red.rigid_contact_max, c_raw.rigid_contact_max)
             # Both piles are chaotic; run-to-run determinism keeps their peak speeds comparable between runs.
             solver = newton.solvers.SolverSteel(
-                model, solve_mode="split", free_body_constraint_max=mf_capacity, deterministic=RUN_TO_RUN
+                model, friction_anchor_beta=0.0, free_body_constraint_max=mf_capacity, deterministic=RUN_TO_RUN
             )
             solver._rigid_body_angular_damping.zero_()
             raw_not_less, strict_reduction_frames, peak_red = 0, 0, 0.0
@@ -678,7 +670,7 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
             raw_dynamics_pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
             raw_dynamics_contacts = raw_dynamics_pipeline.contacts()
             raw_solver = newton.solvers.SolverSteel(
-                model, solve_mode="split", free_body_constraint_max=mf_capacity, deterministic=RUN_TO_RUN
+                model, friction_anchor_beta=0.0, free_body_constraint_max=mf_capacity, deterministic=RUN_TO_RUN
             )
             raw_solver._rigid_body_angular_damping.zero_()
             peak_raw = 0.0

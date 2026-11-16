@@ -98,10 +98,9 @@ from .types import GeoType
 BETA_THRESHOLD = 0.0001  # 0.1mm
 
 VALUES_PER_KEY = NUM_SPATIAL_DIRECTIONS + 1
-# Normal bins occupy 0..19 and 15 voxel groups occupy 20..34. Reserve
-# bin 35 for a pair-level predictive manifold without changing the regular
-# seven-slot value layout: six fingerprint-sharded clearance contacts and one
-# earliest time-of-impact guard.
+# Place the predictive manifold after the normal bins and voxel groups,
+# retaining the regular value layout: fingerprint-sharded clearance contacts
+# and one earliest time-of-impact guard.
 PREDICTIVE_BIN_ID = NUM_NORMAL_BINS + (NUM_VOXEL_DEPTH_SLOTS + VALUES_PER_KEY - 1) // VALUES_PER_KEY
 _GLOBAL_TOTAL_SLOTS = NUM_NORMAL_BINS * VALUES_PER_KEY + NUM_VOXEL_DEPTH_SLOTS + VALUES_PER_KEY
 assert _GLOBAL_TOTAL_SLOTS <= MAX_CONTACTS_PER_PAIR
@@ -2767,7 +2766,6 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
     lanes export the seven surviving slots concurrently in fast mode; CPU and
     deterministic paths stream them serially from lane zero.
     """
-    exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
     _module = f"export_reduced_contacts_{writer_func.__name__}"
 
     @wp.func
@@ -2885,9 +2883,6 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
                                 writer_data,
                             )
             elif lane == 0:
-                exported_ids = exported_ids_vec()
-                num_exported = int(0)
-
                 for slot in range(wp.static(VALUES_PER_KEY)):
                     if duplicate_mask & (1 << slot) != 0:
                         continue
@@ -2898,11 +2893,8 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
                     contact_id = unpack_contact_id(value, deterministic)
                     if contact_id == 0:
                         continue
-                    if is_contact_already_exported(contact_id, exported_ids, num_exported):
-                        continue
-                    exported_ids[num_exported] = contact_id
-                    num_exported = num_exported + 1
-
+                    # The global flag also suppresses repeated winners within
+                    # this entry, so no per-entry ID list is needed.
                     export_contact_id(
                         contact_id,
                         position_depth,

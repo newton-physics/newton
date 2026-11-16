@@ -12,7 +12,7 @@ Those behaviors require deployment and live smoke checks.
 import textwrap
 import unittest
 from contextlib import redirect_stdout
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -142,7 +142,7 @@ class TestWatchdogLogic(unittest.TestCase):
     def test_watchdog_filters_owned_running_instances_and_applies_thresholds(self):
         """Select owned running runners at the candidate and overdue thresholds."""
         namespace = self._lambda_namespace()
-        now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
         instances = [
             self._instance(now, age_minutes=89, instance_id="i-89"),
             self._instance(now, age_minutes=90, instance_id="i-90"),
@@ -201,7 +201,7 @@ class TestWatchdogLogic(unittest.TestCase):
         ``"unknown"`` in diagnostics, but must not match that fallback value.
         """
         namespace = self._lambda_namespace()
-        now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
         instances = [
             self._instance(now, instance_id="i-selected", repository="example/selected"),
             self._instance(now, instance_id="i-other", repository="example/other"),
@@ -243,7 +243,7 @@ class TestWatchdogLogic(unittest.TestCase):
         misconfigured aggressive cleanup cannot inspect or terminate runners.
         """
         namespace = self._lambda_namespace()
-        now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
         invalid_boto3 = FakeBoto3({"us-east-1": FakeEc2([])}, FakeCloudWatch())
         unrestricted_environment = {
             "AWS_REGION": "us-east-1",
@@ -341,7 +341,7 @@ class TestWatchdogLogic(unittest.TestCase):
         and emit its diagnostics before it raises the collected failures.
         """
         namespace = self._lambda_namespace()
-        now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
         failed_ec2 = FakeEc2(
             [self._instance(now, age_minutes=120, instance_id="i-termination-failed")],
             termination_error=RuntimeError("termination denied"),
@@ -424,7 +424,7 @@ class TestWatchdogLogic(unittest.TestCase):
         CloudWatch publishing fails and the invocation raises.
         """
         namespace = self._lambda_namespace()
-        now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
         cloudwatch = FakeCloudWatch(error=RuntimeError("metrics unavailable"))
         boto3 = FakeBoto3(
             {"us-west-2": FakeEc2([self._instance(now, instance_id="i-metric-failure")])},

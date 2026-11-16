@@ -1027,17 +1027,13 @@ def _deformable_prepare_cable_topology(
                 NewtonWarning,
                 stacklevel=2,
             )
-        # A zero representative density still needs geometric weights when any member
-        # curve authors a body mass total (the per-curve rescale distributes it).
-        graph_weight_density = rep.density
-        if graph_weight_density <= 0.0 and any(
-            usd._get_deformable_body_overrides(curve_recs[p].prim, deformable_read)[0] is not None for p in comp_paths
-        ):
-            graph_weight_density = 1.0
+        # The curve schema defines a solid circular section, whatever the builder default.
+        # Segment masses are resolved per source curve by _apply_cable_masses below.
         cfg = replace(
             builder.default_shape_cfg,
             **contact_properties[comp_paths[0]],
-            density=graph_weight_density,
+            density=0.0,
+            is_solid=True,
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
@@ -1326,10 +1322,13 @@ def _deformable_import_cable(
         resolved_cable_density = cable_density
         collision_enabled, approximated_from = _deformable_collision_enabled(prim, ctx.ignore_paths)
         _warn_collision_approximated(path, approximated_from)
+        # The curve schema defines a solid circular section, whatever the builder default.
+        # Segment masses are resolved from the stage by _apply_cable_masses below.
         cable_cfg = replace(
             builder.default_shape_cfg,
             **_resolve_cable_contact(ctx, prim),
-            density=resolved_cable_density,
+            density=0.0,
+            is_solid=True,
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )

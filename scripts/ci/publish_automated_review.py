@@ -14,9 +14,9 @@ to lines in the diff are posted as one pull request review with inline
 comments; the rest are listed in a summary comment that is updated on each
 run. Findings already posted on earlier runs are skipped.
 
-Both name the reviewer and link the workflow run, and the summary states the
-model and effort level, including any fallback model recorded in the run's
-execution file. Only display names are published, never model IDs.
+Inline comments, review bodies, and summaries name the model and effort level
+and link the workflow run. The runner uses one explicitly selected model, with
+no fallback. Only display names are published, never model IDs.
 
 With ``REVIEW_MODE=follow-up`` (the workflow has reviewed the pull request
 before), only P0 and P1 findings are published, and the summary comment keeps
@@ -32,8 +32,8 @@ posted before ``INCOMPLETE_MARKER`` existed.
 
 Environment: ``REVIEW_OUTPUT``, ``GITHUB_REPOSITORY``, ``PR_NUMBER``,
 ``HEAD_SHA``, ``RUNNER_TEMP``, ``REVIEW_MODEL_NAME``, ``REVIEW_EFFORT``,
-``EXECUTION_FILE``, ``REVIEW_MODE``, and ``FULL_DIFF`` (optional), and the
-default ``GITHUB_SERVER_URL``, ``GITHUB_RUN_ID``, and ``GITHUB_RUN_ATTEMPT``.
+``REVIEW_MODE`` and ``FULL_DIFF`` (optional), and the default
+``GITHUB_SERVER_URL``, ``GITHUB_RUN_ID``, and ``GITHUB_RUN_ATTEMPT``.
 The diff is read from ``.pr-review/pr.diff``.
 """
 
@@ -58,8 +58,8 @@ BOT_LOGIN = "github-actions[bot]"
 MAX_INLINE_COMMENTS = 15
 MAX_BODY_CHARS = 6000
 MAX_FIRST_REVIEW_CHARS = 30000
-REVIEWER_NAME = "Claude Code Action review"
-WORKFLOW_PATH = ".github/workflows/claude_code_review.yml"
+REVIEWER_NAME = "Automated code review"
+WORKFLOW_PATH = ".github/workflows/automated_code_review.yml"
 SEVERITY_LABELS = {"P0": "🔴 P0", "P1": "🟠 P1", "P2": "🔵 P2", "nit": "⚪ Nit"}
 FOLLOW_UP_SEVERITIES = ("P0", "P1")
 HUNK_RE = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -139,7 +139,7 @@ def severity_label(finding: dict) -> str:
     return SEVERITY_LABELS.get(str(finding.get("severity")), SEVERITY_LABELS["nit"])
 
 
-def comment_body(finding: dict, with_suggestion: bool = True) -> str:
+def comment_body(finding: dict, with_suggestion: bool = True, *, details: list[str]) -> str:
     """Format a finding as an inline comment body, optionally without its suggestion block."""
     label = severity_label(finding)
     title, body = neutralize(clip(finding.get("title"), 300)), neutralize(clip(finding.get("body")))
@@ -147,12 +147,12 @@ def comment_body(finding: dict, with_suggestion: bool = True) -> str:
     suggestion = finding.get("suggestion")
     if with_suggestion and isinstance(suggestion, str) and suggestion.strip() and "```" not in suggestion:
         parts += ["", "```suggestion", suggestion.rstrip("\n"), "```"]
-    parts += ["", FINDING_MARKER.format(fingerprint(finding))]
+    parts += ["", f"<sub>{' '.join(details)}</sub>", "", FINDING_MARKER.format(fingerprint(finding))]
     return "\n".join(parts)
 
 
 def plan_comments(
-    findings: list[dict], valid_lines: dict[str, set[int]], posted: set[str]
+    findings: list[dict], valid_lines: dict[str, set[int]], posted: set[str], *, details: list[str]
 ) -> tuple[list[dict], list[dict], list[dict], int]:
     """Split findings into inline comments, the findings they come from, findings for the summary, and the number already posted."""
     inline: list[dict] = []
@@ -175,7 +175,7 @@ def plan_comments(
             "path": path,
             "line": line,
             "side": "RIGHT",
-            "body": comment_body(finding, with_suggestion=keep_range or not has_range),
+            "body": comment_body(finding, with_suggestion=keep_range or not has_range, details=details),
         }
         if keep_range:
             comment.update(start_line=start, start_side="RIGHT")
@@ -196,33 +196,7 @@ def count_line(inline_findings: list[dict]) -> str:
     return f"{len(inline_findings)} inline {noun}: " + " · ".join(parts)
 
 
-def display_name(model_id: object) -> str:
-    """Turn a model ID such as ``claude-opus-4-8`` into a display name, without any provider prefix or date."""
-    match = re.fullmatch(r"claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?", str(model_id).rsplit("/", 1)[-1])
-    if not match:
-        return "another model"
-    family, major, minor = match.groups()
-    return f"Claude {family.capitalize()} {major}{'.' + minor if minor else ''}"
-
-
-def fallback_notes(execution_file: str | None, model_name: str) -> list[str]:
-    """Describe any model fallback recorded in Claude Code's execution file."""
-    try:
-        messages = json.loads(Path(execution_file).read_text(encoding="utf-8")) if execution_file else []
-    except (OSError, ValueError):
-        return []
-    notes = []
-    for message in messages if isinstance(messages, list) else []:
-        if isinstance(message, dict) and message.get("type") == "system":
-            fallback = display_name(message.get("fallback_model"))
-            if message.get("subtype") == "model_refusal_fallback":
-                notes.append(f"{model_name} declined a response, so Claude Code continued with {fallback}.")
-            elif message.get("subtype") == "model_fallback":
-                notes.append(f"{model_name} was unavailable, so Claude Code continued with {fallback}.")
-    return notes
-
-
-def run_details(execution_file: str | None) -> list[str]:
+def run_details() -> list[str]:
     """Describe the reviewer, workflow run, model, and effort level without revealing model IDs."""
     repo = os.environ["GITHUB_REPOSITORY"]
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
@@ -230,12 +204,12 @@ def run_details(execution_file: str | None) -> list[str]:
     attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
     if attempt not in ("", "1"):
         run_url += f"/attempts/{attempt}"
-    model_name = os.environ.get("REVIEW_MODEL_NAME", "Claude")
+    model_name = os.environ["REVIEW_MODEL_NAME"]
     lines = [
         f"Produced by [`{Path(WORKFLOW_PATH).name}`]({server}/{repo}/blob/main/{WORKFLOW_PATH}) in "
         f"[this workflow run]({run_url}) with {model_name} at effort `{os.environ.get('REVIEW_EFFORT', 'default')}`."
     ]
-    return lines + fallback_notes(execution_file, model_name)
+    return lines
 
 
 def finding_lines(findings: list[dict], with_marker: bool = False) -> list[str]:
@@ -250,12 +224,15 @@ def finding_lines(findings: list[dict], with_marker: bool = False) -> list[str]:
     return lines
 
 
-def review_payload(head_sha: str, inline: list[dict], inline_findings: list[dict], listed: list[dict]) -> dict:
+def review_payload(
+    head_sha: str, inline: list[dict], inline_findings: list[dict], listed: list[dict], details: list[str]
+) -> dict:
     """Build a pull request review with the inline comments and, in its body, the findings in ``listed``."""
     count = count_line(inline_findings)
     body = [f"**{REVIEWER_NAME}**: {count + '. ' if count else ''}The summary comment has the overview."]
     if listed:
         body += ["", "**Not attached to a line:**", "", *finding_lines(listed, with_marker=True)]
+    body += ["", f"<sub>{' '.join(details)}</sub>"]
     payload = {"commit_id": head_sha, "event": "COMMENT", "body": "\n".join(body)}
     if inline:
         payload["comments"] = inline
@@ -316,7 +293,7 @@ def main() -> int:
     pr = os.environ["PR_NUMBER"]
     head_sha = os.environ["HEAD_SHA"]
     findings = [f for f in output.get("findings", []) if isinstance(f, dict)]
-    details = run_details(os.environ.get("EXECUTION_FILE"))
+    details = run_details()
     follow_up = os.environ.get("REVIEW_MODE") == "follow-up"
     if follow_up:
         # Follow-up reviews only gate merges, so drop anything below P1 even if the reviewer reported it.
@@ -336,12 +313,12 @@ def main() -> int:
         bodies[endpoint] = [json.loads(line)["body"] or "" for line in result.stdout.splitlines() if line.strip()]
     posted = posted_fingerprints(bodies["comments"], bodies["reviews"])
     valid_lines = commentable_lines(Path(".pr-review/pr.diff").read_text(encoding="utf-8", errors="replace"))
-    inline, inline_findings, elsewhere, skipped = plan_comments(findings, valid_lines, posted)
+    inline, inline_findings, elsewhere, skipped = plan_comments(findings, valid_lines, posted, details=details)
 
     # The next follow-up replaces this follow-up's summary section, so also keep its findings without a line
     # in the review body, which stays.
     if inline or (follow_up and elsewhere):
-        review = review_payload(head_sha, inline, inline_findings, elsewhere if follow_up else [])
+        review = review_payload(head_sha, inline, inline_findings, elsewhere if follow_up else [], details)
         result = gh_api("--method", "POST", f"repos/{repo}/pulls/{pr}/reviews", payload=review)
         if result.returncode != 0 and inline:
             print(f"::warning::Posting inline comments failed; listing them in the summary: {result.stderr[:500]}")
@@ -352,7 +329,7 @@ def main() -> int:
                     "--method",
                     "POST",
                     f"repos/{repo}/pulls/{pr}/reviews",
-                    payload=review_payload(head_sha, [], [], elsewhere),
+                    payload=review_payload(head_sha, [], [], elsewhere, details),
                 )
         if result.returncode != 0:
             print(f"::warning::Posting the review failed: {result.stderr[:500]}")
