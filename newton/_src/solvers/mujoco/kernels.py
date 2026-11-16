@@ -525,8 +525,17 @@ def convert_newton_contacts_to_mjwarp_kernel(
     hydroelastic_compliance: bool,
     contacts_epoch: int,
 ):
-    # Reuse material fields while generation, timestep, and buffer match.
-    # Cached substeps only update geometry and reset constraint addresses.
+    # nacon_out is scratch storage, initialized to zero by the solver and
+    # reset by _sync_nacon_count after each pass.
+    #
+    # When the contact set hasn't changed since the last full pass
+    # (contact_generation == last_contact_generation), the kernel takes a
+    # fast path that only recomputes the body-q-dependent fields (dist, pos)
+    # and resets efc_address.  All other MJWarp contact fields (frame,
+    # friction, solref, solimp, condim, geom, worldid, includemargin) are
+    # still valid from the previous full pass.
+    # With hydroelastic buffers, the timestep and buffer epoch must also
+    # match before taking this path.
 
     tid = wp.tid()
 
@@ -541,6 +550,10 @@ def convert_newton_contacts_to_mjwarp_kernel(
         )
 
     if needs_full:
+        # ── FULL PATH ────────────────────────────────────────────────────
+        # Runs on the first substep after collision detection, or when cached
+        # hydroelastic timestep/buffer state changes. Records the tid→cid mapping.
+
         if tid == 0:
             if count > naconmax:
                 wp.printf(
@@ -705,7 +718,12 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         tangent_scale = float(1.0)
         friction_weight = float(0.0)
-        # Per-contact coefficients override shape materials.
+        # Convert Newton per-contact stiffness/damping to MuJoCo solref
+        # (timeconst, dampratio). Per-contact overrides take precedence over
+        # the shape-material force-space override above. solimp is set to
+        # approximate a linear force-displacement relationship at rest,
+        # compensating for impedance scaling. See
+        # https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
         if rigid_contact_stiffness:
             contact_ke = rigid_contact_stiffness[tid]
             invweight = body_invweight0[worldid, mj_body_a][0] + body_invweight0[worldid, mj_body_b][0]
@@ -808,9 +826,19 @@ def convert_newton_contacts_to_mjwarp_kernel(
             contact_worldid_out=contact_worldid_out,
         )
     else:
-        # Collision normals stay fixed until the next contact generation.
+        # ── FAST PATH ────────────────────────────────────────────────────
+        # Subsequent substeps with the same contact set.  Only dist, pos,
+        # and efc_address need updating; all other MJWarp fields are still
+        # valid from the full pass.
+        #
+        # NOTE: rigid_contact_normal is computed once by the narrow phase
+        # and is invariant across substeps.  The fast path is only correct
+        # when collide() has not been called since the last full pass.
+
         cid = tid_to_cid[tid]
-        # Cached mappings may refer to a previous, larger backend buffer.
+        # Defensive bounds check: a stale tid_to_cid (e.g. cached from a
+        # previous mjw_data with larger naconmax) could otherwise produce
+        # out-of-bounds writes that corrupt the GPU allocator state.
         if cid < 0 or cid >= naconmax:
             return
 

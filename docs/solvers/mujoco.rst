@@ -379,7 +379,7 @@ API:
 
 * ``SOLREF_MODE_FORCE_SPACE`` — Newton force-space gains; the per-contact
   factor above applies to ordinary contacts. When both shapes are hydroelastic,
-  pressure contacts use :ref:`physical hydroelastic compliance <mujoco-hydroelastic-response>`.
+  pressure contacts use the mapping described in :ref:`mujoco-hydroelastic-response`.
 * ``SOLREF_MODE_RAW`` — forward the authored ``mujoco.solref`` (e.g.
   from an MJCF/USD import) unchanged.
 * ``SOLREF_MODE_MJCF_DEFAULT`` — registered default; preserves MuJoCo's
@@ -778,7 +778,7 @@ Hydroelastic material response
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Both shapes must be hydroelastic and use force-space ``mujoco.solref_mode``
-to select physical hydroelastic stiffness and damping. Missing modes,
+to use the hydroelastic stiffness and damping mapping. Missing modes,
 ``RAW``, ``MJCF_DEFAULT``, and mixed pairs keep the existing response.
 ``ShapeConfig.kh`` controls stiffness; ``solref_mode`` selects its interpretation.
 
@@ -786,7 +786,7 @@ Use Newton contacts (``use_mujoco_contacts=False``), ``cone="elliptic"``, and
 Euler, implicit, or implicitfast integration on MuJoCo-Warp. Set
 ``HydroelasticSDF.Config(reduce_contacts=False)`` in the collision pipeline;
 the solver does not check contact reduction. Existing hydroelastic pairs
-already using force-space ``solref_mode`` now use physical compliance and
+already using force-space ``solref_mode`` now use this mapping and
 may need retuning. After editing modes, call
 ``solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)``.
 Mode changes also apply when replaying an existing CUDA graph.

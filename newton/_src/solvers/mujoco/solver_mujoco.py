@@ -4905,8 +4905,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     )
         if separate_worlds is None:
             separate_worlds = not use_mujoco_cpu and model.world_count > 1
-        # Allocate counters before conversion, which can invalidate them.
-        # Allocate the contact map below once the backend capacity is known.
+        # Buffers for the fast-path contact conversion optimisation.
+        # See _convert_contacts_to_mjwarp / convert_newton_contacts_to_mjwarp_kernel.
+        # Initialised before _convert_to_mjc because notify_model_changed (called
+        # during conversion) may call _invalidate_contact_fast_path.
+        #
+        # Allocate the generation and count buffers before conversion because
+        # notify_model_changed() may invalidate them during conversion. The
+        # contact map is allocated below once the converted capacity is known.
         self._contact_tid_to_cid: wp.array[wp.int32] | None = None
         self._mjw_qfrc_frictionloss: wp.array2d[wp.float32] | None = None
         self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
@@ -4921,6 +4927,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._contact_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         # Placeholder for collect_overflow_kernel's rigid_contact_count arg when contacts is None.
         self._zero_contact_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        # Track the Contacts instance and its capacity.  Any change to these
+        # invariants invalidates the cached tid_to_cid mapping because the
+        # cached tid values would refer to a different input buffer.
+        # Note: we key on id(contacts.contact_generation) (a stable per-Contacts
+        # device array) rather than id(contacts).  Empirically, keying on the
+        # outer Contacts wrapper produces broken binaries in the dexsuite
+        # workload (root cause unclear; the inner array's id is what works).
         self._last_contacts_id: int | None = None
         self._last_rigid_contact_max: int | None = None
 
@@ -5720,7 +5733,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
     def _apply_hydroelastic_compliance(self, model: MjWarpModel, data: MjWarpData, contacts: Contacts | None) -> None:
-        """Apply physical hydroelastic compliance before the backend constraint solve."""
+        """Apply hydroelastic stiffness and damping before the backend constraint solve."""
         disabled = self._mujoco_warp.DisableBit.CONSTRAINT | self._mujoco_warp.DisableBit.CONTACT
         if model.opt.disableflags & disabled or contacts is None or contacts.rigid_contact_stiffness is None:
             return
@@ -5796,7 +5809,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # small-block grids to eight blocks per SM.
         block_dim = 32 if model.device.is_cuda and launch_dim <= model.device.sm_count * 256 else 256
 
-        # Use the stable generation buffer to identify cached contacts.
+        # Invalidate the cached tid_to_cid mapping whenever any of the
+        # invariants it depends on change.  _contact_tid_to_cid is allocated
+        # in __init__ at naconmax, which is fixed after construction, so it
+        # never needs to grow here.
+        #
+        #  - Contacts identity: keyed on id(contacts.contact_generation), the
+        #    inner per-Contacts device array.  Empirically, keying on the outer
+        #    id(contacts) wrapper produces broken binaries in dexsuite training
+        #    (root cause unclear; the inner array's id is what works).
+        #  - rigid_contact_max: changes the meaning of tid indices.
         contacts_id = id(contacts.contact_generation)
         if self._last_contacts_id != contacts_id or self._last_rigid_contact_max != contacts.rigid_contact_max:
             self._invalidate_contact_fast_path()
@@ -5883,8 +5905,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             block_dim=block_dim,
         )
 
-        # Publish counts after all threads finish compaction and read the old
-        # generation, avoiding a cross-block race.
+        # Runs as a separate dim=1 kernel AFTER the main kernel completes so that:
+        #  - the compacted count is complete before publishing it and resetting
+        #    the scratch counter, avoiding a separate pre-conversion memset
+        #  - last_contact_generation is only updated after ALL threads in the
+        #    main kernel have read it (avoids a cross-block race)
+        # Cached timestep and buffer epochs must also be published after those reads.
         wp.launch(
             _sync_nacon_count,
             dim=1,
