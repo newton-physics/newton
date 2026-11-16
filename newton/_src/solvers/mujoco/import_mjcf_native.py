@@ -266,22 +266,23 @@ def _import_joint_parameters(
     gains = (builder.default_joint_cfg.limit_ke, builder.default_joint_cfg.limit_kd)
     count = _joint_dof_count(model.jnt_type[native_joint])
     source_dof = int(model.jnt_dofadr[native_joint])
+    automatic_spring = np.all(source_joint.springdamper > 0)
+    if automatic_spring:
+        builder._add_model_finalizer(_finalize_native_core_parameters)
     for k in range(count):
         builder.joint_damping[dof + k] = float(model.dof_damping[source_dof + k])
         builder.joint_stiffness[dof + k] = float(model.jnt_stiffness[native_joint])
         builder.joint_armature[dof + k] = float(model.dof_armature[source_dof + k]) * armature_scale
         builder.joint_friction[dof + k] = float(model.dof_frictionloss[source_dof + k])
-        if np.all(source_joint.springdamper > 0):
+        if automatic_spring:
             builder.custom_attributes["mujoco:native_joint_gain_baseline"].values[dof + k] = (
                 builder.joint_stiffness[dof + k],
                 builder.joint_damping[dof + k],
             )
-            builder._add_model_finalizer(_finalize_native_core_parameters)
         if model.jnt_type[native_joint] != mujoco.mjtJoint.mjJNT_FREE:
             builder.joint_limit_ke[dof + k] = gains[0]
             builder.joint_limit_kd[dof + k] = gains[1]
-    extra = attributes(
-        jnt_actgravcomp=bool(model.jnt_actgravcomp[native_joint]),
+    joint_values = attributes(
         native_joint_type=int(model.jnt_type[native_joint]),
         native_joint_springdamper=source_joint.springdamper,
         native_joint_limited=int(source_joint.limited),
@@ -291,6 +292,15 @@ def _import_joint_parameters(
         native_joint_effort_limited=bool(model.jnt_actfrclimited[native_joint]),
         native_joint_dampingpoly=source_joint.damping[1:],
         native_joint_stiffnesspoly=source_joint.stiffness[1:],
+    )
+    if count > 1:
+        joint_values.update(attributes(native_joint_range=model.jnt_range[native_joint]))
+    # Retained joint fields belong to the first DOF, including ball and free joints.
+    for key, value in joint_values.items():
+        builder.custom_attributes[key].values[dof] = value
+
+    dof_values = attributes(
+        jnt_actgravcomp=bool(model.jnt_actgravcomp[native_joint]),
         limit_margin=model.jnt_margin[native_joint],
         solreflimit=model.jnt_solref[native_joint] if limit_mode == SOLREF_MODE_RAW else (0.0, 0.0),
         solimplimit=model.jnt_solimp[native_joint],
@@ -299,14 +309,11 @@ def _import_joint_parameters(
         solreffriction=model.dof_solref[source_dof],
         solimpfriction=model.dof_solimp[source_dof],
     )
-    if count > 1:
-        extra.update(attributes(native_joint_range=model.jnt_range[native_joint]))
-    else:
-        extra.update(attributes(dof_ref=float(model.qpos0[model.jnt_qposadr[native_joint]])))
-    for key, value in extra.items():
-        for k in range(1 if key.startswith("mujoco:native_joint_") else count):
-            builder.custom_attributes[key].values[dof + k] = value
+    if count == 1:
+        dof_values.update(attributes(dof_ref=float(model.qpos0[model.jnt_qposadr[native_joint]])))
     for k in range(count):
+        for key, value in dof_values.items():
+            builder.custom_attributes[key].values[dof + k] = value
         builder._process_custom_attributes(dof + k, custom(frequency.JOINT_DOF, source_joint), frequency.JOINT_DOF)
 
 
@@ -520,7 +527,7 @@ def _joint_target(builder, model, i, dof, bias, values, pending_damping, *, dof_
 
 
 def _import_actuators(
-    builder, spec, model, bodies, joints, tendons, sites, attributes, custom, prefix, bias, ctrl_direct
+    builder, spec, model, bodies, joints, tendons, sites, attributes, custom, *, prefix, actuator_bias, ctrl_direct
 ) -> None:
     import mujoco
 
@@ -566,7 +573,7 @@ def _import_actuators(
             actuator_trntype=transmission,
             actuator_trnid=(target, alternate),
             actuator_gainprm=model.actuator_gainprm[i],
-            actuator_biasprm=bias[i],
+            actuator_biasprm=actuator_bias[i],
             actuator_dynprm=model.actuator_dynprm[i],
             actuator_gear=model.actuator_gear[i],
             actuator_dyntype=int(model.actuator_dyntype[i]),
@@ -603,7 +610,7 @@ def _import_actuators(
                 model,
                 i,
                 target,
-                bias[i],
+                actuator_bias[i],
                 values,
                 pending_damping,
                 dof_count=3 if model.jnt_type[source_target] == mujoco.mjtJoint.mjJNT_BALL else 1,
@@ -1408,7 +1415,18 @@ def parse_mjcf(
     tendons = _tendons(builder, spec, model, joint_ids, joints, geoms, sites, attributes, custom)
 
     _import_actuators(
-        builder, spec, model, bodies, joints, tendons, sites, attributes, custom, prefix, actuator_bias, ctrl_direct
+        builder,
+        spec,
+        model,
+        bodies,
+        joints,
+        tendons,
+        sites,
+        attributes,
+        custom,
+        prefix=prefix,
+        actuator_bias=actuator_bias,
+        ctrl_direct=ctrl_direct,
     )
 
     imported_joints = [joint for group in root_joints.values() for joint in group]
