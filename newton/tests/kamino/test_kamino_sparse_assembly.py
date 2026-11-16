@@ -269,7 +269,6 @@ class TestKaminoSparseAssemblyQuality(unittest.TestCase):
                 inputs=[
                     info.dim,
                     info.vio,
-                    info.mio,
                     info.maxdim,
                     info.vio,
                     diagonal,
@@ -289,7 +288,6 @@ class TestKaminoSparseAssemblyQuality(unittest.TestCase):
                     entry_starts,
                     *pair_arrays,
                     values,
-                    info.mio,
                     info.maxdim,
                     info.vio,
                     scale,

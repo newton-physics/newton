@@ -219,13 +219,12 @@ class TestKaminoSmallBilateralInverse(unittest.TestCase):
             if used:
                 expected[start : start + n] = np.linalg.solve(matrix, rhs[start : start + n])
         L = wp.array(make_row_storage(flat_factors, mio, np.square(dims)), dtype=wp.float32, device=device)
-        mio_wp = wp.zeros(len(dims), dtype=wp.int32, device=device)
         lower_inverse = wp.zeros_like(L)
         inverse = wp.zeros_like(L)
         wp.launch_tiled(
             _invert_small_bilateral_block,
             dim=len(dims),
-            inputs=[dim, mio_wp, L, lower_inverse, inverse],
+            inputs=[dim, L, lower_inverse, inverse],
             block_dim=128,
             device=device,
         )
@@ -236,7 +235,6 @@ class TestKaminoSmallBilateralInverse(unittest.TestCase):
             dim=(len(dims), max(dims)),
             inputs=[
                 wp.array(active, dtype=wp.int32, device=device),
-                mio_wp,
                 vio_wp,
                 inverse,
                 wp.array(rhs, dtype=wp.float32, device=device),

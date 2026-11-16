@@ -253,7 +253,6 @@ class LOXSystem:
                 self._data.body_block,
                 self._data.body_local,
                 self._data.info.dim,
-                self._data.info.mio,
                 self._data.info.vio,
                 self._body_edge_offset,
                 self._body_edge_neighbor,
@@ -322,7 +321,6 @@ class LOXSystem:
             dim=(joint_count, 12),
             inputs=[
                 self._data.info.dim,
-                self._data.info.mio,
                 self._data.info.vio,
                 joint_world,
                 joint_body_a,
@@ -364,7 +362,6 @@ class LOXSystem:
                     self._data.body_block,
                     self._data.body_local,
                     self._data.info.dim,
-                    self._data.info.mio,
                     self._data.matrix,
                 ],
                 outputs=[self._data.single_body_inverse],

@@ -46,7 +46,6 @@ def _problem(matrices, biases, families, friction, device, *, options=None, lowe
     """Build independent small unilateral problems in the actual batched storage layout."""
     sizes = [len(b) for b in biases]
     offsets = np.cumsum([0, *[max(1, n) for n in sizes]])
-    matrix_offsets = np.zeros(len(sizes), dtype=np.int32)
     bound_offsets = np.cumsum([0, *[f[0] for f in families]])
     contact_offsets = np.cumsum([0, *[f[2] for f in families]])
 
@@ -66,7 +65,6 @@ def _problem(matrices, biases, families, friction, device, *, options=None, lowe
     data = SimpleNamespace(
         dim=ints(sizes),
         vio=ints(offsets[:-1]),
-        mio=ints(matrix_offsets),
         njc=ints([0] * len(sizes)),
         nbc=ints([f[0] for f in families]),
         nl=ints([f[1] for f in families]),

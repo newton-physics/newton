@@ -141,7 +141,7 @@ class TestDynamicJointDecoupling(unittest.TestCase):
         dim = wp.array([n], dtype=wp.int32, device=device)
         offset = wp.zeros(1, dtype=wp.int32, device=device)
 
-        self.decoupling.scale_rows_dense(dim, offset, offset, n, D_wp)
+        self.decoupling.scale_rows_dense(dim, offset, n, D_wp)
 
         scale = np.ones(n, dtype=np.float32)
         scale[self.table["friction_row"]] = s
@@ -158,22 +158,21 @@ class TestDynamicJointDecoupling(unittest.TestCase):
         self.decoupling.body_share = wp.zeros(2, dtype=wp.float32, device=device)
 
         blocks = [np.array([[2.0, 0.2, 0.2], [0.2, 3.0, 0.4], [0.2, 0.4, 4.0]]), np.array([[3.0, 0.3], [0.3, 2.0]])]
-        sizes, offsets, vector_offsets = [3, 2], [1, 3], [0, 3]
+        sizes, vector_offsets = [3, 2], [0, 3]
         storage = np.full((2, 16), -7.0, dtype=np.float32)
         for i, block in enumerate(blocks):
-            storage[i, offsets[i] : offsets[i] + block.size] = block.ravel()
+            storage[i, : block.size] = block.ravel()
         D = wp.array(storage, dtype=wp.float32, device=device)
         dims = wp.array(sizes, dtype=wp.int32, device=device)
-        mio = wp.array(offsets, dtype=wp.int32, device=device)
         vio = wp.array(vector_offsets, dtype=wp.int32, device=device)
         inv_m_j = wp.array([0.5, 0.75], dtype=wp.float32, device=device)
         inv_m_a = wp.array([0.4], dtype=wp.float32, device=device)
 
-        self.decoupling.compute_body_share_dense(inv_m_j, dims, mio, vio, D)
+        self.decoupling.compute_body_share_dense(inv_m_j, dims, vio, D)
         shares = np.array([0.5 / 0.7, 0.75 / 1.05])
         np.testing.assert_allclose(self.decoupling.body_share.numpy(), shares, rtol=1e-6)
-        self.decoupling.scale_rows_dense(dims, mio, vio, max(sizes), D)
-        self.decoupling.add_joint_terms_dense(inv_m_j, inv_m_a, dims, mio, vio, D)
+        self.decoupling.scale_rows_dense(dims, vio, max(sizes), D)
+        self.decoupling.add_joint_terms_dense(inv_m_j, inv_m_a, dims, vio, D)
 
         for i, block in enumerate(blocks):
             s = shares[i]
@@ -185,7 +184,7 @@ class TestDynamicJointDecoupling(unittest.TestCase):
             expected[1:, 1:] += c
             if i == 0:
                 expected[2, 2] += (1.0 - s * s) * 0.4
-            storage[i, offsets[i] : offsets[i] + block.size] = expected.ravel()
+            storage[i, : block.size] = expected.ravel()
         np.testing.assert_allclose(D.numpy(), storage, rtol=1e-6, atol=1e-6)
 
     def test_coupled_rows_with_zero_body_share(self):

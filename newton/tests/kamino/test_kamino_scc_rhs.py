@@ -91,12 +91,12 @@ class TestKaminoBilateralRHS(unittest.TestCase):
             jacobian = rng.normal(size=(rows, body_dofs)).astype(np.float32) * 0.1
             weighted = rng.normal(size=(n, body_dofs)).astype(np.float32) * 0.1
             inverse = np.eye(n, dtype=np.float32) + np.full((n, n), 0.005, dtype=np.float32)
-            pvio, bvio, mio = 3, 2, 5
+            pvio, bvio = 3, 2
             impulses = rng.normal(size=pvio + rows + 2).astype(np.float32)
             free = rng.normal(size=pvio + rows + 2).astype(np.float32)
             scale = rng.uniform(0.5, 1.5, size=bvio + n + 2).astype(np.float32)
             previous = rng.normal(size=bvio + n + 2).astype(np.float32)
-            inverse_storage = np.concatenate((np.zeros(mio, dtype=np.float32), inverse.ravel()))
+            inverse_storage = inverse.ravel()
             body = jacobian[n:].astype(np.float64).T @ impulses[pvio + n : pvio + rows].astype(np.float64)
             expected_rhs = -scale[bvio : bvio + n] * (weighted.astype(np.float64) @ body + free[pvio : pvio + n])
             expected_solution = inverse.astype(np.float64).T @ expected_rhs
@@ -139,7 +139,6 @@ class TestKaminoBilateralRHS(unittest.TestCase):
                                 per_world(n),
                                 floats(free),
                                 per_world(n if active else 0),
-                                per_world(0 if row_storage else mio),
                                 per_world(bvio),
                                 floats(scale),
                                 storage,

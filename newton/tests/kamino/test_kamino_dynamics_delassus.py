@@ -78,14 +78,12 @@ def check_delassus_allocations(
     # Check Delassus operator data sizes
     fixture.assertEqual(delassus.info.maxdim.size, num_worlds)
     fixture.assertEqual(delassus.info.dim.size, num_worlds)
-    fixture.assertEqual(delassus.info.mio.size, num_worlds)
     fixture.assertEqual(delassus.info.vio.size, num_worlds)
-    fixture.assertEqual(delassus.D.shape, dense_matrix_layout(D_sizes)[0])
+    fixture.assertEqual(delassus.D.shape, dense_matrix_layout(D_sizes))
 
     # Check if the factorizer info data to the same as the Delassus info data
     fixture.assertEqual(delassus.info.maxdim.ptr, delassus.solver.operator.info.maxdim.ptr)
     fixture.assertEqual(delassus.info.dim.ptr, delassus.solver.operator.info.dim.ptr)
-    fixture.assertEqual(delassus.info.mio.ptr, delassus.solver.operator.info.mio.ptr)
     fixture.assertEqual(delassus.info.vio.ptr, delassus.solver.operator.info.vio.ptr)
 
 
@@ -95,7 +93,6 @@ def debug_print_delassus_info(delassus: DelassusOperator) -> None:
         return
     logger.debug("delassus.info.maxdim: %s", delassus.info.maxdim)
     logger.debug("delassus.info.dim: %s", delassus.info.dim)
-    logger.debug("delassus.info.mio: %s", delassus.info.mio)
     logger.debug("delassus.info.vio: %s", delassus.info.vio)
     logger.debug("delassus.D: %s", delassus.D)
 
@@ -145,7 +142,7 @@ class TestDelassusSizing(unittest.TestCase):
 
     def test_oversized_dense_delassus_uses_world_rows(self):
         """Check the allocation shape without reserving a large dense buffer."""
-        self.assertEqual(dense_matrix_layout([2**28] * 8), ((8, 2**28), [0] * 8))
+        self.assertEqual(dense_matrix_layout([2**28] * 8), (8, 2**28))
         cases = (
             (16384, 487, 3885776896),
             (20000, 487, 4743380000),
@@ -169,7 +166,7 @@ class TestDelassusSizing(unittest.TestCase):
                 self.assertEqual(delassus.num_maxsize, expected_size)
                 self.assertEqual(
                     allocators["zeros"].call_args.kwargs["shape"],
-                    dense_matrix_layout([num_constraints**2] * num_worlds)[0],
+                    dense_matrix_layout([num_constraints**2] * num_worlds),
                 )
 
     def test_reject_unrepresentable_world_row_stride(self):

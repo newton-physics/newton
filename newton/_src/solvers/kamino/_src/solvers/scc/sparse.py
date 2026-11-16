@@ -1031,7 +1031,6 @@ def _factor_sparse_bilateral_block(path: SparseSCCPath, problem: DualProblem) ->
                 dim=path.size.num_worlds,
                 inputs=[
                     operator.info.dim,
-                    operator.info.mio,
                     path.bilateral_solver.L,
                     path.bilateral_lower_inverse,
                     path.bilateral_inverse,
@@ -1050,7 +1049,6 @@ def _assemble_sparse_bilateral_block(
     """Assemble the bilateral matrix directly in the requested row ordering."""
     operator = path.data.bilateral_operator
     state = path.data.state
-    matrix_offsets = operator.info.mio
     if path.bilateral_nzb_pairs is None:
         raise RuntimeError("Sparse SCC topology is not prepared. Call `SparseSCCPath.prepare()` before solving.")
     pair_wid, pair_row, pair_col, pair_bid, pair_i, pair_j = path.bilateral_nzb_pairs
@@ -1064,7 +1062,6 @@ def _assemble_sparse_bilateral_block(
         inputs=[
             problem.data.njc,
             problem.data.vio,
-            matrix_offsets,
             operator.info.maxdim,
             operator.info.vio,
             state.scratch,
@@ -1092,7 +1089,6 @@ def _assemble_sparse_bilateral_block(
                 pair_i,
                 pair_j,
                 jacobian.nzb_values,
-                matrix_offsets,
                 operator.info.maxdim,
                 operator.info.vio,
                 state.bilateral_preconditioner,
@@ -1255,7 +1251,6 @@ def _solve_sparse_bilateral_block(
                 problem.data.njc,
                 problem.data.v_f,
                 operator.info.dim if active_dim is None else active_dim,
-                operator.info.mio,
                 operator.info.vio,
                 state.bilateral_preconditioner,
                 path.bilateral_inverse,
@@ -1323,7 +1318,6 @@ def _solve_sparse_bilateral_block(
                 path.data.solution.lambdas,
                 compact_coupling,
                 operator.info.dim if active_dim is None else active_dim,
-                operator.info.mio,
                 operator.info.vio,
                 state.bilateral_preconditioner,
                 solver.L,
@@ -1376,7 +1370,6 @@ def _solve_sparse_bilateral_block(
             inputs=[
                 info.dim,
                 solver._stride(),
-                info.mio,
                 info.vio,
                 solver.tile_pattern_offsets,
                 solver.P,
@@ -1398,7 +1391,6 @@ def _solve_sparse_bilateral_block(
             dim=(path.size.num_worlds, path.size.max_of_num_bilateral_joint_cts),
             inputs=[
                 info.dim if active_dim is None else active_dim,
-                info.mio,
                 info.vio,
                 path.bilateral_inverse,
                 state.bilateral_rhs,
@@ -1550,7 +1542,7 @@ def _solve_sparse_with_bilateral_schur_complement(
         path.size.max_of_num_bounded_joint_cts + path.size.max_of_max_limits + 3 * path.size.max_of_max_contacts
     )
     use_permutation = isinstance(path.bilateral_solver, LLTBlockedRCMSolver)
-    permutation = path.bilateral_solver.P if use_permutation else state.projected_mio
+    permutation = path.bilateral_solver.P if use_permutation else state.dummy_permutation
     enable_compact_schur = (
         path.device.is_cuda and path.size.max_of_num_bilateral_joint_cts >= 32 and path.max_alternating_iterations >= 4
     )
@@ -1594,7 +1586,6 @@ def _solve_sparse_with_bilateral_schur_complement(
     _solve_sparse_bilateral_block(
         path, problem, forward_only=forward_bilateral, compact_coupling=enable_compact_schur, joint_blocks=joint_blocks
     )
-    factor_offsets = path.data.bilateral_operator.info.mio
     factor = path.bilateral_solver.L
     response_kernel = _solve_bilateral_unilateral_response
     response_block_dim = 1
@@ -1611,7 +1602,6 @@ def _solve_sparse_with_bilateral_schur_complement(
             dim=(path.size.num_worlds, max_joint_rows),
             inputs=[
                 problem.data.njc,
-                factor_offsets,
                 path.data.bilateral_operator.info.maxdim,
                 path.data.bilateral_operator.info.vio,
                 factor,
@@ -1639,7 +1629,6 @@ def _solve_sparse_with_bilateral_schur_complement(
             inputs=[
                 problem.data.dim,
                 problem.data.njc,
-                factor_offsets,
                 path.data.bilateral_operator.info.maxdim,
                 path.data.bilateral_operator.info.vio,
                 state.bilateral_preconditioner,
@@ -1671,7 +1660,6 @@ def _solve_sparse_with_bilateral_schur_complement(
             inputs=[
                 problem.data.dim,
                 problem.data.njc,
-                factor_offsets,
                 path.data.bilateral_operator.info.maxdim,
                 path.data.bilateral_operator.info.vio,
                 state.bilateral_preconditioner,
@@ -1695,7 +1683,6 @@ def _solve_sparse_with_bilateral_schur_complement(
             inputs=[
                 problem.data.dim,
                 problem.data.njc,
-                factor_offsets,
                 path.data.bilateral_operator.info.maxdim,
                 path.data.bilateral_operator.info.vio,
                 state.bilateral_preconditioner,
@@ -1819,7 +1806,6 @@ def _solve_sparse_with_bilateral_schur_complement(
             inputs=[
                 info.dim,
                 solver._stride(),
-                info.mio,
                 info.vio,
                 solver.tile_pattern_offsets,
                 solver.P,

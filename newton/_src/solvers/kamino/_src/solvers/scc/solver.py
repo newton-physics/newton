@@ -590,7 +590,6 @@ class SCCSolver:
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     problem.data.dim,
-                    problem.data.mio,
                     problem.data.vio,
                     problem.data.D,
                     problem.data.v_f,
@@ -808,7 +807,6 @@ class SCCSolver:
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[
                 problem.data.dim,
-                problem.data.mio,
                 problem.data.vio,
                 problem.data.nbc,
                 problem.data.nl,
@@ -829,7 +827,6 @@ class SCCSolver:
                 dim=self._size.num_worlds * threads_per_world,
                 inputs=[
                     problem.data.dim,
-                    problem.data.mio,
                     problem.data.vio,
                     problem.data.nbc,
                     problem.data.nl,
@@ -876,7 +873,6 @@ class SCCSolver:
             dim=(self._size.num_worlds, self._size.max_of_num_bilateral_joint_cts),
             inputs=[
                 problem.data.dim,
-                problem.data.mio,
                 problem.data.vio,
                 problem.data.njc,
                 problem.data.D,
@@ -921,10 +917,8 @@ class SCCSolver:
             ),
             inputs=[
                 problem.data.dim,
-                problem.data.mio,
                 problem.data.njc,
                 problem.data.D,
-                operator.info.mio,
                 operator.info.maxdim,
                 operator.info.vio,
                 operator.mat,
@@ -963,7 +957,6 @@ class SCCSolver:
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     problem.data.dim,
-                    problem.data.mio,
                     problem.data.vio,
                     problem.data.nbc,
                     problem.data.nl,
@@ -981,7 +974,6 @@ class SCCSolver:
                 dim=self._size.num_worlds * threads_per_world,
                 inputs=[
                     problem.data.dim,
-                    problem.data.mio,
                     problem.data.vio,
                     problem.data.nbc,
                     problem.data.nl,
@@ -1042,7 +1034,7 @@ class SCCSolver:
 
         operator = self._data.bilateral_operator
         use_permutation = isinstance(self._bilateral_solver, LLTBlockedRCMSolver)
-        permutation = self._bilateral_solver.P if use_permutation else self._data.state.projected_mio
+        permutation = self._bilateral_solver.P if use_permutation else self._data.state.dummy_permutation
         unilateral_begin = 0
         unilateral_count = self._max_unilateral_rows
         wp.launch(
@@ -1050,13 +1042,10 @@ class SCCSolver:
             dim=(self._size.num_worlds, unilateral_count),
             inputs=[
                 problem.data.dim,
-                problem.data.mio,
                 problem.data.njc,
-                operator.info.mio,
                 operator.info.maxdim,
                 operator.info.vio,
                 self._data.state.bilateral_preconditioner,
-                self._data.state.projected_mio,
                 problem.data.D,
                 self._bilateral_solver.L,
                 permutation,
@@ -1075,11 +1064,9 @@ class SCCSolver:
             ),
             inputs=[
                 problem.data.dim,
-                problem.data.mio,
                 problem.data.njc,
                 operator.info.vio,
                 self._data.state.bilateral_preconditioner,
-                self._data.state.projected_mio,
                 problem.data.D,
                 permutation,
                 use_permutation,
@@ -1105,7 +1092,6 @@ class SCCSolver:
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[
                 problem.data.dim,
-                problem.data.mio,
                 problem.data.vio,
                 problem.data.nbc,
                 problem.data.nl,
@@ -1123,7 +1109,6 @@ class SCCSolver:
             dim=self._size.num_worlds * threads_per_world,
             inputs=[
                 problem.data.dim,
-                self._data.state.projected_mio,
                 problem.data.vio,
                 problem.data.nbc,
                 problem.data.nl,

@@ -31,7 +31,6 @@ def make_response_kernel(width: int = _RESPONSE_WIDTH):
     def response(
         dim: wp.array[wp.int32],
         njc: wp.array[wp.int32],
-        mio: wp.array[wp.int32],
         bilateral_ld: wp.array[wp.int32],
         vio: wp.array[wp.int32],
         preconditioner: wp.array[wp.float32],
@@ -55,9 +54,7 @@ def make_response_kernel(width: int = _RESPONSE_WIDTH):
         if column >= nu or not _compact_schur_fits(n, nu, response_stride[world]):
             return
         stride = bilateral_ld[world]
-        matrix = wp.array(
-            ptr=get_float32_array_offset_ptr(factor, mio[world]), shape=(stride, stride), dtype=wp.float32
-        )
+        matrix = wp.array(ptr=get_float32_array_offset_ptr(factor, 0), shape=(stride, stride), dtype=wp.float32)
         result = wp.array(
             ptr=get_float32_array_offset_ptr(output, response_mio[world]), shape=(n, nu), dtype=wp.float32
         )

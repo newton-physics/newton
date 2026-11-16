@@ -459,9 +459,9 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             self._structural_ready.zero_()
         info = self._operator.info
         dim = self._stride()
-        zero_dense_blocks(self._L, dim, dim, info.mio, info.max_dimension**2)
+        zero_dense_blocks(self._L, dim, dim, info.max_dimension**2)
         self._y.zero_()
-        zero_dense_blocks(self._A_hat, dim, dim, info.mio, info.max_dimension**2)
+        zero_dense_blocks(self._A_hat, dim, dim, info.max_dimension**2)
         self._x_hat.zero_()
         self._P.zero_()
         self._rcm_scratch["permutation_valid"].zero_()
@@ -490,7 +490,6 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
                 A_flat=A,
                 perm_flat=self._P,
                 dims=info.dim,
-                mio=info.mio,
                 vio=info.vio,
                 scratch=self._rcm_scratch,
                 num_blocks=info.num_blocks,
@@ -560,7 +559,6 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             ld=self._stride(),
             kernel=self._fused_permute_and_tp_kernel,
             dim=info.dim,
-            mio=info.mio,
             vio=info.vio,
             tpo=self._tpo,
             tol=self._reorder_tol,
@@ -600,7 +598,6 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
                 ld=self._stride(),
                 kernels=self._parallel_factorize_kernels,
                 dim=info.dim,
-                mio=info.mio,
                 tpo=self._tpo,
                 A=self._A_hat,
                 tile_pattern=self._tile_pattern,
@@ -616,7 +613,6 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
                 ld=self._stride(),
                 kernel=self._factorize_kernel,
                 dim=info.dim,
-                mio=info.mio,
                 tpo=self._tpo,
                 A=self._A_hat,
                 tile_pattern=self._tile_pattern,
@@ -634,20 +630,19 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             wp.launch(
                 flag_failed_llt_factors,
                 dim=retry_shape,
-                inputs=[info.dim, self._stride(), info.mio, self._L, self._retry_dim],
+                inputs=[info.dim, self._stride(), self._L, self._retry_dim],
                 device=self._device,
             )
             wp.launch(
                 shift_failed_llt_factors,
                 dim=retry_shape,
-                inputs=[self._stride(), info.mio, self._retry_dim, self._failed_pivot_shift, self._A_hat],
+                inputs=[self._stride(), self._retry_dim, self._failed_pivot_shift, self._A_hat],
                 device=self._device,
             )
             llt_blocked_rcm_factorize(
                 ld=self._stride(),
                 kernel=self._factorize_kernel,
                 dim=self._retry_dim,
-                mio=info.mio,
                 tpo=self._tpo,
                 A=self._A_hat,
                 tile_pattern=self._tile_pattern,
@@ -671,7 +666,6 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             ld=self._stride(),
             kernel=self._solve_kernel,
             dim=info.dim,
-            mio=info.mio,
             vio=info.vio,
             tpo=self._tpo,
             P=self._P,
@@ -709,7 +703,6 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             ld=self._stride(),
             kernel=self._solve_inplace_kernel,
             dim=info.dim,
-            mio=info.mio,
             vio=info.vio,
             tpo=self._tpo,
             L=self._L,

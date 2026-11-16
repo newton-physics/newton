@@ -130,7 +130,7 @@ class SCCState:
         self.inequality_tangent_cross: wp.array[float32] | None = None
         self.inequality_projected_diagonal: wp.array[float32] | None = None
         self.projected_D: wp.array2d[float32] | None = None
-        self.projected_mio: wp.array[int32] | None = None
+        self.dummy_permutation: wp.array[int32] | None = None
         self.bilateral_coupling: wp.array[float32] | None = None
         self.bilateral_response_mio: wp.array[int32] | None = None
         self.bilateral_response_stride: wp.array[int32] | None = None
@@ -162,13 +162,13 @@ class SCCState:
         self.inequality_ids_by_color = wp.full(max(1, size.sum_of_max_inequalities), -1, dtype=int32)
         self.inequality_color_starts = wp.zeros(max(1, size.sum_of_max_inequalities + size.num_worlds), dtype=int32)
         # Sparse SCC only needs a harmless dummy permutation when RCM is disabled.
-        self.projected_mio = wp.zeros(max(1, size.num_worlds), dtype=int32)
+        self.dummy_permutation = wp.zeros(max(1, size.num_worlds), dtype=int32)
 
     def allocate_dense_projection(self, size: SizeKamino) -> None:
         """Allocate one projected Delassus matrix row per world."""
         if self.projected_D is None:
             projected_stride = max(1, size.max_of_max_total_cts * size.max_of_max_total_cts)
-            shape, _ = dense_matrix_layout([projected_stride] * size.num_worlds)
+            shape = dense_matrix_layout([projected_stride] * size.num_worlds)
             validate_dense_matrix_shape(shape, float32)
             self.projected_D = wp.zeros(shape, dtype=float32)
 

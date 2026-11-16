@@ -46,20 +46,19 @@ class TestKaminoFactorReset(unittest.TestCase):
                             np.testing.assert_array_equal(solver.L.numpy(), expected)
 
     def test_reset_with_mixed_index_types(self):
-        """Clear a shifted active block with independently typed indices."""
+        """Clear active blocks with independently typed dimensions."""
         for device in wp.get_devices():
             matrix = wp.full((1, 12), 7, dtype=wp.float32, device=device)
             rows = wp.array([2], dtype=wp.int16, device=device)
             cols = wp.array([3], dtype=wp.int32, device=device)
-            offsets = wp.array([2], dtype=wp.int64, device=device)
-            zero_dense_blocks(matrix, rows, cols, offsets, 6)
-            np.testing.assert_array_equal(matrix.numpy(), [[7, 7, 0, 0, 0, 0, 0, 0, 7, 7, 7, 7]])
+            zero_dense_blocks(matrix, rows, cols, 6)
+            np.testing.assert_array_equal(matrix.numpy(), [[0, 0, 0, 0, 0, 0, 7, 7, 7, 7, 7, 7]])
 
             matrix = wp.full((1, 40002), 7, dtype=wp.float32, device=device)
             dims = wp.array([200], dtype=wp.int16, device=device)
-            zero_dense_blocks(matrix, dims, dims, offsets, 40000)
+            zero_dense_blocks(matrix, dims, dims, 40000)
             expected = np.zeros((1, 40002))
-            expected[0, :2] = 7
+            expected[0, 40000:] = 7
             np.testing.assert_array_equal(matrix.numpy(), expected)
 
 
@@ -172,13 +171,12 @@ class TestKaminoFactorRowStart(unittest.TestCase):
                 matrices_wp = wp.array(
                     make_row_storage(np.asarray(matrices, dtype=np.float32), mio, np.square(dimensions)), device=device
                 )
-                matrix_offsets = wp.zeros(len(dimensions), dtype=wp.int32, device=device)
                 vector_offsets = wp.array(vio, dtype=wp.int32, device=device)
                 pattern_offsets = wp.array(tpo, dtype=wp.int32, device=device)
                 pattern = wp.array(patterns, dtype=wp.int32, device=device)
                 reference = wp.full(len(expected), -77, dtype=wp.int32, device=device)
                 candidate = wp.full(len(expected), -77, dtype=wp.int32, device=device)
-                inputs = [dims, matrix_offsets, dims, vector_offsets, matrices_wp]
+                inputs = [dims, dims, vector_offsets, matrices_wp]
                 wp.launch(
                     _find_bilateral_factor_row_start,
                     dim=(len(dimensions), max(dimensions)),

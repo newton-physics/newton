@@ -315,7 +315,6 @@ def _certified_bound(
 def _exclude_inertia_free_dofs(
     # Inputs:
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     # Outputs:
     matrix: wp.array2d[wp.float32],
@@ -330,7 +329,7 @@ def _exclude_inertia_free_dofs(
     n = dim[block]
     if i >= n:
         return
-    diagonal = mio[block] + i * n + i
+    diagonal = i * n + i
     excluded = wp.where(matrix[block, diagonal] == 0.0, 1, 0)
     if excluded != 0:
         matrix[block, diagonal] = 1.0

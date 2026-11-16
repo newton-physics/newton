@@ -61,7 +61,6 @@ class TestKaminoBlockedResponse(unittest.TestCase):
                     inputs=[
                         ints([n + nu]),
                         ints([n]),
-                        ints([0]),
                         ints([n]),
                         ints([0]),
                         floats(scale),
@@ -90,7 +89,6 @@ class TestKaminoBlockedResponse(unittest.TestCase):
                     inputs=[
                         ints([0, n + nu]),
                         ints([0, n]),
-                        ints([0, 0]),
                         ints([n, n]),
                         ints([0, 0]),
                         floats(scale),
@@ -122,7 +120,6 @@ class TestKaminoBlockedResponse(unittest.TestCase):
                     inputs=[
                         ints([n]),
                         ints([n]),
-                        ints([0]),
                         ints([0]),
                         ints([0]),
                         ints(permutation),
@@ -178,7 +175,6 @@ class TestKaminoBlockedResponse(unittest.TestCase):
                         ints([n]),
                         ints([0]),
                         ints([0]),
-                        ints([0]),
                         ints(permutation),
                         floats(lower).reshape((1, lower.size)),
                         ints(pattern.ravel()),
@@ -226,7 +222,6 @@ class TestCooperativeResponse(unittest.TestCase):
             inputs=[
                 i32([njc + nu]),
                 i32([njc]),
-                i32([0]),
                 i32([njc]),
                 i32([0]),
                 f32(scale),
@@ -302,7 +297,7 @@ class TestSplitResponse(unittest.TestCase):
             return wp.array(np.asarray(x, dtype=np.float32), dtype=wp.float32, device=device)
 
         dim = ints(ns)
-        njc, bmio, bvio, rio, stride, qoffset = map(ints, (ns, np.zeros(len(ns)), vio, offsets, capacities, qio))
+        njc, bvio, rio, stride, qoffset = map(ints, (ns, vio, offsets, capacities, qio))
         L = floats(make_row_storage(np.asarray(factors, dtype=np.float32), mio, ns * ns))
         scale, order, prefix = floats(scales), ints(orders), ints(prefixes)
         total = int(np.sum(sizes + guard) + guard)
@@ -317,7 +312,7 @@ class TestSplitResponse(unittest.TestCase):
                     _solve_bilateral_unilateral_response_compact,
                     dim=(len(ns), 128),
                     block_dim=128,
-                    inputs=[dim, njc, bmio, njc, bvio, scale, L, order, rio, stride, coupling, outputs[index], prefix],
+                    inputs=[dim, njc, njc, bvio, scale, L, order, rio, stride, coupling, outputs[index], prefix],
                     device=device,
                 )
             wp.launch(
@@ -327,7 +322,6 @@ class TestSplitResponse(unittest.TestCase):
                 inputs=[
                     dim,
                     njc,
-                    bmio,
                     njc,
                     bvio,
                     scale,

@@ -603,7 +603,6 @@ def _make_dense_to_bsm_detect_kernel(block_size: int):
     def kernel(
         # Dense matrix info
         dense_dim: wp.array[wp.int32],
-        dense_mio: wp.array[wp.int32],
         dense_mat_storage: wp.array2d[wp.float32],
         # BSM info
         max_nzb: wp.array[wp.int32],
@@ -624,7 +623,6 @@ def _make_dense_to_bsm_detect_kernel(block_size: int):
 
         row_start = bi * bs
         col_start = bj * bs
-        m_offset = dense_mio[wid]
 
         # Check if any element in this block is non-zero
         # Dense matrices use compact storage: stride = dim
@@ -635,7 +633,7 @@ def _make_dense_to_bsm_detect_kernel(block_size: int):
                 for j in range(bs):
                     col = col_start + j
                     if col < dim:
-                        idx = m_offset + row * dim + col
+                        idx = row * dim + col
                         if dense_mat[idx] != wp.float32(0.0):
                             nonzero_count = nonzero_count + 1
 
@@ -663,7 +661,6 @@ def _make_dense_to_bsm_copy_kernel(block_size: int):
     def kernel(
         # Dense matrix info
         dense_dim: wp.array[wp.int32],
-        dense_mio: wp.array[wp.int32],
         dense_mat_storage: wp.array2d[wp.float32],
         # BSM info
         nzb_start: wp.array[wp.int32],
@@ -679,7 +676,6 @@ def _make_dense_to_bsm_copy_kernel(block_size: int):
             return
 
         dim = dense_dim[wid]
-        m_offset = dense_mio[wid]
         global_idx = nzb_start[wid] + block_idx
         row_start = nzb_coords[global_idx, 0]
         col_start = nzb_coords[global_idx, 1]
@@ -693,7 +689,7 @@ def _make_dense_to_bsm_copy_kernel(block_size: int):
             for j in range(bs):
                 col = col_start + j
                 if row < dim and col < dim:
-                    idx = m_offset + row * dim + col
+                    idx = row * dim + col
                     block[i, j] = dense_mat[idx]
                 else:
                     block[i, j] = wp.float32(0.0)
@@ -810,7 +806,6 @@ def dense_to_block_sparse_copy_values(
         dim=(info.num_blocks, max_blocks_per_dim, max_blocks_per_dim),
         inputs=[
             info.dim,
-            info.mio,
             dense_op.mat,
             bsm.max_nzb,
             bsm.nzb_start,
@@ -828,7 +823,6 @@ def dense_to_block_sparse_copy_values(
         dim=(bsm.num_matrices, bsm.max_of_num_nzb),
         inputs=[
             info.dim,
-            info.mio,
             dense_op.mat,
             bsm.nzb_start,
             bsm.num_nzb,

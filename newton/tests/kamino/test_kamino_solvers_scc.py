@@ -3736,7 +3736,6 @@ class TestSCCSolver(NewtonTestCase):
             inputs=[
                 i32([4]),
                 i32([2]),
-                i32([0]),
                 i32([2]),
                 i32([0]),
                 wp.array(scaling, dtype=wp.float32, device=self.device),
@@ -4467,11 +4466,10 @@ class TestSCCSolver(NewtonTestCase):
         response = wp.zeros_like(workspace)
         row_start = wp.zeros(len(scaling), dtype=wp.int32, device=self.device)
         factor_rows = f32(make_row_storage(np.asarray(factors), matrix_offsets, np.square(joint_counts)))
-        factor_offsets = i32(np.zeros(len(joint_counts)))
         wp.launch(
             _find_bilateral_factor_row_start,
             dim=(5, max(joint_counts)),
-            inputs=[joints, factor_offsets, joints, i32(vector_offsets), factor_rows, row_start],
+            inputs=[joints, joints, i32(vector_offsets), factor_rows, row_start],
             device=self.device,
         )
         expected_starts = []
@@ -4485,7 +4483,6 @@ class TestSCCSolver(NewtonTestCase):
             inputs=[
                 dims,
                 joints,
-                factor_offsets,
                 joints,
                 i32(vector_offsets),
                 f32(scaling),

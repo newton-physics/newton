@@ -50,7 +50,6 @@ class BatchedLinearOperator(Generic[ScalarType, IndexType]):
         device: wp.Device,
         dtype: type[ScalarType],
         matvec_fn: Callable | None = None,
-        mio: wp.array[IndexType] | None = None,
         vio: wp.array[IndexType] | None = None,
         total_vec_size: int = 0,
     ):
@@ -61,7 +60,6 @@ class BatchedLinearOperator(Generic[ScalarType, IndexType]):
         self.device = device
         self.dtype = dtype
         self._matvec_fn = matvec_fn
-        self.mio = mio
         self.vio = vio
         self.total_vec_size = total_vec_size
 
@@ -75,11 +73,10 @@ class BatchedLinearOperator(Generic[ScalarType, IndexType]):
         max_dim = info.max_dimension
         A_mat = operator.mat
         active_dims = info.dim
-        mio = info.mio
         vio = info.vio
 
         def gemv_fn(x, y, world_active, alpha, beta):
-            blas.dense_gemv(A_mat, x, y, active_dims, world_active, alpha, beta, max_dim, mio, vio)
+            blas.dense_gemv(A_mat, x, y, active_dims, world_active, alpha, beta, max_dim, vio)
 
         return cls(
             gemv_fn,
@@ -88,7 +85,6 @@ class BatchedLinearOperator(Generic[ScalarType, IndexType]):
             active_dims,
             info.device,
             info.dtype,
-            mio=mio,
             vio=vio,
             total_vec_size=info.total_vec_size,
         )
@@ -505,7 +501,6 @@ def make_jacobi_preconditioner(
     A_storage: wp.array2d[Any],
     world_dims: wp.array[wp.int32],
     world_maxdims: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     diag: wp.array[Any],
 ):
@@ -518,7 +513,7 @@ def make_jacobi_preconditioner(
     if row >= world_dim:
         diag[v_idx] = 0.0
         return
-    el = A[mio[world] + row * world_dim + row]
+    el = A[row * world_dim + row]
     el_inv = 1.0 / (el + 1e-9)
     diag[v_idx] = el_inv
 

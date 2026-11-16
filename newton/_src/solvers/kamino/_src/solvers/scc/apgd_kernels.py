@@ -616,7 +616,6 @@ def guard_convergence(status: wp.array[SCCStatus]):
 @wp.kernel
 def dense_matvec(
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     matrix_storage: wp.array2d[wp.float32],
     mask: wp.array[wp.bool],
@@ -630,7 +629,7 @@ def dense_matvec(
         return
     value = wp.float32(0.0)
     for column in range(dim[wid]):
-        value += matrix[mio[wid] + row * dim[wid] + column] * x[vio[wid] + column]
+        value += matrix[row * dim[wid] + column] * x[vio[wid] + column]
     y[vio[wid] + row] = value
 
 

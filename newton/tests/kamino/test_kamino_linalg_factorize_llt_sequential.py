@@ -107,7 +107,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_factorize(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
         )
@@ -136,7 +135,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             b=problem.b_wp,
@@ -170,7 +168,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve_inplace(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             x=x_wp,
@@ -251,7 +248,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_factorize(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
         )
@@ -280,7 +276,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             b=problem.b_wp,
@@ -312,7 +307,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve_inplace(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             x=x_wp,
@@ -382,7 +376,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_factorize(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
         )
@@ -414,7 +407,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             b=problem.b_wp,
@@ -450,7 +442,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve_inplace(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             x=x_wp,
@@ -530,7 +521,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_factorize(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
         )
@@ -562,7 +552,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             b=problem.b_wp,
@@ -598,7 +587,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve_inplace(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             x=x_wp,

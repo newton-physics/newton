@@ -483,7 +483,7 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
     ):
         # Declare LLT-specific internal data
         self._L: wp.array2d[ScalarType] | None = None
-        """One row containing the Cholesky factor of each matrix block."""
+        """Cholesky factors, each stored in its own row."""
         self._y: wp.array[ScalarType] | None = None
         """A flat array containing the intermediate results for the solve operation."""
 
@@ -539,7 +539,7 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
     @override
     def _reset_impl(self) -> None:
         info = self._operator.info
-        zero_dense_blocks(self._L, info.dim, info.dim, info.mio, info.max_dimension**2)
+        zero_dense_blocks(self._L, info.dim, info.dim, info.max_dimension**2)
         self._y.zero_()
         self._has_factors = False
 
@@ -548,7 +548,6 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
         factorize.llt_sequential_factorize(
             num_blocks=self._operator.info.num_blocks,
             dim=self._operator.info.dim,
-            mio=self._operator.info.mio,
             A=A,
             L=self._L,
         )
@@ -563,7 +562,6 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
         factorize.llt_sequential_solve(
             num_blocks=self._operator.info.num_blocks,
             dim=self._operator.info.dim,
-            mio=self._operator.info.mio,
             vio=self._operator.info.vio,
             L=self._L,
             b=b,
@@ -577,7 +575,6 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
         factorize.llt_sequential_solve_inplace(
             num_blocks=self._operator.info.num_blocks,
             dim=self._operator.info.dim,
-            mio=self._operator.info.mio,
             vio=self._operator.info.vio,
             L=self._L,
             x=x,
@@ -637,7 +634,7 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
         """
         # Declare LLT-specific internal data
         self._L: wp.array2d[ScalarType] | None = None
-        """One row containing the Cholesky factor of each matrix block."""
+        """Cholesky factors, each stored in its own row."""
         self._y: wp.array[ScalarType] | None = None
         """A flat array containing the intermediate results for the solve operation."""
         self._retry_dim: wp.array[wp.int32] | None = None
@@ -709,7 +706,7 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
     @override
     def _reset_impl(self) -> None:
         info = self._operator.info
-        zero_dense_blocks(self._L, info.dim, info.dim, info.mio, info.max_dimension**2)
+        zero_dense_blocks(self._L, info.dim, info.dim, info.max_dimension**2)
         self._y.zero_()
         self._has_factors = False
 
@@ -720,7 +717,6 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             num_blocks=self._operator.info.num_blocks,
             block_dim=self._factorize_block_dim,
             dim=self._operator.info.dim,
-            mio=self._operator.info.mio,
             A=A,
             L=self._L,
         )
@@ -733,13 +729,13 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             wp.launch(
                 factorize.flag_failed_llt_factors,
                 dim=retry_shape,
-                inputs=[info.dim, info.dim, info.mio, self._L, self._retry_dim],
+                inputs=[info.dim, info.dim, self._L, self._retry_dim],
                 device=self._device,
             )
             wp.launch(
                 factorize.shift_failed_llt_factors,
                 dim=retry_shape,
-                inputs=[info.dim, info.mio, self._retry_dim, self._failed_pivot_shift, A],
+                inputs=[info.dim, self._retry_dim, self._failed_pivot_shift, A],
                 device=self._device,
             )
             factorize.llt_blocked_factorize(
@@ -747,7 +743,6 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
                 num_blocks=info.num_blocks,
                 block_dim=self._factorize_block_dim,
                 dim=self._retry_dim,
-                mio=info.mio,
                 A=A,
                 L=self._L,
             )
@@ -755,7 +750,7 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             wp.launch(
                 factorize.shift_failed_llt_factors,
                 dim=retry_shape,
-                inputs=[info.dim, info.mio, self._retry_dim, -self._failed_pivot_shift, A],
+                inputs=[info.dim, self._retry_dim, -self._failed_pivot_shift, A],
                 device=self._device,
             )
 
@@ -771,7 +766,6 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             num_blocks=self._operator.info.num_blocks,
             block_dim=self._solve_block_dim,
             dim=self._operator.info.dim,
-            mio=self._operator.info.mio,
             vio=self._operator.info.vio,
             L=self._L,
             b=b,
@@ -787,7 +781,6 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             num_blocks=self._operator.info.num_blocks,
             block_dim=self._solve_block_dim,
             dim=self._operator.info.dim,
-            mio=self._operator.info.mio,
             vio=self._operator.info.vio,
             L=self._L,
             y=self._y,
@@ -905,7 +898,6 @@ class ConjugateGradientSolver(IterativeSolver[ScalarType, IndexType]):
                 self._operator.mat,
                 self._batched_operator.active_dims,
                 self._operator.info.maxdim,
-                self._operator.info.mio,
                 self._operator.info.vio,
             ],
             outputs=[self._jacobi_preconditioner],
@@ -1017,7 +1009,6 @@ class ConjugateResidualSolver(IterativeSolver[ScalarType, IndexType]):
                 self._operator.mat,
                 self._batched_operator.active_dims,
                 self._operator.info.maxdim,
-                self._operator.info.mio,
                 self._operator.info.vio,
             ],
             outputs=[self._jacobi_preconditioner],

@@ -43,7 +43,6 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 def _mult_left_right_diag_matrix_with_matrix(
     # Inputs:
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     D: wp.array[wp.float32],
     X_storage: wp.array2d[wp.float32],
@@ -66,14 +65,11 @@ def _mult_left_right_diag_matrix_with_matrix(
     if i >= n or j >= n:
         return
 
-    # Retrieve the matrix index offset of the world
-    m_0 = mio[wid]
-
     # Retrieve the vector index offset of the world
     v_0 = vio[wid]
 
-    # Compute the global index of the matrix entry
-    m_ij = m_0 + n * i + j
+    # Compute the index within the world row
+    m_ij = n * i + j
 
     # Retrieve the ij entry of the input matrix
     X_ij = X[m_ij]
@@ -169,7 +165,6 @@ def _make_masked_zero_kernel_2d(dtype: Any):
 def _zero_dense_blocks(
     rows: wp.array[Any],
     cols: wp.array[Any],
-    mio: wp.array[Any],
     stride: wp.int32,
     X: wp.array2d[Any],
 ):
@@ -177,7 +172,7 @@ def _zero_dense_blocks(
     i = wp.int64(tid)
     size = wp.int64(rows[bid]) * wp.int64(cols[bid])
     while i < size:
-        X[bid, wp.int64(mio[bid]) + i] = X.dtype(0.0)
+        X[bid, i] = X.dtype(0.0)
         i += wp.int64(stride)
 
 
@@ -813,7 +808,6 @@ def _dense_gemv_kernel(
     world_active: wp.array[wp.bool],
     alpha: wp.float32,
     beta: wp.float32,
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     tile_size: int,
 ):
@@ -826,13 +820,12 @@ def _dense_gemv_kernel(
         return
 
     row_stride = active_dims[world]
-    a_offset = mio[world]
     v_offset = vio[world]
     zero = type(alpha)(0)
     s = zero
     if alpha != zero:
         for col in range(lane, dim, tile_size):
-            s += A[a_offset + row * row_stride + col] * x[v_offset + col]
+            s += A[row * row_stride + col] * x[v_offset + col]
     row_tile = wp.tile_sum(wp.tile(s * alpha))
     if beta != zero:
         row_tile += beta * wp.tile_load(y, shape=1, offset=v_offset + row)
@@ -1100,7 +1093,6 @@ def dense_gemv(
     alpha: float,
     beta: float,
     max_dim: int,
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     block_dim: int = 64,
 ):
@@ -1116,7 +1108,6 @@ def dense_gemv(
         alpha: Scalar multiplier for A * x.
         beta: Scalar multiplier for y.
         max_dim: Maximum dimension over all worlds (for launch grid).
-        mio: Matrix index offsets per world.
         vio: Vector index offsets per world.
         block_dim: Block dimension for tiled computation.
     """
@@ -1127,7 +1118,7 @@ def dense_gemv(
     wp.launch(
         _dense_gemv_kernel,
         dim=(n_worlds, max_dim, block_dim),
-        inputs=[x, y, A, active_dims, world_active, dtype(alpha), dtype(beta), mio, vio, block_dim],
+        inputs=[x, y, A, active_dims, world_active, dtype(alpha), dtype(beta), vio, block_dim],
         device=x.device,
         block_dim=block_dim,
     )
@@ -1137,7 +1128,6 @@ def zero_dense_blocks(
     X: wp.array2d[Any],
     rows: wp.array[Any],
     cols: wp.array[Any],
-    mio: wp.array[Any],
     max_block_size: int,
 ):
     """Clear active matrix entries without touching unused capacity or row padding."""
@@ -1150,7 +1140,7 @@ def zero_dense_blocks(
     wp.launch(
         _zero_dense_blocks,
         dim=(num_blocks, threads),
-        inputs=[rows, cols, mio, threads, X],
+        inputs=[rows, cols, threads, X],
         device=X.device,
     )
 

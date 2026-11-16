@@ -637,7 +637,7 @@ class TestLinalgConjugate(unittest.TestCase):
         wp.launch(
             make_jacobi_preconditioner,
             dim=(n_worlds, maxdim),
-            inputs=[problem.A_wp, problem.dim_wp, problem.maxdim_wp, info.mio, info.vio],
+            inputs=[problem.A_wp, problem.dim_wp, problem.maxdim_wp, info.vio],
             outputs=[jacobi_diag],
             device=device,
         )
@@ -708,7 +708,6 @@ class TestLinalgConjugate(unittest.TestCase):
         info.finalize(dimensions=dims_list, dtype=wp.float32, device=device)
         vio_np = info.vio.numpy()
 
-        # Pack matrices into dense storage at mio offsets
         A_wp = wp.array(make_dense_matrix_storage(info, A_list), dtype=wp.float32, device=device)
 
         dense_op = DenseLinearOperatorData(info=info, mat=A_wp)

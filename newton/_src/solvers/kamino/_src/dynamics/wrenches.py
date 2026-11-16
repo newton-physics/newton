@@ -51,7 +51,6 @@ def _compute_joint_dof_body_wrenches_dense(
     model_joints_tau_j_max: wp.array[wp.float32],
     model_joints_dof_act_paths: wp.array[wp.int32],
     data_joints_tau_j: wp.array[wp.float32],
-    jacobian_dofs_offsets: wp.array[wp.int32],
     jacobian_dofs_data_storage: wp.array2d[wp.float32],
     # Outputs:
     data_bodies_w_a: wp.array[wp.spatial_vectorf],
@@ -80,9 +79,8 @@ def _compute_joint_dof_body_wrenches_dense(
 
     # Compute the DoF block index offsets of the world's actuation
     # Jacobian matrix and generalized joint actuation force vector
-    mio = jacobian_dofs_offsets[wid]
     dio_j_world = dio_j - model_info_joint_dofs_offset[wid]
-    mio += nbd * dio_j_world
+    mio = nbd * dio_j_world
     vio = dio_j
 
     # Compute and store the joint actuation wrench for the Follower body
@@ -181,7 +179,6 @@ def _compute_joint_cts_body_wrenches_dense(
     model_joints_kinematic_cts_offset: wp.array[wp.int32],
     model_joints_bid_B: wp.array[wp.int32],
     model_joints_bid_F: wp.array[wp.int32],
-    jacobian_cts_offset: wp.array[wp.int32],
     jacobian_cts_data_storage: wp.array2d[wp.float32],
     lambdas_offsets: wp.array[wp.int32],
     lambdas_data: wp.array[wp.float32],
@@ -225,7 +222,6 @@ def _compute_joint_cts_body_wrenches_dense(
 
     # Retrieve the constraint block index offsets of the
     # Jacobian matrix and multipliers vector of the world
-    world_jacobian_start = jacobian_cts_offset[wid]
     world_cts_start = lambdas_offsets[wid]
 
     # Compute and store the joint constraint wrench for the Follower body
@@ -234,14 +230,14 @@ def _compute_joint_cts_body_wrenches_dense(
     col_F_start = 6 * (bid_F_j - bio)
     for j in range(num_dyn_cts_j):
         row_j = world_jdcgo + local_dyn_cts_start_j + j
-        mio_j = world_jacobian_start + nbd * row_j + col_F_start
+        mio_j = nbd * row_j + col_F_start
         vio_j = world_cts_start + row_j
         lambda_j = inv_dt * lambdas_data[vio_j]
         for i in range(6):
             w_j_F[i] += jacobian_cts_data[mio_j + i] * lambda_j
     for j in range(num_kin_cts_j):
         row_j = world_jkcgo + local_kin_cts_start_j + j
-        mio_j = world_jacobian_start + nbd * row_j + col_F_start
+        mio_j = nbd * row_j + col_F_start
         vio_j = world_cts_start + row_j
         lambda_j = inv_dt * lambdas_data[vio_j]
         for i in range(6):
@@ -255,14 +251,14 @@ def _compute_joint_cts_body_wrenches_dense(
         col_B_start = 6 * (bid_B_j - bio)
         for j in range(num_dyn_cts_j):
             row_j = world_jdcgo + local_dyn_cts_start_j + j
-            mio_j = world_jacobian_start + nbd * row_j + col_B_start
+            mio_j = nbd * row_j + col_B_start
             vio_j = world_cts_start + row_j
             lambda_j = inv_dt * lambdas_data[vio_j]
             for i in range(6):
                 w_j_B[i] += jacobian_cts_data[mio_j + i] * lambda_j
         for j in range(num_kin_cts_j):
             row_j = world_jkcgo + local_kin_cts_start_j + j
-            mio_j = world_jacobian_start + nbd * row_j + col_B_start
+            mio_j = nbd * row_j + col_B_start
             vio_j = world_cts_start + row_j
             lambda_j = inv_dt * lambdas_data[vio_j]
             for i in range(6):
@@ -281,7 +277,6 @@ def _compute_joint_effort_cts_body_wrenches_dense(
     model_joints_effort_cts_offset: wp.array[wp.int32],
     model_joints_bid_B: wp.array[wp.int32],
     model_joints_bid_F: wp.array[wp.int32],
-    jacobian_cts_offset: wp.array[wp.int32],
     jacobian_cts_data_storage: wp.array2d[wp.float32],
     lambdas_offsets: wp.array[wp.int32],
     lambdas_data: wp.array[wp.float32],
@@ -323,7 +318,6 @@ def _compute_joint_effort_cts_body_wrenches_dense(
 
     # Retrieve the constraint block index offsets of the
     # Jacobian matrix and multipliers vector of the world
-    world_jacobian_start = jacobian_cts_offset[wid]
     world_cts_start = lambdas_offsets[wid]
 
     # Compute and store the effort constraint wrench for the Follower body
@@ -332,7 +326,7 @@ def _compute_joint_effort_cts_body_wrenches_dense(
     col_F_start = 6 * (bid_F_j - bio)
     for j in range(num_effort_cts_j):
         row_j = world_jecgo + local_effort_cts_start_j + j
-        mio_j = world_jacobian_start + nbd * row_j + col_F_start
+        mio_j = nbd * row_j + col_F_start
         vio_j = world_cts_start + row_j
         lambda_j = inv_dt * lambdas_data[vio_j]
         for i in range(6):
@@ -345,7 +339,7 @@ def _compute_joint_effort_cts_body_wrenches_dense(
         col_B_start = 6 * (bid_B_j - bio)
         for j in range(num_effort_cts_j):
             row_j = world_jecgo + local_effort_cts_start_j + j
-            mio_j = world_jacobian_start + nbd * row_j + col_B_start
+            mio_j = nbd * row_j + col_B_start
             vio_j = world_cts_start + row_j
             lambda_j = inv_dt * lambdas_data[vio_j]
             for i in range(6):
@@ -364,7 +358,6 @@ def _compute_joint_friction_body_wrenches_dense(
     model_joints_friction_cts_offset: wp.array[wp.int32],
     model_joints_bid_B: wp.array[wp.int32],
     model_joints_bid_F: wp.array[wp.int32],
-    jacobian_cts_offset: wp.array[wp.int32],
     jacobian_cts_data_storage: wp.array2d[wp.float32],
     lambdas_offsets: wp.array[wp.int32],
     lambdas_data: wp.array[wp.float32],
@@ -404,7 +397,6 @@ def _compute_joint_friction_body_wrenches_dense(
 
     # Retrieve the constraint block index offsets of the
     # Jacobian matrix and multipliers vector of the world
-    world_jacobian_start = jacobian_cts_offset[wid]
     world_cts_start = lambdas_offsets[wid]
 
     # Compute and store the joint friction wrench for the Follower body
@@ -413,7 +405,7 @@ def _compute_joint_friction_body_wrenches_dense(
     col_F_start = 6 * (bid_F_j - bio)
     for j in range(num_friction_cts_j):
         row_j = world_jfcgo + local_friction_cts_start_j + j
-        mio_j = world_jacobian_start + nbd * row_j + col_F_start
+        mio_j = nbd * row_j + col_F_start
         vio_j = world_cts_start + row_j
         lambda_j = inv_dt * lambdas_data[vio_j]
         for i in range(6):
@@ -427,7 +419,7 @@ def _compute_joint_friction_body_wrenches_dense(
         col_B_start = 6 * (bid_B_j - bio)
         for j in range(num_friction_cts_j):
             row_j = world_jfcgo + local_friction_cts_start_j + j
-            mio_j = world_jacobian_start + nbd * row_j + col_B_start
+            mio_j = nbd * row_j + col_B_start
             vio_j = world_cts_start + row_j
             lambda_j = inv_dt * lambdas_data[vio_j]
             for i in range(6):
@@ -446,7 +438,6 @@ def _compute_limit_cts_body_wrenches_dense(
     limits_wid: wp.array[wp.int32],
     limits_lid: wp.array[wp.int32],
     limits_bids: wp.array[wp.vec2i],
-    jacobian_cts_offset: wp.array[wp.int32],
     jacobian_cts_data_storage: wp.array2d[wp.float32],
     lambdas_offsets: wp.array[wp.int32],
     lambdas_data: wp.array[wp.float32],
@@ -479,7 +470,6 @@ def _compute_limit_cts_body_wrenches_dense(
     # Retrieve the world-specific info
     bio = model_info_bodies_offset[wid]
     nbd = 6 * (model_info_bodies_offset[wid + 1] - bio)
-    mio = jacobian_cts_offset[wid]
     vio = lambdas_offsets[wid]
 
     # Retrieve the index offset of the active limit constraints of the world
@@ -488,7 +478,7 @@ def _compute_limit_cts_body_wrenches_dense(
     # Compute the index offsets of the limit constraint
     cio_l = lcgo + lid
     vio_l = vio + cio_l
-    mio_l = mio + nbd * cio_l
+    mio_l = nbd * cio_l
 
     # Extract the limit force/torque from the impulse
     # NOTE: We need to scale by the time-step because the lambdas are impulses
@@ -534,7 +524,6 @@ def _compute_contact_cts_body_wrenches_dense(
     contacts_wid: wp.array[wp.int32],
     contacts_cid: wp.array[wp.int32],
     contacts_bid_AB: wp.array[wp.vec2i],
-    jacobian_cts_offset: wp.array[wp.int32],
     jacobian_cts_data_storage: wp.array2d[wp.float32],
     lambdas_offsets: wp.array[wp.int32],
     lambdas_data: wp.array[wp.float32],
@@ -567,7 +556,6 @@ def _compute_contact_cts_body_wrenches_dense(
     # Retrieve the world-specific info data
     bio = model_info_bodies_offset[wid]
     nbd = 6 * (model_info_bodies_offset[wid + 1] - bio)
-    mio = jacobian_cts_offset[wid]
     vio = lambdas_offsets[wid]
 
     # Retrieve the index offset of the active contact constraints of the world
@@ -577,7 +565,7 @@ def _compute_contact_cts_body_wrenches_dense(
     k = 3 * cid
     cio_k = ccgo + k
     vio_k = vio + cio_k
-    mio_k = mio + nbd * cio_k
+    mio_k = nbd * cio_k
 
     # Extract the 3D contact force
     # NOTE: We need to scale by the time-step because the lambdas are impulses
@@ -726,7 +714,6 @@ def compute_joint_dof_body_wrenches_dense(
             model.joints.tau_j_max,
             model.joints.dof_act_paths,
             data.joints.tau_j,
-            jacobians.data.J_dofs_offsets,
             jacobians.data.J_dofs_data,
             # Outputs:
             data.bodies.w_a_i,
@@ -828,7 +815,6 @@ def compute_constraint_body_wrenches_dense(
                 model.joints.kinematic_cts_offset,
                 model.joints.bid_B,
                 model.joints.bid_F,
-                jacobians.data.J_cts_offsets,
                 jacobians.data.J_cts_data,
                 lambdas_offsets,
                 lambdas_data,
@@ -853,7 +839,6 @@ def compute_constraint_body_wrenches_dense(
                 model.joints.effort_cts_offset,
                 model.joints.bid_B,
                 model.joints.bid_F,
-                jacobians.data.J_cts_offsets,
                 jacobians.data.J_cts_data,
                 lambdas_offsets,
                 lambdas_data,
@@ -879,7 +864,6 @@ def compute_constraint_body_wrenches_dense(
                 model.joints.friction_cts_offset,
                 model.joints.bid_B,
                 model.joints.bid_F,
-                jacobians.data.J_cts_offsets,
                 jacobians.data.J_cts_data,
                 lambdas_offsets,
                 lambdas_data,
@@ -905,7 +889,6 @@ def compute_constraint_body_wrenches_dense(
                 limits.wid,
                 limits.lid,
                 limits.bids,
-                jacobians.data.J_cts_offsets,
                 jacobians.data.J_cts_data,
                 lambdas_offsets,
                 lambdas_data,
@@ -931,7 +914,6 @@ def compute_constraint_body_wrenches_dense(
                 contacts.wid,
                 contacts.cid,
                 contacts.bid_AB,
-                jacobians.data.J_cts_offsets,
                 jacobians.data.J_cts_data,
                 lambdas_offsets,
                 lambdas_data,

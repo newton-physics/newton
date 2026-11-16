@@ -84,7 +84,6 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 def flag_failed_llt_factors(
     dim: wp.array[wp.int32],
     ld: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     L_storage: wp.array2d[wp.float32],
     retry_dim: wp.array[wp.int32],
 ):
@@ -96,14 +95,13 @@ def flag_failed_llt_factors(
     world, row = wp.tid()
     L = L_storage[world]
     n = dim[world]
-    if row < n and not wp.isfinite(L[mio[world] + row * ld[world] + row]):
+    if row < n and not wp.isfinite(L[row * ld[world] + row]):
         retry_dim[world] = n
 
 
 @wp.kernel
 def shift_failed_llt_factors(
     ld: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     retry_dim: wp.array[wp.int32],
     shift: wp.float32,
     A_storage: wp.array2d[wp.float32],
@@ -112,7 +110,7 @@ def shift_failed_llt_factors(
     world, row = wp.tid()
     A = A_storage[world]
     if row < retry_dim[world]:
-        A[mio[world] + row * ld[world] + row] += shift
+        A[row * ld[world] + row] += shift
 
 
 @cache
@@ -121,7 +119,6 @@ def make_llt_blocked_factorize_kernel(block_size: int):
     def llt_blocked_factorize_kernel(
         # Inputs:
         dim: wp.array[wp.int32],
-        mio: wp.array[wp.int32],
         A_storage: wp.array2d[wp.float32],
         # Outputs:
         L_storage: wp.array2d[wp.float32],
@@ -134,11 +131,9 @@ def make_llt_blocked_factorize_kernel(block_size: int):
 
         # Retrieve the matrix block dimensions and size
         n_i = dim[tid]
-        A_i_start = mio[tid]
-
         # Retrieve a pointer to the start of the i-th matrix in A
-        A_i_ptr = get_float32_array_offset_ptr(A, A_i_start)
-        L_i_ptr = get_float32_array_offset_ptr(L, A_i_start)
+        A_i_ptr = get_float32_array_offset_ptr(A, 0)
+        L_i_ptr = get_float32_array_offset_ptr(L, 0)
 
         # Create a temporary warp array pointing to the i-th matrix
         A_i = wp.array(ptr=A_i_ptr, shape=(n_i, n_i), dtype=wp.float32)
@@ -239,7 +234,6 @@ def make_llt_blocked_solve_func(block_size: int):
         tid_block: wp.int32,
         # Inputs:
         dim: wp.array[wp.int32],
-        mio: wp.array[wp.int32],
         vio: wp.array[wp.int32],
         L: wp.array[wp.float32],
         b: wp.array[wp.float32],
@@ -252,11 +246,10 @@ def make_llt_blocked_solve_func(block_size: int):
 
         # Retrieve the matrix block dimensions and size
         n_i = dim[tid]
-        L_i_start = mio[tid]
         v_i_start = vio[tid]
 
         # Retrieve a pointer to the start of the i-th matrix in A
-        L_i_ptr = get_float32_array_offset_ptr(L, L_i_start)
+        L_i_ptr = get_float32_array_offset_ptr(L, 0)
         b_i_ptr = get_float32_array_offset_ptr(b, v_i_start)
         y_i_ptr = get_float32_array_offset_ptr(y, v_i_start)
         x_i_ptr = get_float32_array_offset_ptr(x, v_i_start)
@@ -334,7 +327,6 @@ def make_llt_blocked_solve_kernel(block_size: int):
     def llt_blocked_solve_kernel(
         # Inputs:
         dim: wp.array[wp.int32],
-        mio: wp.array[wp.int32],
         vio: wp.array[wp.int32],
         L_storage: wp.array2d[wp.float32],
         b: wp.array[wp.float32],
@@ -344,7 +336,7 @@ def make_llt_blocked_solve_kernel(block_size: int):
     ):
         tid, tid_block = wp.tid()
         L = L_storage[tid]
-        solve(tid, tid_block, dim, mio, vio, L, b, y, x)
+        solve(tid, tid_block, dim, vio, L, b, y, x)
 
     return llt_blocked_solve_kernel
 
@@ -357,7 +349,6 @@ def make_llt_blocked_solve_inplace_kernel(block_size: int):
     def llt_blocked_solve_inplace_kernel(
         # Inputs:
         dim: wp.array[wp.int32],
-        mio: wp.array[wp.int32],
         vio: wp.array[wp.int32],
         L_storage: wp.array2d[wp.float32],
         # Outputs:
@@ -366,7 +357,7 @@ def make_llt_blocked_solve_inplace_kernel(block_size: int):
     ):
         tid, tid_block = wp.tid()
         L = L_storage[tid]
-        solve(tid, tid_block, dim, mio, vio, L, x, y, x)
+        solve(tid, tid_block, dim, vio, L, x, y, x)
 
     return llt_blocked_solve_inplace_kernel
 
@@ -379,7 +370,6 @@ def make_llt_blocked_solve_inplace_kernel(block_size: int):
 def llt_blocked_factorize(
     kernel,
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     A: wp.array2d[wp.float32],
     L: wp.array2d[wp.float32],
     num_blocks: int = 1,
@@ -394,19 +384,17 @@ def llt_blocked_factorize(
     Args:
         kernel: The kernel function to use for the blocked factorization.
         dim: An array of shape `(num_blocks,)` containing the active dimensions of each matrix block.
-        mio: An array of shape `(num_blocks,)` containing the matrix index offset (mio) of each matrix block.
-        A: The flat input array containing the input matrix blocks to be factorized.
-        L: The flat output array containing the factorization of each matrix block.
+        A: The input matrix blocks, one per row.
+        L: The output factors, one per row.
         num_blocks: The number of matrix blocks to process.
         block_dim: The dimension of the thread block to use for the kernel launch.
     """
-    wp.launch_tiled(kernel=kernel, dim=num_blocks, inputs=[dim, mio, A, L], block_dim=block_dim, device=A.device)
+    wp.launch_tiled(kernel=kernel, dim=num_blocks, inputs=[dim, A, L], block_dim=block_dim, device=A.device)
 
 
 def llt_blocked_solve(
     kernel,
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     L: wp.array2d[wp.float32],
     b: wp.array[wp.float32],
@@ -424,24 +412,20 @@ def llt_blocked_solve(
     Args:
         kernel: The kernel function to use for the blocked solve.
         dim: An array of shape `(num_blocks,)` containing the dimensions of each matrix block.
-        mio: An array of shape `(num_blocks,)` containing the matrix index offsets of each matrix block.
         vio: An array of shape `(num_blocks,)` containing the vector index offsets of each vector block.
-        L: The flat input array containing the Cholesky factorization of each matrix block.
+        L: The input Cholesky factors, one per row.
         b: The flat input array containing the stacked right-hand side vectors.
         y: The output array where the intermediate result will be stored.
         x: The output array where the solution to the linear system `A @ x = b` will be stored.
         num_blocks: The number of matrix blocks to process.
         block_dim: The dimension of the thread block to use for the kernel launch.
     """
-    wp.launch_tiled(
-        kernel=kernel, dim=num_blocks, inputs=[dim, mio, vio, L, b, y, x], block_dim=block_dim, device=L.device
-    )
+    wp.launch_tiled(kernel=kernel, dim=num_blocks, inputs=[dim, vio, L, b, y, x], block_dim=block_dim, device=L.device)
 
 
 def llt_blocked_solve_inplace(
     kernel,
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     L: wp.array2d[wp.float32],
     y: wp.array[wp.float32],
@@ -457,14 +441,11 @@ def llt_blocked_solve_inplace(
     Args:
         kernel: The kernel function to use for the blocked in-place solve.
         dim: An array of shape `(num_blocks,)` containing the dimensions of each matrix block.
-        mio: An array of shape `(num_blocks,)` containing the matrix index offsets of each matrix block.
         vio: An array of shape `(num_blocks,)` containing the vector index offsets of each vector block.
-        L: The flat input array containing the Cholesky factorization of each matrix block.
+        L: The input Cholesky factors, one per row.
         y: The output array where the intermediate result will be stored.
         x: The input/output array where the solution to the linear system `A @ x = b` will be stored in-place.
         num_blocks: The number of matrix blocks to process.
         block_dim: The dimension of the thread block to use for the kernel launch.
     """
-    wp.launch_tiled(
-        kernel=kernel, dim=num_blocks, inputs=[dim, mio, vio, L, y, x], block_dim=block_dim, device=L.device
-    )
+    wp.launch_tiled(kernel=kernel, dim=num_blocks, inputs=[dim, vio, L, y, x], block_dim=block_dim, device=L.device)
