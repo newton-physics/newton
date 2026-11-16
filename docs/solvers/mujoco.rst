@@ -444,7 +444,8 @@ force-space contract. For pyramidal contacts with ``condim > 1``, the factor
 also includes ``mu**2 * (1 + mu**2) / (impratio * (condim - 1))`` to account
 for the summed pyramid-edge normal response. Here ``mu`` is the final sliding
 friction after contact overrides. Elliptic and frictionless contacts retain
-the inverse-weight factor alone. The same mapping applies to positive
+the inverse-weight factor alone. Outside the hydroelastic force-space response
+(:ref:`mujoco-hydroelastic-response`), the same mapping applies to positive
 per-contact stiffness and damping overrides; zero per-contact damping retains
 the critical-damping fallback.
 
@@ -453,9 +454,9 @@ This resting-contact approximation is not the full scalar contact effective mass
 
 ``model.mujoco.solref_mode`` (per shape) records how
 ``shape_material_ke`` / ``shape_material_kd`` and ``mujoco.solref``
-combine, with the same three states as joint limits. The list describes existing
-model and implementation behavior; the constants are not a public selection
-API:
+combine, with the same three states as joint limits. The names below are
+internal constants. To select the hydroelastic response from user code, follow
+:ref:`mujoco-hydroelastic-response`.
 
 * ``SOLREF_MODE_FORCE_SPACE`` — Newton force-space gains; the per-contact
   factor above applies to ordinary contacts. When both shapes are hydroelastic,
@@ -522,8 +523,9 @@ Contact friction ``solreffriction`` mapping
 For :class:`~newton.solvers.SolverMuJoCo`, ``kf`` maps to MuJoCo's per-contact
 ``solreffriction`` with elliptic friction cones (``cone="elliptic"``) and Newton
 contacts (``use_mujoco_contacts=False``). It targets the force-space friction slope
-``f = -kf * v`` below the Coulomb limit. The mapping is exact when the sum of
-MuJoCo's translational ``body_invweight0`` values matches the contact's inverse
+``f = -kf * v`` below the Coulomb limit. Outside hydroelastic force-space mode,
+this mapping is exact when the sum of MuJoCo's translational ``body_invweight0``
+values matches the contact's inverse
 effective mass (the relevant diagonal of :math:`J M^{-1} J^T`) and the contact
 operates at its maximum impedance ``dmax``. Very large ``kf`` saturates at
 MuJoCo's refsafe stability bound, where the reference time constant is clamped
@@ -534,13 +536,18 @@ weighting. A resolved ``kf = 0`` makes the contact frictionless
 (``condim = 1``), removing its sliding, torsional, and rolling friction rows.
 If a positive ``kf`` cannot produce a positive, finite inverse-weight
 denominator, ``solreffriction`` remains unset and MuJoCo inherits the normal
-``solref``. The mapping is independent of the shape's ``solref_mode`` above,
-which only governs the normal-direction ``solref``.
+``solref``. Outside the hydroelastic force-space mode, this mapping is
+independent of the shape's ``solref_mode``.
 
 The slope is calibrated for the sliding friction rows. With ``condim > 3``, the
 torsional and rolling rows share the same per-contact ``solreffriction`` and
 MuJoCo scales their regularization by the corresponding friction-coefficient
 ratios, so their effective damping deviates from ``kf`` accordingly.
+
+Hydroelastic force-space pressure contacts use direct-format ``solreffriction``.
+Their damping rate is capped at ``1 / dt`` and depends on normal stiffness,
+damping, and tangent scaling. The positive-format ``refsafe`` clamp above does
+not apply to these rows. See :ref:`mujoco-hydroelastic-response`.
 
 Actuators
 ---------
@@ -857,10 +864,28 @@ limitation.
 Hydroelastic material response
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Both shapes must be hydroelastic and use force-space ``mujoco.solref_mode``
-to use the hydroelastic stiffness and damping mapping. Missing modes,
-``RAW``, ``MJCF_DEFAULT``, and mixed pairs keep the existing response.
-``ShapeConfig.kh`` controls stiffness; ``solref_mode`` selects its interpretation.
+Both shapes must have ``ShapeConfig.is_hydroelastic=True`` and force-space
+``mujoco.solref_mode=0`` to use this mapping. Missing modes, ``RAW``,
+``MJCF_DEFAULT``, and mixed pairs keep the existing response.
+``ShapeConfig.kh`` controls stiffness; damping comes from
+``Contacts.rigid_contact_damping``.
+
+Register the MuJoCo attributes before adding or importing shapes:
+
+.. code-block:: python
+
+    newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+
+After adding or importing the two hydroelastic shapes, select their modes:
+
+.. code-block:: python
+
+    solref_mode = builder.custom_attributes["mujoco:solref_mode"]
+    if solref_mode.values is None:
+        solref_mode.values = {}
+    for shape in (shape_a, shape_b):
+        solref_mode.values[shape] = 0  # Force-space mode.
+    model = builder.finalize()
 
 Use Newton contacts (``use_mujoco_contacts=False``), ``cone="elliptic"``, and
 Euler, implicit, or implicitfast integration on MuJoCo-Warp. Other cones,
@@ -880,8 +905,9 @@ Backend contact frames have scaled tangent rows and compensating friction
 coefficients. Newton still reports forces in world coordinates. Raw MuJoCo
 sensors and viewers that assume unit tangent rows need special care.
 USD and MJCF imports keep their existing mode rules: authored ``solref``
-selects ``RAW``; otherwise shapes use ``MJCF_DEFAULT``. Imported shapes can
-opt in through their model attributes after loading, before solver construction.
+selects ``RAW``; otherwise shapes use ``MJCF_DEFAULT``. The asset alone cannot
+select this hydroelastic response. After importing, use the builder workflow
+above to opt in before finalizing the model and constructing the solver.
 
 .. experimental::
 

@@ -150,11 +150,11 @@ the exact conversion and ``refsafe`` behavior.
 
 Authored raw ``solref`` retains native MuJoCo meaning. Existing force-space-mode
 contacts aim to make normal-contact tuning more transferable across effective
-masses, but the mode constants and direct symbolic selection are internal; do
-not import them from ``newton._src`` or use a magic integer to opt in. Imported
-metadata selects authored/default behavior automatically. The force-space mode
-is documented here to interpret existing models and implementation behavior,
-not as a supported user-selection workflow.
+masses. For hydroelastic contacts, follow the opt-in example in
+:ref:`mujoco-hydroelastic-response`: select mode ``0`` on both shapes before
+constructing the solver, and tune ``kh`` for stiffness. The named mode constants
+remain internal; do not import them from ``newton._src``. Imported metadata
+selects authored/default behavior automatically.
 
 If an existing model uses force-space mode, evaluate damping and timestep safety
 with :ref:`contact-stiffness-sanity-checks`. The mode does not add friction,
