@@ -9,20 +9,20 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonWarning
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from newton.exceptions import NewtonWarning
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, count_initial_contacts
+from newton.tests.unittest_utils import MUJOCO_MODULES, count_initial_contacts, requires
 from newton.usd import SchemaResolverNewton, SchemaResolverPhysx
 
 
 class TestImportUsdJoints(unittest.TestCase):
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_scene_filterparent_flag_sets_joint_parent_filter(self):
         """Honor the PhysicsScene's mjc:flag:filterparent on joints that do not author collisionEnabled (#4693).
 
@@ -103,7 +103,7 @@ class TestImportUsdJoints(unittest.TestCase):
         builder.add_usd(make_stage(False), parse_mujoco_options=False)
         self.assertEqual(filters(builder), dict.fromkeys(assets, True))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_scene_drive_scale_and_per_import_joint_defaults(self):
         """Use scene drive scaling and keep joint defaults scoped to each import."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
@@ -144,7 +144,7 @@ class TestImportUsdJoints(unittest.TestCase):
                 self.assertAlmostEqual(builder.joint_limit_ke[dof], default * 100.0)
                 self.assertAlmostEqual(builder.joint_limit_kd[dof], default * 5.0)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_distance_joint(self):
         """Import independently enabled distance-joint limits."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -186,7 +186,7 @@ class TestImportUsdJoints(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(import_limits(min_distance, max_distance), (expected_min, expected_max))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_joint_collision_enabled(self):
         """Respect joint collision flags and the self-collision override."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -241,7 +241,7 @@ class TestImportUsdJoints(unittest.TestCase):
         )
         self.assertIn(shape_pair, builder.shape_collision_filter_pairs)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_collision_filter_pairs_reference_only_colliding_shapes(self):
         """Generate USD collision filters only for colliding shapes."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -288,7 +288,7 @@ class TestImportUsdJoints(unittest.TestCase):
         for pair in filter_pairs:
             self.assertLessEqual(set(pair), colliding)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_world_joint_does_not_filter_collisions(self):
         """Keep collisions between world-attached bodies and static colliders."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -317,7 +317,7 @@ class TestImportUsdJoints(unittest.TestCase):
                     )
                     self.assertNotIn(shape_pair, builder.shape_collision_filter_pairs)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_newton_joint_api_parsing(self):
         """Parse NewtonJointAPI broadcast attributes onto a revolute joint, including sentinels."""
         from pxr import Usd
@@ -463,7 +463,7 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(limit_ke[d3]), default_ke, places=2)
         self.assertAlmostEqual(float(limit_kd[d3]), default_kd, places=2)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_newton_joint_api_prismatic(self):
         """Parse NewtonJointAPI attributes onto a prismatic joint without per-degree conversion."""
         from pxr import Usd
@@ -545,7 +545,7 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(model.joint_friction.numpy()[d]), 0.1, places=5)
         self.assertAlmostEqual(float(model.joint_velocity_limit.numpy()[d]), 100.0, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_newton_joint_api_revolute_default_damping(self):
         """Use builder.default_joint_cfg.damping unchanged when newton:damping is not authored.
 
@@ -621,7 +621,7 @@ def Xform "Articulation" (
         d = int(qd_start[model.joint_label.index("/Articulation/Joint1")])
         self.assertAlmostEqual(float(damping[d]), 3.0, places=6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_merged_joint_revolute_default_damping(self):
         """Use builder default damping unchanged when merging joints into a D6 joint.
 
@@ -680,7 +680,7 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(damping[qd_start]), 3.0, places=6)  # linear DOF
         self.assertAlmostEqual(float(damping[qd_start + 1]), 3.0, places=6)  # angular DOF
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_merged_joint_gain_edit_before_solver_construction(self):
         """Verify that pre-solver gain edits promote merged USD joints to force space."""
         from pxr import Usd
@@ -777,7 +777,7 @@ def Xform "World" (
             [SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_FORCE_SPACE],
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_newton_joint_api_d6(self):
         """Broadcast joint properties, including registered MuJoCo stiffness, across D6 DOFs."""
         from pxr import Usd
@@ -888,7 +888,7 @@ def Xform "Articulation" (
             self.assertAlmostEqual(float(armature[d]), 0.5, places=5)
             self.assertAlmostEqual(float(friction[d]), 0.1, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_newton_joint_api_velocity_limit_unlimited(self):
         """Use the builder default for newton:velocityLimit=inf rather than storing inf."""
         from pxr import Usd
@@ -960,7 +960,7 @@ def Xform "Articulation" (
         self.assertNotEqual(velocity_limit, float("inf"))
         self.assertAlmostEqual(velocity_limit, builder.default_joint_cfg.velocity_limit, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_newton_limit_sentinel_precedence_over_mjc(self):
         """Select the builder default for authored newton:limitStiffness=-inf.
 
@@ -1046,7 +1046,7 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof]), 999.0, places=2)
         self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), 88.0, places=2)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mjc_solreflimit_does_not_replace_newton_gains(self):
         """Keep MuJoCo solref separate from generic Newton limit gains."""
         from pxr import Usd
@@ -1128,7 +1128,7 @@ def Xform "Articulation" (
         np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[dof], [0.04, 2.0], rtol=1.0e-6, atol=0.0)
         self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_RAW)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_joint_ordering(self):
         """Order ant articulation joints using DFS or BFS traversal."""
         builder_dfs = newton.ModelBuilder()
@@ -1169,7 +1169,7 @@ def Xform "Articulation" (
         for i in range(8):
             self.assertTrue(builder_bfs.joint_label[i + 1].endswith(expected[i]))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_reversed_joints_in_articulation_raise(self):
         """Ensure reversed joints are reported when encountered in articulations."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -1226,7 +1226,7 @@ def Xform "Articulation" (
                 self.assertEqual(builder.body_count, 0 if bodies_follow_joint_ordering else 3)
                 self.assertEqual(builder.joint_count, 0)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_reversed_fixed_root_joint_to_world_is_allowed(self):
         """Ensure a fixed root joint to world (body1 unset) does not raise."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -1285,7 +1285,7 @@ def Xform "Articulation" (
         self.assertEqual(builder.joint_parent[fixed_idx], -1)
         self.assertEqual(builder.joint_child[fixed_idx], root_idx)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_reversed_world_joint_matches_world_parent_joint(self):
         """Simulate a joint whose body1 is the world like the equivalent world-parent joint.
 
@@ -1407,7 +1407,7 @@ def Xform "Articulation" (
                 else:
                     self.assertAlmostEqual(max(joint_q[True]), upper, delta=0.01)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_reversed_world_multi_axis_joints(self):
         """Negate the axes of a reversible multi-axis world joint and warn for the others.
 
@@ -1525,7 +1525,7 @@ def Xform "Articulation" (
             np.testing.assert_allclose(builder.joint_axis[dof], (-1.0, 0.0, 0.0))
             np.testing.assert_allclose(builder.joint_axis[dof + 1], (1.0, 0.0, 0.0))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_reversed_world_spherical_joint_inverts_rotation(self):
         """Import a spherical joint whose body1 is the world with the inverse joint rotation.
 
@@ -1577,7 +1577,7 @@ def Xform "Articulation" (
         alignment = abs(np.dot(wp.transform_get_rotation(relative), wp.quat_inverse(rotation)))
         self.assertAlmostEqual(alignment, 1.0, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_floating_override_replaces_authored_root_joint(self):
         """Replace the authored root joint when an explicit floating override is provided."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -1632,7 +1632,7 @@ def Xform "Articulation" (
                 self.assertEqual(builder.joint_type[root_joint_idx], expected_type)
                 self.assertNotIn("/World/Articulation/RootToWorld", builder.joint_label)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_reversed_joint_unsupported_d6_raises(self):
         """Reject a reversed D6 joint."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -1676,7 +1676,7 @@ def Xform "Articulation" (
         self.assertIn("/World/Articulation/JointD6", error_message)
         self.assertIn("/World/Articulation/FixedJoint", error_message)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_reversed_joint_unsupported_spherical_raises(self):
         """Reject a reversed spherical joint."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -1720,7 +1720,7 @@ def Xform "Articulation" (
         self.assertIn("/World/Articulation/JointBall", error_message)
         self.assertIn("/World/Articulation/FixedJoint", error_message)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_joint_filtering(self):
         """Filter ignored joints and bodies and rebuild the affected articulations."""
 
@@ -1862,7 +1862,7 @@ def Xform "Articulation" (
                 expected_joint_keys=["joint_1", "/Articulation/Joint2", "/Articulation/Joint3"],
             )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_loop_joint(self):
         """Import an articulation with a loop joint marked excludeFromArticulation."""
         from pxr import Usd
@@ -1963,7 +1963,7 @@ def Xform "Articulation" (
         )
         self.assertEqual(builder.joint_articulation, [0, 0, -1])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_solimp_friction_parsing(self):
         """Parse solimp_friction attributes from USD."""
         from pxr import Usd

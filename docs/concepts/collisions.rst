@@ -264,38 +264,43 @@ average or a per-pair limit.
      - Estimated typical count
      - Notes
    * - Triangle mesh--infinite plane
-     - 240
+     - 184
      - ``V_mesh``
      - About 40
      - At most one candidate per mesh vertex.
    * - Mesh/heightfield--sphere or ellipsoid
-     - 240
+     - 184
      - ``T_overlap``
      - About 40
      - At most one contact per overlapping triangle.
    * - Mesh/heightfield--other primitive or convex hull
-     - 240
+     - 184
      - ``5 * T_overlap``
      - About 40
      - Each overlapping triangle uses the convex manifold path.
    * - Mesh--mesh
-     - 240
+     - 184
      - ``E_A + E_B``
      - About 40
      - Uses edge-vs-SDF queries, with BVH distance fallback when needed.
    * - Heightfield--mesh
-     - 240
+     - 184
      - ``E_heightfield + E_mesh``
      - About 40
      - Uses the mesh/SDF route with on-the-fly heightfield evaluation.
    * - Hydroelastic SDF--SDF
-     - 240 by default
+     - 184 penetrating + 100 speculative
      - Geometry and buffer dependent
      - No fixed estimate
      - ``anchor_contact=True`` can add contacts beyond the reduced set.
 
-The reduced maximum follows the current 240-slot contact-reduction layout.
-Disabling reduction exposes the geometry-dependent candidate bounds shown above.
+The default contact-reduction layout uses twelve dodecahedral normal bins with
+six footprint slots and one depth slot each, plus 100 spatial depth slots:
+``12 * 7 + 100 = 184``. Mesh, heightfield, and SDF routes can retain seven
+additional predictive contacts when speculative contacts are enabled.
+Hydroelastic reduction keeps speculative faces in a separate spatial depth
+budget. Disabling reduction exposes the geometry-dependent candidate bounds
+shown above.
 
 **Common pair guidance**
 
@@ -1593,12 +1598,22 @@ observed shape speed:
     )
     schedule.step()
 
-Any change in a collidable shape's linear or angular velocity triggers a
-refresh at the next substep. Slowing, stopping, or turning can increase the
-closing speed between shapes and require contacts that the earlier pass did
-not create. Shapes with rigid collision disabled do not affect the schedule
-or overflow reporting. The scheduler checks the final substep's output when
-reporting ``interval_overflow``.
+During the collision callback, the scheduler's pipeline retains candidates
+within a pairwise distance reserve of at least ``speculative_contact_gap_max``,
+regardless of approach velocity. Authored gaps and physical margins are preserved.
+The callback must use the pipeline passed to the scheduler. Calls outside the
+callback retain velocity-adapted admission.
+
+Gravity, slowing, and turning consume this reserve without unconditionally
+forcing a refresh. Refreshes occur when the travel estimate approaches the
+reserve or the previous horizon expires. The next-step estimate includes the
+speed increase observed over the preceding substep. This is not a bound on
+unobserved forces or impulses. Shapes with rigid collision disabled do not affect
+the schedule or overflow reporting. The final substep is checked for overflow.
+
+The reserve may retain more contacts than velocity-adapted admission. Measure
+both total runtime and refresh counts, and size contact buffers accordingly.
+Fast motion can still require a refresh every substep.
 
 The same ``step()`` call works directly or inside CUDA graph capture; callbacks
 must therefore be capture-safe and preallocate their storage. The scheduler
@@ -2315,6 +2330,13 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - 1.0
      - :attr:`~ModelBuilder.ShapeConfig.mu`
      - :attr:`~Model.shape_material_mu`
+   * - ``mu_static``
+     - Coefficient of static (break-away) friction; ``None`` keeps a single
+       coefficient (``mu``), and a value below ``mu`` is rejected. Not used by
+       any built-in solver yet.
+     - None
+     - :attr:`~ModelBuilder.ShapeConfig.mu_static`
+     - :attr:`~Model.shape_material_mu_static`
    * - ``ke``
      - Normal contact stiffness
      - 2.5e3
@@ -2489,7 +2511,12 @@ attributes. The contact response attributes map to :class:`~ModelBuilder.ShapeCo
 fields as follows: ``newton:contactStiffness`` → ``ke``,
 ``newton:contactDamping`` → ``kd``, ``newton:contactFrictionGain`` → ``kf``,
 ``newton:contactAdhesion`` → ``ka``. A value of ``-inf`` means "use the engine's
-default" (see :ref:`Contact Material Properties`).
+default" (see :ref:`Contact Material Properties`). ``physics:dynamicFriction`` maps
+to ``mu``; ``physics:staticFriction`` maps to ``mu_static`` when it is larger than
+the dynamic coefficient (the material below imports ``mu=0.8``, ``mu_static=1.0``),
+and otherwise leaves a single coefficient (a positive value below the dynamic one is
+reported with a warning). A bound material supplies both coefficients; only colliders
+without one take ``mu`` and ``mu_static`` from the builder defaults.
 
 .. code-block:: usda
 
@@ -2560,6 +2587,17 @@ The overhead is small: fingerprint storage per contact, modified packing in
 the reduction, and one radix sort + gather pass per frame.  The sort is
 fully CUDA-graph-capturable.
 
+The key keeps bit 63 clear, so the two shape indices and the sub-key share 63
+bits.  Models with only primitive and convex shapes use a 3-bit sub-key, which
+leaves room for ``2**30`` shapes.  Models with meshes, heightfields,
+hydroelastic shapes or primitive shapes with an SDF use a 23-bit sub-key and
+fit at most ``2**20`` shapes;
+above that, deterministic mode and contact matching raise ``ValueError`` at
+construction.  A deterministic :class:`~newton.geometry.NarrowPhase` built
+without ``shape_aabb_lower``/``shape_aabb_upper`` doesn't know the shape count,
+so it uses 20-bit shape fields and raises at launch for more than ``2**20``
+shapes.
+
 Hydroelastic contacts are covered by the same two mechanisms, using the
 marching-cubes voxel and face index as the fingerprint.  They additionally need
 a third one, because hydroelastic reduction is the only contact path that sums
@@ -2607,7 +2645,7 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
   frame and populate :attr:`Contacts.rigid_contact_match_index`, but keep the
   current frame's freshly generated contact geometry in the returned
   :class:`Contacts` buffer.
-- ``"sticky"`` — match like ``"latest"``, then overwrite
+- ``"sticky"`` — match using transported body-local witnesses, then overwrite
   each matched contact's body-frame contact points (``point0``/``point1``),
   offsets (``offset0``/``offset1``), and world-frame ``normal`` with the
   saved previous-frame values when the contact is penetrating and the saved
@@ -2666,19 +2704,26 @@ match indices refer to, or ``-1`` when the previous pass wrote another buffer
 with the generation it saved, so indices into another buffer's contacts are not
 mistaken for its own.
 
-The distance metric is the world-space **contact midpoint**
+In ``"latest"`` mode, the distance metric is the world-space **contact midpoint**
 ``0.5 * (world(point0) + world(point1))`` — symmetric in shape 0 and shape 1
 — which means swapping the two shapes of a pair does not change whether a
 contact matches.  It also means pure changes in penetration depth register
 as motion on both sides of the contact, not just one.
+
+In ``"sticky"`` mode, the distance metric is instead the larger distance
+between each saved body-local witness, transformed by its current body pose,
+and its corresponding fresh contact point. This preserves matches during
+shared body motion and compression that leaves each witness on its own
+surface. Both metrics are symmetric in shape 0 and shape 1.
 
 **Thresholds**
 
 - ``contact_matching_pos_threshold`` — maximum world-space distance [m]
   between the previous and current contact midpoints for a match.  Contacts
   that moved more than this between frames are considered broken.  In sticky
-  mode, this also bounds each saved witness's distance from its fresh contact
-  point under the current body transforms.  Defaults to ``0.0005`` m.
+  mode, each saved witness, transformed by its current body pose, must instead
+  lie within this distance of its fresh contact point for a match.
+  Defaults to ``0.0005`` m.
 - ``contact_matching_normal_dot_threshold`` — minimum dot product between old
   and new contact normals.  Below this the contact is reported as broken even
   if the key and position match.
@@ -2688,13 +2733,14 @@ as motion on both sides of the contact, not just one.
 Replay of the matched previous-frame geometry happens after the deterministic
 sort, so ``match_index`` already addresses the final sorted layout.  Unmatched
 rows are left untouched, so new and threshold-broken contacts keep their fresh
-narrow-phase geometry.  Matched contacts also keep fresh geometry if the
-fresh contact is separated, or if either saved witness, transformed by the
-current body pose, lies farther than ``contact_matching_pos_threshold`` from
-its corresponding fresh witness.  This prevents a rotating surface from
-replaying a stale material point even when its geometric contact midpoint
-stays put.  These contacts retain their match indices and reports, and the
-fresh geometry becomes the saved history for the next frame.  The extra
+narrow-phase geometry. A contact is reported as broken when either transported
+witness lies farther than ``contact_matching_pos_threshold`` from its fresh
+contact point, even on a spinning surface whose geometric contact stays put.
+It appears in the new and broken contact reports and loses its solver contact
+history. Use ``"latest"`` to retain world-space midpoint matching with fresh
+geometry. Matched contacts keep fresh geometry if the fresh contact is
+separated; these retain their match indices and reports. The retained geometry
+becomes the saved history for the next frame. The extra
 per-contact buffers (four ``vec3`` columns for the body-frame points and
 offsets) are only allocated when the mode is ``"sticky"``; ``"latest"`` and
 ``"disabled"`` pay zero additional memory and launch no additional kernels.
@@ -2913,7 +2959,7 @@ and ownership requires internal data without a stable public accessor. Use
    The ``Model.mesh_edge_indices``, ``Model.mesh_edge_centers``,
    ``Model.mesh_edge_halves``, and ``Model.shape_edge_range`` aliases expose
    internal collision acceleration data. They remain readable and writable with
-   :class:`~newton.exceptions.NewtonDeprecationWarning` through Newton 1.8 and
+   :class:`~newton.NewtonDeprecationWarning` through Newton 1.8 and
    will be removed in 1.9. Use :class:`~newton.CollisionPipeline` instead.
 
 .. code-block:: python

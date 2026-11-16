@@ -8,7 +8,7 @@ import warp as wp
 
 import newton
 from newton import BodyFlags, ModelBuilder
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 class TestKinematicLinks(unittest.TestCase):
@@ -359,6 +359,33 @@ def _build_free_root_scene(device):
     return model, kinematic_body, probe_body, kinematic_joint
 
 
+def _build_free_root_to_prismatic_scene(device):
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    _configure_contact_defaults(builder)
+
+    kinematic_body = builder.add_body(
+        xform=wp.transform(wp.vec3(-0.1, 0.0, 0.0), wp.quat_identity()),
+        mass=1.0,
+        is_kinematic=True,
+        label="kinematic_free",
+    )
+    builder.add_shape_box(kinematic_body, hx=0.25, hy=0.15, hz=0.15)
+
+    probe_body = builder.add_link(mass=1.0, label="prismatic_probe")
+    builder.add_shape_sphere(probe_body, radius=0.1)
+    probe_joint = builder.add_joint_prismatic(
+        parent=-1,
+        child=probe_body,
+        axis=newton.Axis.X,
+        parent_xform=wp.transform(wp.vec3(0.45, 0.0, 0.0), wp.quat_identity()),
+    )
+    builder.add_articulation([probe_joint])
+
+    builder.color()
+    model = builder.finalize(device=device)
+    return model, kinematic_body, probe_body, _find_joint_for_child(model, kinematic_body), probe_joint
+
+
 def _build_revolute_root_pendulum_scene(device):
     builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _configure_contact_defaults(builder)
@@ -512,6 +539,45 @@ def test_kinematic_free_base_prescribed_motion(
         float(np.linalg.norm(no_force["probe_qd"][:3])) > 5e-3 or no_force["probe_displacement"] > 1e-3,
         "Probe should show collision-driven velocity/displacement update",
     )
+
+
+def test_kinematic_free_base_drives_dense_articulation(
+    test: TestKinematicLinksCanonical,
+    device,
+    solver_fn,
+):
+    """Check that a prescribed kinematic free base pushes a dense articulation's probe without sinking into it."""
+    model, kinematic_body, probe_body, kinematic_joint, probe_joint = _build_free_root_to_prismatic_scene(device)
+    solver = solver_fn(model)
+    collision_pipeline, contacts = _create_contacts(model, solver)
+    state_0, state_1 = model.state(), model.state()
+    q_start = int(model.joint_q_start.numpy()[kinematic_joint])
+    qd_start = int(model.joint_qd_start.numpy()[kinematic_joint])
+    probe_qd_start = int(model.joint_qd_start.numpy()[probe_joint])
+    sim_dt = 1.0 / 240.0
+    speed = 1.0
+
+    # The 0.2 m start gap closes at step 48, so the last 12 steps push the probe.
+    for step in range(60):
+        joint_q = state_0.joint_q.numpy()
+        joint_qd = state_0.joint_qd.numpy()
+        joint_q[q_start : q_start + 7] = np.array(
+            [-0.1 + step * speed * sim_dt, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32
+        )
+        joint_qd[qd_start : qd_start + 6] = np.array([speed, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        state_0.joint_q.assign(joint_q)
+        state_0.joint_qd.assign(joint_qd)
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0, body_flag_filter=newton.BodyFlags.KINEMATIC)
+        state_0.clear_forces()
+        collision_pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, None, contacts, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    # The probe keeps pace with the box (half-width 0.25 m) without the box entering the sphere (radius 0.1 m).
+    body_q = state_0.body_q.numpy()
+    gap = float(body_q[probe_body, 0] - 0.1 - (body_q[kinematic_body, 0] + 0.25))
+    test.assertGreater(gap, -1.0e-3)
+    test.assertAlmostEqual(float(state_0.joint_qd.numpy()[probe_qd_start]), speed, delta=0.05)
 
 
 def test_kinematic_revolute_root_pendulum_prescribed_motion(
@@ -782,8 +848,8 @@ solvers = {
     "steel_colored": lambda model: newton.solvers.SolverSteel(
         model, solve_mode="colored", articulated_contact_response="propagation"
     ),
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+    "mujoco_cpu": requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True)),
+    "mujoco_warp": requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=5, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
     "vbd": lambda model: newton.solvers.SolverVBD(model, rigid_compliant_alm=True),
@@ -812,6 +878,14 @@ for device in devices:
                 TestKinematicLinksCanonical,
                 f"test_kinematic_prescribed_response_lifetime_{solver_name}",
                 test_kinematic_prescribed_response_lifetime,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
+        if solver_name == "steel_serial":
+            add_function_test(
+                TestKinematicLinksCanonical,
+                "test_kinematic_free_base_drives_dense_articulation_steel_serial",
+                test_kinematic_free_base_drives_dense_articulation,
                 devices=[device],
                 solver_fn=solver_fn,
             )

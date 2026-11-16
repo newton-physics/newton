@@ -543,7 +543,7 @@ Actuator damping is preserved on both backends. MuJoCo-Warp 3.15 folds it into
 joint and tendon damping; Newton retains that contribution when publishing
 joint or tendon property updates. Actuator armature is preserved only on the
 native MuJoCo CPU backend (``use_mujoco_cpu=True``); the Warp backend emits a
-:class:`~newton.exceptions.NewtonWarning` when it is nonzero. This limitation applies to all actuator
+:class:`~newton.NewtonWarning` when it is nonzero. This limitation applies to all actuator
 types, not only DC motors. MJCF ``damping`` accepts one, two, or three coefficients:
 the first is stored in ``mujoco:actuator_damping`` and the remaining two in
 ``mujoco:actuator_dampingpoly``. Partial overrides retain inherited trailing
@@ -876,15 +876,18 @@ below for how Newton's :attr:`~newton.Model.shape_margin` is forwarded
 to it). MuJoCo Warp currently remains single-contact for cylinder--box;
 see :ref:`Geometry Pair Contact Behavior`.
 
-**Margin zeroing.** ``mujoco_warp`` rejects non-zero geom margins on
-box-box pairs (its default NATIVECCD path) and on any box/mesh pair
-when ``enable_multiccd=True``. To stay compatible :class:`~newton.solvers.SolverMuJoCo` zeroes
-``geom_margin`` model-wide at compile time whenever a box geom exists,
-or whenever ``enable_multiccd=True`` is combined with mesh geoms; geoms
-with non-zero authored margins emit a warning when
+**Margin zeroing.** Earlier ``mujoco_warp`` releases rejected non-zero geom
+margins on box-box pairs (its default NATIVECCD path) and on any box/mesh pair
+when ``enable_multiccd=True``. MuJoCo Warp 3.17 accepts them, but the MuJoCo Warp
+backend of :class:`~newton.solvers.SolverMuJoCo` still zeroes ``geom_margin`` and
+``pair_margin`` model-wide at compile time whenever a box geom exists and NATIVECCD
+or multi-CCD is enabled, or whenever ``enable_multiccd=True`` is combined with mesh
+geoms; geoms and pairs with non-zero authored margins emit a warning when
 ``use_mujoco_contacts=True``. The Newton model's :attr:`~newton.Model.shape_margin` array
 is left untouched, and when ``use_mujoco_contacts=False`` the authored
 margins are restored at runtime through ``update_geom_properties_kernel``.
+The CPU backend (``use_mujoco_cpu=True``) keeps the authored geom and pair
+margins, so its contacts can differ from the MuJoCo Warp backend's for such models.
 
 
 Contact pairs
@@ -1008,6 +1011,17 @@ MuJoCo solver parameters follow a three-level resolution priority:
    used, with one Newton-opinionated exception: ``integrator`` defaults
    to ``implicitfast`` (MuJoCo's default is ``euler``) for better
    stability on stiff systems.
+
+Per-world options use the ``WORLD`` layout, shape ``(world_count + 1,)``,
+whose final entry belongs to global world ``-1`` (see :ref:`Per-world attributes`).
+Separate MuJoCo worlds read the entry of their Newton world. A single MuJoCo world
+reads world ``0`` when that world owns bodies and the global entry otherwise, as in
+models built without :meth:`~newton.ModelBuilder.begin_world`, where importers store
+options in the global entry. :attr:`~newton.Model.gravity` follows the same rule;
+a MuJoCo world has one gravity, so dynamic global bodies that share it with world ``0``
+bodies must have the same gravity, or construction raises :class:`ValueError`.
+Later changes to either gravity entry or to a body's kinematic flag are not checked;
+such a MuJoCo world follows world ``0``.
 
 These values are read once during :class:`~newton.solvers.SolverMuJoCo`
 construction. Editing ``model.mujoco.<option>`` afterwards has no

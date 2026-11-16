@@ -10,15 +10,17 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.vbd.rigid_vbd_kernels import (
+from newton._src.solvers.rod_kernels import (
     _bishop_transport_quat,
     _finite_curvature_binormal,
     _finite_curvature_binormal_derivative,
-    _measure_rod_bend_twist_z,
     _rod_bend_twist_directional_derivatives_from_measure,
-    _rod_bend_twist_jacobian_z_from_measure,
     _transported_twist_angle_derivative_from_measure,
     compute_geometric_rod_kappa_cached_z,
+    measure_rod_bend_twist_z,
+    rod_bend_twist_jacobian_z_from_measure,
+)
+from newton._src.solvers.vbd.rigid_vbd_kernels import (
     compute_rod_dahl_parameters,
     evaluate_rod_bend_twist_force_hessian_z,
     evaluate_rod_stretch_shear_force_hessian,
@@ -3916,7 +3918,7 @@ def _cable_rod_origin_matches_start_impl(test: unittest.TestCase, device):
     segment_length = 0.2
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
 
-    with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, 'body_frame_origin="start"') as warning:
+    with test.assertWarnsRegex(newton.NewtonDeprecationWarning, 'body_frame_origin="start"') as warning:
         rod_bodies, rod_joints = _add_prepared_rod(
             builder,
             points,
@@ -4018,7 +4020,7 @@ def _cable_rod_graph_body_frame_origin_impl(test: unittest.TestCase, device):
         with test.subTest(body_frame_origin=origin):
             builder = newton.ModelBuilder()
             with (
-                test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, 'body_frame_origin="start"')
+                test.assertWarnsRegex(newton.NewtonDeprecationWarning, 'body_frame_origin="start"')
                 if origin == "start"
                 else nullcontext()
             ):
@@ -4113,8 +4115,8 @@ def _rod_notify_reference_pose_refreshes_structural_rest_impl(test: unittest.Tes
             )
         solver.notify_model_changed(flags)
 
-        bend_after = solver.joint_rod_rest_kb_local.numpy()
-        twist_after = solver.joint_rod_rest_twist.numpy()
+        bend_after = solver.joint_rod_rest_kb_local.numpy().copy()
+        twist_after = solver.joint_rod_rest_twist.numpy().copy()
         test.assertGreater(float(np.linalg.norm(bend_after - bend_before)), 1.0e-5)
         test.assertGreater(float(np.linalg.norm(twist_after - twist_before)), 1.0e-5)
 
@@ -4248,7 +4250,7 @@ def _cable_rod_separate_rest_and_initial_pose_impl(test: unittest.TestCase, devi
     )
 
     start_builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
-    with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, 'body_frame_origin="start"'):
+    with test.assertWarnsRegex(newton.NewtonDeprecationWarning, 'body_frame_origin="start"'):
         start_bodies, start_joints = _add_prepared_rod(
             start_builder,
             points=initial_points,
@@ -5268,7 +5270,7 @@ def _geometric_cable_test_energy(
     q_wc_rest: wp.quat,
     K_elastic_diag: wp.vec3,
 ) -> float:
-    rest = _measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
+    rest = measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
     kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
     residual = compute_geometric_rod_kappa_cached_z(q_wp, q_wc, kb_rest_local, rest.twist)
     return 0.5 * wp.dot(wp.cw_mul(K_elastic_diag, residual), residual)
@@ -5284,7 +5286,7 @@ def _eval_geometric_cable_test_force_hessian(
     K_elastic_diag: wp.vec3,
 ) -> tuple[wp.vec3, wp.mat33]:
     zero = wp.vec3(0.0)
-    rest = _measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
+    rest = measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
     kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
     tau, H, _kappa, _J = evaluate_rod_bend_twist_force_hessian_z(
         q_wp,
@@ -5475,7 +5477,7 @@ def _eval_geometric_precurved_twist_is_pure_twist_kernel(errors: wp.array[wp.vec
     # Validate the production rest-relative DER residual directly (not a test
     # reference): pure twist on a pre-curved rest must not leak into bend, and the
     # transported-twist magnitude equals the applied twist angle.
-    rest = _measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
+    rest = measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
     kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
     kappa = compute_geometric_rod_kappa_cached_z(q_wp, q_wc, kb_rest_local, rest.twist)
     bend_leak = wp.length(P_bend * kappa)
@@ -5500,7 +5502,7 @@ def _eval_geometric_global_rotation_preserves_rest_strain_kernel(errors: wp.arra
     q_wp = q_global * q_wp_rest
     q_wc = q_global * q_wc_rest
 
-    rest = _measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
+    rest = measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
     kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
     kappa = compute_geometric_rod_kappa_cached_z(q_wp, q_wc, kb_rest_local, rest.twist)
     errors[0] = wp.vec3(wp.length(kappa), wp.length(kappa), wp.length(kappa))
@@ -5548,7 +5550,7 @@ def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
     q_wp_rest = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.2, -0.3, 0.5)), 0.4)
     bend_axis = wp.quat_rotate(q_wp_rest, wp.vec3(0.0, 1.0, 0.0))
     q_wc_rest = wp.quat_from_axis_angle(bend_axis, 0.5) * q_wp_rest
-    rest = _measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
+    rest = measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
     kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
 
     q_wp = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.7, -0.2)), 0.55) * q_wp_rest
@@ -5560,10 +5562,10 @@ def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
     elif axis_id == 2:
         axis = wp.vec3(0.0, 0.0, 1.0)
 
-    measure = _measure_rod_bend_twist_z(q_wp, q_wc)
+    measure = measure_rod_bend_twist_z(q_wp, q_wc)
     d_bend_local, d_twist = _rod_bend_twist_directional_derivatives_from_measure(q_wp, measure, axis, is_parent)
     directional = wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
-    jacobian_action = _rod_bend_twist_jacobian_z_from_measure(measure, is_parent) * axis
+    jacobian_action = rod_bend_twist_jacobian_z_from_measure(measure, is_parent) * axis
 
     h = 1.0e-3
     q_wp_p = q_wp
@@ -5608,11 +5610,11 @@ def _eval_bend_twist_jacobian_guard_branches_kernel(errors: wp.array[wp.vec3]):
 
     q_wp = wp.quat_identity()
     q_wc = wp.quat_from_axis_angle(bend_axis, angle)
-    measure = _measure_rod_bend_twist_z(q_wp, q_wc)
+    measure = measure_rod_bend_twist_z(q_wp, q_wc)
 
     d_bend_local, d_twist = _rod_bend_twist_directional_derivatives_from_measure(q_wp, measure, omega, is_parent)
     directional = wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
-    jacobian_action = _rod_bend_twist_jacobian_z_from_measure(measure, is_parent) * omega
+    jacobian_action = rod_bend_twist_jacobian_z_from_measure(measure, is_parent) * omega
     directional_error = wp.length(jacobian_action - directional) / (1.0 + wp.length(directional))
 
     fd_error = 0.0
@@ -5713,7 +5715,7 @@ def _transported_twist_angle_derivative_fd_error(
     is_parent: bool,
     h: float,
 ) -> wp.vec3:
-    measure = _measure_rod_bend_twist_z(q_wp, q_wc)
+    measure = measure_rod_bend_twist_z(q_wp, q_wc)
     analytic = _transported_twist_angle_derivative_from_measure(measure, omega, is_parent)
     q_wp_p = q_wp
     q_wp_m = q_wp
@@ -5728,8 +5730,8 @@ def _transported_twist_angle_derivative_fd_error(
         q_wc_p = _quat_perturb_world(q_wc, axis, h * omega_len)
         q_wc_m = _quat_perturb_world(q_wc, axis, -h * omega_len)
 
-    twist_p = _measure_rod_bend_twist_z(q_wp_p, q_wc_p).twist
-    twist_m = _measure_rod_bend_twist_z(q_wp_m, q_wc_m).twist
+    twist_p = measure_rod_bend_twist_z(q_wp_p, q_wc_p).twist
+    twist_m = measure_rod_bend_twist_z(q_wp_m, q_wc_m).twist
     fd = (twist_p - twist_m) / (2.0 * h)
     return wp.vec3(wp.abs(analytic - fd), wp.abs(analytic), wp.abs(fd))
 
@@ -6082,6 +6084,19 @@ def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
     test.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), (0, 0, 0))
 
     invalid_calls = (
+        (graph, {"total_mass": -1.0}, "total_mass"),
+        (graph, {"total_mass": np.nan}, "total_mass"),
+        (
+            graph,
+            {"total_mass": 1.0, "cfg": newton.ModelBuilder.ShapeConfig(density=0.0, is_solid=False, margin=0.0)},
+            "total_mass",
+        ),
+        (
+            # Thinner than the Python radius, but not than the stored float32 radius.
+            newton.Rod([wp.vec3(0.0), wp.vec3(1.0, 0.0, 0.0), wp.vec3(2.0, 0.0, 0.0)], radius=0.01),
+            {"cfg": newton.ModelBuilder.ShapeConfig(is_solid=False, margin=0.0099999999)},
+            "thickness .* must be smaller than radius",
+        ),
         (
             graph,
             {"cfg": newton.ModelBuilder.ShapeConfig(density=-1.0), "body_frame_origin": "start"},
@@ -6137,7 +6152,7 @@ def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
         warnings.simplefilter("error", DeprecationWarning)
         with test.assertRaisesRegex(ValueError, "quaternion at segment index 0"):
             builder.add_rod(rod=misaligned, body_frame_origin="start")
-        with test.assertRaisesRegex(newton.exceptions.NewtonDeprecationWarning, 'body_frame_origin="start"'):
+        with test.assertRaisesRegex(newton.NewtonDeprecationWarning, 'body_frame_origin="start"'):
             builder.add_rod(rod=graph, body_frame_origin="start")
     test.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), before)
 
@@ -7475,6 +7490,106 @@ def _quat_between_vectors_robust_antiparallel_kernel(direction: wp.vec3, errors:
 
 
 class TestCable(unittest.TestCase):
+    def test_rod_density_mass_under_refinement(self):
+        """Preserve a straight rod's aggregate mass and inertia under subdivision."""
+        radius, thickness, length, density = 0.05, 0.01, 0.8, 1200.0
+        cfg = newton.ModelBuilder.ShapeConfig(density=density)
+        cylinder_mass = density * np.pi * radius**2 * length
+        hollow_cfg = newton.ModelBuilder.ShapeConfig(density=density, is_solid=False, margin=thickness)
+        cases = [
+            (cfg, cylinder_mass),
+            # float16 exposes premature rounding unless density is converted before arithmetic.
+            (newton.ModelBuilder.ShapeConfig(density=np.float16(density)), cylinder_mass),
+            (hollow_cfg, density * np.pi * thickness * (2.0 * radius - thickness) * length),
+        ]
+        for rod_cfg, expected_mass in cases:
+            for segments in (1, 16):
+                with self.subTest(is_solid=rod_cfg.is_solid, margin=rod_cfg.margin, segments=segments):
+                    builder = newton.ModelBuilder()
+                    points = [(0.0, 0.0, z) for z in np.linspace(0.0, length, segments + 1)]
+                    bodies, _ = builder.add_rod(rod=newton.Rod(points, radius=radius), cfg=rod_cfg)
+                    total_mass = sum(builder.body_mass[body] for body in bodies)
+                    np.testing.assert_allclose(total_mass, expected_mass, rtol=1e-6)
+                    # Sum about the whole rod's center using the parallel-axis theorem.
+                    aggregate_inertia = np.zeros((3, 3))
+                    for body in bodies:
+                        offset = float(builder.body_q[body].p[2]) - length / 2.0
+                        inertia = np.asarray(builder.body_inertia[body]).reshape(3, 3)
+                        aggregate_inertia += inertia + builder.body_mass[body] * np.diag([offset**2, offset**2, 0.0])
+                        np.testing.assert_allclose(
+                            inertia @ np.asarray(builder.body_inv_inertia[body]).reshape(3, 3),
+                            np.eye(3),
+                            rtol=1e-6,
+                            atol=1e-7,
+                        )
+                    inner_radius = 0.0 if rod_cfg.is_solid else radius - thickness
+                    radial_sum = radius**2 + inner_radius**2
+                    transverse = expected_mass * (radial_sum / 4.0 + length**2 / 12.0)
+                    axial = expected_mass * radial_sum / 2.0
+                    np.testing.assert_allclose(aggregate_inertia, np.diag([transverse, transverse, axial]), rtol=1e-6)
+                    self.assertEqual(rod_cfg.density, density)
+
+    def test_rod_total_mass_uses_rest_lengths(self):
+        """Distribute total mass by rest length, overriding density, on chain and graph rods."""
+        initial = np.array([(0.0, 0.0, z) for z in (0.0, 0.2, 0.6, 1.2)])
+        rest = initial * 0.5
+        for edges in (None, [(1, 2), (0, 1), (2, 3)]):
+            for total_mass in (6.0, 0.0):
+                with self.subTest(edges=edges, total_mass=total_mass):
+                    rod = newton.Rod(initial, edges=edges, rest_points=rest, radius=0.05)
+                    builder = newton.ModelBuilder()
+                    bodies, _ = builder.add_rod(rod=rod, total_mass=total_mass)
+                    lengths = np.linalg.norm(rest[rod.edges[:, 1]] - rest[rod.edges[:, 0]], axis=1)
+                    expected = total_mass * lengths / lengths.sum()
+                    np.testing.assert_allclose(np.asarray(builder.body_mass)[bodies], expected, rtol=1e-6)
+                    for body in bodies:
+                        if total_mass > 0.0:
+                            self.assertAlmostEqual(builder.body_inv_mass[body] * builder.body_mass[body], 1.0, places=6)
+                        else:
+                            self.assertEqual(builder.body_inv_mass[body], 0.0)
+                            self.assertFalse(np.asarray(builder.body_inertia[body]).any())
+
+    def test_rod_hollow_total_mass_uses_tube_inertia(self):
+        """Use open-tube inertia at an explicit total mass, also for segments shorter than the wall."""
+        radius, thickness, length, total_mass, segments = 0.05, 0.01, 0.1, 3.0, 16
+        points = [(0.0, 0.0, z) for z in np.linspace(0.0, length, segments + 1)]
+        cfg = newton.ModelBuilder.ShapeConfig(is_solid=False, margin=thickness)
+        builder = newton.ModelBuilder()
+        bodies, _ = builder.add_rod(rod=newton.Rod(points, radius=radius), cfg=cfg, total_mass=total_mass)
+        mass = total_mass / segments
+        radial_sum = radius**2 + (radius - thickness) ** 2
+        transverse = mass * (radial_sum / 4.0 + (length / segments) ** 2 / 12.0)
+        expected = np.diag([transverse, transverse, mass * radial_sum / 2.0])
+        for body in bodies:
+            self.assertAlmostEqual(builder.body_mass[body], mass, places=6)
+            np.testing.assert_allclose(np.asarray(builder.body_inertia[body]).reshape(3, 3), expected, rtol=1e-6)
+
+    def test_rod_hollow_zero_thickness_has_zero_mass(self):
+        """Warn at the call site and leave zero mass for a hollow density rod with zero shell thickness."""
+        builder = newton.ModelBuilder()
+        cfg = newton.ModelBuilder.ShapeConfig(is_solid=False)
+        rod = newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 0.1), (0.0, 0.0, 0.2)], radius=0.05)
+        with self.assertWarnsRegex(newton.NewtonWarning, "zero thickness") as caught:
+            bodies, _ = builder.add_rod(rod=rod, cfg=cfg)
+        self.assertEqual(caught.filename, __file__)
+        self.assertEqual([builder.body_mass[body] for body in bodies], [0.0, 0.0])
+
+    def test_rod_total_mass_with_site_shapes(self):
+        """Assign body mass while retaining zero-density, noncolliding site shapes."""
+        builder = newton.ModelBuilder()
+        cfg = newton.ModelBuilder.ShapeConfig()
+        cfg.mark_as_site()
+        bodies, _ = builder.add_rod(
+            rod=newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 0.1)], radius=0.05), cfg=cfg, total_mass=2.0
+        )
+        body = bodies[0]
+        self.assertAlmostEqual(builder.body_mass[body], 2.0)
+        self.assertGreater(np.linalg.det(np.asarray(builder.body_inertia[body]).reshape(3, 3)), 0.0)
+        shape = builder.body_shapes[body][0]
+        self.assertTrue(builder.shape_flags[shape] & newton.ShapeFlags.SITE)
+        self.assertFalse(builder.shape_flags[shape] & newton.ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(builder.shape_flags[shape] & newton.ShapeFlags.COLLIDE_PARTICLES)
+
     def test_semi_implicit_rejects_rod_joints(self):
         """Reject Rod models at SemiImplicit construction."""
         builder = newton.ModelBuilder()
@@ -7586,6 +7701,11 @@ class TestCable(unittest.TestCase):
                 self.assertFalse(np.shares_memory(copied.rest_quaternions, rod.rest_quaternions))
                 bodies, joints = builder.add_rod(rod=copied, body_frame_origin="com")
                 rest_lengths = np.linalg.norm(rest_points[rod.edges[:, 1]] - rest_points[rod.edges[:, 0]], axis=1)
+                np.testing.assert_allclose(
+                    np.asarray(builder.body_mass)[bodies],
+                    builder.default_shape_cfg.density * np.pi * 0.1**2 * rest_lengths,
+                    rtol=1e-6,
+                )
                 edge_by_body = {body: edge for edge, body in enumerate(bodies)}
                 for edge, body in enumerate(bodies):
                     start, end = rod.edges[edge]

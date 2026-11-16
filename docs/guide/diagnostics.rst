@@ -11,8 +11,8 @@ Newton reports diagnostics through two standard Python mechanisms:
 - **Log records** from the :mod:`logging` module, under the ``newton``
   logger. These carry ``verbose=True`` output, status messages, and problems
   Newton worked around, such as asset content an importer skipped.
-- **Warnings** from the :mod:`warnings` module, using the categories in
-  :mod:`newton.exceptions`. These ask you to change how you call Newton, for
+- **Warnings** from the :mod:`warnings` module, using the categories
+  :class:`~newton.NewtonWarning` and :class:`~newton.NewtonDeprecationWarning`. These ask you to change how you call Newton, for
   example to stop using a deprecated feature.
 
 Each mechanism has its own configuration: logger levels do not affect
@@ -34,6 +34,23 @@ ancestors, including the root logger, Newton stops printing and its records
 go only to the configured handlers. This happens when your application calls
 :func:`logging.basicConfig`, under pytest's log capture, and in host
 applications and frameworks that configure logging themselves.
+
+Rich console output
+^^^^^^^^^^^^^^^^^^^
+
+Call :func:`newton.utils.setup_console_logging` from a script's
+``if __name__ == "__main__":`` block to switch this default output to a
+format that prefixes each record with its time, source file and line, and
+level name, colored by level when printed to a terminal:
+
+.. code-block:: text
+
+    [2026-11-02 10:15:42,108][import_mjcf.py:412][INFO]: Parsing MJCF file
+
+It also prints the script's own records. Scripts log through the
+``__main__`` logger, which is outside the ``newton`` logger tree, so their
+``INFO`` records are otherwise dropped unless logging is configured. Pass
+``rich=False`` to keep the plain format.
 
 Controlling log output
 ----------------------
@@ -77,9 +94,9 @@ Controlling warnings
 --------------------
 
 Newton emits deprecations as
-:class:`~newton.exceptions.NewtonDeprecationWarning`, a subclass of
+:class:`~newton.NewtonDeprecationWarning`, a subclass of
 :class:`DeprecationWarning`, and all other warnings as
-:class:`~newton.exceptions.NewtonWarning`, a subclass of :class:`UserWarning`.
+:class:`~newton.NewtonWarning`, a subclass of :class:`UserWarning`.
 Existing filters for the builtin categories therefore keep matching the same
 warnings as before. Filter them by category instead of by message:
 
@@ -90,10 +107,10 @@ warnings as before. Filter them by category instead of by message:
     import newton
 
     # Silence Newton warnings other than deprecations.
-    warnings.filterwarnings("ignore", category=newton.exceptions.NewtonWarning)
+    warnings.filterwarnings("ignore", category=newton.NewtonWarning)
 
     # Fail on Newton deprecations, for example in your test suite.
-    warnings.filterwarnings("error", category=newton.exceptions.NewtonDeprecationWarning)
+    warnings.filterwarnings("error", category=newton.NewtonDeprecationWarning)
 
 Warnings are printed to stderr by Python, not through the ``newton`` logger.
 To send them to your logging handlers as well, call
