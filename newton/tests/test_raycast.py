@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import importlib.util
 import unittest
 
 import numpy as np
@@ -15,7 +14,7 @@ from newton._src.geometry.raycast import (
     ray_intersect_shape,
     raycast_kernel,
 )
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices, has_module
 
 
 class TestRaycast(unittest.TestCase):
@@ -1028,7 +1027,7 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestRaycast, "test_intersect_ray", test_intersect_ray, devices=devices)
-optix_devices = [d for d in devices if d.is_cuda] if importlib.util.find_spec("warp_optix") else []
+optix_devices = [d for d in devices if d.is_cuda] if has_module("warp_optix") else []
 for test_func in (
     test_intersect_ray,
     test_intersect_ray_global_world,

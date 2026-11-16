@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import importlib.util
 import inspect
 import math
 import unittest
@@ -16,7 +15,7 @@ from newton._src.sensors.sensor_camera_render.utils import Utils
 from newton.sensors import (
     SensorCamera,
 )
-from newton.tests.unittest_utils import get_test_devices
+from newton.tests.unittest_utils import get_test_devices, requires
 
 # Transform placing a camera at the origin looking down -Z (identity pose). A
 # camera with this transform sees a sphere placed at z = -2.
@@ -1687,7 +1686,8 @@ class TestSensorCamera(unittest.TestCase):
 
 
 def _optix_variant(test):
-    @unittest.skipUnless(importlib.util.find_spec("warp_optix") and wp.is_cuda_available(), "requires warp-optix")
+    @requires("warp_optix")
+    @unittest.skipUnless(wp.is_cuda_available(), "requires CUDA")
     def run(self):
         test(self, device="cuda:0", backend="optix")
 
