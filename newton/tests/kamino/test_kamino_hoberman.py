@@ -23,7 +23,9 @@ from newton.examples.kamino.example_kamino_earworm_flowers import (
     play_song,
 )
 from newton.examples.kamino.utils.hoberman import generate_sphere
+from newton.tests.kamino import setup_test_output
 from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
+from newton.tests.unittest_utils import NewtonTestCase
 
 
 def _box_corners(pose, extents):
@@ -37,7 +39,10 @@ def _box_corners(pose, extents):
     )
 
 
-class TestHobermanGeometry(unittest.TestCase):
+class TestHobermanGeometry(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_reference_sphere(self):
         """Reproduce the authored sphere's dimensions, mass properties and strut boxes."""
         sphere = generate_sphere()
@@ -155,7 +160,10 @@ class TestHobermanGeometry(unittest.TestCase):
 
 
 @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA for Kamino")
-class TestEarwormPlayback(unittest.TestCase):
+class TestEarwormPlayback(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_pause_resume_and_discard(self):
         """Follow real playback, pause without clock jumps, and release a discarded example."""
         viewer = _make_headless_viewer_gl_or_skip(self)

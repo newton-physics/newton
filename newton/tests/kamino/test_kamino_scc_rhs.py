@@ -3,7 +3,6 @@
 
 """Dense references for cached bilateral right-hand sides."""
 
-import unittest
 from types import SimpleNamespace
 from unittest import mock
 
@@ -19,9 +18,14 @@ from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     make_sparse_bilateral_inverse_kernel,
 )
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCState
+from newton.tests.kamino import setup_test_output
+from newton.tests.unittest_utils import NewtonTestCase
 
 
-class TestKaminoBilateralRHS(unittest.TestCase):
+class TestKaminoBilateralRHS(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_rhs_row_group_boundaries(self):
         """Match dense products across row-group tails, empty inputs, and padded layouts."""
         if not wp.is_cuda_available():

@@ -19,6 +19,8 @@ from newton._src.solvers.kamino._src.solvers.scc.joint_blocks import (
     _build_body_masks,
     _build_topology,
 )
+from newton.tests.kamino import setup_test_output
+from newton.tests.unittest_utils import NewtonTestCase
 
 
 def _fixture(device, *, topology="chain"):
@@ -133,7 +135,10 @@ def _packed_matrix(solver, matrix, mio, ld):
     return packed.ravel()
 
 
-class TestKaminoJointBlocks(unittest.TestCase):
+class TestKaminoJointBlocks(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def _device(self, conditional=False):
         """Select a CUDA device with the capabilities required by the test."""
         if not wp.get_cuda_device_count():

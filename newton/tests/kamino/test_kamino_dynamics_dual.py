@@ -15,11 +15,12 @@ import newton
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.linalg import ConjugateGradientSolver
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_problem_vector
 from newton.tests.kamino.utils.make import make_containers, update_containers
 from newton.tests.kamino.utils.print import debug_print_model_info
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils.basics import make_basics_heterogeneous_builder
 
 logger = logging.getLogger(__name__)
@@ -29,19 +30,14 @@ logger = logging.getLogger(__name__)
 ###
 
 
-class TestDualProblem(unittest.TestCase):
+class TestDualProblem(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for detailed output
         self.default_device = wp.get_device(test_context.device)
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def tearDown(self):
         self.default_device = None

@@ -31,11 +31,12 @@ from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMod
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.solvers import PADMMSolver
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton._src.solvers.kamino.examples import print_progress_bar
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.sampling import sample_world_mask
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils import basics
 from newton.tests.utils.basics import build_boxes_fourbar
 from newton.tests.utils.testing import build_binary_revolute_joint_test, build_shape_pairs_test
@@ -374,19 +375,14 @@ def step_solver(
 ###
 
 
-class TestSolverKaminoConfig(unittest.TestCase):
+class TestSolverKaminoConfig(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True to enable verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def tearDown(self):
         self.default_device = None
@@ -467,8 +463,9 @@ class TestSolverKaminoConfig(unittest.TestCase):
                 kamino_config.LOXSolverConfig(**kwargs)
 
 
-class TestCollisionCapacityInitialization(unittest.TestCase):
+class TestCollisionCapacityInitialization(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
@@ -794,9 +791,10 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         solver.step(state_in, state_out, None, None, dt=1.0 / 60.0)
 
 
-class TestSolverKaminoStatus(unittest.TestCase):
+class TestSolverKaminoStatus(NewtonTestCase):
     def setUp(self):
         """Configure the default Warp device for status tests."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
@@ -885,11 +883,12 @@ class TestSolverKaminoStatus(unittest.TestCase):
                 self.assertTrue(np.all(status_host["iterations"] <= config.lox.max_iterations))
 
 
-class TestSolverKaminoScratchStateReset(unittest.TestCase):
+class TestSolverKaminoScratchStateReset(NewtonTestCase):
     """Check the assumption that every solver iteration reinitializes the scratch state."""
 
     def setUp(self):
         """Configure the default Warp device for scratch-state tests."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
@@ -942,21 +941,17 @@ class TestSolverKaminoScratchStateReset(unittest.TestCase):
                 self._assert_step_resets_scratch_state("scc", warmstart_mode)
 
 
-class TestSolverKaminoImpl(unittest.TestCase):
+class TestSolverKaminoImpl(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True to enable verbose output
+
+        setup_test_output(self, verbose=self.verbose)
+
         self.progress = test_context.verbose  # Set to True to show progress bars during long tests
         self.seed = 42
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
@@ -2045,8 +2040,11 @@ class TestSolverKaminoImpl(unittest.TestCase):
         np.testing.assert_allclose(multi_state_n.dq_j.numpy(), multi_final_dq_j, rtol=rtol, atol=atol)
 
 
-class TestSolverKaminoMasslessBodies(unittest.TestCase):
+class TestSolverKaminoMasslessBodies(NewtonTestCase):
     """Massless bodies are supported when fixed or prescribed and rejected otherwise."""
+
+    def setUp(self):
+        setup_test_output(self)
 
     def test_massless_body_welded_to_world_stays_at_rest(self):
         """Verify a massless body welded to the world stays at rest, along with its welded child.

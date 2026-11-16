@@ -8,7 +8,6 @@ and solver integration with mesh and heightfield shapes via the
 ``ModelKamino.from_newton()`` path.
 """
 
-import logging
 import unittest
 
 import numpy as np
@@ -20,8 +19,9 @@ from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino, convert_contacts_newton_to_kamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 _cuda_available = wp.is_cuda_available()
 
@@ -286,7 +286,7 @@ def _step_with_newton_cd(builder, device, num_steps=200, dt=0.005):
 ###
 
 
-class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
+class TestUnifiedPipelineMeshHeightfield(NewtonTestCase):
     """Tests Kamino unified collision pipeline with heightfield shapes via from_newton().
 
     The unified pipeline handles heightfield-vs-convex contacts directly.
@@ -299,10 +299,8 @@ class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-        else:
-            reset_log_level()
+
+        setup_test_output(self, verbose=self.verbose)
 
     def tearDown(self):
         self.default_device = None
@@ -413,7 +411,7 @@ class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
         self.assertEqual(nc, 0, f"Separated sphere should produce 0 contacts, got {nc}")
 
 
-class TestNewtonCollisionPathMeshHeightfield(unittest.TestCase):
+class TestNewtonCollisionPathMeshHeightfield(NewtonTestCase):
     """Tests Newton collision_pipeline.collide() -> convert_contacts_newton_to_kamino() path.
 
     This is the primary path for mesh collisions in Kamino.  Tests verify
@@ -426,10 +424,8 @@ class TestNewtonCollisionPathMeshHeightfield(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-        else:
-            reset_log_level()
+
+        setup_test_output(self, verbose=self.verbose)
 
     def tearDown(self):
         self.default_device = None
@@ -527,7 +523,7 @@ class TestNewtonCollisionPathMeshHeightfield(unittest.TestCase):
 
 
 @unittest.skipUnless(_cuda_available, "Kamino solver requires CUDA")
-class TestSolverWithMeshHeightfield(unittest.TestCase):
+class TestSolverWithMeshHeightfield(NewtonTestCase):
     """Tests Kamino solver produces physically correct behavior with mesh/heightfield contacts.
 
     Drops objects onto surfaces and verifies they come to rest at the
@@ -539,10 +535,8 @@ class TestSolverWithMeshHeightfield(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-        else:
-            reset_log_level()
+
+        setup_test_output(self, verbose=self.verbose)
 
     def tearDown(self):
         self.default_device = None

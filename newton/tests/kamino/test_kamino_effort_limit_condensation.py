@@ -13,6 +13,8 @@ import newton
 from newton._src.solvers.kamino._src.solvers.scc.effort_limit_condensation import EffortLimitCondensation
 from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import make_compact_schur_pgs_kernel
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCStatus
+from newton.tests.kamino import setup_test_output
+from newton.tests.unittest_utils import NewtonTestCase
 
 
 def _fixture(device, efforts, remaining):
@@ -106,8 +108,9 @@ def _fixture(device, efforts, remaining):
     return helper, inputs, target, effort_ids, nu
 
 
-class TestKaminoEffortLimitCondensation(unittest.TestCase):
+class TestKaminoEffortLimitCondensation(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not wp.get_cuda_device_count():
             self.skipTest("Effort limit elimination uses CUDA tile kernels")
         self.device = wp.get_cuda_devices()[0]

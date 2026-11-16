@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,18 +9,32 @@ from pathlib import Path
 import numpy as np
 import warp as wp
 
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
+from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, NewtonTestCase
+
 ###
 # Module interface
 ###
 
-__all__ = ["allow_verbose_output", "expect_contact_capacity_warning", "setup_tests", "test_context"]
+__all__ = ["expect_contact_capacity_warning", "setup_test_output", "setup_tests", "test_context"]
 
 _CONTACT_CAPACITY_WARNING_RE = r"^Warning: Kamino per-world contact capacity exceeded\..*\n?"
 
 
-def allow_verbose_output(test):
-    """Allow any stdout output in ``test``, which verbose logging prints to."""
-    test.allowOutputRegex(r"[\s\S]+", stream="stdout")
+def setup_test_output(test: NewtonTestCase, verbose: bool = False):
+    """Set the Kamino log level and allow the stdout that ``test`` may print.
+
+    Warp's module-load messages and the log output of a first-time asset
+    download are always allowed. When ``verbose`` is true, the Kamino loggers
+    are set to ``DEBUG`` and any stdout is allowed.
+    """
+    if verbose:
+        test.allowOutputRegex(r"[\s\S]+", stream="stdout")
+        set_log_level(logging.DEBUG)
+    else:
+        test.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
+        test.allowOutputRegex(NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, stream="stdout")
+        reset_log_level()
 
 
 def expect_contact_capacity_warning(test):

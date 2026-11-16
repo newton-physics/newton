@@ -99,6 +99,20 @@ def requires(*modules: str):
 
 MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?"
 
+# Optional rich console prefix of an INFO log record.
+INFO_LOG_PREFIX_RE = r"(?:\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}\]\[[\w.-]+\.py:\d+\]\[INFO\]: )?"
+ASSET_CACHE_REFRESH_OUTPUT_RE = (
+    rf"(?:{INFO_LOG_PREFIX_RE}New version of [^\n]+ found "
+    r"\(cached: [0-9a-f]{8}, latest: [0-9a-f]{8}\)\. Refreshing\.\.\.\n)?"
+)
+# Log output of a ``newton.utils.download_asset()`` call that clones the asset repository.
+NEWTON_ASSET_DOWNLOAD_OUTPUT_RE = (
+    ASSET_CACHE_REFRESH_OUTPUT_RE
+    + INFO_LOG_PREFIX_RE
+    + r"Cloning https://github\.com/newton-physics/newton-assets\.git "
+    r"\(ref: [0-9a-f]{40}\)\.\.\.\n" + INFO_LOG_PREFIX_RE + r"Successfully downloaded folder to: [^\n]+\n?"
+)
+
 # The batched transform helpers in newton._src.core.host_transform mirror the operation
 # order of Warp's native builtins, so they match bit for bit where neither side fuses
 # multiply-adds. That is verified on Linux x86-64; elsewhere, tests compare within

@@ -21,10 +21,11 @@ from newton._src.solvers.kamino._src.core.materials import (
     MaterialPairProperties,
     make_get_mixed_material_pair_property,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 
 # Test utilities
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 logger = logging.getLogger(__name__)
 
@@ -59,18 +60,13 @@ def make_mix_kernel(mixmode: MaterialMixMode):
 ###
 
 
-class TestMaterials(unittest.TestCase):
+class TestMaterials(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def tearDown(self):
         if self.verbose:

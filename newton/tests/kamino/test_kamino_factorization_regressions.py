@@ -3,8 +3,6 @@
 
 """Regressions for Kamino blocked factors and tiled pointer offsets."""
 
-import unittest
-
 import numpy as np
 import warp as wp
 
@@ -20,9 +18,14 @@ from newton._src.solvers.kamino._src.solvers.scc.kernels import (
     _find_bilateral_factor_row_start,
     _find_bilateral_factor_row_start_rcm,
 )
+from newton.tests.kamino import setup_test_output
+from newton.tests.unittest_utils import NewtonTestCase
 
 
-class TestKaminoSymbolicFill(unittest.TestCase):
+class TestKaminoSymbolicFill(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_bitset_boundaries(self):
         """Match classical fill across bitset boundaries and preserve upper entries and guards."""
         rng = np.random.default_rng(731)
@@ -53,7 +56,10 @@ class TestKaminoSymbolicFill(unittest.TestCase):
                     np.testing.assert_array_equal(pattern.numpy(), oracle)
 
 
-class TestKaminoFactorRowStart(unittest.TestCase):
+class TestKaminoFactorRowStart(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_ragged_tile_masks(self):
         """Preserve exact prefixes across ragged tiles, signed zeros, and NaNs."""
         for block_size in (8, 16, 32):
@@ -114,7 +120,10 @@ class TestKaminoFactorRowStart(unittest.TestCase):
                 np.testing.assert_array_equal(candidate.numpy(), expected)
 
 
-class TestKaminoFactorTileReuse(unittest.TestCase):
+class TestKaminoFactorTileReuse(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_disappearing_tiles_are_zero(self):
         """Clear old off-diagonal values when a reused factor's sparsity shrinks."""
         if not wp.is_cuda_available():
@@ -152,7 +161,10 @@ class TestKaminoFactorTileReuse(unittest.TestCase):
                     np.testing.assert_array_equal(factor, np.eye(n, dtype=np.float32) * 2.0)
 
 
-class TestKaminoFailedPivotRetry(unittest.TestCase):
+class TestKaminoFailedPivotRetry(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_blocked_llt_rcm_only_failed_blocks_are_shifted(self):
         """Refactor an indefinite block with a diagonal shift and leave healthy blocks untouched."""
         if not wp.is_cuda_available():
@@ -263,7 +275,10 @@ def _compute_pointer_offsets(
     offsets[i, 1] = get_int32_array_offset_ptr(integers, indices[i]) - get_int32_array_offset_ptr(integers, 0)
 
 
-class TestKaminoPointerOffsets(unittest.TestCase):
+class TestKaminoPointerOffsets(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_large_byte_offsets(self):
         """Preserve 64-bit byte offsets across the signed 32-bit boundary."""
         indices = np.array([0, 1, 2**29 - 1, 2**29, 2**29 + 1, 2**30, 2**31 - 1], dtype=np.int32)

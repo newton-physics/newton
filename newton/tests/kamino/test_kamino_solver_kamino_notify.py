@@ -15,7 +15,8 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino._src.core.materials import DEFAULT_FRICTION, DEFAULT_RESTITUTION
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 
 def _build_revolute(
@@ -165,7 +166,7 @@ def _assert_model_arrays_unchanged(
         np.testing.assert_array_equal(after, before, err_msg=f"notify_model_changed mutated model.{name}")
 
 
-class TestKaminoNotifyModelChanged(unittest.TestCase):
+class TestKaminoNotifyModelChanged(NewtonTestCase):
     def test_joint_transforms_remain_capture_safe_without_host_validation(self):
         """Publish joint transforms eagerly and during capture without host structural checks."""
         if not wp.get_cuda_device_count():
@@ -191,6 +192,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
                 )
 
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
