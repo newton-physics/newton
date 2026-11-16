@@ -375,6 +375,29 @@ objects accept the final entry as a no-op.
    deprecation period. It selects local worlds only and leaves global entities
    unselected.
 
+.. _Per-world attributes:
+
+Per-World Attributes
+--------------------
+
+Arrays with :attr:`Model.AttributeFrequency.WORLD <newton.Model.AttributeFrequency.WORLD>`
+frequency, such as per-world custom attributes and solver observables, use the
+same layout as reset masks: shape ``(world_count + 1,)``, with entries
+``[0, world_count)`` for local worlds and the final entry for global world
+``-1``. Global world ``-1`` is never an alias of world ``0``, so kernels can
+index these arrays directly with an entity's world index: Warp wraps ``-1`` to
+the final entry. Builder values use the same keys: values authored or imported
+outside a world context belong to key ``-1``. Like the builder's gravity, the
+global value is also the default of local worlds without their own value, unless
+the attribute stores references; other unset entries hold the attribute default.
+Merging a builder with :meth:`~newton.ModelBuilder.add_builder`,
+:meth:`~newton.ModelBuilder.add_world`, or :meth:`~newton.ModelBuilder.replicate`
+places all its entities in one world, so the source's explicit values must agree;
+different values raise :class:`ValueError`. The destination entry takes the agreed
+value, or else the attribute default. Consumers without global entities may ignore the final
+entry; a single :class:`~newton.solvers.SolverMuJoCo` world reads world ``0``
+options when that world owns bodies and global options otherwise.
+
 .. _Per-world gravity:
 
 Per-World Gravity
@@ -388,9 +411,10 @@ or modified at runtime via :meth:`~newton.Model.set_gravity`:
 The builder's :attr:`~newton.ModelBuilder.gravity` is the default for new local worlds and the
 dedicated gravity for global entities (world index ``-1``). The final element of
 :attr:`~newton.Model.gravity` stores this global gravity, so the array has shape
-``(world_count + 1,)`` and ``vec3`` elements when the builder contains explicit local
-worlds. Legacy implicit single-world models retain one shared entry with shape ``(1,)``;
-updates for world ``0`` therefore continue to affect their global entities.
+``(world_count + 1,)`` and ``vec3`` elements. Global world ``-1`` is distinct from world
+``0``, also in models built without :meth:`~newton.ModelBuilder.begin_world`, whose
+entities all belong to the global world: change their gravity with ``world=-1`` or by
+passing a single vector for every world.
 
 .. testcode::
 

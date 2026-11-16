@@ -264,38 +264,43 @@ average or a per-pair limit.
      - Estimated typical count
      - Notes
    * - Triangle mesh--infinite plane
-     - 240
+     - 184
      - ``V_mesh``
      - About 40
      - At most one candidate per mesh vertex.
    * - Mesh/heightfield--sphere or ellipsoid
-     - 240
+     - 184
      - ``T_overlap``
      - About 40
      - At most one contact per overlapping triangle.
    * - Mesh/heightfield--other primitive or convex hull
-     - 240
+     - 184
      - ``5 * T_overlap``
      - About 40
      - Each overlapping triangle uses the convex manifold path.
    * - Mesh--mesh
-     - 240
+     - 184
      - ``E_A + E_B``
      - About 40
      - Uses edge-vs-SDF queries, with BVH distance fallback when needed.
    * - Heightfield--mesh
-     - 240
+     - 184
      - ``E_heightfield + E_mesh``
      - About 40
      - Uses the mesh/SDF route with on-the-fly heightfield evaluation.
    * - Hydroelastic SDF--SDF
-     - 240 by default
+     - 184 penetrating + 100 speculative
      - Geometry and buffer dependent
      - No fixed estimate
      - ``anchor_contact=True`` can add contacts beyond the reduced set.
 
-The reduced maximum follows the current 240-slot contact-reduction layout.
-Disabling reduction exposes the geometry-dependent candidate bounds shown above.
+The default contact-reduction layout uses twelve dodecahedral normal bins with
+six footprint slots and one depth slot each, plus 100 spatial depth slots:
+``12 * 7 + 100 = 184``. Mesh, heightfield, and SDF routes can retain seven
+additional predictive contacts when speculative contacts are enabled.
+Hydroelastic reduction keeps speculative faces in a separate spatial depth
+budget. Disabling reduction exposes the geometry-dependent candidate bounds
+shown above.
 
 **Common pair guidance**
 
@@ -1584,12 +1589,22 @@ observed shape speed:
     )
     schedule.step()
 
-Any change in a collidable shape's linear or angular velocity triggers a
-refresh at the next substep. Slowing, stopping, or turning can increase the
-closing speed between shapes and require contacts that the earlier pass did
-not create. Shapes with rigid collision disabled do not affect the schedule
-or overflow reporting. The scheduler checks the final substep's output when
-reporting ``interval_overflow``.
+During the collision callback, the scheduler's pipeline retains candidates
+within a pairwise distance reserve of at least ``speculative_contact_gap_max``,
+regardless of approach velocity. Authored gaps and physical margins are preserved.
+The callback must use the pipeline passed to the scheduler. Calls outside the
+callback retain velocity-adapted admission.
+
+Gravity, slowing, and turning consume this reserve without unconditionally
+forcing a refresh. Refreshes occur when the travel estimate approaches the
+reserve or the previous horizon expires. The next-step estimate includes the
+speed increase observed over the preceding substep. This is not a bound on
+unobserved forces or impulses. Shapes with rigid collision disabled do not affect
+the schedule or overflow reporting. The final substep is checked for overflow.
+
+The reserve may retain more contacts than velocity-adapted admission. Measure
+both total runtime and refresh counts, and size contact buffers accordingly.
+Fast motion can still require a refresh every substep.
 
 The same ``step()`` call works directly or inside CUDA graph capture; callbacks
 must therefore be capture-safe and preallocate their storage. The scheduler

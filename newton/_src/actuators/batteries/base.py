@@ -24,7 +24,9 @@ class BatteryBase:
       [V], read by the motor.
 
     The motors and the batteries form an explicit loop: the motors read the
-    voltage of the previous step.
+    voltage of the previous step.  With one ``Control`` per step, e.g. to
+    differentiate several steps on one tape, pass the next step's ``Control``
+    as *next_control* to :meth:`step`.
 
     Subclasses must override :meth:`resolve_arguments`, :meth:`step` and
     :meth:`reset`.
@@ -86,16 +88,18 @@ class BatteryBase:
         if self.world.shape != (self.num_batteries,):
             raise ValueError(f"world shape {self.world.shape} must be ({self.num_batteries},)")
 
-    def step(self, sim_control: Any) -> None:
+    def step(self, sim_control: Any, next_control: Any | None = None) -> None:
         """Update the supply voltage of the actuators from their current.
 
-        Reads ``actuator_supply_current`` and writes ``actuator_supply_voltage``
-        for the actuators of the batteries. Call once per step, after the
-        actuators have stepped.
+        Reads ``actuator_supply_current`` from *sim_control* and writes
+        ``actuator_supply_voltage`` to *next_control* for the actuators of the
+        batteries. Call once per step, after the actuators have stepped.
 
         Args:
-            sim_control: Object carrying ``actuator_supply_current`` and
-                ``actuator_supply_voltage``, e.g. :class:`~newton.Control`.
+            sim_control: Object carrying ``actuator_supply_current``, e.g.
+                :class:`~newton.Control`.
+            next_control: Object carrying ``actuator_supply_voltage`` for the
+                next step. ``None`` writes it to *sim_control*.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement step")
 
