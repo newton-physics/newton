@@ -426,12 +426,19 @@ def _reads_with_meshio(filename: str) -> bool:
     return extension in meshio.extension_to_filetypes
 
 
-def _load_meshio_trimesh(filename: str):
-    """Load a meshio-only format as the trimesh object that trimesh's own meshio wrapper built."""
+def _load_trimesh(filename: str, **kwargs):
+    """Call ``trimesh.load`` with the behavior trimesh 5 deprecated or turned off by default."""
     import trimesh
 
-    vertices, triangles = _read_meshio_surface(filename)
-    return trimesh.Trimesh(vertices=vertices, faces=triangles)
+    if _reads_with_meshio(filename):
+        vertices, triangles = _read_meshio_surface(filename)
+        return trimesh.Trimesh(vertices=vertices, faces=triangles)
+    try:
+        # Let materials and textures sit outside the mesh directory.
+        resolver = trimesh.resolvers.FilePathResolver(filename, allow_anywhere=True)
+    except TypeError:  # trimesh 4 has no such restriction
+        resolver = None
+    return trimesh.load(filename, resolver=resolver, **kwargs)
 
 
 def load_mesh(filename: str, method: str | None = None):
@@ -465,9 +472,7 @@ def load_mesh(filename: str, method: str | None = None):
             mesh_points, mesh_indices = pcu.load_mesh_vf(filename)
             mesh_indices = mesh_indices.flatten()
         else:
-            import trimesh
-
-            m = _load_meshio_trimesh(filename) if _reads_with_meshio(filename) else trimesh.load(filename)
+            m = _load_trimesh(filename)
             if hasattr(m, "geometry"):
                 # Combine scene parts with their node transforms applied;
                 # raw vertices are in node-local space.
