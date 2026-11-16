@@ -740,6 +740,9 @@ behave as follows:
        tangential memory comes from the replayed material anchor.
        This matching mode is experimental.
 
+Both matching modes also restore torsional and rolling multipliers, projected
+to the current contact frame and torque limits.
+
 For a baseline, set ``rigid_contact_history=False`` explicitly. Use
 ``contact_matching="disabled"`` unless rigid detection uses ``ITERATIONS``,
 which requires ``"latest"`` or ``"sticky"`` matching.

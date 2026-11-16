@@ -104,7 +104,9 @@ Between steps, ``rigid_contact_history=True`` snapshots the solved state of
 every contact at the end of the step (multiplier, penalty stiffness, normal)
 and restores it onto the matched contacts at the next step's contact refresh:
 the normal multiplier along the new normal and, with ``"latest"`` matching,
-the tangential multiplier projected onto the friction disk. Unmatched contacts
+the tangential multiplier projected onto the friction disk. Both matching modes
+restore torsional and rolling multipliers, projected to the current contact
+frame and torque limits. Unmatched contacts
 start cold, and so does every contact when two detection passes run between
 two steps. Between iterations, a ``RIGID`` slot on the ``ITERATIONS`` schedule
 re-detects inside the iteration loop and replaces the contact set in the
