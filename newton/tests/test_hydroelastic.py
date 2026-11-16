@@ -2718,13 +2718,15 @@ class TestMuJoCoHydroelastic(unittest.TestCase):
         """Select the CUDA device for all test buffers."""
         self.enterContext(wp.ScopedDevice(cuda_devices[0]))
 
-    def test_default_preserves_legacy_response(self):
-        """Preserve legacy response for unselected pairs."""
+    def test_preserves_legacy_response(self):
+        """Preserve legacy response for unselected pairs and pyramidal contacts."""
         modes = (SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW, SOLREF_MODE_FORCE_SPACE)
         force_space = (SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_FORCE_SPACE)
         cases = [((), None)] + [((), (a, b)) for a in modes for b in modes if (a, b) != force_space]
         cases += [(shapes, force_space) for shapes in ((0,), (1,), (0, 1))]
         for cone in ("elliptic", "pyramidal"):
+            if cone == "pyramidal":
+                cases.append(((), force_space))
             velocities = []
             for ordinary_shapes, solref_modes in cases:
                 with self.subTest(cone=cone, ordinary_shapes=ordinary_shapes, solref_modes=solref_modes):
@@ -2751,25 +2753,6 @@ class TestMuJoCoHydroelastic(unittest.TestCase):
                         self.assertAlmostEqual(float(state_out.body_qd.numpy()[0, 2]), expected, delta=2.0e-5)
                         force = float(solver.mjw_data.qfrc_constraint.numpy()[0, 2])
                         self.assertAlmostEqual(force, mass * (expected + 0.1) / dt, delta=0.02)
-
-    def test_unsupported_options(self):
-        """Reject unsupported force-space settings."""
-        model = _mujoco_model()
-        for options in (
-            {"use_mujoco_cpu": True},
-            {"use_mujoco_contacts": True},
-            {"integrator": "rk4"},
-            {"integrator": "discrete"},
-            {"cone": "pyramidal"},
-        ):
-            settings = {"use_mujoco_contacts": False, "cone": "elliptic", **options}
-            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "Hydroelastic force-space shapes"):
-                newton.solvers.SolverMuJoCo(model, **settings)
-        model = _mujoco_model(solref_modes=(SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_MJCF_DEFAULT))
-        solver = _mujoco_solver(model, cone="pyramidal")
-        model.mujoco.solref_mode.fill_(SOLREF_MODE_FORCE_SPACE)
-        with self.assertRaisesRegex(ValueError, "Hydroelastic force-space shapes"):
-            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
 
     def test_friction_metric(self):
         """Preserve friction limits for small pressure weights."""

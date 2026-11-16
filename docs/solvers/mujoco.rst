@@ -863,7 +863,8 @@ to use the hydroelastic stiffness and damping mapping. Missing modes,
 ``ShapeConfig.kh`` controls stiffness; ``solref_mode`` selects its interpretation.
 
 Use Newton contacts (``use_mujoco_contacts=False``), ``cone="elliptic"``, and
-Euler, implicit, or implicitfast integration on MuJoCo-Warp. Set
+Euler, implicit, or implicitfast integration on MuJoCo-Warp. Other cones,
+integrators, and contact backends keep their existing response. Set
 ``HydroelasticSDF.Config(reduce_contacts=False)`` in the collision pipeline;
 the solver does not check contact reduction. Existing hydroelastic pairs
 already using force-space ``solref_mode`` now use this mapping and

@@ -4539,10 +4539,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         required_flags = ShapeFlags.HYDROELASTIC | ShapeFlags.COLLIDE_SHAPES
         self._has_hydroelastic_shapes = bool(np.any((model.shape_flags.numpy() & required_flags) == required_flags))
-        if (use_mujoco_cpu or use_mujoco_contacts) and self._has_force_space_hydroelastic_pair():
-            raise ValueError(
-                "Hydroelastic force-space shapes require use_mujoco_cpu=False and use_mujoco_contacts=False."
-            )
 
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
@@ -4961,7 +4957,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # first run inside a CUDA graph that is discarded without replay.
             self._create_inverse_shape_mapping()
             self._contact_tid_to_cid = wp.full(self.mjw_data.naconmax, -1, dtype=wp.int32, device=self.device)
-        self._check_hydroelastic_options()
         self._initial_model_sync = False
         self._update_data_interval = 1 if update_data_interval is None else update_data_interval
         self._step = 0
@@ -5017,14 +5012,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         with self._scoped_deterministic_config():
             yield
 
-    def _has_force_space_hydroelastic_pair(self) -> bool:
-        modes = getattr(getattr(self.model, "mujoco", None), "solref_mode", None)
-        if not self._has_hydroelastic_shapes or modes is None:
-            return False
-        required = ShapeFlags.HYDROELASTIC | ShapeFlags.COLLIDE_SHAPES
-        eligible = (self.model.shape_flags.numpy() & required) == required
-        return np.count_nonzero(eligible & (modes.numpy() == SOLREF_MODE_FORCE_SPACE)) >= 2
-
     def _supports_hydroelastic_compliance(self) -> bool:
         if not self._has_hydroelastic_shapes or self.use_mujoco_cpu or self._use_mujoco_contacts:
             return False
@@ -5034,14 +5021,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             opt.integrator in (integrators.EULER, integrators.IMPLICIT, integrators.IMPLICITFAST)
             and opt.cone == self._mujoco_warp.ConeType.ELLIPTIC
         )
-
-    def _check_hydroelastic_options(self):
-        """Keep legacy options available unless hydroelastic force space is selected."""
-        if not self._supports_hydroelastic_compliance() and self._has_force_space_hydroelastic_pair():
-            raise ValueError(
-                "Hydroelastic force-space shapes require Newton contacts on MuJoCo Warp, "
-                "cone='elliptic', and Euler, implicit, or implicitfast integration."
-            )
 
     @event_scope
     def _mujoco_warp_step(self, contacts: Contacts | None):
@@ -5906,13 +5885,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._validate_compiled_mesh_scales()
         if flags & ModelFlags.ACTUATOR_PROPERTIES:
             self._validate_compiled_actuator_gears()
-        if (
-            flags & ModelFlags.SHAPE_PROPERTIES
-            and self._has_hydroelastic_shapes
-            and not self._initial_model_sync
-            and not self.model.device.is_capturing
-        ):
-            self._check_hydroelastic_options()
 
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
             self._update_model_inertial_properties()
