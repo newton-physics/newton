@@ -240,6 +240,61 @@ def test_critical_offset_modes(test, device):
         np.testing.assert_allclose(offsets.numpy(), [0.1, 0.3, 0.0, 0.2], atol=1.0e-7)
 
 
+def _critical_bound_fraction(device, spacing):
+    """Fraction of occupied P0 cells with an active critical bound in a closed 0.6 m box of 0.2 m voxels."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    builder.add_ground_plane()
+    # Walls and a lid close the box on the grid's cell faces
+    for center, half in (
+        ((-0.1, 0.3, 0.3), (0.1, 0.5, 0.5)),
+        ((0.7, 0.3, 0.3), (0.1, 0.5, 0.5)),
+        ((0.3, -0.1, 0.3), (0.5, 0.1, 0.5)),
+        ((0.3, 0.7, 0.3), (0.5, 0.1, 0.5)),
+        ((0.3, 0.3, 0.7), (0.5, 0.5, 0.1)),
+    ):
+        builder.add_shape_box(
+            -1, xform=wp.transform(wp.vec3(*center), wp.quat_identity()), hx=half[0], hy=half[1], hz=half[2]
+        )
+    count = round(0.6 / spacing)
+    builder.add_particle_grid(
+        pos=wp.vec3(0.5 * spacing),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=count,
+        dim_y=count,
+        dim_z=count,
+        cell_x=spacing,
+        cell_y=spacing,
+        cell_z=spacing,
+        mass=1.0,
+        jitter=0.0,
+        radius_mean=0.05,
+    )
+    model = builder.finalize(device=device)
+    solver = SolverImplicitMPM(model, config=_config(0.2, critical_fraction=0.6))
+    apply_transform = solver._apply_strain_basis_transform
+    fractions = []
+
+    def capture_bounds(scratch, basis_transform, stress_transform):
+        bound = scratch.critical_strain_offset.numpy()
+        occupied = scratch.strain_node_particle_volume.numpy() > 0.0
+        fractions.append(float(np.mean(bound[occupied] > 0.0)))
+        apply_transform(scratch, basis_transform, stress_transform)
+
+    solver._apply_strain_basis_transform = capture_bounds
+    solver.step(model.state(), model.state(), None, None, 0.01)
+    return fractions[0]
+
+
+def test_critical_fraction_against_walls(test, device):
+    """Measure packing against the space outside colliders: flag loose material, and no packed cells at walls."""
+    with wp.ScopedDevice(device):
+        # Particles of 0.1 m fill the box at 0.1 m spacing, and an eighth of it at 0.2 m
+        test.assertEqual(_critical_bound_fraction(device, 0.1), 0.0)
+        test.assertEqual(_critical_bound_fraction(device, 0.2), 1.0)
+
+
 def test_recovery_config_validation(test, device):
     """Reject invalid recovery fractions, gaps, and unsupported combinations."""
     with wp.ScopedDevice(device):
@@ -275,6 +330,7 @@ for function in (
     test_volume_recovery_offsets,
     test_density_offset_bounded_in_p1d_modes,
     test_critical_offset_modes,
+    test_critical_fraction_against_walls,
     test_recovery_config_validation,
 ):
     add_function_test(TestImplicitMPMRecovery, function.__name__, function, devices=get_test_devices(mode="basic"))
