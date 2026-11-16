@@ -6491,6 +6491,50 @@ def Xform "Articulation" (
         self.assertIsNone(src.texture)
 
     @requires("pxr.Usd")
+    def test_gltf_mdl_base_color_factor_sets_shape_color(self):
+        """A ``gltf/pbr.mdl`` shader's ``base_color_factor`` imports as the shape color.
+
+        Regression test for #5372: glTF-converted assets author their base color as
+        ``inputs:base_color_factor`` (linear RGB), which was not read, so the shape got
+        the unmaterialed gray.
+        """
+        from pxr import Gf, Sdf, UsdShade
+
+        stage = self._build_mdl_shader_mesh_stage({})
+        shader = UsdShade.Shader(stage.GetPrimAtPath("/M/Mdl"))
+        shader.SetSourceAsset(Sdf.AssetPath("gltf/pbr.mdl"), "mdl")
+        shader.SetSourceAssetSubIdentifier("gltf_material", "mdl")
+        linear = (0.8, 0.019607844, 0.03529412)
+        shader.CreateInput("base_color_factor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*linear))
+        shader.CreateInput("roughness_factor", Sdf.ValueTypeNames.Float).Set(0.5)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        color = builder.shape_color[result["path_shape_map"]["/Body/VisualMesh"]]
+        np.testing.assert_allclose(color, newton.utils.color_linear_to_srgb(linear), atol=1e-5)
+
+    @requires("pxr.Usd")
+    def test_material_input_base_color_factor_sets_color(self):
+        """``base_color_factor`` authored directly on a Material is read as its color."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Mesh")
+        mesh.GetPointsAttr().Set([Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0)])
+        mesh.GetFaceVertexCountsAttr().Set([3])
+        mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+        material = UsdShade.Material.Define(stage, "/World/Looks/Material")
+        linear = (0.2, 0.4, 0.6)
+        material.CreateInput("base_color_factor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*linear))
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        material_props = resolve_material_properties_for_prim(mesh.GetPrim())
+        self.assertIsNotNone(material_props["color"])
+        np.testing.assert_allclose(material_props["color"], newton.utils.color_linear_to_srgb(linear), atol=1e-6)
+
+    @requires("pxr.Usd")
     def test_usd_transform2d_mapping_is_preserved(self):
         """Preserve standard UsdTransform2d order and its upstream primvar reader."""
         from pxr import Sdf, UsdGeom, UsdShade

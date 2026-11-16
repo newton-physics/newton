@@ -2455,6 +2455,8 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
                 "base_color",
                 "baseColor",
                 "displayColor",
+                # glTF-converted MDL materials (gltf/pbr.mdl, gltf_material)
+                "base_color_factor",
             ),
         )
         color = _coerce_color(color_value, color_attr)
@@ -2519,6 +2521,7 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             "diffuse_color",
             "base_color",
             "displaycolor",
+            "base_color_factor",
         ):
             color = _coerce_color(value, inp.GetAttr())
             if color is not None:
