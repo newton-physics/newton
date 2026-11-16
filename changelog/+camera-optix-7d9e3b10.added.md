@@ -1,1 +1,1 @@
-Add experimental OptiX ray tracing for `SensorCamera` and `intersect_ray` with `backend="optix"`, installed with the `optix` extra. `Model.optix_build_shapes()` and `Model.optix_refit_shapes()` build and refit the OptiX shape acceleration alongside the shape BVH.
+Add experimental OptiX ray tracing for `SensorCamera` and `intersect_ray` with `backend="optix"`, installed with the `optix` extra. `Model.bvh_build_shapes()` and `Model.bvh_refit_shapes()` take a `backend` argument and build and refit the OptiX shape acceleration with `backend="optix"`.

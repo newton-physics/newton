@@ -3,7 +3,7 @@
 
 """OptiX shape acceleration, built alongside the shape BVH.
 
-Used by :meth:`Model.optix_build_shapes` and :meth:`Model.optix_refit_shapes`. Importing this module
+Used by :meth:`Model.bvh_build_shapes` and :meth:`Model.bvh_refit_shapes` with ``backend="optix"``. Importing this module
 requires the ``newton[optix]`` extra, so import it lazily.
 """
 
@@ -36,8 +36,8 @@ class OptixShapes:
 
     Each world's shapes are packed into a cube of half-width :attr:`extent`, spaced ``3.5 * extent``
     apart, and rays are clipped to their world's cube. The cell grid, world count and extent are fixed
-    when the shapes are built, so kernels compile them in. Infinite per-world planes are instanced as
-    squares covering their cell, and global planes (usually the ground) are intersected analytically.
+    when the shapes are built, so kernels compile them in. Planes are intersected analytically, filtered
+    by the ray's world.
     """
 
     id: int
@@ -59,7 +59,9 @@ class OptixShapes:
     instances: wp.array[wo.Instance]
     """OptiX instance of each shape in :attr:`instance_shapes`."""
     planes: tuple[int, ...]
-    """Global planes, intersected analytically."""
+    """Global planes."""
+    world_planes: wp.array2d[wp.int32]
+    """Planes of each world, padded with -1, shape ``[world_count, max planes per world]``."""
     grid: int
     """Cells per axis of the world grid."""
     extent: float
@@ -101,12 +103,7 @@ def ray_interval(origin: wp.vec3, direction: wp.vec3, extent: float, max_distanc
 
 @wp.func
 def primitive_half_extents(kind: int, size: wp.vec3) -> wp.vec3:
-    """Half extents that scale the shared unit cube to an analytic shape's bounds.
-
-    Infinite plane axes get 1; the instance sets their span, which does not change the hit distance.
-    """
-    if kind == GeoType.PLANE:
-        return wp.vec3(wp.where(size[0] > 0.0, 0.5 * size[0], 1.0), wp.where(size[1] > 0.0, 0.5 * size[1], 1.0), 1.0e-3)
+    """Half extents that scale the shared unit cube to an analytic shape's bounds."""
     if kind == GeoType.SPHERE:
         return wp.vec3(size[0])
     if kind == GeoType.CAPSULE:
@@ -143,20 +140,7 @@ def compute_optix_shape_instances(
     center = wp.transform_get_translation(transform)
     half = primitive_half_extents(kind, size)
     mask = int(255)
-    if kind == GeoType.PLANE and (size[0] <= 0.0 or size[1] <= 0.0):
-        # Cover the cell (radius sqrt(3) * extent) with a square centered on the plane point nearest
-        # the cell center. Its corners stay within sqrt(6) * extent of the center, clear of other cells.
-        nearest = -wp.transpose(rotation) @ center
-        span = wp.sqrt(wp.max(3.0 * extent * extent - nearest[2] * nearest[2], 0.0))
-        shift = wp.vec3(0.0)
-        for axis in range(2):
-            if size[axis] <= 0.0:
-                shift[axis] = nearest[axis]
-                half[axis] = wp.max(span, 1.0e-3)
-        center += rotation @ shift
-        if span == 0.0:
-            mask = 0
-    elif wp.max(wp.abs(center)) + shape_radii[si] > extent:
+    if wp.max(wp.abs(center)) + shape_radii[si] > extent:
         # Hide shapes that left their cell rather than let them reach another world's.
         mask = 0
     out_instances[i] = wo.make_instance(
@@ -279,8 +263,8 @@ def intersect_rays(
     if shapes is None:
         raise RuntimeError(
             "OptiX raycasting requires OptiX shapes built for the queried state. Call "
-            "model.optix_build_shapes(state) before first use and model.optix_refit_shapes(state) "
-            "after state changes."
+            "model.bvh_build_shapes(state, backend='optix') before first use and "
+            "model.bvh_refit_shapes(state, backend='optix') after state changes."
         )
     if model.device.stream.is_capturing:
         raise RuntimeError("The OptiX backend does not support CUDA graph capture")
@@ -292,6 +276,7 @@ def intersect_rays(
         dim=ray_origins.shape[0],
         inputs=[
             shapes.id,
+            shapes.world_planes,
             shapes.shape_world_transforms,
             shapes.shape_types,
             model.shape_scale,
@@ -307,9 +292,28 @@ def intersect_rays(
 def _create_ray_pipeline(shapes, enable_global_world, write_dist, write_shape_id, write_normal, fast_math):
     grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
 
+    @wp.func
+    def nearest_plane(
+        si: int,
+        shape_transforms: wp.array[wp.transform],
+        shape_sizes: wp.array[wp.vec3],
+        origin: wp.vec3,
+        direction: wp.vec3,
+        distance: float,
+        shape: int,
+        normal: wp.vec3,
+    ):
+        plane_distance, plane_normal = raycast.ray_intersect_shape(
+            shape_transforms[si], shape_sizes[si], GeoType.PLANE, origin, direction, False
+        )
+        if plane_distance >= 0.0 and plane_distance < distance:
+            return plane_distance, si, plane_normal
+        return distance, shape, normal
+
     @wp.kernel(enable_backward=False, module="unique", module_options={"fast_math": fast_math})
     def intersect(
         handle: wp.uint64,
+        world_planes: wp.array2d[wp.int32],
         shape_transforms: wp.array[wp.transform],
         shape_types: wp.array[wp.int32],
         shape_sizes: wp.array[wp.vec3],
@@ -327,16 +331,26 @@ def _create_ray_pipeline(shapes, enable_global_world, write_dist, write_shape_id
         distance = float(wp.static(raycast.MAXVAL))
         shape = int(-1)
         normal = wp.vec3(0.0)
+        # Planes first: a nearer hit shortens the traversals.
         if wp.static(enable_global_world) or ray_worlds[tid] < 0:
             for p in range(wp.static(len(shapes.planes))):
-                si = wp.static(shapes.planes[p])
-                plane_distance, plane_normal = raycast.ray_intersect_shape(
-                    shape_transforms[si], shape_sizes[si], GeoType.PLANE, origin, direction, False
+                distance, shape, normal = nearest_plane(
+                    wp.static(shapes.planes[p]),
+                    shape_transforms,
+                    shape_sizes,
+                    origin,
+                    direction,
+                    distance,
+                    shape,
+                    normal,
                 )
-                if plane_distance >= 0.0 and plane_distance < distance:
-                    shape = si
-                    distance = plane_distance
-                    normal = plane_normal
+        if ray_worlds[tid] >= 0:
+            for p in range(wp.static(shapes.world_planes.shape[1])):
+                si = world_planes[ray_worlds[tid], p]
+                if si >= 0:
+                    distance, shape, normal = nearest_plane(
+                        si, shape_transforms, shape_sizes, origin, direction, distance, shape, normal
+                    )
         # Match the camera's unrolled local/global traversal (OptiX 0.3.0).
         for i in range(wp.static(2 if enable_global_world and shapes.has_global_instances else 1)):
             world = wp.where(i == 1 or ray_worlds[tid] < 0, wp.static(world_count), ray_worlds[tid])

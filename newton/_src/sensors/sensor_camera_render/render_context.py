@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from typing import Literal
 
 import numpy as np
 import warp as wp
@@ -86,7 +87,7 @@ class RenderContext:
         model: Model,
         load_textures: bool = True,
         *,
-        backend: str = "warp",
+        backend: Literal["warp", "optix"] = "warp",
         deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Create a render context for a Newton simulation model.
@@ -491,9 +492,8 @@ class RenderContext:
         geometry, refit them via
         :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles` before calling this
-        method. The OptiX backend instead traces :attr:`~newton.Model.optix_shapes`,
-        built with :meth:`~newton.Model.optix_build_shapes` and refit with
-        :meth:`~newton.Model.optix_refit_shapes`.
+        method. The OptiX backend instead traces :attr:`~newton.Model.optix_shapes`, built and
+        refit by the same methods with ``backend="optix"``.
 
         Args:
             state: Current simulation state (for particle positions).
@@ -530,7 +530,8 @@ class RenderContext:
             optix = model.optix_shapes
             if optix is None:
                 raise RuntimeError(
-                    "The OptiX camera backend requires Model.optix_build_shapes() to have been called first."
+                    "The OptiX camera backend requires Model.bvh_build_shapes(state, backend='optix') to have been "
+                    "called first."
                 )
 
         if config is None:
@@ -690,7 +691,7 @@ class RenderContext:
                     # Shape BVH
                     model.bvh_shape_count_enabled if optix is None else 0,
                     optix.id if optix is not None else (model.bvh_shapes.id if model.bvh_shapes is not None else 0),
-                    model.bvh_shapes_group_roots if optix is None else None,
+                    model.bvh_shapes_group_roots if optix is None else optix.world_planes.flatten(),
                     # Shapes
                     model._bvh_shape_active_leaves if optix is None else None,
                     self._get_shape_render_type(),  # HFIELD and CONVEX_MESH remapped to MESH

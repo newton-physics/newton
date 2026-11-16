@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import warp as wp
 
@@ -944,7 +944,7 @@ def intersect_ray(
     out_shape_id: wp.array[wp.int32] | None = None,
     out_normal: wp.array[wp.vec3] | None = None,
     fast_math: bool = True,
-    backend: str = "warp",
+    backend: Literal["warp", "optix"] = "warp",
 ):
     """Intersect rays with model shapes.
 
@@ -953,9 +953,8 @@ def intersect_ray(
     the BVH with :meth:`~newton.Model.bvh_refit_shapes` before raycasting
     again. Manually populated models must build the BVH with
     :meth:`~newton.Model.bvh_build_shapes` before first use. With
-    ``backend="optix"``, build and refit :attr:`~newton.Model.optix_shapes` with
-    :meth:`~newton.Model.optix_build_shapes` and :meth:`~newton.Model.optix_refit_shapes`
-    instead.
+    ``backend="optix"``, build and refit :attr:`~newton.Model.optix_shapes` by passing
+    ``backend="optix"`` to the same methods instead.
 
     Each ray is cast against the shapes of its own world (given by
     ``ray_worlds``) and against the shapes of the global world (index ``-1``),

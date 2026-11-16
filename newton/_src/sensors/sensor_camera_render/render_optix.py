@@ -3,7 +3,8 @@
 
 """Camera traversal of :attr:`Model.optix_shapes`, with the Warp traversal signatures.
 
-``bvh_shapes_id`` is the OptiX instance structure; the Warp BVH arguments are unused.
+``bvh_shapes_id`` is the OptiX instance structure and ``bvh_shapes_group_roots`` holds
+:attr:`OptixShapes.world_planes` flattened; the other Warp BVH arguments are unused.
 """
 
 import warp as wp
@@ -17,6 +18,33 @@ def create_closest_hit(config, shapes):
     from ...geometry.optix import ray_interval, wo, world_offset  # noqa: PLC0415
 
     grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
+    planes_per_world = shapes.world_planes.shape[1]
+
+    @wp.func
+    def plane_hit(
+        hit: raytrace.ClosestHit,
+        si: int,
+        shape_sizes: wp.array[wp.vec3f],
+        shape_transforms: wp.array[wp.transformf],
+        origin: wp.vec3f,
+        direction: wp.vec3f,
+    ) -> raytrace.ClosestHit:
+        distance, normal = raycast.ray_intersect_shape(
+            shape_transforms[si],
+            shape_sizes[si],
+            GeoType.PLANE,
+            origin,
+            direction,
+            wp.static(config.enable_backface_culling),
+        )
+        if distance >= 0.0 and distance < hit.distance:
+            hit.distance = distance
+            hit.normal = normal
+            hit.shape_index = wp.uint32(si)
+            hit.bary_u = 0.0
+            hit.bary_v = 0.0
+            hit.face_idx = -1
+        return hit
 
     @wp.func
     def closest_hit_shape(
@@ -37,25 +65,14 @@ def create_closest_hit(config, shapes):
         direction: wp.vec3f,
         camera_forward: wp.vec3f,
     ) -> raytrace.ClosestHit:
-        # Global planes first: a nearer hit shortens the traversals.
+        # Planes first: a nearer hit shortens the traversals.
         if wp.static(config.enable_global_world):
             for p in range(wp.static(len(shapes.planes))):
-                si = wp.static(shapes.planes[p])
-                distance, normal = raycast.ray_intersect_shape(
-                    shape_transforms[si],
-                    shape_sizes[si],
-                    GeoType.PLANE,
-                    origin,
-                    direction,
-                    wp.static(config.enable_backface_culling),
-                )
-                if distance >= 0.0 and distance < hit.distance:
-                    hit.distance = distance
-                    hit.normal = normal
-                    hit.shape_index = wp.uint32(si)
-                    hit.bary_u = 0.0
-                    hit.bary_v = 0.0
-                    hit.face_idx = -1
+                hit = plane_hit(hit, wp.static(shapes.planes[p]), shape_sizes, shape_transforms, origin, direction)
+        for p in range(wp.static(planes_per_world)):
+            si = bvh_shapes_group_roots[world_index * wp.static(planes_per_world) + p]
+            if si >= 0:
+                hit = plane_hit(hit, si, shape_sizes, shape_transforms, origin, direction)
         # Unrolled: dynamic traversal loops miscompile with warp-optix 0.3.0.
         for i in range(wp.static(2 if config.enable_global_world and shapes.has_global_instances else 1)):
             world = wp.where(i == 1, wp.static(world_count), world_index)
@@ -117,6 +134,26 @@ def create_first_hit(config, shapes):
     from ...geometry.optix import ray_interval, wo, world_offset  # noqa: PLC0415
 
     grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
+    planes_per_world = shapes.world_planes.shape[1]
+
+    @wp.func
+    def plane_blocks(
+        si: int,
+        shape_sizes: wp.array[wp.vec3f],
+        shape_transforms: wp.array[wp.transformf],
+        origin: wp.vec3f,
+        direction: wp.vec3f,
+        max_dist: wp.float32,
+    ) -> wp.bool:
+        distance, _normal = raycast.ray_intersect_shape_no_normal(
+            shape_transforms[si],
+            shape_sizes[si],
+            GeoType.PLANE,
+            origin,
+            direction,
+            wp.static(config.enable_backface_culling),
+        )
+        return distance >= 0.0 and distance < max_dist
 
     @wp.func
     def first_hit_shape(
@@ -135,16 +172,14 @@ def create_first_hit(config, shapes):
     ) -> wp.bool:
         if wp.static(config.enable_global_world):
             for p in range(wp.static(len(shapes.planes))):
-                si = wp.static(shapes.planes[p])
-                distance, _normal = raycast.ray_intersect_shape_no_normal(
-                    shape_transforms[si],
-                    shape_sizes[si],
-                    GeoType.PLANE,
-                    origin,
-                    direction,
-                    wp.static(config.enable_backface_culling),
-                )
-                if distance >= 0.0 and distance < max_dist:
+                if plane_blocks(
+                    wp.static(shapes.planes[p]), shape_sizes, shape_transforms, origin, direction, max_dist
+                ):
+                    return True
+        for p in range(wp.static(planes_per_world)):
+            si = bvh_shapes_group_roots[world_index * wp.static(planes_per_world) + p]
+            if si >= 0:
+                if plane_blocks(si, shape_sizes, shape_transforms, origin, direction, max_dist):
                     return True
         # Unrolled: dynamic traversal loops miscompile with warp-optix 0.3.0.
         for i in range(wp.static(2 if config.enable_global_world and shapes.has_global_instances else 1)):

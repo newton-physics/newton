@@ -34,6 +34,7 @@ import random
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
@@ -257,7 +258,7 @@ class _SensorCameraSceneRig:
         render_order: SensorCamera.RenderOrder,
         camera_fov_deg: float = 45.0,
         *,
-        backend: str = "warp",
+        backend: Literal["warp", "optix"] = "warp",
     ):
         world = preset.build()
         _disable_collision_handling(world)
@@ -299,7 +300,7 @@ class _SensorCameraSceneRig:
 
         self.model.bvh_build_shapes(self.state, bvh_constructor=BVH_CONSTRUCTOR)
         if backend == "optix":
-            self.model.optix_build_shapes(self.state)
+            self.model.bvh_build_shapes(self.state, backend="optix")
         self.model.bvh_build_particles(self.state, bvh_constructor=BVH_CONSTRUCTOR)
         # Static benchmark scene: synchronize render-only state once up front and
         # let render() skip the per-frame sync so it measures rendering only.
@@ -377,7 +378,7 @@ PREVIEW_WORLD_COUNTS = (1, 16)
 
 
 def write_preview_images(
-    scene_names: list[str], output_dir: Path, image_size: int = 1024, backend: str = "warp"
+    scene_names: list[str], output_dir: Path, image_size: int = 1024, backend: Literal["warp", "optix"] = "warp"
 ) -> list[Path]:
     """Write a PNG preview of each scene for every entry in :data:`PREVIEW_WORLD_COUNTS`.
 
