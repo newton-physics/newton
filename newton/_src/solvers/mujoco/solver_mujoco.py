@@ -3544,9 +3544,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         )
 
-    def _init_pairs(
-        self, model: Model, spec: Any, shape_mapping: dict[int, str], template_world: int
-    ) -> list[tuple[int, int]]:
+    def _init_pairs(self, model: Model, spec: Any, shape_mapping: dict[int, str], template_world: int) -> None:
         """
         Initialize MuJoCo contact pairs from custom attributes.
 
@@ -3559,16 +3557,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             spec: The MuJoCo spec to add pairs to.
             shape_mapping: Mapping from Newton shape index to MuJoCo geom name.
             template_world: The world index to use as the template (typically first_group).
-
-        Returns:
-            List of ``(newton_pair_idx, template_world_ordinal)`` for each
-            compiled MuJoCo pair, where ``template_world_ordinal`` is ``-1``
-            for global pairs (``pair_world < 0``) and the 0-based index among
-            rows with ``pair_world == template_world`` otherwise.
         """
         pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
         if pair_count == 0:
-            return []
+            return
 
         mujoco_attrs = model.mujoco
 
@@ -3580,9 +3572,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         pair_geom1 = get_numpy("pair_geom1")
         pair_geom2 = get_numpy("pair_geom2")
         if pair_world is None or pair_geom1 is None or pair_geom2 is None:
-            return []
-
-        pair_count = min(pair_count, len(pair_world), len(pair_geom1), len(pair_geom2))
+            return
 
         pair_condim = get_numpy("pair_condim")
         pair_solref = get_numpy("pair_solref")
@@ -3592,20 +3582,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         pair_gap = get_numpy("pair_gap")
         pair_friction = get_numpy("pair_friction")
 
-        selected_pairs: list[tuple[int, int]] = []
-        template_pair_ordinal = 0
-
         for i in range(pair_count):
             # Only include pairs from the template world or global pairs (world < 0)
             pw = int(pair_world[i])
             if pw != template_world and pw >= 0:
                 continue
-
-            if pw < 0:
-                ordinal = -1
-            else:
-                ordinal = template_pair_ordinal
-                template_pair_ordinal += 1
 
             # Map Newton shape indices to MuJoCo geom names
             newton_shape1 = int(pair_geom1[i])
@@ -3649,9 +3630,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 pair_kwargs["friction"] = pair_friction[i].tolist()
 
             spec.add_pair(**pair_kwargs)
-            selected_pairs.append((i, ordinal))
-
-        return selected_pairs
 
     @staticmethod
     def _validate_tendon_attributes(model: Model) -> tuple[int, int, int]:
@@ -4772,7 +4750,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from MuJoCo [world, tendon] to Newton tendon index.
 
         Shape [nworld, ntendon], dtype int32."""
-        self._mjc_pair_to_newton_pair: wp.array2d[wp.int32] | None = None
         self.body_free_qd_start: wp.array[wp.int32] | None = None
         """Per-body mapping to the free-joint qd_start index (or -1 if not free)."""
 
@@ -9097,7 +9074,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             spec.add_exclude(bodyname1=spec.bodies[mb1].name, bodyname2=spec.bodies[mb2].name)
 
         # add explicit contact pairs from custom attributes
-        selected_pairs = self._init_pairs(model, spec, shape_mapping, first_world)
+        self._init_pairs(model, spec, shape_mapping, first_world)
 
         selected_tendons, mjc_tendon_names = self._init_tendons(
             model, spec, joint_mapping, shape_mapping, site_mapping, first_world
@@ -9613,59 +9590,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     template_tendon = newton_tendon % tendons_per_world if tendons_per_world > 0 else newton_tendon
                     mjc_tendon_to_newton_tendon_np[:, mjc_tendon] = world_offsets * tendons_per_world + template_tendon
                 self.mjc_tendon_to_newton_tendon = wp.array(mjc_tendon_to_newton_tendon_np, dtype=wp.int32)
-
-            npair = self.mj_model.npair
-            if npair > 0:
-                mujoco_attrs = getattr(model, "mujoco", None)
-                pair_world_attr = getattr(mujoco_attrs, "pair_world", None) if mujoco_attrs else None
-                pair_geom1_attr = getattr(mujoco_attrs, "pair_geom1", None) if mujoco_attrs else None
-                pair_geom2_attr = getattr(mujoco_attrs, "pair_geom2", None) if mujoco_attrs else None
-                mjc_pair_to_newton_pair_np = np.full((nworld, npair), -1, dtype=np.int32)
-                if pair_world_attr is not None and pair_geom1_attr is not None and pair_geom2_attr is not None:
-                    pair_world_np = pair_world_attr.numpy()
-                    pair_geom1_np = pair_geom1_attr.numpy()
-                    pair_geom2_np = pair_geom2_attr.numpy()
-                    valid_pair_count = min(
-                        model.custom_frequency_counts.get("mujoco:pair", 0),
-                        len(pair_world_np),
-                        len(pair_geom1_np),
-                        len(pair_geom2_np),
-                    )
-                    pair_world_np = pair_world_np[:valid_pair_count]
-                    order = np.argsort(pair_world_np, kind="stable")
-                    sorted_worlds = pair_world_np[order]
-                    unique_worlds, starts, counts = np.unique(sorted_worlds, return_index=True, return_counts=True)
-                    world_rows = {
-                        int(w): order[start : start + count]
-                        for w, start, count in zip(unique_worlds, starts, counts, strict=True)
-                        if w >= 0
-                    }
-                    world_indices = range(nworld) if separate_worlds else (first_world,)
-                    for mjc_pair, (newton_pair, ordinal) in enumerate(selected_pairs):
-                        if mjc_pair >= npair:
-                            break
-                        if ordinal < 0:
-                            mjc_pair_to_newton_pair_np[:, mjc_pair] = newton_pair
-                            continue
-                        g1 = int(self.mj_model.pair_geom1[mjc_pair])
-                        g2 = int(self.mj_model.pair_geom2[mjc_pair])
-                        for out_w, src_w in enumerate(world_indices):
-                            rows = world_rows.get(src_w)
-                            if rows is None:
-                                continue
-                            expected_s1 = int(geom_shape_mapping[out_w, g1])
-                            expected_s2 = int(geom_shape_mapping[out_w, g2])
-                            if ordinal < len(rows):
-                                cand = int(rows[ordinal])
-                                if int(pair_geom1_np[cand]) == expected_s1 and int(pair_geom2_np[cand]) == expected_s2:
-                                    mjc_pair_to_newton_pair_np[out_w, mjc_pair] = cand
-                                    continue
-                            for cand_np in rows:
-                                cand = int(cand_np)
-                                if int(pair_geom1_np[cand]) == expected_s1 and int(pair_geom2_np[cand]) == expected_s2:
-                                    mjc_pair_to_newton_pair_np[out_w, mjc_pair] = cand
-                                    break
-                self._mjc_pair_to_newton_pair = wp.array(mjc_pair_to_newton_pair_np, dtype=wp.int32)
 
             if separate_worlds:
                 nworld = model.world_count
@@ -11231,7 +11155,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             return  # CPU mode not supported for pair runtime updates
 
         npair = self.mj_model.npair
-        if self._mjc_pair_to_newton_pair is None or npair == 0:
+        if npair == 0:
             return
 
         # Get custom attributes for pair properties
@@ -11253,11 +11177,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             attr is not None
             for attr in [pair_solref, pair_solreffriction, pair_solimp, pair_margin, pair_gap, pair_friction]
         ):
+            # Compute pairs_per_world from Newton custom attributes
+            pair_world_attr = getattr(mujoco_attrs, "pair_world", None)
+            if pair_world_attr is not None:
+                total_pairs = len(pair_world_attr)
+                pairs_per_world = total_pairs // self.model.world_count
+            else:
+                pairs_per_world = npair
+
+            world_count = self.mjw_data.nworld
+
             wp.launch(
                 update_pair_properties_kernel,
-                dim=self._mjc_pair_to_newton_pair.shape,
+                dim=(world_count, npair),
                 inputs=[
-                    self._mjc_pair_to_newton_pair,
+                    pairs_per_world,
                     pair_solref,
                     pair_solreffriction,
                     pair_solimp,
