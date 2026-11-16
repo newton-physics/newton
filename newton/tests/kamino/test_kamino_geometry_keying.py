@@ -18,8 +18,9 @@ from newton._src.solvers.kamino._src.geometry.keying import (
     make_bitmask,
     make_build_pair_key3_func,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 logger = logging.getLogger(__name__)
 
@@ -39,19 +40,14 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ###
 
 
-class TestPairKeyOps(unittest.TestCase):
+class TestPairKeyOps(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
         # Global numpy configurations
         np.set_printoptions(linewidth=10000, precision=10, threshold=10000, suppress=True)
@@ -233,19 +229,14 @@ class TestPairKeyOps(unittest.TestCase):
                 self.assertEqual(keys_np[i], expected_key)
 
 
-class TestBinarySearchOps(unittest.TestCase):
+class TestBinarySearchOps(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
         # Global numpy configurations
         np.set_printoptions(linewidth=10000, precision=10, threshold=10000, suppress=True)
@@ -364,19 +355,14 @@ class TestBinarySearchOps(unittest.TestCase):
             self.assertEqual(target_start_idxs_np[i], expected)
 
 
-class TestKeySorter(unittest.TestCase):
+class TestKeySorter(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
         # Global numpy configurations
         np.set_printoptions(linewidth=10000, precision=10, threshold=10000, suppress=True)

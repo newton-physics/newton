@@ -14,13 +14,16 @@ import warp as wp
 
 import newton
 from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
-from newton.tests.kamino import setup_tests
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.test_viewer_get_frame import _make_box_model, _make_headless_viewer_gl_or_skip
-from newton.tests.unittest_utils import requires
+from newton.tests.unittest_utils import NewtonTestCase, requires
 
 
 @requires("imageio_ffmpeg")
-class TestKaminoViewerRecording(unittest.TestCase):
+class TestKaminoViewerRecording(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_headless_video_recording(self):
         """Encode and decode a real recording driven by a headless ``ViewerGL``.
 
@@ -30,6 +33,11 @@ class TestKaminoViewerRecording(unittest.TestCase):
         ``viewer.close()`` with a stale PNG dropped into the frame folder to
         confirm ``_generate_video`` enumerates only this clip's frames.
         """
+        # The recorder logs each clip's progress and saved file at INFO level.
+        self.expectOutputRegex(
+            r"^(Recording started: |Clip captured: |Generating video from |Video generated successfully: |Video saved: ).*\n?",
+            stream="stdout",
+        )
         import imageio_ffmpeg as ffmpeg  # noqa: PLC0415
         from PIL import Image
 

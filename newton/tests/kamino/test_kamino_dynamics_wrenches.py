@@ -23,8 +23,8 @@ from newton._src.solvers.kamino._src.dynamics.wrenches import (
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
     extract_active_constraint_vectors,
     extract_actuation_forces,
@@ -38,6 +38,7 @@ from newton.tests.kamino.utils.make import (
     make_test_problem_heterogeneous,
     update_containers,
 )
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils.testing import build_unary_revolute_joint_test
 
 logger = logging.getLogger(__name__)
@@ -246,7 +247,7 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
 ###
 
 
-class TestDynamicsWrenches(unittest.TestCase):
+class TestDynamicsWrenches(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -254,12 +255,7 @@ class TestDynamicsWrenches(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set info-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def tearDown(self):
         self.default_device = None

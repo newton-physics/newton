@@ -24,8 +24,9 @@ from newton._src.solvers.kamino._src.core.types import (
     assign_to_warp_int32_array,
     to_warp_int32_array,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +43,14 @@ INT32_MIN = np.iinfo(np.int32).min
 ###
 
 
-class TestToWarpInt32Array(unittest.TestCase):
+class TestToWarpInt32Array(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
 
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def tearDown(self):
         self.default_device = None
@@ -159,18 +156,14 @@ class TestToWarpInt32Array(unittest.TestCase):
             to_warp_int32_array(src, device=self.default_device)
 
 
-class TestAssignToWarpInt32Array(unittest.TestCase):
+class TestAssignToWarpInt32Array(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
 
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def tearDown(self):
         self.default_device = None

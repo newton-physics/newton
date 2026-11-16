@@ -16,8 +16,9 @@ from newton._src.solvers.kamino._src.dynamics.joint_decoupling import DynamicJoi
 from newton._src.solvers.kamino._src.linalg import LLTBlockedSolver
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.make import make_containers, update_containers
+from newton.tests.unittest_utils import NewtonTestCase
 
 
 def _build_decoupled_model(num_joints: int = 3, friction: float = 0.5, effort_limit: float = 2.0) -> ModelKamino:
@@ -66,13 +67,16 @@ def _make_dual_problem(model: ModelKamino) -> tuple[DualProblem, ModelKamino]:
     return problem, model
 
 
-class TestDynamicJointDecoupling(unittest.TestCase):
+class TestDynamicJointDecoupling(NewtonTestCase):
     """The change of variables of :class:`DynamicJointDecoupling` and its uses."""
 
     def setUp(self):
         """Initialize the shared public Kamino test context."""
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
+
+        setup_test_output(self)
+
         # Constructs the constraint offsets of the model
         self.model, *_ = make_containers(model=_build_decoupled_model())
         self.decoupling = DynamicJointDecoupling(self.model)

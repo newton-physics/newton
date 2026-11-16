@@ -16,8 +16,8 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJac
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver
 from newton._src.solvers.kamino._src.solvers.padmm.types import PADMMData
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
 from newton.tests.kamino.utils.extract import (
     extract_cts_jacobians,
@@ -25,6 +25,7 @@ from newton.tests.kamino.utils.extract import (
     extract_info_vectors,
     extract_problem_vector,
 )
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils.basics import build_box_on_plane, build_boxes_hinged
 from newton.tests.utils.testing import build_free_joint_test, build_unary_revolute_joint_test
 
@@ -250,20 +251,16 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 ###
 
 
-class TestSolverMetrics(unittest.TestCase):
+class TestSolverMetrics(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
-        self.seed = 42
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
+
+        self.seed = 42
 
     def tearDown(self):
         self.default_device = None

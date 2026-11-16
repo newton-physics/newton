@@ -3,7 +3,6 @@
 
 """Regressions for captured sparse assembly and numerical ordering."""
 
-import unittest
 from types import SimpleNamespace
 
 import numpy as np
@@ -21,6 +20,8 @@ from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _build_sparse_bilateral_block,
     _set_sparse_bilateral_diagonal,
 )
+from newton.tests.kamino import setup_test_output
+from newton.tests.unittest_utils import NewtonTestCase
 
 
 @wp.kernel
@@ -40,7 +41,10 @@ def _assemble(
     target[target_row * n + target_col] = source[row * n + col]
 
 
-class TestKaminoSparseTopology(unittest.TestCase):
+class TestKaminoSparseTopology(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_preserve_block_order_across_worlds(self):
         """Preserve block ordering, bounded rows, and empty worlds in cached topology."""
         device = wp.get_device("cpu")
@@ -81,7 +85,10 @@ class TestKaminoSparseTopology(unittest.TestCase):
         np.testing.assert_array_equal(indices.numpy(), [3, 5, 4, 7, 2, 6, 10, 9])
 
 
-class TestKaminoSparseAssemblyLifecycle(unittest.TestCase):
+class TestKaminoSparseAssemblyLifecycle(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_capture_reset_and_changing_values(self):
         """Preserve numeric ordering through first use, resets, and changing values."""
         if not wp.is_cuda_available() or not wp.is_conditional_graph_supported():
@@ -200,7 +207,10 @@ def _relative_error(actual, expected):
     return float(np.linalg.norm(actual - expected) / max(np.linalg.norm(expected), 1.0e-30))
 
 
-class TestKaminoSparseAssemblyQuality(unittest.TestCase):
+class TestKaminoSparseAssemblyQuality(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_redundant_cancelling_bridge(self):
         """Preserve numerical ordering and accuracy as a structural bridge becomes nonzero."""
         if not wp.is_cuda_available():

@@ -21,8 +21,8 @@ from newton._src.solvers.kamino._src.kinematics.constraints import get_max_const
 from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.linalg import LLTSequentialSolver
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
     extract_active_constraint_dims,
     extract_cts_jacobians,
@@ -37,6 +37,7 @@ from newton.tests.kamino.utils.make import (
 )
 from newton.tests.kamino.utils.print import debug_print_error_stats
 from newton.tests.kamino.utils.rand import random_rhs_for_matrix
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils.basics import build_boxes_fourbar, build_boxes_nunchaku, make_basics_heterogeneous_builder
 
 logger = logging.getLogger(__name__)
@@ -110,7 +111,10 @@ def _allocation_patches(error):
     return {name: Mock(side_effect=error) for name in ("zeros", "empty", "full", "array")}
 
 
-class TestDelassusSizing(unittest.TestCase):
+class TestDelassusSizing(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_accept_dense_delassus_at_int32_limit(self):
         """Allow a dense buffer at the int32 limit to reach allocation without reserving its memory."""
         model = ModelKamino(
@@ -176,19 +180,14 @@ class TestDelassusSizing(unittest.TestCase):
                     self.assertIn(guidance, str(error.exception))
 
 
-class TestDelassusOperator(unittest.TestCase):
+class TestDelassusOperator(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for detailed output
         self.default_device = wp.get_device(test_context.device)
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def tearDown(self):
         self.default_device = None
@@ -834,7 +833,7 @@ class TestDelassusOperator(unittest.TestCase):
             np.testing.assert_allclose(D_dense_np[w], D_sparse_np[w], rtol=1e-3, atol=1e-4, err_msg="D")
 
 
-class TestDelassusOperatorSparse(unittest.TestCase):
+class TestDelassusOperatorSparse(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
@@ -843,12 +842,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         self.seed = 42
         self.dynamic_joints = True
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def tearDown(self):
         self.default_device = None
