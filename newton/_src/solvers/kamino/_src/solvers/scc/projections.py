@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared contact projection functions for dense and sparse DVI kernels."""
+"""Shared contact projection functions for dense and sparse SCC kernels."""
 
 import warp as wp
 

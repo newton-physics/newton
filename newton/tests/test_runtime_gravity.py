@@ -10,7 +10,7 @@ import warp as wp
 import newton
 from newton import NewtonWarning
 from newton.solvers import SolverKamino, SolverSemiImplicit, SolverVBD, SolverXPBD
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 class TestRuntimeGravity(unittest.TestCase):
@@ -401,6 +401,7 @@ def test_global_gravity_coupling_acceleration(test, device, solver_fn):
     np.testing.assert_allclose(body_acceleration_np[local_body], (0.0, 0.0, -5.0), atol=1.0e-6)
 
 
+@requires(*MUJOCO_MODULES)
 def test_per_world_gravity_bodies_mujoco_warp(test, device):
     """Test per-world gravity with MuJoCo Warp solver (CUDA only)"""
     world_builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
@@ -818,8 +819,8 @@ solvers_particles = {
 solvers_bodies = {
     "xpbd": SolverXPBD,
     "semi_implicit": SolverSemiImplicit,
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+    "mujoco_cpu": requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True)),
+    "mujoco_warp": requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
     "kamino": SolverKamino,
 }
 

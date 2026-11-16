@@ -11,14 +11,14 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.core.types import vec6f
-from newton._src.solvers.kamino._src.solvers.dvi.solver import DVISolver
-from newton._src.solvers.kamino._src.solvers.dvi.sparse import _build_sparse_bilateral_row_nzb_topology
-from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
+from newton._src.solvers.kamino._src.solvers.scc.solver import SCCSolver
+from newton._src.solvers.kamino._src.solvers.scc.sparse import _build_sparse_bilateral_row_nzb_topology
+from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _assemble_sparse_bilateral_unilateral_coupling,
     _build_sparse_bilateral_rhs,
     make_sparse_bilateral_inverse_kernel,
 )
-from newton._src.solvers.kamino._src.solvers.dvi.types import DVIState
+from newton._src.solvers.kamino._src.solvers.scc.types import SCCState
 
 
 class TestKaminoBilateralRHS(unittest.TestCase):
@@ -167,12 +167,12 @@ class TestKaminoBilateralRHS(unittest.TestCase):
 
     def test_large_non_schur_workspace_stays_matrix_free(self):
         """Avoid oversized coupling allocations and int32 errors in non-Schur solves."""
-        solver = DVISolver()
+        solver = SCCSolver()
         solver._device = wp.get_device("cpu")
         solver._size = SimpleNamespace(sum_of_max_inequalities=1, num_worlds=1, sum_of_max_total_cts=1)
         solver._joint_rows_host = [46341]
         solver._data = SimpleNamespace(
-            state=DVIState(),
+            state=SCCState(),
             bilateral_operator=SimpleNamespace(info=SimpleNamespace(total_vec_size=1)),
         )
         zeros = wp.zeros
@@ -190,7 +190,7 @@ class TestKaminoBilateralRHS(unittest.TestCase):
 
     def test_coupling_workspace_without_responses(self):
         """Cache only the coupling when alternating solves do not use Schur responses."""
-        state = DVIState()
+        state = SCCState()
         size = SimpleNamespace(sum_of_max_inequalities=2, num_worlds=1, sum_of_max_total_cts=6)
         state.allocate_sparse_projection(size, [4], [2], 4, False, cache_bilateral_coupling=True)
         self.assertEqual(state.bilateral_coupling.size, 8)

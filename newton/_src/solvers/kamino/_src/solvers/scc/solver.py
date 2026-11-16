@@ -1,14 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Projected DVI solver for Kamino dual forward-dynamics problems."""
+"""Split Constraint Coupling (SCC) solver for Kamino dual forward-dynamics problems."""
 
 from __future__ import annotations
 
 import warp as wp
 
 from ......sim import ModelFlags
-from ....config import DVISolverConfig
+from ....config import SCCSolverConfig
 from ...core.data import DataKamino
 from ...core.model import ModelKamino
 from ...core.size import SizeKamino
@@ -32,35 +32,35 @@ from .kernels import (
     BILATERAL_FAILED_PIVOT_SHIFT,
     _assemble_bilateral_contact_response,
     _build_bilateral_rhs,
-    _compute_dvi_desaxce_corrections,
-    _compute_dvi_solution_vectors,
-    _compute_dvi_status_residuals,
-    _compute_dvi_unilateral_velocities,
+    _compute_scc_desaxce_corrections,
+    _compute_scc_solution_vectors,
+    _compute_scc_status_residuals,
+    _compute_scc_unilateral_velocities,
     _copy_bilateral_block,
-    _initialize_dvi_status,
-    _reset_dvi_solver_data,
-    _reset_dvi_status,
-    _scale_dvi_tangential_warmstart,
+    _initialize_scc_status,
+    _reset_scc_solver_data,
+    _reset_scc_status,
+    _scale_scc_tangential_warmstart,
     _scatter_bilateral_solution,
-    _set_dvi_bilateral_active_dim,
-    _set_dvi_direct_status_iterations,
+    _set_scc_bilateral_active_dim,
+    _set_scc_direct_status_iterations,
     _solve_bilateral_contact_response,
-    _solve_dvi_inequalities_colored_pgs,
-    _unprecondition_dvi_solution,
+    _solve_scc_inequalities_colored_pgs,
+    _unprecondition_scc_solution,
 )
 from .sparse import (
-    SparseDVIPath,
+    SparseSCCPath,
     _compute_sparse_solution_vectors,
     _factor_sparse_bilateral_block,
     _solve_sparse_bilateral_block,
 )
 from .sparse_kernels import (
-    _color_mapped_dvi_inequalities,
+    _color_mapped_scc_inequalities,
     _map_active_contacts,
     _map_active_limits,
     _map_bounded_constraints,
 )
-from .types import DVIConfigStruct, DVIData, convert_config_to_struct
+from .types import SCCConfigStruct, SCCData, convert_config_to_struct
 
 wp.set_module_options({"enable_backward": False})
 
@@ -70,8 +70,8 @@ float32 = wp.float32
 _MAX_CACHED_BILATERAL_COUPLING_ENTRIES = 16 * 1024 * 1024  # 64 MiB of float32.
 
 
-class DVISolver:
-    """Solve Kamino dual problems with projected DVI iterations.
+class SCCSolver:
+    """Solve Kamino dual problems with projected SCC iterations.
 
     For Kamino's dual system ``v_plus = D * lambda + v_f``, bilateral rows
     enforce zero velocity, limit rows enforce nonnegative complementarity,
@@ -85,7 +85,7 @@ class DVISolver:
     status, and diagnostics contract.
     """
 
-    Config = DVISolverConfig
+    Config = SCCSolverConfig
 
     def __init__(
         self,
@@ -95,29 +95,29 @@ class DVISolver:
         contacts: ContactsKamino | None = None,
         jacobians: SparseSystemJacobians | None = None,
         problem: DualProblem | None = None,
-        config: list[DVISolver.Config] | DVISolver.Config | None = None,
+        config: list[SCCSolver.Config] | SCCSolver.Config | None = None,
         warmstart: WarmStartMode = WarmStartMode.NONE,
         collect_info: bool = False,
     ):
-        """Initialize a DVI solver and optionally allocate it for a model.
+        """Initialize an SCC solver and optionally allocate it for a model.
 
         Args:
             model: Model that determines solver allocation sizes.
-            data: Model data used by sparse DVI operator products.
-            limits: Limit topology used by sparse DVI updates.
+            data: Model data used by sparse SCC operator products.
+            limits: Limit topology used by sparse SCC updates.
             contacts: Contact topology used for graph-colored contact updates.
-            jacobians: Sparse constraint Jacobians used by sparse DVI updates.
+            jacobians: Sparse constraint Jacobians used by sparse SCC updates.
             problem: Optional sparse problem used to precompute topology outside
                 the first simulation step.
-            config: One DVI config or one config per world.
+            config: One SCC config or one config per world.
             warmstart: Source used to initialize constraint impulses.
             collect_info: Whether to retain terminal per-world diagnostics.
         """
-        self._config: list[DVISolver.Config] = []
+        self._config: list[SCCSolver.Config] = []
         self._warmstart: WarmStartMode = WarmStartMode.NONE
         self._collect_info: bool = False
         self._size: SizeKamino | None = None
-        self._data: DVIData | None = None
+        self._data: SCCData | None = None
         self._bilateral_solver: LLTBlockedSolver | LLTBlockedRCMSolver | None = None
         self._use_schur_complement: bool = False
         self._max_alternating_iterations: int = 1
@@ -125,7 +125,7 @@ class DVISolver:
         self._has_unilateral_constraints: bool = False
         self._limits: LimitsKamino | None = None
         self._contacts: ContactsKamino | None = None
-        self._sparse_path: SparseDVIPath | None = None
+        self._sparse_path: SparseSCCPath | None = None
         self._all_worlds_mask: wp.array[wp.bool] | None = None
         self._device: wp.DeviceLike = None
         self._joint_rows_host: list[int] = []
@@ -149,8 +149,8 @@ class DVISolver:
             )
 
     @property
-    def config(self) -> list[DVISolver.Config]:
-        """Host-side per-world DVI configs."""
+    def config(self) -> list[SCCSolver.Config]:
+        """Host-side per-world SCC configs."""
         return self._config
 
     @property
@@ -159,7 +159,7 @@ class DVISolver:
         return self._size
 
     @property
-    def data(self) -> DVIData:
+    def data(self) -> SCCData:
         """Solver data arrays."""
         if self._data is None:
             raise RuntimeError("Solver data has not been allocated yet. Call `finalize()` first.")
@@ -183,7 +183,7 @@ class DVISolver:
         contacts: ContactsKamino | None = None,
         jacobians: SparseSystemJacobians | None = None,
         problem: DualProblem | None = None,
-        config: list[DVISolver.Config] | DVISolver.Config | None = None,
+        config: list[SCCSolver.Config] | SCCSolver.Config | None = None,
         warmstart: WarmStartMode = WarmStartMode.NONE,
         collect_info: bool = False,
     ):
@@ -191,12 +191,12 @@ class DVISolver:
 
         Args:
             model: Model that determines solver allocation sizes.
-            data: Model data used by sparse DVI operator products.
-            limits: Limit topology used by sparse DVI updates.
+            data: Model data used by sparse SCC operator products.
+            limits: Limit topology used by sparse SCC updates.
             contacts: Contact topology used for graph-colored contact updates.
-            jacobians: Sparse constraint Jacobians used by sparse DVI updates.
+            jacobians: Sparse constraint Jacobians used by sparse SCC updates.
             problem: Optional sparse problem used to precompute topology.
-            config: One DVI config or one config per world.
+            config: One SCC config or one config per world.
             warmstart: Source used to initialize constraint impulses.
             collect_info: Whether to retain terminal per-world diagnostics.
         """
@@ -219,7 +219,7 @@ class DVISolver:
         self._body_inv_mass = model.bodies.inv_m_i
         self._config = self._check_config(model, config)
         if len({c.unilateral_solver for c in self._config}) != 1:
-            raise ValueError("All worlds must use the same DVI unilateral solver.")
+            raise ValueError("All worlds must use the same SCC unilateral solver.")
         self._apgd = None
         # Account for the bilateral response in every bounded-drive update.
         # Raw body inverse inertia can dwarf the constrained joint mobility.
@@ -227,7 +227,7 @@ class DVISolver:
         schur_modes = [auto_schur if c.use_schur_complement is None else c.use_schur_complement for c in self._config]
         self._use_schur_complement = schur_modes[0]
         if any(mode != self._use_schur_complement for mode in schur_modes[1:]):
-            raise ValueError("All worlds must use the same DVI Schur-complement configuration.")
+            raise ValueError("All worlds must use the same SCC Schur-complement configuration.")
         self._warmstart = warmstart
         self._collect_info = collect_info
         self._max_alternating_iterations = max(c.max_alternating_iterations for c in self._config)
@@ -237,7 +237,7 @@ class DVISolver:
             or self._size.max_of_max_contacts > 0
             or self._size.max_of_num_bounded_joint_cts > 0
         )
-        self._data = DVIData(size=self._size, collect_info=self._collect_info, device=self._device)
+        self._data = SCCData(size=self._size, collect_info=self._collect_info, device=self._device)
         self._all_worlds_mask = wp.ones(shape=(self._size.num_worlds,), dtype=wp.bool, device=self._device)
         self._joint_rows_host = model.info.num_joint_bilateral_cts.numpy().astype(int).tolist()
         bounded_counts = model.info.num_joint_bounded_cts.numpy().astype(int).tolist()
@@ -249,7 +249,7 @@ class DVISolver:
         ]
         self._max_unilateral_rows = max(self._unilateral_strides_host, default=0)
         self._allocate_bilateral_solver(model)
-        self._sparse_path = SparseDVIPath(
+        self._sparse_path = SparseSCCPath(
             device=self._device,
             size=self._size,
             joint_rows_host=self._joint_rows_host,
@@ -279,12 +279,12 @@ class DVISolver:
 
         configs = [convert_config_to_struct(c) for c in self._config]
         with wp.ScopedDevice(self._device):
-            self._data.config = wp.array(configs, dtype=DVIConfigStruct)
+            self._data.config = wp.array(configs, dtype=SCCConfigStruct)
         if self._config[0].unilateral_solver == "apgd":
             self._apgd = UnilateralAPGD(self)
 
-    def _make_bilateral_solve_schedule(self, configs: list[DVISolver.Config]) -> tuple[bool, ...]:
-        """Return host-side repeated bilateral solve points for direct-block DVI."""
+    def _make_bilateral_solve_schedule(self, configs: list[SCCSolver.Config]) -> tuple[bool, ...]:
+        """Return host-side repeated bilateral solve points for direct-block SCC."""
         if self._use_schur_complement:
             # Schur elimination incorporates the bilateral response into every
             # unilateral update. Re-solving the bilateral block between
@@ -309,7 +309,7 @@ class DVISolver:
     def _set_bilateral_active_dim(self, problem: DualProblem, block_iteration: int) -> None:
         """Select worlds whose bilateral block is active for a scheduled solve."""
         wp.launch(
-            kernel=_set_dvi_bilateral_active_dim,
+            kernel=_set_scc_bilateral_active_dim,
             dim=self._size.num_worlds,
             inputs=[
                 problem.data.njc,
@@ -324,7 +324,7 @@ class DVISolver:
         )
 
     def _allocate_bilateral_solver(self, model: ModelKamino):
-        """Allocate the reduced dense operator used for bilateral DVI solves."""
+        """Allocate the reduced dense operator used for bilateral SCC solves."""
         self._bilateral_solver = None
         self._data.bilateral_operator = None
         if model.size.sum_of_num_bilateral_joint_cts == 0:
@@ -336,7 +336,7 @@ class DVISolver:
             or config.bilateral_solver_kwargs != first_config.bilateral_solver_kwargs
             for config in self._config[1:]
         ):
-            raise ValueError("All worlds must use the same DVI bilateral solver configuration.")
+            raise ValueError("All worlds must use the same SCC bilateral solver configuration.")
 
         solver_type = first_config.bilateral_solver_type
         kwargs = dict(first_config.bilateral_solver_kwargs)
@@ -378,19 +378,19 @@ class DVISolver:
 
     @staticmethod
     def _check_config(
-        model: ModelKamino | None = None, config: list[DVISolver.Config] | DVISolver.Config | None = None
-    ) -> list[DVISolver.Config]:
+        model: ModelKamino | None = None, config: list[SCCSolver.Config] | SCCSolver.Config | None = None
+    ) -> list[SCCSolver.Config]:
         if config is None:
-            config = [DVISolver.Config()] * (model.info.num_worlds if model else 1)
-        elif isinstance(config, DVISolver.Config):
+            config = [SCCSolver.Config()] * (model.info.num_worlds if model else 1)
+        elif isinstance(config, SCCSolver.Config):
             config = [config] * (model.info.num_worlds if model else 1)
         elif isinstance(config, list):
             if model is not None and len(config) != model.info.num_worlds:
                 raise ValueError(f"Expected {model.info.num_worlds} configs, got {len(config)}")
-            if not all(isinstance(c, DVISolver.Config) for c in config):
-                raise TypeError("All configs must be instances of DVISolver.Config")
+            if not all(isinstance(c, SCCSolver.Config) for c in config):
+                raise TypeError("All configs must be instances of SCCSolver.Config")
         else:
-            raise TypeError(f"Expected a single object or list of `DVISolver.Config`, got {type(config)}")
+            raise TypeError(f"Expected a single object or list of `SCCSolver.Config`, got {type(config)}")
         return config
 
     def set_contacts(self, contacts: ContactsKamino | None):
@@ -426,7 +426,7 @@ class DVISolver:
             if problem is None:
                 raise ValueError("A `DualProblem` instance must be provided when a world mask is used.")
             wp.launch(
-                kernel=_reset_dvi_solver_data,
+                kernel=_reset_scc_solver_data,
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     world_mask,
@@ -520,9 +520,9 @@ class DVISolver:
         triplets ``[t0, t1, n]``. Contact rows use
         ``v_aug = v_plus + [0, 0, mu * norm(v_t)]``.
 
-        The DVI solution satisfies zero ``v_aug`` on bilateral rows,
+        The SCC solution satisfies zero ``v_aug`` on bilateral rows,
         nonnegative complementarity on limit rows, and Coulomb-cone
-        complementarity between contact impulses and augmented velocities. DVI
+        complementarity between contact impulses and augmented velocities. SCC
         exploits this difference by partitioning the system into bilateral
         impulses ``lambda_b`` and unilateral limit/contact impulses
         ``lambda_u``. When the bilateral block is available, it is factored and
@@ -545,9 +545,9 @@ class DVISolver:
         This differs from Kamino's PADMM backend, which places all constraint
         rows in one proximal-ADMM iteration: it solves a regularized full
         Delassus system for the unconstrained primal update, then projects the
-        unilateral components. DVI uses no ADMM penalty or auxiliary-variable
+        unilateral components. SCC uses no ADMM penalty or auxiliary-variable
         iteration; its primary split is direct bilateral versus projected
-        iterative unilateral solves. Dense and sparse DVI paths implement the
+        iterative unilateral solves. Dense and sparse SCC paths implement the
         same split with different Delassus representations.
 
         Args:
@@ -555,7 +555,7 @@ class DVISolver:
         """
         self._allocate_projection_workspace(problem)
         wp.launch(
-            kernel=_reset_dvi_status,
+            kernel=_reset_scc_status,
             dim=self._size.num_worlds,
             inputs=[self._data.status],
             device=self.device,
@@ -563,7 +563,7 @@ class DVISolver:
 
         if problem.sparse:
             if self._sparse_path is None:
-                raise RuntimeError("Sparse DVI path has not been allocated. Call `finalize()` first.")
+                raise RuntimeError("Sparse SCC path has not been allocated. Call `finalize()` first.")
             if self._sparse_path.bilateral_nzb_pairs is None:
                 self._sparse_path.prepare(problem)
             # Apply projected iterations through matrix-free products
@@ -584,7 +584,7 @@ class DVISolver:
 
             # Evaluate the physical post-event velocity v_plus = D * lambda + v_f.
             wp.launch(
-                kernel=_compute_dvi_solution_vectors,
+                kernel=_compute_scc_solution_vectors,
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     problem.data.dim,
@@ -604,7 +604,7 @@ class DVISolver:
             # Map physical contact velocity to the dual-cone variable
             # v_aug = v_plus + [0, 0, mu * norm(v_t)].
             wp.launch(
-                kernel=_compute_dvi_desaxce_corrections,
+                kernel=_compute_scc_desaxce_corrections,
                 dim=(self._size.num_worlds, self._size.max_of_max_contacts),
                 inputs=[
                     problem.data.nc,
@@ -619,12 +619,12 @@ class DVISolver:
                 device=self.device,
             )
 
-        # Classify the final iterate using all DVI conditions. This replaces
+        # Classify the final iterate using all SCC conditions. This replaces
         # provisional iterate-change convergence from the dense fallback;
         # direct and sparse paths reach this check after fixed iteration counts.
         residual_workers = 32 if self._device.is_cuda else 1
         wp.launch(
-            kernel=_compute_dvi_status_residuals,
+            kernel=_compute_scc_status_residuals,
             dim=self._size.num_worlds * residual_workers,
             inputs=[
                 problem.data.dim,
@@ -658,7 +658,7 @@ class DVISolver:
             wp.copy(self._data.info.status, self._data.status)
 
         wp.launch(
-            kernel=_unprecondition_dvi_solution,
+            kernel=_unprecondition_scc_solution,
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[
                 problem.data.dim,
@@ -710,9 +710,9 @@ class DVISolver:
         before the first solve, which may run inside a captured graph.
         """
         if self._size.max_of_max_limits > 0 and self._limits is None:
-            raise ValueError("DVI requires `limits` when the model allocates joint limits.")
+            raise ValueError("SCC requires `limits` when the model allocates joint limits.")
         if self._size.max_of_max_contacts > 0 and self._contacts is None:
-            raise ValueError("DVI requires `contacts` when the model allocates contacts.")
+            raise ValueError("SCC requires `contacts` when the model allocates contacts.")
 
     def _prepare_inequality_coloring(self, problem: DualProblem) -> None:
         """Map and color active inequalities with the multi-world fast path."""
@@ -771,7 +771,7 @@ class DVISolver:
             )
         state.inequality_body_color_masks.zero_()
         wp.launch(
-            kernel=_color_mapped_dvi_inequalities,
+            kernel=_color_mapped_scc_inequalities,
             dim=self._size.num_worlds,
             inputs=[
                 problem.data.nbc,
@@ -795,14 +795,14 @@ class DVISolver:
         """Solve an inequality-only dense problem through the unified path."""
         state = self._data.state
         wp.launch(
-            kernel=_initialize_dvi_status,
+            kernel=_initialize_scc_status,
             dim=self._size.num_worlds,
             inputs=[self._data.config, self._data.status],
             device=self.device,
         )
         self._prepare_inequality_coloring(problem)
         wp.launch(
-            kernel=_compute_dvi_unilateral_velocities,
+            kernel=_compute_scc_unilateral_velocities,
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[
                 problem.data.dim,
@@ -823,7 +823,7 @@ class DVISolver:
         # Inequality-only solves need no host work between PGS blocks.
         for block_iteration in (_FUSED_INEQUALITY_BLOCK,):
             wp.launch(
-                kernel=_solve_dvi_inequalities_colored_pgs,
+                kernel=_solve_scc_inequalities_colored_pgs,
                 dim=self._size.num_worlds * threads_per_world,
                 inputs=[
                     problem.data.dim,
@@ -859,7 +859,7 @@ class DVISolver:
                 block_dim=threads_per_world,
             )
         wp.launch(
-            kernel=_set_dvi_direct_status_iterations,
+            kernel=_set_scc_direct_status_iterations,
             dim=self._size.num_worlds,
             inputs=[problem.data.nbc, problem.data.nl, problem.data.nc, self._data.config, False, self._data.status],
             device=self.device,
@@ -948,7 +948,7 @@ class DVISolver:
             return
 
         wp.launch(
-            kernel=_initialize_dvi_status,
+            kernel=_initialize_scc_status,
             dim=self._size.num_worlds,
             inputs=[self._data.config, self._data.status],
             device=self.device,
@@ -957,7 +957,7 @@ class DVISolver:
         threads_per_world = 64 if self.device.is_cuda else 1
         for block_iteration in range(self._max_alternating_iterations):
             wp.launch(
-                kernel=_compute_dvi_unilateral_velocities,
+                kernel=_compute_scc_unilateral_velocities,
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     problem.data.dim,
@@ -975,7 +975,7 @@ class DVISolver:
                 device=self.device,
             )
             wp.launch(
-                kernel=_solve_dvi_inequalities_colored_pgs,
+                kernel=_solve_scc_inequalities_colored_pgs,
                 dim=self._size.num_worlds * threads_per_world,
                 inputs=[
                     problem.data.dim,
@@ -1017,7 +1017,7 @@ class DVISolver:
         self._set_bilateral_active_dim(problem, -1)
         self._solve_bilateral_block(problem, active_dim=self._data.state.bilateral_active_dim)
         wp.launch(
-            kernel=_set_dvi_direct_status_iterations,
+            kernel=_set_scc_direct_status_iterations,
             dim=self._size.num_worlds,
             inputs=[problem.data.nbc, problem.data.nl, problem.data.nc, self._data.config, False, self._data.status],
             device=self.device,
@@ -1030,7 +1030,7 @@ class DVISolver:
         used by every colored unilateral sweep. A final bilateral solve then
         recovers joint impulses consistent with the contact and limit solution.
         CUDA's fused path adaptively stops and reports its completed projected
-        sweeps in :class:`DVIStatus`; CPU executes and reports the full configured
+        sweeps in :class:`SCCStatus`; CPU executes and reports the full configured
         sweep budget.
         """
         self._factor_bilateral_block(problem)
@@ -1087,7 +1087,7 @@ class DVISolver:
         )
 
         wp.launch(
-            kernel=_initialize_dvi_status,
+            kernel=_initialize_scc_status,
             dim=self._size.num_worlds,
             inputs=[
                 self._data.config,
@@ -1099,7 +1099,7 @@ class DVISolver:
         self._prepare_inequality_coloring(problem)
         threads_per_world = 64 if self.device.is_cuda else 1
         wp.launch(
-            kernel=_compute_dvi_unilateral_velocities,
+            kernel=_compute_scc_unilateral_velocities,
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[
                 problem.data.dim,
@@ -1117,7 +1117,7 @@ class DVISolver:
             device=self.device,
         )
         wp.launch(
-            kernel=_solve_dvi_inequalities_colored_pgs,
+            kernel=_solve_scc_inequalities_colored_pgs,
             dim=self._size.num_worlds * threads_per_world,
             inputs=[
                 problem.data.dim,
@@ -1157,7 +1157,7 @@ class DVISolver:
         self._solve_bilateral_block(problem, active_dim=self._data.state.bilateral_active_dim)
 
         wp.launch(
-            kernel=_set_dvi_direct_status_iterations,
+            kernel=_set_scc_direct_status_iterations,
             dim=self._size.num_worlds,
             inputs=[
                 problem.data.nbc,
@@ -1271,7 +1271,7 @@ class DVISolver:
                 device=self.device,
             )
             wp.launch(
-                kernel=_scale_dvi_tangential_warmstart,
+                kernel=_scale_scc_tangential_warmstart,
                 dim=contacts.model_max_contacts_host,
                 inputs=[
                     model.info.total_cts_offset,
