@@ -408,7 +408,8 @@ _COUPLED_CONTACT_COULOMB_NEWTON = """
         }
         float rT0 = -last_s0;
         float rT1 = -last_s1;
-        new_lambda_n = -(wNT0 * rT0 + wNT1 * rT1 + bN) / WN;
+        // The finite search can end just below zero load; the exact root is non-negative.
+        new_lambda_n = fmaxf(-(wNT0 * rT0 + wNT1 * rT1 + bN) / WN, 0.0f);
         new_lambda_t1 = rT0;
         new_lambda_t2 = rT1;
         // The root search stops within a tolerance and leaves a residual tangent at mu = 0.

@@ -23,11 +23,32 @@ from ..core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from ..linear import DirectSolver
 from .ldl_dense import DenseLDLStorage
 
+###
+# Module interface
+###
+
+__all__ = ["LDLBlockSparseSolver"]
+
+
+###
+# Module configs
+###
+
 wp.set_module_options({"enable_backward": False})
+
+
+###
+# Types
+###
 
 _Vector = wp.types.vector(length=6, dtype=wp.float32)
 _BlockRows = Sequence[Sequence[Sequence[int]]]
 _BlockEdges = Sequence[Sequence[tuple[int, int]]]
+
+
+###
+# Functions
+###
 
 
 def _rcm_ordering(graph):
@@ -87,6 +108,33 @@ def _symbolic(groups, edges, ordering):
         remaining.remove(node)
     inverse = {node: i for i, node in enumerate(order)}
     return [groups[i] for i in order], [sorted(inverse[j] for j in col) for col in columns]
+
+
+@wp.func
+def _factor_entry(
+    i: int,
+    r: int,
+    j: int,
+    c: int,
+    row_ptr: wp.array[wp.int32],
+    col_idx: wp.array[wp.int32],
+    slots: wp.array[wp.int32],
+    factors: wp.array3d[wp.float32],
+):
+    """Read a scalar entry of unit-lower L, returning zero outside its sparse pattern."""
+    value = wp.float32(0.0)
+    if i == j and r >= c:
+        value = factors[i, r, c]
+    elif i > j:
+        for entry in range(row_ptr[i], row_ptr[i + 1]):
+            if col_idx[entry] == j:
+                value = factors[slots[entry], r, c]
+    return value
+
+
+###
+# Kernels
+###
 
 
 @wp.kernel
@@ -293,28 +341,6 @@ def _solve_diagonal(
     result[index] = source[index] / d
 
 
-@wp.func
-def _factor_entry(
-    i: int,
-    r: int,
-    j: int,
-    c: int,
-    row_ptr: wp.array[wp.int32],
-    col_idx: wp.array[wp.int32],
-    slots: wp.array[wp.int32],
-    factors: wp.array3d[wp.float32],
-):
-    """Read a scalar entry of unit-lower L, returning zero outside its sparse pattern."""
-    value = wp.float32(0.0)
-    if i == j and r >= c:
-        value = factors[i, r, c]
-    elif i > j:
-        for entry in range(row_ptr[i], row_ptr[i + 1]):
-            if col_idx[entry] == j:
-                value = factors[slots[entry], r, c]
-    return value
-
-
 @wp.kernel
 def _reconstruct(
     dim: wp.array[wp.int32],
@@ -343,6 +369,11 @@ def _reconstruct(
             * _factor_entry(jc // 6, jc % 6, kc // 6, kc % 6, row_ptr, col_idx, slots, factors)
         )
     result[mio[world] + row * n + col] = value
+
+
+###
+# Interfaces
+###
 
 
 class LDLBlockSparseSolver(DirectSolver):
@@ -389,118 +420,18 @@ class LDLBlockSparseSolver(DirectSolver):
         self._dense = None
         super().__init__(operator=operator, dtype=dtype, device=device)
 
+    ###
+    # Properties
+    ###
+
     @property
     def ordering(self) -> str:
         """Block ordering selected for symbolic factorization."""
         return self._ordering
 
-    def _allocate_impl(self, operator: DenseLinearOperatorData) -> None:
-        """Build symbolic fill and schedules, or allocate implicit complete-pattern storage."""
-        if not isinstance(operator.info, DenseSquareMultiLinearInfo):
-            raise ValueError("LDL factorization requires a square matrix.")
-        if operator.info.dtype != wp.float32:
-            raise ValueError("LDLBlockSparseSolver supports float32 matrices.")
-        if operator.info.itype != wp.int32:
-            raise ValueError("LDLBlockSparseSolver supports int32 indices.")
-        info = operator.info
-        self._device = info.dim.device
-        capacities = info.maxdim.numpy().tolist()
-        self._maxdim = max(capacities, default=0)
-        self._world_count = len(capacities)
-        self._ones = wp.ones(self._world_count, dtype=wp.int32, device=self.device)
-        self._dense = None
-        if self._block_rows is None and self._block_edges is None:
-            self._dense = DenseLDLStorage(operator, self.ordering, self.device)
-            self.factors = self._dense.lower
-            self.diagonal = self._dense.diagonal
-            self.failed = self._dense.failed
-            self._has_factors = False
-            return
-        block_rows, block_edges = self._block_rows, self._block_edges
-        if block_rows is None:
-            block_rows = [[list(range(i, min(i + 6, n))) for i in range(0, n, 6)] for n in capacities]
-        if len(block_rows) != len(capacities):
-            raise ValueError("Provide one row partition per matrix.")
-        if block_edges is None:
-            block_edges = [[(i, j) for i in range(len(groups)) for j in range(i)] for groups in block_rows]
-        if len(block_edges) != len(capacities):
-            raise ValueError("Provide one block graph per matrix.")
-        rows, worlds, columns, world_ptr = [], [], [], [0]
-        cache_symbolic = {}
-        self._row_maps = []
-        for world, (n, row_groups, edges) in enumerate(zip(capacities, block_rows, block_edges, strict=True)):
-            groups = tuple(tuple(int(r) for r in group) for group in row_groups)
-            if any(not 1 <= len(group) <= 6 for group in groups) or sorted(r for g in groups for r in g) != list(
-                range(n)
-            ):
-                raise ValueError("Block rows must partition each matrix into groups of one to six rows.")
-            key = (groups, tuple(sorted({(min(i, j), max(i, j)) for i, j in edges})))
-            if key not in cache_symbolic:
-                cache_symbolic[key] = _symbolic(*key, self._ordering)
-            ordered, local_columns = cache_symbolic[key]
-            base = len(rows)
-            mapping = {}
-            for i, group in enumerate(ordered):
-                mapping.update({r: (base + i, c) for c, r in enumerate(group)})
-                rows.append([*group, *([-1] * (6 - len(group)))])
-                worlds.append(world)
-                columns.append([base + j for j in local_columns[i]])
-            self._row_maps.append(mapping)
-            world_ptr.append(len(rows))
-        self.pivot_count = len(rows)
-        col_ptr, row_idx, block_i, block_j = [0], [], list(range(len(rows))), list(range(len(rows)))
-        predecessors = [{} for _ in rows]
-        self._block_lookup = {(i, i): i for i in range(len(rows))}
-        for j, column in enumerate(columns):
-            for i in column:
-                slot = len(block_i)
-                self._block_lookup[i, j] = slot
-                predecessors[i][j] = slot
-                row_idx.append(i)
-                block_i.append(i)
-                block_j.append(j)
-            col_ptr.append(len(row_idx))
-        row_ptr, col_idx, row_slots = [0], [], []
-        levels = []
-        for previous in predecessors:
-            col_idx.extend(previous)
-            row_slots.extend(previous.values())
-            row_ptr.append(len(col_idx))
-            levels.append(1 + max((levels[j] for j in previous), default=-1))
-        pred_ptr, pred_left, pred_right = [0], [], []
-        for i, j in zip(block_i[self.pivot_count :], block_j[self.pivot_count :], strict=True):
-            for k, slot in predecessors[j].items():
-                if k in predecessors[i]:
-                    pred_left.append(predecessors[i][k])
-                    pred_right.append(slot)
-            pred_ptr.append(len(pred_left))
-        vio = info.vio.numpy()
-        inverse = np.zeros(info.total_vec_size, dtype=np.int32)
-        for w, mapping in enumerate(self._row_maps):
-            for row, (i, r) in mapping.items():
-                inverse[vio[w] + row] = 6 * i + r
-        level_indices = sorted(range(len(rows)), key=lambda i: (levels[i], i))
-        counts = np.bincount(levels) if levels else []
-        self._levels = list(zip(np.cumsum([0, *counts[:-1]]).tolist(), counts, strict=True)) if len(counts) else []
-
-        def ints(values):
-            """Copy packed symbolic indices to an int32 device array."""
-            return wp.array(values, dtype=wp.int32, device=self.device)
-
-        self.rows = ints(np.asarray(rows, dtype=np.int32).reshape(-1, 6))
-        self.worlds = ints(worlds)
-        self._world_ptr = ints(world_ptr)
-        self.block_i, self.block_j = ints(block_i), ints(block_j)
-        self._col_ptr, self._row_idx = ints(col_ptr), ints(row_idx)
-        self._row_ptr, self._col_idx, self._row_slots = ints(row_ptr), ints(col_idx), ints(row_slots)
-        self._col_slots = ints(list(range(self.pivot_count, len(block_i))))
-        self._pred_ptr, self._pred_left, self._pred_right = ints(pred_ptr), ints(pred_left), ints(pred_right)
-        self._pivots, self._inverse = ints(level_indices), ints(inverse)
-        self.values = wp.zeros((len(block_i), 6, 6), dtype=wp.float32, device=self.device)
-        self.factors = wp.zeros_like(self.values)
-        self.diagonal = wp.zeros((self.pivot_count, 6), dtype=wp.float32, device=self.device)
-        self.failed = wp.zeros(len(capacities), dtype=wp.int32, device=self.device)
-        self._has_factors = False
+    ###
+    # Operations
+    ###
 
     def entry_offsets(self, worlds: Sequence[int], rows: Sequence[int], cols: Sequence[int]) -> np.ndarray:
         """Map structural scalar entries to flat block storage before capture."""
@@ -514,32 +445,6 @@ class LDLBlockSparseSolver(DirectSolver):
                 i, j, r, c = j, i, c, r
             result.append(self._block_lookup[i, j] * 36 + r * 6 + c)
         return np.asarray(result, dtype=np.int32)
-
-    def _reset_impl(self) -> None:
-        """Invalidate the cached numeric factorization while retaining symbolic storage."""
-        self._has_factors = False
-
-    def _factorize_impl(self, A: wp.array[wp.float32]) -> None:
-        """Factor packed dense input through the explicit sparse pattern or complete-pattern storage."""
-        if self._dense is not None:
-            self._dense.factorize(A, self._failed_pivot_shift)
-            return
-        wp.launch(
-            _gather_matrix,
-            dim=self.values.shape,
-            inputs=[
-                self.operator.info.dim,
-                self.operator.info.mio,
-                self.worlds,
-                self.rows,
-                self.block_i,
-                self.block_j,
-                A,
-                self.values,
-            ],
-            device=self.device,
-        )
-        self.factorize_values()
 
     def factorize_values(self) -> None:
         """Factor the assembled sparse values, retaining them for a masked retry."""
@@ -556,38 +461,6 @@ class LDLBlockSparseSolver(DirectSolver):
             )
             self._factor_levels(True)
         self._has_factors = True
-
-    def _factor_levels(self, retry: bool) -> None:
-        """Launch independent pivots by elimination level, optionally retrying only failed worlds."""
-        for offset, count in self._levels:
-            wp.launch_tiled(
-                _factor_level,
-                dim=int(count),
-                inputs=[
-                    self._pivots,
-                    int(offset),
-                    self.worlds,
-                    self.rows,
-                    self.operator.info.dim,
-                    self._col_ptr,
-                    self._row_idx,
-                    self._row_ptr,
-                    self._row_slots,
-                    self.block_j,
-                    self._pred_ptr,
-                    self._pred_left,
-                    self._pred_right,
-                    self.values,
-                    self.factors,
-                    self.diagonal,
-                    self.pivot_count,
-                    retry,
-                    self.failed,
-                    self._failed_pivot_shift,
-                ],
-                block_dim=32,
-                device=self.device,
-            )
 
     def solve_matrix(
         self,
@@ -730,13 +603,175 @@ class LDLBlockSparseSolver(DirectSolver):
             device=self.device,
         )
 
-    def _solve_impl(self, b: wp.array[wp.float32], x: wp.array[wp.float32]) -> None:
-        """Solve one packed vector per world using the current L D L transpose factors."""
-        self.solve_matrix(b, x, offsets=self.operator.info.vio, strides=self._ones, columns=self._ones, max_columns=1)
+    ###
+    # Implementation
+    ###
 
-    def _solve_inplace_impl(self, x: wp.array[wp.float32]) -> None:
-        """Replace each packed vector with its solution using the current factorization."""
-        self._solve_impl(x, x)
+    def _allocate_impl(self, operator: DenseLinearOperatorData) -> None:
+        """Build symbolic fill and schedules, or allocate implicit complete-pattern storage."""
+        if not isinstance(operator.info, DenseSquareMultiLinearInfo):
+            raise ValueError("LDL factorization requires a square matrix.")
+        if operator.info.dtype != wp.float32:
+            raise ValueError("LDLBlockSparseSolver supports float32 matrices.")
+        if operator.info.itype != wp.int32:
+            raise ValueError("LDLBlockSparseSolver supports int32 indices.")
+        info = operator.info
+        self._device = info.dim.device
+        capacities = info.maxdim.numpy().tolist()
+        self._maxdim = max(capacities, default=0)
+        self._world_count = len(capacities)
+        self._ones = wp.ones(self._world_count, dtype=wp.int32, device=self.device)
+        self._dense = None
+        if self._block_rows is None and self._block_edges is None:
+            self._dense = DenseLDLStorage(operator, self.ordering, self.device)
+            self.factors = self._dense.lower
+            self.diagonal = self._dense.diagonal
+            self.failed = self._dense.failed
+            self._has_factors = False
+            return
+        block_rows, block_edges = self._block_rows, self._block_edges
+        if block_rows is None:
+            block_rows = [[list(range(i, min(i + 6, n))) for i in range(0, n, 6)] for n in capacities]
+        if len(block_rows) != len(capacities):
+            raise ValueError("Provide one row partition per matrix.")
+        if block_edges is None:
+            block_edges = [[(i, j) for i in range(len(groups)) for j in range(i)] for groups in block_rows]
+        if len(block_edges) != len(capacities):
+            raise ValueError("Provide one block graph per matrix.")
+        rows, worlds, columns, world_ptr = [], [], [], [0]
+        cache_symbolic = {}
+        self._row_maps = []
+        for world, (n, row_groups, edges) in enumerate(zip(capacities, block_rows, block_edges, strict=True)):
+            groups = tuple(tuple(int(r) for r in group) for group in row_groups)
+            if any(not 1 <= len(group) <= 6 for group in groups) or sorted(r for g in groups for r in g) != list(
+                range(n)
+            ):
+                raise ValueError("Block rows must partition each matrix into groups of one to six rows.")
+            key = (groups, tuple(sorted({(min(i, j), max(i, j)) for i, j in edges})))
+            if key not in cache_symbolic:
+                cache_symbolic[key] = _symbolic(*key, self._ordering)
+            ordered, local_columns = cache_symbolic[key]
+            base = len(rows)
+            mapping = {}
+            for i, group in enumerate(ordered):
+                mapping.update({r: (base + i, c) for c, r in enumerate(group)})
+                rows.append([*group, *([-1] * (6 - len(group)))])
+                worlds.append(world)
+                columns.append([base + j for j in local_columns[i]])
+            self._row_maps.append(mapping)
+            world_ptr.append(len(rows))
+        self.pivot_count = len(rows)
+        col_ptr, row_idx, block_i, block_j = [0], [], list(range(len(rows))), list(range(len(rows)))
+        predecessors = [{} for _ in rows]
+        self._block_lookup = {(i, i): i for i in range(len(rows))}
+        for j, column in enumerate(columns):
+            for i in column:
+                slot = len(block_i)
+                self._block_lookup[i, j] = slot
+                predecessors[i][j] = slot
+                row_idx.append(i)
+                block_i.append(i)
+                block_j.append(j)
+            col_ptr.append(len(row_idx))
+        row_ptr, col_idx, row_slots = [0], [], []
+        levels = []
+        for previous in predecessors:
+            col_idx.extend(previous)
+            row_slots.extend(previous.values())
+            row_ptr.append(len(col_idx))
+            levels.append(1 + max((levels[j] for j in previous), default=-1))
+        pred_ptr, pred_left, pred_right = [0], [], []
+        for i, j in zip(block_i[self.pivot_count :], block_j[self.pivot_count :], strict=True):
+            for k, slot in predecessors[j].items():
+                if k in predecessors[i]:
+                    pred_left.append(predecessors[i][k])
+                    pred_right.append(slot)
+            pred_ptr.append(len(pred_left))
+        vio = info.vio.numpy()
+        inverse = np.zeros(info.total_vec_size, dtype=np.int32)
+        for w, mapping in enumerate(self._row_maps):
+            for row, (i, r) in mapping.items():
+                inverse[vio[w] + row] = 6 * i + r
+        level_indices = sorted(range(len(rows)), key=lambda i: (levels[i], i))
+        counts = np.bincount(levels) if levels else []
+        self._levels = list(zip(np.cumsum([0, *counts[:-1]]).tolist(), counts, strict=True)) if len(counts) else []
+
+        def ints(values):
+            """Copy packed symbolic indices to an int32 device array."""
+            return wp.array(values, dtype=wp.int32, device=self.device)
+
+        self.rows = ints(np.asarray(rows, dtype=np.int32).reshape(-1, 6))
+        self.worlds = ints(worlds)
+        self._world_ptr = ints(world_ptr)
+        self.block_i, self.block_j = ints(block_i), ints(block_j)
+        self._col_ptr, self._row_idx = ints(col_ptr), ints(row_idx)
+        self._row_ptr, self._col_idx, self._row_slots = ints(row_ptr), ints(col_idx), ints(row_slots)
+        self._col_slots = ints(list(range(self.pivot_count, len(block_i))))
+        self._pred_ptr, self._pred_left, self._pred_right = ints(pred_ptr), ints(pred_left), ints(pred_right)
+        self._pivots, self._inverse = ints(level_indices), ints(inverse)
+        self.values = wp.zeros((len(block_i), 6, 6), dtype=wp.float32, device=self.device)
+        self.factors = wp.zeros_like(self.values)
+        self.diagonal = wp.zeros((self.pivot_count, 6), dtype=wp.float32, device=self.device)
+        self.failed = wp.zeros(len(capacities), dtype=wp.int32, device=self.device)
+        self._has_factors = False
+
+    def _reset_impl(self) -> None:
+        """Invalidate the cached numeric factorization while retaining symbolic storage."""
+        self._has_factors = False
+
+    def _factorize_impl(self, A: wp.array[wp.float32]) -> None:
+        """Factor packed dense input through the explicit sparse pattern or complete-pattern storage."""
+        if self._dense is not None:
+            self._dense.factorize(A, self._failed_pivot_shift)
+            return
+        wp.launch(
+            _gather_matrix,
+            dim=self.values.shape,
+            inputs=[
+                self.operator.info.dim,
+                self.operator.info.mio,
+                self.worlds,
+                self.rows,
+                self.block_i,
+                self.block_j,
+                A,
+                self.values,
+            ],
+            device=self.device,
+        )
+        self.factorize_values()
+
+    def _factor_levels(self, retry: bool) -> None:
+        """Launch independent pivots by elimination level, optionally retrying only failed worlds."""
+        for offset, count in self._levels:
+            wp.launch_tiled(
+                _factor_level,
+                dim=int(count),
+                inputs=[
+                    self._pivots,
+                    int(offset),
+                    self.worlds,
+                    self.rows,
+                    self.operator.info.dim,
+                    self._col_ptr,
+                    self._row_idx,
+                    self._row_ptr,
+                    self._row_slots,
+                    self.block_j,
+                    self._pred_ptr,
+                    self._pred_left,
+                    self._pred_right,
+                    self.values,
+                    self.factors,
+                    self.diagonal,
+                    self.pivot_count,
+                    retry,
+                    self.failed,
+                    self._failed_pivot_shift,
+                ],
+                block_dim=32,
+                device=self.device,
+            )
 
     def _reconstruct_impl(self, A: wp.array[wp.float32]) -> None:
         """Reconstruct the factored operator in its original packed dense layout."""
@@ -761,3 +796,11 @@ class LDLBlockSparseSolver(DirectSolver):
             ],
             device=self.device,
         )
+
+    def _solve_impl(self, b: wp.array[wp.float32], x: wp.array[wp.float32]) -> None:
+        """Solve one packed vector per world using the current L D L transpose factors."""
+        self.solve_matrix(b, x, offsets=self.operator.info.vio, strides=self._ones, columns=self._ones, max_columns=1)
+
+    def _solve_inplace_impl(self, x: wp.array[wp.float32]) -> None:
+        """Replace each packed vector with its solution using the current factorization."""
+        self._solve_impl(x, x)

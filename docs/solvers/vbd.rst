@@ -8,11 +8,9 @@ VBD
 
 :class:`~newton.solvers.SolverVBD` is a unified implicit solver based on
 Vertex Block Descent (VBD): cloth, soft bodies, rigid bodies (joints,
-contacts, rods), and their interactions are all solved in one VBD loop, with
-joint and contact constraints enforced through an augmented-Lagrangian (ALM)
-extension of the method. The compliant ALM constraint path is enabled
-by default (``rigid_compliant_alm=True``). Pass ``rigid_compliant_alm=False``
-explicitly to retain the deprecated legacy path during its migration period.
+contacts, rods), and their interactions are all solved in one VBD loop.
+Rigid joints and body-body contacts use a compliant augmented-Lagrangian
+(ALM) formulation.
 
 .. experimental::
 
@@ -35,9 +33,6 @@ cited by :class:`~newton.solvers.SolverVBD`:
 
 - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block
   Descent. *ACM Trans. Graph.* 43, 4. https://doi.org/10.1145/3658179
-- Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block
-  Descent. *ACM Trans. Graph.* 44, 4. https://doi.org/10.1145/3731195
-  (the deprecated legacy rigid constraint path)
 - Anka H. Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide
   and Truncate: A Penetration and Inversion Free Framework for Coupled
   Multi-physics System. In *ACM SIGGRAPH 2026 Conference Papers*.
@@ -101,7 +96,7 @@ labels and keeps the fresh geometry; ``"sticky"`` also replays the saved
 contact points and normal (experimental); the default ``"disabled"`` writes no
 labels (:ref:`Contact Matching`). The solver uses the labels in two places.
 Between steps, ``rigid_contact_history=True`` snapshots the solved state of
-every contact at the end of the step (multiplier, penalty stiffness, normal)
+every contact at the end of the step (multiplier and normal)
 and restores it onto the matched contacts at the next step's contact refresh:
 the normal multiplier along the new normal and, with ``"latest"`` matching,
 the tangential multiplier projected onto the friction disk. Unmatched contacts
@@ -128,7 +123,7 @@ publishes :attr:`~newton.CollisionPipeline.rigid_contact_max`, or run one uncapt
 
 Start at ``dt`` = 1/600 s with 10 iterations and adjust following
 :ref:`vbd-rules-of-thumb`. The :ref:`Tuning VBD` parameter table lists the
-constructor arguments that matter most for particle systems, with their
+constructor arguments that matter most for tuning, with their
 effect and cost; the signature of :class:`~newton.solvers.SolverVBD` is the
 complete list.
 
@@ -166,15 +161,13 @@ the systems. The contact material between particles and shapes mixes
 with the shape values (:ref:`vbd-energy-terms`). The Model Parameters table of
 :ref:`Tuning VBD` gives the effect and typical values of each of these.
 
-Rigid constraint rows use the compliant ALM formulation by default
-(``rigid_compliant_alm=True``): the authored stiffness is the physical
-stiffness of the row and the solver picks the metric :math:`\rho` itself
-(:ref:`vbd-rigid-joints`). The legacy AVBD path (``rigid_compliant_alm=False``)
-is deprecated since 1.6, together with its controls: the per-joint
-``vbd:joint_is_hard`` custom attribute (``model.vbd.joint_is_hard``, declared
-by :meth:`~newton.solvers.SolverVBD.register_custom_attributes`) and
-:meth:`~newton.solvers.SolverVBD.set_joint_constraint_mode`. Under compliant
-ALM they have no solver-mode effect.
+Rigid constraint rows use the compliant ALM formulation: the authored
+stiffness is the physical stiffness of the row and the solver picks the
+metric :math:`\rho` itself (:ref:`vbd-rigid-joints`). The legacy AVBD path,
+deprecated in 1.6, has been removed together with its penalty-ramp controls,
+the hard-contact switch ``rigid_contact_hard``, and the hard/soft joint API
+(``vbd:joint_is_hard``, ``SolverVBD.set_joint_constraint_mode()``, and
+``SolverVBD.JointSlot``).
 
 Scene-authored settings
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -231,10 +224,6 @@ value.
 VBD runs exactly this many iterations per step, so assets authored for
 convergence-checked solvers (for example ``newton:maxSolverIterations = 100``)
 cost proportionally more. Pass ``iterations=`` to override.
-
-Scene values apply in both constraint modes: they are not skipped when the
-deprecated ``rigid_compliant_alm=False`` path is selected, even though the
-schema scopes them to the compliant ALM path.
 
 Coupling Modes
 ~~~~~~~~~~~~~~
@@ -304,17 +293,18 @@ Key Constructor Parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The constructor has three groups. Common: ``iterations``, ``friction_epsilon``,
-``dat_conservative_bound_relaxation``,
+``soft_contact_damping_bidirectional``, ``dat_conservative_bound_relaxation``,
 ``integrate_with_external_rigid_solver``, and ``collision_pipeline`` with
 ``collision_frequency_type`` and ``collision_frequency``. ``particle_*``:
 self-contact on or off, margin and gap, the candidate buffer sizes, the
 topological and rest-shape filters, and the tile solve. ``rigid_*``: the
-compliant ALM switch with its stabilization and retention factors, body-body
-contact history, the per-body contact list capacities, the rigid-soft barrier
-law and DAT, and the structural joint stiffness and damping. Defaults and exact
-semantics are in :class:`~newton.solvers.SolverVBD`; effects, symptoms and
-recommended values for particle systems are in the :ref:`Tuning VBD`
-parameter table.
+ALM stabilization and retention factors, body-body
+contact history and two-sided damping (``rigid_contact_damping_bidirectional``),
+the per-body contact list capacities, the rigid-soft barrier law and DAT, and
+the structural joint stiffness and damping. Defaults and exact
+semantics are in :class:`~newton.solvers.SolverVBD`; recommended values for
+particle systems, and effects and symptoms for rigid bodies and cables, are
+in the :ref:`Tuning VBD` parameter table.
 
 .. _vbd-how-it-works:
 
@@ -559,9 +549,6 @@ friction is a Coulomb projection carrying :math:`\boldsymbol{\lambda}_t`. The
 complete law, with the material mixing and the damping, is in
 :ref:`vbd-energy-terms`.
 
-The deprecated legacy path (``rigid_compliant_alm=False``) replaces the
-finite-material rows with ramped penalties and hard or soft slots.
-
 .. _vbd-energy-terms:
 
 The energy terms
@@ -706,9 +693,14 @@ relative displacement of the two closest points over the step and
 with :math:`\mu = \mathtt{soft\_contact\_mu}`. Unlike IPC, the contact normal
 is held constant inside the block solve; the kernel notes that this improves
 stability. Damping (``damp_collision``) acts on the gap rate :math:`\dot d =
-\mathbf{n}\cdot\Delta\mathbf{x}_{\text{rel}}/h`, only while the gap closes:
-:math:`\mathbf{f}_d = -\mathtt{soft\_contact\_kd}\;\dot d\,\mathbf{n}`. A
-separating pair is not damped.
+(d - d_{\text{prev}})/h`, the change of the contact distance over the substep;
+:math:`d_{\text{prev}}` is the distance at the substep-start positions from its own
+closest point, so a rigid motion of the pair gives :math:`\dot d = 0`. The force is
+:math:`\mathbf{f}_d = -\mathtt{soft\_contact\_kd}\;\dot d\,\mathbf{n}` with the
+Hessian :math:`(\mathtt{soft\_contact\_kd}/h)\,\mathbf{n}\mathbf{n}^T`. By default
+(``soft_contact_damping_bidirectional=True``) it acts while the gap closes and
+while it opens. ``soft_contact_damping_bidirectional=False`` keeps
+closing-only damping, which leaves a separating pair undamped.
 
 *Rigid-soft contact* acts between a soft contact point and one shape of a
 rigid or static body. The point is a particle, or, with full-surface mesh
@@ -728,8 +720,11 @@ quadratic penalty :math:`E = \tfrac{k}{2}(r - d)^2` for :math:`d < r`;
 ``rigid_soft_contact_use_log_barrier=True`` switches it to the self-contact
 barrier law. Damping and friction have the same form as for self-contact,
 written in world space (``compute_projected_isotropic_friction``): the damping force
-:math:`-k_d\,\dot d\,\mathbf{n}` acts only while the point approaches the
-shape, and the friction force is :math:`-\mu\, f_n\,
+:math:`-k_d\,\dot d\,\mathbf{n}`, with :math:`\dot d =
+\mathbf{n}\cdot\Delta\mathbf{x}_{\text{rel}}/h` the normal rate of the point
+relative to the shape, acts in both directions by default, or only while the
+point approaches the shape with
+``soft_contact_damping_bidirectional=False``, and the friction force is :math:`-\mu\, f_n\,
 f_1(\lVert\mathbf{u}_t\rVert)\,\hat{\mathbf{u}}_t`, with :math:`\mathbf{u}_t`
 the tangential slip of the point relative to the shape surface over the step.
 The force is distributed to the particles by their barycentric weights, and
@@ -755,8 +750,7 @@ their bodies and :math:`t_0, t_1` the effective thicknesses (shape radius plus
 The material is the pair average of the shape values:
 :math:`k = \tfrac{1}{2}(\mathtt{ke}_0 + \mathtt{ke}_1)`,
 :math:`k_d = \tfrac{1}{2}(\mathtt{kd}_0 + \mathtt{kd}_1)` and
-:math:`\mu = \sqrt{\mathtt{mu}_0\,\mathtt{mu}_1}`. On the default compliant
-ALM path (``rigid_compliant_alm=True``) the normal force is
+:math:`\mu = \sqrt{\mathtt{mu}_0\,\mathtt{mu}_1}`. The normal force is
 
 .. math::
 
@@ -784,22 +778,12 @@ points and :math:`\rho_t` the tangent metric, is projected onto the disk
 :math:`\lVert\mathbf{f}_t\rVert \le \mu f_n`,
 and :math:`\boldsymbol{\lambda}_t` is advanced and projected onto the disk of
 radius :math:`\mu\lambda_n` in the same dual step. Damping is
-:math:`-k_d\,(\mathbf{n}\cdot\mathbf{v}_{\text{rel}})\,\mathbf{n}` while the
-bodies approach and the row carries load. The multipliers start from zero in
+:math:`-k_d\,(\mathbf{n}\cdot\mathbf{v}_{\text{rel}})\,\mathbf{n}` while the row
+carries load, only while the bodies approach by default and in both directions
+of the normal relative velocity with ``rigid_contact_damping_bidirectional=True``.
+The multipliers start from zero in
 every step unless ``rigid_contact_history=True`` warm-starts them from the
-matched contacts of the previous step. The legacy AVBD path
-(``rigid_compliant_alm=False``, deprecated) uses the pair stiffness as a fixed
-penalty by default (``rigid_avbd_beta`` is zero). With a positive beta
-(``rigid_avbd_linear_beta``, falling back to ``rigid_avbd_beta``) the penalty
-starts at ``rigid_contact_k_start`` and grows by beta times the penetration
-per iteration, capped at the pair stiffness. Its soft
-mode uses the IPC friction law instead of the Coulomb projection.
-
-The underlying methods are described in the references cited by
-:class:`~newton.solvers.SolverVBD`: VBD for the particle blocks, AVBD for the
-rigid rows, Divide and Truncate (DAT) for penetration-free contact and Offset
-Geometric Contact (OGC) for the feature regions of mesh contact. The two
-contact papers are also listed under Contact Handling above.
+matched contacts of the previous step.
 
 **Particle-body attachments** are compliant augmented-Lagrangian rows of the
 same form as the joint rows (:ref:`vbd-rigid-joints`). With :math:`C =
@@ -886,9 +870,11 @@ damping coefficient.
 Examples
 --------
 
-:ref:`vbd-empirical-table` on the tuning page lists one shipped example per
-scenario, from cloth drape to a gripper on a soft pad, and says what each one
-demonstrates; copy the values from the example file.
+:ref:`Empirical parameter combinations <vbd-empirical-table>` on the tuning
+page lists one shipped example per scenario, from cloth drape to a gripper on
+a soft pad, and says what each one demonstrates; copy the values from the
+example file. For cables, see the
+:ref:`cable example table <vbd-cable-examples>`.
 
 Runnable examples using :class:`~newton.solvers.SolverVBD` on GitHub:
 

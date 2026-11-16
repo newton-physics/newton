@@ -401,7 +401,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
         assert_solver_config(self, config)
         self.assertEqual(config.rotation_correction, "twopi")
         self.assertEqual(config.dynamics.linear_solver_type, "LLTB")
-        self.assertEqual(config.dvi.bilateral_solver_type, "LLTB")
+        self.assertEqual(config.scc.bilateral_solver_type, "LLTB")
         self.assertEqual(config.padmm.warmstart_mode, "containers")
         self.assertEqual(config.padmm.warmstart_scale, 0.9)
 
@@ -433,7 +433,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
             )
 
     def test_ldl_supported_dynamics(self):
-        """Reject sparse PADMM LDL while accepting dense PADMM and sparse DVI LDL."""
+        """Reject sparse PADMM LDL while accepting dense PADMM and sparse SCC LDL."""
         with self.assertRaisesRegex(ValueError, "Sparse PADMM.*LDL"):
             SolverKamino.Config(
                 dynamics_solver="padmm",
@@ -447,9 +447,9 @@ class TestSolverKaminoConfig(unittest.TestCase):
             dynamics=kamino_config.ConstrainedDynamicsConfig(linear_solver_type="LDL"),
         )
         SolverKamino.Config(
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
             sparse_dynamics=True,
-            dvi=kamino_config.DVISolverConfig(bilateral_solver_type="LDL"),
+            scc=kamino_config.SCCSolverConfig(bilateral_solver_type="LDL"),
         )
 
     def test_ldl_example_options(self):
@@ -460,10 +460,10 @@ class TestSolverKaminoConfig(unittest.TestCase):
         from newton.examples.robot.example_robot_h1 import Example as H1  # noqa: PLC0415
 
         for example, mode, selector, default in (
-            (G1, "dvi", "bilateral", "LLTBRCM"),
-            (H1, "dvi", "bilateral", "LLTBRCM"),
+            (G1, "scc", "bilateral", "LLTBRCM"),
+            (H1, "scc", "bilateral", "LLTBRCM"),
             (DRLegs, "padmm", "linear", "LLTB"),
-            (DRLegs, "dvi", "bilateral", "LLTBRCM"),
+            (DRLegs, "scc", "bilateral", "LLTBRCM"),
         ):
             parser = example.create_parser()
             base_flags = ["--dynamics-solver", mode] if example is DRLegs else ["--solver", "kamino"]
@@ -477,7 +477,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
                 with self.subTest(example=example.__module__, flags=flags):
                     args = parser.parse_args([*base_flags, *flags])
                     config = SolverKamino.Config(dynamics_solver=mode)
-                    subconfig = config.dvi if mode == "dvi" else config.dynamics
+                    subconfig = config.scc if mode == "scc" else config.dynamics
                     selected = getattr(args, f"{selector}_solver_type") or default
                     setattr(subconfig, f"{selector}_solver_type", selected)
                     configure_ldl(config, args)
@@ -493,13 +493,13 @@ class TestSolverKaminoConfig(unittest.TestCase):
                         configure_ldl(config, args)
 
         config = SolverKamino.Config(
-            dynamics_solver="dvi",
-            dvi=kamino_config.DVISolverConfig(
+            dynamics_solver="scc",
+            scc=kamino_config.SCCSolverConfig(
                 bilateral_solver_type="LDL", bilateral_solver_kwargs={"ordering": "rcm", "failed_pivot_shift": 1.0e-5}
             ),
         )
         configure_ldl(config, G1.create_parser().parse_args(["--ldl"]))
-        self.assertEqual(config.dvi.bilateral_solver_kwargs, {"ordering": "rcm", "failed_pivot_shift": 1.0e-5})
+        self.assertEqual(config.scc.bilateral_solver_kwargs, {"ordering": "rcm", "failed_pivot_shift": 1.0e-5})
         with self.assertRaisesRegex(ValueError, "dense PADMM"):
             configure_ldl(
                 SolverKamino.Config(dynamics_solver="padmm", sparse_dynamics=True, sparse_jacobian=True),
@@ -525,8 +525,8 @@ class TestSolverKaminoConfig(unittest.TestCase):
                 args = parser.parse_args(["--dynamics-solver", mode, "--bilateral-solver-type", "LDL"])
                 with self.assertRaisesRegex(ValueError, "--bilateral-solver-type"):
                     configure_ldl(SolverKamino.Config(dynamics_solver=mode), args)
-        # DR Legs replaces the dynamics linear solver with CR for DVI; LOX uses none.
-        for mode, linear_solver in (("dvi", "CR"), ("lox", "LLTB")):
+        # DR Legs replaces the dynamics linear solver with CR for SCC; LOX uses none.
+        for mode, linear_solver in (("scc", "CR"), ("lox", "LLTB")):
             with self.subTest(mode=mode, option="linear"):
                 args = parser.parse_args(["--dynamics-solver", mode, "--linear-solver-type", "LLTB"])
                 config = SolverKamino.Config(dynamics_solver=mode)
@@ -538,7 +538,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
             ("padmm", ["--unilateral-solver", "apgd"], "--unilateral-solver"),
             ("lox", ["--use-schur-complement"], "use-schur-complement"),
             ("padmm", ["--no-use-schur-complement"], "use-schur-complement"),
-            ("dvi", ["--no-graph-conditionals"], "--no-graph-conditionals"),
+            ("scc", ["--no-graph-conditionals"], "--no-graph-conditionals"),
         ):
             with self.subTest(mode=mode, flags=flags), self.assertRaisesRegex(ValueError, message):
                 DRLegs(None, parser.parse_args(["--dynamics-solver", mode, *flags]))
@@ -977,8 +977,8 @@ class TestSolverKaminoStatus(unittest.TestCase):
                     self.assertEqual(solver._solver_kamino.problem_fd.delassus.solver.ordering, ordering)
                 self._step_and_assert_status_contract(solver, model)
 
-    def test_dvi_status_is_always_available(self):
-        """Verify DVI terminal status is available regardless of detailed collection."""
+    def test_scc_status_is_always_available(self):
+        """Verify SCC terminal status is available regardless of detailed collection."""
         model = self._make_three_world_model()
 
         for collect_solver_info in (False, True):
@@ -986,7 +986,7 @@ class TestSolverKaminoStatus(unittest.TestCase):
                 solver = newton.solvers.SolverKamino(
                     model,
                     config=newton.solvers.SolverKamino.Config(
-                        dynamics_solver="dvi",
+                        dynamics_solver="scc",
                         collect_solver_info=collect_solver_info,
                     ),
                 )
@@ -1021,7 +1021,7 @@ class TestSolverKaminoScratchStateReset(unittest.TestCase):
 
     def _assert_step_resets_scratch_state(
         self,
-        dynamics_solver: Literal["padmm", "dvi"],
+        dynamics_solver: Literal["padmm", "scc"],
         warmstart_mode: Literal["none", "internal", "containers"],
     ) -> None:
         """Assert that a single step resets the dynamics solver scratch state before solving."""
@@ -1034,7 +1034,7 @@ class TestSolverKaminoScratchStateReset(unittest.TestCase):
         if dynamics_solver == "padmm":
             config.padmm.warmstart_mode = warmstart_mode
         else:
-            config.dvi.warmstart_mode = warmstart_mode
+            config.scc.warmstart_mode = warmstart_mode
         solver = SolverKamino(model, config=config)
 
         solver_fd = solver._solver_kamino.solver_fd
@@ -1060,11 +1060,11 @@ class TestSolverKaminoScratchStateReset(unittest.TestCase):
             with self.subTest(warmstart_mode=warmstart_mode):
                 self._assert_step_resets_scratch_state("padmm", warmstart_mode)
 
-    def test_dvi_step_resets_scratch_state(self):
-        """Verify DVI reinitializes its scratch state on both the cold- and warm-start paths."""
+    def test_scc_step_resets_scratch_state(self):
+        """Verify SCC reinitializes its scratch state on both the cold- and warm-start paths."""
         for warmstart_mode in ("none", "internal"):
             with self.subTest(warmstart_mode=warmstart_mode):
-                self._assert_step_resets_scratch_state("dvi", warmstart_mode)
+                self._assert_step_resets_scratch_state("scc", warmstart_mode)
 
 
 class TestSolverKaminoImpl(unittest.TestCase):
@@ -2268,6 +2268,7 @@ class TestSolverKaminoMasslessBodies(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

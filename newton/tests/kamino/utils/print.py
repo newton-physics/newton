@@ -196,7 +196,6 @@ def debug_print_model_joints(
         return
     logger.debug("model.joints.num_joints: %s", model.joints.num_joints)
     logger.debug("model.joints.wid: %s", model.joints.wid)
-    logger.debug("model.joints.jid: %s", model.joints.jid)
     logger.debug("model.joints.dof_type: %s", model.joints.dof_type)
     logger.debug("model.joints.act_type: %s", model.joints.act_type)
     logger.debug("model.joints.num_dynamic_cts: %s", model.joints.num_dynamic_cts)

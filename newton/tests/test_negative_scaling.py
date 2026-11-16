@@ -21,7 +21,7 @@ import warp as wp
 import newton
 from newton import GeoType, Mesh
 from newton._src.geometry.utils import compute_shape_radius, transform_points
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
+from newton.tests.unittest_utils import assert_np_equal, requires
 
 
 def _build_mesh_pair(scale_a, scale_b, body_pos_a=(-0.5, 0.0, 1.0), body_pos_b=(0.5, 0.0, 1.0)):
@@ -174,6 +174,20 @@ class TestComputeShapeRadius(unittest.TestCase):
         radius = compute_shape_radius(GeoType.PLANE, (-2.0, 1.0, 0.0), None)
         np.testing.assert_allclose(radius, np.linalg.norm([2.0, 1.0, 0.0]) * 0.5)
 
+    def test_mesh_radius_tracks_scale_and_vertex_updates(self):
+        """Follow each shape's signed scale and replaced vertices with cached mesh bounds."""
+        rng = np.random.default_rng(3)
+        mesh = newton.Mesh(rng.uniform(-1.0, 2.0, size=(32, 3)), np.arange(30), compute_inertia=False)
+        for scale in ((1.0, 1.0, 1.0), (-2.0, 0.5, 3.0)):
+            verts = mesh.vertices.astype(np.float64) * np.asarray(scale)
+            expected = 0.5 * np.linalg.norm(verts.max(axis=0) - verts.min(axis=0))
+            np.testing.assert_allclose(compute_shape_radius(GeoType.MESH, scale, mesh), expected, rtol=1e-12)
+
+        mesh.vertices = mesh.vertices * 4.0
+        verts = mesh.vertices.astype(np.float64)
+        expected = 0.5 * np.linalg.norm(verts.max(axis=0) - verts.min(axis=0))
+        np.testing.assert_allclose(compute_shape_radius(GeoType.CONVEX_MESH, (1.0, 1.0, 1.0), mesh), expected)
+
 
 class TestMeshMirrorContacts(unittest.TestCase):
     """Mesh-mesh narrow phase produces the expected contact count under mirroring."""
@@ -263,7 +277,7 @@ class TestUsdNegativeScale(unittest.TestCase):
     def _asset_path(name):
         return os.path.join(os.path.dirname(__file__), "assets", name)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_cube_with_negative_scale(self):
         builder = newton.ModelBuilder()
         result = builder.add_usd(self._asset_path("negative_scale_cube.usda"))
@@ -277,7 +291,7 @@ class TestUsdNegativeScale(unittest.TestCase):
         )
         assert_np_equal(np.array(builder.shape_scale[shape_id]), np.array([0.5, 0.25, 0.75]), tol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_sphere_with_negative_scale(self):
         builder = newton.ModelBuilder()
         result = builder.add_usd(self._asset_path("negative_scale_sphere.usda"))
@@ -291,7 +305,7 @@ class TestUsdNegativeScale(unittest.TestCase):
         )
         assert_np_equal(np.array(builder.shape_scale[shape_id]), np.array([1.0, 0.0, 0.0]), tol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_mesh_with_negative_scale_generates_contacts(self):
         builder = newton.ModelBuilder()
         result = builder.add_usd(self._asset_path("negative_scale_mesh_pair.usda"))
@@ -313,7 +327,7 @@ class TestUsdNegativeScale(unittest.TestCase):
             "USD-imported mirrored mesh should still generate contacts",
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_asymmetric_mesh_negative_scale_transform_matches_usd(self):
         """Preserve mirrored triangle positions despite normal-driven vertex splitting."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -364,7 +378,7 @@ class TestUsdNegativeScale(unittest.TestCase):
         source_indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get())
         assert_np_equal(imported_vertices[imported_mesh.indices], expected_vertices[source_indices], tol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_asymmetric_mesh_negative_scale_from_parent_xform(self):
         """Preserve mirrored triangle positions under a scaled parent."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

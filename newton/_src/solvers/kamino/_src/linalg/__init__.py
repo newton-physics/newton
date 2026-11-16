@@ -8,6 +8,8 @@ from .core import (
     DenseLinearOperatorData,
     DenseRectangularMultiLinearInfo,
     DenseSquareMultiLinearInfo,
+    prefix_offsets,
+    segment_local_indices,
 )
 from .factorize.ldl_sparse import LDLBlockSparseSolver
 
@@ -71,5 +73,7 @@ __all__ = [
     "LinearSolverNameToType",
     "LinearSolverType",
     "LinearSolverTypeToName",
+    "prefix_offsets",
+    "segment_local_indices",
     "utils",
 ]

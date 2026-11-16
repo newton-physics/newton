@@ -13,7 +13,7 @@ def add_ldl_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ldl",
         action="store_true",
-        help="Use LDL for the DVI bilateral solve or the dense PADMM linear solve.",
+        help="Use LDL for the SCC bilateral solve or the dense PADMM linear solve.",
     )
     parser.add_argument(
         "--ldl-ordering",
@@ -37,13 +37,13 @@ def configure_ldl(config: SolverKamino.Config | None, args: argparse.Namespace |
             raise ValueError("LDL and bilateral solver options require the Kamino solver (--solver kamino).")
         return
 
-    if config.dynamics_solver == "dvi":
-        subconfig, prefix = config.dvi, "bilateral"
+    if config.dynamics_solver == "scc":
+        subconfig, prefix = config.scc, "bilateral"
     elif config.dynamics_solver == "padmm" and not config.sparse_dynamics:
         subconfig, prefix = config.dynamics, "linear"
     else:
         if requested or config.dynamics.linear_solver_type == "LDL":
-            raise ValueError("The LDL example option requires DVI or dense PADMM dynamics.")
+            raise ValueError("The LDL example option requires SCC or dense PADMM dynamics.")
         _reject_ignored_backends(config, args)
         return
 
@@ -67,7 +67,7 @@ def _reject_ignored_backends(config: SolverKamino.Config, args: argparse.Namespa
     # LOX builds its dual problem only for metrics, without a linear solver.
     selected = {
         "linear": config.dynamics.linear_solver_type if config.dynamics_solver != "lox" else None,
-        "bilateral": config.dvi.bilateral_solver_type if config.dynamics_solver == "dvi" else None,
+        "bilateral": config.scc.bilateral_solver_type if config.dynamics_solver == "scc" else None,
     }
     for prefix, backend in selected.items():
         explicit = getattr(args, f"{prefix}_solver_type", None)

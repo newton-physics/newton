@@ -37,7 +37,7 @@ from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 def _run(device, steps: int = 720, crank_target: float = 0.6, **solver_kwargs):
     builder = _build_four_bar()
     model = builder.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.1, **solver_kwargs)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.1, **solver_kwargs)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     targets = model.joint_target_q.numpy().copy()
@@ -148,8 +148,8 @@ def test_four_bar_capture_matches_eager(test, device):
     targets = model.joint_target_q.numpy().copy()
     targets[0] = 0.6
     control.joint_target_q.assign(targets)
-    eager = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.1)
-    captured = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.1)
+    eager = SolverSteel(model, iterations=16, baumgarte=0.1)
+    captured = SolverSteel(model, iterations=16, baumgarte=0.1)
     e0, e1 = model.state(), model.state()
     c0, c1 = model.state(), model.state()
 
@@ -187,7 +187,7 @@ def test_connect_ownership_survives_interleaved_articulation(test, device):
 
     loop_joint = b.add_joint_ball(parent=left, child=right)
     model = b.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free")
+    solver = SolverSteel(model)
 
     test.assertEqual(int(model.joint_articulation.numpy()[loop_joint]), -1)
     np.testing.assert_array_equal(solver._model_plan.loop_joint_articulation, np.array([-1, -1, -1, 0], dtype=np.int32))
@@ -201,7 +201,7 @@ def check_standalone_world_root_is_not_loop_joint(test, device, **solver_kwargs)
     model = b.finalize(device=device)
     test.assertEqual(model.joint_articulation.numpy().tolist(), [0, -1])
     test.assertEqual(standalone_joint, 1)
-    solver = SolverSteel(model, solve_mode="matrix_free", **solver_kwargs)
+    solver = SolverSteel(model, **solver_kwargs)
     test.assertEqual(solver._connect_count, 0)
     np.testing.assert_array_equal(solver._model_plan.loop_joint_articulation, np.array([-1, -1], dtype=np.int32))
 
@@ -223,7 +223,7 @@ def test_connect_survives_foreign_joint_between_tree_and_loop(test, device):
     and leave the four-bar open.
     """
     model = _build_interleaved_four_bar().finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.1)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.1)
     test.assertEqual(solver._connect_count, 1, "closure row lost: loop joint attributed to the wrong articulation")
 
     state_0, state_1 = model.state(), model.state()
@@ -242,16 +242,16 @@ def test_connect_survives_foreign_joint_between_tree_and_loop(test, device):
 
 
 def test_unsupported_loop_joints_are_rejected(test, device):
-    """Reject loop joints other than BALL and REVOLUTE, and closures between two dynamic articulations."""
+    """Reject loop joints other than BALL, REVOLUTE and FIXED, and closures between two dynamic articulations."""
     b = _build_four_bar()
     _expect_one_warning(
         test,
-        newton.exceptions.NewtonWarning,
+        newton.NewtonWarning,
         "another joint already connects these bodies",
-        lambda: b.add_joint_fixed(parent=1, child=2),
+        lambda: b.add_joint_prismatic(parent=1, child=2),
     )
-    with test.assertRaisesRegex(NotImplementedError, "only BALL and REVOLUTE loop-closing joints"):
-        SolverSteel(b.finalize(device=device), solve_mode="matrix_free")
+    with test.assertRaisesRegex(NotImplementedError, "only BALL, REVOLUTE and FIXED loop-closing joints"):
+        SolverSteel(b.finalize(device=device))
 
     b = newton.ModelBuilder(up_axis=newton.Axis.Z)
     first = b.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
@@ -262,7 +262,7 @@ def test_unsupported_loop_joints_are_rejected(test, device):
         warnings.simplefilter("ignore", UserWarning)
         b.add_joint_ball(parent=first, child=second)
     with test.assertRaisesRegex(NotImplementedError, "connects articulations"):
-        SolverSteel(b.finalize(device=device), solve_mode="matrix_free")
+        SolverSteel(b.finalize(device=device))
 
 
 def test_closure_row_overflow_is_reported(test, device):
@@ -270,7 +270,7 @@ def test_closure_row_overflow_is_reported(test, device):
     model = _build_four_bar().finalize(device=device)
     solver = SolverSteel(
         model,
-        solve_mode="matrix_free",
+        solve_mode="serial",
         articulation_constraint_max=2,
         joint_limit_activation_gap=0.0,
         warn_constraint_overflow=False,
@@ -331,7 +331,7 @@ def test_kinematic_parent_closure_carries_load(test, device):
     """
     b, carrier, load, joints = _build_carried_load()
     model = b.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.2)
     articulation = wp.array([int(solver._body_to_articulation.numpy()[carrier])], dtype=wp.int32, device=device)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -361,7 +361,7 @@ def test_world_parent_closure_holds_hanging_load(test, device):
     """Hold a load hanging from world anchors through three point closures."""
     b, _, load, joints = _build_carried_load(world_parent=True)
     model = b.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     for _ in range(240):
@@ -379,7 +379,7 @@ def test_model_edits_release_and_reanchor_closures(test, device):
     """Release closures through Model.joint_enabled, re-anchor them through joint_X_p and engage them again."""
     b, carrier, load, joints = _build_carried_load()
     model = b.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     dt = 1.0 / 240.0
@@ -424,7 +424,7 @@ def test_disabled_loop_joint_starts_released(test, device):
     """Start a loop joint disabled in Model.joint_enabled released, and engage it by enabling it."""
     b, _, load, joints = _build_carried_load(enabled=False, world_parent=True)
     model = b.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
     z0 = float(state_0.body_q.numpy()[load, 2])
     for _ in range(48):
@@ -453,7 +453,7 @@ def test_kinematic_parent_turning_dynamic_is_rejected(test, device):
     load = b.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
     loop_joint = b.add_joint_ball(carrier, load)
     model = b.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", joint_limit_activation_gap=0.0)
+    solver = SolverSteel(model, joint_limit_activation_gap=0.0)
     test.assertEqual(solver._connect_parent_prescribed.numpy().tolist(), [1])
     state_0, state_1 = model.state(), model.state()
     solver.step(state_0, state_1, model.control(), None, 0.01)
@@ -473,7 +473,7 @@ def test_kinematic_parent_turning_dynamic_is_rejected(test, device):
     with test.assertRaisesRegex(NotImplementedError, f"loop-closing joint {loop_joint} .* no longer kinematic"):
         solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
     with test.assertRaisesRegex(NotImplementedError, "connects articulations 0 and 1"):
-        SolverSteel(model, solve_mode="matrix_free", joint_limit_activation_gap=0.0)
+        SolverSteel(model, joint_limit_activation_gap=0.0)
 
 
 def test_imported_connect_equality_is_enforced(test, device):
@@ -495,7 +495,7 @@ def test_imported_connect_equality_is_enforced(test, device):
             # The converted CONNECT becomes a BALL loop joint parallel to the hinge.
             _expect_one_warning(
                 test,
-                newton.exceptions.NewtonWarning,
+                newton.NewtonWarning,
                 "another joint already connects these bodies",
                 functools.partial(b.add_mjcf, mjcf, convert_mjc_equality_constraints=True),
             )
@@ -505,9 +505,9 @@ def test_imported_connect_equality_is_enforced(test, device):
         test.assertEqual(model.mujoco.equality_constraint_count, 1)
         if not convert:
             with test.assertRaisesRegex(NotImplementedError, "equality"):
-                SolverSteel(model, solve_mode="matrix_free")
+                SolverSteel(model)
             continue
-        solver = SolverSteel(model, solve_mode="matrix_free", iterations=16)
+        solver = SolverSteel(model, iterations=16)
         test.assertEqual(solver._connect_count, 1)
         state_0, state_1 = model.state(), model.state()
         for _ in range(120):
@@ -529,7 +529,7 @@ def _four_bar_setup(device, world_count=1, **solver_kwargs):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.replicate(four_bar, world_count)
     model = builder.finalize(device=device)
-    options = {"solve_mode": "matrix_free", "iterations": 16, "baumgarte": 0.1, **solver_kwargs}
+    options = {"solve_mode": "serial", "iterations": 16, "baumgarte": 0.1, **solver_kwargs}
     solver = SolverSteel(model, **options)
     control = model.control()
     targets = model.joint_target_q.numpy().reshape(world_count, -1)
@@ -581,7 +581,7 @@ def test_world_parent_release(test, device):
     """Drop a load hung from world anchors once its closures are disabled in the model."""
     b, _, load, joints = _build_carried_load(world_parent=True)
     model = b.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
     state_0, state_1 = _step_four_bar(solver, state_0, state_1, model.control(), 60)
     z_held = float(state_0.body_q.numpy()[load, 2])
@@ -594,7 +594,7 @@ def test_reanchor_world_parent_closure(test, device):
     """Move a world-parent closure's anchors through joint_X_p and notify_model_changed."""
     b, _, load, joints = _build_carried_load(world_parent=True)
     model = b.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
     shift = np.array([0.05, 0.0, 0.0])
     joint_X_p = model.joint_X_p.numpy()
@@ -670,7 +670,7 @@ def test_release_matches_xpbd(test, device):
         b, _, load, joints = _build_carried_load(world_parent=True)
         model = b.finalize(device=device)
         if name == "steel":
-            solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
+            solver = SolverSteel(model, iterations=16, baumgarte=0.2)
         else:
             solver = newton.solvers.SolverXPBD(model, iterations=8)
         state_0, state_1 = model.state(), model.state()
@@ -701,7 +701,7 @@ def test_closure_owner_stays_awake_and_releases(test, device):
     contacts = pipeline.contacts()
     solver = SolverSteel(
         model,
-        solve_mode="matrix_free",
+        solve_mode="serial",
         iterations=16,
         baumgarte=0.1,
         enable_sleeping=True,
@@ -736,7 +736,7 @@ def test_propagation_rejects_closures(test, device):
         model = _build_four_bar().finalize(device=device)
         _set_joint_enabled(model, [_LOOP_JOINT], enabled)
         with test.assertRaisesRegex(NotImplementedError, "Loop-closing joints are not supported"):
-            SolverSteel(model, solve_mode="matrix_free", articulated_contact_response="propagation")
+            SolverSteel(model, articulated_contact_response="propagation")
 
 
 def test_disabled_tree_joint_is_reported(test, device):
@@ -765,7 +765,131 @@ def test_disabled_tree_joint_is_reported(test, device):
         solver.check_constraint_capacity()
 
     with test.assertRaisesRegex(NotImplementedError, "disabled joints in an articulation tree"):
-        SolverSteel(model, solve_mode="matrix_free")
+        SolverSteel(model)
+
+
+def test_imported_weld_equality_holds_the_authored_pose(test, device):
+    """Hold a tilted body where an imported MuJoCo WELD authors it instead of snapping it to the world axes."""
+    mjcf = """
+    <mujoco>
+      <worldbody>
+        <body name="paddle" pos="0 0 1" euler="0 45 0">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <geom type="box" pos="0.3 0 0" size="0.3 0.05 0.05"/>
+        </body>
+      </worldbody>
+      <equality><weld body1="paddle"/></equality>
+    </mujoco>
+    """
+    b = newton.ModelBuilder()
+    # The converted WELD becomes a FIXED loop joint parallel to the hinge.
+    _expect_one_warning(
+        test, newton.NewtonWarning, "another joint already connects these bodies", lambda: b.add_mjcf(mjcf)
+    )
+    model = b.finalize(device=device)
+    solver = SolverSteel(model, iterations=16)
+    test.assertEqual(solver._connect_count, 1)
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    q_start = state_0.body_q.numpy()[0, 3:].copy()
+    for _ in range(30):
+        solver.step(state_0, state_1, control, None, 1.0 / 240.0)
+        state_0, state_1 = state_1, state_0
+    test.assertLess(abs(float(state_0.joint_q.numpy()[0])), 1.0e-3)
+    test.assertGreater(abs(float(state_0.body_q.numpy()[0, 3:] @ q_start)), 1.0 - 1.0e-6)
+
+
+def test_imported_weld_with_zero_torquescale_leaves_rotation_free(test, device):
+    """Pin only the anchor of a MuJoCo weld with torquescale 0, so a paddle welded at its hinge swings freely."""
+    mjcf = """
+    <mujoco>
+      <worldbody>
+        <body name="paddle" pos="0 0 1" euler="0 45 0">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <geom type="box" pos="0.3 0 0" size="0.3 0.05 0.05"/>
+        </body>
+      </worldbody>
+      <equality><weld body1="paddle" anchor="0 0 1" torquescale="0"/></equality>
+    </mujoco>
+    """
+    b = newton.ModelBuilder()
+    # The BALL loop joint parallels the hinge.
+    with test.assertLogs("newton", level="WARNING") as logs:
+        _expect_one_warning(test, newton.NewtonWarning, "another joint already connects", lambda: b.add_mjcf(mjcf))
+    test.assertTrue(any("torquescale=0" in line for line in logs.output))
+    model = b.finalize(device=device)
+    solver = SolverSteel(model, iterations=16)
+    test.assertEqual(solver._connect_count, 1)
+    test.assertEqual(int(solver._connect_rows_np[0]), 3)
+
+    # Reference: a compound pendulum about the hinge, theta'' = m g r_x(theta) / I_pivot, integrated with RK4.
+    dt, steps = 1.0 / 240.0, 30
+    m = float(model.body_mass.numpy()[0])
+    q0 = wp.quat(*model.body_q.numpy()[0, 3:])
+    r0 = np.array(wp.quat_rotate(q0, wp.vec3(*model.body_com.numpy()[0])))
+    i_pivot = float(model.body_inertia.numpy()[0][1, 1]) + m * (r0[0] ** 2 + r0[2] ** 2)
+
+    def accel(th):
+        return m * 9.81 * (np.cos(th) * r0[0] + np.sin(th) * r0[2]) / i_pivot
+
+    th, w, h = 0.0, 0.0, dt / 20
+    for _ in range(20 * steps):
+        k1 = (w, accel(th))
+        k2 = (w + 0.5 * h * k1[1], accel(th + 0.5 * h * k1[0]))
+        k3 = (w + 0.5 * h * k2[1], accel(th + 0.5 * h * k2[0]))
+        k4 = (w + h * k3[1], accel(th + h * k3[0]))
+        th += h * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]) / 6
+        w += h * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1]) / 6
+
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    for _ in range(steps):
+        solver.step(state_0, state_1, control, None, dt)
+        state_0, state_1 = state_1, state_0
+    swing = float(state_0.joint_q.numpy()[0])
+    test.assertGreater(abs(th), 0.1)
+    # Semi-implicit Euler leads the exact swing by about one step, (N + 1) / N = 3.3 % for N = 30.
+    test.assertAlmostEqual(swing, th, delta=0.05 * abs(th))
+
+
+def test_imported_weld_with_unnormalized_relpose_holds_the_same_pose(test, device):
+    """Normalize an imported weld's relpose quaternion, so a scaled one gives the same frames and held pose."""
+    mjcf = """
+    <mujoco>
+      <worldbody>
+        <body name="paddle" pos="0 0 1" euler="0 45 0">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <geom type="box" pos="0.3 0 0" size="0.3 0.05 0.05"/>
+        </body>
+      </worldbody>
+      <equality><weld body1="paddle" anchor="0 0 1" relpose="0 0 0 {quat}"/></equality>
+    </mujoco>
+    """
+    held = {}
+    for label, quat in (("unit", "0.9238795 0 -0.3826834 0"), ("scaled", "1.847759 0 -0.7653668 0")):
+        b = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(b)
+        # The FIXED loop joint parallels the hinge.
+        _expect_one_warning(
+            test,
+            newton.NewtonWarning,
+            "another joint already connects",
+            lambda b=b, quat=quat: b.add_mjcf(mjcf.format(quat=quat)),
+        )
+        model = b.finalize(device=device)
+        solver = SolverSteel(model, iterations=16)
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        for _ in range(30):
+            solver.step(state_0, state_1, control, None, 1.0 / 240.0)
+            state_0, state_1 = state_1, state_0
+        held[label] = (
+            model.joint_X_p.numpy()[1],
+            model.joint_X_c.numpy()[1],
+            model.mujoco.equality_constraint_relpose.numpy()[0],
+            state_0.body_q.numpy()[0],
+        )
+    for unit, scaled in zip(held["unit"], held["scaled"], strict=True):
+        np.testing.assert_allclose(scaled, unit, atol=1.0e-6)
+    # The relpose is the authored pose, so the weld holds the paddle against gravity at its 45 degree tilt.
+    test.assertGreater(abs(float(held["unit"][3][3:] @ model.body_q.numpy()[0, 3:])), 1.0 - 1.0e-6)
 
 
 def _expect_one_warning(test, category, pattern, call):
@@ -864,14 +988,14 @@ def test_open_world_closure_pulls_at_child_anchor(test, device):
     # The child anchor is the load's center of mass; the world anchor sits 5 cm to the side.
     _expect_one_warning(
         test,
-        newton.exceptions.NewtonWarning,
+        newton.NewtonWarning,
         "another joint already connects these bodies",
         lambda: b.add_joint_ball(
             parent=-1, child=load, parent_xform=wp.transform(wp.vec3(0.05, 0.0, 1.0), wp.quat_identity())
         ),
     )
     model = b.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     spin = 0.0
@@ -902,14 +1026,14 @@ def test_open_closure_from_fixed_root_pulls_at_child_anchor(test, device):
     # The child anchor is the load's center of mass; the root anchor is 5 cm away and out of the rod's reach.
     _expect_one_warning(
         test,
-        newton.exceptions.NewtonWarning,
+        newton.NewtonWarning,
         "another joint already connects these bodies",
         lambda: b.add_joint_ball(
             parent=root, child=load, parent_xform=wp.transform(wp.vec3(0.03, 0.04, -0.2), wp.quat_identity())
         ),
     )
     model = b.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     control = model.control()
@@ -942,14 +1066,14 @@ def test_open_closure_from_kinematic_root_pulls_at_child_anchor(test, device):
     # The root's free joint keeps response DOFs, but they are kinematic, so only the load takes the impulse.
     _expect_one_warning(
         test,
-        newton.exceptions.NewtonWarning,
+        newton.NewtonWarning,
         "another joint already connects these bodies",
         lambda: b.add_joint_ball(
             parent=root, child=load, parent_xform=wp.transform(wp.vec3(0.03, 0.04, -0.2), wp.quat_identity())
         ),
     )
     model = b.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     control = model.control()
@@ -994,6 +1118,9 @@ for _name in (
     "test_unsupported_loop_joints_are_rejected",
     "test_closure_row_overflow_is_reported",
     "test_imported_connect_equality_is_enforced",
+    "test_imported_weld_equality_holds_the_authored_pose",
+    "test_imported_weld_with_zero_torquescale_leaves_rotation_free",
+    "test_imported_weld_with_unnormalized_relpose_holds_the_same_pose",
     "test_open_closure_on_floating_base_conserves_angular_momentum",
     "test_open_world_closure_pulls_at_child_anchor",
     "test_open_closure_from_fixed_root_pulls_at_child_anchor",
@@ -1200,7 +1327,7 @@ def _run_four_bar(device, steps: int = 720, crank_target: float = 0.6, iteration
     keeps it small at the same budget.
     """
     model = _build_four_bar().finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=iterations, baumgarte=0.1, **solver_kwargs)
+    solver = SolverSteel(model, iterations=iterations, baumgarte=0.1, **solver_kwargs)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     targets = model.joint_target_q.numpy().copy()
@@ -1232,7 +1359,7 @@ def test_default_preserves_all_bilateral_trajectory(test, device):
     builder.set_joint_mimic(1, 0)
     model = builder.finalize(device=device)
     solvers = [
-        SolverSteel(model, solve_mode="matrix_free", iterations=8, enable_bilateral_preelimination=True, **options)
+        SolverSteel(model, iterations=8, enable_bilateral_preelimination=True, **options)
         for options in ({}, {"bilateral_preelimination_include_mimics": True})
     ]
     states = [(model.state(), model.state()) for _ in solvers]
@@ -1265,13 +1392,13 @@ def test_mimics_can_remain_iterative_when_total_rows_exceed_capacity(test, devic
     model = _build_overcapacity_mixed_bilateral_model(device)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        solver_all = SolverSteel(model, solve_mode="matrix_free", enable_bilateral_preelimination=True)
+        solver_all = SolverSteel(model, enable_bilateral_preelimination=True)
     test.assertFalse(solver_all._preelim_active)
     test.assertTrue(any("9 bilateral rows" in str(w.message) for w in caught))
 
     solver = SolverSteel(
         model,
-        solve_mode="matrix_free",
+        solve_mode="serial",
         iterations=8,
         enable_bilateral_preelimination=True,
         bilateral_preelimination_include_mimics=False,
@@ -1330,7 +1457,7 @@ def test_mimic_held_at_low_iterations(test, device):
         builder.set_joint_mimic(1, 0, coeffs=(0.0, -1.0))
         model = builder.finalize(device=device)
         solver = SolverSteel(
-            model, solve_mode="matrix_free", iterations=1, baumgarte=0.1, enable_bilateral_preelimination=enabled
+            model, solve_mode="serial", iterations=1, baumgarte=0.1, enable_bilateral_preelimination=enabled
         )
         test.assertEqual(solver._preelim_active, enabled)
         state_0, state_1 = model.state(), model.state()
@@ -1369,7 +1496,7 @@ def test_preelimination_with_free_body_in_world(test, device):
         model = builder.finalize(device=device)
         solver = SolverSteel(
             model,
-            solve_mode="matrix_free",
+            solve_mode="serial",
             iterations=2,
             baumgarte=0.1,
             articulation_constraint_max=64,
@@ -1418,14 +1545,14 @@ def test_rows_remain_allocated(test, device):
 def test_prescribed_parent_closure_warns_and_falls_back(test, device):
     """Disable elimination for the whole solver when a closure has a kinematic or world parent."""
     b, _, _, _ = _build_carried_load()
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "kinematic or world parent.*whole solver"):
-        solver = SolverSteel(b.finalize(device=device), solve_mode="matrix_free", enable_bilateral_preelimination=True)
+    with test.assertWarnsRegex(newton.NewtonWarning, "kinematic or world parent.*whole solver"):
+        solver = SolverSteel(b.finalize(device=device), enable_bilateral_preelimination=True)
     test.assertFalse(solver._preelim_active)
     test.assertEqual(solver._connect_count, 3)
 
     # An eligible four-bar is eliminated alone, but not next to a world-parent closure.
     eligible = SolverSteel(
-        _build_four_bar().finalize(device=device), solve_mode="matrix_free", enable_bilateral_preelimination=True
+        _build_four_bar().finalize(device=device), solve_mode="serial", enable_bilateral_preelimination=True
     )
     test.assertTrue(eligible._preelim_active)
     b = _build_four_bar()
@@ -1434,8 +1561,8 @@ def test_prescribed_parent_closure_warns_and_falls_back(test, device):
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*another joint already connects these bodies")
         b.add_joint_ball(-1, load, parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.5), wp.quat_identity()))
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "whole solver"):
-        mixed = SolverSteel(b.finalize(device=device), solve_mode="matrix_free", enable_bilateral_preelimination=True)
+    with test.assertWarnsRegex(newton.NewtonWarning, "whole solver"):
+        mixed = SolverSteel(b.finalize(device=device), enable_bilateral_preelimination=True)
     test.assertFalse(mixed._preelim_active)
     test.assertEqual(mixed._preelim_count, 0)
     test.assertEqual(mixed._connect_count, 2)
@@ -1450,8 +1577,8 @@ def test_preelimination_capture_matches_eager(test, device):
     control.joint_target_q.assign(targets)
     options = {"iterations": 2, "baumgarte": 0.1, "enable_bilateral_preelimination": True}
     eager, captured = (
-        SolverSteel(model, solve_mode="matrix_free", **options),
-        SolverSteel(model, solve_mode="matrix_free", **options),
+        SolverSteel(model, **options),
+        SolverSteel(model, **options),
     )
     e0, e1 = model.state(), model.state()
     c0, c1 = model.state(), model.state()
@@ -1480,7 +1607,7 @@ def _run_loaded_four_bar(device, contact_warmstart):
     model = builder.finalize(device=device)
     solver = SolverSteel(
         model,
-        solve_mode="matrix_free",
+        solve_mode="serial",
         iterations=1,
         baumgarte=0.1,
         articulation_constraint_max=64,
@@ -1523,23 +1650,19 @@ def test_warmstart_with_preelimination_holds_a_loaded_closure(test, device):
     test.assertAlmostEqual(float(state.body_q.numpy()[box, 2]), 0.47, delta=1.0e-3)
 
 
-def test_split_rejects_bilateral_rows(test, device):
-    """Reject loop closures in the split solve, with or without pre-elimination."""
-    model = _build_four_bar().finalize(device=device)
-    for enabled in (False, True):
-        with test.subTest(enable_bilateral_preelimination=enabled):
-            with test.assertRaisesRegex(NotImplementedError, "require solve_mode='matrix_free'"):
-                SolverSteel(model, solve_mode="split", enable_bilateral_preelimination=enabled)
-
-
 def test_propagation_keeps_iterative_mimic_rows(test, device):
     """Keep iterative mimic rows with the propagation responses; pre-elimination falls back with a warning."""
     builder, _, _ = _build_two_revolute_chain(0.0, 1.0)
     model = builder.finalize(device=device)
-    for response in ("propagation", "propagation_colored"):
-        with test.subTest(response=response):
-            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "propagation"):
-                solver = SolverSteel(model, articulated_contact_response=response, enable_bilateral_preelimination=True)
+    for solve_mode in ("serial", "colored"):
+        with test.subTest(solve_mode=solve_mode):
+            with test.assertWarnsRegex(newton.NewtonWarning, "propagation"):
+                solver = SolverSteel(
+                    model,
+                    solve_mode=solve_mode,
+                    articulated_contact_response="propagation",
+                    enable_bilateral_preelimination=True,
+                )
             test.assertFalse(solver._preelim_active)
             test.assertGreater(solver._mimic_count, 0)
 
@@ -1547,17 +1670,13 @@ def test_propagation_keeps_iterative_mimic_rows(test, device):
 def test_propagation_rejects_loop_joints(test, device):
     """Reject loop-closing joints with the propagation responses."""
     model = _build_four_bar().finalize(device=device)
-    for response in ("propagation", "propagation_colored"):
-        with test.subTest(response=response):
+    for solve_mode in ("serial", "colored"):
+        with test.subTest(solve_mode=solve_mode):
             with test.assertRaisesRegex(NotImplementedError, "Loop-closing joints.*articulated_contact_response"):
-                SolverSteel(model, articulated_contact_response=response)
+                SolverSteel(model, solve_mode=solve_mode, articulated_contact_response="propagation")
 
 
 class TestSteelPreelimination(unittest.TestCase):
-    pass
-
-
-class TestSteelPreeliminationSplit(unittest.TestCase):
     pass
 
 
@@ -1578,14 +1697,6 @@ for _name in (
     "test_warmstart_with_preelimination_holds_a_loaded_closure",
 ):
     add_function_test(TestSteelPreelimination, _name, globals()[_name], devices=cuda_devices)
-
-
-add_function_test(
-    TestSteelPreeliminationSplit,
-    "test_split_rejects_bilateral_rows",
-    test_split_rejects_bilateral_rows,
-    devices=get_test_devices(),
-)
 
 
 add_function_test(
@@ -1647,7 +1758,7 @@ def _build_mimic_layout(joint_type):
 
 
 def _run_model(model, leader_target: float, steps: int, **solver_kwargs):
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.1, **solver_kwargs)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.1, **solver_kwargs)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     targets = model.joint_target_q.numpy().copy()
@@ -1714,17 +1825,17 @@ def check_invalid_legacy_mimic_keeps_precedence(test, device, **solver_kwargs):
 
 def test_reject_quaternion_mimics_at_construction(test, device):
     """Reject mimics of BALL, FREE and DISTANCE joints at construction."""
-    check_reject_quaternion_mimics_at_construction(test, device, solve_mode="matrix_free")
+    check_reject_quaternion_mimics_at_construction(test, device, solve_mode="serial")
 
 
 def test_scalar_and_d6_mimic_coordinate_maps(test, device):
     """Map scalar and D6 mimic followers to their coordinate rows."""
-    check_scalar_and_d6_mimic_coordinate_maps(test, device, solve_mode="matrix_free")
+    check_scalar_and_d6_mimic_coordinate_maps(test, device, solve_mode="serial")
 
 
 def test_invalid_legacy_mimic_keeps_precedence(test, device):
     """Validate a legacy mimic entry in place of the joint-owned mimic it replaces."""
-    check_invalid_legacy_mimic_keeps_precedence(test, device, solve_mode="matrix_free")
+    check_invalid_legacy_mimic_keeps_precedence(test, device, solve_mode="serial")
 
 
 def test_cross_articulation_mimic_is_rejected(test, device):
@@ -1738,7 +1849,7 @@ def test_cross_articulation_mimic_is_rejected(test, device):
         # The follower of the second copy mimics the leader of the first copy.
         builder.add_constraint_mimic(joint0=j_follower + 2, joint1=j_leader, coef0=0.0, coef1=1.0)
     with test.assertRaisesRegex(NotImplementedError, "different articulations"):
-        SolverSteel(builder.finalize(device=device), solve_mode="matrix_free")
+        SolverSteel(builder.finalize(device=device))
 
 
 def test_identity_mimic_tracks_leader(test, device):
@@ -1770,7 +1881,7 @@ def test_runtime_coefficient_change(test, device):
     """Read joint-owned coefficients every step, also from a captured graph."""
     builder, _, follower = _build_two_revolute_chain(0.0, 1.0)
     model = builder.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.1)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.1)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     targets = model.joint_target_q.numpy().copy()
@@ -1814,7 +1925,7 @@ def test_replicated_mimics_have_articulation_local_ranges(test, device):
     template, _, _ = _build_two_revolute_chain(coef0=0.0, coef1=1.0)
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     builder.replicate(template, copy_count=4)
-    solver = SolverSteel(builder.finalize(device=device), solve_mode="matrix_free")
+    solver = SolverSteel(builder.finalize(device=device))
     test.assertEqual(solver._mimic_art_start.numpy().tolist(), [0, 1, 2, 3, 4])
     test.assertEqual(solver._mimic_art_list.numpy().tolist(), [0, 1, 2, 3])
 
@@ -1835,7 +1946,7 @@ def test_mimic_row_overflow_is_reported(test, device):
     model = builder.finalize(device=device)
     # A zero activation gap keeps the (far) joint-limit rows out of the single row slot.
     options = {"articulation_constraint_max": 1, "joint_limit_activation_gap": 0.0, "warn_constraint_overflow": False}
-    solver = SolverSteel(model, solve_mode="matrix_free", **options)
+    solver = SolverSteel(model, **options)
     state_0, state_1 = model.state(), model.state()
     solver.step(state_0, state_1, model.control(), None, DT)
     test.assertEqual(int(solver._mimic_slot.numpy()[0]), 0)
@@ -1846,7 +1957,7 @@ def test_mimic_row_overflow_is_reported(test, device):
         # A second, consistent row on the other joint (identity coupling in both directions).
         builder.add_constraint_mimic(joint0=0, joint1=1, coef0=0.0, coef1=1.0)
     model = builder.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", **options)
+    solver = SolverSteel(model, **options)
     state_0, state_1 = model.state(), model.state()
     solver.step(state_0, state_1, model.control(), None, DT)
     test.assertEqual(int(solver._constraint_count.numpy()[0]), 1)
@@ -1855,34 +1966,11 @@ def test_mimic_row_overflow_is_reported(test, device):
         solver.check_constraint_capacity()
 
 
-def test_split_reject_quaternion_mimics_at_construction(test, device):
-    """Reject quaternion mimics at construction in the split solve."""
-    check_reject_quaternion_mimics_at_construction(test, device, solve_mode="split")
-
-
-def test_split_rejects_supported_mimics(test, device):
-    """Reject scalar and D6 mimics in the split solve, which has no bilateral rows."""
-    for joint_type in (newton.JointType.REVOLUTE, newton.JointType.PRISMATIC, newton.JointType.D6):
-        with test.subTest(joint_type=joint_type):
-            builder, _, _ = _build_mimic_layout(joint_type)
-            with test.assertRaisesRegex(NotImplementedError, "require solve_mode='matrix_free'"):
-                SolverSteel(builder.finalize(device=device), solve_mode="split")
-
-
-def test_split_invalid_legacy_mimic_keeps_precedence(test, device):
-    """Keep legacy mimic precedence during validation in the split solve."""
-    check_invalid_legacy_mimic_keeps_precedence(test, device, solve_mode="split")
-
-
 class TestSteelMimicLayout(unittest.TestCase):
     pass
 
 
 class TestSteelMimic(unittest.TestCase):
-    pass
-
-
-class TestSteelMimicLayoutSplit(unittest.TestCase):
     pass
 
 
@@ -1908,18 +1996,10 @@ for _name in (
     add_function_test(TestSteelMimic, _name, globals()[_name], devices=cuda_devices)
 
 
-for _name in (
-    "test_split_reject_quaternion_mimics_at_construction",
-    "test_split_rejects_supported_mimics",
-    "test_split_invalid_legacy_mimic_keeps_precedence",
-):
-    add_function_test(TestSteelMimicLayoutSplit, _name, globals()[_name], devices=get_test_devices())
-
-
 SPRING_KEYS = ("mujoco:dof_passive_stiffness", "mujoco:dof_springref", "mujoco:dof_ref")
 
 
-def _hinge_model(device, *, damping: float, spring_k: float | None = None, spring_ref: float = 0.5):
+def _hinge_model(device, *, damping: float, spring_k: float | None = None, spring_ref: float = 0.5, **joint_kwargs):
     """A fixed-base link on a revolute Z joint, so gravity exerts no torque about the axis.
 
     ``spring_k`` sets the core passive spring stiffness.
@@ -1937,6 +2017,7 @@ def _hinge_model(device, *, damping: float, spring_k: float | None = None, sprin
         damping=damping,
         stiffness=spring_k,
         rest_q=spring_ref,
+        **joint_kwargs,
     )
     builder.add_articulation([joint])
     return builder.finalize(device=device)
@@ -1955,16 +2036,16 @@ def _run_springs(model, solver, steps: int, qd0: float = 0.0):
     return state_0
 
 
-def _construct(test, model, *, solve_mode):
-    """Construct silently, including when the model has unsupported spring properties."""
+def _construct(test, model, *, solve_mode="serial", **solver_kwargs):
+    """Construct silently, including when the model has passive spring properties."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        solver = SolverSteel(model, solve_mode=solve_mode, iterations=8)
+        solver = SolverSteel(model, solve_mode=solve_mode, iterations=8, **solver_kwargs)
     test.assertEqual(caught, [], [str(w.message) for w in caught])
     return solver
 
 
-def test_passive_damping_decays_velocity(test, device, solve_mode="matrix_free"):
+def test_passive_damping_decays_velocity(test, device, solve_mode="serial"):
     """Decay joint velocity through passive damping; without damping the joint keeps coasting."""
     damped_model = _hinge_model(device, damping=0.02)
     undamped_model = _hinge_model(device, damping=0.0)
@@ -1976,33 +2057,248 @@ def test_passive_damping_decays_velocity(test, device, solve_mode="matrix_free")
     test.assertLess(qd_damped, 0.2 * qd_undamped)
 
 
-def test_nonzero_spring_stiffness_is_ignored(test, device, solve_mode="matrix_free"):
-    """Accept unsupported core spring properties silently and apply no spring torque."""
-    model = _hinge_model(device, damping=0.0, spring_k=4.0, spring_ref=0.5)
-    solver = _construct(test, model, solve_mode=solve_mode)
-    np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), [0.0])
-    state = _run_springs(model, solver, 240)
-    np.testing.assert_allclose(state.joint_q.numpy(), [0.0], atol=1.0e-6)
-    test.assertEqual(float(solver._joint_tau.numpy()[0]), 0.0)
+SPRING_MASS = 1.0
 
 
-def test_zero_or_absent_spring_stiffness_does_not_warn(test, device, solve_mode="matrix_free"):
-    """Construct silently with default or explicitly zero spring stiffness."""
-    _construct(test, _hinge_model(device, damping=0.1), solve_mode=solve_mode)
-    _construct(test, _hinge_model(device, damping=0.1, spring_k=0.0), solve_mode=solve_mode)
+SPRING_ARMATURE = 0.1
 
 
-def test_spring_attribute_edits_leave_damping_refresh_intact(test, device, solve_mode="matrix_free"):
-    """Refresh damping on a JOINT_DOF_PROPERTIES notify while still applying no spring torque."""
+# (stiffness, rest_q, initial q) of the prismatic, revolute, D6 linear and D6 angular spring DOFs.
+SPRING_DOFS = ((40.0, 0.2, -0.1), (25.0, -0.4, 0.3), (60.0, 0.05, 0.25), (30.0, 0.6, 0.0))
+
+
+# The free body ahead of the spring joints holds coordinates 0-6 and DOFs 0-5.
+SPRING_COORDS = slice(7, 11)
+
+
+def _spring_scene(device, *, stiffness: tuple[float, ...] | None = None, rest_q: tuple[float, ...] | None = None):
+    """A free body, a prismatic joint, and a welded root branching into a revolute and a two-axis D6 joint.
+
+    Gravity is off and every center of mass lies on its joint axes, so each spring DOF is an independent
+    oscillator of mass ``SPRING_MASS + SPRING_ARMATURE``. The free body's quaternion offsets the spring
+    joints' coordinate indices from their DOF indices, and the branch gives ``parallel_tree`` a tree plan.
+    """
+    stiffness = tuple(k for k, _, _ in SPRING_DOFS) if stiffness is None else stiffness
+    rest_q = tuple(r for _, r, _ in SPRING_DOFS) if rest_q is None else rest_q
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    inertia = wp.mat33(np.eye(3) * SPRING_MASS)
+    builder.add_body(xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()), mass=SPRING_MASS, inertia=inertia)
+
+    def link(x):
+        return builder.add_link(
+            xform=wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity()), mass=SPRING_MASS, inertia=inertia
+        )
+
+    def parent_xform(x):
+        return wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity())
+
+    def axis(index, direction):
+        return newton.ModelBuilder.JointDofConfig(
+            axis=direction, stiffness=stiffness[index], rest_q=rest_q[index], armature=SPRING_ARMATURE
+        )
+
+    slider = builder.add_joint_prismatic(
+        -1,
+        link(0.0),
+        axis=newton.Axis.X,
+        stiffness=stiffness[0],
+        rest_q=rest_q[0],
+        armature=SPRING_ARMATURE,
+        parent_xform=parent_xform(0.0),
+    )
+    builder.add_articulation([slider])
+    root = link(1.0)
+    branch = [
+        builder.add_joint_fixed(-1, root, parent_xform=parent_xform(1.0)),
+        builder.add_joint_revolute(
+            root,
+            link(1.0),
+            axis=newton.Axis.Z,
+            stiffness=stiffness[1],
+            rest_q=rest_q[1],
+            armature=SPRING_ARMATURE,
+        ),
+        builder.add_joint_d6(
+            root,
+            link(2.0),
+            linear_axes=[axis(2, newton.Axis.X)],
+            angular_axes=[axis(3, newton.Axis.Z)],
+            parent_xform=parent_xform(1.0),
+        ),
+    ]
+    builder.add_articulation(branch)
+    model = builder.finalize(device=device)
+    q = model.joint_q.numpy()
+    q[SPRING_COORDS] = [q0 for _, _, q0 in SPRING_DOFS]
+    model.joint_q.assign(q)
+    return model
+
+
+def _spring_reference(steps: int, *, damping: float = 0.0):
+    """Explicit spring force with Steel's symplectic Euler update, one independent oscillator per DOF."""
+    k = np.array([entry[0] for entry in SPRING_DOFS])
+    rest = np.array([entry[1] for entry in SPRING_DOFS])
+    q = np.array([entry[2] for entry in SPRING_DOFS])
+    qd = np.zeros_like(q)
+    history = []
+    for _ in range(steps):
+        qd = qd + DT * (k * (rest - q) - damping * qd) / (SPRING_MASS + SPRING_ARMATURE)
+        q = q + DT * qd
+        history.append(q.copy())
+    return np.asarray(history)
+
+
+def _spring_trajectory(model, solver, steps: int, *, qd0: float = 0.0):
+    state_0, state_1 = model.state(), model.state()
+    if qd0 != 0.0:
+        qd = state_0.joint_qd.numpy()
+        qd[6:10] = qd0
+        state_0.joint_qd.assign(qd)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    control = model.control()
+    history = []
+    for _ in range(steps):
+        solver.step(state_0, state_1, control, None, DT)
+        state_0, state_1 = state_1, state_0
+        history.append(state_0.joint_q.numpy().copy())
+    return np.asarray(history)
+
+
+SPRING_STEPS = 240
+
+
+def test_springs_match_explicit_reference(test, device, solve_mode="serial", **solver_kwargs):
+    """Oscillate PRISMATIC, REVOLUTE and D6 springs about their rest coordinates as the explicit reference does."""
+    model = _spring_scene(device)
+    solver = _construct(test, model, solve_mode=solve_mode, **solver_kwargs)
+    test.assertEqual(solver._tree_plan is not None, solver_kwargs.get("parallel_tree", False))
+    history = _spring_trajectory(model, solver, SPRING_STEPS)
+    reference = _spring_reference(SPRING_STEPS)
+    np.testing.assert_allclose(history[:, SPRING_COORDS], reference, rtol=0.0, atol=1.0e-5)
+    # The discrete oscillator stays within the time-discretization error of the analytic one.
+    stiffness, rest, q0 = (np.array(column) for column in zip(*SPRING_DOFS, strict=True))
+    omega = np.sqrt(stiffness / (SPRING_MASS + SPRING_ARMATURE))
+    time = DT * np.arange(1, SPRING_STEPS + 1)
+    analytic = rest + (q0 - rest) * np.cos(np.outer(time, omega))
+    np.testing.assert_allclose(history[:, SPRING_COORDS], analytic, rtol=0.0, atol=1.0e-2)
+    # The run spans more than half of every period, so each DOF swings through its rest coordinate.
+    test.assertTrue(np.all(np.min(history[:, SPRING_COORDS] - rest, axis=0) < -0.05))
+    test.assertTrue(np.all(np.max(history[:, SPRING_COORDS] - rest, axis=0) > 0.05))
+    # The free body carries no spring and stays put.
+    np.testing.assert_array_equal(history[:, :7], np.broadcast_to(model.joint_q.numpy()[:7], (SPRING_STEPS, 7)))
+
+
+def test_zero_stiffness_ignores_rest_coordinates(test, device, solve_mode="serial", **solver_kwargs):
+    """Step bitwise like a scene with default rest coordinates when every spring stiffness is zero."""
+    zeros = (0.0,) * len(SPRING_DOFS)
+    trajectories = []
+    for rest_q in (None, zeros):
+        model = _spring_scene(device, stiffness=zeros, rest_q=rest_q)
+        solver = _construct(test, model, solve_mode=solve_mode, **solver_kwargs)
+        trajectories.append(_spring_trajectory(model, solver, 60, qd0=0.5))
+    np.testing.assert_array_equal(trajectories[0], trajectories[1])
+    # Without a spring each DOF coasts at its initial velocity.
+    q0 = np.array([q for _, _, q in SPRING_DOFS])
+    np.testing.assert_allclose(trajectories[0][-1, SPRING_COORDS], q0 + 60 * DT * 0.5, atol=1.0e-5)
+
+
+def test_damped_spring_settles_at_rest_coordinate(test, device, solve_mode="serial", **solver_kwargs):
+    """Settle an undriven, damped hinge at its passive spring's rest coordinate."""
+    model = _hinge_model(device, damping=0.05, spring_k=0.5, spring_ref=0.5)
+    state = _run_springs(model, _construct(test, model, solve_mode=solve_mode, **solver_kwargs), 1200)
+    np.testing.assert_allclose(state.joint_q.numpy(), [0.5], atol=0.02)
+
+
+def test_rest_coordinate_beyond_the_limit_preloads_the_joint(test, device, solve_mode="serial"):
+    """Press a joint against its upper limit with a rest coordinate it cannot reach."""
+    model = _hinge_model(device, damping=0.05, spring_k=0.5, spring_ref=2.62, limit_lower=-10.0, limit_upper=0.3)
+    solver = _construct(test, model, solve_mode=solve_mode, enable_joint_limits=True)
+    state = _run_springs(model, solver, 1200)
+    np.testing.assert_allclose(state.joint_q.numpy(), [0.3], atol=0.03)
+
+
+def _first_step_tau(model, solver):
+    state_0, state_1 = model.state(), model.state()
+    state_0.joint_qd.fill_(1.0)
+    solver.step(state_0, state_1, model.control(), None, DT)
+    return solver._joint_tau.numpy().copy()
+
+
+def test_spring_edits_follow_their_notifications(test, device, solve_mode="serial"):
+    """Re-read stiffness on DOF force notifications and rest coordinates on reference-pose notifications."""
     model = _hinge_model(device, damping=0.0, spring_k=0.0, spring_ref=0.5)
     solver = _construct(test, model, solve_mode=solve_mode)
     model.joint_stiffness.assign([4.0])
     model.joint_damping.assign([3.0])
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+    # 4 * (0.5 - 0) spring torque against 3 * 1 damping torque.
+    np.testing.assert_allclose(_first_step_tau(model, solver), [-1.0], atol=1.0e-6)
+    model.joint_rest_q.assign([0.25])
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+    np.testing.assert_allclose(_first_step_tau(model, solver), [-1.0], atol=1.0e-6)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
+    np.testing.assert_allclose(_first_step_tau(model, solver), [-2.0], atol=1.0e-6)
+    # A replaced array is re-read too.
+    model.joint_stiffness = wp.array([12.0], dtype=wp.float32, device=device)
+    model.joint_rest_q = wp.array([0.5], dtype=wp.float32, device=device)
     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+    np.testing.assert_allclose(_first_step_tau(model, solver), [3.0], atol=1.0e-6)
+
+
+def test_captured_spring_notifications_apply_in_place_edits(test, device):
+    """Replay captured DOF force and reference-pose notifications after in-place spring edits."""
+    model = _hinge_model(device, damping=3.0, spring_k=4.0, spring_ref=0.5)
+    solver = _construct(test, model)
     state_0, state_1 = model.state(), model.state()
-    state_0.joint_qd.fill_(1.0)
-    solver.step(state_0, state_1, model.control(), None, DT)
-    np.testing.assert_allclose(solver._joint_tau.numpy(), [-3.0], atol=1.0e-6)
+    control = model.control()
+    flags = newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES | newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+    solver.notify_model_changed(flags)
+    solver.step(state_0, state_1, control, None, DT)
+    with wp.ScopedCapture(device) as capture:
+        solver.notify_model_changed(flags)
+        solver.step(state_0, state_1, control, None, DT)
+    taus = []
+    for stiffness, rest_q in ((4.0, 0.5), (2.0, -0.5)):
+        model.joint_stiffness.assign([stiffness])
+        model.joint_rest_q.assign([rest_q])
+        state_0.joint_q.zero_()
+        state_0.joint_qd.fill_(1.0)
+        wp.capture_launch(capture.graph)
+        taus.append(float(solver._joint_tau.numpy()[0]))
+    np.testing.assert_allclose(taus, [4.0 * 0.5 - 3.0, 2.0 * -0.5 - 3.0], atol=1.0e-6)
+
+
+def test_springs_skip_unsupported_joint_types(test, device, solve_mode="serial"):
+    """Keep stiffness only on tree PRISMATIC, REVOLUTE and D6 DOFs, across construction and notifications."""
+    builder, loop_joint = _build_square_loop("revolute")
+    inertia = wp.mat33(np.eye(3) * 0.01)
+    links = [
+        builder.add_link(
+            xform=wp.transform(wp.vec3(3.0 + 0.3 * i, 0.0, 1.0), wp.quat_identity()), mass=0.5, inertia=inertia
+        )
+        for i in range(3)
+    ]
+    hinge = wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity())
+    joints = [
+        builder.add_joint_free(child=links[0]),
+        builder.add_joint_ball(parent=links[0], child=links[1], parent_xform=hinge),
+        builder.add_joint_revolute(parent=links[1], child=links[2], parent_xform=hinge, axis=newton.Axis.Z),
+    ]
+    builder.add_articulation(joints)
+    builder.joint_stiffness = [5.0] * builder.joint_dof_count
+    model = builder.finalize(device=device)
+    # The square's four tree hinges and the finger hinge carry springs; the loop, FREE and BALL joints do not.
+    qd_start = model.joint_qd_start.numpy()
+    sprung = np.zeros(model.joint_dof_count, dtype=bool)
+    sprung[qd_start[joints[2]]] = True
+    sprung[: qd_start[loop_joint]] = True
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", newton.NewtonWarning)
+        solver = SolverSteel(model, solve_mode=solve_mode)
+        np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 5.0, 0.0))
+        model.joint_stiffness.fill_(7.0)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+    np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 7.0, 0.0))
 
 
 def test_registration_adds_no_spring_attributes(test, device):
@@ -2016,26 +2312,57 @@ class TestSteelSprings(unittest.TestCase):
     pass
 
 
-# test_joint_damping covers passive damping on the matrix-free CUDA and split CPU routes.
 add_function_test(
     TestSteelSprings,
-    "test_passive_damping_decays_velocity_split",
+    "test_passive_damping_decays_velocity",
     test_passive_damping_decays_velocity,
-    devices=get_cuda_test_devices(),
-    solve_mode="split",
+    devices=get_test_devices(),
 )
+
+
+# Each route launches a different kernel for the inverse-dynamics pass that applies the springs.
+SPRING_ROUTES = {
+    "_drive_rows": {"drive_mode": "rows"},
+    "_parallel_tree": {"parallel_tree": True},
+}
+
+
+add_function_test(
+    TestSteelSprings,
+    "test_springs_match_explicit_reference",
+    test_springs_match_explicit_reference,
+    devices=get_test_devices(),
+)
+for _suffix, _kwargs in SPRING_ROUTES.items():
+    add_function_test(
+        TestSteelSprings,
+        f"test_springs_match_explicit_reference{_suffix}",
+        test_springs_match_explicit_reference,
+        devices=get_cuda_test_devices(),
+        **_kwargs,
+    )
 for _name, _func in (
-    ("test_nonzero_spring_stiffness_is_ignored", test_nonzero_spring_stiffness_is_ignored),
-    ("test_zero_or_absent_spring_stiffness_does_not_warn", test_zero_or_absent_spring_stiffness_does_not_warn),
+    ("test_zero_stiffness_ignores_rest_coordinates", test_zero_stiffness_ignores_rest_coordinates),
+    ("test_damped_spring_settles_at_rest_coordinate", test_damped_spring_settles_at_rest_coordinate),
     (
-        "test_spring_attribute_edits_leave_damping_refresh_intact",
-        test_spring_attribute_edits_leave_damping_refresh_intact,
+        "test_rest_coordinate_beyond_the_limit_preloads_the_joint",
+        test_rest_coordinate_beyond_the_limit_preloads_the_joint,
     ),
+    ("test_spring_edits_follow_their_notifications", test_spring_edits_follow_their_notifications),
 ):
-    add_function_test(TestSteelSprings, _name, _func, devices=get_cuda_test_devices())
-    add_function_test(TestSteelSprings, f"{_name}_split", _func, devices=get_test_devices(), solve_mode="split")
-
-
+    add_function_test(TestSteelSprings, _name, _func, devices=get_test_devices())
+add_function_test(
+    TestSteelSprings,
+    "test_captured_spring_notifications_apply_in_place_edits",
+    test_captured_spring_notifications_apply_in_place_edits,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSteelSprings,
+    "test_springs_skip_unsupported_joint_types",
+    test_springs_skip_unsupported_joint_types,
+    devices=get_test_devices(),
+)
 add_function_test(
     TestSteelSprings,
     "test_registration_adds_no_spring_attributes",
@@ -2179,7 +2506,7 @@ def _com_velocity(model, state):
     return (mass[:, None] * body_qd[:, :3]).sum(axis=0) / mass.sum()
 
 
-def _spin_free_articulation(model, omega=OMEGA, solve_mode="matrix_free"):
+def _spin_free_articulation(model, omega=OMEGA, solve_mode="serial"):
     """Spin the articulation with its composite centre of mass at rest, then step.
 
     Returns the largest centre-of-mass velocity drift [m/s] seen over the run.
@@ -2214,7 +2541,7 @@ def _spin_free_articulation(model, omega=OMEGA, solve_mode="matrix_free"):
     return worst
 
 
-def test_single_link_conserves_com_velocity(test, device, solve_mode="matrix_free"):
+def test_single_link_conserves_com_velocity(test, device, solve_mode="serial"):
     """Hold the center-of-mass velocity of a lone rotating free body in free fall.
 
     With no gravity the public-to-internal shift cancels step to step, so this case passes even
@@ -2225,7 +2552,7 @@ def test_single_link_conserves_com_velocity(test, device, solve_mode="matrix_fre
     test.assertLess(_spin_free_articulation(model, solve_mode=solve_mode), 1e-6)
 
 
-def test_single_link_offset_com_tumbling(test, device, solve_mode="matrix_free"):
+def test_single_link_offset_com_tumbling(test, device, solve_mode="serial"):
     """Conserve the COM velocity of a lone tumbling free body with an offset center of mass.
 
     Tumbling changes the angular velocity within each step, so the public-to-internal shift's
@@ -2238,7 +2565,7 @@ def test_single_link_offset_com_tumbling(test, device, solve_mode="matrix_free")
     test.assertLess(_spin_free_articulation(model, omega=(20.0, 0.5, 0.0), solve_mode=solve_mode), 1e-3)
 
 
-def test_welded_pair_conserves_com_velocity(test, device, solve_mode="matrix_free"):
+def test_welded_pair_conserves_com_velocity(test, device, solve_mode="serial"):
     """Hold the COM velocity of a welded two-link articulation to the integrator's own accuracy.
 
     The pair is the same physical object as the single link above -- same mass, centre of mass
@@ -2250,7 +2577,7 @@ def test_welded_pair_conserves_com_velocity(test, device, solve_mode="matrix_fre
     test.assertLess(_spin_free_articulation(model, solve_mode=solve_mode), 0.5)
 
 
-def test_welded_pair_drift_converges_with_timestep(test, device, solve_mode="matrix_free"):
+def test_welded_pair_drift_converges_with_timestep(test, device, solve_mode="serial"):
     """Show the residual drift is first-order in dt, not a fixed formulation error.
 
     Halving the step must roughly halve the drift. A formulation error would sit flat instead,
@@ -2269,7 +2596,7 @@ def test_welded_pair_drift_converges_with_timestep(test, device, solve_mode="mat
     test.assertLess(fine, 0.65 * coarse)
 
 
-def test_offset_root_com_conserves_com_velocity(test, device, solve_mode="matrix_free"):
+def test_offset_root_com_conserves_com_velocity(test, device, solve_mode="serial"):
     """Conserve momentum for a root link whose own COM is offset from its origin.
 
     This exercises the public-to-internal free-base shift, which is an identity only when the
@@ -2280,7 +2607,7 @@ def test_offset_root_com_conserves_com_velocity(test, device, solve_mode="matrix
     test.assertLess(_spin_free_articulation(model, solve_mode=solve_mode), 0.5)
 
 
-def test_matches_featherstone_reference(test, device, solve_mode="matrix_free"):
+def test_matches_featherstone_reference(test, device, solve_mode="serial"):
     """Track SolverFeatherstone on chains deep enough to expose the free base.
 
     Featherstone solves the same dynamics without Steel's frame re-centring machinery, so
@@ -2323,14 +2650,7 @@ for _name in (
     "test_offset_root_com_conserves_com_velocity",
     "test_matches_featherstone_reference",
 ):
-    add_function_test(TestSteelFreeBaseMomentum, _name, globals()[_name], devices=devices)
-    add_function_test(
-        TestSteelFreeBaseMomentum,
-        f"{_name}_split",
-        globals()[_name],
-        devices=get_test_devices(),
-        solve_mode="split",
-    )
+    add_function_test(TestSteelFreeBaseMomentum, _name, globals()[_name], devices=get_test_devices())
 
 
 DT_free_root_predictor = 1.0 / 200.0
@@ -2391,7 +2711,7 @@ def _build_slider(device):
     return _undamped(builder.finalize(device=device))
 
 
-def _slide_heights(model, omega_y, solve_mode="matrix_free", response="immediate"):
+def _slide_heights(model, omega_y, solve_mode="serial", response="immediate"):
     """Slide the sphere at ``SLIDE_VX`` while spinning at ``omega_y``; return heights and peak contacts."""
     state_0, state_1 = model.state(), model.state()
     joint_qd = state_0.joint_qd.numpy()
@@ -2428,7 +2748,7 @@ def _world_com(model, state):
     return np.asarray(q[0:3]) + np.asarray(wp.quat_rotate(rot, wp.vec3(*com_local)))
 
 
-def test_frictionless_slide_is_spin_invariant(test, device, solve_mode="matrix_free", response="immediate"):
+def test_frictionless_slide_is_spin_invariant(test, device, solve_mode="serial", response="immediate"):
     """Keep a frictionless sliding sphere's height trajectory independent of its spin.
 
     Without friction the spin exerts no force. A predictor missing the ``omega x v`` term feeds
@@ -2444,7 +2764,7 @@ def test_frictionless_slide_is_spin_invariant(test, device, solve_mode="matrix_f
     test.assertLess(divergence, 1e-4, f"spin changed a frictionless slide by {divergence} m")
 
 
-def test_anchored_spinner_com_stays_put(test, device, solve_mode="matrix_free"):
+def test_anchored_spinner_com_stays_put(test, device, solve_mode="serial"):
     """Keep the center of mass of a force-free spinner with an offset joint anchor in place.
 
     The free joint's coordinate tracks the child anchor frame, offset from the center of mass by
@@ -2519,6 +2839,7 @@ def test_integrator_transport_identities(test, device):
             wp.zeros_like(state.joint_qd),
             DT_free_root_predictor,
             wp.zeros(model.body_count, dtype=wp.float32, device=device),
+            wp.zeros(model.body_count, dtype=wp.float32, device=device),
             wp.ones(model.joint_count, dtype=wp.int32, device=device),
         ],
         outputs=[q_new, qd_new],
@@ -2532,7 +2853,7 @@ def test_integrator_transport_identities(test, device):
     np.testing.assert_allclose(out[9:12], (0.0, 0.0, 3.0), atol=1e-7)
 
 
-def test_predictor_and_qdd_transport_identities(test, device, solve_mode="matrix_free"):
+def test_predictor_and_qdd_transport_identities(test, device, solve_mode="serial"):
     """Apply the transport term in the predictor and remove it in the solved-velocity conversion."""
     model = _build_slider(device)
     solver = SolverSteel(model, solve_mode=solve_mode)
@@ -2599,6 +2920,7 @@ def test_predictor_and_qdd_transport_identities(test, device, solve_mode="matrix
             state_aug._joint_qdd,
             DT_free_root_predictor,
             solver._rigid_body_angular_damping,
+            solver._rigid_body_linear_damping,
             solver._dynamics_joint_active,
         ],
         outputs=[state_out.joint_q, state_out.joint_qd],
@@ -2607,7 +2929,7 @@ def test_predictor_and_qdd_transport_identities(test, device, solve_mode="matrix
     np.testing.assert_allclose(state_out.joint_qd.numpy(), v_out_np, rtol=1e-6, atol=1e-6)
 
 
-def test_compact_root_metadata_includes_standalone_joint(test, device, solve_mode="matrix_free"):
+def test_compact_root_metadata_includes_standalone_joint(test, device, solve_mode="serial"):
     """Keep every world-rooted free joint, but no descendant, in the compact root launch."""
     builder = _new_builder(gravity=(0.0, 0.0, 0.0))
     inertia = wp.mat33(0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01)
@@ -2622,7 +2944,7 @@ def test_compact_root_metadata_includes_standalone_joint(test, device, solve_mod
     np.testing.assert_array_equal(solver._free_root_joint_indices.numpy(), (joint_a, joint_b))
 
 
-def test_captured_step_matches_uncaptured(test, device, solve_mode="matrix_free"):
+def test_captured_step_matches_uncaptured(test, device, solve_mode="serial"):
     """Reproduce the eager trajectory by replaying a captured collide-and-step graph."""
     heights_ref, _ = _slide_heights(_build_slider(device), OMEGA_Y, solve_mode)
 
@@ -2669,30 +2991,9 @@ for _name, _func in (
     ("test_compact_root_metadata_includes_standalone_joint", test_compact_root_metadata_includes_standalone_joint),
     ("test_captured_step_matches_uncaptured", test_captured_step_matches_uncaptured),
 ):
-    add_function_test(TestSteelFreeRootPredictor, _name, _func, devices=devices)
-
-
-for _name, _func, _devices in (
-    ("test_frictionless_slide_is_spin_invariant", test_frictionless_slide_is_spin_invariant, get_test_devices()),
-    ("test_anchored_spinner_com_stays_put", test_anchored_spinner_com_stays_put, get_test_devices()),
-    ("test_predictor_and_qdd_transport_identities", test_predictor_and_qdd_transport_identities, get_test_devices()),
-    (
-        "test_compact_root_metadata_includes_standalone_joint",
-        test_compact_root_metadata_includes_standalone_joint,
-        get_test_devices(),
-    ),
-    ("test_captured_step_matches_uncaptured", test_captured_step_matches_uncaptured, devices),
-):
-    add_function_test(TestSteelFreeRootPredictor, f"{_name}_split", _func, devices=_devices, solve_mode="split")
-
-
-# The integrator kernel is mode-independent; also check it on CPU.
-add_function_test(
-    TestSteelFreeRootPredictor,
-    "test_integrator_transport_identities",
-    test_integrator_transport_identities,
-    devices=[d for d in get_test_devices() if d.is_cpu],
-)
+    # Graph capture needs CUDA; the other checks also run on CPU.
+    _devices = devices if _func is test_captured_step_matches_uncaptured else get_test_devices()
+    add_function_test(TestSteelFreeRootPredictor, _name, _func, devices=_devices)
 
 
 # The propagation response solves the free sphere's contact as a body-space row.
@@ -2739,7 +3040,7 @@ def test_free_spin_energy(test, device):
     """Conserve kinetic energy and angular momentum of a torque-free asymmetric spinning body."""
     inertia = np.diag([0.001, 0.02, 0.0205])
     model, state, output = _model(device, inertia, (100.0, 20.0, 50.0))
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free")
+    solver = newton.solvers.SolverSteel(model)
     control = model.control()
     omega = _body_omega(state)
     energy = 0.5 * omega @ inertia @ omega
@@ -2760,7 +3061,7 @@ def test_principal_axis_torque(test, device):
     inertia = np.diag([0.04, 0.02, 0.05])
     for armature in (0.0, 0.03):
         model, state, output = _model(device, inertia, (0.0, 0.0, 2.0), armature=armature)
-        solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free")
+        solver = newton.solvers.SolverSteel(model)
         control = model.control()
         torque = 0.1
         dt = 1.0 / 240.0
@@ -2787,7 +3088,7 @@ def test_rotated_inertia_and_armature(test, device):
         q[3:7] = np.asarray(rotation)
         state.joint_q.assign(q)
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-        solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free")
+        solver = newton.solvers.SolverSteel(model)
         control = model.control()
         w = _body_omega(state)
         initial = w @ inertia @ w + np.dot(rotor, omega * omega)
@@ -2823,7 +3124,7 @@ def test_gyro_precession_converges(test, device):
     errors = []
     for steps in (48, 96):
         model, state, output = _model(device, inertia, initial)
-        solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free")
+        solver = newton.solvers.SolverSteel(model)
         control = model.control()
         for _ in range(steps):
             solver.step(state, output, control, None, duration / steps)
@@ -2882,7 +3183,7 @@ def _mixed_scene(device, *, arm, totes):
     control = model.control()
     control.joint_target_q.fill_(0.1)
     # The 19 revolute joints keep two finite position-limit rows each.
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", articulation_constraint_max=64)
+    solver = newton.solvers.SolverSteel(model, articulation_constraint_max=64)
     return model, solver, control, [state, output]
 
 
@@ -3004,7 +3305,7 @@ def _step_once(model, solver):
     return state_out
 
 
-def test_public_eval_fk_round_trips_solver_body_qd(test, device, solve_mode="matrix_free"):
+def test_public_eval_fk_round_trips_solver_body_qd(test, device, solve_mode="serial"):
     """Reproduce the solver's published body_qd with eval_fk on its joint state, far from the origin."""
     for origin in ORIGINS:
         with test.subTest(origin=origin):
@@ -3020,7 +3321,7 @@ def test_public_eval_fk_round_trips_solver_body_qd(test, device, solve_mode="mat
             np.testing.assert_allclose(state_out.body_qd.numpy()[0][0:3], V_COM, rtol=0.0, atol=1e-3)
 
 
-def test_joint_qd_matches_featherstone_far_from_origin(test, device, solve_mode="matrix_free"):
+def test_joint_qd_matches_featherstone_far_from_origin(test, device, solve_mode="serial"):
     """Match SolverFeatherstone's joint_qd and body_qd from the same public twist, far from the origin."""
     for origin in ORIGINS:
         with test.subTest(origin=origin):
@@ -3040,10 +3341,7 @@ for _name, _func in (
     ("test_public_eval_fk_round_trips_solver_body_qd", test_public_eval_fk_round_trips_solver_body_qd),
     ("test_joint_qd_matches_featherstone_far_from_origin", test_joint_qd_matches_featherstone_far_from_origin),
 ):
-    add_function_test(TestSteelJointQdConvention, _name, _func, devices=get_cuda_test_devices())
-    add_function_test(
-        TestSteelJointQdConvention, f"{_name}_split", _func, devices=get_test_devices(), solve_mode="split"
-    )
+    add_function_test(TestSteelJointQdConvention, _name, _func, devices=get_test_devices())
 
 
 def _build_branched_d6(device):
@@ -3228,14 +3526,13 @@ for _name, _func in (
     ("test_translated_d6_spin_holds_position", test_translated_d6_spin_holds_position),
     ("test_free_and_distance_roots_use_com_twists", test_free_and_distance_roots_use_com_twists),
 ):
-    add_function_test(TestSteelJointMotion, f"{_name}_split", _func, devices=get_test_devices(), solve_mode="split")
-    add_function_test(TestSteelJointMotion, _name, _func, devices=get_cuda_test_devices(), solve_mode="matrix_free")
+    add_function_test(TestSteelJointMotion, _name, _func, devices=get_test_devices(), solve_mode="serial")
 add_function_test(
     TestSteelJointMotion,
     "test_translated_d6_spin_holds_position_propagation",
     test_translated_d6_spin_holds_position,
     devices=get_cuda_test_devices(),
-    solve_mode="matrix_free",
+    solve_mode="serial",
     articulated_contact_response="propagation",
 )
 add_function_test(
@@ -3250,7 +3547,7 @@ add_function_test(
     "test_multi_angular_d6_motion_matches_fk_parallel_tree",
     test_multi_angular_d6_motion_matches_fk,
     devices=get_cuda_test_devices(),
-    solve_mode="matrix_free",
+    solve_mode="serial",
     parallel_tree=True,
 )
 
@@ -3275,7 +3572,7 @@ def _mask(values, device):
     return wp.array(values, dtype=wp.bool, device=device)
 
 
-def test_reset_validates_mask_length(test, device, solve_mode="matrix_free"):
+def test_reset_validates_mask_length(test, device, solve_mode="serial"):
     """Accept ``(world_count + 1,)`` masks and reject every other length, including the legacy ``(world_count,)``."""
     model = _build_two_worlds_with_global_body(device)
     solver = SolverSteel(model, solve_mode=solve_mode)
@@ -3295,7 +3592,7 @@ def test_reset_validates_mask_length(test, device, solve_mode="matrix_free"):
     np.testing.assert_array_equal(solver._impulses.numpy(), before)
 
 
-def test_reset_isolates_global_slot(test, device, solve_mode="matrix_free"):
+def test_reset_isolates_global_slot(test, device, solve_mode="serial"):
     """Select local worlds and global entities independently through the final mask entry."""
     model = _build_two_worlds_with_global_body(device)
     solver = SolverSteel(model, solve_mode=solve_mode, update_mass_matrix_interval=100)
@@ -3326,17 +3623,11 @@ class TestSteelReset(unittest.TestCase):
     pass
 
 
-add_function_test(TestSteelReset, "test_reset_validates_mask_length", test_reset_validates_mask_length, devices=devices)
-
-
-add_function_test(TestSteelReset, "test_reset_isolates_global_slot", test_reset_isolates_global_slot, devices=devices)
-
-
 for _name, _func in (
     ("test_reset_validates_mask_length", test_reset_validates_mask_length),
     ("test_reset_isolates_global_slot", test_reset_isolates_global_slot),
 ):
-    add_function_test(TestSteelReset, f"{_name}_split", _func, devices=get_test_devices(), solve_mode="split")
+    add_function_test(TestSteelReset, _name, _func, devices=get_test_devices())
 
 
 PLATFORM_TOP = 0.5
@@ -3373,7 +3664,7 @@ def _stack_on_platform(device, num_worlds=2):
     return builder.finalize(device=device)
 
 
-def _run_split(model, solver, steps):
+def _run_stack(model, solver, steps):
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
@@ -3388,9 +3679,8 @@ def _run_split(model, solver, steps):
 def test_mixed_world_stack_rests(test, device):
     """Rest a box stack on an articulated platform: dense and free-body rows exchange impulses every sweep."""
     model = _stack_on_platform(device)
-    solver = SolverSteel(model, solve_mode="split", iterations=16)
-    test.assertTrue(solver._has_mixed_contacts)
-    state = _run_split(model, solver, 240)
+    solver = SolverSteel(model, iterations=16)
+    state = _run_stack(model, solver, 240)
     solver.check_constraint_capacity()
     test.assertGreater(int(solver._constraint_count.numpy()[0]), 0)
     test.assertGreater(int(solver._mf_constraint_count.numpy()[0]), 0)
@@ -3403,22 +3693,12 @@ def test_mixed_world_stack_rests(test, device):
     test.assertLess(float(np.abs(state.body_qd.numpy()).max()), 2.0e-2)
 
 
-def test_mixed_world_matches_matrix_free_solve(test, device):
-    """Converge to the matrix-free solve's resting state on the same mixed scene."""
-    final = {}
-    for solve_mode in ("split", "matrix_free"):
-        model = _stack_on_platform(device)
-        solver = SolverSteel(model, solve_mode=solve_mode, iterations=32)
-        final[solve_mode] = _run_split(model, solver, 120).body_q.numpy()
-    np.testing.assert_allclose(final["split"], final["matrix_free"], rtol=0.0, atol=2.0e-3)
-
-
 def test_captured_mixed_step_matches_eager(test, device):
-    """Replay captured collide + split step on a mixed scene like eager stepping."""
+    """Replay a captured collide and step on a mixed scene like eager stepping."""
     trajectories = []
     for capture in (False, True):
         model = _stack_on_platform(device)
-        solver = SolverSteel(model, solve_mode="split")
+        solver = SolverSteel(model)
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
         state_0, state_1 = model.state(), model.state()
@@ -3448,24 +3728,15 @@ def test_captured_mixed_step_matches_eager(test, device):
     np.testing.assert_allclose(trajectories[1][:, 3:], trajectories[0][:, 3:], rtol=0.0, atol=5.0e-4)
 
 
-class TestSteelSplit(unittest.TestCase):
-    @unittest.skipUnless(wp.is_cuda_available(), "requires a CUDA device to compare against")
-    def test_cpu_and_cuda_split_solves_agree(self):
-        """Match the CPU split solve (scalar kernels) and the CUDA split solve (native kernels)."""
-        final = {}
-        for device in ("cpu", "cuda:0"):
-            model = _stack_on_platform(device)
-            final[device] = _run_split(model, SolverSteel(model, solve_mode="split"), 120).body_q.numpy()
-        np.testing.assert_allclose(final["cpu"][:, :3], final["cuda:0"][:, :3], rtol=0.0, atol=1.0e-4)
-        np.testing.assert_allclose(final["cpu"][:, 3:], final["cuda:0"][:, 3:], rtol=0.0, atol=5.0e-4)
+class TestSteelMixedWorld(unittest.TestCase):
+    pass
 
 
 for _name, _func, _devices in (
     ("test_mixed_world_stack_rests", test_mixed_world_stack_rests, get_test_devices()),
-    ("test_mixed_world_matches_matrix_free_solve", test_mixed_world_matches_matrix_free_solve, get_cuda_test_devices()),
     ("test_captured_mixed_step_matches_eager", test_captured_mixed_step_matches_eager, get_cuda_test_devices()),
 ):
-    add_function_test(TestSteelSplit, _name, _func, devices=_devices)
+    add_function_test(TestSteelMixedWorld, _name, _func, devices=_devices)
 
 
 def _rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -3531,7 +3802,7 @@ def _build_world_hinged_swing(test, closure, start_angle=0.6):
     else:
         add_loop_joint = functools.partial(b.add_joint_ball, parent=-1, child=body, parent_xform=x_p, child_xform=x_c)
     joint = _expect_one_warning(
-        test, newton.exceptions.NewtonWarning, "another joint already connects these bodies", add_loop_joint
+        test, newton.NewtonWarning, "another joint already connects these bodies", add_loop_joint
     )
     return b, joint
 
@@ -3714,7 +3985,7 @@ def test_revolute_loop_overflow_drops_all_five_rows(test, device):
 
     def row_count(capacity):
         solver = SolverSteel(
-            model, solve_mode="matrix_free", articulation_constraint_max=capacity, warn_constraint_overflow=False
+            model, solve_mode="serial", articulation_constraint_max=capacity, warn_constraint_overflow=False
         )
         state_0, state_1 = model.state(), model.state()
         solver.step(state_0, state_1, model.control(), None, 1.0 / 500.0)
@@ -3735,25 +4006,27 @@ def test_revolute_loop_warns_about_ignored_limits_and_drives(test, device):
         builder, joint = _build_world_hinged_swing(test, "revolute")
         dof = builder.joint_qd_start[joint]
         builder.joint_limit_lower[dof], builder.joint_limit_upper[dof] = lower, upper
-        with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* limits"):
+        with test.assertWarnsRegex(newton.NewtonWarning, "loop-closing REVOLUTE joint .* limits"):
             SolverSteel(builder.finalize(device=device))
     builder, joint = _build_world_hinged_swing(test, "revolute")
     builder.joint_target_ke[builder.joint_qd_start[joint]] = 10.0
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* drive gains"):
+    with test.assertWarnsRegex(newton.NewtonWarning, "loop-closing REVOLUTE joint .* drive gains"):
         SolverSteel(builder.finalize(device=device))
-    for name, attribute, value in (("damping", "joint_damping", 100.0), ("armature", "joint_armature", 0.1)):
+    for name, attribute, value in (
+        ("damping", "joint_damping", 100.0),
+        ("spring stiffness", "joint_stiffness", 5.0),
+        ("armature", "joint_armature", 0.1),
+    ):
         builder, joint = _build_world_hinged_swing(test, "revolute")
         getattr(builder, attribute)[builder.joint_qd_start[joint]] = value
-        with test.assertWarnsRegex(newton.exceptions.NewtonWarning, f"loop-closing REVOLUTE joint .* {name}"):
+        with test.assertWarnsRegex(newton.NewtonWarning, f"loop-closing REVOLUTE joint .* {name}"):
             SolverSteel(builder.finalize(device=device))
     builder, joint = _build_world_hinged_swing(test, "revolute")
     builder.joint_axis[builder.joint_qd_start[joint]] = (0.0, 0.0, 0.0)
-    with test.assertWarnsRegex(
-        newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* zero or non-finite axis"
-    ):
+    with test.assertWarnsRegex(newton.NewtonWarning, "loop-closing REVOLUTE joint .* zero or non-finite axis"):
         SolverSteel(builder.finalize(device=device))
     with warnings.catch_warnings():
-        warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+        warnings.simplefilter("error", newton.NewtonWarning)
         SolverSteel(_build_world_hinged_swing(test, "revolute")[0].finalize(device=device))
 
 
@@ -3761,7 +4034,7 @@ def test_revolute_loop_warns_about_edits_it_ignores(test, device):
     """Warn on an eager notification after an edit to a zero or NaN axis or to damping of a loop-closing REVOLUTE joint."""
     model = _build_world_hinged_swing(test, "revolute")[0].finalize(device=device)
     with warnings.catch_warnings():
-        warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+        warnings.simplefilter("error", newton.NewtonWarning)
         solver = SolverSteel(model)
         solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.JOINT_DOF_PROPERTIES)
     dof = int(model.joint_qd_start.numpy()[1])
@@ -3769,14 +4042,12 @@ def test_revolute_loop_warns_about_edits_it_ignores(test, device):
     for bad_axis in ((0.0, 0.0, 0.0), (np.nan, 0.0, 0.0)):
         axis[dof] = bad_axis
         model.joint_axis.assign(axis)
-        with test.assertWarnsRegex(
-            newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint 1 has a zero or non-finite axis"
-        ):
+        with test.assertWarnsRegex(newton.NewtonWarning, "loop-closing REVOLUTE joint 1 has a zero or non-finite axis"):
             solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
     damping = model.joint_damping.numpy()
     damping[dof] = 100.0
     model.joint_damping.assign(damping)
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint 1 has damping"):
+    with test.assertWarnsRegex(newton.NewtonWarning, "loop-closing REVOLUTE joint 1 has damping"):
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
 
 
@@ -3796,17 +4067,13 @@ def test_revolute_loop_dof_gets_no_drive_or_velocity_limit_rows(test, device):
             builder.joint_target_ke[loop_dof] = 50.0
             builder.joint_target_kd[loop_dof] = 1.0
             builder.joint_target_q[builder.joint_q_start[joint]] = 0.3
-            context = test.assertWarnsRegex(
-                newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* drive gains"
-            )
+            context = test.assertWarnsRegex(newton.NewtonWarning, "loop-closing REVOLUTE joint .* drive gains")
         else:
             context = warnings.catch_warnings()
         with context:
             if not gain:
-                warnings.simplefilter("error", newton.exceptions.NewtonWarning)
-            _, _, poses, solver = _run_closure(
-                builder, joint, device, steps=100, solve_mode="matrix_free", **solver_options
-            )
+                warnings.simplefilter("error", newton.NewtonWarning)
+            _, _, poses, solver = _run_closure(builder, joint, device, steps=100, solve_mode="serial", **solver_options)
         return poses, int(solver._constraint_count.numpy()[0])
 
     reference, reference_rows = run(drive_mode="rows")
@@ -3833,7 +4100,7 @@ def test_revolute_loop_realigns_to_the_nearer_axis_direction(test, device):
     flipped = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), float(np.radians(179.0)))
     joint = _expect_one_warning(
         test,
-        newton.exceptions.NewtonWarning,
+        newton.NewtonWarning,
         "another joint already connects these bodies",
         functools.partial(
             b.add_joint_revolute,
@@ -3880,11 +4147,11 @@ def test_revolute_loop_from_fixed_root_matches_world_parent(test, device):
         )
         if parent == root:
             joint = _expect_one_warning(
-                test, newton.exceptions.NewtonWarning, "another joint already connects these bodies", add_loop_joint
+                test, newton.NewtonWarning, "another joint already connects these bodies", add_loop_joint
             )
         else:
             joint = add_loop_joint()
-        return _run_closure(b, joint, device, steps=50, solve_mode="matrix_free")[2]
+        return _run_closure(b, joint, device, steps=50, solve_mode="serial")[2]
 
     np.testing.assert_allclose(run(parent=0), run(parent=-1), atol=1.0e-6)
 

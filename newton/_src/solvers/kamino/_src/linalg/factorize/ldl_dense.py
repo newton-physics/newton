@@ -8,13 +8,34 @@ import warp as wp
 
 from ._array_ptr import get_float32_array_offset_ptr
 
+###
+# Module interface
+###
+
+__all__ = ["DenseLDLStorage"]
+
+
+###
+# Module configs
+###
+
 wp.set_module_options({"enable_backward": False})
+
+
+###
+# Functions
+###
 
 
 @wp.func
 def _row(index: int, padded: int, reverse: bool):
     """Map a scalar row through the optional reversal of padded six-row groups."""
     return (padded // 6 - 1 - index // 6) * 6 + index % 6 if reverse else index
+
+
+###
+# Kernels
+###
 
 
 @wp.kernel
@@ -192,6 +213,11 @@ def _reconstruct(
     a[mio[world] + row * n + column] = value
 
 
+###
+# Interfaces
+###
+
+
 class DenseLDLStorage:
     """Represent a complete block graph implicitly, with quadratic storage only."""
 
@@ -208,6 +234,10 @@ class DenseLDLStorage:
         self.lower = wp.zeros(sum(n * n for n in capacities), dtype=wp.float32, device=device)
         self.diagonal = wp.zeros(sum(capacities), dtype=wp.float32, device=device)
         self.failed = wp.zeros(self.worlds, dtype=wp.int32, device=device)
+
+    ###
+    # Operations
+    ###
 
     def factorize(self, a, shift):
         """Factor active matrices, retrying only failed worlds with the requested diagonal shift."""

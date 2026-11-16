@@ -429,7 +429,7 @@ one iteration; a standalone Steel on a ``ModelView`` keeps these options. The
 coupler routes contacts and sums coupling forces with atomics, so the contact
 order that run-to-run mode relies on is not fixed inside it. Acting as a proxy
 destination raises :class:`NotImplementedError` on the first coupled step.
-Coupled use is validated with ``solve_mode="matrix_free"`` and the
+Coupled use is validated with ``solve_mode="serial"`` and the
 ``"immediate"`` articulated contact response. Set ``model.rigid_contact_max`` to the capacity of
 the coupled contact buffer before constructing the coupled solver, because Steel
 sizes its contact scratch from the model.

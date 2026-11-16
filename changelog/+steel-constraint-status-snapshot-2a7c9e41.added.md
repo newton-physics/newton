@@ -1,1 +1,0 @@
-Add `SolverSteel.snapshot_constraint_status()` and `check_constraint_capacity(snapshot=True)`, which report the constraint status as it was at the snapshot without waiting for steps enqueued after it.

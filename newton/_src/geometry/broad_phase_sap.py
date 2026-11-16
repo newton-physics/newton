@@ -567,7 +567,7 @@ class BroadPhaseSAP:
                 segmented sorting; a single segment uses equivalent ordinary radix sorting.
                 Use ``"tile"`` for tile-based
                 sorting via ``wp.tile_sort``, or ``"auto"`` to use one of
-                three bounded tile sizes for medium-sized worlds.
+                five bounded tile sizes for worlds with up to 512 shapes.
             tile_block_dim: Block dimension for tile-based sorting (optional, auto-calculated if None).
                 If None, will be set to next power of 2 >= ``max_shapes_per_world``, capped at 512.
                 Minimum value is 32 (required by wp.tile_sort). If provided, will be clamped to [32, 1024].
@@ -621,14 +621,18 @@ class BroadPhaseSAP:
             self.max_shapes_per_world = max(self.max_shapes_per_world, num_shapes)
             start_idx = end_idx
 
-        # The collision pipeline uses auto mode. Restrict it to three fixed
+        # The collision pipeline uses auto mode. Restrict it to five fixed
         # tile sizes so arbitrary model sizes cannot create arbitrary kernel
-        # variants, and keep padding at or below 2x. Small and large worlds retain
-        # the general segmented sort.
+        # variants. Small worlds avoid segmented-sort overhead with 32/64 tiles;
+        # empty and large worlds retain the general segmented sort.
         if self.sort_type == "auto":
-            if 64 <= self.max_shapes_per_world <= 512:
+            if 1 <= self.max_shapes_per_world <= 512:
                 self.sort_type = "tile"
-                if self.max_shapes_per_world <= 128:
+                if self.max_shapes_per_world <= 32:
+                    self.max_shapes_per_world = 32
+                elif self.max_shapes_per_world < 64:
+                    self.max_shapes_per_world = 64
+                elif self.max_shapes_per_world <= 128:
                     self.max_shapes_per_world = 128
                 elif self.max_shapes_per_world <= 256:
                     self.max_shapes_per_world = 256
@@ -663,6 +667,12 @@ class BroadPhaseSAP:
         self.sap_sort_index = wp.zeros(2 * total_elements, dtype=wp.int32, device=device)
         self.sap_range = wp.zeros(total_elements, dtype=wp.int32, device=device)
         self.sap_cumulative_sum = wp.zeros(total_elements, dtype=wp.int32, device=device)
+        # Older Warp versions allocate internally and cannot capture SAP
+        # inside conditional bodies. Reuse storage when the API supports it.
+        self._scan_kwargs = {}
+        if hasattr(wp.utils, "array_scan_temp_storage_size"):
+            scan_bytes = wp.utils.array_scan_temp_storage_size(total_elements, self.sap_range.dtype, device)
+            self._scan_kwargs["temp_storage"] = wp.empty(scan_bytes, dtype=wp.uint8, device=device)
 
         # Segment indices for the multi-world segmented sort
         # [0, max_shapes_per_world, 2*max_shapes_per_world, ..., world_count*max_shapes_per_world]
@@ -851,7 +861,7 @@ class BroadPhaseSAP:
         )
 
         # Compute cumulative sum of ranges
-        wp.utils.array_scan(self.sap_range, self.sap_cumulative_sum, True)
+        wp.utils.array_scan(self.sap_range, self.sap_cumulative_sum, True, **self._scan_kwargs)
 
         # Estimate number of sweep threads
         total_elements = self.world_count * self.max_shapes_per_world
