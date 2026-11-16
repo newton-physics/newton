@@ -1251,10 +1251,8 @@ class ModelBuilder:
             backends may scale or otherwise interpret this coefficient
             according to their formulation.
 
-            For :class:`~newton.solvers.SolverMuJoCo`, stiffness values are
-            internally scaled by masses when Newton-generated contacts are
-            passed through the MuJoCo contact path. Tune ``kh`` with that
-            scaling in mind.
+            For MuJoCo's stiffness interpretation and supported settings,
+            see :ref:`mujoco-hydroelastic-response`.
         """
         sdf_padding: float | None = None
         """SDF AABB padding [m] for primitive texture SDFs. Falls back to

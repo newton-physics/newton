@@ -4487,7 +4487,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         update_data_interval: int | None = None,
         save_to_mjcf: str | None = None,
         use_mujoco_contacts: bool = True,
-        hydroelastic_force_space: bool = False,
         use_speculative_contacts: bool = False,
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
@@ -4570,11 +4569,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 .. experimental::
 
                     The ``use_speculative_contacts=True`` mode may change without prior notice.
-            hydroelastic_force_space: Opt into experimental physical hydroelastic stiffness
-                instead of the legacy acceleration-space response. Defaults to False
-                to preserve existing tuning. Requires Newton contacts on MuJoCo-Warp
-                with elliptic contacts and Euler, implicit, or implicitfast integration.
-                Use unreduced hydroelastic contacts. Set at construction only.
             include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
@@ -4609,12 +4603,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raise ValueError("use_speculative_contacts=True requires Newton contacts on the MuJoCo Warp backend.")
         self._use_speculative_contacts = use_speculative_contacts
 
-        if not isinstance(hydroelastic_force_space, bool | np.bool_):
-            raise TypeError("hydroelastic_force_space must be a bool.")
-        self._hydroelastic_force_space = bool(hydroelastic_force_space)
-        if self._hydroelastic_force_space and (use_mujoco_cpu or use_mujoco_contacts):
+        required_flags = ShapeFlags.HYDROELASTIC | ShapeFlags.COLLIDE_SHAPES
+        self._has_hydroelastic_shapes = bool(np.any((model.shape_flags.numpy() & required_flags) == required_flags))
+        if (use_mujoco_cpu or use_mujoco_contacts) and self._has_force_space_hydroelastic_pair():
             raise ValueError(
-                "hydroelastic_force_space=True requires use_mujoco_cpu=False and use_mujoco_contacts=False."
+                "Hydroelastic force-space shapes require use_mujoco_cpu=False and use_mujoco_contacts=False."
             )
 
         # Import and cache MuJoCo modules (only happens once per class)
@@ -4912,38 +4905,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     )
         if separate_worlds is None:
             separate_worlds = not use_mujoco_cpu and model.world_count > 1
-        # Buffers for the fast-path contact conversion optimisation.
-        # See _convert_contacts_to_mjwarp / convert_newton_contacts_to_mjwarp_kernel.
-        # Initialised before _convert_to_mjc because notify_model_changed (called
-        # during conversion) may call _invalidate_contact_fast_path.
-        #
-        # Allocate the generation and count buffers before conversion because
-        # notify_model_changed() may invalidate them during conversion. The
-        # contact map is allocated below once the converted capacity is known.
+        # Allocate counters before conversion, which can invalidate them.
+        # Allocate the contact map below once the backend capacity is known.
         self._contact_tid_to_cid: wp.array[wp.int32] | None = None
         self._mjw_qfrc_frictionloss: wp.array2d[wp.float32] | None = None
         self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=self.device)
-        self._last_contact_timestep = (
-            wp.zeros(1, dtype=float, device=self.device) if self._hydroelastic_force_space else None
-        )
         self._contacts_epoch = 0
-        self._last_contacts_epoch = (
-            wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
-            if self._hydroelastic_force_space
-            else None
-        )
+        self._last_contact_timestep = None
+        self._last_contacts_epoch = None
+        if self._has_hydroelastic_shapes:
+            self._last_contact_timestep = wp.zeros(1, dtype=float, device=self.device)
+            self._last_contacts_epoch = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         # Reset by the conversion finalizer, avoiding a memset before each pass.
         self._contact_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         # Placeholder for collect_overflow_kernel's rigid_contact_count arg when contacts is None.
         self._zero_contact_count = wp.zeros(1, dtype=wp.int32, device=self.device)
-        # Track the Contacts instance and its capacity.  Any change to these
-        # invariants invalidates the cached tid_to_cid mapping because the
-        # cached tid values would refer to a different input buffer.
-        # Note: we key on id(contacts.contact_generation) (a stable per-Contacts
-        # device array) rather than id(contacts).  Empirically, keying on the
-        # outer Contacts wrapper produces broken binaries in the dexsuite
-        # workload (root cause unclear; the inner array's id is what works).
         self._last_contacts_id: int | None = None
         self._last_rigid_contact_max: int | None = None
 
@@ -5028,8 +5005,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # first run inside a CUDA graph that is discarded without replay.
             self._create_inverse_shape_mapping()
             self._contact_tid_to_cid = wp.full(self.mjw_data.naconmax, -1, dtype=wp.int32, device=self.device)
-            if self._hydroelastic_force_space:
-                self._check_hydroelastic_options()
+        self._check_hydroelastic_options()
         self._initial_model_sync = False
         self._update_data_interval = 1 if update_data_interval is None else update_data_interval
         self._step = 0
@@ -5089,25 +5065,40 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         with self._scoped_deterministic_config():
             yield
 
-    def _check_hydroelastic_options(self):
-        """Reject options that cannot provide the force-space contact response."""
+    def _has_force_space_hydroelastic_pair(self) -> bool:
+        modes = getattr(getattr(self.model, "mujoco", None), "solref_mode", None)
+        if not self._has_hydroelastic_shapes or modes is None:
+            return False
+        required = ShapeFlags.HYDROELASTIC | ShapeFlags.COLLIDE_SHAPES
+        eligible = (self.model.shape_flags.numpy() & required) == required
+        return np.count_nonzero(eligible & (modes.numpy() == SOLREF_MODE_FORCE_SPACE)) >= 2
+
+    def _supports_hydroelastic_compliance(self) -> bool:
+        if not self._has_hydroelastic_shapes or self.use_mujoco_cpu or self._use_mujoco_contacts:
+            return False
         opt = self.mjw_model.opt
         integrators = self._mujoco_warp.IntegratorType
-        if opt.integrator not in (integrators.EULER, integrators.IMPLICIT, integrators.IMPLICITFAST):
+        return (
+            opt.integrator in (integrators.EULER, integrators.IMPLICIT, integrators.IMPLICITFAST)
+            and opt.cone == self._mujoco_warp.ConeType.ELLIPTIC
+        )
+
+    def _check_hydroelastic_options(self):
+        """Keep legacy options available unless hydroelastic force space is selected."""
+        if not self._supports_hydroelastic_compliance() and self._has_force_space_hydroelastic_pair():
             raise ValueError(
-                "hydroelastic_force_space=True does not support RK4 or discrete; use implicitfast or Euler."
+                "Hydroelastic force-space shapes require Newton contacts on MuJoCo Warp, "
+                "cone='elliptic', and Euler, implicit, or implicitfast integration."
             )
-        if opt.cone != self._mujoco_warp.ConeType.ELLIPTIC:
-            raise ValueError("hydroelastic_force_space=True requires cone='elliptic'.")
 
     @event_scope
     def _mujoco_warp_step(self, contacts: Contacts | None):
-        if not self._use_speculative_contacts and not self._hydroelastic_force_space:
+        # Keep the hook in captured graphs so later solref_mode edits take effect.
+        hydroelastic = self._supports_hydroelastic_compliance()
+        if not self._use_speculative_contacts and not hydroelastic:
             self._mujoco_warp.step(self.mjw_model, self.mjw_data)
             return
         model, data = self.mjw_model, self.mjw_data
-        if self._hydroelastic_force_space:
-            self._check_hydroelastic_options()
         contact = data.contact
         if self._use_speculative_contacts:
             if model.opt.integrator not in (
@@ -5135,7 +5126,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 device=self.device,
             )
         self._mujoco_warp.step1(model, data)
-        if self._hydroelastic_force_space:
+        if hydroelastic:
             self._apply_hydroelastic_compliance(model, data, contacts)
         if self._use_speculative_contacts:
             wp.launch(
@@ -5742,6 +5733,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 contacts.rigid_contact_shape0,
                 contacts.rigid_contact_shape1,
                 self.model.shape_flags,
+                getattr(getattr(self.model, "mujoco", None), "solref_mode", None),
                 contacts.rigid_contact_stiffness,
                 contacts.rigid_contact_damping,
                 self._contact_tid_to_cid,
@@ -5753,8 +5745,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 data.contact.dist,
                 data.contact.includemargin,
                 self._speculative_clearance if self._use_speculative_contacts else None,
-                data.contact.adhesion,
-                model.flg_adhesion,
+                data.contact.adhesion if model.flg_adhesion else None,
                 data.nefc,
                 data.efc.vel,
             ],
@@ -5805,16 +5796,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # small-block grids to eight blocks per SM.
         block_dim = 32 if model.device.is_cuda and launch_dim <= model.device.sm_count * 256 else 256
 
-        # Invalidate the cached tid_to_cid mapping whenever any of the
-        # invariants it depends on change.  _contact_tid_to_cid is allocated
-        # in __init__ at naconmax, which is fixed after construction, so it
-        # never needs to grow here.
-        #
-        #  - Contacts identity: keyed on id(contacts.contact_generation), the
-        #    inner per-Contacts device array.  Empirically, keying on the outer
-        #    id(contacts) wrapper produces broken binaries in dexsuite training
-        #    (root cause unclear; the inner array's id is what works).
-        #  - rigid_contact_max: changes the meaning of tid indices.
+        # Use the stable generation buffer to identify cached contacts.
         contacts_id = id(contacts.contact_generation)
         if self._last_contacts_id != contacts_id or self._last_rigid_contact_max != contacts.rigid_contact_max:
             self._invalidate_contact_fast_path()
@@ -5891,21 +5873,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
                 self._last_contact_timestep,
-                contacts._hydroelastic_pressure_contact if self._hydroelastic_force_space else None,
-                contacts._hydroelastic_pressure_generation if self._hydroelastic_force_space else None,
+                contacts._hydroelastic_pressure_contact if self._has_hydroelastic_shapes else None,
+                contacts._hydroelastic_pressure_generation if self._has_hydroelastic_shapes else None,
                 self._last_contacts_epoch,
-                self._hydroelastic_force_space,
+                self._supports_hydroelastic_compliance(),
                 self._contacts_epoch,
             ],
             device=model.device,
             block_dim=block_dim,
         )
 
-        # Runs as a separate dim=1 kernel AFTER the main kernel completes so that:
-        #  - the compacted count is complete before publishing it and resetting
-        #    the scratch counter, avoiding a separate pre-conversion memset
-        #  - last_contact_generation is only updated after ALL threads in the
-        #    main kernel have read it (avoids a cross-block race)
+        # Publish counts after all threads finish compaction and read the old
+        # generation, avoiding a cross-block race.
         wp.launch(
             _sync_nacon_count,
             dim=1,
@@ -5962,6 +5941,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._validate_compiled_mesh_scales()
         if flags & ModelFlags.ACTUATOR_PROPERTIES:
             self._validate_compiled_actuator_gears()
+        if (
+            flags & (ModelFlags.SHAPE_PROPERTIES | ModelFlags.MODEL_PROPERTIES)
+            and not self._initial_model_sync
+            and not self.model.device.is_capturing
+        ):
+            self._check_hydroelastic_options()
 
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
             self._update_model_inertial_properties()
