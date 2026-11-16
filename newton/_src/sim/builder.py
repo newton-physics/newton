@@ -17198,7 +17198,7 @@ class ModelBuilder:
         )
 
     def _weld_group_filter_pairs(self) -> np.ndarray:
-        """Shape pairs that filtering joints add across weld groups, shape [pair_count, 2].
+        """Shape pairs that filtering tree joints add between weld groups, shape [pair_count, 2].
 
         A joint with ``collision_filter_parent=True`` filters the colliding shapes of its
         child's weld group against those of its parent's weld group. Weld groups are the
@@ -17214,9 +17214,12 @@ class ModelBuilder:
         below one of them filters that body alone. Shapes whose
         :attr:`ShapeConfig.collision_filter_parent` is ``False`` take no part.
 
-        :meth:`add_joint` and :meth:`add_shape` already add the direct parent-child pairs;
-        this computes the remaining pairs in :meth:`finalize`, so the result does not depend
-        on the order in which joints and shapes were added.
+        :meth:`add_joint` and :meth:`add_shape` add the direct parent-child pairs of the bodies
+        as they are at that moment. This recomputes the pairs of every filtering tree joint from
+        the bodies and joints as they are in :meth:`finalize`, so the result depends neither on
+        the order in which joints and shapes were added nor on later edits such as
+        :meth:`collapse_fixed_joints`, which moves shapes onto merged bodies and re-parents joints.
+        Loop joints keep only the pairs they got when they were added.
         """
         empty = np.empty((0, 2), dtype=np.int64)
         body_count = self.body_count
@@ -17233,9 +17236,6 @@ class ModelBuilder:
         is_weld = is_tree & ((joint_type == JointType.FIXED) | (dof_count == 0))
         # A weld with collision_filter_parent=False keeps its two bodies in separate groups.
         welded = is_weld & joint_filters & (joint_parent >= 0)
-        if not np.any(welded):
-            # Every weld group is a single body: the direct pairs already cover the rule.
-            return empty
 
         # Weld root per body: follow the filtering welds upward to the topmost body of the group,
         # MuJoCo's weld id. A body has one tree joint, so at most one weld leads up from it, and
@@ -17298,13 +17298,11 @@ class ModelBuilder:
         filtering = np.asarray(self.joint_collision_filter_parent, dtype=bool) & is_tree & (joint_parent >= 0)
         parent_side = side[np.maximum(joint_parent, 0)]
         child_side = side[joint_child]
-        # Joints between two groups, where at least one group is more than its direct body.
+        # Filtering joints between two groups filter one group against the other.
         across = filtering & (parent_side != child_side)
-        across &= (side_body_count[parent_side] > 1) | (side_body_count[child_side] > 1)
         pairs = product(parent_side[across], child_side[across])
-        # Filtering joints inside a group (its welds) filter the group against itself; a
-        # two-body group is its direct pair already.
-        within = filtering & (parent_side == child_side) & (side_body_count[child_side] > 2)
+        # Filtering joints inside a group (its welds) filter the group against itself.
+        within = filtering & (parent_side == child_side) & (side_body_count[child_side] > 1)
         groups = np.unique(child_side[within])
         if groups.shape[0]:
             clique = product(groups, groups)

@@ -3231,6 +3231,79 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
                 self.assertEqual((min(hand, finger), max(hand, finger)) in excludes, hand_filters)
                 self.assertEqual((min(parent, child), max(parent, child)) in excludes, pair_filters)
 
+    def test_collapsed_fixed_joints_keep_parent_filters_in_mujoco(self):
+        """Collapsing fixed joints keeps the parent-child filters, as MuJoCo's own rule does.
+
+        Hand (free) > palm (fixed) > cap (fixed), and finger (hinge) on the palm, with overlapping
+        spheres on all four bodies. Collapsing merges the palm and the cap into the hand and
+        re-parents the hinge, so the hand's shapes must be filtered against the finger in both
+        pipelines, built through the builder API or imported from MJCF, exactly as without
+        collapsing and as in native MuJoCo. Keeping the hand-palm weld through ``joints_to_keep``
+        merges only the cap into the palm, whose weld group must then filter the moved shape too.
+        """
+        import mujoco
+
+        mjcf = """
+<mujoco>
+  <worldbody>
+    <body name="hand" pos="0 0 1"><freejoint/><geom type="sphere" size="0.2"/>
+      <body name="palm" pos="0 0 0.05"><geom type="sphere" size="0.2"/>
+        <body name="cap" pos="0 0.05 0"><geom type="sphere" size="0.2"/></body>
+        <body name="finger" pos="0 0 0.05"><joint type="hinge" axis="0 0 1"/><geom type="sphere" size="0.2"/></body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+        native_data = mujoco.MjData(native_model)
+        mujoco.mj_forward(native_model, native_data)
+        self.assertEqual(native_data.ncon, 0)
+
+        def build(source, collapse):
+            builder = newton.ModelBuilder()
+            if source == "mjcf":
+                builder.add_mjcf(mjcf, collapse_fixed_joints=bool(collapse))
+                return builder.finalize(device="cpu")
+            inertia = wp.mat33(np.eye(3))
+            bodies = {}
+            for name, z, y in (("hand", 1.0, 0.0), ("palm", 1.05, 0.0), ("cap", 1.05, 0.05), ("finger", 1.1, 0.0)):
+                bodies[name] = builder.add_link(
+                    xform=wp.transform((0.0, y, z), wp.quat_identity()), mass=0.1, inertia=inertia, label=name
+                )
+                builder.add_shape_sphere(bodies[name], radius=0.2)
+            joints = [
+                builder.add_joint_free(bodies["hand"]),
+                builder.add_joint_fixed(
+                    bodies["hand"], bodies["palm"], parent_xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity())
+                ),
+                builder.add_joint_fixed(
+                    bodies["palm"], bodies["cap"], parent_xform=wp.transform((0.0, 0.05, 0.0), wp.quat_identity())
+                ),
+                builder.add_joint_revolute(
+                    bodies["palm"],
+                    bodies["finger"],
+                    axis=newton.Axis.Z,
+                    parent_xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()),
+                ),
+            ]
+            builder.add_articulation(joints)
+            if collapse == "keep_weld":
+                builder.collapse_fixed_joints(joints_to_keep=[joints[1]])
+            elif collapse:
+                builder.collapse_fixed_joints()
+            return builder.finalize(device="cpu")
+
+        cases = [(source, collapse) for source in ("builder", "mjcf") for collapse in (False, True)]
+        cases.append(("builder", "keep_weld"))
+        for source, collapse in cases:
+            with self.subTest(source=source, collapse=collapse):
+                model = build(source, collapse)
+                self.assertEqual(model.body_count, {False: 4, True: 2, "keep_weld": 3}[collapse])
+                newton_contacts, mujoco_contacts, solver = count_initial_contacts(model)
+                self.assertTrue(self._native_parent_filter_off(solver))
+                self.assertEqual((newton_contacts, mujoco_contacts), (0, native_data.ncon))
+
     def test_sparse_filters_query_only_selected_pairs(self):
         """Query filters only for pairs in the selected collision graph."""
 
