@@ -243,7 +243,7 @@ XPBD continues to use its native contact model.
 
 This ownership boundary is deliberate. The editor does not mutate arbitrary
 examples' private solvers or captured CUDA graphs. Solvers beyond XPBD and
-MuJoCo Warp, replicated
+MuJoCo (native CPU or Warp), replicated
 training environments, deformable authoring, and editing an existing Isaac Lab
 simulation are outside this application's supported scope.
 
