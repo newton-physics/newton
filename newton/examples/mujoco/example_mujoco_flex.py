@@ -32,14 +32,19 @@ BOX_HALF = 0.15
 CLOTH_CELLS, CLOTH_SIZE = 16, 0.6
 CABLE_SEGMENTS, CABLE_LENGTH = 30, 0.9
 PARTICLE_RADIUS = 0.01
+# A cloth flex radius of about half the cloth spacing keeps its triangles outside the box edges.
+CLOTH_RADIUS = 0.02
+CLOTH_COLOR = (0.4, 0.8, 0.93)
+BLOCK_COLOR = (0.13, 0.53, 0.2)
 CABLE_COLOR = (0.85, 0.3, 0.2)
 
 
 @wp.kernel(enable_backward=False)
-def gather_points(points: wp.array[wp.vec3], indices: wp.array[wp.int32], out: wp.array[wp.vec3]):
-    """Gather the cable particles so the viewer can draw them."""
-    i = wp.tid()
-    out[i] = points[indices[i]]
+def cable_render_points(points: wp.array[wp.vec3], starts: wp.array[wp.int32], out: wp.array2d[wp.vec3]):
+    """Sample each world's cable at its particles and segment midpoints so the spheres overlap into a rope."""
+    world, j = wp.tid()
+    a = starts[world] + j // 2
+    out[world, j] = 0.5 * (points[a] + points[a + j % 2])
 
 
 def build_world() -> newton.ModelBuilder:
@@ -65,8 +70,11 @@ def build_world() -> newton.ModelBuilder:
         tri_ke=1.0e3,
         tri_ka=1.0e3,
         particle_radius=PARTICLE_RADIUS,
+        color=CLOTH_COLOR,
     )
-    mujoco.add_flex(builder, triangles=range(start, builder.tri_count), elastic2d="both", thickness=1.0e-3)
+    mujoco.add_flex(
+        builder, triangles=range(start, builder.tri_count), elastic2d="both", thickness=1.0e-3, radius=CLOTH_RADIUS
+    )
 
     segment = CABLE_LENGTH / CABLE_SEGMENTS
     cable = [
@@ -93,6 +101,7 @@ def build_world() -> newton.ModelBuilder:
         k_lambda=2.0e4,
         k_damp=0.0,
         particle_radius=PARTICLE_RADIUS,
+        color=BLOCK_COLOR,
     )
     return builder
 
@@ -122,14 +131,14 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # The viewer draws the cloth and block triangles; draw the cable particles separately.
-        cloth = (CLOTH_CELLS + 1) ** 2
+        # The viewer draws the cloth and block triangles; draw the cable as overlapping spheres.
         per_world = self.model.particle_count // self.world_count
-        cable = np.arange(cloth, cloth + CABLE_SEGMENTS + 1) + per_world * np.arange(self.world_count)[:, None]
-        self.cable_ids = wp.array(cable.ravel(), dtype=wp.int32)
-        self.cable_points = wp.empty(self.cable_ids.shape, dtype=wp.vec3)
-        self.cable_radii = wp.full(self.cable_ids.shape, PARTICLE_RADIUS, dtype=wp.float32)
-        self.cable_colors = wp.full(self.cable_ids.shape, wp.vec3(CABLE_COLOR), dtype=wp.vec3)
+        starts = (CLOTH_CELLS + 1) ** 2 + per_world * np.arange(self.world_count)
+        self.cable_starts = wp.array(starts, dtype=wp.int32)
+        self.cable_points = wp.empty((self.world_count, 2 * CABLE_SEGMENTS + 1), dtype=wp.vec3)
+        count = self.cable_points.size
+        self.cable_radii = wp.full(count, 1.2 * PARTICLE_RADIUS, dtype=wp.float32)
+        self.cable_colors = wp.full(count, wp.vec3(CABLE_COLOR), dtype=wp.vec3)
 
         self.viewer.set_model(self.model)
         self.viewer.set_camera(pos=wp.vec3(1.0, -1.0, 0.7), pitch=-25.0, yaw=135.0)
@@ -161,9 +170,12 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         wp.launch(
-            gather_points, self.cable_ids.shape, inputs=[self.state_0.particle_q, self.cable_ids, self.cable_points]
+            cable_render_points,
+            self.cable_points.shape,
+            inputs=[self.state_0.particle_q, self.cable_starts],
+            outputs=[self.cable_points],
         )
-        self.viewer.log_points("cable", self.cable_points, self.cable_radii, self.cable_colors)
+        self.viewer.log_points("cable", self.cable_points.flatten(), self.cable_radii, self.cable_colors)
         self.viewer.end_frame()
 
     def test_final(self):
