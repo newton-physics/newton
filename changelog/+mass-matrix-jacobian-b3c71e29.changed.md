@@ -1,0 +1,1 @@
+Speed up computing the mass matrix in :func:`newton.eval_inverse_dynamics_passive`, and in :func:`newton.eval_mass_matrix` when it assembles H from the Jacobian (``J`` is passed, gradients are required, or the model has no FK level schedule). No migration is required.
