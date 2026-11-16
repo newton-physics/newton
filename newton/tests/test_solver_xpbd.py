@@ -17,7 +17,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.solvers.xpbd import kernels as xpbd_kernels
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 def test_particle_particle_friction_uses_relative_velocity(test, device):
@@ -2205,6 +2205,7 @@ def test_xpbd_parent_f_centripetal_zero_g(test, device):
     )
 
 
+@requires(*MUJOCO_MODULES)
 def test_xpbd_parent_f_consistent_across_solvers(test, device):
     """XPBD's ``body_parent_f`` must match MuJoCo / Featherstone for a static pendulum.
 
@@ -2674,9 +2675,7 @@ class TestSolverXPBD(unittest.TestCase):
     def test_rejects_rod_joints(self):
         """Raise at construction instead of silently skipping Rod joints in the constraint kernels."""
         builder = newton.ModelBuilder()
-        builder.add_rod(
-            rod=newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 2.0)], radius=0.1), body_frame_origin="com"
-        )
+        builder.add_rod(rod=newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 2.0)], radius=0.1))
         with self.assertRaisesRegex(ValueError, "JointType.ROD"):
             newton.solvers.SolverXPBD(builder.finalize(device="cpu"))
 

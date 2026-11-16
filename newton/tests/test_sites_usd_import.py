@@ -10,8 +10,10 @@ import warp as wp
 
 import newton
 from newton import GeoType, ShapeFlags
+from newton.tests.unittest_utils import requires
 
 
+@requires("pxr.Usd")
 class TestUSDSiteImport(unittest.TestCase):
     """Test parsing sites from USD files."""
 

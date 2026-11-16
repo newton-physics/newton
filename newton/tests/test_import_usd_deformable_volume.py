@@ -27,7 +27,7 @@ from newton.tests._usd_deformable_test_utils import (
     group_labels,
     group_range,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 from newton.usd import SchemaResolverPhysx
 
 
@@ -71,7 +71,7 @@ def _author_two_tet_wedge(stage, path):
     return tet
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUSDDeformableVolume(unittest.TestCase):
     """Volume (TetMesh) soft-body mass policy, body hierarchy, and transform baking."""
 
