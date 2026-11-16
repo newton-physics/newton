@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -15,8 +13,10 @@ if TYPE_CHECKING:
     from .render_context import RenderContext
 
 
-def create_compute_lighting_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
-    raytrace_first_hit = raytrace.create_first_hit_function(config, state)
+def create_compute_lighting_function(
+    config: RenderConfig, state: "RenderContext.RenderState", optix=None
+) -> wp.Function:
+    raytrace_first_hit = raytrace.create_first_hit_function(config, state, optix)
 
     @wp.func
     def compute_lighting(
