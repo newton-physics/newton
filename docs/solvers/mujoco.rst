@@ -848,6 +848,12 @@ that integrator. Newton's
 triangle damping, drag, and lift, tetrahedron damping, and dihedral bending
 edges are not converted.
 
+Each flex particle adds three DOFs, and MuJoCo's default ``"newton"`` solver
+factorizes a dense matrix over all DOFs of a world, so its cost grows quickly
+with the particle count. Pass ``solver="cg"`` for flexes with more than a few
+dozen particles, as in the ``mujoco_flex`` example
+(``python -m newton.examples mujoco_flex``).
+
 .. note::
 
    MuJoCo Warp treats geom ``gap`` as a contact-inclusion offset for
