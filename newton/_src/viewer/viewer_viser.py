@@ -2391,12 +2391,13 @@ class ViewerViser(ViewerBase):
         changed = self._shape_appearance_changed_device.numpy()
         colors_changed = self.model_changed or self._packed_shape_colors_host is None or bool(changed[0])
         opacities_changed = self.model_changed or self._packed_shape_opacities_host is None or bool(changed[1])
-        if colors_changed:
-            self._packed_shape_colors_host = to_numpy(self.model_shape_color).copy()
-        if opacities_changed:
-            self._packed_shape_opacities_host = to_numpy(self.model_shape_opacity).copy()
-        packed_colors = self._packed_shape_colors_host
-        packed_opacities = self._packed_shape_opacities_host
+        packed_colors = to_numpy(self.model_shape_color).copy() if colors_changed else self._packed_shape_colors_host
+        packed_opacities = (
+            to_numpy(self.model_shape_opacity).copy() if opacities_changed else self._packed_shape_opacities_host
+        )
+        # Commit snapshots after logging succeeds so a failed frame resends appearance.
+        self._packed_shape_colors_host = None
+        self._packed_shape_opacities_host = None
         layer_hidden = self._layer_force_hidden()
 
         for shapes, offset, count in self._packed_shape_groups:
@@ -2437,6 +2438,8 @@ class ViewerViser(ViewerBase):
 
         self._log_gaussian_shapes(state)
         self._log_non_shape_state(state)
+        self._packed_shape_colors_host = packed_colors
+        self._packed_shape_opacities_host = packed_opacities
         self.model_changed = False
         self._render_picking_line()
 

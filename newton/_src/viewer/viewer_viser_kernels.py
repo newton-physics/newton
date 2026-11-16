@@ -18,12 +18,14 @@ def detect_shape_appearance_changes(
     """Repack appearance and detect edits in one pass, using the existing batch buffers."""
     tid = wp.tid()
     shape = slot_to_shape[tid]
-    color = colors[shape]
-    previous = packed_colors[tid]
-    opacity = wp.clamp(opacities[shape], 0.0, 1.0)
-    if color[0] != previous[0] or color[1] != previous[1] or color[2] != previous[2]:
-        wp.atomic_max(changed, 0, 1)
-    if opacity != packed_opacities[tid]:
-        wp.atomic_max(changed, 1, 1)
-    packed_colors[tid] = color
-    packed_opacities[tid] = opacity
+    if colors:
+        color = colors[shape]
+        previous = packed_colors[tid]
+        if color[0] != previous[0] or color[1] != previous[1] or color[2] != previous[2]:
+            wp.atomic_max(changed, 0, 1)
+        packed_colors[tid] = color
+    if opacities:
+        opacity = wp.clamp(opacities[shape], 0.0, 1.0)
+        if opacity != packed_opacities[tid]:
+            wp.atomic_max(changed, 1, 1)
+        packed_opacities[tid] = opacity
