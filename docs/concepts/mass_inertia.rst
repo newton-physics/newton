@@ -124,6 +124,33 @@ Special cases:
   ``barrel_radius``.
 
 
+Rod and cable mass
+^^^^^^^^^^^^^^^^^^
+
+:meth:`~newton.ModelBuilder.add_rod` builds each segment as a capsule, and
+neighboring capsules overlap at their tips. Rods therefore take segment mass
+from the cylindrical part only, ``density * area * rest_length``, so refining
+the same centerline preserves total mass. ``area`` is ``pi * radius**2``, or
+for hollow rods (``is_solid=False``) the tube wall of thickness ``margin``.
+``total_mass`` [kg] instead sets the mass of the whole rod, distributed by rest
+length, and overrides ``ShapeConfig.density``.
+
+Segment inertia is the solid-cylinder or open-tube tensor at the assigned mass
+and rest length. For outer radius ``r``, inner radius ``a`` (zero for a solid
+rod), and rest length ``L``, the local axial moment is ``m * (r**2 + a**2) / 2``
+and both transverse moments are ``m * ((r**2 + a**2) / 4 + L**2 / 12)``.
+Collision geometry stays capsule-based. USD cable import uses the same solid
+cylinder mass and inertia model; ``default_shape_cfg.is_solid`` does not apply
+to imported cables. Capsules joined manually with rod joints keep ordinary
+capsule mass and inertia.
+
+This replaces the previous capsule-based inertia for native rods and USD
+cables, changing their angular response. Scenes tuned to that approximation
+may need to retune their solver settings. Hollow mass and inertia use the tube
+wall; material-derived rod stiffness retains its solid-circle convention.
+Use explicit section rigidities when modeling a hollow material section.
+
+
 .. _Mass resolution during file import:
 
 Mass resolution during file import

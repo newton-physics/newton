@@ -60,9 +60,13 @@ published citation when available and retain an accessible preprint link.
 
 - **Backpropagating Through Simulation: Analytic Policy Gradients for Sample and Learning Efficient Differentiable Continuous Control**. *Y. Deng*. June 2026. [arXiv:2606.21525](https://arxiv.org/abs/2606.21525)
 
+- **Alloy: A Multi-Material Physics Engine for Robot Learning**. *P. Gupta, D. Rohilla*. November 2026. [arXiv:2611.16312](https://arxiv.org/abs/2611.16312)
+
 - **RigPI: Dynamic Parameter Identification of Rigid Body via VLM-Seeded Differentiable Simulation**. *X. He, R. Zhang, W. Jiang, W. Xu*. June 2026. [arXiv:2606.25212](https://arxiv.org/abs/2606.25212)
 
 - **RoboMMT: Learning Stable Tracking of Modulated Expressive and Interactive Robot Motion**. *T. Hielscher, K. O. Arras*. October 2026. [arXiv:2610.26414](https://arxiv.org/abs/2610.26414)
+
+- **HolidayFactory 1.0: Simulating, Generating, and Evaluating Industrial Robot Tasks**. *Holiday Robotics*. November 2026. [arXiv:2611.11789](https://arxiv.org/abs/2611.11789)
 
 - **Probabilistic Physics Digital Twin for Human-Robot Interaction**. *Y. Hu, H. Chandirasekar, A. Kushwaha, J. King, Z.-T. Chen*. October 2026. [arXiv:2610.19336](https://arxiv.org/abs/2610.19336)
 
@@ -107,6 +111,8 @@ published citation when available and retain an accessible preprint link.
 - **RopeFormer: Cross-Trial Adaptation from Interaction History for Dynamic Rope Manipulation**. *M. Wu, K. Yao, S. Luan, M. Tomizuka, Y. Chen*. September 2026. [arXiv:2609.23432](https://arxiv.org/abs/2609.23432)
 
 - **ContactBench 1.0: A Benchmark for Everyday Contact-Rich Robotic Manipulation**. *J. Xiang, Y. Wang, J. Bohg, W. Yuan*. October 2026. [arXiv:2610.24512](https://arxiv.org/abs/2610.24512)
+
+- **VABAR: A Variational Automation Benchmark for Agentic Robotics**. *S. Xie, K. Chen, U. Yoo, X. Zhu, M. Shen, J. Drake, E. Solowjow, L. Gulich, A. Millane, R. Cathomen, T. Stuyck, S. Subramanian, Y. Pan, B. McGowan, M. Benedict, L. Fan, Y. Zhu, S. Huang, K. Goldberg*. November 2026. [arXiv:2611.06881](https://arxiv.org/abs/2611.06881)
 
 - **PointCast: One World Model for Rigid, Articulated, and Deformable Object Manipulation**. *H. Ye, R. Worobel, Z. Xie, M. Li, H. Yu, Y. Hong, C. Choi*. September 2026. [arXiv:2609.28393](https://arxiv.org/abs/2609.28393)
 

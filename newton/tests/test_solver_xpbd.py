@@ -17,7 +17,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.solvers.xpbd import kernels as xpbd_kernels
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 def test_particle_particle_friction_uses_relative_velocity(test, device):
@@ -2205,6 +2205,7 @@ def test_xpbd_parent_f_centripetal_zero_g(test, device):
     )
 
 
+@requires(*MUJOCO_MODULES)
 def test_xpbd_parent_f_consistent_across_solvers(test, device):
     """XPBD's ``body_parent_f`` must match MuJoCo / Featherstone for a static pendulum.
 
