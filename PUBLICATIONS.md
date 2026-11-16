@@ -112,6 +112,8 @@ published citation when available and retain an accessible preprint link.
 
 - **ContactBench 1.0: A Benchmark for Everyday Contact-Rich Robotic Manipulation**. *J. Xiang, Y. Wang, J. Bohg, W. Yuan*. October 2026. [arXiv:2610.24512](https://arxiv.org/abs/2610.24512)
 
+- **VABAR: A Variational Automation Benchmark for Agentic Robotics**. *S. Xie, K. Chen, U. Yoo, X. Zhu, M. Shen, J. Drake, E. Solowjow, L. Gulich, A. Millane, R. Cathomen, T. Stuyck, S. Subramanian, Y. Pan, B. McGowan, M. Benedict, L. Fan, Y. Zhu, S. Huang, K. Goldberg*. November 2026. [arXiv:2611.06881](https://arxiv.org/abs/2611.06881)
+
 - **PointCast: One World Model for Rigid, Articulated, and Deformable Object Manipulation**. *H. Ye, R. Worobel, Z. Xie, M. Li, H. Yu, Y. Hong, C. Choi*. September 2026. [arXiv:2609.28393](https://arxiv.org/abs/2609.28393)
 
 - **AlphaNIST: Emergent Assembly Skills from Binary Task Rewards**. *O. Zhang, I. Akinola, R. Scalise, M. Guaman Castro, P. Yin, T. Widmer, M. Macklin, C. Amevor, D. Turpin, D. Van Gelder, J. Carius, A. Handa, G. State, Y. Guo, Y. Narang*. October 2026. [arXiv:2610.13354](https://arxiv.org/abs/2610.13354)
@@ -125,8 +127,6 @@ published citation when available and retain an accessible preprint link.
 ### 2025
 
 - **Offset Geometric Contact**. *A. H. Chen, J. Hsu, Z. Liu, M. Macklin, Y. Yang, C. Yuksel*. ACM Transactions on Graphics 44(4), July 2025. [DOI:10.1145/3731205](https://doi.org/10.1145/3731205)
-
-- **Augmented Vertex Block Descent**. *C. Giles, E. Diaz, C. Yuksel*. ACM Transactions on Graphics 44(4), July 2025. [DOI:10.1145/3731195](https://doi.org/10.1145/3731195)
 
 ### 2024
 

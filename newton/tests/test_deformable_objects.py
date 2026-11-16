@@ -173,7 +173,6 @@ class TestDeformableObjects(unittest.TestCase):
                         rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
                         label=label,
                         wrap_in_articulation=False,
-                        body_frame_origin="com",
                     )
                     anchor = builder.add_joint_fixed(-1, bodies[0], label="anchor")
                     builder.add_articulation([*joints, anchor])
@@ -202,7 +201,6 @@ class TestDeformableObjects(unittest.TestCase):
                         rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0)], radius=0.02),
                         label=label,
                         wrap_in_articulation=False,
-                        body_frame_origin="com",
                     )
                     anchor = builder.add_joint_fixed(-1, bodies[0], label=f"{label}_anchor")
                     builder.add_articulation([*joints, anchor])
@@ -242,7 +240,6 @@ class TestDeformableObjects(unittest.TestCase):
                         rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0)], radius=0.02),
                         label=f"segment_{i}",
                         wrap_in_articulation=False,
-                        body_frame_origin="com",
                     )
                     if i < 5:
                         body = prototype.add_link()
