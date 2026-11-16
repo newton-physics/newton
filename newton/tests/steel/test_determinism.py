@@ -663,7 +663,7 @@ def test_overflow_warning_names_deterministic_mode(test, device):
                 paths = []
                 for _ in range(2):
                     solver.step(state, model.state(), model.control(), contacts, 0.005)
-                    paths.append(solver._contact_path.numpy())
+                    paths.append(solver._contact_path.numpy().copy())
                 wp.synchronize_device(device)
             finally:
                 output = capture.end() if check_output else ""

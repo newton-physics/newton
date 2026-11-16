@@ -10,7 +10,7 @@ import warp as wp
 
 import newton
 from newton.sensors import SensorCamera, SensorTiledCamera
-from newton.tests.unittest_utils import ignore_sensor_tiled_camera_deprecation
+from newton.tests.unittest_utils import ignore_sensor_tiled_camera_deprecation, requires
 
 
 def setUpModule():
@@ -72,7 +72,7 @@ def _ray_to_opencv_normalized(direction: np.ndarray) -> tuple[float, float]:
 
 
 class TestSensorCameraRays(unittest.TestCase):
-    @unittest.skipIf(Usd is None, "Requires USD Python bindings")
+    @requires("pxr.Usd")
     def test_usd_camera_transform_matches_model_up_axis(self):
         from newton.math import quat_between_axes  # noqa: PLC0415
 
@@ -94,7 +94,7 @@ class TestSensorCameraRays(unittest.TestCase):
             got_q = -got_q
         np.testing.assert_allclose(got_q, expected_q, atol=1e-6)
 
-    @unittest.skipIf(Usd is None, "Requires USD Python bindings")
+    @requires("pxr.Usd")
     def test_usd_camera_transform_composes_import_xform(self):
         from newton.math import quat_between_axes  # noqa: PLC0415
 
@@ -396,7 +396,7 @@ class TestSensorCameraRays(unittest.TestCase):
 
         np.testing.assert_allclose(got, expected, atol=1e-6)
 
-    @unittest.skipIf(Usd is None, "Requires USD Python bindings")
+    @requires("pxr.Usd")
     def test_usd_pinhole_camera_rays_accepts_prim_and_camera(self):
         utils = _make_utils()
         width, height = 5, 3
@@ -423,14 +423,14 @@ class TestSensorCameraRays(unittest.TestCase):
         np.testing.assert_allclose(got_prim, expected, atol=1e-6)
         np.testing.assert_allclose(got_camera, expected, atol=1e-6)
 
-    @unittest.skipIf(Usd is None, "Requires USD Python bindings")
+    @requires("pxr.Usd")
     def test_usd_pinhole_camera_rays_rejects_invalid_prim(self):
         utils = _make_utils()
 
         with self.assertRaisesRegex(TypeError, "Expected a valid UsdGeom.Camera prim"):
             utils.compute_camera_rays_usd_pinhole(1, 1, Usd.Prim())
 
-    @unittest.skipIf(Usd is None, "Requires USD Python bindings")
+    @requires("pxr.Usd")
     def test_sensor_camera_usd_pinhole_rays_match_aperture_form(self):
         """Verify SensorCamera.compute_camera_rays_pinhole_usd reads USD intrinsics and matches the aperture form."""
         width, height = 5, 3
@@ -475,7 +475,7 @@ class TestSensorCameraRays(unittest.TestCase):
         np.testing.assert_allclose(got_camera.numpy(), expected, atol=1e-6)
         np.testing.assert_allclose(got_multisample.numpy(), expected_multisample.numpy(), atol=1e-6)
 
-    @unittest.skipIf(Usd is None, "Requires USD Python bindings")
+    @requires("pxr.Usd")
     def test_sensor_camera_usd_pinhole_rejects_invalid_prim(self):
         """Verify SensorCamera.compute_camera_rays_pinhole_usd rejects a non-camera prim."""
         with self.assertRaisesRegex(TypeError, "Expected a valid UsdGeom.Camera prim"):

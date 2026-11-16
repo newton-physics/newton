@@ -15,7 +15,7 @@ import newton
 from newton import ModelFlags
 from newton._src.solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 @wp.kernel
@@ -59,6 +59,7 @@ def _make_model(
     return builder.finalize(device=device)
 
 
+@requires(*MUJOCO_MODULES)
 class TestMuJoCoForceProperties(unittest.TestCase):
     def test_inertial_and_reference_updates_preserve_pending_limit_parameters(self):
         """Recompute limits from published parameters until a force notification arrives."""

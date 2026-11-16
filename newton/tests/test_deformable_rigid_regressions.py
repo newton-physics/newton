@@ -1884,7 +1884,7 @@ def test_mesh_complete_rigid_indices_and_reuse(test, device):
     state.particle_q.assign(np.array([(-0.01, -0.01, 0.0), (0.01, -0.01, 0.0), (0.0, 0.01, 0.0)], dtype=np.float32))
     pipeline.collide(state, contacts)
     count = int(contacts.soft_contact_count.numpy()[0])
-    features_np = contacts._soft_contact_mesh_features.numpy()[:count, 0]
+    features_np = contacts._soft_contact_mesh_features.numpy()[:count, 0].copy()
     recovery_np = (features_np >= 0) & ((features_np & int(soft_contacts_mesh._MESH_FEATURE_RECOVERY)) != 0)
     test.assertTrue(np.any(recovery_np))
     test.assertTrue(
