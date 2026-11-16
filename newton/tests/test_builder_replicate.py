@@ -1169,3 +1169,130 @@ class TestModelBuilderReplicateLabelPrefixes(unittest.TestCase):
         """label_prefixes must have exactly one entry per replicated world."""
         with self.assertRaises(ValueError):
             ModelBuilder().replicate(self._source("root"), 2, label_prefixes=["only-one"])
+
+    def test_bulk_custom_attributes_match_sequential_add_world(self):
+        """Bulk custom-attribute replication and array building match sequential add_world()."""
+        vec10f = wp.types.vector(10, wp.float32)
+
+        def make_source() -> ModelBuilder:
+            src = ModelBuilder()
+            b0 = src.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), label="b0")
+            b1 = src.add_link(xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()), label="b1")
+            j0 = src.add_joint_free(parent=-1, child=b0, label="j0")
+            j1 = src.add_joint_revolute(parent=b0, child=b1, axis=(0.0, 1.0, 0.0), label="j1")
+            src.add_articulation([j0, j1], label="art")
+            s0 = src.add_shape_sphere(body=b0, radius=0.1, label="s0")
+            src.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1, label="s1")
+
+            src.add_custom_frequency(
+                ModelBuilder.CustomFrequency(name="wrap", namespace="test", label_attribute="test:wrap_label")
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="wrap_label", dtype=str, frequency="test:wrap", namespace="test", default=""
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="wrap_shape",
+                    dtype=wp.int32,
+                    frequency="test:wrap",
+                    namespace="test",
+                    references="shape",
+                    default=-1,
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="wrap_world",
+                    dtype=wp.int32,
+                    frequency="test:wrap",
+                    namespace="test",
+                    references="world",
+                    default=-1,
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="wrap_prm",
+                    dtype=vec10f,
+                    frequency="test:wrap",
+                    namespace="test",
+                    default=vec10f(*range(10)),
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="body_offset",
+                    dtype=wp.vec3,
+                    frequency=Model.AttributeFrequency.BODY,
+                    namespace="test",
+                    default=wp.vec3(1.0, 2.0, 3.0),
+                    values={b1: wp.vec3(4.0, 5.0, 6.0)},
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="body_parent_shape",
+                    dtype=wp.int32,
+                    frequency=Model.AttributeFrequency.BODY,
+                    namespace="test",
+                    references="shape",
+                    default=-1,
+                    values={b0: s0, b1: -1},
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="collision_mask_domain",
+                    dtype=wp.int32,
+                    frequency=Model.AttributeFrequency.SHAPE,
+                    namespace="mujoco",
+                    default=-1,
+                    values={s0: 7, 1: -1},
+                )
+            )
+            src.add_custom_values(
+                **{
+                    "test:wrap_label": "w0",
+                    "test:wrap_shape": s0,
+                    "test:wrap_world": -1,
+                    "test:wrap_prm": vec10f(*[float(i + 1) for i in range(10)]),
+                }
+            )
+            # Second row leaves wrap_prm unset (None gap before end of custom frequency)
+            src.add_custom_values(
+                **{
+                    "test:wrap_label": "w1",
+                    "test:wrap_shape": -1,
+                    "test:wrap_world": -1,
+                }
+            )
+            return src
+
+        prefixes = ["env0", None, "env2", "env3"]
+        rep_scene = (
+            self._make_destination()
+            if hasattr(self, "_make_destination")
+            else TestModelBuilderReplicate._make_destination()
+        )
+        seq_scene = TestModelBuilderReplicate._make_destination()
+        proto = make_source()
+        rep_scene.replicate(proto, 4, label_prefixes=prefixes)
+        for prefix in prefixes:
+            seq_scene.add_world(proto, label_prefix=prefix)
+
+        rep_model = rep_scene.finalize(device="cpu")
+        seq_model = seq_scene.finalize(device="cpu")
+
+        self.assertEqual(rep_model.test.wrap_label, seq_model.test.wrap_label)
+        np.testing.assert_array_equal(rep_model.test.wrap_shape.numpy(), seq_model.test.wrap_shape.numpy())
+        np.testing.assert_array_equal(rep_model.test.wrap_world.numpy(), seq_model.test.wrap_world.numpy())
+        np.testing.assert_allclose(rep_model.test.wrap_prm.numpy(), seq_model.test.wrap_prm.numpy())
+        np.testing.assert_allclose(rep_model.test.body_offset.numpy(), seq_model.test.body_offset.numpy())
+        np.testing.assert_array_equal(
+            rep_model.test.body_parent_shape.numpy(), seq_model.test.body_parent_shape.numpy()
+        )
+        np.testing.assert_array_equal(
+            rep_model.mujoco.collision_mask_domain.numpy(), seq_model.mujoco.collision_mask_domain.numpy()
+        )
