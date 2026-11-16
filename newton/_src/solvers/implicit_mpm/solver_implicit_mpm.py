@@ -2185,7 +2185,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             self._last_step_data.save_collider_current_position(
                 state.body_q,
-                body_world=self.model.body_world,
+                body_world=self._mpm_model.collider_body_world,
                 world_mask=world_mask,
                 world_count=self._initial_world_count,
             )

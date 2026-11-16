@@ -329,6 +329,7 @@ class ImplicitMPMModel:
         self.collider_body_mass = None
         self.collider_body_inv_inertia = None
         self.collider_body_q = None
+        self.collider_body_world = None
         self.deformable_collider_vertex_ranges: list[tuple[int, int, int]] = []
 
         self.notify_particle_material_changed()
@@ -945,6 +946,7 @@ class ImplicitMPMModel:
         self.collider_body_mass = body_mass
         self.collider_body_inv_inertia = body_inv_inertia
         self.collider_body_q = body_q
+        self.collider_body_world = model.body_world
         self._collider_meshes = collider_meshes  # Keep a ref so that meshes are not garbage collected
         self.deformable_collider_vertex_ranges = [
             (collider_id, collider_particle_offsets[collider_id], collider_particle_offsets[collider_id + 1])
