@@ -8,7 +8,12 @@ import warp.fem as fem
 import warp.sparse as sp
 from warp.fem.linalg import symmetric_eigenvalues_qr
 
-from .contact_solver_kernels import ColoredContacts, make_solve_colored_cell_contacts
+from .contact_solver_kernels import (
+    ColoredContacts,
+    EnvironmentGate,
+    environment_stopped,
+    make_solve_colored_cell_contacts,
+)
 
 _DELASSUS_SCALED_REG = wp.constant(1.0e-2)
 """Proximal regularization of the Delassus diagonal blocks, as a fraction of a full cell's inertial scale.
@@ -943,6 +948,7 @@ def make_jacobi_solve_kernel(
 
     @fem.cache.dynamic_kernel(suffix=key, kernel_options={"fast_math": True})
     def jacobi_solve_kernel_impl(
+        gate: EnvironmentGate,
         yield_params: wp.array[YieldParamVec],
         strain_node_volume: wp.array[float],
         compliance_mat_offsets: wp.array[int],
@@ -960,7 +966,7 @@ def make_jacobi_solve_kernel(
     ):
         tau_i = wp.tid()
 
-        if strain_mat_offsets[tau_i] == strain_mat_offsets[tau_i + 1]:
+        if strain_mat_offsets[tau_i] == strain_mat_offsets[tau_i + 1] or environment_stopped(gate, tau_i):
             delta_correction[tau_i] = vec6(0.0)
             return
 
@@ -1218,6 +1224,7 @@ def make_gs_solve_kernel(
         color_blocks: wp.array2d[int],
         rows: Any,
         colors_per_batch: int,
+        gate: EnvironmentGate,
         yield_params: wp.array[YieldParamVec],
         strain_node_volume: wp.array[float],
         compliance_mat_offsets: wp.array[int],
@@ -1249,6 +1256,11 @@ def make_gs_solve_kernel(
                 beg, end = int(rows.block_offsets[block]), int(rows.block_offsets[block + 1])
             else:
                 beg, end = int(color_blocks[0, block]), int(color_blocks[1, block])
+            # A block's rows and contacts belong to one environment
+            if end > beg and environment_stopped(gate, _strain_row_node(rows, beg)):
+                for row in range(beg, end):
+                    delta_correction[_strain_row_node(rows, row)] = vec6(0.0)
+                continue
             wp.static(solve_rows)(
                 beg,
                 end,

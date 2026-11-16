@@ -44,7 +44,6 @@ from newton._src.solvers.implicit_mpm.solve_rheology import (
     MomentumData,
     RheologyData,
     _compute_environment_l2_tolerance_scales,
-    _copy_converged_environment_state,
     _DelassusOperator,
     _linear_solver_result_norms,
     _nonlinear_solver_result_norms,
@@ -945,53 +944,27 @@ def test_multiworld_residual_tolerance_scales(test, device):
     test.assertEqual(condition.numpy()[0], 1)
 
     # Accept worlds independently, including an empty world, and retain their
-    # accepted residuals if further iteration would move them out of tolerance.
+    # accepted residuals once they stop iterating.
     residual_device.assign(np.array(((3.6, 0.0, 11.0), (0.25, 0.0, 0.75)), dtype=np.float32))
     status = wp.zeros(3, dtype=int, device=device)
     accepted = wp.empty_like(residual_device)
-    initial_values = np.arange(42, dtype=np.float32).reshape(14, 3)
-    values = wp.array(initial_values, dtype=wp.vec3, device=device)
-    saved_values = wp.empty_like(values)
 
-    def update_and_save():
+    def update():
         wp.launch(
             _update_environment_convergence,
             dim=3,
             inputs=[1.0, scales, residual_device, status, accepted],
             device=device,
         )
-        wp.launch(
-            _copy_converged_environment_state,
-            dim=(3, 1),
-            block_dim=1,
-            inputs=[False, offsets, status, values, saved_values],
-            device=device,
-        )
 
-    def restore():
-        wp.launch(
-            _copy_converged_environment_state,
-            dim=(3, 1),
-            block_dim=1,
-            inputs=[True, offsets, status, values, saved_values],
-            device=device,
-        )
-
-    update_and_save()
-    values.fill_(wp.vec3(99.0))
-    restore()
-    # A world still above tolerance keeps its last iterate at the budget limit.
-    np.testing.assert_array_equal(values.numpy()[:3], initial_values[:3])
-    np.testing.assert_array_equal(values.numpy()[3:], 99.0)
+    update()
+    np.testing.assert_array_equal(status.numpy(), (1, 1, 0))
 
     residual_device.assign(np.array(((100.0, 0.0, 9.0), (100.0, 0.0, 0.75)), dtype=np.float32))
-    update_and_save()
+    update()
+    np.testing.assert_array_equal(status.numpy(), (2, 2, 1))
     np.testing.assert_allclose(accepted.numpy(), ((3.6, 0.0, 9.0), (0.25, 0.0, 0.75)))
-    values.fill_(wp.vec3(-10.0))
-    restore()
-    np.testing.assert_array_equal(values.numpy()[:3], initial_values[:3])
-    np.testing.assert_array_equal(values.numpy()[3:12], 99.0)
-    np.testing.assert_array_equal(values.numpy()[12:], -10.0)
+    np.testing.assert_allclose(residual_device.numpy(), ((3.6, 0.0, 9.0), (0.25, 0.0, 0.75)))
 
     # Stopping reads the retained-environment status instead of repeating the threshold.
     iteration.zero_()
