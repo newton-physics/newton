@@ -9280,6 +9280,29 @@ class ModelBuilder:
             else:
                 self.joint_children[p].append((c, i))
 
+        # Merging moves shapes onto a surviving body and re-parents the joints below the removed
+        # bodies, so the direct pairs that add_joint() and add_shape() added no longer cover every
+        # pair of bodies a filtering joint now connects. Complete them for the joints touching a
+        # body that absorbed others; bodies merged into the world filter nothing, as in MuJoCo.
+        merge_targets = {body_remap[target] for target in body_merged_parent.values() if target >= 0}
+        if merge_targets:
+            filter_pairs = set(self._shape_collision_filter_pairs)
+            for joint, (parent, child) in enumerate(zip(self.joint_parent, self.joint_child, strict=True)):
+                if parent < 0 or not self.joint_collision_filter_parent[joint]:
+                    continue
+                if parent not in merge_targets and child not in merge_targets:
+                    continue
+                for parent_shape in self.body_shapes[parent]:
+                    if not self._shape_filters_parent(parent_shape):
+                        continue
+                    for child_shape in self.body_shapes[child]:
+                        if not self._shape_filters_parent(child_shape):
+                            continue
+                        pair = (min(parent_shape, child_shape), max(parent_shape, child_shape))
+                        if pair not in filter_pairs:
+                            filter_pairs.add(pair)
+                            self.add_shape_collision_filter_pair(*pair)
+
         # Warning filters may raise, so finish rebuilding all references before emitting these.
         for label in removed_curve_labels:
             warnings.warn(
@@ -17214,12 +17237,11 @@ class ModelBuilder:
         below one of them filters that body alone. Shapes whose
         :attr:`ShapeConfig.collision_filter_parent` is ``False`` take no part.
 
-        :meth:`add_joint` and :meth:`add_shape` add the direct parent-child pairs of the bodies
-        as they are at that moment. This recomputes the pairs of every filtering tree joint from
-        the bodies and joints as they are in :meth:`finalize`, so the result depends neither on
-        the order in which joints and shapes were added nor on later edits such as
-        :meth:`collapse_fixed_joints`, which moves shapes onto merged bodies and re-parents joints.
-        Loop joints keep only the pairs they got when they were added.
+        The pairs of two bodies that a filtering joint connects directly are not computed here:
+        :meth:`add_joint` and :meth:`add_shape` add them to :attr:`shape_collision_filter_pairs`
+        in either order, and :meth:`collapse_fixed_joints` completes them for the bodies it
+        merges, so edits to that list before :meth:`finalize` stay in effect. This adds the
+        remaining pairs, between bodies that weld groups join without a direct joint.
         """
         empty = np.empty((0, 2), dtype=np.int64)
         body_count = self.body_count
@@ -17236,6 +17258,9 @@ class ModelBuilder:
         is_weld = is_tree & ((joint_type == JointType.FIXED) | (dof_count == 0))
         # A weld with collision_filter_parent=False keeps its two bodies in separate groups.
         welded = is_weld & joint_filters & (joint_parent >= 0)
+        if not np.any(welded):
+            # Every weld group is a single body: the direct pairs already cover the rule.
+            return empty
 
         # Weld root per body: follow the filtering welds upward to the topmost body of the group,
         # MuJoCo's weld id. A body has one tree joint, so at most one weld leads up from it, and
@@ -17298,18 +17323,28 @@ class ModelBuilder:
         filtering = np.asarray(self.joint_collision_filter_parent, dtype=bool) & is_tree & (joint_parent >= 0)
         parent_side = side[np.maximum(joint_parent, 0)]
         child_side = side[joint_child]
-        # Filtering joints between two groups filter one group against the other.
+        # Joints between two groups, where at least one group is more than its direct body.
         across = filtering & (parent_side != child_side)
+        across &= (side_body_count[parent_side] > 1) | (side_body_count[child_side] > 1)
         pairs = product(parent_side[across], child_side[across])
-        # Filtering joints inside a group (its welds) filter the group against itself.
-        within = filtering & (parent_side == child_side) & (side_body_count[child_side] > 1)
+        # Filtering joints inside a group (its welds) filter the group against itself; a
+        # two-body group is its direct pair already.
+        within = filtering & (parent_side == child_side) & (side_body_count[child_side] > 2)
         groups = np.unique(child_side[within])
         if groups.shape[0]:
             clique = product(groups, groups)
             pairs = np.concatenate((pairs, clique[clique[:, 0] < clique[:, 1]]), axis=0)
         if pairs.shape[0] == 0:
             return empty
-        pairs = pairs[shape_body[pairs[:, 0]] != shape_body[pairs[:, 1]]]
+        # Leave out the pairs of directly joined bodies; the public list holds those.
+        direct = joint_filters & (joint_parent >= 0)
+        direct_codes = np.minimum(joint_parent[direct], joint_child[direct]) * body_count + np.maximum(
+            joint_parent[direct], joint_child[direct]
+        )
+        body_a = shape_body[pairs[:, 0]]
+        body_b = shape_body[pairs[:, 1]]
+        codes = np.minimum(body_a, body_b) * body_count + np.maximum(body_a, body_b)
+        pairs = pairs[(body_a != body_b) & ~np.isin(codes, direct_codes)]
         return np.sort(pairs, axis=1)
 
     def _build_shape_collision_filter_packed(self) -> np.ndarray:

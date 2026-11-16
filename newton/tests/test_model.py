@@ -2211,6 +2211,51 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((1, 2), contact_pairs)
         self.assertEqual(len(contact_pairs), 7)
 
+    def test_removed_parent_child_filter_pairs_stay_removed(self):
+        """finalize() must not reinstate parent-child pairs removed from the public list.
+
+        Only the pairs between bodies that no joint connects directly (across weld groups) are
+        added in finalize(); the direct pairs are the list's, and the list is authoritative.
+        """
+
+        def build(weld: bool) -> tuple[ModelBuilder, int, int, int]:
+            robot = ModelBuilder()
+            root = robot.add_link()
+            root_shape = robot.add_shape_sphere(root, radius=0.2)
+            parent = root
+            if weld:
+                palm = robot.add_link()
+                robot.add_shape_sphere(palm, radius=0.2)
+                parent = palm
+            finger = robot.add_link()
+            finger_shape = robot.add_shape_sphere(finger, radius=0.2)
+            joints = [robot.add_joint_free(root)]
+            if weld:
+                joints.append(robot.add_joint_fixed(root, palm))
+            joints.append(robot.add_joint_revolute(parent, finger, axis=(0.0, 0.0, 1.0)))
+            robot.add_articulation(joints)
+            direct_pair = (robot.body_shapes[parent][0], finger_shape)
+            return robot, root_shape, finger_shape, direct_pair
+
+        for weld in (False, True):
+            for replicated in (False, True):
+                with self.subTest(weld=weld, replicated=replicated):
+                    robot, root_shape, finger_shape, direct_pair = build(weld)
+                    builder = robot
+                    if replicated:
+                        builder = ModelBuilder()
+                        builder.replicate(robot, 2)
+                    self.assertIn(direct_pair, builder.shape_collision_filter_pairs)
+                    builder.shape_collision_filter_pairs = [
+                        pair for pair in builder.shape_collision_filter_pairs if pair != direct_pair
+                    ]
+
+                    model = builder.finalize()
+
+                    self.assertNotIn(direct_pair, model.shape_collision_filter_pairs)
+                    # The root and the finger are joined through the weld group only.
+                    self.assertEqual((root_shape, finger_shape) in model.shape_collision_filter_pairs, weld)
+
     def test_collision_filter_fixed_to_world(self):
         """Bodies fixed to world via add_joint_fixed(parent=-1) should auto-filter
         their shapes against world-static shapes regardless of construction order

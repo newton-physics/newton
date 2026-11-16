@@ -718,7 +718,11 @@ Filter pairs are automatically populated in several cases:
   alone. Loop-closure joints keep their direct pair only, and bodies welded to the world form no
   group. The pairs are completed in
   :meth:`~ModelBuilder.finalize`, so the order in which joints and shapes are added does not
-  matter, and shapes with ``ShapeConfig(collision_filter_parent=False)`` take no part. For USD
+  matter, and shapes with ``ShapeConfig(collision_filter_parent=False)`` take no part. The pairs
+  of two bodies a joint connects directly stay as
+  :attr:`~ModelBuilder.shape_collision_filter_pairs` holds them, so removing them before
+  ``finalize()`` keeps those bodies colliding, and :meth:`~ModelBuilder.collapse_fixed_joints`
+  adds them for the bodies it merges. For USD
   joints with two explicit bodies, ``physics:collisionEnabled`` controls this filter with
   inverse polarity; joints to world do not create a body-pair filter. Also applies to
   max-coordinate jointed bodies.
