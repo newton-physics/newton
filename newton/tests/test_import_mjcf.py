@@ -8538,6 +8538,34 @@ class TestImportMjcfComposition(unittest.TestCase):
         # We don't need to verify body3 interactions as that would require running
         # a full simulation to observe collision behavior.
 
+    def test_exclude_tag_skips_non_colliding_shapes(self):
+        """Test that <exclude> adds filter pairs only between colliding shapes."""
+        mjcf_content = """
+<mujoco>
+  <worldbody>
+    <body name="body1">
+      <freejoint/>
+      <geom name="geom1" type="sphere" size="0.1"/>
+      <site name="site1"/>
+    </body>
+    <body name="body2" pos="0 0 1">
+      <freejoint/>
+      <geom name="geom2" type="sphere" size="0.1"/>
+      <site name="site2"/>
+    </body>
+  </worldbody>
+  <contact>
+    <exclude body1="body1" body2="body2"/>
+  </contact>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, enable_self_collisions=True)
+
+        geom1 = builder.shape_label.index("worldbody/body1/geom1")
+        geom2 = builder.shape_label.index("worldbody/body2/geom2")
+        self.assertEqual(set(builder.shape_collision_filter_pairs), {(geom1, geom2)})
+
     def test_exclude_tag_with_verbose(self):
         """Test that <exclude> tag parsing produces verbose output when requested."""
         builder = newton.ModelBuilder()
