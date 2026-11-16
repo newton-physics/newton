@@ -117,8 +117,9 @@ refreshes** as a practical alternative to full continuous collision detection
 Newton can keep possible contacts between nearby objects before they touch.
 The experimental :class:`CollisionSubstepScheduler` reuses this information for
 several solver steps, checking again as the objects move. This can reduce
-collision-detection work while keeping the solver timestep small, including
-for falling and thrown objects.
+collision-detection work for sufficiently stable motion while keeping the
+solver timestep small. Falling and thrown objects under gravity can require
+collision checks every substep because their velocities keep changing.
 
 Tune these three controls together:
 

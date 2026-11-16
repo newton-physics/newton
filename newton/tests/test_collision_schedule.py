@@ -587,6 +587,51 @@ def test_collision_schedule_explicit_motion(test, device, external_capture=False
     test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
+def test_collision_schedule_empty_variants(test, device, external_capture=False):
+    """Ignore empty variant rows and track them again after live selection."""
+    if external_capture and not wp.is_conditional_graph_supported():
+        test.skipTest("CUDA graph capture requires conditional graph support")
+    empty = newton.ModelBuilder()
+    empty.add_body()
+    sphere = newton.ModelBuilder()
+    sphere.add_shape_sphere(sphere.add_body(), radius=0.1)
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    body = builder.add_body()
+    builder.add_body_variants(body, [empty, sphere])
+    builder.body_qd[body] = (100.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    states = model.state(), model.state()
+    pipeline = newton.CollisionPipeline(model, broad_phase="explicit", speculative_contact_gap_max=0.01)
+    contacts = pipeline.contacts()
+    calls = wp.zeros(1, dtype=int, device=device)
+
+    def collide(state, horizon):
+        pipeline.collide(state, contacts, dt=horizon)
+        wp.launch(_increment_tick, 1, inputs=[calls], device=device)
+
+    def step(state_in, state_out, dt):
+        wp.copy(state_out.body_q, state_in.body_q)
+        wp.copy(state_out.body_qd, state_in.body_qd)
+
+    schedule = newton.CollisionSubstepScheduler(
+        pipeline, states, collision_callback=collide, substep_callback=step, frame_dt=0.04, substeps=4
+    )
+    if external_capture:
+        with wp.ScopedCapture(device=device) as capture:
+            schedule.step()
+    for choice in (0, 1, 0):
+        model.select_body_variants(wp.array([choice], dtype=wp.int32, device=device))
+        calls.zero_()
+        if external_capture:
+            wp.capture_launch(capture.graph)
+        else:
+            schedule.step()
+        test.assertEqual(int(calls.numpy()[0]), 4 if choice else 1)
+        test.assertEqual(int(schedule.interval_overflow.numpy()[0]), choice)
+        test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]) > 0, bool(choice))
+
+
 def test_collision_schedule_constant_rotation(test, device, external_capture=False):
     """Retain a mesh's newly approaching vertices under a constant angular velocity."""
     if external_capture and not wp.is_conditional_graph_supported():
@@ -648,6 +693,7 @@ def test_collision_schedule_constant_rotation(test, device, external_capture=Fal
 
 
 for name, function in (
+    ("empty_variants", test_collision_schedule_empty_variants),
     ("explicit_motion", test_collision_schedule_explicit_motion),
     ("constant_rotation", test_collision_schedule_constant_rotation),
     ("velocity_changes", test_collision_schedule_refreshes_for_velocity_changes),

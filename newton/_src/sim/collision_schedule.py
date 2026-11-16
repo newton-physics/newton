@@ -33,7 +33,9 @@ def _find_max_point_speed(
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
     shape_body: wp.array[wp.int32],
+    motion_shape_flags: wp.array[wp.int32],
     shape_flags: wp.array[wp.int32],
+    shape_variant_row: wp.array[wp.bool],
     shape_transform: wp.array[wp.transform],
     shape_collision_aabb_lower: wp.array[wp.vec3],
     shape_collision_aabb_upper: wp.array[wp.vec3],
@@ -45,8 +47,13 @@ def _find_max_point_speed(
     """Find a conservative instantaneous speed over all moving shape points."""
     shape_id = wp.tid()
     body_id = shape_body[shape_id]
-    if body_id < 0 or (shape_flags[shape_id] & ShapeFlags.COLLIDE_SHAPES) == 0:
+    if body_id < 0 or (motion_shape_flags[shape_id] & ShapeFlags.COLLIDE_SHAPES) == 0:
         return
+    # Match the pipeline's empty-variant filtering while keeping explicit
+    # non-variant pairs authoritative even when collision flags are disabled.
+    if shape_variant_row.shape[0] > 0 and shape_variant_row[shape_id]:
+        if (shape_flags[shape_id] & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)) == 0:
+            return
 
     X_wb = body_q[body_id]
     X_ws = wp.transform_multiply(X_wb, shape_transform[shape_id])
@@ -321,6 +328,7 @@ class CollisionSubstepScheduler:
         self._travel_estimate = wp.zeros(1, dtype=wp.float32, device=device)
         self._previous_shape_velocity = wp.zeros(model.shape_count, dtype=wp.spatial_vector, device=device)
         self._motion_changed = wp.zeros(1, dtype=wp.int32, device=device)
+        self._shape_variant_row = collision_pipeline._shape_variant_row
         self._motion_shape_flags = model.shape_flags
         if collision_pipeline.broad_phase_mode == "explicit":
             # Pair lists are fixed for the pipeline's lifetime, like its routing.
@@ -380,6 +388,8 @@ class CollisionSubstepScheduler:
                     model.body_com,
                     model.shape_body,
                     self._motion_shape_flags,
+                    model.shape_flags,
+                    self._shape_variant_row,
                     model.shape_transform,
                     model.shape_collision_aabb_lower,
                     model.shape_collision_aabb_upper,
@@ -427,6 +437,8 @@ class CollisionSubstepScheduler:
                 model.body_com,
                 model.shape_body,
                 self._motion_shape_flags,
+                model.shape_flags,
+                self._shape_variant_row,
                 model.shape_transform,
                 model.shape_collision_aabb_lower,
                 model.shape_collision_aabb_upper,
