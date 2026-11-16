@@ -11513,8 +11513,10 @@ def Xform "Body" (
         render_mesh.inertia = physics_mesh.inertia
         render_mesh.has_inertia = physics_mesh.has_inertia
 
-        def _mock_get_mesh(_prim, *, load_uvs=False, load_normals=False, load_visual_materials=True):
-            del load_normals, load_visual_materials
+        def _mock_get_mesh(
+            _prim, *, load_uvs=False, load_normals=False, load_visual_materials=True, compute_inertia=True
+        ):
+            del load_normals, load_visual_materials, compute_inertia
             return render_mesh if load_uvs else physics_mesh
 
         with (
