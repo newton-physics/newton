@@ -2433,8 +2433,8 @@ class Model:
         The OptiX counterpart of :meth:`bvh_build_shapes`, stored in :attr:`optix_shapes` and used
         by ``backend="optix"`` cameras and raycasts. It is independent of the shape BVH and is not
         built by :meth:`ModelBuilder.finalize`. Call it again after structural changes; for
-        ordinary state changes, use :meth:`optix_refit_shapes`, which raises once a shape moves
-        beyond twice the farthest reach of any shape from the origin at build time.
+        ordinary state changes, use :meth:`optix_refit_shapes`. Shapes must stay within twice the
+        farthest reach of any shape from the origin at build time; shapes beyond it are not traced.
 
         .. experimental::
             The OptiX backend may change without prior notice.
@@ -2553,8 +2553,6 @@ class Model:
             instance_shapes=wp.array(instance_shapes, dtype=wp.int32, device=device),
             instances=wp.empty(len(instance_shapes), dtype=optix.wo.Instance, device=device),
             shape_radii=wp.array(radii, dtype=wp.float32, device=device),
-            overflow=wp.zeros(1, dtype=wp.int32, device=device),
-            overflow_host=wp.zeros(1, dtype=wp.int32, device="cpu", pinned=True),
             planes=tuple(int(si) for si in enabled[global_plane]),
             # Room for shapes to move.
             extent=max(2.0 * float(reach[bounded].max(initial=0.0)), 1.0),
@@ -2585,7 +2583,7 @@ class Model:
             state: Current simulation state with body transforms.
 
         Raises:
-            RuntimeError: If a shape left its world's cell; rebuild with :meth:`optix_build_shapes`.
+            RuntimeError: If :meth:`optix_build_shapes` has not been called, or during CUDA graph capture.
         """
         from ..geometry.bvh import compute_shape_world_transforms  # noqa: PLC0415
         from ..geometry.optix import compute_optix_shape_instances_launch  # noqa: PLC0415
@@ -2605,16 +2603,8 @@ class Model:
                 device=self.device,
             )
         compute_optix_shape_instances_launch(self, shapes)
-        # Check the overflow flag after enqueueing the refit, so the GPU is not left idle.
-        wp.copy(shapes.overflow_host, shapes.overflow)
-        copied = self.device.stream.record_event()
         if shapes.accel is not None:
             shapes.accel.refit()
-        wp.synchronize_event(copied)
-        if shapes.overflow_host.numpy()[0]:
-            raise RuntimeError(
-                "A shape moved outside its OptiX world cell; rebuild with Model.optix_build_shapes(state)."
-            )
 
     def _variant_row_options(self) -> tuple[np.ndarray, np.ndarray]:
         """Each variant row with each variant shape it can hold, on the host."""

@@ -743,11 +743,13 @@ def test_intersect_ray(test: TestRaycast, device: str, backend: str = "warp"):
     np.testing.assert_allclose(out_dist.numpy(), np.array([1.5, 2.5, -1.0], dtype=np.float32), atol=1e-5)
 
     if backend == "optix":
-        # Shapes that leave their world's cell require a rebuild.
+        # A shape that leaves its world's cell is hidden instead of reaching another world's cell.
         body_q[1, 0] = 100.0
         state.body_q.assign(body_q)
-        with test.assertRaises(RuntimeError):
-            model.optix_refit_shapes(state)
+        model.optix_refit_shapes(state)
+        shapes = model.optix_shapes
+        masks = shapes.instances.numpy()["visibility_mask"]
+        np.testing.assert_array_equal(masks[np.argsort(shapes.instance_shapes.numpy())], [255, 0])
 
 
 def test_intersect_ray_world_planes(test: TestRaycast, device: str, backend: str = "warp"):

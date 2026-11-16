@@ -58,10 +58,6 @@ class OptixShapes:
     """Shape index of each instance."""
     instances: wp.array[wo.Instance]
     """OptiX instance of each shape in :attr:`instance_shapes`."""
-    overflow: wp.array[wp.int32]
-    """Set by the instance kernel when a shape leaves its cell, and never cleared."""
-    overflow_host: wp.array[wp.int32]
-    """Pinned host copy of :attr:`overflow`, read after each refit is enqueued."""
     planes: tuple[int, ...]
     """Global planes, intersected analytically."""
     grid: int
@@ -136,7 +132,6 @@ def compute_optix_shape_instances(
     shape_transforms: wp.array[wp.transformf],
     shape_traversables: wp.array[wp.uint64],
     out_instances: wp.array[wo.Instance],
-    out_overflow: wp.array[wp.int32],
 ):
     i = wp.tid()
     si = instance_shapes[i]
@@ -162,7 +157,8 @@ def compute_optix_shape_instances(
         if span == 0.0:
             mask = 0
     elif wp.max(wp.abs(center)) + shape_radii[si] > extent:
-        out_overflow[0] = 1
+        # Hide shapes that left their cell rather than let them reach another world's.
+        mask = 0
     out_instances[i] = wo.make_instance(
         rotation @ wp.diag(half),
         center + world_offset(world, grid, extent),
@@ -227,7 +223,6 @@ def compute_optix_shape_instances_launch(model: Model, shapes: OptixShapes) -> N
             shapes.shape_world_transforms,
             shapes.shape_traversables,
             shapes.instances,
-            shapes.overflow,
         ],
         device=model.device,
     )
