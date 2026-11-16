@@ -73,6 +73,7 @@ from .enums import (
     _ActuatorBiasType,
     _ActuatorDynamicsType,
     _ActuatorGainType,
+    _geom_types,
     _joint_dof_count,
     _transmission_types,
 )
@@ -7420,15 +7421,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             JointType.D6,
         }
 
-        geom_type_mapping = {
-            GeoType.SPHERE: mujoco.mjtGeom.mjGEOM_SPHERE,
-            GeoType.PLANE: mujoco.mjtGeom.mjGEOM_PLANE,
-            GeoType.HFIELD: mujoco.mjtGeom.mjGEOM_HFIELD,
-            GeoType.CAPSULE: mujoco.mjtGeom.mjGEOM_CAPSULE,
-            GeoType.CYLINDER: mujoco.mjtGeom.mjGEOM_CYLINDER,
-            GeoType.BOX: mujoco.mjtGeom.mjGEOM_BOX,
-            GeoType.ELLIPSOID: mujoco.mjtGeom.mjGEOM_ELLIPSOID,
-            GeoType.MESH: mujoco.mjtGeom.mjGEOM_MESH,
+        geom_type_mapping = _geom_types() | {
             GeoType.CONVEX_MESH: mujoco.mjtGeom.mjGEOM_MESH,
             GeoType.CONE: mujoco.mjtGeom.mjGEOM_MESH,
         }

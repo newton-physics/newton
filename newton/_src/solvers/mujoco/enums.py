@@ -118,6 +118,25 @@ def _joint_dof_count(kind: int) -> int:
 
 
 @cache
+def _geom_types():
+    """Keep geometry import/export reversible; mesh approximations belong to the solver."""
+    import mujoco
+
+    from ...geometry.types import GeoType  # noqa: PLC0415
+
+    return {
+        GeoType.SPHERE: mujoco.mjtGeom.mjGEOM_SPHERE,
+        GeoType.PLANE: mujoco.mjtGeom.mjGEOM_PLANE,
+        GeoType.HFIELD: mujoco.mjtGeom.mjGEOM_HFIELD,
+        GeoType.CAPSULE: mujoco.mjtGeom.mjGEOM_CAPSULE,
+        GeoType.CYLINDER: mujoco.mjtGeom.mjGEOM_CYLINDER,
+        GeoType.BOX: mujoco.mjtGeom.mjGEOM_BOX,
+        GeoType.ELLIPSOID: mujoco.mjtGeom.mjGEOM_ELLIPSOID,
+        GeoType.MESH: mujoco.mjtGeom.mjGEOM_MESH,
+    }
+
+
+@cache
 def _transmission_types():
     import mujoco
 
