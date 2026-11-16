@@ -5,6 +5,8 @@ import ast
 import hashlib
 import inspect
 import math
+import os
+import tempfile
 import textwrap
 import types
 import unittest
@@ -310,6 +312,27 @@ class TestGaussian(unittest.TestCase):
         linear = newton.Gaussian(**kwargs, sh_color_space=newton.utils.ColorSpace.LINEAR)
         self.assertNotEqual(srgb, linear)
         self.assertNotEqual(hash(srgb), hash(linear))
+
+    @requires("meshio")
+    def test_gaussian_create_from_ply(self):
+        """Read a 3DGS PLY: reorder wxyz rotations, exponentiate scales, squash opacities, keep the SH order."""
+        names = ["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", *(f"f_rest_{i}" for i in range(9))]
+        names += ["opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
+        data = np.random.default_rng(0).standard_normal((4, len(names))).astype("<f4")
+        header = "ply\nformat binary_little_endian 1.0\nelement vertex 4\n"
+        header += "".join(f"property float {name}\n" for name in names) + "end_header\n"
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "splats.ply")
+            with open(path, "wb") as file:
+                file.write(header.encode() + data.tobytes())
+            gaussian = newton.Gaussian.create_from_ply(path)
+
+        xyzw = data[:, [20, 21, 22, 19]]
+        assert_np_equal(gaussian.positions, data[:, :3])
+        assert_np_equal(gaussian.sh_coeffs, data[:, 3:15])
+        np.testing.assert_allclose(gaussian.opacities, 1.0 / (1.0 + np.exp(-data[:, 15])), rtol=1e-6)
+        np.testing.assert_allclose(gaussian.scales, np.exp(data[:, 16:19]), rtol=1e-6)
+        np.testing.assert_allclose(gaussian.rotations, xyzw / np.linalg.norm(xyzw, axis=1, keepdims=True), rtol=1e-6)
 
 
 class TestModelMesh(unittest.TestCase):

@@ -272,7 +272,7 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``notebook``
      - Jupyter notebook support with Rerun visualization (includes ``examples``)
    * - ``dev``
-     - Dependencies for development and testing (includes ``examples``)
+     - Dependencies for development and testing (includes ``examples`` + ``remesh``)
    * - ``docs``
      - Dependencies for building the documentation
 
