@@ -9,6 +9,8 @@ Locations sit at the footprint's axial extremes along its principal axis, with
 the transverse offset and height of the members near each end, avoiding a
 diagonal friction couple on symmetric narrow footprints. Isotropic footprints
 retain a canonical farthest pair because they have no unique axis.
+Only touching contacts of a touching body pair are eligible as friction
+locations, so a separated member never carries the region's pooled load.
 Regions require matching friction materials, nearly aligned normals, nearby
 contact planes, and connected shape bounding spheres on each body. The latter
 is a conservative test across convex seams, not an exact surface-connectivity
@@ -89,6 +91,7 @@ class _PatchFrame:
     second: wp.array[int]
     separation: wp.array[float]
     support_gap_limit: wp.array[float]
+    gap: wp.array[float]
     tangent_impulse: wp.array[wp.vec3]
     # Per sorted pair start: nonzero when a frozen pair's contacts differ from the previous frame's.
     carry_failed: wp.array[int]
@@ -178,6 +181,7 @@ def _prepare(
     # filtered regions must still be able to carry their anchor history.
     frame.support_gap_limit[c] = wp.max(support_gap_limit, 0.0)
     frame.eligible[c] = int(eligible)
+    frame.gap[c] = gap
     flip = int(ka > kb)
     if flip != 0:
         t = a
@@ -216,6 +220,30 @@ def _prepare(
     if b >= 0:
         r = wp.min(r, body_radius[b])
     frame.radius[c] = wp.max(r, 1.0e-4)
+
+
+@wp.kernel(enable_backward=False)
+def _gate_separated_contacts(count: wp.array[int], frame: _PatchFrame):
+    """On a body pair that touches, only its touching contacts may hold friction anchors.
+
+    A pair whose contacts are all separated keeps those nearest to touching, so a speculative landing still gets friction.
+    """
+    start = wp.tid()
+    end = wp.min(count[0], frame.center.shape[0])
+    if start >= end or (start > 0 and frame.keys[start - 1] == frame.keys[start]):
+        return
+    key = frame.keys[start]
+    if key == wp.int64(0x7FFFFFFFFFFFFFFF):
+        return
+    stop = start
+    nearest = float(1.0e30)
+    while stop < end and frame.keys[stop] == key:
+        nearest = wp.min(nearest, frame.gap[frame.indices[stop]])
+        stop += 1
+    for j in range(start, stop):
+        c = frame.indices[j]
+        if frame.gap[c] > wp.max(nearest, 0.0) + _TOUCH_TOLERANCE * frame.radius[c]:
+            frame.eligible[c] = 0
 
 
 @wp.func
@@ -473,6 +501,9 @@ def _flood_native(
 
 _FLOOD_MIN_CONTACTS = 32
 """Body pairs with more contacts than this grow their regions on a warp; smaller pairs in ``_build``."""
+
+_TOUCH_TOLERANCE = wp.constant(0.01)
+"""Fraction of the smaller body's radius by which a contact may be separated and still count as touching."""
 
 _SUPPORT_EDGE_FRACTION = wp.constant(0.05)
 """Fraction of a footprint's principal extent that groups members into each end's support edge.
@@ -866,6 +897,14 @@ def _build(
                 # reject rocking beyond the same envelope as fresh contacts.
                 support_gap = wp.dot(_world_point(q, a, prev.surface_a[p]) - _world_point(q, b, prev.surface_b[p]), n)
                 if not (support_gap <= wp.max(current_gap, frame.support_gap_limit[c]) + 1.0e-5 * r):
+                    continue
+                # A separated contact without friction rows keeps only its own history: witnesses
+                # nearer than its gap belong to a nearer contact, which carries them on.
+                if (
+                    frame.eligible[c] == 0
+                    and current_gap > _TOUCH_TOLERANCE * r
+                    and support_gap < current_gap - 1.0e-5 * r
+                ):
                     continue
                 error = _carried_displacement(q, prev, p, n)
                 error += motion
@@ -1389,6 +1428,7 @@ class _FrictionPatchState:
         frame.mu = wp.zeros(n, dtype=wp.vec2, device=device)
         frame.radius = wp.zeros(n, dtype=float, device=device)
         frame.support_gap_limit = wp.zeros(n, dtype=float, device=device)
+        frame.gap = wp.zeros(n, dtype=float, device=device)
         frame.separation = wp.zeros(n, dtype=float, device=device)
         for field in (
             "body_a",
@@ -1450,6 +1490,12 @@ class _FrictionPatchState:
             device=model.device,
         )
         wp.utils.radix_sort_pairs(self.current.keys, self.current.indices, self.capacity)
+        wp.launch(
+            _gate_separated_contacts,
+            dim=self.capacity,
+            inputs=[contacts.rigid_contact_count, self.current],
+            device=model.device,
+        )
         if frozen_bodies is not None:
             wp.launch(
                 _check_frozen_carry,

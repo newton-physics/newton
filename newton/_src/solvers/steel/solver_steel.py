@@ -2248,7 +2248,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 none of them friction rows, which saves the rows that zero friction coefficients
                 would keep. A finite negative value keeps friction rows for contacts that
                 penetrate deeper than it. Switching between ``None`` (or ``inf``) and a
-                finite or ``-inf`` value requires a new solver.
+                finite or ``-inf`` value requires a new solver. With patch friction, a separated
+                contact of a body pair that also touches never holds a friction anchor, whatever
+                this limit.
             contact_shared_anchor: Apply every contact row at the midpoint of the two witness
                 points instead of at each body's own witness point, as PhysX applies a contact at
                 one point. ``phi`` still comes from the witness points. Friction patch rows keep
