@@ -1014,7 +1014,6 @@ class SensorCamera:
         clear_data: ClearData | None = None,
         render_config: RenderConfig | None = None,
         sync_deformables: bool = True,
-        sync_shapes: bool = True,
         deformable_visuals: DeformableVisuals | None = None,
     ) -> None:
         """Render this camera sensor.
@@ -1027,7 +1026,9 @@ class SensorCamera:
         BVHs with :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles` (both are built initially by
         :meth:`~newton.ModelBuilder.finalize`) before calling this; otherwise the
-        render reads stale bounds. Deformable triangle-mesh points are synced from
+        render reads stale bounds. With the OptiX backend, build
+        :attr:`~newton.Model.optix_shapes` once with :meth:`~newton.Model.optix_build_shapes`
+        and refit them with :meth:`~newton.Model.optix_refit_shapes` instead. Deformable triangle-mesh points are synced from
         *state* automatically (see ``sync_deformables``).
 
         The camera looks along its local ``-Z`` axis with ``+Y`` up and ``+X``
@@ -1065,9 +1066,6 @@ class SensorCamera:
                 :attr:`default_clear_data`.
             render_config: Render settings for this call. Defaults to
                 :attr:`default_render_config`.
-            sync_shapes: With the OptiX backend, refit :attr:`~newton.Model.optix_shapes`
-                from *state* with :meth:`~newton.Model.optix_refit_shapes`. The first update
-                builds them with :meth:`~newton.Model.optix_build_shapes` if needed.
             sync_deformables: Sync simulation surfaces and visual mesh points
                 from *state* before rendering. Set ``False`` if you already
                 called :meth:`sync_deformable_meshes` this frame.
@@ -1133,5 +1131,4 @@ class SensorCamera:
                 albedo_image=albedo_image,
                 clear_data=clear_data if clear_data is not None else self.default_clear_data,
                 config=render_config if render_config is not None else self.default_render_config,
-                sync_shapes=sync_shapes,
             )

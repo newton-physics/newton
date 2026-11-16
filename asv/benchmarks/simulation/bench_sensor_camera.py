@@ -298,6 +298,8 @@ class _SensorCameraSceneRig:
         self.depth_image = self.sensor.allocate_image_depth(world_count, resolution, resolution)
 
         self.model.bvh_build_shapes(self.state, bvh_constructor=BVH_CONSTRUCTOR)
+        if backend == "optix":
+            self.model.optix_build_shapes(self.state)
         self.model.bvh_build_particles(self.state, bvh_constructor=BVH_CONSTRUCTOR)
         # Static benchmark scene: synchronize render-only state once up front and
         # let render() skip the per-frame sync so it measures rendering only.
@@ -311,7 +313,6 @@ class _SensorCameraSceneRig:
             color_image=self.color_image if color else None,
             depth_image=self.depth_image if depth else None,
             sync_deformables=False,
-            sync_shapes=False,
         )
 
 

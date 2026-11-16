@@ -740,6 +740,8 @@ class TestSensorCamera(unittest.TestCase):
         helper_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -1.5), q=wp.quat_identity()))
         helper = builder.add_shape_box(helper_body, hx=1.0, hy=1.0, hz=0.05, opacity=0.0)
         model = builder.finalize(device=device)
+        if backend == "optix":
+            model.optix_build_shapes(model.state())
         camera = SensorCamera(model, backend=backend)
         rays = self._rays(8, 8, fov=math.radians(40.0), device=device)
         depth = wp.zeros((1, 8, 8), dtype=wp.float32, device=device)
@@ -800,6 +802,8 @@ class TestSensorCamera(unittest.TestCase):
             else:
                 builder.add_shape_mesh(-1, mesh=mesh)
             model = builder.finalize(device=device)
+            if backend == "optix":
+                model.optix_build_shapes(model.state())
             camera = SensorCamera(model, backend=backend)
             # Camera 2 m above the origin looking down -Z at the box's top face (z = 0.1 m).
             above = np.array([[0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)

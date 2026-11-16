@@ -478,7 +478,6 @@ class RenderContext:
         albedo_image: wp.array3d[wp.uint32] | None = None,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
         config: RenderConfig | None = DEFAULT_RENDER_CONFIG,
-        sync_shapes: bool = True,
     ):
         """Raytrace the scene into the provided output images.
 
@@ -492,7 +491,9 @@ class RenderContext:
         geometry, refit them via
         :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles` before calling this
-        method.
+        method. The OptiX backend instead traces :attr:`~newton.Model.optix_shapes`,
+        built with :meth:`~newton.Model.optix_build_shapes` and refit with
+        :meth:`~newton.Model.optix_refit_shapes`.
 
         Args:
             state: Current simulation state (for particle positions).
@@ -518,9 +519,6 @@ class RenderContext:
             clear_data: Values used to clear output images before
                 rendering. Pass ``None`` to use :attr:`DEFAULT_CLEAR_DATA`.
             hdr_color_image: Output linear HDR color buffer.
-            sync_shapes: With the OptiX backend, refit :attr:`~newton.Model.optix_shapes`
-                from *state* with :meth:`~newton.Model.optix_refit_shapes`. The first render
-                builds them with :meth:`~newton.Model.optix_build_shapes` if needed.
             config: Render settings for this render call. If ``None``, uses
                 default :class:`RenderConfig` settings.
         """
@@ -529,11 +527,11 @@ class RenderContext:
         if self.backend == "optix":
             if self.device.stream.is_capturing:
                 raise RuntimeError("The OptiX camera backend does not support CUDA graph capture; use backend='warp'")
-            if model.optix_shapes is None:
-                model.optix_build_shapes(state)
-            elif sync_shapes:
-                model.optix_refit_shapes(state)
             optix = model.optix_shapes
+            if optix is None:
+                raise RuntimeError(
+                    "The OptiX camera backend requires Model.optix_build_shapes() to have been called first."
+                )
 
         if config is None:
             config = RenderContext.DEFAULT_RENDER_CONFIG
