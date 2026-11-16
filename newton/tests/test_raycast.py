@@ -743,13 +743,29 @@ def test_intersect_ray(test: TestRaycast, device: str, backend: str = "warp"):
     np.testing.assert_allclose(out_dist.numpy(), np.array([1.5, 2.5, -1.0], dtype=np.float32), atol=1e-5)
 
     if backend == "optix":
-        # A shape that leaves its world's cell is hidden instead of reaching another world's cell.
+        # A shape that leaves its world's cell is hidden and flagged instead of reaching another world's cell.
+        test.assertEqual(model.optix_shapes.out_of_cell.numpy()[0], 0)
         body_q[1, 0] = 100.0
         state.body_q.assign(body_q)
         model.bvh_refit_shapes(state, backend="optix")
         shapes = model.optix_shapes
         masks = shapes.instances.numpy()["visibility_mask"]
         np.testing.assert_array_equal(masks[np.argsort(shapes.instance_shapes.numpy())], [255, 0])
+        test.assertEqual(shapes.out_of_cell.numpy()[0], 1)
+
+        # A larger extent leaves room for the move.
+        model.bvh_build_shapes(state, backend="optix", optix_extent=200.0)
+        far = wp.array([[100.0, 0.0, 2.0]], dtype=wp.vec3, device=device)
+        newton.intersect_ray(
+            model,
+            backend=backend,
+            ray_origins=far,
+            ray_directions=directions[1:2],
+            ray_worlds=worlds[:1],
+            out_dist=out_dist,
+        )
+        np.testing.assert_allclose(out_dist.numpy()[0], 2.5, atol=1e-4)
+        test.assertEqual(model.optix_shapes.out_of_cell.numpy()[0], 0)
 
 
 def test_intersect_ray_world_planes(test: TestRaycast, device: str, backend: str = "warp"):

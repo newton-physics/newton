@@ -2257,6 +2257,7 @@ class Model:
         bvh_constructor: str | None = None,
         shape_flags: ShapeFlags = ShapeFlags.VISIBLE,
         backend: Literal["warp", "optix"] = "warp",
+        optix_extent: float | None = None,
     ) -> None:
         """Build or rebuild the shape BVH stored on this model.
 
@@ -2268,8 +2269,10 @@ class Model:
 
         With ``backend="optix"``, builds :attr:`optix_shapes` instead, which ``backend="optix"``
         cameras and raycasts trace. It is independent of the shape BVH and is not built by
-        :meth:`ModelBuilder.finalize`. Shapes must stay within twice the farthest reach of any
-        shape from the origin at build time; shapes beyond it are not traced.
+        :meth:`ModelBuilder.finalize`. Each world's shapes must stay within the cube of half-width
+        ``optix_extent`` about the origin; a refit hides shapes that leave it and sets
+        ``optix_shapes.out_of_cell`` on the device. Building is several times slower than the
+        Warp BVH build and refitting is somewhat slower, so build once and refit each frame.
 
         Args:
             state: Current simulation state with body transforms.
@@ -2280,9 +2283,14 @@ class Model:
                 included in the BVH if any of its flags are set in the mask.
             backend: ``"warp"`` builds :attr:`bvh_shapes`; ``"optix"`` builds
                 :attr:`optix_shapes` (experimental).
+            optix_extent: Half-width [m] of the region each world's shapes may occupy with
+                ``backend="optix"``. Defaults to twice the farthest reach of any non-plane shape
+                from the origin at build time, and at least 1 m. Larger values leave room for
+                motion but lower precision, since worlds are packed further apart in float32.
 
         Raises:
-            ValueError: If ``backend`` is unknown, or ``bvh_constructor`` is given with ``backend="optix"``.
+            ValueError: If ``backend`` is unknown, ``bvh_constructor`` is given with ``backend="optix"``,
+                ``optix_extent`` is given with ``backend="warp"``, or ``optix_extent`` is not positive.
             RuntimeError: If ``backend="optix"`` and ``newton[optix]`` is not installed, or OptiX
                 does not support the model or device.
 
@@ -2292,10 +2300,14 @@ class Model:
         if backend == "optix":
             if bvh_constructor is not None:
                 raise ValueError("bvh_constructor is not supported with backend='optix'")
-            self._optix_build_shapes(state, shape_flags)
+            if optix_extent is not None and not optix_extent > 0.0:
+                raise ValueError(f"optix_extent must be positive, got {optix_extent}")
+            self._optix_build_shapes(state, shape_flags, optix_extent)
             return
         if backend != "warp":
             raise ValueError(f"backend must be 'warp' or 'optix', got {backend!r}")
+        if optix_extent is not None:
+            raise ValueError("optix_extent requires backend='optix'")
         from ..geometry.bvh import (  # noqa: PLC0415
             SHAPE_BOUNDS_BLOCK_DIM,
             compute_bvh_group_roots,
@@ -2469,7 +2481,7 @@ class Model:
             device=self.device,
         )
 
-    def _optix_build_shapes(self, state: State, shape_flags: ShapeFlags) -> None:
+    def _optix_build_shapes(self, state: State, shape_flags: ShapeFlags, extent: float | None) -> None:
         """Build :attr:`optix_shapes`; see :meth:`bvh_build_shapes`."""
         try:
             from ..geometry import optix  # noqa: PLC0415
@@ -2586,7 +2598,8 @@ class Model:
             planes=tuple(int(si) for si in enabled[plane & (shape_world[enabled] < 0)]),
             world_planes=wp.array(world_planes, dtype=wp.int32, device=device),
             # Room for shapes to move.
-            extent=max(2.0 * float(reach[bounded].max(initial=0.0)), 1.0),
+            extent=extent or max(2.0 * float(reach[bounded].max(initial=0.0)), 1.0),
+            out_of_cell=wp.zeros(1, dtype=wp.int32, device=device),
             grid=grid,
             world_count=self.world_count,
             has_global_instances=bool(np.any(shape_world[instance_shapes] < 0)),

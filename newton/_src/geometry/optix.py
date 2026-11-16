@@ -70,6 +70,8 @@ class OptixShapes:
     """Number of worlds; the global world uses the cell after them."""
     has_global_instances: bool
     """Whether the global world's cell holds any instances."""
+    out_of_cell: wp.array[wp.int32]
+    """Set to 1 on the device when a refit hides a shape that left its cell; cleared by a rebuild, shape ``[1]``."""
     pipelines: dict = field(default_factory=dict)
     """Camera and raycast pipelines compiled for these shapes."""
 
@@ -129,6 +131,7 @@ def compute_optix_shape_instances(
     shape_transforms: wp.array[wp.transformf],
     shape_traversables: wp.array[wp.uint64],
     out_instances: wp.array[wo.Instance],
+    out_of_cell: wp.array[wp.int32],
 ):
     i = wp.tid()
     si = instance_shapes[i]
@@ -143,6 +146,7 @@ def compute_optix_shape_instances(
     if wp.max(wp.abs(center)) + shape_radii[si] > extent:
         # Hide shapes that left their cell rather than let them reach another world's.
         mask = 0
+        out_of_cell[0] = 1
     out_instances[i] = wo.make_instance(
         rotation @ wp.diag(half),
         center + world_offset(world, grid, extent),
@@ -207,6 +211,7 @@ def compute_optix_shape_instances_launch(model: Model, shapes: OptixShapes) -> N
             shapes.shape_world_transforms,
             shapes.shape_traversables,
             shapes.instances,
+            shapes.out_of_cell,
         ],
         device=model.device,
     )

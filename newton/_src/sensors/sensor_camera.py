@@ -165,7 +165,8 @@ class SensorCamera:
                 ``newton[optix]`` extra (Python 3.12 on x86-64 Linux or Windows) and a CUDA device,
                 cannot be recorded in CUDA graphs, and does not support particles, deformable
                 surfaces, Gaussians or shape variants; unsupported models raise
-                :class:`RuntimeError`.
+                :class:`RuntimeError`. OptiX does not render shapes that have left the region
+                set when the OptiX shapes were built (see :meth:`~newton.Model.bvh_build_shapes`).
             deformable_surface_mode: Which deformable surfaces the sensor uploads
                 and renders: :attr:`DeformableSurfaceMode.BOTH` renders the
                 simulation triangles and the visual meshes, as the viewers do;

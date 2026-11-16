@@ -978,13 +978,22 @@ def intersect_ray(
         fast_math: Whether to compile the intersection kernel with fast math enabled.
         backend: ``"warp"`` traverses :attr:`~newton.Model.bvh_shapes`; ``"optix"``
             (experimental) traverses :attr:`~newton.Model.optix_shapes` and cannot be recorded
-            in CUDA graphs.
+            in CUDA graphs. OptiX does not trace shapes that have left the region set when
+            the OptiX shapes were built (see :meth:`~newton.Model.bvh_build_shapes`).
+
+    Raises:
+        ValueError: If ``backend`` is unknown.
+        RuntimeError: If ``backend="optix"`` and the ``newton[optix]`` extra is missing,
+            :attr:`~newton.Model.optix_shapes` has not been built, or a CUDA graph is being captured.
     """
 
     if backend not in ("warp", "optix"):
         raise ValueError(f"backend must be 'warp' or 'optix', got {backend!r}")
     if backend == "optix":
-        from .optix import intersect_rays  # noqa: PLC0415
+        try:
+            from .optix import intersect_rays  # noqa: PLC0415
+        except ImportError as exc:
+            raise RuntimeError("OptiX raycasting requires the newton[optix] extra") from exc
 
         intersect_rays(
             model,
