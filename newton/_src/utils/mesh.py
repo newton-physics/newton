@@ -13,6 +13,7 @@ import warp as wp
 
 from ..exceptions import NewtonWarning
 from ..geometry.types import Mesh
+from ..geometry.utils import _load_msh
 
 
 @wp.kernel
@@ -1373,13 +1374,7 @@ def load_meshes_from_file(
             )
             tri = trimesh.load(filename, force="mesh")
     elif filename.lower().endswith(".msh"):
-        import meshio  # trimesh 5 deprecates reading these files through its meshio wrapper
-
-        try:
-            msh = meshio.read(filename)
-        except (Exception, SystemExit) as e:  # meshio exits when no reader accepts the file
-            raise ValueError(f"meshio could not read mesh file '{filename}'.") from e
-        tri = trimesh.Trimesh(vertices=msh.points, faces=msh.get_cells_type("triangle"))
+        tri = _load_msh(filename)
     else:
         tri = trimesh.load(filename, force="mesh")
     tri_meshes = tri.geometry.values() if hasattr(tri, "geometry") else [tri]

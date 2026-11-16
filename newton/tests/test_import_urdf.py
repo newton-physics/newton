@@ -494,7 +494,11 @@ class TestImportUrdfBasic(unittest.TestCase):
 
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float64)
         faces = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])
-        mesh = meshio.Mesh(vertices, [("triangle", faces)])
+        # A leading non-triangle block and a node that only it uses must not reach the surface mesh.
+        mesh = meshio.Mesh(
+            np.vstack([vertices, [[100.0, 0.0, 0.0]]]),
+            [("tetra", np.array([[0, 1, 2, 4]])), ("triangle", faces[:2]), ("triangle", faces[2:])],
+        )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "tetra.msh"
             for file_format, binary in (("gmsh22", False), ("gmsh22", True), ("ansys", True)):
@@ -504,12 +508,18 @@ class TestImportUrdfBasic(unittest.TestCase):
                     with warnings.catch_warnings():
                         warnings.simplefilter("error", DeprecationWarning)
                         parse_urdf(MESH_URDF.format(filename=path), builder)
-                    source = builder.shape_source[0]
-                    np.testing.assert_array_equal(source.vertices, vertices)
-                    np.testing.assert_array_equal(source.indices.reshape(-1, 3), faces)
+                        loaded = newton.Mesh.create_from_file(path)
+                    for source in (builder.shape_source[0], loaded):
+                        np.testing.assert_array_equal(source.vertices, vertices)
+                        np.testing.assert_array_equal(source.indices.reshape(-1, 3), faces)
             path.write_text("not a mesh")
-            with self.assertRaisesRegex(ValueError, "meshio could not read"):
-                load_meshes_from_file(str(path), maxhullvert=64)
+            for load in (
+                lambda: load_meshes_from_file(str(path), maxhullvert=64),
+                lambda: newton.Mesh.create_from_file(path),
+                lambda: newton.TetMesh.create_from_file(path),
+            ):
+                with self.assertRaises(ValueError):
+                    load()
 
     @requires("trimesh", "collada")
     def test_empty_mesh_reports_filename(self):

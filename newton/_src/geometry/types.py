@@ -2213,9 +2213,9 @@ class TetMesh:
                 **kwargs,
             )
 
-        import meshio
+        from .utils import _read_meshio  # noqa: PLC0415
 
-        m = meshio.read(filename)
+        m = _read_meshio(filename)
 
         # Find tetrahedral cells
         tet_indices = None

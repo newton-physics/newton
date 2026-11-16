@@ -388,6 +388,24 @@ def compute_inertia_obb(
     return wp.transform(*best_transform), wp.vec3(*best_extents)
 
 
+def _read_meshio(filename: str):
+    """Read a mesh file with meshio, which exits the process when no reader accepts the file."""
+    import meshio
+
+    try:
+        return meshio.read(filename)
+    except (Exception, SystemExit) as e:
+        raise ValueError(f"meshio could not read mesh file '{filename}'.") from e
+
+
+def _load_msh(filename: str):
+    """Load the triangles of a Gmsh or ANSYS ``.msh`` file; trimesh 5 deprecates its own meshio wrapper."""
+    import trimesh
+
+    msh = _read_meshio(filename)
+    return trimesh.Trimesh(vertices=msh.points, faces=msh.get_cells_type("triangle"))
+
+
 def load_mesh(filename: str, method: str | None = None):
     """
     Loads a 3D triangular surface mesh from a file.
@@ -405,9 +423,7 @@ def load_mesh(filename: str, method: str | None = None):
 
     def load_mesh_with_method(method):
         if method == "meshio":
-            import meshio
-
-            m = meshio.read(filename)
+            m = _read_meshio(filename)
             mesh_points = np.array(m.points)
             mesh_indices = np.array(m.cells[0].data, dtype=np.int32)
         elif method == "openmesh":
@@ -424,7 +440,8 @@ def load_mesh(filename: str, method: str | None = None):
         else:
             import trimesh
 
-            m = trimesh.load(filename)
+            is_msh = os.path.splitext(filename)[1].lower() == ".msh"
+            m = _load_msh(filename) if is_msh else trimesh.load(filename)
             if hasattr(m, "geometry"):
                 # Combine scene parts with their node transforms applied;
                 # raw vertices are in node-local space.
