@@ -2779,9 +2779,9 @@ class TestMuJoCoHydroelastic(unittest.TestCase):
         expected[:, 1:] *= (friction / (ir * friction[:, :1])) ** 2
         np.testing.assert_allclose(data.efc.D.numpy()[0, rows], expected, rtol=2.0e-6, atol=0.0)
 
-    def test_captured_mode_and_timestep_changes(self):
-        """Refresh captured contacts after timestep and solref mode changes."""
-        model = _mujoco_model(solref_modes=(SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_MJCF_DEFAULT))
+    def test_captured_timestep_changes(self):
+        """Refresh captured hydroelastic contacts after timestep changes."""
+        model = _mujoco_model()
         solver = _mujoco_solver(model)
         state_in, state_out = _mujoco_states(model)
         state_in.joint_qd.assign(np.array([0.001, 0.0, -0.1, 0.0, 0.0, 0.0]))
@@ -2793,25 +2793,15 @@ class TestMuJoCoHydroelastic(unittest.TestCase):
             with wp.ScopedCapture() as capture:
                 solver.step(state_in, state_out, None, contacts, dt)
             graphs.append(capture.graph)
-        with wp.ScopedCapture() as notification:
-            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
-        for modes in (
-            (SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_MJCF_DEFAULT),
-            (SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_FORCE_SPACE),
-            (SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_RAW),
-        ):
-            model.mujoco.solref_mode.assign(modes)
-            wp.capture_launch(notification.graph)
-            expected = []
-            for dt in timesteps:
-                solver.step(state_in, state_out, None, contacts, dt)
-                expected.append(state_out.body_qd.numpy().copy())
-                if modes == (SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_FORCE_SPACE):
-                    velocity = (-0.1 + dt * 50.0) / (1.0 + dt * dt * 1.0e4)
-                    self.assertAlmostEqual(float(expected[-1][0, 2]), velocity, delta=2.0e-5)
-            for index in (0, 1, 0):
-                wp.capture_launch(graphs[index])
-                np.testing.assert_allclose(state_out.body_qd.numpy(), expected[index], atol=1.0e-7, rtol=1.0e-5)
+        expected = []
+        for dt in timesteps:
+            solver.step(state_in, state_out, None, contacts, dt)
+            expected.append(state_out.body_qd.numpy().copy())
+            velocity = (-0.1 + dt * 50.0) / (1.0 + dt * dt * 1.0e4)
+            self.assertAlmostEqual(float(expected[-1][0, 2]), velocity, delta=2.0e-5)
+        for index in (0, 1, 0):
+            wp.capture_launch(graphs[index])
+            np.testing.assert_allclose(state_out.body_qd.numpy(), expected[index], atol=1.0e-7, rtol=1.0e-5)
 
     def test_soft_slab_friction(self):
         """Check sticking, sliding, and world-space contact forces."""
@@ -2936,9 +2926,6 @@ class TestMuJoCoHydroelasticMixing(unittest.TestCase):
         """Preserve activation response on reuse and refresh it after collision."""
         dt = 1.0 / 600.0
         model = self.models[True, True, False]
-        modes = model.mujoco.solref_mode.numpy().copy()
-        self.addCleanup(model.mujoco.solref_mode.assign, modes)
-        model.mujoco.solref_mode.fill_(SOLREF_MODE_MJCF_DEFAULT)
         solver = _mujoco_solver(model)
         legacy = _mujoco_solver(self.model)
         state_in, state_out = _mujoco_states(self.model, velocity=0.0)
@@ -2953,8 +2940,6 @@ class TestMuJoCoHydroelasticMixing(unittest.TestCase):
         with wp.ScopedCapture() as capture_a:
             solver.step(state_in, state_out, None, a, dt)
         wp.capture_launch(capture_a.graph)
-        model.mujoco.solref_mode.assign(modes)
-        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
         q[:, 2] = 0.0999
         state_in.joint_q.assign(q.ravel())
         newton.eval_fk(self.model, state_in.joint_q, state_in.joint_qd, state_in)

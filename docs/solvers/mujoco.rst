@@ -868,9 +868,8 @@ integrators, and contact backends keep their existing response. Set
 ``HydroelasticSDF.Config(reduce_contacts=False)`` in the collision pipeline;
 the solver does not check contact reduction. Existing hydroelastic pairs
 already using force-space ``solref_mode`` now use this mapping and
-may need retuning. After editing modes, call
-``solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)``.
-Mode changes also apply when replaying an existing CUDA graph.
+may need retuning. Set the modes before constructing the solver. To change
+hydroelastic modes later, recreate the solver and any CUDA graphs.
 
 For sticking or frictionless contacts, normal stiffness is consistent across
 body masses and contact subdivision. Sliding couples normal and friction
@@ -882,7 +881,7 @@ coefficients. Newton still reports forces in world coordinates. Raw MuJoCo
 sensors and viewers that assume unit tangent rows need special care.
 USD and MJCF imports keep their existing mode rules: authored ``solref``
 selects ``RAW``; otherwise shapes use ``MJCF_DEFAULT``. Imported shapes can
-opt in through their model attributes after loading.
+opt in through their model attributes after loading, before solver construction.
 
 .. experimental::
 

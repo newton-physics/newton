@@ -4537,12 +4537,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raise ValueError("use_speculative_contacts=True requires Newton contacts on the MuJoCo Warp backend.")
         self._use_speculative_contacts = use_speculative_contacts
 
-        required_flags = ShapeFlags.HYDROELASTIC | ShapeFlags.COLLIDE_SHAPES
-        self._has_hydroelastic_shapes = bool(np.any((model.shape_flags.numpy() & required_flags) == required_flags))
-
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
         mujoco_attrs = getattr(model, "mujoco", None)
+        solref_mode = getattr(mujoco_attrs, "solref_mode", None)
+        required_flags = ShapeFlags.HYDROELASTIC | ShapeFlags.COLLIDE_SHAPES
+        # Select at construction so unselected scenes need no extra contact pass.
+        self._has_force_space_hydroelastic = (
+            solref_mode is not None
+            and np.count_nonzero(
+                ((model.shape_flags.numpy() & required_flags) == required_flags)
+                & (solref_mode.numpy() == SOLREF_MODE_FORCE_SPACE)
+            )
+            >= 2
+        )
         if enable_sleeping is None:
             if mujoco_attrs is not None and hasattr(mujoco_attrs, "enable_sleeping"):
                 enable_sleeping = bool(mujoco_attrs.enable_sleeping.numpy()[0])
@@ -4859,7 +4867,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._contacts_epoch = 0
         self._last_contact_timestep = None
         self._last_contacts_epoch = None
-        if self._has_hydroelastic_shapes:
+        if self._has_force_space_hydroelastic:
             self._last_contact_timestep = wp.zeros(1, dtype=float, device=self.device)
             self._last_contacts_epoch = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         # Reset by the conversion finalizer, avoiding a memset before each pass.
@@ -5013,7 +5021,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             yield
 
     def _supports_hydroelastic_compliance(self) -> bool:
-        if not self._has_hydroelastic_shapes or self.use_mujoco_cpu or self._use_mujoco_contacts:
+        if not self._has_force_space_hydroelastic or self.use_mujoco_cpu or self._use_mujoco_contacts:
             return False
         opt = self.mjw_model.opt
         integrators = self._mujoco_warp.IntegratorType
@@ -5024,7 +5032,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     @event_scope
     def _mujoco_warp_step(self, contacts: Contacts | None):
-        # Keep the hook in captured graphs so later solref_mode edits take effect.
         hydroelastic = self._supports_hydroelastic_compliance()
         if not self._use_speculative_contacts and not hydroelastic:
             self._mujoco_warp.step(self.mjw_model, self.mjw_data)
@@ -5813,8 +5820,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
                 self._last_contact_timestep,
-                contacts._hydroelastic_pressure_contact if self._has_hydroelastic_shapes else None,
-                contacts._hydroelastic_pressure_generation if self._has_hydroelastic_shapes else None,
+                contacts._hydroelastic_pressure_contact if self._has_force_space_hydroelastic else None,
+                contacts._hydroelastic_pressure_generation if self._has_force_space_hydroelastic else None,
                 self._last_contacts_epoch,
                 self._supports_hydroelastic_compliance(),
                 self._contacts_epoch,
