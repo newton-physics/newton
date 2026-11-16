@@ -4205,7 +4205,8 @@ class ModelBuilder:
                 self._merge_builder_copies(builder, worlds, xforms, label_prefixes, array_backed=True)
 
             if separate_worlds:
-                self.world_gravity.extend(builder._gravity_as_vector() for _ in range(copy_count))
+                gravity = tuple(builder._gravity_as_vector())
+                self.world_gravity.extend(wp.vec3(*gravity) for _ in range(copy_count))
                 self.world_count += copy_count
             else:
                 self._adopt_builder_gravity(builder)
@@ -4603,18 +4604,24 @@ class ModelBuilder:
         self.joint_constraint_count += copy_count * counts["joint_constraint"]
 
         custom_attributes = self._prepare_builder_custom_attributes(builder)
+        kinds = tuple(counts)
+        offset_rows = np.stack([starts(kind) for kind in kinds], axis=1).tolist()
+        has_actuators = bool(builder.actuator_entries)
+        has_batteries = bool(builder.battery_entries)
         for copy_index, world in enumerate(worlds.tolist()):
-            entity_offsets = {kind: int(starts(kind)[copy_index]) for kind in counts}
+            entity_offsets = dict(zip(kinds, offset_rows[copy_index], strict=True))
             self._merge_builder_custom_attributes(
                 builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes
             )
-            self._merge_builder_actuators(
-                builder,
-                int(joint_dof_starts[copy_index]),
-                int(joint_coord_starts[copy_index]),
-                entity_offsets["actuator"],
-            )
-            self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
+            if has_actuators:
+                self._merge_builder_actuators(
+                    builder,
+                    int(joint_dof_starts[copy_index]),
+                    int(joint_coord_starts[copy_index]),
+                    entity_offsets["actuator"],
+                )
+            if has_batteries:
+                self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
         self.actuator_count += copy_count * counts["actuator"]
 
     def _model_value_key(self, attribute: CustomAttribute) -> int:
@@ -5957,7 +5964,8 @@ class ModelBuilder:
                 reference = Model._normalize_attribute_reference(reference)
 
             freq_key = attr.frequency
-            if isinstance(freq_key, str):
+            is_custom_frequency = isinstance(freq_key, str)
+            if is_custom_frequency:
                 index_offset = custom_frequency_offsets.get(freq_key, 0)
             elif attr.frequency == Model.AttributeFrequency.ONCE:
                 index_offset = 0
@@ -6095,7 +6103,7 @@ class ModelBuilder:
                             source_counts = self._builder_merge_counts(builder)
                         count = (
                             builder._custom_frequency_counts.get(freq_key, 0)
-                            if isinstance(freq_key, str)
+                            if is_custom_frequency
                             else source_counts.get(self._builder_frequency_key(freq_key), 0)
                         )
                     source_values = attr._values_with_defaults(count)
@@ -6108,15 +6116,17 @@ class ModelBuilder:
                     source_key = -1 if -1 in source_values else min(attr.values or source_values)
                     value = source_values[source_key]
                     enum_values[index_offset] = transform_enum_value(source_key, value) if needs_remap else value
-            elif not isinstance(freq_key, str):
-                enum_values = {
-                    index_offset + idx: transform_enum_value(idx, value) if needs_remap else value
-                    for idx, value in source_values.items()
-                }
+            elif not is_custom_frequency:
+                if needs_remap:
+                    enum_values = {
+                        index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()
+                    }
+                else:
+                    enum_values = {index_offset + idx: value for idx, value in source_values.items()}
 
             merged = self.custom_attributes.get(full_key)
             if merged is None:
-                if isinstance(freq_key, str):
+                if is_custom_frequency:
                     mapped_values = [None] * index_offset
                     if needs_remap:
                         mapped_values.extend(
@@ -6139,9 +6149,9 @@ class ModelBuilder:
                 )
 
             if merged.values is None:
-                merged.values = [] if isinstance(freq_key, str) else {}
+                merged.values = [] if is_custom_frequency else {}
 
-            if isinstance(freq_key, str):
+            if is_custom_frequency:
                 if len(merged.values) < index_offset:
                     merged.values.extend([None] * (index_offset - len(merged.values)))
                 if needs_remap:
