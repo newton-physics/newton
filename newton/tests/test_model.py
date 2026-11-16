@@ -22,6 +22,7 @@ import newton
 import newton.utils
 from newton import ModelBuilder, NewtonDeprecationWarning
 from newton._src.geometry.utils import transform_points
+from newton._src.sim.builder import _as_quat
 from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
@@ -4137,6 +4138,16 @@ class TestParticleInputTypes(unittest.TestCase):
                 assert_np_equal(np.array(builder.tri_areas), np.array(reference.tri_areas), tol=1.0e-6)
                 assert_np_equal(np.array(builder.edge_rest_angle), np.array(reference.edge_rest_angle), tol=1.0e-6)
                 assert_np_equal(np.array(builder.edge_rest_length), np.array(reference.edge_rest_length), tol=1.0e-6)
+
+    def test_as_quat_helper(self):
+        """``_as_quat`` returns a ``wp.quat`` unchanged and converts tuples, lists, and NumPy arrays."""
+        rot = (0.0, 0.0, math.sin(0.3), math.cos(0.3))
+        quat = wp.quat(*rot)
+        self.assertIs(_as_quat(quat), quat)
+        for value in (rot, list(rot), np.array(rot, dtype=np.float32)):
+            converted = _as_quat(value)
+            self.assertIsInstance(converted, wp.quat)
+            assert_np_equal(np.array(converted), np.array(quat), tol=1.0e-6)
 
     def test_grid_and_mesh_helpers_accept_any_vec3_and_quat(self):
         """Particle grid and mesh helpers accept tuple, list, and NumPy pos/vel/rot and match the Warp-typed result."""
