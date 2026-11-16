@@ -221,7 +221,7 @@ To generate a coverage report:
 
         .. code-block:: console
 
-            # append the coverage flags and make sure `coverage[toml]` is installed (it comes in `[dev]`)
+            # append the coverage flags and make sure `coverage` is installed (it comes in `[dev]`)
             python -m newton.tests --coverage --coverage-html htmlcov
 
 The file ``htmlcov/index.html`` can be opened with a web browser to view the coverage report.
