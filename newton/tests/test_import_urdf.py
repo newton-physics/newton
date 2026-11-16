@@ -489,7 +489,7 @@ class TestImportUrdfBasic(unittest.TestCase):
 
     @requires("meshio", "trimesh")
     def test_gmsh_mesh_urdf(self):
-        """Read Gmsh and ANSYS .msh files with meshio, not through trimesh's deprecated wrapper."""
+        """Read meshio-only formats with meshio, not through trimesh's deprecated wrapper."""
         import meshio
 
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float64)
@@ -500,16 +500,16 @@ class TestImportUrdfBasic(unittest.TestCase):
             [("tetra", np.array([[0, 1, 2, 4]])), ("triangle", faces[:2]), ("triangle", faces[2:])],
         )
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "tetra.msh"
-            for file_format, binary in (("gmsh22", False), ("gmsh22", True), ("ansys", True)):
+            for file_format, binary in (("gmsh22", False), ("gmsh22", True), ("ansys", True), ("vtk", True)):
+                path = Path(directory) / ("tetra.vtk" if file_format == "vtk" else "tetra.msh")
                 with self.subTest(file_format=file_format, binary=binary):
                     meshio.write(path, mesh, file_format=file_format, binary=binary)
                     builder = newton.ModelBuilder()
                     with warnings.catch_warnings():
                         warnings.simplefilter("error", DeprecationWarning)
                         parse_urdf(MESH_URDF.format(filename=path), builder)
-                        loaded = newton.Mesh.create_from_file(path)
-                    for source in (builder.shape_source[0], loaded):
+                        loaded = [newton.Mesh.create_from_file(path, method=method) for method in (None, "meshio")]
+                    for source in (builder.shape_source[0], *loaded):
                         np.testing.assert_array_equal(source.vertices, vertices)
                         np.testing.assert_array_equal(source.indices.reshape(-1, 3), faces)
             path.write_text("not a mesh")

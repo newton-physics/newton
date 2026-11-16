@@ -13,7 +13,7 @@ import warp as wp
 
 from ..exceptions import NewtonWarning
 from ..geometry.types import Mesh
-from ..geometry.utils import _load_msh
+from ..geometry.utils import _load_meshio_trimesh, _reads_with_meshio
 
 
 @wp.kernel
@@ -1373,8 +1373,8 @@ def load_meshes_from_file(
                 module=r"^collada\.",
             )
             tri = trimesh.load(filename, force="mesh")
-    elif filename.lower().endswith(".msh"):
-        tri = _load_msh(filename)
+    elif _reads_with_meshio(filename):
+        tri = _load_meshio_trimesh(filename)
     else:
         tri = trimesh.load(filename, force="mesh")
     tri_meshes = tri.geometry.values() if hasattr(tri, "geometry") else [tri]

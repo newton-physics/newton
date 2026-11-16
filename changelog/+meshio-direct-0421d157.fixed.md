@@ -1,1 +1,1 @@
-Fix a trimesh 5 `DeprecationWarning` when `ModelBuilder.add_urdf()` or `Mesh.create_from_file()` loads a Gmsh `.msh` mesh. Newton now reads these files with meshio directly.
+Fix a trimesh 5 `DeprecationWarning` when `ModelBuilder.add_urdf()`, `ModelBuilder.add_mjcf()`, or `Mesh.create_from_file()` loads a mesh in a format that trimesh does not read itself, such as Gmsh `.msh` or `.vtk`. Newton now reads these formats with meshio directly.
