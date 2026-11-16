@@ -3355,9 +3355,12 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
             shapes.append(builder.add_shape_sphere(body, radius=0.1, cfg=cfg, label=f"shape_{index}"))
         builder.add_shape_collision_filter_pair(shapes[1], shapes[2])
         builder.add_shape_collision_filter_pair(shapes[3], shapes[5])
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), label="no_shapes")
 
         model = builder.finalize(device="cpu")
         solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        # A body without colliding shapes needs no excludes.
+        self.assertEqual(solver.mj_model.nexclude, 2)
         mapping = solver.mjc_geom_to_newton_shape.numpy()[0]
         contype = solver.mj_model.geom_contype
         conaffinity = solver.mj_model.geom_conaffinity

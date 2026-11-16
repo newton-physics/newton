@@ -3707,9 +3707,11 @@ def parse_mjcf(
                     logger.warning("<exclude> references unknown body '%s', skipping", body2_name)
                 continue
 
-            # Find all shapes belonging to body1 and body2
-            body1_shapes = [i for i, body in enumerate(builder.shape_body) if body == body1_idx]
-            body2_shapes = [i for i, body in enumerate(builder.shape_body) if body == body2_idx]
+            # The broad phase only ever tests colliding shapes, so sites and visual-only shapes need no filter pairs.
+            body1_shapes, body2_shapes = (
+                [shape for shape in builder.body_shapes[body] if builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES]
+                for body in (body1_idx, body2_idx)
+            )
 
             # Add all shape pairs from these bodies to collision filter
             for shape1_idx in body1_shapes:
