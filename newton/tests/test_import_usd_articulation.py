@@ -1015,7 +1015,7 @@ def Xform "World"
         ]
         self.assertEqual(len(collision_shapes), 13)
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "scipy")
     def test_import_articulation_with_mesh(self):
         """Import an articulation containing a mesh without errors."""
         builder = newton.ModelBuilder()

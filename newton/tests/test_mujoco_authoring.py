@@ -423,8 +423,8 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
 
         pair = mujoco.add_contact_pair(
             builder,
-            shape0,
-            shape1,
+            geom1=shape0,
+            geom2=shape1,
             condim=4,
             friction=(0.8, 0.7, 0.01, 0.02, 0.03),
             margin=0.01,
@@ -627,6 +627,7 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                     positions = state0.body_q.numpy()[:, :3]
                     np.testing.assert_allclose(positions[1] - positions[0], [expected_offset, 0.0, 0.0], atol=1e-5)
 
+    @requires(*MUJOCO_MODULES)
     def test_weld_runtime_relpose_overrides_inferred_pose(self):
         """An explicit relpose set at runtime survives MuJoCo's constant refresh."""
         for use_mujoco_cpu in (True, False):
@@ -660,6 +661,7 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                 positions = state0.body_q.numpy()[:, :3]
                 np.testing.assert_allclose(positions[1] - positions[0], [0.0, 0.0, 0.0], atol=1e-5)
 
+    @requires(*MUJOCO_MODULES)
     def test_weld_relpose_inference_per_world(self):
         """Each world infers or keeps its weld pose according to its own authored relpose."""
         blueprint = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))

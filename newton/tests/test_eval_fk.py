@@ -41,7 +41,7 @@ def _expect_parallel_joint_warning(test):
         yield
 
     test.assertEqual(len(caught), 1)
-    test.assertEqual(caught[0].category, newton.exceptions.NewtonWarning)
+    test.assertEqual(caught[0].category, newton.NewtonWarning)
     test.assertRegex(str(caught[0].message), _PARALLEL_JOINT_WARNING)
 
 
@@ -283,8 +283,8 @@ def test_deep_articulation(test, device):
 def test_empty_articulation_selection(test, device):
     model = _build_heterogeneous_model(device)
     state = model.state()
-    body_q = state.body_q.numpy()
-    body_qd = state.body_qd.numpy()
+    body_q = state.body_q.numpy().copy()
+    body_qd = state.body_qd.numpy().copy()
 
     newton.eval_fk(
         model,

@@ -364,7 +364,7 @@ def make_llt_blocked_rcm_factorize_kernel(block_size: int):
 
                 # Skip the whole off-diagonal block panel if L[tile_i, tile_k] is zero.
                 if TP_i[tile_i, tile_k] == int(0):
-                    # Sparsity can shrink between factorizations. DVI reads L
+                    # Sparsity can shrink between factorizations. SCC reads L
                     # without the tile mask, so old factor entries cannot remain.
                     if clear_skipped:
                         zeros = wp.tile_zeros(shape=(block_size, block_size), dtype=wp.float32)

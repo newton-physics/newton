@@ -589,8 +589,7 @@ def test_free_joint_qfrc_actuator_frame(
 
 
 def _steel(model):
-    # The matrix-free solve is CUDA-only; split is the CPU route.
-    return newton.solvers.SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split")
+    return newton.solvers.SolverSteel(model)
 
 
 devices = get_test_devices()

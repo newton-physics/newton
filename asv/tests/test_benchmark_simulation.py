@@ -15,6 +15,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import warp as wp
 from asv_runner.benchmarks.time import TimeBenchmark
+from asv_runner.statistics import compute_stats
 
 ASV_DIR = Path(__file__).parents[1]
 ROOT = ASV_DIR.parent
@@ -218,7 +219,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
 
     def test_deformable_rigid_collision_benchmarks_stay_out_of_pr_gate(self):
-        """Keep nightly collision cases out of the gate and preserve fast sampling."""
+        """Keep nightly collisions out of the gate with finite timing statistics."""
         benchmark_names = (
             "simulation.bench_cloth.DeformableRigidCollision.time_collide",
             "simulation.bench_cloth.DeformableRigidCollisionScale.time_collide",
@@ -229,8 +230,11 @@ class TestSimulationBenchmarks(unittest.TestCase):
             with self.subTest(benchmark_name=benchmark_name):
                 self.assertIn(benchmark_name, inventory)
                 self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns))
-        self.assertEqual(bench_cloth.DeformableRigidCollision.repeat, 3)
-        self.assertEqual(bench_cloth.DeformableRigidCollisionScale.repeat, 1)
+                benchmark = inventory[benchmark_name]
+                sample_count = benchmark["rounds"] * benchmark["repeat"]
+                samples = [0.01 + 0.001 * index for index in range(sample_count)]
+                _, stats = compute_stats(samples, number=1)
+                self.assertTrue(np.isfinite([stats["ci_99_a"], stats["ci_99_b"]]).all())
         coarse_name = "simulation.bench_cloth.FastDeformableRigidCoarseCloth.time_collide"
         self.assertIn(coarse_name, inventory)
         self.assertEqual(inventory[coarse_name]["rounds"], 2)
@@ -585,21 +589,21 @@ class TestSimulationBenchmarks(unittest.TestCase):
 
         solver_cls.assert_called_once()
 
-    def test_g1_dvi_remains_available_outside_pr_gate(self):
+    def test_g1_scc_remains_available_outside_pr_gate(self):
         """Keep small and large G1 batches outside the PR gate with bounded sampling."""
         patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
         for pr_gate in (False, True):
             inventory = self._discover_benchmarks(pr_gate=pr_gate)
-            benchmarks = [benchmark for benchmark in inventory if "G1DVI" in benchmark["name"]]
+            benchmarks = [benchmark for benchmark in inventory if "G1SCC" in benchmark["name"]]
             self.assertEqual(len(benchmarks), 1)
             benchmark = benchmarks[0]
             self.assertFalse(any(pattern.search(benchmark["name"]) for pattern in patterns))
             self.assertEqual(benchmark["params"], [["4", "512"]])
             self.assertEqual((benchmark["rounds"], benchmark["repeat"]), (1, 3))
 
-    def test_g1_dvi_builds_once_per_world_count(self):
+    def test_g1_scc_builds_once_per_world_count(self):
         """Avoid rebuilding and warming G1 for each ASV timing sample."""
-        workload = bench_kamino.G1DVI()
+        workload = bench_kamino.G1SCC()
         with (
             patch("newton.examples.robot.example_robot_g1.Example") as example_cls,
             patch.object(wp, "get_cuda_device_count", return_value=1),

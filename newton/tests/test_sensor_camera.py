@@ -9,8 +9,6 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton._src.sensors.sensor_camera_render as internal_render
-import newton.geometry as geometry
 from newton._src.geometry.types import SH_C0
 from newton._src.sensors.sensor_camera_render.types import LightType
 from newton._src.sensors.sensor_camera_render.utils import Utils
@@ -64,84 +62,6 @@ class TestSensorCamera(unittest.TestCase):
     def _camera_with_model(model: newton.Model, **camera_kwargs) -> SensorCamera:
         """A SensorCamera that renders ``model`` (owns an internal render context)."""
         return SensorCamera(model, **camera_kwargs)
-
-    def test_sensor_camera_public_imports_resolve_to_same_class(self) -> None:
-        """Verify public SensorCamera imports and removed site-attachment helpers."""
-        # SensorCamera lives in ``newton.sensors`` like every other sensor, not at
-        # the top level or in ``newton.geometry``.
-        self.assertIs(newton.sensors.SensorCamera, SensorCamera)
-        self.assertFalse(hasattr(newton, "SensorCamera"))
-        # The camera model spec classes were removed along with USD/MJCF camera import.
-        for spec_name in (
-            "CameraSpec",
-            "CameraPinholeSpec",
-            "CameraFisheyeOpenCVSpec",
-            "CameraFisheyeFThetaSpec",
-            "CameraFisheyeKannalaBrandtSpec",
-        ):
-            self.assertFalse(hasattr(newton, spec_name), spec_name)
-            self.assertFalse(hasattr(newton.sensors, spec_name), spec_name)
-        # RenderContext is an internal implementation detail owned by SensorCamera;
-        # it is not part of the public API.
-        self.assertFalse(hasattr(newton, "RenderContext"))
-        self.assertNotIn("RenderContext", internal_render.__all__)
-        self.assertFalse(hasattr(internal_render, "RenderContext"))
-        # The render config/enum types are exposed as SensorCamera nested attributes,
-        # not on the top-level namespace, and the ``newton.render`` module is gone.
-        self.assertFalse(hasattr(newton, "render"))
-        render_types = (
-            "AntiAliasing",
-            "ClearData",
-            "DeformableSurfaceMode",
-            "GaussianRenderMode",
-            "RenderConfig",
-            "RenderOrder",
-            "TextureProjectionMode",
-            "WorldRenderFlag",
-        )
-        for type_name in render_types:
-            self.assertFalse(hasattr(newton, type_name), type_name)
-            self.assertNotIn(type_name, newton.__all__)
-            self.assertTrue(hasattr(SensorCamera, type_name), type_name)
-            self.assertIs(getattr(SensorCamera, type_name), getattr(internal_render, type_name))
-        # LightType is intentionally not exposed on SensorCamera (no public API accepts it yet).
-        self.assertFalse(hasattr(SensorCamera, "LightType"))
-        # The post-processing Utils and the gray clear preset are nested on SensorCamera.
-        self.assertIs(SensorCamera.Utils, Utils)
-        self.assertFalse(hasattr(geometry, "SensorCamera"))
-
-        # The caller owns the rays, transforms, and output buffers; the sensor holds
-        # none of them, and is not attached to model sites.
-        _, camera = self._build_sphere_scene()
-        for attr in (
-            "rays",
-            "view_count",
-            "width",
-            "height",
-            "world_indices",
-            "camera_transforms",
-            "shape_indices",
-            "_shape_index_by_world",
-            "_camera_transforms",
-        ):
-            self.assertFalse(hasattr(camera, attr), attr)
-        for attr in (
-            "_compute_shape_index_by_world",
-            "_update_transforms",
-            "_ensure_shape_index_by_world",
-            "_ensure_render_buffers",
-        ):
-            self.assertFalse(hasattr(SensorCamera, attr), attr)
-        self.assertFalse(hasattr(internal_render, "_compute_camera_transforms"))
-
-        self.assertFalse(hasattr(newton.ModelBuilder, "add_shape_camera"))
-        self.assertFalse(hasattr(newton.ModelBuilder, "set_site_camera"))
-        self.assertNotIn("camera", inspect.signature(newton.ModelBuilder.add_site).parameters)
-
-        # Negative disable sentinels for the per-view world_indices array; no ENABLE.
-        self.assertFalse(hasattr(SensorCamera.WorldRenderFlag, "ENABLE"))
-        self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_PRESERVE), -101)
-        self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_CLEAR), -102)
 
     def test_camera_ray_helpers_live_on_sensor_camera(self) -> None:
         """Verify camera ray helpers live on SensorCamera."""

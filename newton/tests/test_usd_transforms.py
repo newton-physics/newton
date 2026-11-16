@@ -97,6 +97,50 @@ class TestUsdTransforms(unittest.TestCase):
         np.testing.assert_array_equal(usd.get_scale(prim, local=False), expected)
         np.testing.assert_array_equal(usd.get_scale(prim, local=False, xform_cache=UsdGeom.XformCache()), expected)
 
+    def test_quaternion_conversion_matches_warp_normalize(self):
+        """Convert USD quaternions bit-identically to Warp's normalization."""
+        from pxr import Gf
+
+        rng = np.random.default_rng(5)
+        components = rng.normal(size=(256, 4)) * rng.choice([1.0e-3, 1.0, 1.0e3], size=(256, 1))
+        components = [*components, (0.0, 0.0, 0.0, 0.0), (np.nan, 0.0, 0.0, 1.0)]
+        for x, y, z, w in components:
+            for quat_type in (Gf.Quatf, Gf.Quatd):
+                value = quat_type(float(w), float(x), float(y), float(z))
+                expected = wp.normalize(wp.quat(*value.imaginary, value.real))
+                np.testing.assert_array_equal(usd.value_to_warp(value), expected)
+
+    def test_cached_world_scale_matches_uncached(self):
+        """Reuse ancestors' authored scales without changing any world scale."""
+        from pxr import Gf, Sdf, Usd, UsdGeom
+
+        from newton._src.usd.utils import _get_scale  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/Root")
+        root.AddScaleOp().Set(Gf.Vec3f(2.0, -1.0, 0.5))
+        group = UsdGeom.Xform.Define(stage, "/Root/Group")
+        group.AddScaleOp(opSuffix="a").Set(Gf.Vec3f(1.0, 3.0, -2.0))
+        group.AddScaleOp(opSuffix="b", isInverseOp=True)
+        stage.GetPrimAtPath("/Root/Group").CreateAttribute("xformOp:scale:b", Sdf.ValueTypeNames.Float3).Set(
+            Gf.Vec3f(4.0, 1.0, 0.0)
+        )
+        UsdGeom.Scope.Define(stage, "/Root/Group/Scope")
+        leaves = ["/Root/Group/A", "/Root/Group/B", "/Root/Group/Scope/C", "/Root/Reset"]
+        for index, path in enumerate(leaves):
+            leaf = UsdGeom.Xform.Define(stage, path)
+            leaf.AddScaleOp().Set(Gf.Vec3f(1.0 + index, -0.5, 2.0))
+        UsdGeom.Xform(stage.GetPrimAtPath("/Root/Reset")).SetResetXformStack(True)
+
+        xform_cache = UsdGeom.XformCache()
+        authored_scale_cache = {}
+        for path in [*leaves, "/Root/Group", "/Root"]:
+            prim = stage.GetPrimAtPath(path)
+            expected = usd.get_scale(prim, local=False, xform_cache=xform_cache)
+            actual = _get_scale(prim, local=False, xform_cache=xform_cache, authored_scale_cache=authored_scale_cache)
+            np.testing.assert_array_equal(actual, expected, err_msg=path)
+        self.assertIn(stage.GetPrimAtPath("/Root/Group").GetPath(), authored_scale_cache)
+
 
 if __name__ == "__main__":
     unittest.main()

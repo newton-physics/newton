@@ -13,7 +13,7 @@ from ...sim.articulation import (
 )
 from ...sim.contacts import GENERATION_SENTINEL
 from ..featherstone.kernels import jcalc_motion
-from .friction import contact_tangent_basis, friction_pair_candidate
+from .friction import contact_tangent_basis
 from .friction_patches import WARP_DETERMINISM_OFF, FrictionPatches, warmstart_dt_scale
 
 # SolverSteel rejects models with ``requires_grad``, so no kernel needs an adjoint.
@@ -61,7 +61,7 @@ CONTACT_GENERATION_NONE = wp.constant(GENERATION_SENTINEL)
 
 # Row-slot reservation modes of the joint-row families. ATOMIC reserves from the per-world counter, so a
 # family's rows land in thread-scheduling order. COUNT and WRITE run a family twice around a scan of the
-# counted rows (:func:`assign_world_row_slots`), so each element's rows land in world-element order.
+# counted rows (:func:`reserve_world_row_slots`), so each element's rows land in world-element order.
 ROW_SLOTS_ATOMIC = wp.constant(0)
 ROW_SLOTS_COUNT = wp.constant(1)
 ROW_SLOTS_WRITE = wp.constant(2)
@@ -91,49 +91,102 @@ def reserve_world_rows(
     return first
 
 
-@wp.kernel
-def gather_world_row_requests(
-    world_elements: wp.array[int],
-    element_row_cursor: wp.array[int],
-    # outputs
-    row_requests: wp.array[int],
-):
-    """List the row counts of a COUNT pass in world-element order, followed by a zero."""
-    i = wp.tid()
-    count = int(0)
-    if i < world_elements.shape[0]:
-        count = element_row_cursor[world_elements[i]]
-    row_requests[i] = count
-
-
-@wp.kernel
-def assign_world_row_slots(
+@wp.func_native("""
+#if defined(__CUDA_ARCH__)
+    __shared__ int warp_totals[32];
+    const int lane = thread & 31;
+    const int warp = thread >> 5;
+    const int warp_count = blockDim.x >> 5;
+    const int start = world_element_start.data[world];
+    const int end = world_element_start.data[world + 1];
+    int slot = world_slot_counter.data[world];
+    for (int base = start; base < end; base += blockDim.x) {
+        const int i = base + thread;
+        int element = -1;
+        int count = 0;
+        if (i < end) {
+            element = world_elements.data[i];
+            count = element_row_cursor.data[element];
+        }
+        int inclusive = count;
+        for (int offset = 1; offset < 32; offset <<= 1) {
+            const int below = __shfl_up_sync(0xFFFFFFFF, inclusive, offset);
+            if (lane >= offset) inclusive += below;
+        }
+        if (warp_count == 1) {
+            // One warp: the shuffle total carries the chunk, with no shared totals or barriers.
+            if (i < end) element_row_cursor.data[element] = slot + inclusive - count;
+            slot += __shfl_sync(0xFFFFFFFF, inclusive, 31);
+            continue;
+        }
+        if (lane == 31) warp_totals[warp] = inclusive;
+        __syncthreads();
+        if (warp == 0) {
+            int total = lane < warp_count ? warp_totals[lane] : 0;
+            for (int offset = 1; offset < 32; offset <<= 1) {
+                const int below = __shfl_up_sync(0xFFFFFFFF, total, offset);
+                if (lane >= offset) total += below;
+            }
+            warp_totals[lane] = total;
+        }
+        __syncthreads();
+        const int warp_offset = warp > 0 ? warp_totals[warp - 1] : 0;
+        if (i < end) element_row_cursor.data[element] = slot + warp_offset + inclusive - count;
+        slot += warp_totals[warp_count - 1];
+        // Every thread reads the totals before the next chunk overwrites them.
+        __syncthreads();
+    }
+    if (thread == 0) world_slot_counter.data[world] = slot;
+#endif
+""")
+def _reserve_world_row_slots(
+    world: int,
+    thread: int,
     world_element_start: wp.array[int],
     world_elements: wp.array[int],
-    element_world: wp.array[int],
-    row_offsets: wp.array[int],
     world_slot_counter: wp.array[int],
-    # outputs
     element_row_cursor: wp.array[int],
 ):
-    """Give each element the first slot of its rows: its world's counter plus the earlier requests of that world."""
-    i = wp.tid()
-    world = element_world[i]
-    element_row_cursor[world_elements[i]] = (
-        world_slot_counter[world] + row_offsets[i] - row_offsets[world_element_start[world]]
+    """Scan one world's element row counts into first slots with one block, a block's width at a time."""
+
+
+# Its own module: each launch block size compiles this kernel alone, not all of the Steel kernels.
+@wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)
+def reserve_world_row_slots(
+    worlds: wp.array[int],
+    world_element_start: wp.array[int],
+    world_elements: wp.array[int],
+    # in/out
+    world_slot_counter: wp.array[int],
+    element_row_cursor: wp.array[int],
+):
+    """Turn a COUNT pass's row counts into first slots in world-element order and advance the world counters.
+
+    Launch tiled with one block per entry of ``worlds`` and a multiple of 32 threads, at most 1024 (CUDA only).
+    """
+    block, thread = wp.tid()
+    _reserve_world_row_slots(
+        worlds[block], thread, world_element_start, world_elements, world_slot_counter, element_row_cursor
     )
 
 
-@wp.kernel
-def advance_world_row_counters(
+@wp.kernel(enable_backward=False)
+def reserve_world_row_slots_serial(
     world_element_start: wp.array[int],
-    row_offsets: wp.array[int],
+    world_elements: wp.array[int],
     # in/out
     world_slot_counter: wp.array[int],
+    element_row_cursor: wp.array[int],
 ):
-    """Advance each world's counter past the rows its elements requested."""
+    """The one-thread-per-world form of :func:`reserve_world_row_slots`, for CPU."""
     world = wp.tid()
-    world_slot_counter[world] += row_offsets[world_element_start[world + 1]] - row_offsets[world_element_start[world]]
+    slot = world_slot_counter[world]
+    for i in range(world_element_start[world], world_element_start[world + 1]):
+        element = world_elements[i]
+        count = element_row_cursor[element]
+        element_row_cursor[element] = slot
+        slot += count
+    world_slot_counter[world] = slot
 
 
 @wp.kernel
@@ -142,12 +195,19 @@ def fill_contact_family_sort_keys(
     contact_path: wp.array[int],
     contact_world: wp.array[int],
     segment_count: int,
+    contact_max: int,
     # outputs
     keys: wp.array[int],
     values: wp.array[int],
+    slot_scan_length: wp.array[int],
 ):
-    """Key every contact by its solve world and row family; contacts without rows sort last."""
+    """Key every contact by its solve world and row family; contacts without rows sort last.
+
+    ``slot_scan_length`` gets the active contact count plus one, the sorted row counts the reservation reads.
+    """
     c = wp.tid()
+    if c == 0:
+        slot_scan_length[0] = wp.clamp(contact_count[0], 0, contact_max) + 1
     key = segment_count
     if c < contact_count[0] and contact_path[c] >= 0:
         key = contact_world[c] * CONTACT_ROW_FAMILIES + contact_path[c]
@@ -333,6 +393,20 @@ def compute_com_transforms(
     tid = wp.tid()
     com = body_com[tid]
     body_X_com[tid] = wp.transform(com, wp.quat_identity())
+
+
+@wp.kernel
+def mask_passive_spring_stiffness(
+    joint_stiffness: wp.array[float],
+    spring_dof_mask: wp.array[wp.int32],
+    # outputs
+    spring_stiffness: wp.array[float],
+):
+    dof = wp.tid()
+    if spring_dof_mask[dof] != 0:
+        spring_stiffness[dof] = joint_stiffness[dof]
+    else:
+        spring_stiffness[dof] = 0.0
 
 
 @wp.kernel
@@ -683,8 +757,8 @@ def jcalc_tau(
     joint_f: wp.array[float],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
-    joint_spring_stiffness: wp.array[float],
-    joint_spring_ref: wp.array[float],
+    joint_stiffness: wp.array[float],
+    joint_rest_q: wp.array[float],
     joint_damping: wp.array[float],
     coord_start: int,
     dof_start: int,
@@ -724,8 +798,8 @@ def jcalc_tau(
             S_s = joint_S_s[j]
             # Passive spring/damping applied explicitly; the drive gains stay on the
             # implicit augmented path. These joint types have one coordinate per DOF,
-            # so coord_start + i addresses the axis position.
-            passive_f = joint_spring_stiffness[j] * (joint_spring_ref[j] - joint_q[coord_start + i])
+            # so coord_start + i addresses the axis position and its rest coordinate.
+            passive_f = joint_stiffness[j] * (joint_rest_q[coord_start + i] - joint_q[coord_start + i])
             passive_f -= joint_damping[j] * joint_qd[j]
             # total torque / force on the joint (drive forces handled via augmented mass)
             value = -wp.dot(S_s, body_f_s) + joint_f[j] + passive_f
@@ -1055,6 +1129,55 @@ def compute_link_kinematics(
 
 
 @wp.func
+def write_body_dynamics(
+    body: int,
+    origin: wp.vec3,
+    gravity: wp.vec3,
+    X_sm: wp.transform,
+    mass: float,
+    inertia: wp.mat33,
+    v_s: wp.spatial_vector,
+    a_s: wp.spatial_vector,
+    write_body_inertia: int,
+    write_body_inertia_terms: int,
+    body_I_s: wp.array[wp.spatial_matrix],
+    body_inertia_terms: wp.array2d[float],
+    body_f_s: wp.array[wp.spatial_vector],
+):
+    """Form a body's spatial inertia, inertia terms and bias wrench in the solve frame centred at ``origin``.
+
+    The fused FK/ID kernel calls this inside its per-joint loop and :func:`finalize_body_dynamics`
+    one body per thread, so the two paths share one arithmetic.
+    """
+    X_sm_local = wp.transform(
+        wp.transform_get_translation(X_sm) - origin,
+        wp.transform_get_rotation(X_sm),
+    )
+    # gravity and external forces (expressed in frame aligned with s but centered at body mass)
+    f_g = mass * gravity
+    com, inertia_origin = transform_com_inertia_terms(X_sm_local, mass, inertia)
+    f_g_s = wp.spatial_vector(f_g, wp.cross(com, f_g))
+
+    if write_body_inertia != 0:
+        body_I_s[body] = assemble_com_spatial_inertia(mass, com, inertia_origin)
+    if write_body_inertia_terms != 0:
+        body_inertia_terms[body, 0] = com[0]
+        body_inertia_terms[body, 1] = com[1]
+        body_inertia_terms[body, 2] = com[2]
+        for row in range(3):
+            for col in range(3):
+                body_inertia_terms[body, 3 + 3 * row + col] = inertia_origin[row, col]
+
+    # The root's linear inertial wrench is NOT spurious: the solve frame is centred on a material
+    # point of the root body, so that point accelerates as the body rotates and this term is what
+    # carries it. SolverFeatherstone keeps it and conserves momentum; zeroing it here leaked
+    # momentum on every rotating multi-link articulation.
+    coriolis = spatial_cross_dual(v_s, mul_com_spatial_inertia(mass, com, inertia_origin, v_s))
+    f_b_s = mul_com_spatial_inertia(mass, com, inertia_origin, a_s) + coriolis
+    body_f_s[body] = f_b_s - f_g_s
+
+
+@wp.func
 def compute_link_velocity(
     i: int,
     parent: int,
@@ -1106,39 +1229,21 @@ def compute_link_velocity(
         body_a_s,
     )
 
-    # compute body forces
-    X_sm = body_q_com[child]
-    X_sm_local = wp.transform(
-        wp.transform_get_translation(X_sm) - origin,
-        wp.transform_get_rotation(X_sm),
+    write_body_dynamics(
+        child,
+        origin,
+        gravity,
+        body_q_com[child],
+        body_mass[child],
+        body_inertia[child],
+        v_s,
+        a_s,
+        write_body_inertia,
+        write_body_inertia_terms,
+        body_I_s,
+        body_inertia_terms,
+        body_f_s,
     )
-    mass = body_mass[child]
-
-    # gravity and external forces (expressed in frame aligned with s but centered at body mass)
-    f_g = mass * gravity
-    com, inertia_origin = transform_com_inertia_terms(X_sm_local, mass, body_inertia[child])
-    f_g_s = wp.spatial_vector(f_g, wp.cross(com, f_g))
-
-    # body forces
-    if write_body_inertia != 0:
-        body_I_s[child] = assemble_com_spatial_inertia(mass, com, inertia_origin)
-    if write_body_inertia_terms != 0:
-        body_inertia_terms[child, 0] = com[0]
-        body_inertia_terms[child, 1] = com[1]
-        body_inertia_terms[child, 2] = com[2]
-        for row in range(3):
-            for col in range(3):
-                body_inertia_terms[child, 3 + 3 * row + col] = inertia_origin[row, col]
-
-    # The root's linear inertial wrench is NOT spurious: the solve frame is centred on a material
-    # point of the root body, so that point accelerates as the body rotates and this term is what
-    # carries it. SolverFeatherstone keeps it and conserves momentum; zeroing it here leaked
-    # momentum on every rotating multi-link articulation.
-    coriolis = spatial_cross_dual(v_s, mul_com_spatial_inertia(mass, com, inertia_origin, v_s))
-
-    f_b_s = mul_com_spatial_inertia(mass, com, inertia_origin, a_s) + coriolis
-
-    body_f_s[child] = f_b_s - f_g_s
     return v_s, a_s
 
 
@@ -1178,7 +1283,12 @@ def eval_rigid_fk_id(
     body_f_s: wp.array[wp.spatial_vector],
     body_a_s: wp.array[wp.spatial_vector],
 ):
-    """Evaluate articulation poses and the inverse-dynamics bias wrenches."""
+    """Evaluate articulation poses and the inverse-dynamics bias wrenches in one serial pass.
+
+    The solver runs :func:`eval_rigid_fk_kinematics` and :func:`finalize_body_dynamics` instead, and the
+    parallel tree has kernels of its own over :func:`compute_link_velocity`; this fused kernel remains the
+    bitwise reference the split is tested against.
+    """
     index = wp.tid()
     if articulation_active[index] == 0:
         return
@@ -1259,6 +1369,199 @@ def eval_rigid_fk_id(
             body_a_s,
         )
         cached_child = child
+
+
+@wp.kernel(module=_KINEMATICS_KERNEL_MODULE, enable_backward=False)
+def eval_rigid_fk_kinematics(
+    articulation_start: wp.array[int],
+    articulation_joint_end: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_X_com: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_com: wp.array[wp.vec3],
+    articulation_active: wp.array[int],
+    reuse_valid: wp.array[int],
+    # outputs
+    body_q: wp.array[wp.transform],
+    body_q_com: wp.array[wp.transform],
+    articulation_origin: wp.array[wp.vec3],
+    joint_S_s: wp.array[wp.spatial_vector],
+    body_v_s: wp.array[wp.spatial_vector],
+    body_a_s: wp.array[wp.spatial_vector],
+    valid_out: wp.array[int],
+):
+    """Propagate articulation poses, motion subspaces, velocities and accelerations.
+
+    The serial part of :func:`eval_rigid_fk_id`; :func:`finalize_body_dynamics` forms the
+    per-body inertias and bias wrenches from these results in parallel. An articulation whose
+    ``reuse_valid`` entry is set keeps its stored results; every computed articulation sets its
+    ``valid_out`` entry.
+    """
+    index = wp.tid()
+    if articulation_active[index] == 0:
+        return
+    if reuse_valid[index] != 0:
+        return
+    start = articulation_start[index]
+    end = articulation_joint_end[index]
+
+    for i in range(start, end):
+        compute_link_transform(
+            i,
+            joint_type,
+            joint_parent,
+            joint_child,
+            joint_q_start,
+            joint_qd_start,
+            joint_q,
+            joint_X_p,
+            joint_X_c,
+            body_X_com,
+            joint_axis,
+            joint_dof_dim,
+            body_q,
+            body_q_com,
+        )
+
+    origin = wp.vec3()
+    if start < articulation_start[index + 1]:
+        root_body = joint_child[start]
+        if root_body >= 0:
+            origin = wp.transform_point(body_q[root_body], body_com[root_body])
+    articulation_origin[index] = origin
+
+    cached_child = int(-1)
+    cached_v_s = wp.spatial_vector()
+    cached_a_s = wp.spatial_vector()
+    for i in range(start, end):
+        parent = joint_parent[i]
+        child = joint_child[i]
+        parent_v_s = wp.spatial_vector()
+        parent_a_s = wp.spatial_vector()
+        if parent >= 0:
+            if parent == cached_child:
+                parent_v_s = cached_v_s
+                parent_a_s = cached_a_s
+            else:
+                parent_v_s = body_v_s[parent]
+                parent_a_s = body_a_s[parent]
+        cached_v_s, cached_a_s = compute_link_kinematics(
+            i,
+            parent,
+            child,
+            parent_v_s,
+            parent_a_s,
+            origin,
+            joint_type,
+            joint_q_start,
+            joint_qd_start,
+            joint_q,
+            joint_qd,
+            joint_axis,
+            joint_dof_dim,
+            body_q,
+            joint_X_p,
+            joint_S_s,
+            body_v_s,
+            body_a_s,
+        )
+        cached_child = child
+    valid_out[index] = 1
+
+
+@wp.kernel(module=_KINEMATICS_KERNEL_MODULE, enable_backward=False)
+def finalize_body_dynamics(
+    body_to_articulation: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_com: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    is_free_rigid: wp.array[int],
+    articulation_origin: wp.array[wp.vec3],
+    materialize_all_body_inertia: int,
+    materialize_body_inertia_terms: int,
+    body_world: wp.array[int],
+    gravity: wp.array[wp.vec3],
+    body_v_s: wp.array[wp.spatial_vector],
+    body_a_s: wp.array[wp.spatial_vector],
+    body_active: wp.array[int],
+    articulation_reuse: wp.array[int],
+    # outputs
+    body_I_s: wp.array[wp.spatial_matrix],
+    body_inertia_terms: wp.array2d[float],
+    body_f_s: wp.array[wp.spatial_vector],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    """Form each articulated body's spatial inertia and bias wrench, and publish its COM velocity.
+
+    One thread per body, after :func:`eval_rigid_fk_kinematics`; the same arithmetic as the
+    per-joint tail of :func:`eval_rigid_fk_id` plus :func:`update_body_qd_from_featherstone`.
+    Bodies outside every articulation are left to copy_unarticulated_body_state; bodies of an
+    articulation whose ``articulation_reuse`` entry is set keep their stored results.
+    """
+    body = wp.tid()
+    articulation = body_to_articulation[body]
+    if body_active[body] == 0 or articulation < 0:
+        return
+    if articulation_reuse[articulation] != 0:
+        return
+    origin = articulation_origin[articulation]
+    write_body_inertia = materialize_all_body_inertia
+    if is_free_rigid[articulation] != 0:
+        write_body_inertia = 1
+    v_s = body_v_s[body]
+    write_body_dynamics(
+        body,
+        origin,
+        gravity[body_world[body]],
+        body_q_com[body],
+        body_mass[body],
+        body_inertia[body],
+        v_s,
+        body_a_s[body],
+        write_body_inertia,
+        materialize_body_inertia_terms,
+        body_I_s,
+        body_inertia_terms,
+        body_f_s,
+    )
+
+    com_world = wp.transform_point(body_q[body], body_com[body])
+    com_rel = com_world - origin
+    v_com = wp.spatial_top(v_s) + wp.cross(wp.spatial_bottom(v_s), com_rel)
+    body_qd[body] = wp.spatial_vector(v_com, wp.spatial_bottom(v_s))
+
+
+@wp.kernel(enable_backward=False)
+def check_fk_id_source(
+    source_token: int,
+    published_token: wp.array[int],
+    # outputs
+    valid: wp.array[int],
+):
+    """Drop every carried articulation unless the input state is the one the terms were published into."""
+    if published_token[0] != source_token:
+        valid[wp.tid()] = 0
+
+
+@wp.kernel(enable_backward=False)
+def publish_fk_id_source(
+    source_token: int,
+    # outputs
+    published_token: wp.array[int],
+):
+    """Record the state the carried kinematics were published into."""
+    published_token[0] = source_token
 
 
 @wp.func_native("""
@@ -1703,8 +2006,8 @@ def accumulate_articulation_tau(
     joint_f: wp.array[float],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
-    joint_spring_stiffness: wp.array[float],
-    joint_spring_ref: wp.array[float],
+    joint_stiffness: wp.array[float],
+    joint_rest_q: wp.array[float],
     joint_damping: wp.array[float],
     joint_S_s: wp.array[wp.spatial_vector],
     body_fb_s: wp.array[wp.spatial_vector],
@@ -1750,8 +2053,8 @@ def accumulate_articulation_tau(
             joint_f,
             joint_q,
             joint_qd,
-            joint_spring_stiffness,
-            joint_spring_ref,
+            joint_stiffness,
+            joint_rest_q,
             joint_damping,
             joint_q_start[i],
             dof_start,
@@ -1782,8 +2085,8 @@ def eval_rigid_tau(
     joint_f: wp.array[float],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
-    joint_spring_stiffness: wp.array[float],
-    joint_spring_ref: wp.array[float],
+    joint_stiffness: wp.array[float],
+    joint_rest_q: wp.array[float],
     joint_damping: wp.array[float],
     joint_S_s: wp.array[wp.spatial_vector],
     body_fb_s: wp.array[wp.spatial_vector],
@@ -1813,8 +2116,8 @@ def eval_rigid_tau(
         joint_f,
         joint_q,
         joint_qd,
-        joint_spring_stiffness,
-        joint_spring_ref,
+        joint_stiffness,
+        joint_rest_q,
         joint_damping,
         joint_S_s,
         body_fb_s,
@@ -1859,8 +2162,8 @@ def _get_tree_tau_kernel(lanes: int):
         joint_f: wp.array[float],
         joint_q: wp.array[float],
         joint_qd: wp.array[float],
-        joint_spring_stiffness: wp.array[float],
-        joint_spring_ref: wp.array[float],
+        joint_stiffness: wp.array[float],
+        joint_rest_q: wp.array[float],
         joint_damping: wp.array[float],
         joint_S_s: wp.array[wp.spatial_vector],
         body_fb_s: wp.array[wp.spatial_vector],
@@ -1912,8 +2215,8 @@ def _get_tree_tau_kernel(lanes: int):
                             joint_f,
                             joint_q,
                             joint_qd,
-                            joint_spring_stiffness,
-                            joint_spring_ref,
+                            joint_stiffness,
+                            joint_rest_q,
                             joint_damping,
                             joint_q_start[joint],
                             joint_qd_start[joint],
@@ -2743,7 +3046,7 @@ def accumulate_connect_wrenches_from_impulses(
     maps back to the force ``e * lambda * inv_norm / dt``: ``+`` on the parent and ``-`` on the
     child, at the points the row's Jacobian uses (the anchors' midpoint where the row builder set
     ``connect_at_midpoint``, otherwise each body's own anchor). A REVOLUTE closure's two hinge rows
-    map back to the couple ``e_i * lambda * inv_norm / dt`` the same way.
+    and a FIXED closure's three rotation rows map back to the couple ``e_i * lambda * inv_norm / dt`` the same way.
     """
     k = wp.tid()
     base_slot = connect_slot[k]
@@ -2772,22 +3075,20 @@ def accumulate_connect_wrenches_from_impulses(
         force = e * (world_impulses[world, slot] * inv_dt * inv_norm)
         _add_point_force(body_p, force, p_a, body_to_articulation, articulation_origin, body_contact_wrench)
         _add_point_force(body_c, -force, p_b, body_to_articulation, articulation_origin, body_contact_wrench)
-    if connect_rows[k] < 5:
+    rows = connect_rows[k]
+    if rows < 5:
         return
-    _a_p, _a_c, e1, e2 = _connect_hinge_frame(
-        body_p, body_c, joint, joint_axis[joint_qd_start[joint]], joint_X_p, joint_X_c, body_q
+    dirs, _phi = _connect_rotation_rows(
+        rows, body_p, body_c, joint, joint_axis, joint_qd_start, joint_X_p, joint_X_c, body_q
     )
-    for i in range(2):
+    for i in range(rows - 3):
         slot = base_slot + 3 + i
         if slot >= world_constraint_count[world] or world_row_type[world, slot] != PGS_CONSTRAINT_TYPE_CONNECT:
             continue
         inv_norm = connect_row_inv_norm[k, 3 + i]
         if inv_norm == 0.0:
             continue
-        e = e1
-        if i == 1:
-            e = e2
-        torque = e * (world_impulses[world, slot] * inv_dt * inv_norm)
+        torque = dirs[i] * (world_impulses[world, slot] * inv_dt * inv_norm)
         if body_p >= 0:
             wp.atomic_add(body_contact_wrench, body_p, wp.spatial_vector(wp.vec3(0.0), torque))
         wp.atomic_add(body_contact_wrench, body_c, wp.spatial_vector(wp.vec3(0.0), -torque))
@@ -3043,8 +3344,8 @@ def eval_rigid_tau_and_augmented_drives(
     joint_f: wp.array[float],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
-    joint_spring_stiffness: wp.array[float],
-    joint_spring_ref: wp.array[float],
+    joint_stiffness: wp.array[float],
+    joint_rest_q: wp.array[float],
     joint_damping: wp.array[float],
     joint_S_s: wp.array[wp.spatial_vector],
     body_fb_s: wp.array[wp.spatial_vector],
@@ -3086,8 +3387,8 @@ def eval_rigid_tau_and_augmented_drives(
         joint_f,
         joint_q,
         joint_qd,
-        joint_spring_stiffness,
-        joint_spring_ref,
+        joint_stiffness,
+        joint_rest_q,
         joint_damping,
         joint_S_s,
         body_fb_s,
@@ -3149,9 +3450,10 @@ def build_mass_update_mask(
 # =============================================================================
 # Mimic rows enforce ``q_follower = coef0 + coef1 * q_leader`` between two DOFs of
 # one articulation, one row per follower coordinate. Connect rows close a kinematic
-# loop: three rows per loop-closing BALL or REVOLUTE joint pin its parent and child
-# anchors together, and a REVOLUTE closure adds two hinge-axis rows. Both are bilateral
-# equality rows with an unbounded impulse and the Baumgarte bias ``baumgarte * phi / dt``.
+# loop: three rows per loop-closing BALL, REVOLUTE or FIXED joint pin its parent and child
+# anchors together, a REVOLUTE closure adds two hinge-axis rows and a FIXED closure three
+# rotation rows. Both are bilateral equality rows with an unbounded impulse and the
+# Baumgarte bias ``baumgarte * phi / dt``.
 # Coefficients, enable flags and anchors are read from device arrays every step, so
 # runtime changes need no re-initialization and stay compatible with CUDA graph capture.
 
@@ -3309,7 +3611,7 @@ def allocate_connect_slots(
 ):
     """Allocate consecutive dense rows per loop closure enabled in ``Model.joint_enabled``.
 
-    A BALL closure takes three rows and a REVOLUTE closure five (``connect_rows``). A
+    A BALL closure takes three rows, a REVOLUTE closure five and a FIXED closure six (``connect_rows``). A
     closure that does not fit is dropped whole (``connect_slot = -1``) rather than
     enforced along some axes only.
     """
@@ -3356,6 +3658,64 @@ def _connect_hinge_frame(
     t1 = wp.normalize(wp.cross(u, helper))
     t2 = wp.cross(u, t1)
     return wp.quat_rotate(q_p, u), wp.quat_rotate(q_c, u), wp.quat_rotate(q_p, t1), wp.quat_rotate(q_p, t2)
+
+
+@wp.func
+def _connect_weld_rotation(
+    body_p: int,
+    body_c: int,
+    joint: int,
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+):
+    """Return the world rotation vector [rad] of a FIXED closure's parent anchor frame relative to its child's.
+
+    Its rate is ``omega_parent - omega_child`` for a small misalignment, the sign convention of the hinge rows.
+    """
+    q_p = wp.transform_get_rotation(joint_X_p[joint])
+    if body_p >= 0:
+        q_p = wp.transform_get_rotation(body_q[body_p]) * q_p
+    q_c = wp.transform_get_rotation(body_q[body_c]) * wp.transform_get_rotation(joint_X_c[joint])
+    q = q_p * wp.quat_inverse(q_c)
+    v = wp.vec3(q[0], q[1], q[2])
+    w = q[3]
+    if w < 0.0:
+        v = -v
+        w = -w
+    s = wp.length(v)
+    if s < 1.0e-9:
+        return 2.0 * v
+    return v * (2.0 * wp.atan2(s, w) / s)
+
+
+@wp.func
+def _connect_rotation_rows(
+    rows: int,
+    body_p: int,
+    body_c: int,
+    joint: int,
+    joint_axis: wp.array[wp.vec3],
+    joint_qd_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+):
+    """Return the directions (matrix rows) and position errors of a closure's rotation rows.
+
+    REVOLUTE (5 rows): the two normals of the live hinge axis, realigning toward the nearer axis direction.
+    FIXED (6 rows): the three world axes, ``phi = r`` with ``r`` the weld's rotation vector.
+    """
+    if rows == 5:
+        a_p, a_c, e1, e2 = _connect_hinge_frame(
+            body_p, body_c, joint, joint_axis[joint_qd_start[joint]], joint_X_p, joint_X_c, body_q
+        )
+        misalign = wp.cross(a_c, a_p)
+        # A closure has no joint coordinate, so it holds the hinge line and realigns toward the nearer direction.
+        if wp.dot(a_c, a_p) < 0.0:
+            misalign = -misalign
+        return wp.matrix_from_rows(e1, e2, wp.vec3(0.0)), wp.vec3(wp.dot(e1, misalign), wp.dot(e2, misalign), 0.0)
+    return wp.identity(n=3, dtype=float), _connect_weld_rotation(body_p, body_c, joint, joint_X_p, joint_X_c, body_q)
 
 
 @wp.func
@@ -3499,8 +3859,10 @@ def populate_connect_J_for_size(
     A REVOLUTE closure adds two rows ``J = e_i . (omega_parent - omega_child)`` for the two
     directions ``e_i`` perpendicular to the hinge axis, with ``phi_i = e_i . (a_child x a_parent)``,
     the small rotation that realigns the child's hinge axis with the parent's, or with its reverse
-    when they are more than 90 degrees apart. These rows are pure couples. The axis is read from
-    ``Model.joint_axis`` every step.
+    when they are more than 90 degrees apart. The axis is read from ``Model.joint_axis`` every step.
+    A FIXED (weld) closure adds three rows, one per world axis ``e_k``, with ``phi_k = e_k . r`` and
+    ``r`` the rotation vector of the parent anchor frame relative to the child's. These rows are
+    pure couples.
 
     Each row is normalized. On a planar linkage one axis is nearly redundant with the
     tree (``|J|`` around ``1e-4``), and an unnormalized row would relax a real velocity
@@ -3594,23 +3956,19 @@ def populate_connect_J_for_size(
                 world_target_velocity,
             )
 
-        if connect_rows[k] < 5:
+        rows = connect_rows[k]
+        if rows < 5:
             continue
-        a_p, a_c, e1, e2 = _connect_hinge_frame(
-            body_p, body_c, joint, joint_axis[joint_qd_start[joint]], joint_X_p, joint_X_c, body_q
+        dirs, phis = _connect_rotation_rows(
+            rows, body_p, body_c, joint, joint_axis, joint_qd_start, joint_X_p, joint_X_c, body_q
         )
-        misalign = wp.cross(a_c, a_p)
-        # A closure has no joint coordinate, so it holds the hinge line and realigns toward the nearer direction.
-        if wp.dot(a_c, a_p) < 0.0:
-            misalign = -misalign
         omega_a = wp.vec3(0.0, 0.0, 0.0)
         if prescribed and body_p >= 0:
             omega_a = wp.spatial_bottom(body_qd[body_p])
-        for i in range(2):
+        # Rotation rows: two hinge-alignment rows for REVOLUTE, three weld rows for FIXED.
+        for i in range(rows - 3):
             slot = base_slot + 3 + i
-            e = e1
-            if i == 1:
-                e = e2
+            e = dirs[i]
             target = float(0.0)
             if prescribed:
                 target = -wp.dot(e, omega_a)
@@ -3646,7 +4004,7 @@ def populate_connect_J_for_size(
                 slot,
                 n_dofs,
                 world,
-                wp.dot(e, misalign),
+                phis[i],
                 target,
                 J_group,
                 world_row_type,
@@ -7629,16 +7987,6 @@ def scatter_qdd_from_groups(
         joint_qdd[dof_start + i] = qdd_group[idx, i, 0]
 
 
-# =============================================================================
-# Split-Mode Kernels (dense Delassus solve and standalone free-body solve)
-# =============================================================================
-# Split mode assembles the dense rows of each world into a Delassus matrix
-# ``C = J H^-1 J^T`` and solves them in impulse space, then solves the free-body
-# rows against the resulting velocity. These Warp kernels run on every device and
-# are the CPU implementation; CUDA selects native one-warp-per-world variants built
-# in ``solver_steel.py`` when they fit shared memory.
-
-
 @wp.kernel
 def build_joint_limit_rows(
     articulation_dof_start: wp.array[int],
@@ -7701,381 +8049,10 @@ def build_joint_limit_rows(
 
 
 @wp.kernel
-def delassus_par_row_col(
-    J_group: wp.array3d[float],
-    Y_group: wp.array3d[float],
-    group_to_art: wp.array[int],
-    art_to_world: wp.array[int],
-    world_constraint_count: wp.array[int],
-    n_dofs: int,
-    max_constraints: int,
-    n_arts: int,
-    # outputs
-    world_C: wp.array3d[float],
-    world_diag: wp.array2d[float],
-):
-    """Accumulate one size group's Delassus contribution ``C += J Y^T``, one entry per thread.
-
-    Launched over ``n_arts * max_constraints * max_constraints`` threads. The diagonal is
-    accumulated separately so the constraint force mixing can be added to it alone.
-    """
-    tid = wp.tid()
-    j = tid % max_constraints
-    i = (tid // max_constraints) % max_constraints
-    idx = tid // (max_constraints * max_constraints)
-    if idx >= n_arts:
-        return
-    art = group_to_art[idx]
-    world = art_to_world[art]
-    n_constraints = world_constraint_count[world]
-    if i >= n_constraints or j >= n_constraints:
-        return
-    val = float(0.0)
-    for k in range(n_dofs):
-        val += J_group[idx, i, k] * Y_group[idx, j, k]
-    if val != 0.0:
-        wp.atomic_add(world_C, world, i, j, val)
-        if i == j:
-            wp.atomic_add(world_diag, world, i, val)
-
-
-@wp.kernel
-def rhs_accum_world_par_art(
-    world_constraint_count: wp.array[int],
-    art_to_world: wp.array[int],
-    art_dof_start: wp.array[int],
-    velocity: wp.array[float],
-    group_to_art: wp.array[int],
-    J_group: wp.array3d[float],
-    n_dofs: int,
-    # outputs
-    world_rhs: wp.array2d[float],
-):
-    """Add one size group's ``J v`` to the dense right-hand side, one articulation per thread."""
-    idx = wp.tid()
-    art = group_to_art[idx]
-    world = art_to_world[art]
-    n_constraints = world_constraint_count[world]
-    dof_start = art_dof_start[art]
-    for c in range(n_constraints):
-        jv = float(0.0)
-        for d in range(n_dofs):
-            jv += J_group[idx, c, d] * velocity[dof_start + d]
-        wp.atomic_add(world_rhs, world, c, jv)
-
-
-@wp.kernel
-def rhs_accum_world_par_row(
-    world_constraint_count: wp.array[int],
-    world_group_start: wp.array[int],
-    world_groups: wp.array[int],
-    group_to_art: wp.array[int],
-    art_dof_start: wp.array[int],
-    velocity: wp.array[float],
-    J_group: wp.array3d[float],
-    n_dofs: int,
-    max_constraints: int,
-    # outputs
-    world_rhs: wp.array2d[float],
-):
-    """Add one size group's ``J v`` to the dense right-hand side, summing a world's articulations in a fixed order."""
-    tid = wp.tid()
-    world = tid // max_constraints
-    c = tid - world * max_constraints
-    if c >= world_constraint_count[world]:
-        return
-    jv = float(0.0)
-    for i in range(world_group_start[world], world_group_start[world + 1]):
-        group_idx = world_groups[i]
-        dof_start = art_dof_start[group_to_art[group_idx]]
-        for d in range(n_dofs):
-            jv += J_group[group_idx, c, d] * velocity[dof_start + d]
-    world_rhs[world, c] = world_rhs[world, c] + jv
-
-
-@wp.kernel
-def pgs_solve_loop(
-    world_constraint_count: wp.array[int],
-    world_diag: wp.array2d[float],
-    world_C: wp.array3d[float],
-    world_rhs: wp.array2d[float],
-    iterations: int,
-    omega: float,
-    world_row_type: wp.array2d[int],
-    world_row_parent: wp.array2d[int],
-    world_row_mu: wp.array2d[float],
-    friction_start_iteration: int,
-    iteration_offset: int,
-    # in/out
-    world_impulses: wp.array2d[float],
-):
-    """Projected Gauss-Seidel on the dense Delassus system of one world per thread.
-
-    The residual of row ``i`` is ``rhs_i + sum_j C_ij lambda_j``. Contact and joint-limit
-    rows are unilateral; the first friction row of a contact solves both tangents on the
-    Coulomb disk of the current normal impulse (:func:`friction_pair_candidate`). Friction
-    rows hold zero impulse in iterations before ``friction_start_iteration``, counted from
-    ``iteration_offset``.
-    """
-    world = wp.tid()
-    m = world_constraint_count[world]
-    if m == 0:
-        return
-    for it in range(iterations):
-        for i in range(m):
-            row_type = world_row_type[world, i]
-            if row_type == PGS_CONSTRAINT_TYPE_FRICTION and iteration_offset + it < friction_start_iteration:
-                world_impulses[world, i] = 0.0
-                continue
-            if row_type == PGS_CONSTRAINT_TYPE_FRICTION and i != world_row_parent[world, i] + 1:
-                continue
-
-            w = world_rhs[world, i]
-            for j in range(m):
-                w += world_C[world, i, j] * world_impulses[world, j]
-
-            denom = world_diag[world, i]
-            if denom <= 0.0 and row_type != PGS_CONSTRAINT_TYPE_FRICTION:
-                continue
-
-            if row_type == PGS_CONSTRAINT_TYPE_FRICTION:
-                parent_idx = world_row_parent[world, i]
-                radius = wp.max(world_row_mu[world, i] * world_impulses[world, parent_idx], 0.0)
-                if radius <= 0.0:
-                    world_impulses[world, i] = 0.0
-                    world_impulses[world, i + 1] = 0.0
-                    continue
-                sib = parent_idx + 2
-                sibling_residual = world_rhs[world, sib]
-                for j in range(m):
-                    sibling_residual += world_C[world, sib, j] * world_impulses[world, j]
-                trial = friction_pair_candidate(
-                    denom,
-                    world_C[world, i, sib],
-                    world_diag[world, sib],
-                    wp.vec2(w, sibling_residual),
-                    wp.vec2(world_impulses[world, i], world_impulses[world, sib]),
-                    radius,
-                    omega,
-                )
-                magnitude = wp.length(trial)
-                if magnitude > radius:
-                    trial *= radius / magnitude
-                world_impulses[world, i] = trial[0]
-                world_impulses[world, sib] = trial[1]
-            else:
-                delta = -w / denom
-                new_impulse = world_impulses[world, i] + omega * delta
-                if new_impulse < 0.0:
-                    new_impulse = 0.0
-                world_impulses[world, i] = new_impulse
-
-
-@wp.kernel
-def apply_impulses_world_par_dof(
-    group_to_art: wp.array[int],
-    art_to_world: wp.array[int],
-    art_dof_start: wp.array[int],
-    n_dofs: int,
-    n_arts: int,
-    world_constraint_count: wp.array[int],
-    Y_group: wp.array3d[float],
-    world_impulses: wp.array2d[float],
-    v_hat: wp.array[float],
-    # outputs
-    v_out: wp.array[float],
-):
-    """Write ``v_out = v_hat + Y lambda`` for one size group, one (articulation, DOF) per thread."""
-    tid = wp.tid()
-    local_dof = tid % n_dofs
-    idx = tid // n_dofs
-    if idx >= n_arts:
-        return
-    art = group_to_art[idx]
-    world = art_to_world[art]
-    delta_v = float(0.0)
-    for c in range(world_constraint_count[world]):
-        delta_v += Y_group[idx, c, local_dof] * world_impulses[world, c]
-    global_dof = art_dof_start[art] + local_dof
-    v_out[global_dof] = v_hat[global_dof] + delta_v
-
-
-@wp.func
-def _mf_row_velocity(
-    world: int,
-    row: int,
-    mf_J_a: wp.array3d[float],
-    mf_J_b: wp.array3d[float],
-    dof_a: int,
-    dof_b: int,
-    v_out: wp.array[float],
-):
-    jv = float(0.0)
-    if dof_a >= 0:
-        for k in range(6):
-            jv += mf_J_a[world, row, k] * v_out[dof_a + k]
-    if dof_b >= 0:
-        for k in range(6):
-            jv += mf_J_b[world, row, k] * v_out[dof_b + k]
-    return jv
-
-
-@wp.func
-def _mf_apply_impulse(
-    world: int,
-    row: int,
-    mf_MiJt_a: wp.array3d[float],
-    mf_MiJt_b: wp.array3d[float],
-    dof_a: int,
-    dof_b: int,
-    delta_impulse: float,
-    v_out: wp.array[float],
-):
-    for k in range(6):
-        if dof_a >= 0:
-            v_out[dof_a + k] = v_out[dof_a + k] + mf_MiJt_a[world, row, k] * delta_impulse
-        if dof_b >= 0:
-            v_out[dof_b + k] = v_out[dof_b + k] + mf_MiJt_b[world, row, k] * delta_impulse
-
-
-@wp.kernel
-def pgs_solve_mf_loop(
-    mf_constraint_count: wp.array[int],
-    mf_body_a: wp.array2d[int],
-    mf_body_b: wp.array2d[int],
-    mf_MiJt_a: wp.array3d[float],
-    mf_MiJt_b: wp.array3d[float],
-    mf_J_a: wp.array3d[float],
-    mf_J_b: wp.array3d[float],
-    mf_eff_mass_inv: wp.array2d[float],
-    mf_rhs: wp.array2d[float],
-    mf_row_type: wp.array2d[int],
-    mf_row_parent: wp.array2d[int],
-    mf_row_mu: wp.array2d[float],
-    body_to_articulation: wp.array[int],
-    art_dof_start: wp.array[int],
-    iterations: int,
-    omega: float,
-    friction_start_iteration: int,
-    iteration_offset: int,
-    # in/out
-    mf_impulses: wp.array2d[float],
-    v_out: wp.array[float],
-):
-    """Projected Gauss-Seidel on the free-body rows of one world per thread.
-
-    ``J v`` is recomputed from ``v_out`` for every row and each impulse change is applied
-    immediately through ``M^-1 J^T``. Rows are laid out as ``[contacts and friction]
-    [velocity limits]``, so the velocity limits have the last word in each sweep; they
-    are stateless and apply only the impulse needed for the current overshoot. Friction
-    rows hold zero impulse in iterations before ``friction_start_iteration``, counted from
-    ``iteration_offset``.
-    """
-    world = wp.tid()
-    m = mf_constraint_count[world]
-    for it in range(iterations):
-        for i in range(m):
-            row_type = mf_row_type[world, i]
-            if row_type == PGS_CONSTRAINT_TYPE_FRICTION and iteration_offset + it < friction_start_iteration:
-                mf_impulses[world, i] = 0.0
-                continue
-            parent_idx = mf_row_parent[world, i]
-            if row_type == PGS_CONSTRAINT_TYPE_FRICTION and i != parent_idx + 1:
-                continue
-            eff_inv = mf_eff_mass_inv[world, i]
-            if eff_inv <= 0.0 and row_type != PGS_CONSTRAINT_TYPE_FRICTION:
-                continue
-
-            ba = mf_body_a[world, i]
-            bb = mf_body_b[world, i]
-            dof_a = int(-1)
-            dof_b = int(-1)
-            if ba >= 0:
-                dof_a = art_dof_start[body_to_articulation[ba]]
-            if bb >= 0:
-                dof_b = art_dof_start[body_to_articulation[bb]]
-
-            residual = _mf_row_velocity(world, i, mf_J_a, mf_J_b, dof_a, dof_b, v_out) + mf_rhs[world, i]
-            old_impulse = mf_impulses[world, i]
-            delta = -residual * eff_inv
-            new_impulse = old_impulse + omega * delta
-            delta_impulse = float(0.0)
-            if row_type == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT:
-                new_impulse = float(0.0)
-                if residual < 0.0:
-                    new_impulse = delta
-                delta_impulse = new_impulse
-            elif row_type == PGS_CONSTRAINT_TYPE_FRICTION:
-                sib = parent_idx + 2
-                radius = wp.max(mf_row_mu[world, i] * mf_impulses[world, parent_idx], 0.0)
-                pair_residual = wp.vec2(mf_rhs[world, i], mf_rhs[world, sib])
-                cross = float(0.0)
-                for k in range(6):
-                    if dof_a >= 0:
-                        pair_residual[0] += mf_J_a[world, i, k] * v_out[dof_a + k]
-                        pair_residual[1] += mf_J_a[world, sib, k] * v_out[dof_a + k]
-                        cross += mf_J_a[world, i, k] * mf_MiJt_a[world, sib, k]
-                    if dof_b >= 0:
-                        pair_residual[0] += mf_J_b[world, i, k] * v_out[dof_b + k]
-                        pair_residual[1] += mf_J_b[world, sib, k] * v_out[dof_b + k]
-                        cross += mf_J_b[world, i, k] * mf_MiJt_b[world, sib, k]
-                first_diag = float(0.0)
-                if eff_inv > 0.0:
-                    first_diag = 1.0 / eff_inv
-                sibling_inv = mf_eff_mass_inv[world, sib]
-                sibling_diag = float(0.0)
-                if sibling_inv > 0.0:
-                    sibling_diag = 1.0 / sibling_inv
-                trial = friction_pair_candidate(
-                    first_diag,
-                    cross,
-                    sibling_diag,
-                    pair_residual,
-                    wp.vec2(old_impulse, mf_impulses[world, sib]),
-                    radius,
-                    omega,
-                )
-                magnitude = wp.length(trial)
-                if magnitude > radius:
-                    trial *= radius / magnitude
-                sibling_delta = trial[1] - mf_impulses[world, sib]
-                mf_impulses[world, sib] = trial[1]
-                _mf_apply_impulse(world, sib, mf_MiJt_a, mf_MiJt_b, dof_a, dof_b, sibling_delta, v_out)
-                new_impulse = trial[0]
-                delta_impulse = new_impulse - old_impulse
-            else:
-                if new_impulse < 0.0:
-                    new_impulse = 0.0
-                delta_impulse = new_impulse - old_impulse
-            mf_impulses[world, i] = new_impulse
-            _mf_apply_impulse(world, i, mf_MiJt_a, mf_MiJt_b, dof_a, dof_b, delta_impulse, v_out)
-
-
-@wp.kernel
 def scale_array_inplace(values: wp.array[float], scale: float):
     """Multiply every entry of ``values`` by ``scale``."""
     i = wp.tid()
     values[i] = values[i] * scale
-
-
-@wp.kernel
-def vector_add_inplace(a: wp.array[float], b: wp.array[float]):
-    """Add ``b`` to ``a`` element-wise."""
-    i = wp.tid()
-    a[i] = a[i] + b[i]
-
-
-@wp.kernel
-def compute_delta_and_accumulate(
-    v_out: wp.array[float],
-    v_snap: wp.array[float],
-    v_accum: wp.array[float],
-):
-    """Accumulate ``delta = v_out - v_snap`` into ``v_accum`` and store ``delta`` in ``v_snap``."""
-    i = wp.tid()
-    delta = v_out[i] - v_snap[i]
-    v_accum[i] = v_accum[i] + delta
-    v_snap[i] = delta
 
 
 # ---------------------------------------------------------------------------
@@ -8677,7 +8654,7 @@ def accumulate_propagation_warmstart_body_impulses_ordered(
             )
 
 
-# Coloring of the propagation contact units ("propagation_colored").
+# Coloring of the propagation contact units (solve_mode="colored").
 #
 # Two units conflict when they share a body with a response: their twist updates and deferred
 # impulses overlap. The units of one color are body-disjoint and solve in parallel; colors run in
@@ -8882,13 +8859,17 @@ def gather_propagation_unit_meta(
                 walk = row_parent[world, walk]
             overflow = offset | (count << 20)
     unit_meta[base + 7 + PROPAGATION_UNIT_RING] = overflow
-    # Rows of the unit: its first row and the friction rows following it.
+    # Rows of the unit: its first row and the friction rows following it, then its contact torsion row.
     m = wp.min(constraint_count[world], int(row_type.shape[1]))
     rows = int(1)
     while slot + rows < m and row_type[world, slot + rows] == PGS_CONSTRAINT_TYPE_FRICTION:
         rows += 1
-    unit_meta[base + 5 + PROPAGATION_UNIT_RING] = rows
+    torsion = int(0)
+    if slot + rows < m and row_type[world, slot + rows] == PGS_CONSTRAINT_TYPE_TORSION:
+        torsion = 1
+    unit_meta[base + 5 + PROPAGATION_UNIT_RING] = rows + torsion
     # Straight-line kinds: a contact row with its friction pair on the unit's two bodies, or a lone contact row.
+    # The sweep solves a torsion row after either.
     standard = int(0)
     if (
         straight_line != 0
@@ -9188,6 +9169,7 @@ def flatten_propagation_joint_S(
 @wp.kernel
 def factor_propagation_tree_for_size(
     group_to_art: wp.array[int],
+    articulation_active: wp.array[int],
     articulation_start: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -9218,6 +9200,9 @@ def factor_propagation_tree_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
 
@@ -9530,6 +9515,7 @@ def compute_propagation_tree_body_response_for_size(
     body_to_articulation: wp.array[int],
     body_to_joint: wp.array[int],
     group_to_art: wp.array[int],
+    articulation_active: wp.array[int],
     art_to_world: wp.array[int],
     articulation_start: wp.array[int],
     joint_parent: wp.array[int],
@@ -9562,6 +9548,9 @@ def compute_propagation_tree_body_response_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     world = art_to_world[art]
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
@@ -9697,6 +9686,7 @@ def compute_propagation_tree_body_response_for_size(
 @wp.kernel
 def refresh_propagation_tree_body_qd_for_size(
     group_to_art: wp.array[int],
+    articulation_active: wp.array[int],
     art_to_world: wp.array[int],
     dense_contact_world_flag: wp.array[int],
     force_refresh: int,
@@ -9718,6 +9708,9 @@ def refresh_propagation_tree_body_qd_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     if force_refresh == 0:
         world = art_to_world[art]
         if world >= 0 and dense_contact_world_flag[world] == 0:
@@ -9778,6 +9771,7 @@ def refresh_propagation_free_body_qd_from_vout(
 @wp.kernel
 def propagate_tree_impulses_for_size(
     group_to_art: wp.array[int],
+    articulation_active: wp.array[int],
     articulation_start: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -9807,6 +9801,9 @@ def propagate_tree_impulses_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
 
@@ -10369,10 +10366,8 @@ def classify_local_solve_worlds(
     local_residual_mf_max_constraints: int,
     # outputs
     local_solve_owner: wp.array[int],
-    general_world_count: wp.array[int],
-    general_worlds: wp.array[int],
 ):
-    """Assign each world's solver owner and compact the worlds left to the general sweep.
+    """Assign each world's solver owner.
 
     A world whose dense rows are all internal (no contact rows) and fit the articulation's
     DOF count goes to the single-articulation solve; a world whose articulation also touches
@@ -10424,9 +10419,6 @@ def classify_local_solve_worlds(
     ):
         owner = PGS_LOCAL_SOLVE_OWNER_PAIR_RESIDUAL
     local_solve_owner[world] = owner
-    if owner == PGS_LOCAL_SOLVE_OWNER_GENERAL and (row_count > 0 or mf_count > 0):
-        general_index = wp.atomic_add(general_world_count, 0, 1)
-        general_worlds[general_index] = world
 
 
 @wp.kernel

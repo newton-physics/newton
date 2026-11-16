@@ -508,7 +508,7 @@ class TestImportUrdfBasic(unittest.TestCase):
                     np.testing.assert_array_equal(source.vertices, vertices)
                     np.testing.assert_array_equal(source.indices.reshape(-1, 3), faces)
 
-    @requires("trimesh")
+    @requires("trimesh", "collada")
     def test_empty_mesh_reports_filename(self):
         """Reject empty geometry before processing colors or material overrides."""
         files = {
@@ -558,7 +558,7 @@ class TestImportUrdfBasic(unittest.TestCase):
             self.assertIsNotNone(texture)
             np.testing.assert_array_equal(texture[0, 0, :3], np.array([255, 0, 0], dtype=np.uint8))
 
-    @requires("trimesh")
+    @requires("trimesh", "collada")
     def test_dae_visual_texture_uri_preserved(self):
         """Verify URI-style Collada textures are not path-joined against the mesh directory."""
         urdf = """
@@ -2075,7 +2075,7 @@ f 1/1 2/2 3/3
         with self.assertRaises(FileNotFoundError):
             newton.ModelBuilder().add_urdf(uri)
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "Could not resolve URI"):
+        with self.assertWarnsRegex(newton.NewtonWarning, "Could not resolve URI"):
             builder.add_urdf(self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename=uri)))
         self.assertEqual(builder.shape_count, 0)
 
@@ -2727,6 +2727,34 @@ class TestUrdfJointFriction(unittest.TestCase):
 
         np.testing.assert_allclose(model.joint_damping.numpy()[dof_start : dof_start + 2], [4.0, 4.0])
         np.testing.assert_allclose(model.joint_target_kd.numpy()[dof_start : dof_start + 2], [3.0, 3.0])
+
+    def test_planar_joint_in_plane_axes_for_every_normal(self):
+        """Build an orthonormal in-plane basis for every planar normal, including +-Y."""
+        for normal in ("0 1 0", "0 -1 0", "0 -2 0", "1 0 0", "0 0 -1"):
+            with self.subTest(normal=normal):
+                urdf = f"""
+<robot name="planar_axis_test">
+    <link name="base_link"/>
+    <link name="child_link"/>
+    <joint name="planar_joint" type="planar">
+        <parent link="base_link"/>
+        <child link="child_link"/>
+        <axis xyz="{normal}"/>
+        <limit lower="-1.0" upper="1.0"/>
+    </joint>
+</robot>
+"""
+                builder = newton.ModelBuilder()
+                parse_urdf(urdf, builder)
+                joint_idx = builder.joint_label.index("planar_axis_test/planar_joint")
+                dof_start = builder.joint_qd_start[joint_idx]
+                u = np.array(builder.joint_axis[dof_start])
+                v = np.array(builder.joint_axis[dof_start + 1])
+                n = np.array([float(x) for x in normal.split()])
+                n /= np.linalg.norm(n)
+
+                np.testing.assert_allclose([np.linalg.norm(u), np.linalg.norm(v)], [1.0, 1.0], atol=1e-6)
+                np.testing.assert_allclose([u @ v, u @ n, v @ n], [0.0, 0.0, 0.0], atol=1e-6)
 
     def test_joint_friction_parsed_from_urdf(self):
         """Joint friction values from <dynamics friction='...'> should be forwarded to the model."""

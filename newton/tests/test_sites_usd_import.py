@@ -230,10 +230,12 @@ def Xform "World"
         shape_keys = model.shape_label
         shape_types = model.shape_type.numpy()
 
-        for i in range(model.shape_count):
-            key = shape_keys[i]
-            if key in expected_types and (shape_flags[i] & ShapeFlags.SITE):
-                self.assertEqual(shape_types[i], expected_types[key], f"Type mismatch for {key}")
+        site_types = {
+            shape_keys[i].rsplit("/", 1)[-1]: int(shape_types[i])
+            for i in range(model.shape_count)
+            if shape_flags[i] & ShapeFlags.SITE
+        }
+        self.assertEqual(site_types, {name: int(geo_type) for name, geo_type in expected_types.items()})
 
     def test_parse_site_orientations(self):
         """Test parsing sites with different orientations."""

@@ -116,6 +116,11 @@ step. `orientation` determines which signed side of the neighboring bypass
 span engages the roller. `tendon_activation_tol` on the solver adds a
 radius-relative activation gap to prevent state chattering near tangency.
 
+A candidate can cross zero wrap during a step before the next routing update
+bypasses it. Material bookkeeping uses signed wrap arcs during this transition
+so that splitting and merging spans does not create or remove cable material.
+This does not make negative wraps a supported persistent route.
+
 Dynamic routing currently supports isolated rolling candidates only.
 Consecutive dynamic roller guides, endpoint candidates, and route reordering
 are not supported.
@@ -125,9 +130,16 @@ are not supported.
 Both tendon-capable solvers expose these controls:
 
 - `tendon_max_sweeps`: maximum capstan material-relaxation sweeps per solver
-  iteration.
-- `tendon_settle_tol`: relative tension-change tolerance for stopping those
-  sweeps early.
+  iteration (default `256`). It accepts positive 32-bit integers; long routes
+  may require a larger budget.
+- `tendon_settle_tol`: relative final capstan-force residual tolerance for
+  stopping sweeps early. Zero disables early-out, including the absolute tolerance.
+- `tendon_settle_atol`: absolute final capstan-force residual tolerance in
+  newtons (default `1.0e-6`). Each guide must satisfy
+  `error <= atol + tol * max(T_left, T_right)`. Slipping guides must reach
+  the appropriate friction boundary; sticking guides must stay inside it.
+  At a span's minimum rest length, only feasible transfer directions are checked;
+  a depleted span cannot supply more material, but it can receive material again.
 - `tendon_activation_tol`: radius-relative activation gap for dynamic
   rollers. The default is `2.0e-3`.
 
@@ -136,9 +148,20 @@ the same routed material state as body force and positive-semidefinite local
 Hessian contributions. VBD approximates zero segment compliance with
 `1.0e-8 m/N`.
 
-XPBD applies `joint_linear_relaxation` to tendon stretch and rolling-slip
-corrections. As with other parallel XPBD constraints, the value may need
-adjustment for strongly coupled routes.
+Material sweeps first apply the roller's no-slip displacement, then project
+the adjacent span tensions into the capstan bounds. Each guide reprojects
+its net transfer, allowing later sweeps to undo excessive slip caused by
+earlier neighbor updates. A taut cable can stick inside the bounds; an
+unloaded cable does not gain grip solely from a high friction coefficient.
+Driven rollers therefore need cable loading or pre-tension to transmit
+torque. For pre-tension, set incoming-span `rest_length` values shorter than
+their initial free-span lengths; automatic rest lengths (`-1`) do not add
+pre-tension.
+
+XPBD applies `joint_linear_relaxation` to tendon stretch corrections.
+Rolling slip bounds the accumulated spin reaction and applies its change,
+including retraction when tension falls. As with other parallel XPBD
+constraints, relaxation may need adjustment for strongly coupled routes.
 
 ### Reading tension (experimental diagnostics)
 
@@ -240,12 +263,29 @@ and reject unsupported semantics rather than silently discard them.
 - Segment compliance applies to the straight free spans. Wrapped arc length is
   included in material transport but is not independently stretchable.
 - Free-span rest lengths are limited to at least `1.0e-6 m` during material
-  transfer and dynamic-route transitions.
+  transfer and dynamic-route transitions. If enforcing this floor adds material
+  beyond float32 roundoff at the accepted pose, XPBD and VBD emit an `ERROR`
+  diagnostic identifying the tendon and added length. This can happen when
+  growing wrapped arcs exhaust the available material, or material transfers
+  have not converged. The diagnostic also runs during CUDA graph replay, without
+  host synchronization. It does not stop the simulation or repair the material
+  budget; reported rest lengths and tensions are invalid after this error.
 - Fixed roller wraps must remain in `[0, pi]`. Zero wrap is a valid tangent
   boundary; crossing below zero or beyond pi is unsupported and emits a
   diagnostic from the accepted pose. The diagnostic does not repair the route.
 - Dynamic candidates cannot change their authored order or attach between
   non-neighboring guides.
+- Circular neighbors with parallel axes use an exact common tangent, including
+  when their centers are axially offset. Overlapping circles
+  can have a valid external tangent; an internal tangent requires their center
+  distance projected into the roller plane to exceed the sum of their radii.
+  A dynamic guide with a missing or collapsed initial bypass starts inactive.
+  Later undefined bypasses preserve its previous active state. Tilted-axis bypass
+  tangents use an iterative solve; if it does not converge within the geometric and float32
+  precision tolerance, routing emits a diagnostic, keeps the previous active
+  state, and retries at the next substep. An impossible accepted roller span
+  emits a diagnostic; preserving its previous attachment points does not make
+  that geometry physically valid.
 - Native tendon data is not imported from USD/MuJoCo.
 - Tendon actuation is not part of {class}`~newton.Control`, and tendon
   diagnostics are solver-owned rather than part of {class}`~newton.State`.

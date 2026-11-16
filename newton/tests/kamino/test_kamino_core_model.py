@@ -1310,6 +1310,7 @@ class TestConvertModelMaterials(unittest.TestCase):
         mu_np[2] = 0.8
         restitution_np[2] = 0.9
         model.shape_material_mu.assign(mu_np)
+        model.shape_material_mu_static.assign(mu_np)
         model.shape_material_restitution.assign(restitution_np)
 
         convert_model_materials(model, model_kamino, first_shape, conflict)
@@ -1346,6 +1347,7 @@ class TestConvertModelMaterials(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

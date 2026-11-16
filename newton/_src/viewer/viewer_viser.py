@@ -658,7 +658,6 @@ class ViewerViser(ViewerBase):
         """Initialize Viser-specific per-layer interaction state."""
         super()._init_extra_layer_state(layer)
         layer.picking = None
-        layer._last_state = None
         layer._shape_instance_batches_by_name = {}
         layer._packed_shape_world_xforms = None
         layer._packed_shape_groups = []

@@ -1,1 +1,0 @@
-Add `SolverSteel(propagation_color_order=...)` for `articulated_contact_response="propagation_colored"`. The default `"contact"` batches contacts in contact-index order as before; `"longest_first"` takes contacts with more rows first, which shortens the colored sweep where one body carries many contacts with different row counts.
