@@ -11882,7 +11882,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             return np.arange(model.world_count)
         return np.array([self._option_world])
 
-    def _validate_model_for_separate_worlds(self, model: Model, particle_world: np.ndarray | None = None) -> None:
+    def _validate_model_for_separate_worlds(self, model: Model, particle_world: np.ndarray) -> None:
         """Validate that the Newton model is compatible with MuJoCo's separate_worlds mode.
 
         MuJoCo's separate_worlds mode creates identical copies of a single MuJoCo model
@@ -11895,7 +11895,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         Args:
             model: The Newton model to validate.
-            particle_world: World index of each particle simulated as a flex, if any.
+            particle_world: World index of each particle, or empty without flexes.
 
         Raises:
             ValueError: If the model is not compatible with separate_worlds mode.
@@ -11951,8 +11951,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             msg = f"Global world (-1) cannot contain mimic constraints. Found {len(global_mimic)} constraint(s) with world == -1"
             raise ValueError(msg)
 
-        if particle_world is None:
-            particle_world = np.empty(0, dtype=np.int32)
         if np.any(particle_world == -1):
             raise ValueError("Global world (-1) cannot contain particles.")
 
@@ -12019,13 +12017,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 owner = getattr(mujoco_attrs, attribute, None)
                 owned = owner.numpy() >= 0 if owner is not None else np.zeros(len(elems), dtype=bool)
                 layout = np.column_stack((elems - particle_start[worlds][:, None], owned))
-                template = layout[worlds == 0]
-                for w in range(1, world_count):
-                    if not np.array_equal(layout[worlds == w], template):
-                        raise ValueError(
-                            f"SolverMuJoCo requires homogeneous worlds. The {name} or their flexes "
-                            f"in world {w} differ from world 0."
-                        )
+                counts = np.bincount(worlds, minlength=world_count)
+                if np.all(counts == counts[0]):
+                    layout = layout[np.argsort(worlds, kind="stable")].reshape(world_count, counts[0], -1)
+                    differs = np.any(layout != layout[0], axis=(1, 2))
+                else:
+                    differs = counts != counts[0]
+                if np.any(differs):
+                    raise ValueError(
+                        f"SolverMuJoCo requires homogeneous worlds. The {name} or their flexes "
+                        f"in world {np.argmax(differs)} differ from world 0."
+                    )
 
         # --- Check type matching across worlds (vectorized) ---
         # Load type arrays lazily - only when needed for validation
