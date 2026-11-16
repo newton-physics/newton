@@ -261,6 +261,7 @@ class Mesh:
         self._edges = None
         self._canonical_ids = None
         self._collision_edges: np.ndarray | None = None
+        self._collision_edge_geometry: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         self._is_watertight: bool | None = None
         self._boundary_flags: tuple[tuple[int, int], np.ndarray] | None = None
         self.sdf = sdf
@@ -1199,6 +1200,7 @@ class Mesh:
         self._canonical_ids = None
         self._collision_edges = None
         self._is_watertight = None
+        self._collision_edge_geometry = None
         self._boundary_flags = None
         self._finalized_meshes = {}
 
@@ -1282,6 +1284,35 @@ class Mesh:
             first_idx.sort()
             self._edges = orig_edges[first_idx]
         return self._edges
+
+    def _get_collision_edge_geometry(self, edges: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Reuse unscaled edge bounds and endpoint ownership for the last packed edge set."""
+        cached = self._collision_edge_geometry
+        if cached is None or cached[0] is not edges:
+            count = len(edges)
+            if count:
+                vertices = np.asarray(self.vertices, dtype=np.float32)
+                edge_v0 = vertices[edges[:, 0]]
+                edge_v1 = vertices[edges[:, 1]]
+                edge_halves = np.ascontiguousarray((edge_v1 - edge_v0) * 0.5, dtype=np.float32)
+                edge_centers = np.ascontiguousarray((edge_v0 + edge_v1) * 0.5, dtype=np.float32)
+                edge_radii = np.linalg.norm(edge_halves, axis=1, keepdims=True)
+                canonical_edges = self._canonical_vertex_ids()[edges].reshape(-1)
+                endpoint_indices = np.arange(2 * count, dtype=np.int64)
+                first_endpoint = np.full(int(canonical_edges.max()) + 1, 2 * count, dtype=np.int64)
+                np.minimum.at(first_endpoint, canonical_edges, endpoint_indices)
+                owns_endpoint = (first_endpoint[canonical_edges] == endpoint_indices).reshape(-1, 2)
+                # Zero remains the legacy "both endpoints owned" encoding.
+                corner_ownership = (4.0 + owns_endpoint[:, 0].astype(np.float32) + 2.0 * owns_endpoint[:, 1]).reshape(
+                    -1, 1
+                )
+                centers = np.ascontiguousarray(np.concatenate((edge_centers, edge_radii), axis=1), dtype=np.float32)
+                halves = np.ascontiguousarray(np.concatenate((edge_halves, corner_ownership), axis=1))
+            else:
+                centers, halves = (np.empty((0, 4), dtype=np.float32) for _ in range(2))
+            # Retain the edge array so its identity cannot be recycled while cached.
+            self._collision_edge_geometry = cached = edges, centers, halves
+        return cached[1], cached[2]
 
     def _build_edge_slot_topology(
         self,

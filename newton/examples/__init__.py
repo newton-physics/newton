@@ -22,6 +22,7 @@ import time
 import warnings
 from collections import defaultdict
 from collections.abc import Callable
+from contextlib import nullcontext
 from typing import Any
 
 import numpy as np
@@ -355,6 +356,8 @@ def _coupled_view_state(example, name: str):
 class _ExampleBrowser:
     """Manages the example browser UI and switching/reset logic for the run loop."""
 
+    _scene_editor_module = "newton.examples.basic.example_scene_editor"
+
     def __init__(self, viewer, args=None):
         self.viewer = viewer
         self.switch_target: str | None = None
@@ -363,6 +366,7 @@ class _ExampleBrowser:
         self.error_title = "Could not load example"
         self.failed_target: str | None = None
         self._reset_requested = False
+        self._new_scene_options: tuple[str | None, str | None] | None = None
         self.callback = None
         self._tree: dict[str, list[tuple[str, str]]] = {}
         # Deep-copy so later mutations to the caller's namespace (or to
@@ -411,6 +415,11 @@ class _ExampleBrowser:
         viewer.register_ui_callback(_browser_ui, position="panel")
         if hasattr(viewer, "set_reset_callback"):
             viewer.set_reset_callback(lambda: setattr(self, "_reset_requested", True))
+
+    def new_scene(self, *, solver: str | None = None, device: str | None = None) -> None:
+        """Queue an empty editor scene for the runner that owns example replacement."""
+        self._new_scene_options = solver, device
+        self.switch_target = self._scene_editor_module
 
     def _error_ui(self, ui: Any) -> None:
         """Show failures and retry through ImGui or the native Viser UI adapter."""
@@ -489,6 +498,9 @@ class _ExampleBrowser:
         The caller must release its old example before entering this method.
         """
         module_path, self.switch_target = self.switch_target, None
+        scene_options, self._new_scene_options = self._new_scene_options, None
+        if module_path != self._scene_editor_module:
+            scene_options = None
         self._reset_requested = False
         self.load_error = self.failed_target = None
         logger.info("Loading example %s", module_path.rsplit(".", 1)[-1])
@@ -502,15 +514,32 @@ class _ExampleBrowser:
                     mod = importlib.import_module(module_path)
                     parser = getattr(mod.Example, "create_parser", create_parser)()
                     new_args = default_args(parser)
+                    if scene_options is not None:
+                        solver, device = scene_options
+                        new_args.empty = True
+                        if solver is not None:
+                            new_args.solver = solver
+                        new_args.device = device
+                        for name in ("mcp_port", "mcp_info"):
+                            value = getattr(self._initial_args, name, None)
+                            if value is not None:
+                                setattr(new_args, name, value)
                     # Constructors may mutate their argument namespace.
                     initial_args = copy.deepcopy(new_args)
-                    example = mod.Example(self.viewer, new_args)
+                    with wp.ScopedDevice(scene_options[1]) if scene_options is not None else nullcontext():
+                        example = mod.Example(self.viewer, new_args)
                     self._register_ui(example)
             except (Exception, SystemExit) as error:
+                self._new_scene_options = scene_options
                 self.report_error(error, module_path, phase="load", retry_switch=True)
                 return None, example_class
             self._initial_args = initial_args
             self.current_module = module_path
+            if scene_options is not None:
+                if hasattr(self.viewer, "_paused"):
+                    self.viewer._paused = True
+                if hasattr(self.viewer, "_step_requested"):
+                    self.viewer._step_requested = False
             gui = getattr(self.viewer, "gui", None)
             if gui is not None and hasattr(gui, "_frame_camera_pending"):
                 # Retain authored cameras; fit other models after the first state.

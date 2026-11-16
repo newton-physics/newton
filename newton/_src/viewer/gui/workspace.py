@@ -159,6 +159,7 @@ class ViewerWorkspace:
         self.rect = (0, 0, 1, 1)
         self.dockspace = ViewerDockspace(self)
         self.authoring = None
+        self._new_scene_engine = 0
         self._cache = {}
         self._live_cache = {}
         self._live_time = 0.0
@@ -1266,6 +1267,12 @@ class ViewerWorkspace:
                 size=22,
             ):
                 self.selection_mode = mode
+        browser = getattr(self.gui, "_workspace_browser", None)
+        if browser is not None:
+            ui.same_line()
+            if self.widgets.button("New scene"):
+                self._new_scene_engine = 0
+                ui.open_popup("Create new scene##new_scene")
         version = f"Newton {__version__}"
         left = ui.get_item_rect_max().x + 16 * self.widgets.scale
         pos, size = ui.get_window_pos(), ui.get_window_size()
@@ -1280,6 +1287,33 @@ class ViewerWorkspace:
         )
         draw.pop_clip_rect()
         ui.pop_font()
+        if (
+            browser is not None
+            and ui.begin_popup_modal("Create new scene##new_scene", None, ui.WindowFlags_.always_auto_resize)[0]
+        ):
+            engines = [("MuJoCo (CPU)", "mujoco", "cpu")]
+            if wp.is_cuda_available():
+                device = self.viewer.device if self.viewer.device.is_cuda else wp.get_cuda_device()
+                engines.append(("MuJoCo Warp (GPU)", "mujoco", device.alias))
+            engines.append(("XPBD (CPU)", "xpbd", "cpu"))
+            _, self._new_scene_engine = ui.combo("Physics", self._new_scene_engine, [item[0] for item in engines])
+            _, solver, device = engines[self._new_scene_engine]
+            if solver == "mujoco" and device == "cpu":
+                ui.text_unformatted("Fast for small rigid scenes; mesh collisions use convex hulls.")
+            elif solver == "mujoco":
+                ui.text_unformatted("Preserves Newton mesh contacts; requires CUDA.")
+            else:
+                ui.text_unformatted("Newton XPBD solver on CPU.")
+            if self.authoring is not None and self.authoring.editor.objects:
+                ui.separator()
+                ui.text_unformatted("The current scene will close. Save it as USD first to keep it.")
+            if self.widgets.button("Cancel"):
+                ui.close_current_popup()
+            ui.same_line()
+            if self.widgets.button("Create new scene"):
+                browser.new_scene(solver=solver, device=device)
+                ui.close_current_popup()
+            ui.end_popup()
 
     def _transport(self) -> None:
         """Draw basic play, pause, single-step, and restart controls when no history timeline is used."""

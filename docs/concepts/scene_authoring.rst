@@ -13,12 +13,21 @@ Scene Authoring
 
 The scene editor combines the Newton workspace with an explicitly owned
 simulation. The example uses MuJoCo Warp on CUDA by default; XPBD remains
-available on CPU and CUDA and remains the default on CPU. Added objects
+available on CPU and CUDA and remains the CLI default on CPU. Native MuJoCo
+is also available explicitly on CPU. Added objects
 participate in physics. It supports rigid primitives
 and local USD assets, including packages browsed from NVIDIA's SimReady catalog.
 
 Launch and edit
 ---------------
+
+Choose **New scene** in the header of a native Newton example viewer to open an
+empty, paused editor without launching another process. The dialog offers
+**MuJoCo (CPU)**, **MuJoCo Warp (GPU)** when CUDA is available, and **XPBD (CPU)**.
+Choose Cancel to retain the current scene. Creating a scene replaces the
+current example; save an existing authored document as USD first to keep it.
+The action uses the example runner's scene lifecycle. Embedded viewers without
+that runner retain their application's simulation ownership.
 
 The ``examples`` extra includes the native viewer and USD import dependencies:
 
@@ -27,16 +36,28 @@ The ``examples`` extra includes the native viewer and USD import dependencies:
    uv run --extra examples -m newton.examples scene_editor
    uv run --extra examples -m newton.examples scene_editor --empty
    uv run --extra examples -m newton.examples scene_editor --scene scene.usda
+   uv run --extra examples -m newton.examples scene_editor --solver mujoco --device cpu
    uv run --extra examples -m newton.examples scene_editor --solver xpbd --device cpu
 
-``--solver mujoco`` selects MuJoCo Warp and requires a CUDA device. The solver
-choice is fixed for the editor session. The window title and authoring header
-identify the active solver. When constructing :class:`~newton.viewer.SceneEditor`
-directly, pass ``solver="mujoco"`` to select it; the class retains XPBD as its
-default for existing CPU callers. An empty or static world with no joints needs
+``--solver mujoco`` selects native MuJoCo on a CPU device and MuJoCo Warp on
+a CUDA device. The solver and device are fixed for the editor session. The
+window title and authoring header identify the active solver. When constructing :class:`~newton.viewer.SceneEditor`
+directly, pass ``solver="mujoco", device="cpu"`` for native MuJoCo or select a
+CUDA device for MuJoCo Warp; the class retains XPBD as its default.
+An empty or static world with no joints needs
 no solver. The example opens paused. MuJoCo Warp is constructed on the first
 Play or single-step after a topology commit; browsing and placement do not
-compile it. Use ``--no-paused`` to start playback at launch.
+compile it. Native CPU MuJoCo follows the same lazy initialization. Use
+``--no-paused`` to start playback at launch.
+
+Native CPU MuJoCo suits small rigid scenes and does not capture CUDA graphs.
+Its collision detection treats mesh shapes as convex hulls, so concave assets
+can contact differently from Newton's mesh collision pipeline. Choose MuJoCo
+Warp to retain Newton mesh contacts. XPBD on CPU also retains Newton mesh
+contacts, but detailed triangle meshes can make CPU collision detection slow.
+Assets requiring CUDA-only texture SDF data still need a CUDA device.
+First use of either device can compile Warp kernels; CPU selection does not
+guarantee an immediate first Play.
 
 MuJoCo Warp uses Newton's collision pipeline, retaining the imported mesh
 geometry instead of replacing concave meshes with MuJoCo convex hulls. Imported
@@ -47,7 +68,11 @@ warm-start and actuator activation history. Large assets can still pause
 placement while their model and new render geometry are prepared. Unchanged
 mesh boundary topology is cached with its source geometry, and matching GL
 geometry is retained across model replacement. Geometry edits invalidate those
-caches; removing an object releases render resources no longer used.
+caches; removing an object releases render resources no longer used. Unchanged
+mesh bounds and packed collision edge geometry are also reused across model
+builds. The host cache retains one edge set per mesh, at 32 bytes per edge,
+and is released with that mesh. Structural edits still finalize a replacement
+model while paused.
 
 In the visible native GL viewer, structural changes (including Delete and Undo)
 show **Building model…** before the blocking rebuild begins. First playback
@@ -185,8 +210,9 @@ The transient :meth:`~newton.viewer.SceneEditor.preview_primitive` and
 to return a safe pivot position for a subsequent add. USD preview returns
 ``None`` while its template is being prepared.
 
-The owned runtime checks contact capacity before solving and expands collision
-buffers when dense mesh contacts exceed the initial estimate. This does not
+When using Newton collision detection, the owned runtime checks contact
+capacity before solving and expands collision buffers when dense mesh contacts
+exceed the initial estimate. This does not
 rebuild the model or reset Newton state. With MuJoCo Warp, contact growth also
 invalidates the solver, which is recreated at the larger capacity on the next
 physics substep. Solver overflow pauses physics
@@ -194,6 +220,11 @@ before publishing the failed step. These checks read collision counters and,
 for MuJoCo Warp, its overflow mask from the device on each substep. Pose edits
 and Reset clear solver warm-start history; friction edits notify the solver
 without rebuilding the model.
+Native CPU MuJoCo solves its own contacts without a Newton collision pass or
+CUDA overflow readback. It exports native contact geometry after each simulated
+frame. Its contact export capacity limits inspection, rather than CPU physics;
+the solver warns if that display export is incomplete. Paused contact refresh
+after authored edits uses Newton collision detection until the next CPU step.
 MuJoCo collision detection also waits for a simulation step while browsing.
 Paused pose edits invalidate the previous contacts. Opening contact inspection
 or enabling contact display refreshes them once, without compiling the solver.
@@ -329,7 +360,7 @@ quaternions. Read the observed scene revision before submitting mutations:
    * - Tool
      - Behavior
    * - ``get_scene``
-     - Active ``solver``, paginated authored objects, root poses and their ``pose_kind``, revision,
+     - Active ``solver`` and ``device``, paginated authored objects, root poses and their ``pose_kind``, revision,
        model generation, camera, playback state, and pending/busy/error status.
        ``physics_ready`` indicates whether physics has been initialized for the
        current model; a deferred solver becomes ready on Play or single-step.

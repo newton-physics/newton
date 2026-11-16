@@ -394,6 +394,58 @@ class TestExampleBrowserReset(unittest.TestCase):
                 self.assertIsNone(viewer.old_refs[0]())
                 self.assertTrue(viewer.old_refs[1]().previous_released)
 
+    def test_new_scene_replaces_owned_editor_with_empty_paused_scene(self) -> None:
+        """Close the previous editor and create an empty scene on the same viewer."""
+        from newton.examples.basic.example_scene_editor import Example  # noqa: PLC0415 - Load the editor only here.
+
+        with wp.ScopedDevice("cpu"):
+            viewer = _BrowserViewer()
+            viewer._paused = False
+            viewer._step_requested = True
+            viewer._display_options_user["_paused"] = False
+            previous = Example(viewer, Example.create_parser().parse_args(["--empty"]))
+            previous.add_primitive("box", position=(0, 0, 2))
+            previous.commit()
+            model = previous.model
+            switched = []
+
+            def make_browser(viewer, args):
+                browser = _ExampleBrowser(viewer, args)
+                switch = browser.switch
+
+                def create_scene():
+                    browser.new_scene(solver="xpbd", device="cpu")
+                    self.assertIs(viewer.model, model)
+                    self.assertFalse(previous._closed)
+                    viewer.on_frame = lambda: None
+
+                def observe_switch(example_class):
+                    result = switch(example_class)
+                    switched.append((browser, result[0]))
+                    return result
+
+                viewer.on_frame = create_scene
+                browser.switch = observe_switch
+                return browser
+
+            with patch("newton.examples._ExampleBrowser", side_effect=make_browser):
+                newton.examples.run(previous, newton.examples.default_args())
+            self.assertEqual(len(switched), 1)
+            browser, current = switched[0]
+            self.assertIsInstance(current, Example)
+            self.assertIs(current.viewer, viewer)
+            self.assertIsNot(current.model, model)
+            self.assertEqual(current.objects, ())
+            self.assertEqual(current.model.body_count, 0)
+            self.assertEqual(current.model.shape_count, 1)
+            self.assertTrue(current.model.device.is_cpu)
+            self.assertEqual(current.solver_type.value, "xpbd")
+            self.assertTrue(previous._closed)
+            self.assertTrue(current._closed)
+            self.assertTrue(browser._initial_args.empty)
+            self.assertTrue(viewer._paused)
+            self.assertFalse(viewer._step_requested)
+
     def test_runtime_failure_recovers_but_automated_runs_raise(self) -> None:
         """Keep browsing after step/render errors and propagate automated failures."""
 

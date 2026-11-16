@@ -330,8 +330,9 @@ class _Runtime:
 class SceneEditor:
     """Author a rigid scene while owning its simulation and compiled resources.
 
-    This entire class is **experimental**. It owns an XPBD or CUDA-only MuJoCo
-    Warp scene, rather than mutating another application's solver or graphs.
+    This entire class is **experimental**. It owns an XPBD or MuJoCo scene,
+    rather than mutating another application's solver or graphs. MuJoCo uses
+    its native CPU backend on CPU and MuJoCo Warp on CUDA.
     Positions and dimensions use metres, rotations use XYZW quaternions, and
     masses use kilograms. Pose, color, visibility, and friction edits retain
     Model/State storage. Add/remove, geometry, mass, and motion-type changes
@@ -401,13 +402,13 @@ class SceneEditor:
         Args:
             viewer: Viewer receiving the owned model, state, and interaction forces.
             device: Simulation device; defaults to the current Warp device.
-            solver: Fixed physics backend. MuJoCo Warp requires CUDA.
+            solver: Fixed physics backend. MuJoCo uses native contacts on CPU
+                and Newton contacts with MuJoCo Warp on CUDA.
         """
         self.viewer = viewer
         self.device = wp.get_device(device)
         self._solver_type = self.Solver(solver)
-        if self._solver_type == self.Solver.MUJOCO and not self.device.is_cuda:
-            raise ValueError("MuJoCo Warp scene authoring requires a CUDA device; use solver='xpbd' for CPU simulation")
+        self._mujoco_cpu = self._solver_type == self.Solver.MUJOCO and self.device.is_cpu
         self.scene_editor = self
         self.frame_dt = 1.0 / 60.0
         self.sim_time = 0.0
@@ -1117,13 +1118,14 @@ class SceneEditor:
 
         solver = SolverMuJoCo(
             model,
-            use_mujoco_contacts=False,
+            use_mujoco_cpu=self._mujoco_cpu,
+            use_mujoco_contacts=self._mujoco_cpu,
             integrator="implicitfast",
             nconmax=contact_max,
-            strict_capacity=True,
+            strict_capacity=not self._mujoco_cpu,
             kinematic_switchable_roots=False,
         )
-        return solver, solver.observables({solver.ObservableKind.OVERFLOW})
+        return solver, None if self._mujoco_cpu else solver.observables({solver.ObservableKind.OVERFLOW})
 
     def _preserve_state(self, old: _Runtime, new: _Runtime) -> None:
         labels = {label: index for index, label in enumerate(old.model.body_label)}
@@ -1649,11 +1651,11 @@ class SceneEditor:
                     if pipeline is not runtime.pipeline:
                         if runtime is self._runtime:
                             self.viewer.set_collision_pipeline(pipeline)
-                            if self.solver_type == self.Solver.MUJOCO:
+                            if self.solver_type == self.Solver.MUJOCO and not self._mujoco_cpu:
                                 self.viewer.set_solver(None)
                         previous = runtime.contacts.rigid_contact_max
                         runtime.pipeline, runtime.contacts = pipeline, contacts
-                        if self.solver_type == self.Solver.MUJOCO:
+                        if self.solver_type == self.Solver.MUJOCO and not self._mujoco_cpu:
                             runtime.solver = runtime.observables = None
                             runtime.solver_graphs.clear()
                             runtime.solver_warm_binding = None
@@ -1712,7 +1714,7 @@ class SceneEditor:
                 observables=runtime.observables,
             )
 
-        if self.solver_type != self.Solver.MUJOCO:
+        if self.solver_type != self.Solver.MUJOCO or self._mujoco_cpu:
             solve()
             return
         arrays = tuple(
@@ -1800,7 +1802,7 @@ class SceneEditor:
         for substep in range(self.sim_substeps):
             runtime.state_0.clear_forces()
             self.viewer.apply_forces(runtime.state_0)
-            if not self._collide(runtime):
+            if not self._mujoco_cpu and not self._collide(runtime):
                 self._sync_coordinates(runtime)
                 self._publish(runtime)
                 self.sim_time += substep * dt
@@ -1811,7 +1813,7 @@ class SceneEditor:
                     self.viewer.set_solver(solver)
                 except (ImportError, MemoryError, OSError, RuntimeError, TypeError, ValueError) as error:
                     self.sim_time += substep * dt
-                    self._pause_physics(runtime, f"MuJoCo Warp could not start: {error}")
+                    self._pause_physics(runtime, f"MuJoCo could not start: {error}")
                     return
                 runtime.solver, runtime.observables = solver, observables
                 self.solver = solver
@@ -1828,8 +1830,31 @@ class SceneEditor:
             runtime.state_0, runtime.state_1 = runtime.state_1, runtime.state_0
         if self.solver_type == self.Solver.XPBD:
             self._sync_coordinates(runtime)
+        if self._mujoco_cpu:
+            self._update_cpu_contacts(runtime)
         self._publish(runtime)
         self.sim_time += self.frame_dt
+
+    def _update_cpu_contacts(self, runtime: _Runtime) -> None:
+        """Export native contact geometry once per frame, without affecting CPU physics."""
+        capacity = runtime.solver.get_max_contact_count()
+        if capacity > runtime.contacts.rigid_contact_max:
+            pipeline = CollisionPipeline(
+                runtime.model,
+                rigid_contact_max=capacity,
+                soft_contact_max=runtime.contacts.soft_contact_max,
+                publish_capacity=False,
+            )
+            contacts = pipeline.contacts()
+            self.viewer.set_collision_pipeline(pipeline)
+            runtime.pipeline, runtime.contacts = pipeline, contacts
+            runtime.model.rigid_contact_max = contacts.rigid_contact_max
+            runtime.model.soft_contact_max = contacts.soft_contact_max
+            runtime.model._contact_capacity_initialized = True
+        # Native MuJoCo solves every contact. Its configured nconmax only
+        # limits this display export, with a warning when it is truncated.
+        runtime.solver.update_contacts(runtime.contacts)
+        runtime.contacts_dirty = False
 
     def render(self) -> None:
         """Render live or history-selected state with optional placement preview."""

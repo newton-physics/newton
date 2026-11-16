@@ -344,7 +344,10 @@ class AuthoringPanel:
         """Draw the asset palette in the existing left workspace panel."""
         ui, w, s = self.ui, self.widgets, self.widgets.scale
         ui.text_colored(ui.ImVec4(*theme.ACCENT), "SCENE AUTHORING")
-        ui.text_disabled("Solver: MuJoCo Warp" if self.editor.solver_type.value == "mujoco" else "Solver: XPBD")
+        engine = "XPBD"
+        if self.editor.solver_type.value == "mujoco":
+            engine = "MuJoCo CPU" if self.editor.device.is_cpu else "MuJoCo Warp"
+        ui.text_disabled(f"Solver: {engine}")
         ui.spacing()
         if w.icon_button("##author_open", "folder", "Open authored scene", size=24):
             self._open_dialog("open")

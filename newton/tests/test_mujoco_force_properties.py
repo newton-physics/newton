@@ -147,6 +147,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                 model = _make_model(worlds=1)
                 solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                 before = {name: getattr(solver.mjw_model, name).numpy().copy() for name in ("dof_armature", "qpos0")}
+                native_before = {name: getattr(solver.mj_model, name).copy() for name in before} if cpu else {}
                 body_pos = solver.mjw_model.body_pos.numpy().copy()
                 model.joint_armature.fill_(7.0)
                 model.mujoco.dof_ref.fill_(0.2)
@@ -158,6 +159,13 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                 for name, values in before.items():
                     np.testing.assert_array_equal(getattr(solver.mjw_model, name).numpy(), values)
                 self.assertFalse(np.array_equal(solver.mjw_model.body_pos.numpy(), body_pos))
+                for name, values in native_before.items():
+                    np.testing.assert_array_equal(getattr(solver.mj_model, name), values)
+                if cpu:
+                    for name in ("jnt_pos", "jnt_axis", "body_pos", "body_quat"):
+                        np.testing.assert_array_equal(
+                            getattr(solver.mj_model, name), getattr(solver.mjw_model, name).numpy()[0]
+                        )
 
     def test_constant_refresh_preserves_pending_armature(self):
         """Refresh constants without publishing an unnotified armature edit."""

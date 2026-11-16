@@ -93,7 +93,8 @@ class SceneEditorMCP:
             log_level="WARNING",
             instructions=(
                 "Inspect get_scene and get_viewport before editing. Object IDs are stable; body indices are not. "
-                "get_scene identifies the selected solver: mujoco is MuJoCo Warp on CUDA; xpbd is XPBD. "
+                "get_scene identifies the solver and device: mujoco uses native MuJoCo on CPU and MuJoCo Warp on CUDA; "
+                "xpbd is XPBD. Native MuJoCo convex-hulls collision meshes. "
                 "physics_ready distinguishes a published scene from physics initialized by Play or an explicit step. "
                 "Positions and sizes are world Z-up metres, rotations are XYZW quaternions, mass is kilograms. "
                 "Use the observed revision for apply_edits and undo_redo. Batch edits into one request. "
@@ -411,6 +412,7 @@ class SceneEditorMCP:
             "revision": editor.revision,
             "model_generation": editor.rebuild_count,
             "solver": editor.solver_type.value,
+            "device": str(editor.device),
             "physics_ready": bool(
                 runtime is not None and (runtime.solver is not None or not runtime.model.joint_count)
             ),

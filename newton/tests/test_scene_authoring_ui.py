@@ -19,6 +19,7 @@ import warp as wp
 from newton import ModelBuilder, ModelFlags
 from newton._src.viewer.gui.authoring import intersect_ray
 from newton._src.viewer.gui.viewer_gui import ViewerGui
+from newton.examples import _ExampleBrowser
 from newton.examples.basic.example_scene_editor import Example
 from newton.tests import test_viewer_assets
 from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
@@ -724,6 +725,50 @@ class TestSceneAuthoringUI(unittest.TestCase):
                 self.assertFalse(panel._pending_imports)
                 self.assertIsNotNone(assets.library.ready(record))
 
+            # The common viewer entry queues ownership changes, with an
+            # explicit dialog before replacing a nonempty authored document.
+            click(33, 123)  # Keep the creation palette visible across the switch.
+            browser = _ExampleBrowser(viewer, Example.create_parser().parse_args(["--empty"]))
+            positions = {}
+            button = workspace.widgets.button
+
+            def locate_scene_actions(label, *args, **kwargs):
+                clicked = button(label, *args, **kwargs)
+                if label in ("New scene", "Cancel", "Create new scene"):
+                    lo, hi = imgui.get_item_rect_min(), imgui.get_item_rect_max()
+                    positions[label] = ((lo.x + hi.x) / 2, (lo.y + hi.y) / 2)
+                return clicked
+
+            previous, model, document, history = editor, editor.model, editor.objects, workspace.history
+            with mock.patch.object(workspace.widgets, "button", locate_scene_actions):
+                render(2)
+                click(*positions["New scene"])
+                self.assertIsNone(browser.switch_target)
+                self.assertIs(editor.model, model)
+                click(*positions["Cancel"])
+                self.assertIsNone(browser.switch_target)
+                self.assertEqual(editor.objects, document)
+                click(*positions["New scene"])
+                click(*positions["Create new scene"])
+            self.assertEqual(browser._new_scene_options, ("mujoco", "cpu"))
+            self.assertIs(editor.model, model)
+            previous.close()
+            editor = None
+            editor, _ = browser.switch(Example)
+            self.assertIsNotNone(editor, browser.load_error)
+            self.addCleanup(editor.close)
+            render(2)
+            self.assertTrue(previous._closed)
+            self.assertTrue(viewer.is_paused())
+            self.assertEqual(editor.objects, ())
+            self.assertTrue(editor.model.device.is_cpu)
+            self.assertIsNone(editor.state_0.body_q)
+            self.assertTrue(editor.model.shape_transform.device.is_cpu)
+            self.assertEqual(editor.solver_type.value, "mujoco")
+            self.assertIs(workspace.authoring.editor, editor)
+            self.assertIsNot(workspace.history, history)
+            self.assertIsNone(workspace.selected)
+            self.assertIsNone(panel._file_drop_handler)
             workspace.bind(None)
             self.assertIsNone(workspace.authoring)
             self.assertIsNone(panel._file_drop_handler)

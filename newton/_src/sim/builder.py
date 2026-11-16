@@ -15435,17 +15435,18 @@ class ModelBuilder:
                     # Compute AABB based on shape type
                     if shape_type == GeoType.MESH and shape_src is not None:
                         # Compute local AABB from mesh vertices
-                        vertices = shape_src.vertices
-                        lo = vertices.min(axis=0) * np.array(shape_scale)
-                        hi = vertices.max(axis=0) * np.array(shape_scale)
+                        lower, upper = shape_src._get_local_bounds()
+                        lo = lower * np.array(shape_scale)
+                        hi = upper * np.array(shape_scale)
                         aabb_lower = np.minimum(lo, hi)
                         aabb_upper = np.maximum(lo, hi)
 
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
-                        lo = shape_src.vertices.min(axis=0) * np.array(shape_scale)
-                        hi = shape_src.vertices.max(axis=0) * np.array(shape_scale)
+                        lower, upper = shape_src._get_local_bounds()
+                        lo = lower * np.array(shape_scale)
+                        hi = upper * np.array(shape_scale)
                         centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
                         interior_point = centroid * np.array(shape_scale)
                         aabb_lower = np.minimum(lo, hi)
@@ -15929,29 +15930,9 @@ class ModelBuilder:
                         edge_chunks.append(edges)
                         if count > 0:
                             # Unscaled: kernels apply the live shape_scale when reading these edges.
-                            vertices = np.asarray(mesh.vertices, dtype=np.float32)
-                            edge_v0 = vertices[edges[:, 0]]
-                            edge_v1 = vertices[edges[:, 1]]
-                            edge_halves = np.ascontiguousarray((edge_v1 - edge_v0) * 0.5, dtype=np.float32)
-                            edge_centers = np.ascontiguousarray((edge_v0 + edge_v1) * 0.5, dtype=np.float32)
-                            edge_radii = np.linalg.norm(edge_halves, axis=1, keepdims=True)
-                            canonical_edges = mesh._canonical_vertex_ids()[edges].reshape(-1)
-                            endpoint_indices = np.arange(2 * count, dtype=np.int64)
-                            first_endpoint = np.full(int(canonical_edges.max()) + 1, 2 * count, dtype=np.int64)
-                            np.minimum.at(first_endpoint, canonical_edges, endpoint_indices)
-                            owns_endpoint = (first_endpoint[canonical_edges] == endpoint_indices).reshape(-1, 2)
-                            # Zero remains the legacy "both endpoints owned" encoding.
-                            corner_ownership = (
-                                4.0 + owns_endpoint[:, 0].astype(np.float32) + 2.0 * owns_endpoint[:, 1]
-                            ).reshape(-1, 1)
-                            edge_center_chunks.append(
-                                np.ascontiguousarray(
-                                    np.concatenate((edge_centers, edge_radii), axis=1), dtype=np.float32
-                                )
-                            )
-                            edge_half_chunks.append(
-                                np.ascontiguousarray(np.concatenate((edge_halves, corner_ownership), axis=1))
-                            )
+                            centers, halves = mesh._get_collision_edge_geometry(edges)
+                            edge_center_chunks.append(centers)
+                            edge_half_chunks.append(halves)
                         edge_offset += count
                         entry = (start, count)
                         edge_cache[mesh_key] = entry

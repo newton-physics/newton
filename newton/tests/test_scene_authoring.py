@@ -862,6 +862,108 @@ class TestSceneAuthoring(unittest.TestCase):
         self.assertTrue(np.isfinite(editor.state_0.body_q.numpy()).all())
         self.assertEqual(editor.rebuild_count, 1)
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("mujoco") and importlib.util.find_spec("mujoco_warp"), "Requires MuJoCo"
+    )
+    def test_mujoco_cpu_edits_and_native_contacts(self):
+        """Use lazy native CPU physics, preserving authored edits and exported contacts."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        editor = SceneEditor(ViewerNull(), device="cpu", solver="mujoco")
+        self.addCleanup(editor.close)
+        editor.commit()
+        editor.step()
+        self.assertIsNone(editor.solver)
+        support = editor.add_primitive("box", position=(0, 0, 0.25), size=(2, 2, 0.5), dynamic=False)
+        box = editor.add_primitive("box", position=(0, 0, 0.74), size=(0.5, 0.5, 0.5))
+        editor.commit()
+        self.assertTrue(editor.model.device.is_cpu)
+        self.assertIsNone(editor.solver)
+        model, control = editor.model, editor.control
+        states = {id(editor.state_0), id(editor.state_1)}
+        builds = editor.rebuild_count
+        with mock.patch.object(editor, "_collide", side_effect=AssertionError("CPU physics uses native contacts")):
+            editor.step()
+            solver = editor.solver
+            self.assertTrue(solver.use_mujoco_cpu)
+            self.assertIsNone(editor._runtime.observables)
+            self.assertFalse(editor._runtime.solver_graphs)
+            self.assertGreater(solver.mj_data.ncon, 0)
+            self.assertEqual(int(editor.contacts.rigid_contact_count.numpy()[0]), solver.mj_data.ncon)
+
+            rotation = tuple(wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.4))
+            editor.update_object(box, position=(0.2, 0, 2.2), rotation=rotation, friction=0.82)
+            editor.update_object(support, position=(0.1, 0, 0.3))
+            editor.before_frame()
+            body = editor.body_indices(box)[0]
+            shape = np.flatnonzero(model.shape_body.numpy() == body)[0]
+            geoms = solver.mjc_geom_to_newton_shape.numpy().reshape(-1) == shape
+            self.assertTrue(geoms.any())
+            np.testing.assert_allclose(solver.mj_model.geom_friction[geoms, 0], 0.82)
+            solver.mj_data.qacc_warmstart[:] = 123
+            editor.reset_scene()
+            np.testing.assert_array_equal(solver.mj_data.qacc_warmstart, 0)
+            np.testing.assert_allclose(editor.get_pose(box)[0], (0.2, 0, 2.2), atol=1e-6)
+            editor.step()
+            np.testing.assert_allclose(editor.get_pose(box)[0][:2], (0.2, 0), atol=1e-6)
+            self.assertLess(editor.get_pose(box)[0][2], 2.2)
+            np.testing.assert_allclose(editor.get_pose(support)[0], (0.1, 0, 0.3), atol=1e-6)
+            self.assertIs(editor.model, model)
+            self.assertIs(editor.solver, solver)
+            self.assertIs(editor.control, control)
+            self.assertEqual({id(editor.state_0), id(editor.state_1)}, states)
+            self.assertEqual(editor.rebuild_count, builds)
+
+            # Contact display storage may grow without replacing native physics.
+            pipeline = CollisionPipeline(model, rigid_contact_max=1, publish_capacity=False)
+            editor._runtime.pipeline = pipeline
+            editor._runtime.contacts = pipeline.contacts()
+            editor._publish(editor._runtime)
+            editor.update_object(box, position=(0.1, 0, 0.79))
+            editor.before_frame()
+            editor.step()
+            self.assertIs(editor.solver, solver)
+            self.assertGreater(editor.contacts.rigid_contact_max, 1)
+            self.assertEqual(model.rigid_contact_max, editor.contacts.rigid_contact_max)
+            self.assertGreater(int(editor.contacts.rigid_contact_count.numpy()[0]), 0)
+            np.testing.assert_array_equal(editor._runtime.contacts.contact_counters.numpy()[2:], 0)
+
+        before = editor.state_0.body_q.numpy().copy()
+        editor.add_primitive("sphere", position=(3, 0, 2), size=(0.5, 0.5, 0.5))
+        editor.before_frame()
+        self.assertIsNone(editor.solver)
+        np.testing.assert_array_equal(editor.state_0.body_q.numpy()[: len(before)], before)
+        editor.undo()
+        editor.before_frame()
+        np.testing.assert_array_equal(editor.state_0.body_q.numpy(), before)
+
+        if importlib.util.find_spec("pxr"):
+            from pxr import Usd, UsdGeom, UsdPhysics
+
+            path = Path(directory.name) / "platform.usda"
+            stage = Usd.Stage.CreateNew(str(path))
+            UsdGeom.SetStageMetersPerUnit(stage, 1)
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            cube = UsdGeom.Cube.Define(stage, "/Platform")
+            cube.CreateSizeAttr(1)
+            UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+            stage.GetRootLayer().Save()
+            platform = editor.add_usd(path, position=(0, 0, 0.5))
+            neighbor = editor.add_usd(path, position=(-6, 0, 0.5))
+            for object_id in (platform, neighbor):
+                editor.update_object(object_id, dynamic=False)
+            editor.commit()
+            editor.step()
+            solver = editor.solver
+            editor.update_object(platform, position=(3, 0, 0.5))
+            editor.update_object(box, position=(3, 0, 1.24))
+            editor.before_frame()
+            for _ in range(40):
+                editor.step()
+            self.assertIs(editor.solver, solver)
+            self.assertGreater(solver.mj_data.ncon, 0)
+            self.assertAlmostEqual(editor.get_pose(box)[0][2], 1.25, delta=0.03)
+
     @unittest.skipUnless(importlib.util.find_spec("mujoco_warp"), "Requires MuJoCo Warp")
     def test_mujoco_edits_preserve_state_and_handle_capacity(self):
         """Keep CUDA authoring edits coherent with MuJoCo and stop before publishing incomplete physics."""

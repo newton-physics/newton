@@ -680,6 +680,35 @@ class TestMuJoCoSolverMassProperties(_MuJoCoSolverPropertiesFixture, unittest.Te
             np.testing.assert_allclose(mj_model.bvh_aabb[bvh, 3:], extents, atol=1.0e-9)
             assert_midphase_matches_narrowphase()
 
+        with self.subTest("moved_geometry"):
+            transforms = model.shape_transform.numpy()
+            world = model.shape_body.numpy() == -1
+            transforms[world, 0] += 3.0
+            transforms[world, 3:] = tuple(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3))
+            model.shape_transform.assign(transforms)
+            free = mj_model.jnt_type == mujoco.mjtJoint.mjJNT_FREE
+            mj_data.qpos[mj_model.jnt_qposadr[free]] += 3.0
+            moved_qpos = mj_data.qpos.copy()
+            solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+            assert_midphase_matches_narrowphase()
+            for geom, shape in enumerate(solver.mjc_geom_to_newton_shape.numpy()[0]):
+                if shape >= 0 and world[shape]:
+                    np.testing.assert_allclose(mj_data.geom_xpos[geom], transforms[shape, :3], atol=1.0e-9)
+            moved_bounds = mj_model.bvh_aabb.copy()
+            for flags in (
+                ModelFlags.BODY_INERTIAL_PROPERTIES,
+                ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.SHAPE_PROPERTIES,
+            ):
+                model.body_com.assign(shifted_com)
+                solver.notify_model_changed(flags)
+                mj_data.qpos[:] = moved_qpos
+                assert_midphase_matches_narrowphase()
+                model.body_com.assign(body_com)
+                solver.notify_model_changed(flags)
+                mj_data.qpos[:] = moved_qpos
+                assert_midphase_matches_narrowphase()
+                np.testing.assert_allclose(mj_model.bvh_aabb, moved_bounds, atol=1.0e-9)
+
     def test_mujoco_cpu_inertia_frame_sync(self):
         """CPU MuJoCo must use the full MJWarp inertia representation."""
         mjcf = """

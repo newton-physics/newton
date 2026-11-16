@@ -37,7 +37,7 @@ class Example(SceneEditor):
 
     def __init__(self, viewer, args):
         solver = args.solver or ("mujoco" if wp.get_device().is_cuda else "xpbd")
-        super().__init__(viewer, solver=solver)
+        super().__init__(viewer, solver=solver, device=args.device)
         self._mcp = None
         if args.mcp_info is not None and args.mcp_port is None:
             raise ValueError("--mcp-info requires --mcp-port")
@@ -69,7 +69,9 @@ class Example(SceneEditor):
                     ).strip()
                 except (OSError, subprocess.SubprocessError):
                     pass
-            engine = "MuJoCo Warp" if self.solver_type is self.Solver.MUJOCO else "XPBD"
+            engine = "XPBD"
+            if self.solver_type is self.Solver.MUJOCO:
+                engine = "MuJoCo CPU" if self.device.is_cpu else "MuJoCo Warp"
             window.set_caption(f"Newton Scene Editor · {engine} [{revision}]")
         if args.mcp_port is not None:
             from newton.viewer import SceneEditorMCP  # noqa: PLC0415
