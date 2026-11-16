@@ -3186,9 +3186,12 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
             shapes.append(builder.add_shape_sphere(body, radius=0.1, cfg=cfg, label=f"shape_{index}"))
         builder.add_shape_collision_filter_pair(shapes[1], shapes[2])
         builder.add_shape_collision_filter_pair(shapes[3], shapes[5])
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), label="no_shapes")
 
         model = builder.finalize(device="cpu")
         solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        # A body without colliding shapes needs no excludes.
+        self.assertEqual(solver.mj_model.nexclude, 2)
         mapping = solver.mjc_geom_to_newton_shape.numpy()[0]
         contype = solver.mj_model.geom_contype
         conaffinity = solver.mj_model.geom_conaffinity
@@ -15571,6 +15574,31 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
             touched = np.unique(geoms[worlds == w])
             self.assertEqual(len(touched), count + 1)
             self.assertTrue(np.all(mapping[w, touched] >= 0))
+
+
+@requires(*MUJOCO_MODULES)
+class TestMuJoCoWithoutBodyForces(unittest.TestCase):
+    """Steps with ``State.body_f = None``."""
+
+    DT = 0.01
+
+    def test_free_joint_force_without_body_f(self):
+        """Replace, not accumulate, free-joint forces over steps when the state has no body forces."""
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+                builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01))
+                model = builder.finalize(device="cpu" if use_mujoco_cpu else None)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
+                states = [model.state(), model.state()]
+                for state in states:
+                    state.body_f = None
+                control = model.control()
+                control.joint_f.assign([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
+                for _ in range(3):
+                    solver.step(states[0], states[1], control, None, self.DT)
+                    states.reverse()
+                np.testing.assert_allclose(states[0].body_qd.numpy()[0], np.zeros(6), atol=1.0e-5)
 
 
 if __name__ == "__main__":

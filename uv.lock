@@ -53,7 +53,7 @@ dependencies = [
     { name = "frozenlist" },
     { name = "multidict" },
     { name = "propcache" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
     { name = "yarl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6c/4c/bdccd81e9ee225b69c60e7766c9a5b05364f118f4d383713b89a682d772d/aiohttp-3.14.5.tar.gz", hash = "sha256:5558a7f5a05af9ecf744af91e5baefc436f93c9333e656c27ec253f9a6bbe178", size = 8078052, upload-time = "2026-10-11T01:05:12.408Z" }
@@ -208,7 +208,7 @@ version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "frozenlist" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
@@ -232,11 +232,11 @@ dependencies = [
     { name = "click" },
     { name = "click-log" },
     { name = "networkx" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "rtree" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "shapely" },
     { name = "trimesh" },
 ]
@@ -251,7 +251,7 @@ version = "4.14.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/cc/a381afa6efea9f496eff839d4a6a1aed3bfafc7b3ab4b0d1b243a12573dd/anyio-4.14.2.tar.gz", hash = "sha256:cfa139f3ed1a23ee8f88a145ddb5ac7605b8bbfd8592baacd7ce3d8bb4313c7f", size = 260176, upload-time = "2026-07-12T20:29:07.082Z" }
 wheels = [
@@ -369,12 +369,12 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "asv-runner" },
     { name = "build" },
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
     { name = "importlib-metadata" },
     { name = "json5" },
     { name = "packaging" },
-    { name = "pympler", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "pyyaml", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "pympler", marker = "platform_python_implementation != 'PyPy'" },
+    { name = "pyyaml", marker = "platform_python_implementation != 'PyPy'" },
     { name = "tabulate" },
     { name = "virtualenv" },
 ]
@@ -472,7 +472,7 @@ name = "build"
 version = "1.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "os_name == 'nt' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "colorama", marker = "os_name == 'nt'" },
     { name = "packaging" },
     { name = "pyproject-hooks" },
 ]
@@ -543,7 +543,7 @@ name = "cffi"
 version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9e/ef/008a1939e372c06329a3fce4279c02f328488f3526744906eeec3da7ad5f/cffi-2.1.1.tar.gz", hash = "sha256:dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be", size = 530807, upload-time = "2026-08-03T21:21:18.939Z" }
 wheels = [
@@ -809,8 +809,8 @@ name = "coacd"
 version = "1.0.14"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3d/94/622a380a5c4cac78c1f19379b1d3fa193903f848311c200924309797abf8/coacd-1.0.14-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:4cd9e1f327af766f6364e79e384ebfe152780a3d8dbbd09ce0756ec14f9e1256", size = 3426003, upload-time = "2026-08-28T21:53:32.005Z" },
@@ -851,8 +851,8 @@ name = "contourpy"
 version = "1.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/58/01/1253e6698a07380cd31a736d248a3f2a50a7c88779a1813da27503cadc2a/contourpy-1.3.3.tar.gz", hash = "sha256:083e12155b210502d0bca491432bb04d56dc3432f95a979b429f2848c3dbe880", size = 13466174, upload-time = "2025-07-26T12:03:12.549Z" }
 wheels = [
@@ -1045,7 +1045,7 @@ wheels = [
 
 [package.optional-dependencies]
 toml = [
-    { name = "tomli", marker = "python_full_version <= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "tomli", marker = "python_full_version <= '3.11'" },
 ]
 
 [[package]]
@@ -1249,7 +1249,7 @@ dependencies = [
     { name = "requests" },
     { name = "retrying" },
     { name = "setuptools", version = "81.0.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-6-newton-torch-cu12'" },
-    { name = "setuptools", version = "84.2.1", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-6-newton-torch-cu13' or extra != 'extra-6-newton-torch-cu12'" },
+    { name = "setuptools", version = "84.2.1", source = { registry = "https://pypi.org/simple" }, marker = "extra != 'extra-6-newton-torch-cu12' or extra == 'extra-6-newton-torch-cu13'" },
     { name = "typing-extensions" },
     { name = "werkzeug" },
 ]
@@ -1344,8 +1344,8 @@ name = "fast-simplification"
 version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f3/0a/b943887803aefecd01d30cd150bd2a6f03d90b96886e3befdcc5d4276c98/fast_simplification-0.2.0.tar.gz", hash = "sha256:ed02ea6f4968ec98f963f2d3665dbafd0297ec12aea9e4d0a87c4b3c14d608a8", size = 31865, upload-time = "2026-08-12T19:53:50.49Z" }
 wheels = [
@@ -1669,8 +1669,8 @@ name = "imageio"
 version = "2.38.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pillow" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/81/c8/2b56274457e4fadcfa86bf7c0fb93f19e124ab8f38f4bfa4372423052046/imageio-2.38.0.tar.gz", hash = "sha256:fe1d406862f6bc2930e8ec662d7bc40d4370cb76e3390dcd33819560d2708531", size = 403333, upload-time = "2026-09-28T07:44:08.101Z" }
@@ -1741,7 +1741,7 @@ name = "ipykernel"
 version = "6.31.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "appnope", marker = "sys_platform == 'darwin' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "appnope", marker = "sys_platform == 'darwin'" },
     { name = "comm" },
     { name = "debugpy" },
     { name = "ipython" },
@@ -1765,17 +1765,17 @@ name = "ipython"
 version = "9.17.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
     { name = "ipython-pygments-lexers" },
     { name = "jedi" },
     { name = "matplotlib-inline" },
-    { name = "pexpect", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "pexpect", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
     { name = "prompt-toolkit" },
-    { name = "psutil", marker = "(sys_platform != 'cygwin' and sys_platform != 'emscripten') or (sys_platform == 'cygwin' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (sys_platform == 'emscripten' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "psutil", marker = "sys_platform != 'cygwin' and sys_platform != 'emscripten'" },
     { name = "pygments" },
     { name = "stack-data" },
     { name = "traitlets" },
-    { name = "typing-extensions", marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b9/32/99451b1283ec5d92ad77073f12e1c667dc10775384d8f15c2914207149dd/ipython-9.17.1.tar.gz", hash = "sha256:8919be8c27f20a6f4423145028063f6637b42a03ce57665bb12015ee1f073529", size = 4539289, upload-time = "2026-09-01T08:29:32.6Z" }
 wheels = [
@@ -2010,10 +2010,10 @@ dependencies = [
     { name = "jupyter-server-terminals" },
     { name = "nbconvert" },
     { name = "nbformat" },
-    { name = "overrides", marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "overrides", marker = "python_full_version < '3.12'" },
     { name = "packaging" },
     { name = "prometheus-client" },
-    { name = "pywinpty", marker = "os_name == 'nt' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "pywinpty", marker = "os_name == 'nt'" },
     { name = "pyzmq" },
     { name = "send2trash" },
     { name = "terminado" },
@@ -2047,7 +2047,7 @@ name = "jupyter-server-terminals"
 version = "0.5.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pywinpty", marker = "os_name == 'nt' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "pywinpty", marker = "os_name == 'nt'" },
     { name = "terminado" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f4/a7/bcd0a9b0cbba88986fe944aaaf91bfda603e5a50bda8ed15123f381a3b2f/jupyter_server_terminals-0.5.4.tar.gz", hash = "sha256:bbda128ed41d0be9020349f9f1f2a4ab9952a73ed5f5ac9f1419794761fb87f5", size = 31770, upload-time = "2026-01-14T16:53:20.213Z" }
@@ -2085,7 +2085,7 @@ dependencies = [
     { name = "packaging" },
     { name = "tornado" },
     { name = "traitlets" },
-    { name = "typing-extensions", marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/33/8d/995cc142f6083346b35e7d3eadc5a6717ee89ce64ea53577010ac493bc3c/jupyterlab-4.6.4.tar.gz", hash = "sha256:404f49b081819378524886c9db66dba57a5565981eff885830df1baba3a17df5", size = 28335647, upload-time = "2026-09-21T15:25:18.779Z" }
 wheels = [
@@ -2338,8 +2338,8 @@ dependencies = [
     { name = "cycler" },
     { name = "fonttools" },
     { name = "kiwisolver" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "packaging" },
     { name = "pillow" },
     { name = "pyparsing" },
@@ -2432,8 +2432,8 @@ name = "meshio"
 version = "5.3.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "rich" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/20/1e/caa4f15c020de3e3486b4133ca689236bd3863a3d6dd0f58e97ce86a296a/meshio-5.3.5.tar.gz", hash = "sha256:f21f01abd9f29ba06ea119304b3d39e610421cfe93b9dd23362834919f87586d", size = 490922, upload-time = "2024-01-31T15:09:41.731Z" }
@@ -2455,8 +2455,8 @@ name = "ml-dtypes"
 version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/12/72/307d7c4bd0600601c7133fba5cb78af7db968152951c1cd473abb1cda782/ml_dtypes-0.6.0.tar.gz", hash = "sha256:5e60251d32ced5598972e4d5e06a2f044341f9291402551a3f6f0ec44f9299b0", size = 3032327, upload-time = "2026-08-13T14:14:40.215Z" }
 wheels = [
@@ -2562,8 +2562,8 @@ dependencies = [
     { name = "absl-py" },
     { name = "etils", extra = ["epath"] },
     { name = "glfw" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pyopengl" },
     { name = "websockets" },
 ]
@@ -2607,8 +2607,8 @@ dependencies = [
     { name = "absl-py" },
     { name = "etils", extra = ["epath"] },
     { name = "mujoco" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "warp-lang" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c3/82/846dc011598bcb3e6ea8949c1fc7519584a86241b50c62fab4e631519200/mujoco_warp-3.17.0.tar.gz", hash = "sha256:2a5391f9d4d7a4d0e2908e0be80ee77ad12dbf27c76a2b9724099441360b5de7", size = 2266308, upload-time = "2026-10-22T23:39:12.206Z" }
@@ -2902,43 +2902,43 @@ dependencies = [
 dev = [
     { name = "alphashape" },
     { name = "cbor2" },
-    { name = "coacd", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "coacd", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "coverage", extra = ["toml"] },
-    { name = "fast-simplification", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "fast-simplification", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "gitpython" },
     { name = "imgui-bundle" },
     { name = "matplotlib" },
     { name = "meshio" },
-    { name = "mujoco", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "mujoco-warp", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "mujoco", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "mujoco-warp", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "networkx" },
     { name = "newton-usd-schemas" },
-    { name = "open3d", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "open3d", marker = "platform_machine == 'arm64' or (platform_machine != 'ARM64' and platform_machine != 'arm64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
     { name = "pillow" },
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
     { name = "requests" },
     { name = "resolve-robotics-uri-py" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine != 'aarch64' and sys_platform != 'win32') or (python_full_version >= '3.15' and platform_machine != 'ARM64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.15' and sys_platform != 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "usd-exchange", marker = "(python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "viser" },
     { name = "warp-nn", extra = ["onnx"] },
 ]
 docs = [
     { name = "alphashape" },
-    { name = "coacd", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "fast-simplification", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "coacd", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "fast-simplification", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "gitpython" },
     { name = "ipykernel" },
     { name = "meshio" },
     { name = "myst-parser" },
     { name = "nbsphinx" },
     { name = "newton-usd-schemas" },
-    { name = "open3d", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "open3d", marker = "platform_machine == 'arm64' or (platform_machine != 'ARM64' and platform_machine != 'arm64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
     { name = "pillow" },
     { name = "pycollada" },
     { name = "pydata-sphinx-theme" },
@@ -2946,78 +2946,78 @@ docs = [
     { name = "pypandoc-binary" },
     { name = "requests" },
     { name = "resolve-robotics-uri-py" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "sphinx" },
     { name = "sphinx-copybutton" },
     { name = "sphinx-design" },
     { name = "sphinx-tabs" },
     { name = "sphinxcontrib-mermaid" },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine != 'aarch64' and sys_platform != 'win32') or (python_full_version >= '3.15' and platform_machine != 'ARM64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.15' and sys_platform != 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "usd-exchange", marker = "(python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "viser" },
 ]
 examples = [
     { name = "alphashape" },
     { name = "cbor2" },
-    { name = "coacd", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "fast-simplification", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "coacd", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "fast-simplification", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "gitpython" },
     { name = "imgui-bundle" },
     { name = "matplotlib" },
     { name = "meshio" },
-    { name = "mujoco", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "mujoco-warp", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "mujoco", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "mujoco-warp", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "networkx" },
     { name = "newton-usd-schemas" },
-    { name = "open3d", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "open3d", marker = "platform_machine == 'arm64' or (platform_machine != 'ARM64' and platform_machine != 'arm64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
     { name = "pillow" },
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
     { name = "requests" },
     { name = "resolve-robotics-uri-py" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine != 'aarch64' and sys_platform != 'win32') or (python_full_version >= '3.15' and platform_machine != 'ARM64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.15' and sys_platform != 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "usd-exchange", marker = "(python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "warp-nn", extra = ["onnx"] },
 ]
 importers = [
     { name = "alphashape" },
-    { name = "coacd", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "fast-simplification", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "coacd", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "fast-simplification", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "meshio" },
     { name = "newton-usd-schemas" },
-    { name = "open3d", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "open3d", marker = "platform_machine == 'arm64' or (platform_machine != 'ARM64' and platform_machine != 'arm64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
     { name = "pillow" },
     { name = "pycollada" },
     { name = "requests" },
     { name = "resolve-robotics-uri-py" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine != 'aarch64' and sys_platform != 'win32') or (python_full_version >= '3.15' and platform_machine != 'ARM64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.15' and sys_platform != 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "usd-exchange", marker = "(python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
 ]
 notebook = [
     { name = "alphashape" },
     { name = "cbor2" },
-    { name = "coacd", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "fast-simplification", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "coacd", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "fast-simplification", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "gitpython" },
     { name = "imgui-bundle" },
     { name = "jupyter-server-proxy" },
     { name = "jupyterlab" },
     { name = "matplotlib" },
     { name = "meshio" },
-    { name = "mujoco", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "mujoco-warp", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "mujoco", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "mujoco-warp", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "networkx" },
     { name = "newton-usd-schemas" },
-    { name = "open3d", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "open3d", marker = "platform_machine == 'arm64' or (platform_machine != 'ARM64' and platform_machine != 'arm64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
     { name = "pillow" },
     { name = "pycollada" },
     { name = "pyglet" },
@@ -3025,11 +3025,11 @@ notebook = [
     { name = "requests" },
     { name = "rerun-sdk", extra = ["notebook"] },
     { name = "resolve-robotics-uri-py" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine != 'aarch64' and sys_platform != 'win32') or (python_full_version >= '3.15' and platform_machine != 'ARM64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.15' and sys_platform != 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "usd-exchange", marker = "(python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "viser" },
     { name = "warp-nn", extra = ["onnx"] },
 ]
@@ -3037,16 +3037,16 @@ onnx = [
     { name = "warp-nn", extra = ["onnx"] },
 ]
 remesh = [
-    { name = "open3d", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "open3d", marker = "platform_machine == 'arm64' or (platform_machine != 'ARM64' and platform_machine != 'arm64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
     { name = "pyfqmr" },
 ]
 rtx = [
     { name = "alphashape" },
-    { name = "coacd", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "fast-simplification", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "coacd", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "fast-simplification", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "meshio" },
     { name = "newton-usd-schemas" },
-    { name = "open3d", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "open3d", marker = "platform_machine == 'arm64' or (platform_machine != 'ARM64' and platform_machine != 'arm64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
     { name = "ovrtx" },
     { name = "ovstage" },
     { name = "pillow" },
@@ -3054,15 +3054,15 @@ rtx = [
     { name = "pyglet" },
     { name = "requests" },
     { name = "resolve-robotics-uri-py" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine != 'aarch64' and sys_platform != 'win32') or (python_full_version >= '3.15' and platform_machine != 'ARM64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.15' and sys_platform != 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "usd-exchange", marker = "(python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
 ]
 sim = [
-    { name = "mujoco", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "mujoco-warp", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "mujoco", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "mujoco-warp", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
 ]
 torch-cu12 = [
     { name = "alphashape" },
@@ -3077,7 +3077,7 @@ torch-cu12 = [
     { name = "mujoco-warp", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "networkx" },
     { name = "newton-usd-schemas" },
-    { name = "open3d", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
+    { name = "open3d", marker = "platform_machine == 'arm64' or (platform_machine != 'ARM64' and platform_machine != 'arm64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
     { name = "pillow" },
     { name = "pycollada" },
     { name = "pyglet" },
@@ -3088,7 +3088,7 @@ torch-cu12 = [
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-6-newton-torch-cu12') or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" } },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine != 'aarch64' and sys_platform != 'win32')" },
+    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
     { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "warp-nn", extra = ["onnx"], marker = "extra == 'extra-6-newton-torch-cu12'" },
 ]
@@ -3105,7 +3105,7 @@ torch-cu13 = [
     { name = "mujoco-warp", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "networkx" },
     { name = "newton-usd-schemas" },
-    { name = "open3d", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
+    { name = "open3d", marker = "platform_machine == 'arm64' or (platform_machine != 'ARM64' and platform_machine != 'arm64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
     { name = "pillow" },
     { name = "pycollada" },
     { name = "pyglet" },
@@ -3116,14 +3116,14 @@ torch-cu13 = [
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-6-newton-torch-cu13') or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "torch", version = "2.14.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine != 'aarch64' and sys_platform != 'win32')" },
+    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
     { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "warp-nn", extra = ["onnx"], marker = "extra == 'extra-6-newton-torch-cu13'" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "asv", marker = "platform_machine != 'ARM64' or sys_platform != 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "asv", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
 ]
 
 [package.metadata]
@@ -3156,8 +3156,8 @@ requires-dist = [
     { name = "newton", extras = ["onnx"], marker = "extra == 'examples'" },
     { name = "newton", extras = ["sim"], marker = "extra == 'examples'" },
     { name = "newton-usd-schemas", marker = "extra == 'importers'", specifier = ">=0.6.0" },
-    { name = "open3d", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'importers') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'importers') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'importers')", specifier = ">=0.20.0" },
-    { name = "open3d", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'remesh') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'remesh') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'remesh')", specifier = ">=0.20.0" },
+    { name = "open3d", marker = "(platform_machine != 'ARM64' and platform_machine != 'arm64' and sys_platform == 'win32' and extra == 'importers') or (platform_machine == 'arm64' and extra == 'importers') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'importers')", specifier = ">=0.20.0" },
+    { name = "open3d", marker = "(platform_machine != 'ARM64' and platform_machine != 'arm64' and sys_platform == 'win32' and extra == 'remesh') or (platform_machine == 'arm64' and extra == 'remesh') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'remesh')", specifier = ">=0.20.0" },
     { name = "ovrtx", marker = "extra == 'rtx'", specifier = ">=0.5.1.385782" },
     { name = "ovstage", marker = "extra == 'rtx'", specifier = ">=0.2.1.385922" },
     { name = "pillow", marker = "extra == 'importers'", specifier = ">=11.3.0" },
@@ -3181,7 +3181,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'torch-cu12'", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "newton", extra = "torch-cu12" } },
     { name = "torch", marker = "extra == 'torch-cu13'", specifier = ">=2.10.0", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "newton", extra = "torch-cu13" } },
     { name = "trimesh", marker = "extra == 'importers'", specifier = ">=4.6.8" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64' and extra == 'importers') or (python_full_version < '3.15' and platform_machine != 'aarch64' and sys_platform != 'win32' and extra == 'importers')", specifier = ">=25.5,<26.9" },
+    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64' and extra == 'importers') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32' and extra == 'importers')", specifier = ">=25.5,<26.12" },
     { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64' and extra == 'importers'", specifier = ">=2.3.0,<4" },
     { name = "viser", marker = "extra == 'dev'", specifier = ">=1.1.1" },
     { name = "viser", marker = "extra == 'docs'", specifier = ">=1.1.1" },
@@ -3707,8 +3707,8 @@ version = "1.23.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ml-dtypes" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "protobuf" },
     { name = "typing-extensions" },
 ]
@@ -3744,8 +3744,8 @@ dependencies = [
     { name = "flask" },
     { name = "ipywidgets" },
     { name = "nbformat" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "werkzeug" },
 ]
 wheels = [
@@ -4249,8 +4249,8 @@ name = "pycollada"
 version = "0.9.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "python-dateutil" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/5a/8d/52a5364a17eb96129962cae8d3ee7658775e085ad0ba38388684ad5944e9/pycollada-0.9.3.tar.gz", hash = "sha256:c34d6dcf0fe2eba5896f71c96d37a1c0fe1a61f08440fa0cfcec3dc2895d3302", size = 110826, upload-time = "2026-01-24T15:45:23.625Z" }
@@ -4291,8 +4291,8 @@ name = "pyfqmr"
 version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/c2/a19a20eb20d5f37a186038032297985a66c4ca29a5b6db565bd5deedf947/pyfqmr-0.5.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:f02d1fc1c83d3f3d0c21fae04028174b819fc9a56513735a9778afd8b42b3209", size = 137462, upload-time = "2025-08-23T10:06:36.997Z" },
@@ -4365,7 +4365,7 @@ name = "pympler"
 version = "1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pywin32", marker = "sys_platform == 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/dd/37/c384631908029676d8e7213dd956bb686af303a80db7afbc9be36bc49495/pympler-1.1.tar.gz", hash = "sha256:1eaa867cb8992c218430f1708fdaccda53df064144d1c5656b1e6f1ee6000424", size = 179954, upload-time = "2024-06-28T19:56:06.563Z" }
 wheels = [
@@ -4557,7 +4557,7 @@ name = "pyzmq"
 version = "27.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "implementation_name == 'pypy' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "cffi", marker = "implementation_name == 'pypy'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e7/8d/5b3d5631c2f4b4b8862f64cd0c9eb777b5710eeb5125b4be8dd0a200a4c0/pyzmq-27.2.0.tar.gz", hash = "sha256:54d4259d1bfae24ecdb5ca79f7acc2eac6c286a02d6a0ae617797cb45f0726d3", size = 292316, upload-time = "2026-08-20T19:08:21.19Z" }
 wheels = [
@@ -4623,7 +4623,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "rpds-py" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/f5/df4e9027acead3ecc63e50fe1e36aca1523e1719559c499951bb4b53188f/referencing-0.37.0.tar.gz", hash = "sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8", size = 78036, upload-time = "2025-10-13T15:30:48.871Z" }
 wheels = [
@@ -4664,8 +4664,8 @@ version = "0.33.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pillow" },
     { name = "psutil" },
     { name = "pyarrow" },
@@ -4915,7 +4915,7 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -4991,7 +4991,7 @@ resolution-markers = [
     "python_full_version == '3.12.*'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7e/74/66de6258867beb2ef08f35f9f2ac017a52cacd5081714d239ff1a442d458/scipy-1.18.1.tar.gz", hash = "sha256:52c4b7422442aba924d03ad4019852b08a92e64ea187b933135687bfe2747307", size = 30781235, upload-time = "2026-08-21T23:28:50.599Z" }
 wheels = [
@@ -5101,8 +5101,8 @@ name = "shapely"
 version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f3/ab/924b6e202f796d270a3041a230151f7908db5ea48c74effe6f8023e9bd05/shapely-2.2.0.tar.gz", hash = "sha256:e8865e553d874a1ec4a032057ea81fca9def37b188cd8fb550af3b3480b3f88c", size = 380326, upload-time = "2026-10-07T09:18:01.001Z" }
 wheels = [
@@ -5223,7 +5223,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "alabaster" },
     { name = "babel" },
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
     { name = "docutils" },
     { name = "imagesize" },
     { name = "jinja2" },
@@ -5390,8 +5390,8 @@ name = "terminado"
 version = "0.18.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess", marker = "os_name != 'nt' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "pywinpty", marker = "os_name == 'nt' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "ptyprocess", marker = "os_name != 'nt'" },
+    { name = "pywinpty", marker = "os_name == 'nt'" },
     { name = "tornado" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8a/11/965c6fd8e5cc254f1fe142d547387da17a8ebfd75a3455f637c663fb38a0/terminado-0.18.1.tar.gz", hash = "sha256:de09f2c4b85de4765f7714688fff57d3e75bad1f909b589fde880460c753fd2e", size = 32701, upload-time = "2024-03-12T14:34:39.026Z" }
@@ -5617,7 +5617,7 @@ name = "tqdm"
 version = "4.70.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0d/ea/b2a5bd54b28a324dae8211928b2d730b6547500342c7e6c6dea08bd0a485/tqdm-4.70.1.tar.gz", hash = "sha256:cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4", size = 171846, upload-time = "2026-09-11T07:25:16.601Z" }
 wheels = [
@@ -5638,8 +5638,8 @@ name = "trimesh"
 version = "4.12.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/79/37/5cb90f04990260d2caceb6093560c6cefafca1ec522c1e43be01ca658244/trimesh-4.12.2.tar.gz", hash = "sha256:c8ca31571ac00b112e4e160e66a2d4c3491df321f056bd33806be0485d1af9d9", size = 842220, upload-time = "2026-05-01T00:57:43.333Z" }
 wheels = [
@@ -5732,21 +5732,25 @@ wheels = [
 
 [[package]]
 name = "usd-core"
-version = "26.8"
+version = "26.11"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/7b/fd674dc4c3273e18cede49c50be75d90649d38dbec6180bda83b4047a8f0/usd_core-26.8-cp311-none-macosx_10_15_universal2.whl", hash = "sha256:781ddef732e3a6d300a5fa2d0c5b8af103aa8589a88c4af77ac6608f39293880", size = 40653076, upload-time = "2026-07-20T14:32:11.676Z" },
-    { url = "https://files.pythonhosted.org/packages/c4/d7/491a3dd0f62424f92f59240c5aa5c64c03588c1b4920b00f5df2ac4f4087/usd_core-26.8-cp311-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:53ebbc130108c7e0e7b4af9a4fe3bdac2ae084a12db13496a50f895db527382e", size = 29611915, upload-time = "2026-07-20T14:32:14.833Z" },
-    { url = "https://files.pythonhosted.org/packages/66/18/7ccfb5c69366fa0d7590697e0f62adb4b5c20f02a3c3a674331b4bf40d43/usd_core-26.8-cp311-none-win_amd64.whl", hash = "sha256:d39cef20efdfc29473e92887487bb8c10c45e966c492b5356d32a52724c3578f", size = 13848082, upload-time = "2026-07-20T14:32:17.701Z" },
-    { url = "https://files.pythonhosted.org/packages/97/44/fb780d02b04bbebc410bfb6decccc66aec07fb0322172ad019c4579ad80a/usd_core-26.8-cp312-none-macosx_10_15_universal2.whl", hash = "sha256:aaf1a68bf4c7ab959b9f4d3a6e0ef9347ff6135a1452676bb40916060146c53e", size = 40698020, upload-time = "2026-07-20T14:32:20.788Z" },
-    { url = "https://files.pythonhosted.org/packages/19/0b/efe5c0d7c273149ac94083831e5b36649925a621a73cd2ddf9616e160c8c/usd_core-26.8-cp312-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:204fb1ef1fc977b827c491f4e9fa39b57518504ed0cacfe12e026e95123cacf1", size = 29530957, upload-time = "2026-07-20T14:32:24.255Z" },
-    { url = "https://files.pythonhosted.org/packages/79/d3/749edc4d2eea3ffb94aa0526d5da6f4a3f185ef7004ceeb6b5ecdb6a0c68/usd_core-26.8-cp312-none-win_amd64.whl", hash = "sha256:6db0031224b718cae53e4b19ecd80aea0a7ed4348e330fd82ccfbdc9b8b311ed", size = 13887898, upload-time = "2026-07-20T14:32:27.452Z" },
-    { url = "https://files.pythonhosted.org/packages/79/fd/7060951a8fef299c9adcd89493219884c9f53f14492f7972238b83a6eb17/usd_core-26.8-cp313-none-macosx_10_15_universal2.whl", hash = "sha256:150bc967f4760000b8087ab4bd669f1477043f07433dcbcd8a80a97c73c47545", size = 40698029, upload-time = "2026-07-20T14:32:30.566Z" },
-    { url = "https://files.pythonhosted.org/packages/f8/e8/aee0809bedc47032a4bee4cd0b1b65e7bc65522c5ac9b28418974a47b5c7/usd_core-26.8-cp313-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:cd08c65edccd3fd3b5be5354593a8b54175adb8b45e3d84eb5e1644af5e904fb", size = 29531140, upload-time = "2026-07-20T14:32:34.047Z" },
-    { url = "https://files.pythonhosted.org/packages/ca/54/83e0f3810f74c88a85a56dc9cf950bc7b74a342cea3d5c4e441b3a11b4bb/usd_core-26.8-cp313-none-win_amd64.whl", hash = "sha256:8de2d62f148d11a33936634b9e43ded9c691ce565430218b606e8235bdb9cbf2", size = 13888333, upload-time = "2026-07-20T14:32:36.645Z" },
-    { url = "https://files.pythonhosted.org/packages/94/56/1b14f82eaa8db9d054246ec6c4abad146c21eb4e914e742d4ad153f8325a/usd_core-26.8-cp314-none-macosx_10_15_universal2.whl", hash = "sha256:fec6ba0ddcf6b285e1757494fcb66e57c23993098cb3cb26bf8db263567bb945", size = 40856543, upload-time = "2026-07-20T14:32:39.783Z" },
-    { url = "https://files.pythonhosted.org/packages/4f/ce/76e0476d04c387cbf435f11aafb36ff4f79345215d7b9dbb677a7a1efa11/usd_core-26.8-cp314-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:114f39723ccfc9a269cfdf6a7b80fec53aa96530806e510a6cccfd577401a07c", size = 29575839, upload-time = "2026-07-20T14:32:43.582Z" },
-    { url = "https://files.pythonhosted.org/packages/fc/87/d5cd29f5326bb945cf90198d28c7f3fca45a950e7512851360ced2e0a7e9/usd_core-26.8-cp314-none-win_amd64.whl", hash = "sha256:c780f28b624f4efb3d8f78af805f17082b3976f61ba18da8171bb898ce31f2be", size = 14451875, upload-time = "2026-07-20T14:32:46.461Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/45/b7c981c62b752d27043f60e7d29143d0feffe644af21f188440e16ade5de/usd_core-26.11-cp311-none-macosx_10_15_universal2.whl", hash = "sha256:3480fa1b68e421185a18b1651226077549e7b7047c83a7930006e83b2efd7275", size = 40973085, upload-time = "2026-10-21T05:53:56.005Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/d9/1317942521f1bf09ad1bf65119ce29ded96fd2db930ec780c33140871a4d/usd_core-26.11-cp311-none-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:39ed21e43b0d2624b354e3703da957d8689b1e5e186817723f432fd56e3a1781", size = 27902385, upload-time = "2026-10-21T05:53:59.591Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/3c/1f4161b2368ebb08c44e63620ae65d17c182b5a195db6b667b13545a539d/usd_core-26.11-cp311-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:934edc9e11f276e93a45f5cca08fc6fb8f66d94c78ca788975cc62e7fd8b562e", size = 28836592, upload-time = "2026-10-21T05:54:03.564Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/ab/57b59e82faa614ef43f53aaaa0dabe610257474b82638bca461c2cc9c219/usd_core-26.11-cp311-none-win_amd64.whl", hash = "sha256:4bbf496be5c71d9e5ac98a91d631b03ea0c401e0c539abe3167cd77ab9742b20", size = 13069723, upload-time = "2026-10-21T05:54:06.226Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/dd/e6e06338160dd27be906157d433490b048a35a2db52fa90a42a172504141/usd_core-26.11-cp312-none-macosx_10_15_universal2.whl", hash = "sha256:eddc3c58dfc1d5ec70a74986afeea5280bacb7f52b9bc5d6f3e000ee314d6219", size = 41028535, upload-time = "2026-10-21T05:54:09.281Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/96/1cb21601562c49172b5ea2cbef7311859e6f0169836e1b6dbbae497bbbab/usd_core-26.11-cp312-none-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:f546816f4a565731bb9e1e8c168b074cfb3c2f44131e18e8df926baeb52a2d5e", size = 27722662, upload-time = "2026-10-21T05:54:13.094Z" },
+    { url = "https://files.pythonhosted.org/packages/68/37/01c0d76d58fc95e24d786e8399cffe352eb147e8d41dea49a923fca9c961/usd_core-26.11-cp312-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c412fa1d2a5dd0c7bc65484ffe34add8f3fc7b03510867e7e019bcaf06b76177", size = 28776103, upload-time = "2026-10-21T05:54:15.768Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/2b/c5a9b06b0c28cbbfbf7ef7c2d75e7c941a76ab123c1fd3d42aa68e1a4e50/usd_core-26.11-cp312-none-win_amd64.whl", hash = "sha256:2e7df4865f9e997b460b29d397e3a3e802a6c08837c0b8ac8deb91bd88e7da4b", size = 13116270, upload-time = "2026-10-21T05:54:18.266Z" },
+    { url = "https://files.pythonhosted.org/packages/db/fe/51beb2e4b814abaac00f7e8998c2df7b2114df391c3b7c46679a4bf129e2/usd_core-26.11-cp313-none-macosx_10_15_universal2.whl", hash = "sha256:e0eb21b39464f3bb4fed1393072fea3f19cf6ff5b2844f49832c6f075e5b1e2f", size = 41031318, upload-time = "2026-10-21T05:54:21.062Z" },
+    { url = "https://files.pythonhosted.org/packages/98/50/98cc58f8916942023618314c33449bf6fb2d514a0e17a9a616d673609532/usd_core-26.11-cp313-none-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e1e420ae1d0d92072fa9793e0f0d499aa3c51991d50db8160f2a15c9934a4afd", size = 27720879, upload-time = "2026-10-21T05:54:24.118Z" },
+    { url = "https://files.pythonhosted.org/packages/49/d0/aade15c70521eb0e87b9e8b0ffbe2024633b37f7243d1b98482fc9fb6ec6/usd_core-26.11-cp313-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:da42ec136033a69975655b44c65c75c6a494ddc8f1e6a52d57cb7cd2dc4603a8", size = 28776181, upload-time = "2026-10-21T05:54:27.1Z" },
+    { url = "https://files.pythonhosted.org/packages/02/79/872355c8418b8659e2b0e1436083a5bcdf43edb75d6ba8f531e4b1300113/usd_core-26.11-cp313-none-win_amd64.whl", hash = "sha256:9d6dab0d6933b23bd567b90532fea3c5aef8f6d435ccf3551f788f93c366e0b4", size = 13116328, upload-time = "2026-10-21T05:54:29.639Z" },
+    { url = "https://files.pythonhosted.org/packages/90/72/7b25d64f3e61594e1a1365720f0383942a43c755a36ff4cee722ccc96c3f/usd_core-26.11-cp314-none-macosx_10_15_universal2.whl", hash = "sha256:24d8bdedc4696cdde55b31f7dcb934dcc2deab33f6f7aaa35db221cc4787cb4b", size = 41184150, upload-time = "2026-10-21T05:54:32.647Z" },
+    { url = "https://files.pythonhosted.org/packages/52/d9/e35aa71ce55987db5a22e144f9acbc5ac134d094bfc574c05f86716c6b51/usd_core-26.11-cp314-none-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:543ea11f24416aa98e3d956374c6c443b8d621348708ef4711c02b7fb452e8db", size = 27804713, upload-time = "2026-10-21T05:54:35.544Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/62/9eab0e48278156c375c13a96592732981779603ac0a9080f42546a288441/usd_core-26.11-cp314-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c3684b90075c56f986e96860142ee586092ba202a12a2b70512c5a05b0ea1af1", size = 28805780, upload-time = "2026-10-21T05:54:38.839Z" },
+    { url = "https://files.pythonhosted.org/packages/39/dd/d8e391d9a7a08e73334e69822e86d2e20181fcc4d698c74a098a171afdd2/usd_core-26.11-cp314-none-win_amd64.whl", hash = "sha256:9f31e6a1a6b81242b9856660efe3a5f37d5df02c8c065cfbd8a376a1d51f5911", size = 13652934, upload-time = "2026-10-21T05:54:41.467Z" },
 ]
 
 [[package]]
@@ -5755,13 +5759,10 @@ version = "3.0.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1d/69/a216f1bf12678f8f64f893885dd6808e2b31b80442d528719c4bafc2bcbd/usd_exchange-3.0.0-cp311-cp311-manylinux_2_35_aarch64.whl", hash = "sha256:02b6f47f6d97b00c3c79a33862a5b7f53cac5e87311cc6b636a4742f7ba5270e", size = 26123597, upload-time = "2026-08-20T21:18:20.081Z" },
-    { url = "https://files.pythonhosted.org/packages/7a/56/a4df2a0a3d561a89baf938782fe5cf75ceb2058e425a79dc1b28e5624861/usd_exchange-3.0.0-cp311-cp311-manylinux_2_35_x86_64.whl", hash = "sha256:e349a5792deee29a9cf86c95e3fbcec501caaa89d59844041813d2040c448c02", size = 26831797, upload-time = "2026-08-20T21:18:43.19Z" },
     { url = "https://files.pythonhosted.org/packages/5b/b5/2f8ef05cb1fd4e117833e6195beb72224876ed57453ab2ba0ddd8e2d4e85/usd_exchange-3.0.0-cp311-cp311-win_amd64.whl", hash = "sha256:4428b021601fd0b7c26a65b0130f5d475ebe53263573359a596770f4e5719b55", size = 15978917, upload-time = "2026-08-20T21:19:06.147Z" },
     { url = "https://files.pythonhosted.org/packages/67/34/585377aab3b09f1f039dc78db23e967814dfc669392dcb115c97c9e7b055/usd_exchange-3.0.0-cp312-cp312-manylinux_2_35_aarch64.whl", hash = "sha256:59a3b8ef4bc545c76059f7efc5fec94023e0818c5a714fae40f8e0411de79db5", size = 25988564, upload-time = "2026-08-20T21:19:27.866Z" },
-    { url = "https://files.pythonhosted.org/packages/5f/b7/746eb09779f624e593c025366f7d227f7376e0fef6226a7783ba5cff18a8/usd_exchange-3.0.0-cp312-cp312-manylinux_2_35_x86_64.whl", hash = "sha256:3d5a3ca9f6153abaf2bb4f8fda6c4026e174b6b050eb904a6e4a5bdf89a52926", size = 26729798, upload-time = "2026-08-20T21:19:50.636Z" },
     { url = "https://files.pythonhosted.org/packages/31/43/d25c80097b3e975452bc5648b6b9fbcfe75457bf7e402cfaad9ef6730cd7/usd_exchange-3.0.0-cp312-cp312-win_amd64.whl", hash = "sha256:374499c3d06bd10f4cda2036239935222527f17e1f3ee059fc093aeb9058439b", size = 16032363, upload-time = "2026-08-20T21:20:14.5Z" },
     { url = "https://files.pythonhosted.org/packages/20/4d/dbace3235366d0b8bf49181e1880428e3614f6051d83d526c62afa370d06/usd_exchange-3.0.0-cp313-cp313-manylinux_2_35_aarch64.whl", hash = "sha256:15ef92fedf3f26018a11caf1fb7d2c3293693b3465eff1bd20c5eaab14431185", size = 25987040, upload-time = "2026-08-20T21:20:39.081Z" },
-    { url = "https://files.pythonhosted.org/packages/1e/c5/fd2a764ae01c19a0e28b03a71115a1f29aa73f9aa119f5e953441dc03eb6/usd_exchange-3.0.0-cp313-cp313-manylinux_2_35_x86_64.whl", hash = "sha256:5557c7ba24c03cc7bd54186c93111c2f3a678b8228a91cb782578d6ef4aef607", size = 26730210, upload-time = "2026-08-20T21:21:00.813Z" },
     { url = "https://files.pythonhosted.org/packages/2c/23/e756780c82dd054531ec21efb42beec13c8504fab65ab5854e74c9e7aa62/usd_exchange-3.0.0-cp313-cp313-win_amd64.whl", hash = "sha256:4ad3ef6125f716b4bc934cf30f54c8e99089a27ceaa52483683adf5333c6eb1c", size = 16032782, upload-time = "2026-08-20T21:21:19.269Z" },
 ]
 
@@ -5788,8 +5789,8 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "imageio" },
     { name = "msgspec" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "requests" },
     { name = "rich" },
     { name = "tqdm" },
@@ -5808,8 +5809,8 @@ name = "warp-lang"
 version = "1.19.0"
 source = { registry = "https://pypi.nvidia.com/" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 wheels = [
     { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.19.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:310e7dcd9b4afa1ea45bf2304d793efc88f7317182e996b2077b069a0e34d3a0" },

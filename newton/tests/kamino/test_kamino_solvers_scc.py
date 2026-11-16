@@ -4573,4 +4573,5 @@ class TestSCCSolver(NewtonTestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     unittest.main()

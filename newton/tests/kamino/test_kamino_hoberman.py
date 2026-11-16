@@ -15,6 +15,7 @@ from itertools import product
 import numpy as np
 import warp as wp
 
+import newton
 from newton.examples.kamino.example_kamino_earworm_flowers import (
     SONG_LOOP_BAR,
     SONG_ROW,
@@ -225,4 +226,5 @@ class TestEarwormPlayback(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     unittest.main()
