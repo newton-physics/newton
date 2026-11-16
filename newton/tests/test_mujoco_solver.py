@@ -3173,26 +3173,6 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
         np.testing.assert_array_equal(actual, expected)
 
     @requires(*MUJOCO_MODULES)
-    def test_bodies_without_colliding_shapes_emit_no_excludes(self):
-        """Emit MuJoCo excludes only for body pairs with filtered colliding shapes."""
-        builder = newton.ModelBuilder()
-        shapes = []
-        for index in range(4):
-            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), label=f"body_{index}")
-            joint = builder.add_joint_free(parent=-1, child=body, label=f"joint_{index}")
-            builder.add_articulation([joint])
-            if index < 3:
-                shapes.append(builder.add_shape_sphere(body, radius=0.1, label=f"shape_{index}"))
-            else:
-                builder.add_site(body, label="site")
-        builder.add_shape_collision_filter_pair(shapes[0], shapes[1])
-
-        model = builder.finalize(device="cpu")
-        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
-
-        self.assertEqual(solver.mj_model.nexclude, 1)
-
-    @requires(*MUJOCO_MODULES)
     def test_native_newton_graph_compiles_exact_masks(self):
         """Compile native signed groups and pair filters into exact MuJoCo masks."""
         builder = newton.ModelBuilder()
@@ -3206,9 +3186,12 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
             shapes.append(builder.add_shape_sphere(body, radius=0.1, cfg=cfg, label=f"shape_{index}"))
         builder.add_shape_collision_filter_pair(shapes[1], shapes[2])
         builder.add_shape_collision_filter_pair(shapes[3], shapes[5])
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), label="no_shapes")
 
         model = builder.finalize(device="cpu")
         solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        # A body without colliding shapes needs no excludes.
+        self.assertEqual(solver.mj_model.nexclude, 2)
         mapping = solver.mjc_geom_to_newton_shape.numpy()[0]
         contype = solver.mj_model.geom_contype
         conaffinity = solver.mj_model.geom_conaffinity
