@@ -148,7 +148,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         self.assertEqual(disabled.camera_count, 0)
 
     def test_camera_tracking_modes_import_as_fixed_mounts(self):
-        """Import tracking cameras as fixed mounts on their body and report them in one warning."""
+        """Import tracking cameras as fixed mounts on their body and report them in one debug record."""
         mjcf = """
 <mujoco>
     <worldbody>
@@ -167,9 +167,10 @@ class TestImportMjcfBasic(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        with self.assertLogs("newton", level="WARNING") as logs:
+        with self.assertLogs("newton", level="DEBUG") as logs:
             builder.add_mjcf(mjcf)
         tracking = [line for line in logs.output if "tracking modes" in line]
+        self.assertTrue(all(line.startswith("DEBUG:") for line in tracking))
         self.assertEqual(len(tracking), 1)
         self.assertIn("chase", tracking[0])
         self.assertIn("look", tracking[0])

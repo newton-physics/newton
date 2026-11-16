@@ -115,21 +115,17 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         view_ray_bundle: wp.array[wp.int32],
         view_pinhole: wp.array[wp.vec4f],
     ):
-        if wp.static(not state.per_view_rays):
-            # One bundle shared by every view.
-            return camera_rays[py, px, sample_index, 0], camera_rays[py, px, sample_index, 1]
-        else:
-            # A view with its own bundle (a site, or a camera given rays with set_camera_rays())
-            # uses it; the others generate pinhole rays from
-            # view_pinhole = (horizontal aperture, vertical aperture, horizontal offset, vertical offset) / focal.
-            bundle = view_ray_bundle[view_index]
-            if bundle >= 0:
-                row = bundle * img_height + py
-                return camera_rays[row, px, sample_index, 0], camera_rays[row, px, sample_index, 1]
-            direction = pinhole_pixel_ray(
-                px, py, sample_index, sample_count, img_width, img_height, view_pinhole[view_index]
-            )
-            return wp.vec3f(0.0), direction
+        # A view with a ray bundle (rays shared by all views, rays of a site, or a camera given rays with
+        # set_camera_rays()) reads it; the others generate pinhole rays from
+        # view_pinhole = (horizontal aperture, vertical aperture, horizontal offset, vertical offset) / focal.
+        bundle = view_ray_bundle[view_index]
+        if bundle >= 0:
+            row = bundle * img_height + py
+            return camera_rays[row, px, sample_index, 0], camera_rays[row, px, sample_index, 1]
+        direction = pinhole_pixel_ray(
+            px, py, sample_index, sample_count, img_width, img_height, view_pinhole[view_index]
+        )
+        return wp.vec3f(0.0), direction
 
     if config.output_color_space == ColorSpace.LINEAR:
         clear_data = ClearData(

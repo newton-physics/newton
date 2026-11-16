@@ -413,14 +413,14 @@ class SensorCamera:
         self._view_clip_rays = wp.array(self._view_clip_np, dtype=wp.vec3f, device=device)
         self._view_pinhole = wp.zeros(self.view_count, dtype=wp.vec4f, device=device)
 
-        # Ray bundles set with set_camera_rays(), stacked one slot per group of views. Pinhole
-        # views without a bundle (index -1) generate their rays in the render kernel from the
-        # Model's current intrinsics.
+        # Rays set with set_camera_rays() live in slots of one stacked array, and each view holds the
+        # index of its slot. Camera views without a slot (index -1) project rays from the Model's
+        # current intrinsics in the render kernel.
         self._view_bundle_np = np.full(self.view_count, -1, dtype=np.int32)
-        self._custom_views: list[np.ndarray] = []  # views of each bundle slot
-        self._camera_rays: wp.array | None = None
         self._view_ray_bundle = wp.zeros(self.view_count, dtype=wp.int32, device=device)
-        self._rebuild_bundles()
+        self._ray_slot_count = 0
+        self._camera_rays = wp.zeros((0, self.width, self.sample_count, 2), dtype=wp.vec3f, device=device)
+        self._sync_view_ray_tables()
 
     @property
     def is_bound(self) -> bool:
@@ -454,42 +454,30 @@ class SensorCamera:
             device=self.device,
         )
 
-    def _rebuild_bundles(
-        self, custom_views: list[np.ndarray] | None = None, sources: dict[int, int | wp.array] | None = None
-    ) -> None:
-        """Re-pack the custom ray bundles into the sensor's ray storage.
-
-        ``sources`` maps each custom slot to the rays copied into it: a caller bundle, or the
-        index of a slot in the current layout whose rays carry over. By default all slots keep
-        their rays.
-        """
-        device = self.device
-        if custom_views is None:
-            custom_views = self._custom_views
-            sources = {slot: slot for slot in range(len(custom_views))}
-        # Snapshot carried-over rays first, since the storage may be re-packed in place.
-        carried = {}
-        for slot, source in sources.items():
-            if isinstance(source, int):
-                row = source * self.height
-                carried[slot] = wp.clone(self._camera_rays[row : row + self.height])
-            else:
-                carried[slot] = source
-        self._view_bundle_np[:] = -1
-        for index, views in enumerate(custom_views):
-            self._view_bundle_np[views] = index
-        # Without bundles the storage is empty; the kernel only reads it for views with an index.
-        shape = (len(custom_views) * self.height, self.width, self.sample_count, 2)
-        if self._camera_rays is None or self._camera_rays.shape != shape:
-            self._camera_rays = wp.zeros(shape, dtype=wp.vec3f, device=device)
-        for slot, rays in carried.items():
-            row = slot * self.height
-            wp.copy(self._camera_rays[row : row + self.height], rays)
-        self._custom_views = custom_views
+    def _sync_view_ray_tables(self) -> None:
+        """Upload each view's ray slot and whether it clips on depth (projected rays only)."""
         self._view_ray_bundle.assign(self._view_bundle_np)
         planar = (self._view_lens_np == int(CameraLensType.PINHOLE)) & (self._view_bundle_np < 0)
         self._view_clip_np[:, 2] = planar
         self._view_clip.assign(self._view_clip_np)
+
+    def _exclusive_ray_slot(self, views: np.ndarray) -> int | None:
+        """Return the ray slot used by exactly ``views``, or ``None``."""
+        slots = self._view_bundle_np[views]
+        slot = int(slots[0])
+        if slot < 0 or np.any(slots != slot):
+            return None
+        return slot if np.count_nonzero(self._view_bundle_np == slot) == len(views) else None
+
+    def _grow_ray_slots(self, slot_count: int) -> None:
+        """Enlarge the ray storage to ``slot_count`` slots, keeping the rays of existing slots."""
+        storage = wp.zeros(
+            (slot_count * self.height, self.width, self.sample_count, 2), dtype=wp.vec3f, device=self.device
+        )
+        if self._ray_slot_count:
+            wp.copy(storage[: self._ray_slot_count * self.height], self._camera_rays)
+        self._camera_rays = storage
+        self._ray_slot_count = slot_count
 
     def set_camera_rays(
         self,
@@ -505,10 +493,14 @@ class SensorCamera:
         marks an unused ray. Cameras given rays this way use them instead of
         their intrinsics and clip along each ray. Sites have no intrinsics and
         need rays from this method or :meth:`update` before they render. To give
-        views different rays, call this once per selection. The rays are copied
-        into sensor-owned storage; calling again with the same selection is a
-        device copy that keeps the storage address, so it can run inside a
-        captured CUDA graph.
+        views different rays, call this once per selection.
+
+        The rays are copied into sensor-owned storage with one slot per distinct
+        ray set. Repeating a call with the same selection only copies the rays,
+        so it can run inside a captured CUDA graph. A call with a new selection
+        moves the selected views to a free slot; only when no slot is free does
+        the storage grow, which moves it and invalidates CUDA graphs captured
+        before the call.
 
         .. experimental::
 
@@ -538,22 +530,19 @@ class SensorCamera:
         if tuple(rays.shape) != expected:
             raise ValueError(f"rays must have shape {expected}, got {tuple(rays.shape)}")
 
-        # A slot with exactly these views is overwritten in place, which keeps the storage layout.
-        slot = next((i for i, v in enumerate(self._custom_views) if np.array_equal(v, views)), None)
-        if slot is not None:
-            row = slot * self.height
-            wp.copy(self._camera_rays[row : row + self.height], rays)
-            return
-        # Otherwise remove these views from older slots, keeping their rays, and append a new slot.
-        custom_views, sources = [], {}
-        for old_slot, old_views in enumerate(self._custom_views):
-            remaining = np.setdiff1d(old_views, views)
-            if len(remaining):
-                sources[len(custom_views)] = old_slot
-                custom_views.append(remaining)
-        sources[len(custom_views)] = rays
-        custom_views.append(views)
-        self._rebuild_bundles(custom_views, sources)
+        slot = self._exclusive_ray_slot(views)
+        if slot is None:
+            # Release the views' current slots, then take the first slot no other view uses. Only
+            # when every slot is taken does the storage grow.
+            self._view_bundle_np[views] = -1
+            used = set(self._view_bundle_np[self._view_bundle_np >= 0].tolist())
+            slot = next(s for s in range(self._ray_slot_count + 1) if s not in used)
+            if slot == self._ray_slot_count:
+                self._grow_ray_slots(slot + 1)
+            self._view_bundle_np[views] = slot
+            self._sync_view_ray_tables()
+        row = slot * self.height
+        wp.copy(self._camera_rays[row : row + self.height], rays)
 
     def compute_view_transforms(self, state: State, *, out: wp.array[wp.transformf] | None = None) -> wp.array:
         """Compute the world-space pose of every view of a bound sensor.

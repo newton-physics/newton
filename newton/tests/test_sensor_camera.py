@@ -1088,6 +1088,24 @@ class TestSensorCamera(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     camera.set_camera_rays(hit_rays, sites="site")
 
+                # Reselecting views reuses free slots without moving the storage, so a graph captured
+                # earlier renders the new rays.
+                if wp.get_device(device).is_cuda and wp.is_mempool_enabled(device):
+                    depth = camera.allocate_image_depth()
+                    camera.update(state, depth_image=depth)
+                    with wp.ScopedCapture(device=device) as capture:
+                        camera.update(state, depth_image=depth)
+                    storage = camera._camera_rays.ptr
+                    for rays, selection, expected in (
+                        (hit_rays, "cam_*", (2.0, 2.0)),  # both views share slot 0; slot 1 becomes free
+                        (wp.zeros_like(hit_rays), "cam_a", (0.0, 2.0)),  # cam_a moves to the free slot 1
+                    ):
+                        camera.set_camera_rays(rays, cameras=selection)
+                        self.assertEqual(camera._camera_rays.ptr, storage, msg=selection)
+                        wp.capture_launch(capture.graph)
+                        center_depth = depth.numpy()[:, center[0], center[1]]
+                        np.testing.assert_allclose(center_depth[[view_a, 1 - view_a]], expected, atol=0.05)
+
                 # Sites have no intrinsics and render only once given rays.
                 camera = SensorCamera(model, sites="site", width=width, height=height)
                 self.assertIsNone(camera.view_camera)

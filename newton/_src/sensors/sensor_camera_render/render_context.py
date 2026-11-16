@@ -78,7 +78,6 @@ class RenderContext:
         render_albedo: bool = False
         render_hdr_color: bool = False
         has_view_clip: bool = False
-        per_view_rays: bool = False
 
     DEFAULT_CLEAR_DATA = ClearData()
     DEFAULT_RENDER_CONFIG = RenderConfig()
@@ -111,6 +110,10 @@ class RenderContext:
         self._render_state = RenderContext.RenderState()
 
         self._kernel_cache: dict[tuple, wp.Kernel] = {}
+        # Per-view ray tables for renders whose views all share one ray bundle: every view reads
+        # bundle 0, so no view generates pinhole rays. Grown on demand to the largest view count.
+        self._shared_ray_bundle: wp.array[wp.int32] = wp.zeros(0, dtype=wp.int32, device=self.device)
+        self._no_pinhole: wp.array[wp.vec4f] = wp.zeros(1, dtype=wp.vec4f, device=self.device)
 
         self._triangle_mesh: wp.Mesh | None = None
         self._triangle_mesh_group_roots: wp.array[wp.int32] = wp.full(
@@ -520,11 +523,12 @@ class RenderContext:
             anti_aliasing = AntiAliasing(config.anti_aliasing)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid anti_aliasing mode: {config.anti_aliasing!r}") from exc
-        # Per-view rays: each view reads its stacked bundle from ``view_ray_bundle``, or generates
-        # pinhole rays from ``view_pinhole`` when its bundle index is negative.
-        per_view_rays = view_ray_bundle is not None
-        if per_view_rays != (view_pinhole is not None):
-            raise ValueError("view_ray_bundle and view_pinhole must be given together")
+        # Each view reads the bundle that ``view_ray_bundle`` selects in the stacked ``camera_rays``, or
+        # generates pinhole rays from ``view_pinhole`` when its index is negative. Without a table, every
+        # view reads the single bundle in ``camera_rays``.
+        shared_rays = view_ray_bundle is None
+        if not shared_rays and view_pinhole is None:
+            raise ValueError("view_ray_bundle requires view_pinhole")
         if sample_count is None:
             if camera_rays is None:
                 raise ValueError("sample_count is required when camera_rays is not given")
@@ -574,7 +578,6 @@ class RenderContext:
             self._render_state.render_albedo = albedo_image is not None
             self._render_state.render_hdr_color = hdr_color_image is not None
             self._render_state.has_view_clip = view_clip is not None
-            self._render_state.per_view_rays = per_view_rays
 
             # One view per camera transform; independent of the model world count.
             view_count = camera_transforms.shape[0]
@@ -589,11 +592,21 @@ class RenderContext:
                 if image is not None and image.shape != expected:
                     raise ValueError(f"{name} shape must be {expected}, got {tuple(image.shape)}")
 
-            if not per_view_rays:
-                if camera_rays.ndim != 4 or camera_rays.shape[2] <= 0 or camera_rays.shape[3] != 2:
+            if shared_rays:
+                if (
+                    camera_rays.ndim != 4
+                    or camera_rays.shape[0] != height
+                    or camera_rays.shape[1] != width
+                    or camera_rays.shape[2] != sample_count
+                    or camera_rays.shape[3] != 2
+                ):
                     raise ValueError(
                         f"camera_rays shape must be ({height}, {width}, sample_count, 2), got {tuple(camera_rays.shape)}"
                     )
+                if self._shared_ray_bundle.shape[0] < view_count:
+                    self._shared_ray_bundle = wp.zeros(view_count, dtype=wp.int32, device=self.device)
+                view_ray_bundle = self._shared_ray_bundle
+                view_pinhole = self._no_pinhole
             else:
                 if (
                     camera_rays.ndim != 4

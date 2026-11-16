@@ -5691,7 +5691,7 @@ class ModelBuilder:
             parse_cameras: Whether ``<camera>`` elements should be added as model cameras (see
                 :meth:`~newton.ModelBuilder.add_camera`). Tracking cameras (``track``, ``trackcom``,
                 ``targetbody``, ``targetbodycom``) are imported as fixed mounts on their body, which match
-                MuJoCo only at the initial pose, and are reported in one warning. Orthographic cameras are
+                MuJoCo only at the initial pose, and are logged at debug level. Orthographic cameras are
                 skipped and logged. Default is True.
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
