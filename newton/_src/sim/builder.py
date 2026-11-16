@@ -16778,14 +16778,16 @@ class ModelBuilder:
                         interior_pt = np.zeros(3, dtype=np.float32)
                         sc_np = np.array(sc_tuple)
                         if st == GeoType.MESH:
-                            vertices = shape_src.vertices
-                            lo64 = vertices.min(axis=0) * sc_np
-                            hi64 = vertices.max(axis=0) * sc_np
+                            # Reuse geometry bounds across differently scaled instances.
+                            lower, upper = shape_src._get_local_bounds()
+                            lo64 = lower * sc_np
+                            hi64 = upper * sc_np
                             aabb_lo = np.minimum(lo64, hi64)
                             aabb_hi = np.maximum(lo64, hi64)
                         elif st == GeoType.CONVEX_MESH:
-                            lo64 = shape_src.vertices.min(axis=0) * sc_np
-                            hi64 = shape_src.vertices.max(axis=0) * sc_np
+                            lower, upper = shape_src._get_local_bounds()
+                            lo64 = lower * sc_np
+                            hi64 = upper * sc_np
                             centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
                             interior_pt = (centroid * sc_np).astype(np.float32)
                             aabb_lo = np.minimum(lo64, hi64)

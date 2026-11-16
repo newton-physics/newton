@@ -750,6 +750,38 @@ class TestModelMesh(unittest.TestCase):
         shape_source_ptr = model.shape_source_ptr.numpy()
         self.assertEqual(shape_source_ptr[0], shape_source_ptr[1])
 
+    def test_finalize_mesh_bounds_follow_scale_and_geometry_changes(self):
+        """Preserve signed instance bounds after changing shared mesh geometry."""
+        mesh = newton.Mesh.create_box(1.0, 0.5, 0.25, duplicate_vertices=False, compute_inertia=False)
+        mesh.vertices = mesh.vertices + np.array([2.0, 3.0, 4.0], dtype=np.float32)
+        builder = ModelBuilder()
+        scales = ((1.0, 2.0, 3.0), (-2.0, 1.0, -0.5), (0.5, -3.0, 2.0))
+        for add in (builder.add_shape_mesh, builder.add_shape_convex_hull):
+            for scale in scales:
+                add(body=-1, mesh=mesh, scale=scale)
+
+        for change in ("initial", "replace", "in_place"):
+            with self.subTest(change=change):
+                if change == "replace":
+                    mesh.vertices = mesh.vertices + np.array([0.5, -1.0, 2.0], dtype=np.float32)
+                elif change == "in_place":
+                    mesh.vertices[:] += np.array([-2.0, 0.25, 1.0], dtype=np.float32)
+                    mesh.invalidate_cache()
+                model = builder.finalize(device="cpu")
+                lower, upper = [], []
+                for scale in scales * 2:
+                    vertices = mesh.vertices * np.asarray(scale)
+                    lower.append(vertices.min(axis=0))
+                    upper.append(vertices.max(axis=0))
+                np.testing.assert_allclose(model.shape_collision_aabb_lower.numpy(), lower, atol=1e-6)
+                np.testing.assert_allclose(model.shape_collision_aabb_upper.numpy(), upper, atol=1e-6)
+                center = mesh.vertices.mean(axis=0)
+                np.testing.assert_allclose(
+                    model._shape_interior_point.numpy()[len(scales) :],
+                    [center * scale for scale in scales],
+                    atol=1e-6,
+                )
+
     def test_finalize_deduplicates_convex_collision_vertices(self):
         """Deduplicate exact convex vertices in the finalized collision mesh."""
         vertices = np.array(
