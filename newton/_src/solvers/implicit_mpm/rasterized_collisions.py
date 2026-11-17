@@ -115,6 +115,10 @@ class Collider:
     query_max_dist: float
     """Maximum distance to query collider sdf"""
 
+    collider_winding_number: wp.array[int]
+    """Per collider, nonzero to sign distances with generalized winding numbers (closed meshes built with
+    ``support_winding_number=True``); zero to sign them from the average normal around the closest point."""
+
 
 @wp.func
 def _triangle_pseudonormal(q: wp.vec3, e1: wp.vec3, e2: wp.vec3, eps_sq: float):
@@ -261,7 +265,10 @@ def _query_collider_sdf(
 
     max_dist = collider.query_max_dist + thickness
 
-    if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
+    winding = collider.collider_winding_number[stable_collider_id] != 0
+    if winding:
+        query = wp.mesh_query_point_sign_winding_number(mesh, x_local, max_dist)
+    elif wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
         query = wp.mesh_query_point_no_sign(mesh, x_local, max_dist)
     else:
         query = wp.mesh_query_point(mesh, x_local, max_dist)
@@ -276,7 +283,10 @@ def _query_collider_sdf(
     if query_result:
         cp = wp.mesh_eval_position(mesh, query.face, query.u, query.v)
 
-        if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
+        if winding:
+            face_normal = wp.mesh_eval_face_normal(mesh, query.face)
+            sign = query.sign
+        elif wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
             face_normal = get_average_face_normal(mesh, cp)
             if wp.length_sq(face_normal) == 0.0:
                 # Edge rounding or cancellation can leave the average normal zero.
@@ -608,97 +618,484 @@ def point_contact_radii(
     node_radii[n] = wp.where(space_node >= 0, particle_radius[evaluation_particle[wp.max(space_node, 0)]], 0.0)
 
 
-@fem.integrand
-def _node_collider_distance(
-    s: fem.Sample,
-    domain: fem.Domain,
-    separate_worlds: bool,
+# A capped "picN" collider basis keeps the first N particles of each cell. Ordering them by contact priority first
+# keeps resting contacts (deepest first), then approaching ones by time to impact, then separating ones, then
+# particles out of collider range.
+
+
+@wp.func
+def _pic_contact_priority(
+    p: int,
+    particle_environment: wp.array[int],
+    positions: wp.array[wp.vec3],
+    velocities: wp.array[wp.vec3],
+    radii: wp.array[float],
     collider: Collider,
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
-    body_q_prev: wp.array[wp.transform],
-    max_distance: float,
+    dt: float,
+    voxel_size: float,
 ):
-    """Collider signed distance at a distance-space node, clamped to ``max_distance``."""
-    world = wp.where(separate_worlds, fem.environment_index(domain, s), int(_ALL_COLLIDER_WORLDS))
-    sdf, _gradient, _velocity, _collider_id, _material_id = collision_sdf(
-        domain(s), world, collider, body_q, body_qd, body_q_prev, 1.0
+    """Contact priority as (tier, value), lower first: resting by depth, approaching by time to impact,
+    separating by gap, then out of collider range."""
+    environment_index = int(_ALL_COLLIDER_WORLDS)
+    if particle_environment:
+        environment_index = particle_environment[p]
+    sdf, normal, collider_velocity, collider_id, _material_id = collision_sdf(
+        positions[p], environment_index, collider, body_q, body_qd, body_q, dt
     )
-    return wp.min(sdf, max_distance)
+    if collider_id == _NULL_COLLIDER_ID or sdf >= _INFINITY:
+        return wp.vec2(3.0, 0.0)
+    gap = sdf - radii[p]
+    if gap <= 0.0:
+        return wp.vec2(0.0, gap)
+    approach = -wp.dot(velocities[p] - collider_velocity, normal)
+    if approach <= 0.0:
+        return wp.vec2(2.0, gap)
+    stop = wp.max(0.25 * voxel_size - radii[p], 0.0)
+    return wp.vec2(1.0, wp.max(gap - stop, 0.0) / approach)
 
 
-@fem.integrand
-def _point_distance_gradient(
-    s: fem.Sample,
-    domain: fem.Domain,
-    distance: fem.Field,
-    node_positions: wp.array[wp.vec3],
-    node_environment_offsets: wp.array[int],
+@wp.func
+def _priority_less(a: wp.vec2, b: wp.vec2):
+    return a[0] < b[0] or (a[0] == b[0] and a[1] < b[1])
+
+
+@wp.kernel
+def _pic_select_contacts(
+    max_per_cell: int,
+    cell_offsets: wp.array[int],
+    indices: wp.array[int],
+    fraction: wp.array[float],
+    coords: wp.array[fem.Coords],
+    particle_environment: wp.array[int],
+    positions: wp.array[wp.vec3],
+    velocities: wp.array[wp.vec3],
+    radii: wp.array[float],
+    collider: Collider,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    dt: float,
+    voxel_size: float,
+    keys: wp.array[wp.vec2],
 ):
-    """Gradient of the rasterized collider distance at a contact node position."""
-    i = s.qp_index
-    x = node_positions[i]
-    if x[0] == fem.OUTSIDE:
-        return wp.vec3(0.0)
+    # One thread per cell. Cells within the cap keep their order; fuller cells move their max_per_cell
+    # highest-priority entries to the front by partial selection sort.
+    cell = wp.tid()
+    begin = cell_offsets[cell]
+    end = cell_offsets[cell + 1]
+    if end - begin <= max_per_cell:
+        return
+    for j in range(begin, end):
+        keys[j] = _pic_contact_priority(
+            indices[j], particle_environment, positions, velocities, radii, collider, body_q, body_qd, dt, voxel_size
+        )
+    for i in range(begin, begin + max_per_cell):
+        best = i
+        best_key = keys[i]
+        for j in range(i + 1, end):
+            if _priority_less(keys[j], best_key):
+                best = j
+                best_key = keys[j]
+        if best != i:
+            keys[best] = keys[i]
+            keys[i] = best_key
+            tmp_index = indices[i]
+            indices[i] = indices[best]
+            indices[best] = tmp_index
+            tmp_fraction = fraction[i]
+            fraction[i] = fraction[best]
+            fraction[best] = tmp_fraction
+            tmp_coords = coords[i]
+            coords[i] = coords[best]
+            coords[best] = tmp_coords
+
+
+def prioritize_pic_contacts(
+    pic: fem.PicQuadrature,
+    max_per_cell: int,
+    particle_environment: wp.array[int] | None,
+    positions: wp.array[wp.vec3],
+    velocities: wp.array[wp.vec3],
+    radii: wp.array[float],
+    collider: Collider,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    dt: float,
+    voxel_size: float,
+    temporary_store: fem.TemporaryStore,
+):
+    """Move the ``max_per_cell`` highest-priority particles of each over-full cell of ``pic`` to the front. ``particle_environment`` selects each particle's collider world, or None for all."""
+    indices = pic._cell_particle_indices
+    offsets = pic._cell_particle_offsets
+    device = indices.device
+    keys = fem.borrow_temporary(temporary_store, shape=indices.shape[0], dtype=wp.vec2, device=device)
+    wp.launch(
+        _pic_select_contacts,
+        dim=offsets.shape[0] - 1,
+        inputs=[
+            max_per_cell,
+            offsets,
+            indices,
+            pic._cell_particle_fraction,
+            pic._cell_particle_coords,
+            particle_environment,
+            positions,
+            velocities,
+            radii,
+            collider,
+            body_q,
+            body_qd,
+            dt,
+            voxel_size,
+            keys,
+        ],
+        device=device,
+    )
+    keys.release()
+
+
+@wp.func
+def quadratic_bspline(x: float):
+    x = wp.abs(x)
+    if x < 0.5:
+        return 0.75 - x * x
+    if x < 1.5:
+        return 0.5 * (1.5 - x) * (1.5 - x)
+    return 0.0
+
+
+def make_cell_locator(grid):
+    """Functions locating a position's cell and its neighbor cells, on dense or sparse grids."""
+
+    @fem.cache.dynamic_func(suffix=grid.name)
+    def containing_cell(geo: grid.CellArg, x: wp.vec3, environment: int, h: float):
+        """Lattice coordinates and center of the cell containing ``x``, and whether it exists."""
+        if wp.static(isinstance(grid, fem.Nanogrid)):
+            uvw = wp.volume_world_to_index(geo.cell_grid, x) + wp.vec3(0.5)
+            local_cell = wp.vec3i(int(wp.floor(uvw[0])), int(wp.floor(uvw[1])), int(wp.floor(uvw[2])))
+            return local_cell, wp.volume_index_to_world(geo.cell_grid, wp.vec3(local_cell)), True
+        sample = grid.cell_lookup(geo, x, 0.0, environment)
+        if sample.element_index < 0:
+            return wp.vec3i(0), wp.vec3(0.0), False
+        sample.element_coords = wp.vec3(0.5)
+        return wp.vec3i(0), grid.cell_position(geo, sample), True
+
+    @fem.cache.dynamic_func(suffix=grid.name)
+    def neighbor_cell(
+        geo: grid.CellArg, local_cell: wp.vec3i, center: wp.vec3, offset: wp.vec3i, environment: int, h: float
+    ):
+        """Index of the cell ``offset`` away from the containing cell, or -1 outside the grid."""
+        if wp.static(isinstance(grid, fem.Nanogrid)):
+            ijk = local_cell + offset + geo.env_offsets[environment]
+            cell = wp.volume_lookup_index(geo.cell_grid, ijk[0], ijk[1], ijk[2])
+            if cell >= 0:
+                if geo.cell_env[cell] != environment:
+                    cell = -1
+            return cell
+        target_center = center + h * wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
+        target = grid.cell_lookup(geo, target_center, 0.0, environment)
+        if target.element_index < 0:
+            return -1
+        # Grid3D lookups clamp at their boundary: reject clamped cells.
+        actual = grid.cell_position(geo, target)
+        if wp.length_sq(actual - target_center) >= 1.0e-8 * h * h:
+            return -1
+        return target.element_index
+
+    return containing_cell, neighbor_cell
+
+
+@wp.func
+def quadratic_bspline_derivative(x: float):
+    a = wp.abs(x)
+    if a < 0.5:
+        return -2.0 * x
+    if a < 1.5:
+        return -wp.sign(x) * (1.5 - a)
+    return 0.0
+
+
+# Reflected-depth reconstruction of the collider distance around contact nodes: vertex-centred quadratic B-splines
+# interpolate the collider distance at the 27 cell vertices around each contact. A vertex behind the contact's exact
+# tangent plane, or outside the grid, takes its depth below that plane, so the reconstructed gap stays at or below the
+# exact one. Vertex distances are computed once and shared by the contacts around them. Worlds never share vertices:
+# sparse grids pack each world in its own tile of the Nanogrid index space, dense grids hold one vertex block per world.
+
+
+@wp.func
+def _node_environment(i: int, node_environment_offsets: wp.array[int]):
     environment = int(0)
     if node_environment_offsets:
         environment = environment_from_offsets(i, node_environment_offsets)
-    sample = fem.lookup(domain, x, environment)
-    if sample.element_index == fem.NULL_ELEMENT_INDEX:
-        return wp.vec3(0.0)
-    return fem.grad(distance, sample)
+    return environment
 
 
-def collider_distance_gradients(
+def _make_reflect_kernels(grid):
+    containing_cell, _neighbor_cell = make_cell_locator(grid)
+
+    @fem.cache.dynamic_func(suffix=grid.name)
+    def lower_corner_vertex(geo: grid.CellArg, local_cell: wp.vec3i, center: wp.vec3, environment: int, h: float):
+        """Vertex coordinates of the containing cell's lower corner, and the vertex lattice resolution (dense grids)."""
+        ijk = wp.vec3i(0)
+        res = wp.vec3i(0)
+        if wp.static(isinstance(grid, fem.Nanogrid)):
+            ijk = local_cell + geo.env_offsets[environment]
+        else:
+            g = wp.cw_div(center - geo.origin, geo.cell_size) - wp.vec3(0.5)
+            ijk = wp.vec3i(int(wp.round(g[0])), int(wp.round(g[1])), int(wp.round(g[2])))
+            res = geo.res
+        return ijk, res
+
+    # Stencil loops index vertices from the containing cell's lower corner, read once outside the loops
+    # (Warp 1.17 faults on struct array fields read in unrolled loops).
+    @fem.cache.dynamic_func(suffix=grid.name)
+    def vertex_index(vertex_grid: wp.uint64, corner: wp.vec3i, res: wp.vec3i, vertex: wp.vec3i, environment: int):
+        """Index of the vertex ``vertex`` away from the lower corner ``corner``, or -1 outside the grid."""
+        index = int(-1)
+        ijk = corner + vertex
+        if wp.static(isinstance(grid, fem.Nanogrid)):
+            index = wp.volume_lookup_index(vertex_grid, ijk[0], ijk[1], ijk[2])
+        elif wp.min(ijk) >= 0 and ijk[0] <= res[0] and ijk[1] <= res[1] and ijk[2] <= res[2]:
+            index = ((environment * (res[0] + 1) + ijk[0]) * (res[1] + 1) + ijk[1]) * (res[2] + 1) + ijk[2]
+        return index
+
+    @fem.cache.dynamic_func(suffix=grid.name)
+    def vertex_position(geo: grid.CellArg, vertex_ijk: wp.array[wp.vec3i], index: int, environment: int):
+        x = wp.vec3(0.0)
+        if wp.static(isinstance(grid, fem.Nanogrid)):
+            ijk = vertex_ijk[index] - geo.env_offsets[environment]
+            x = wp.volume_index_to_world(
+                geo.cell_grid, wp.vec3(float(ijk[0]), float(ijk[1]), float(ijk[2])) - wp.vec3(0.5)
+            )
+        else:
+            res = geo.res
+            k = index % (res[2] + 1)
+            j = (index // (res[2] + 1)) % (res[1] + 1)
+            i = (index // ((res[1] + 1) * (res[2] + 1))) % (res[0] + 1)
+            x = geo.origin + wp.cw_mul(wp.vec3(float(i), float(j), float(k)), geo.cell_size)
+        return x
+
+    @fem.cache.dynamic_kernel(suffix=grid.name)
+    def mark_stencil_vertices(
+        vertex_grid: wp.uint64,
+        geo: grid.CellArg,
+        h: float,
+        node_environment_offsets: wp.array[int],
+        node_positions: wp.array[wp.vec3],
+        contact_normals: wp.array[wp.vec3],
+        contact_gaps: wp.array[float],
+        node_radii: wp.array[float],
+        needed: wp.array[int],
+    ):
+        """Flag the stencil vertices in front of each contact's tangent plane with their world plus one."""
+        i = wp.tid()
+        x = node_positions[i]
+        n_p = contact_normals[i]
+        if x[0] == fem.OUTSIDE or wp.length_sq(n_p) == 0.0:
+            return
+        radius = float(0.0)
+        if node_radii:
+            radius = node_radii[i]
+        c_p = x - (contact_gaps[i] + radius) * n_p
+        environment = _node_environment(i, node_environment_offsets)
+        local_cell, center, found = containing_cell(geo, x, environment, h)
+        if not found:
+            return
+        corner, res = lower_corner_vertex(geo, local_cell, center, environment, h)
+        # Vertex coordinates relative to the containing cell's lower corner
+        u = (x - center) / h + wp.vec3(0.5)
+        base = wp.vec3i(int(wp.floor(u[0] + 0.5)), int(wp.floor(u[1] + 0.5)), int(wp.floor(u[2] + 0.5)))
+        for a in range(-1, 2):
+            for b in range(-1, 2):
+                for c in range(-1, 2):
+                    vertex = base + wp.vec3i(a, b, c)
+                    x_k = center + h * (wp.vec3(float(vertex[0]), float(vertex[1]), float(vertex[2])) - wp.vec3(0.5))
+                    if wp.dot(n_p, x_k - c_p) >= 0.0:
+                        index = vertex_index(vertex_grid, corner, res, vertex, environment)
+                        if index >= 0 and index < needed.shape[0]:
+                            needed[index] = environment + 1
+
+    @fem.cache.dynamic_kernel(suffix=grid.name)
+    def vertex_distances(
+        geo: grid.CellArg,
+        vertex_ijk: wp.array[wp.vec3i],
+        separate_worlds: int,
+        collider: Collider,
+        body_q: wp.array[wp.transform],
+        body_qd: wp.array[wp.spatial_vector],
+        max_distance: float,
+        needed: wp.array[int],
+        values: wp.array[float],
+    ):
+        """Collider distance at each flagged vertex, clamped to ``max_distance``."""
+        index = wp.tid()
+        if needed[index] == 0:
+            return
+        environment = needed[index] - 1
+        world = int(_ALL_COLLIDER_WORLDS)
+        if separate_worlds != 0:
+            world = environment
+        sdf, _gradient, _velocity, _collider_id, _material_id = collision_sdf(
+            vertex_position(geo, vertex_ijk, index, environment), world, collider, body_q, body_qd, body_q, 1.0
+        )
+        values[index] = wp.min(sdf, max_distance)
+
+    @fem.cache.dynamic_kernel(suffix=grid.name)
+    def reflect(
+        vertex_grid: wp.uint64,
+        geo: grid.CellArg,
+        h: float,
+        values: wp.array[float],
+        node_environment_offsets: wp.array[int],
+        node_positions: wp.array[wp.vec3],
+        contact_normals: wp.array[wp.vec3],
+        contact_gaps: wp.array[float],
+        node_radii: wp.array[float],
+        out_normals: wp.array[wp.vec3],
+        out_values: wp.array[float],
+    ):
+        """Vertex-centred quadratic B-spline sum of the vertex distances, vertices behind the contact's tangent plane
+        or outside the grid taken at their depth below that plane; normal = normalized gradient."""
+        i = wp.tid()
+        out_normals[i] = wp.vec3(0.0)
+        out_values[i] = _INFINITY
+        x = node_positions[i]
+        n_p = contact_normals[i]
+        if x[0] == fem.OUTSIDE or wp.length_sq(n_p) == 0.0:
+            return
+        radius = float(0.0)
+        if node_radii:
+            radius = node_radii[i]
+        c_p = x - (contact_gaps[i] + radius) * n_p
+        environment = _node_environment(i, node_environment_offsets)
+        local_cell, center, found = containing_cell(geo, x, environment, h)
+        if not found:
+            return
+        corner, res = lower_corner_vertex(geo, local_cell, center, environment, h)
+
+        u = (x - center) / h + wp.vec3(0.5)
+        base = wp.vec3i(int(wp.floor(u[0] + 0.5)), int(wp.floor(u[1] + 0.5)), int(wp.floor(u[2] + 0.5)))
+        value = float(0.0)
+        gradient = wp.vec3(0.0)
+        for a in range(-1, 2):
+            qx = u[0] - float(base[0] + a)
+            wx = quadratic_bspline(qx)
+            dwx = quadratic_bspline_derivative(qx)
+            for b in range(-1, 2):
+                qy = u[1] - float(base[1] + b)
+                wy = quadratic_bspline(qy)
+                dwy = quadratic_bspline_derivative(qy)
+                for c in range(-1, 2):
+                    qz = u[2] - float(base[2] + c)
+                    wz = quadratic_bspline(qz)
+                    w = wx * wy * wz
+                    if w != 0.0:
+                        vertex = base + wp.vec3i(a, b, c)
+                        x_k = center + h * (
+                            wp.vec3(float(vertex[0]), float(vertex[1]), float(vertex[2])) - wp.vec3(0.5)
+                        )
+                        d_k = wp.dot(n_p, x_k - c_p)
+                        if d_k >= 0.0:
+                            index = vertex_index(vertex_grid, corner, res, vertex, environment)
+                            if index >= 0 and index < values.shape[0]:
+                                d_k = values[index]
+                        value += w * d_k
+                        gradient += d_k * wp.vec3(
+                            dwx * wy * wz, wx * dwy * wz, wx * wy * quadratic_bspline_derivative(qz)
+                        )
+
+        gradient_length = wp.length(gradient)
+        if gradient_length == 0.0:
+            return
+        out_normals[i] = gradient / gradient_length
+        out_values[i] = value
+
+    return mark_stencil_vertices, vertex_distances, reflect
+
+
+def collider_distance_reflect(
+    grid: fem.Geometry,
     collider: Collider,
     body_q: wp.array[wp.transform],
-    distance: fem.DiscreteField,
-    distance_space_restriction: fem.SpaceRestriction,
     voxel_size: float,
     node_positions: wp.array[wp.vec3],
-    node_environment_offsets: wp.array | None,
+    node_environment_offsets: wp.array[int] | None,
     separate_worlds: bool,
+    contact_normals: wp.array[wp.vec3],
+    contact_gaps: wp.array[float],
+    node_radii: wp.array[float] | None,
     temporary_store: fem.TemporaryStore,
 ):
-    """Gradient of the collider signed distance rasterized on a quadratic B-spline space, at each contact node.
+    """Reflected-depth distance and unit normal at each contact node, from collider distances at the cell
+    vertices of ``grid`` around it.
 
-    Node distances act as B-spline coefficients, whose gradient is continuous across cells. Distances
-    are exact within four voxels of colliders, which covers the B-spline support around any active
-    contact, and clamped farther away.
+    ``contact_normals`` and ``contact_gaps`` are the exact per-contact query. Contact nodes are packed by world
+    along ``node_environment_offsets`` when worlds are separate. Returns ``(normals, values)``; a zero normal and an
+    infinite value mark contacts without a normal.
     """
     device = node_positions.device
+    mark_stencil_vertices, vertex_distances, reflect = _make_reflect_kernels(grid)
+    geo = grid.cell_arg_value(device)
+    sparse = isinstance(grid, fem.Nanogrid)
+    vertex_grid = grid.vertex_grid.id if sparse else 0
+    vertex_ijk = grid._node_ijk if sparse else None
+    vertex_count = grid.vertex_count()
+    n = node_positions.shape[0]
     max_distance = 4.0 * voxel_size
-    gradients = fem.borrow_temporary(temporary_store, shape=node_positions.shape[0], dtype=wp.vec3, device=device)
+    values = fem.borrow_temporary(temporary_store, shape=vertex_count, dtype=float, device=device)
+    needed = fem.borrow_temporary(temporary_store, shape=vertex_count, dtype=int, device=device)
+    out_normals = fem.borrow_temporary(temporary_store, shape=n, dtype=wp.vec3, device=device)
+    out_values = fem.borrow_temporary(temporary_store, shape=n, dtype=float, device=device)
+    needed.zero_()
+    wp.launch(
+        mark_stencil_vertices,
+        dim=n,
+        inputs=[
+            vertex_grid,
+            geo,
+            voxel_size,
+            node_environment_offsets,
+            node_positions,
+            contact_normals,
+            contact_gaps,
+            node_radii,
+            needed,
+        ],
+        device=device,
+    )
     old_query_distance = collider.query_max_dist
     collider.query_max_dist = max(old_query_distance, max_distance)
     try:
-        fem.interpolate(
-            _node_collider_distance,
-            dest=distance,
-            at=distance_space_restriction,
-            values={
-                "separate_worlds": separate_worlds,
-                "collider": collider,
-                "body_q": body_q,
-                "body_qd": None,
-                "body_q_prev": None,
-                "max_distance": max_distance,
-            },
-            reduction="first",
-            temporary_store=temporary_store,
-        )
-        fem.interpolate(
-            _point_distance_gradient,
-            dest=gradients,
-            at=distance_space_restriction.domain,
-            dim=node_positions.shape[0],
-            fields={"distance": distance},
-            values={"node_positions": node_positions, "node_environment_offsets": node_environment_offsets},
-            temporary_store=temporary_store,
+        wp.launch(
+            vertex_distances,
+            dim=vertex_count,
+            inputs=[geo, vertex_ijk, int(separate_worlds), collider, body_q, None, max_distance, needed, values],
+            device=device,
         )
     finally:
         collider.query_max_dist = old_query_distance
-    return gradients
+    needed.release()
+    wp.launch(
+        reflect,
+        dim=n,
+        inputs=[
+            vertex_grid,
+            geo,
+            voxel_size,
+            values,
+            node_environment_offsets,
+            node_positions,
+            contact_normals,
+            contact_gaps,
+            node_radii,
+            out_normals,
+            out_values,
+        ],
+        device=device,
+    )
+    values.release()
+    return out_normals, out_values
 
 
 @wp.func
@@ -837,45 +1234,10 @@ def world_position(
     return domain(s)
 
 
-@fem.integrand
-def collider_gradient_field(s: fem.Sample, domain: fem.Domain, distance: fem.Field, normal: fem.Field):
-    min_sdf = float(_INFINITY)
-    min_pos = wp.vec3(0.0)
-    min_grad = wp.vec3(0.0)
-
-    # min sdf over all nodes in the element
-    elem_count = fem.node_count(distance, s)
-    for k in range(elem_count):
-        s_node = fem.at_node(distance, s, k)
-        sdf = distance(s_node, k)
-        if sdf < min_sdf:
-            min_sdf = sdf
-            min_pos = domain(s_node)
-            min_grad = normal(s_node, k)
-
-    if min_sdf == _INFINITY:
-        return wp.vec3(0.0)
-
-    # compute gradient, filtering invalid values
-    sdf_gradient = wp.vec3(0.0)
-    for k in range(elem_count):
-        s_node = fem.at_node(distance, s, k)
-        sdf = distance(s_node, k)
-        pos = domain(s_node)
-
-        # if the sdf value is not acceptable (larger than min_sdf + distance between nodes),
-        # replace with linearized approximation
-        if sdf >= min_sdf + wp.length(pos - min_pos):
-            sdf = wp.min(sdf, min_sdf + wp.dot(min_grad, pos - min_pos))
-
-        sdf_gradient += sdf * fem.node_inner_weight_gradient(distance, s, k)
-
-    return sdf_gradient
-
-
 @wp.kernel
 def normalize_gradient(
     gradient: wp.array[wp.vec3],
+    values: wp.array[float],
     normal: wp.array[wp.vec3],
     sdf: wp.array[float],
     velocity: wp.array[wp.vec3],
@@ -883,17 +1245,32 @@ def normalize_gradient(
     stop_distance: float,
     node_radii: wp.array[float],
 ):
+    """Replace each contact's normal with its normalized distance gradient, and its gap with ``values`` when given,
+    moving the speculative approach velocity from the old normal and gap to the new ones."""
     i = wp.tid()
-    previous_normal = normal[i]
-    # Fully clamped distance stencils, far from colliders, leave no usable gradient
-    if wp.length_sq(gradient[i]) < 1.0e-6:
+    g = gradient[i]
+    # Contacts without a reconstructed gradient keep their closest-point normal
+    if wp.length_sq(g) < 1.0e-6:
         return
-    corrected_normal = wp.normalize(gradient[i])
-    stop = stop_distance
+    corrected_normal = wp.normalize(g)
+    previous_normal = normal[i]
+    if wp.length_sq(previous_normal) == 0.0:
+        normal[i] = corrected_normal
+        return
+    radius = float(0.0)
     if node_radii:
-        stop = wp.max(stop_distance - node_radii[i], 0.0)
-    if wp.length_sq(previous_normal) > 0.0 and dt > 0.0:
-        velocity[i] += (wp.max(sdf[i] - stop, 0.0) / dt) * (previous_normal - corrected_normal)
+        radius = node_radii[i]
+    stop = wp.max(stop_distance - radius, 0.0)
+    sdf_old = sdf[i]
+    sdf_new = sdf_old
+    if values:
+        if values[i] < _INFINITY:
+            sdf_new = values[i] - radius
+    if dt > 0.0:
+        velocity[i] += (wp.max(sdf_old - stop, 0.0) / dt) * previous_normal - (
+            wp.max(sdf_new - stop, 0.0) / dt
+        ) * corrected_normal
+    sdf[i] = sdf_new
     normal[i] = corrected_normal
 
 
@@ -1016,57 +1393,38 @@ def rasterize_collider(
 
 
 def interpolate_collider_normals(
-    collider_space_restriction: fem.SpaceRestriction,
     collider_distance_field: fem.DiscreteField,
     collider_normal_field: fem.DiscreteField,
-    temporary_store: fem.TemporaryStore,
+    distance_gradients: wp.array[wp.vec3],
     *,
     collider_velocity: wp.array[wp.vec3],
     dt: float,
-    distance_gradients: wp.array | None = None,
     stop_distance: float = 0.0,
     node_radii: wp.array | None = None,
+    distance_values: wp.array | None = None,
 ):
-    """Smooth collider normals by computing the gradient of the distance field.
+    """Replace collider normals with the normalized ``distance_gradients``.
 
-    Interpolates the gradient of ``collider_distance_field`` at each collision
-    node and normalizes the result to produce smoothed outward normals, which
-    are written back into ``collider_normal_field``. Point (particle) collision
-    nodes carry no distance gradient, so they take ``distance_gradients``, from
-    :func:`collider_distance_gradients`, instead.
+    The gradients come from :func:`collider_distance_reflect`. With ``distance_values``, point (particle)
+    contacts also take the reconstructed distances as their gaps; grid contacts keep their exact gaps.
 
     Args:
-        collider_space_restriction: Space restriction for collision nodes.
-        collider_distance_field: Per-node signed-distance field.
+        collider_distance_field: Per-node signed-distance field (gaps updated in place with ``distance_values``).
         collider_normal_field: Per-node normal field (updated in place).
-        temporary_store: Temporary storage for intermediate buffers.
+        distance_gradients: Per-node distance gradients; zero gradients keep the closest-point normal.
         collider_velocity: Collider constraint velocities, updated for the corrected normals [m/s].
         dt: Timestep length [s].
-        distance_gradients: Per-node distance gradients replacing those of
-            ``collider_distance_field``, or ``None``.
         stop_distance: Distance [m] where speculative contacts stop approaching, as in
             :func:`rasterize_collider`.
         node_radii: Per-node radius of point contacts, as in :func:`rasterize_collider`, or ``None``.
+        distance_values: Per-node reconstructed distances [m] replacing the gaps of point contacts, or ``None``.
     """
-    if distance_gradients is not None:
-        corrected_normal = distance_gradients
-    else:
-        corrected_normal = wp.empty_like(collider_normal_field.dof_values)
-        fem.interpolate(
-            collider_gradient_field,
-            dest=corrected_normal,
-            dest_space=collider_normal_field.space,
-            at=collider_space_restriction,
-            fields={"distance": collider_distance_field, "normal": collider_normal_field},
-            reduction="mean",
-            temporary_store=temporary_store,
-        )
-
     wp.launch(
         normalize_gradient,
         dim=collider_normal_field.dof_values.shape,
         inputs=[
-            corrected_normal,
+            distance_gradients,
+            distance_values,
             collider_normal_field.dof_values,
             collider_distance_field.dof_values,
             collider_velocity,

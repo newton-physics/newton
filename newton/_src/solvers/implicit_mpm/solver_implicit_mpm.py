@@ -28,6 +28,7 @@ from ..solver import SolverBase
 from .density_measurement import (
     critical_offset_values,
     deformed_particle_volumes,
+    drop_shielded_contacts,
     feedback_offset_values,
     make_free_box_mask_kernel,
     make_grid_capacity_kernel,
@@ -35,6 +36,7 @@ from .density_measurement import (
     make_grid_volume_kernel,
     make_particle_capacity_kernel,
     make_particle_volume_kernel,
+    make_shielded_contact_kernel,
     point_density_offset,
 )
 from .implicit_mpm_model import ImplicitMPMModel
@@ -42,10 +44,11 @@ from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
 from .rasterized_collisions import (
     Collider,
     build_rigidity_operator,
-    collider_distance_gradients,
+    collider_distance_reflect,
     interpolate_collider_normals,
     particle_contact_gap,
     point_contact_radii,
+    prioritize_pic_contacts,
     project_outside_collider,
     rasterize_collider,
     speculative_stop_distance,
@@ -325,9 +328,6 @@ class ImplicitMPMScratchpad:
 
     def __init__(self):
         self.grid = None
-        self.distance_basis = None
-        self.distance_field = None
-        self.distance_space_restriction = None
         self.particle_cells = None
         self.contact_pic = None
         self.collision_pic = None
@@ -398,13 +398,8 @@ class ImplicitMPMScratchpad:
         environment_first: bool,
         temporary_store: fem.TemporaryStore,
         contact_pic: fem.PicQuadrature | None = None,
-        distance_basis: bool = False,
     ):
-        """Define velocity and strain function spaces over the given geometry.
-
-        With ``distance_basis``, also define the quadratic B-spline space that particle contacts
-        differentiate the collider distance on.
-        """
+        """Define velocity and strain function spaces over the given geometry."""
 
         self.domain = pic.domain
 
@@ -428,17 +423,12 @@ class ImplicitMPMScratchpad:
                 self._collision_basis = _make_grid_basis_space(
                     self.grid, collider_basis_str, family=fem.Polynomial.EQUISPACED_CLOSED
                 )
-            self.distance_basis = _make_grid_basis_space(self.grid, "B2") if distance_basis else None
         else:
-            if distance_basis and self.distance_basis is None:
-                self.distance_basis = _make_grid_basis_space(self.grid, "B2")
             topologies = {id(self._velocity_basis.topology): self._velocity_basis.topology}
             if not use_pic_strain_basis:
                 topologies[id(self._strain_basis.topology)] = self._strain_basis.topology
             if not use_pic_collider_basis:
                 topologies[id(self._collision_basis.topology)] = self._collision_basis.topology
-            if self.distance_basis is not None:
-                topologies[id(self.distance_basis.topology)] = self.distance_basis.topology
             for topology in topologies.values():
                 if hasattr(topology, "rebuild"):
                     topology.rebuild()
@@ -453,7 +443,6 @@ class ImplicitMPMScratchpad:
         self._create_velocity_function_space(temporary_store, max_cell_count, environment_first)
         self._create_collider_function_space(temporary_store, max_cell_count, environment_first)
         self._create_strain_function_space(temporary_store, max_cell_count, environment_first)
-        self._create_distance_function_space(temporary_store, max_cell_count)
 
     def _create_velocity_function_space(
         self, temporary_store: fem.TemporaryStore, max_cell_count: int, environment_first: bool
@@ -522,29 +511,6 @@ class ImplicitMPMScratchpad:
         self._collision_space = collision_space
         self._collision_space_restriction = collision_space_restriction
         self.collider_environment_offsets = collision_space_partition.env_offsets if environment_first else None
-
-    def _create_distance_function_space(self, temporary_store: fem.TemporaryStore, max_cell_count: int):
-        """Create the collider distance field and its restriction over the active cells."""
-        if self.distance_basis is None:
-            self.distance_field = None
-            self.distance_space_restriction = None
-            return
-
-        domain = self.domain
-        distance_space = fem.make_collocated_function_space(self.distance_basis, dtype=float)
-        distance_space_partition = fem.make_space_partition(
-            space_topology=distance_space.topology,
-            geometry_partition=domain.geometry_partition,
-            with_halo=False,
-            max_node_count=distance_space.topology.MAX_NODES_PER_ELEMENT * max_cell_count
-            if max_cell_count >= 0
-            else -1,
-            temporary_store=temporary_store,
-        )
-        self.distance_space_restriction = fem.make_space_restriction(
-            space_partition=distance_space_partition, domain=domain, temporary_store=temporary_store
-        )
-        self.distance_field = distance_space.make_field(space_partition=distance_space_partition)
 
     def _create_strain_function_space(
         self, temporary_store: fem.TemporaryStore, max_cell_count: int, environment_first: bool
@@ -1197,14 +1163,33 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Density measurements may change without prior notice.
         """
+        collider_winding_number: bool = False
+        """Sign collider distances with generalized winding numbers.
+
+        Default collider meshes are then built with winding-number support, and planes become slabs below their
+        surface. Shapes merged into one collider mesh, such as boxes resting on the ground, are then signed as their
+        union. Custom collider meshes use winding numbers when built with ``support_winding_number=True``, which
+        requires them to be closed; other custom meshes keep the default sign.
+        """
         collider_normal_from_sdf_gradient: bool = False
         """Compute collider normals from the signed-distance gradient rather than the closest point.
 
-        Grid collider bases differentiate the distance rasterized at their nodes. Particle
-        collider bases (``"pic"`` and ``"picN"``) differentiate the collider distance
-        rasterized at cell centers with quadratic B-spline weights, so normals turn smoothly
-        around concave and convex collider edges, such as the seams between assembled boxes.
-        Particle collider bases require Warp 1.19 or newer for this option.
+        Normals come from a quadratic B-spline reconstruction of the collider distance sampled
+        at the cell vertices, so they turn smoothly around concave and convex collider edges,
+        such as the seams between assembled boxes. Nodes of the B-spline stencil behind a
+        contact's tangent plane contribute their depth below that plane, which keeps the
+        reconstructed distance at or below the exact one, also across walls thinner than a
+        cell. Particle collider bases (``"pic"`` and ``"picN"``) also take their gap from this
+        reconstruction; grid collider bases keep the exact distance at their nodes.
+        """
+        collider_contact_shielding: bool = True
+        """Deactivate particle collider contacts that another particle shields from the collider.
+
+        Applies to particle collider bases (``"pic"`` and ``"picN"``). A contact is shielded when
+        another particle lies on its closing path, between it and the collider, which then takes
+        the contact first. Resting contacts and contacts approaching faster than their gap allows
+        within the step stay active. Shielding removes most contacts behind the first particle
+        layer of piles and pools, which shortens the contact solve.
         """
         collider_basis: _MPMColliderBasisName = "S2"
         """Collider basis function. Defaults to ``"S2"``; pass ``"Q1"``
@@ -1849,6 +1834,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self.gimp = config.integration_scheme == "gimp"
         self.collider_normal_from_sdf_gradient = config.collider_normal_from_sdf_gradient
         self.collider_basis = config.collider_basis
+        self.collider_contact_shielding = config.collider_contact_shielding
         supports_colored_contacts = (
             not self.strain_basis.startswith("pic")
             and _parse_grid_basis_name(self.strain_basis)[2]
@@ -1866,8 +1852,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         )
         if not self.collider_basis.startswith("pic"):
             self._collider_recovery_time = None
-        if self.collider_normal_from_sdf_gradient and self.collider_basis.startswith("pic") and not _WARP_AT_LEAST_1_19:
-            raise ValueError("SDF-gradient normals for a particle collider basis require Warp 1.19 or newer")
 
         if config.collider_velocity_mode not in ("forward", "backward"):
             raise ValueError(f"Invalid collider velocity mode: {config.collider_velocity_mode}")
@@ -2418,6 +2402,23 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             ):
                 last_step_data.gimp_stress[1].zero_()
             pic = self._particles_to_cells(state_in.particle_q)
+            if self.collider_basis[:3] == "pic" and self.collider_basis[3:].isdigit():
+                contact_pic = self._scratchpad.contact_pic if self.gimp else pic
+                if contact_pic is not None:
+                    prioritize_pic_contacts(
+                        contact_pic,
+                        int(self.collider_basis[3:]),
+                        self._particle_environment,
+                        state_in.particle_q,
+                        state_in.particle_qd,
+                        self._mpm_model.particle_radius,
+                        self._mpm_model.collider,
+                        state_in.body_q,
+                        state_in.body_qd,
+                        dt,
+                        self._mpm_model.voxel_size,
+                        self.temporary_store,
+                    )
             scratch = self._rebuild_scratchpad(pic)
             self._step_impl(state_in, state_out, dt, pic, scratch)
             scratch.release_temporaries()
@@ -3179,7 +3180,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 environment_first=self._separate_worlds,
                 contact_pic=scratch.contact_pic,
                 temporary_store=self.temporary_store,
-                distance_basis=self.collider_normal_from_sdf_gradient and self.collider_basis[:3] == "pic",
             )
 
             scratch.allocate_temporaries(
@@ -3729,31 +3729,72 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             # normal interpolation
             if self.collider_normal_from_sdf_gradient:
-                distance_gradients = None
-                if speculative:
-                    # Particle nodes differentiate the collider distance rasterized on a quadratic B-spline space
-                    distance_gradients = collider_distance_gradients(
-                        self._mpm_model.collider,
-                        state_in.body_q,
-                        scratch.distance_field,
-                        scratch.distance_space_restriction,
-                        self._mpm_model.voxel_size,
-                        scratch.collider_position_field.dof_values,
-                        scratch.collider_environment_offsets,
-                        self._separate_worlds,
-                        self.temporary_store,
-                    )
+                # Reflected-depth B-spline reconstruction of the collider distance at the cell vertices
+                distance_gradients, distance_values = collider_distance_reflect(
+                    scratch.grid,
+                    self._mpm_model.collider,
+                    state_in.body_q,
+                    self._mpm_model.voxel_size,
+                    scratch.collider_position_field.dof_values,
+                    scratch.collider_environment_offsets,
+                    self._separate_worlds,
+                    scratch.collider_normal_field.dof_values,
+                    scratch.collider_distance_field.dof_values,
+                    node_radii,
+                    self.temporary_store,
+                )
                 interpolate_collider_normals(
-                    scratch.collider_fraction_test.space_restriction,
                     scratch.collider_distance_field,
                     scratch.collider_normal_field,
-                    temporary_store=self.temporary_store,
+                    distance_gradients,
                     collider_velocity=scratch.collider_velocity,
                     dt=dt,
-                    distance_gradients=distance_gradients,
                     stop_distance=speculative_stop_distance(self._mpm_model.voxel_size),
                     node_radii=node_radii,
+                    distance_values=distance_values if speculative else None,
                 )
+
+            if speculative and self.collider_contact_shielding:
+                shield_pic = scratch.collision_pic
+                shielded = fem.borrow_temporary(self.temporary_store, shape=collider_node_count, dtype=int)
+                wp.launch(
+                    make_shielded_contact_kernel(shield_pic),
+                    dim=collider_node_count,
+                    inputs=[
+                        shield_pic.domain.geometry.cell_arg_value(self.model.device),
+                        shield_pic.domain.element_index_arg_value(self.model.device),
+                        shield_pic.cell_particle_offsets,
+                        shield_pic.cell_particle_indices,
+                        state_in.particle_q,
+                        self._mpm_model.particle_radius,
+                        self.model.particle_flags,
+                        self._particle_environment,
+                        scratch.collider_fraction_test.space_restriction.space_partition.space_node_indices(),
+                        scratch.collider_position_field.dof_values,
+                        scratch.collider_normal_field.dof_values,
+                        scratch.collider_distance_field.dof_values,
+                        scratch.collider_ids,
+                        state_in.particle_qd,
+                        scratch.collider_velocity,
+                        self._mpm_model.voxel_size,
+                        shielded,
+                    ],
+                    device=self.model.device,
+                )
+                wp.launch(
+                    drop_shielded_contacts,
+                    dim=collider_node_count,
+                    inputs=[
+                        shielded,
+                        scratch.collider_velocity,
+                        scratch.collider_normal_field.dof_values,
+                        scratch.collider_friction,
+                        scratch.collider_adhesion,
+                        scratch.collider_ids,
+                    ],
+                    device=self.model.device,
+                )
+                shielded.release()
 
             contact_nodes = scratch.gimp_particle_contact_nodes
             if contact_nodes is not None:

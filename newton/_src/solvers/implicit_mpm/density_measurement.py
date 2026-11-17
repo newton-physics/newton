@@ -15,66 +15,15 @@ from warp.fem import cache
 
 import newton
 
-from .rasterized_collisions import Collider, collision_sdf
+from .rasterized_collisions import Collider, collision_sdf, make_cell_locator, quadratic_bspline
 
 wp.set_module_options({"enable_backward": False, "max_unroll": 0})
 
-PARTICLE_KERNEL_RADIUS = 1.0
+_PARTICLE_KERNEL_RADIUS = 1.0
 """Radius of the particle-centered cubic B-spline kernel, in voxels."""
 
-_PARTICLE_KERNEL_SCALE = wp.constant(PARTICLE_KERNEL_RADIUS / 2.0)
+_PARTICLE_KERNEL_SCALE = wp.constant(_PARTICLE_KERNEL_RADIUS / 2.0)
 """Scale of the cubic B-spline, whose support radius is two."""
-
-
-@wp.func
-def quadratic_bspline(x: float):
-    x = wp.abs(x)
-    if x < 0.5:
-        return 0.75 - x * x
-    if x < 1.5:
-        return 0.5 * (1.5 - x) * (1.5 - x)
-    return 0.0
-
-
-def make_cell_locator(grid):
-    """Functions locating a position's cell and its neighbor cells, on dense or sparse grids."""
-
-    @fem.cache.dynamic_func(suffix=grid.name)
-    def containing_cell(geo: grid.CellArg, x: wp.vec3, environment: int, h: float):
-        """Lattice coordinates and center of the cell containing ``x``, and whether it exists."""
-        if wp.static(isinstance(grid, fem.Nanogrid)):
-            uvw = wp.volume_world_to_index(geo.cell_grid, x) + wp.vec3(0.5)
-            local_cell = wp.vec3i(int(wp.floor(uvw[0])), int(wp.floor(uvw[1])), int(wp.floor(uvw[2])))
-            return local_cell, wp.volume_index_to_world(geo.cell_grid, wp.vec3(local_cell)), True
-        sample = grid.cell_lookup(geo, x, 0.0, environment)
-        if sample.element_index < 0:
-            return wp.vec3i(0), wp.vec3(0.0), False
-        sample.element_coords = wp.vec3(0.5)
-        return wp.vec3i(0), grid.cell_position(geo, sample), True
-
-    @fem.cache.dynamic_func(suffix=grid.name)
-    def neighbor_cell(
-        geo: grid.CellArg, local_cell: wp.vec3i, center: wp.vec3, offset: wp.vec3i, environment: int, h: float
-    ):
-        """Index of the cell ``offset`` away from the containing cell, or -1 outside the grid."""
-        if wp.static(isinstance(grid, fem.Nanogrid)):
-            ijk = local_cell + offset + geo.env_offsets[environment]
-            cell = wp.volume_lookup_index(geo.cell_grid, ijk[0], ijk[1], ijk[2])
-            if cell >= 0:
-                if geo.cell_env[cell] != environment:
-                    cell = -1
-            return cell
-        target_center = center + h * wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
-        target = grid.cell_lookup(geo, target_center, 0.0, environment)
-        if target.element_index < 0:
-            return -1
-        # Grid3D lookups clamp at their boundary: reject clamped cells.
-        actual = grid.cell_position(geo, target)
-        if wp.length_sq(actual - target_center) >= 1.0e-8 * h * h:
-            return -1
-        return target.element_index
-
-    return containing_cell, neighbor_cell
 
 
 @wp.func
@@ -509,3 +458,109 @@ def point_density_offset(
     if (flags[s.qp_index] & newton.ParticleFlags.ACTIVE) == 0:
         return 0.0
     return values[s.qp_index] * tau(s) * inv_cell_volume
+
+
+def make_shielded_contact_kernel(pic):
+    """Flag point contacts with another particle on their closing path.
+
+    A contact is shielded when another active particle lies between half a
+    particle diameter and half a diameter plus the gap (at most one diameter)
+    below it along the collider normal, within one diameter laterally. Resting
+    contacts (negative gap) and contacts that bind at the particle's step-start
+    velocity, approaching faster than the collider velocity allows, are kept.
+    """
+    domain = pic.domain
+    grid = domain.geometry
+    domain_indices = pic._use_domain_element_indices
+    containing_cell, neighbor_cell = make_cell_locator(grid)
+
+    @cache.dynamic_kernel(suffix=f"shield_{grid.name}_{domain.name}_{domain_indices}")
+    def shielded_contacts(
+        geo: grid.CellArg,
+        domain_arg: domain.ElementIndexArg,
+        particle_offsets: wp.array[int],
+        particle_indices: wp.array[int],
+        positions: wp.array[wp.vec3],
+        radii: wp.array[float],
+        flags: wp.array[int],
+        environments: wp.array[int],
+        space_node_indices: wp.array[int],
+        contact_positions: wp.array[wp.vec3],
+        contact_normals: wp.array[wp.vec3],
+        contact_gaps: wp.array[float],
+        collider_ids: wp.array[int],
+        velocities: wp.array[wp.vec3],
+        collider_velocities: wp.array[wp.vec3],
+        h: float,
+        shielded: wp.array[int],
+    ):
+        i = wp.tid()
+        shielded[i] = 0
+        if collider_ids[i] < 0:
+            return
+        sn = space_node_indices[i]
+        if sn < 0:
+            return
+        p = particle_indices[sn]
+        # The collider velocity holds the approach the gap allows this step: a particle already faster keeps its contact
+        if wp.dot(velocities[p] - collider_velocities[i], contact_normals[i]) < 0.0:
+            return
+        d = 2.0 * radii[p]
+        lo = 0.5 * d
+        hi = lo + wp.min(contact_gaps[i], d)
+        if hi < lo:
+            return
+        lat_sq = d * d
+        environment = int(0)
+        if environments:
+            environment = environments[p]
+        x = contact_positions[i]
+        n = contact_normals[i]
+        local_cell, containing_center, found = containing_cell(geo, x, environment, h)
+        if not found:
+            return
+        for k in range(27):
+            offset = wp.vec3i(k // 9 - 1, (k // 3) % 3 - 1, k % 3 - 1)
+            # Skip cells entirely behind the contact
+            if wp.dot(wp.vec3(float(offset[0]), float(offset[1]), float(offset[2])), n) > 0.9:
+                continue
+            cell = neighbor_cell(geo, local_cell, containing_center, offset, environment, h)
+            qp_cell = cell
+            if wp.static(domain_indices):
+                if cell >= 0:
+                    qp_cell = domain.element_partition_index(domain_arg, cell)
+            if qp_cell >= 0 and qp_cell + 1 < particle_offsets.shape[0]:
+                for entry in range(particle_offsets[qp_cell], particle_offsets[qp_cell + 1]):
+                    q = particle_indices[entry]
+                    if q < 0 or q == p:
+                        continue
+                    if (flags[q] & newton.ParticleFlags.ACTIVE) == 0:
+                        continue
+                    dx = positions[q] - x
+                    s = -wp.dot(dx, n)
+                    if s >= lo and s <= hi:
+                        l = dx + s * n
+                        if wp.dot(l, l) <= lat_sq:
+                            shielded[i] = 1
+                            return
+
+    return shielded_contacts
+
+
+@wp.kernel
+def drop_shielded_contacts(
+    shielded: wp.array[int],
+    collider_velocity: wp.array[wp.vec3],
+    collider_normals: wp.array[wp.vec3],
+    collider_friction: wp.array[float],
+    collider_adhesion: wp.array[float],
+    collider_ids: wp.array[int],
+):
+    i = wp.tid()
+    if shielded[i] == 0:
+        return
+    collider_velocity[i] = wp.vec3(0.0)
+    collider_normals[i] = wp.vec3(0.0)
+    collider_friction[i] = -1.0
+    collider_adhesion[i] = 0.0
+    collider_ids[i] = -1

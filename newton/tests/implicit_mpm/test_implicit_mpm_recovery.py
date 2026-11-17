@@ -9,7 +9,6 @@ import warp as wp
 import newton
 from newton._src.solvers.implicit_mpm.implicit_mpm_solver_kernels import add_critical_strain_offset
 from newton._src.solvers.implicit_mpm.rasterized_collisions import stabilize_collider_velocity
-from newton._src.solvers.implicit_mpm.solver_implicit_mpm import _WARP_AT_LEAST_1_19
 from newton.solvers import SolverImplicitMPM
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -103,10 +102,6 @@ def test_sdf_gradient_normals_particle_contacts(test, device):
         )
         model = builder.finalize(device=device)
         config = _config(0.1, collider_normal_from_sdf_gradient=True)
-        if not _WARP_AT_LEAST_1_19:
-            with test.assertRaisesRegex(ValueError, "Warp 1.19"):
-                SolverImplicitMPM(model, config=config)
-            return
         solver = SolverImplicitMPM(model, config=config)
         state = model.state()
         apply_transform = solver._apply_strain_basis_transform
@@ -119,6 +114,117 @@ def test_sdf_gradient_normals_particle_contacts(test, device):
         solver._apply_strain_basis_transform = capture_normals
         solver.step(state, state, None, None, 0.01)
         np.testing.assert_allclose(normals[0], np.tile((-1.0, 0.0, 0.0), (3, 1)), atol=1.0e-3)
+
+
+def _capture_contacts(solver):
+    """Record the contact positions, normals, gaps and world offsets the solve uses at each step."""
+    apply_transform = solver._apply_strain_basis_transform
+    contacts = []
+
+    def capture(scratch, basis_transform, stress_transform):
+        offsets = scratch.collider_environment_offsets
+        contacts.append(
+            (
+                scratch.collider_position_field.dof_values.numpy().copy(),
+                scratch.collider_normal_field.dof_values.numpy().copy(),
+                scratch.collider_distance_field.dof_values.numpy().copy(),
+                None if offsets is None else offsets.numpy().copy(),
+            )
+        )
+        apply_transform(scratch, basis_transform, stress_transform)
+
+    solver._apply_strain_basis_transform = capture
+    return contacts
+
+
+def test_sdf_gradient_blocks_nearest_face_at_corner(test, device):
+    """Block straight motion into the nearest face of a corner between the floor and a wall thinner than a cell."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverImplicitMPM.register_custom_attributes(builder)
+        radius = 0.02
+        for x in np.linspace(0.42, 0.468, 7):
+            for y in np.linspace(0.025, 0.07, 4):
+                builder.add_particle(pos=(x, y, 0.5), vel=(0.0, 0.0, 0.0), mass=1.0, radius=radius)
+        # The wall spans x in [0.49, 0.51], a fifth of a cell, and stands on the floor at y = 0
+        builder.add_shape_box(
+            -1, xform=wp.transform(wp.vec3(0.5, 1.0, 0.5), wp.quat_identity()), hx=0.01, hy=1.0, hz=2.0
+        )
+        builder.add_shape_box(
+            -1, xform=wp.transform(wp.vec3(0.5, -0.5, 0.5), wp.quat_identity()), hx=2.0, hy=0.5, hz=2.0
+        )
+        model = builder.finalize(device=device)
+        # Keep the contacts of every particle, including those behind others
+        solver = SolverImplicitMPM(
+            model, config=_config(0.1, collider_normal_from_sdf_gradient=True, collider_contact_shielding=False)
+        )
+        contacts = _capture_contacts(solver)
+        state = model.state()
+        solver.step(state, state, None, None, 0.01)
+        positions, normals, gaps, _offsets = contacts[0]
+        wall_gaps = 0.49 - positions[:, 0] - radius
+        floor_gaps = positions[:, 1] - radius
+        test.assertTrue(np.all(np.linalg.norm(normals, axis=1) > 0.5))
+        np.testing.assert_array_less(gaps, np.minimum(wall_gaps, floor_gaps) + 1.0e-5)
+        # Moving straight into the nearest face by its distance leaves the contact's half-space
+        nearest = np.where(wall_gaps < floor_gaps, wall_gaps * -normals[:, 0], floor_gaps * normals[:, 1])
+        np.testing.assert_array_less(gaps, nearest + 1.0e-5)
+
+
+def test_sdf_gradient_normals_separate_worlds(test, device):
+    """Give each world's particles the normal and gap of their own world's collider, at identical positions."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverImplicitMPM.register_custom_attributes(builder)
+        radius = 0.02
+        # Both worlds hold the same particles at x = 0.45. The wall face is at x = 0.50 on their +x side in world 0,
+        # and closer, at x = 0.41 on their -x side, in world 1.
+        for wall_x in (0.51, 0.40):
+            world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            SolverImplicitMPM.register_custom_attributes(world)
+            for y in (0.3, 0.5, 0.7):
+                world.add_particle(pos=(0.45, y, 0.5), vel=(0.0, 0.0, 0.0), mass=1.0, radius=radius)
+            world.add_shape_box(
+                -1, xform=wp.transform(wp.vec3(wall_x, 0.5, 0.5), wp.quat_identity()), hx=0.01, hy=2.0, hz=2.0
+            )
+            builder.add_world(world)
+        model = builder.finalize(device=device)
+        solver = SolverImplicitMPM(
+            model, config=_config(0.1, collider_normal_from_sdf_gradient=True, separate_worlds=True)
+        )
+        contacts = _capture_contacts(solver)
+        state = model.state()
+        solver.step(state, state, None, None, 0.01)
+        _positions, normals, gaps, offsets = contacts[0]
+        test.assertIsNotNone(offsets)
+        for world_index, (normal, gap) in enumerate((((-1.0, 0.0, 0.0), 0.03), ((1.0, 0.0, 0.0), 0.02))):
+            begin, end = offsets[world_index], offsets[world_index + 1]
+            test.assertEqual(end - begin, 3)
+            np.testing.assert_allclose(normals[begin:end], np.tile(normal, (3, 1)), atol=1.0e-3)
+            np.testing.assert_allclose(gaps[begin:end], gap, atol=1.0e-4)
+
+
+def test_contact_shielding_keeps_binding_contacts(test, device):
+    """Deactivate a contact behind a particle closer to the floor, unless it approaches faster than its gap allows."""
+    with wp.ScopedDevice(device):
+        radius = 0.01
+        for fall_speed, shielded in ((0.0, True), (5.0, False)):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            SolverImplicitMPM.register_custom_attributes(builder)
+            builder.add_ground_plane()
+            # The upper particle's path to the floor crosses the lower one, a diameter below it
+            builder.add_particle(pos=(0.55, 0.55, 0.011), vel=(0.0, 0.0, 0.0), mass=1.0, radius=radius)
+            builder.add_particle(pos=(0.55, 0.55, 0.031), vel=(0.0, 0.0, -fall_speed), mass=1.0, radius=radius)
+            model = builder.finalize(device=device)
+            solver = SolverImplicitMPM(model, config=_config(0.1))
+            contacts = _capture_contacts(solver)
+            state = model.state()
+            solver.step(state, state, None, None, 0.01)
+            positions, normals, _gaps, _offsets = contacts[0]
+            active = np.linalg.norm(normals, axis=1) > 0.5
+            test.assertEqual(len(positions), 2)
+            test.assertTrue(active[np.argmin(positions[:, 2])])
+            test.assertEqual(active[np.argmax(positions[:, 2])], not shielded)
 
 
 def _make_volume_solver(device, recovery_time, *, target=1.0):
@@ -326,6 +432,9 @@ for function in (
     test_predictive_contact_truncated,
     test_project_outside_keeps_particle_radius,
     test_sdf_gradient_normals_particle_contacts,
+    test_sdf_gradient_blocks_nearest_face_at_corner,
+    test_sdf_gradient_normals_separate_worlds,
+    test_contact_shielding_keeps_binding_contacts,
     test_volume_recovery_truncated,
     test_volume_recovery_offsets,
     test_density_offset_bounded_in_p1d_modes,
