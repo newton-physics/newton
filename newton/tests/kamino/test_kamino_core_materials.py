@@ -21,7 +21,6 @@ from newton._src.solvers.kamino._src.core.materials import (
     MaterialPairProperties,
     make_get_mixed_material_pair_property,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 
 # Test utilities
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
@@ -67,10 +66,6 @@ class TestMaterials(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True for verbose output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        if self.verbose:
-            reset_log_level()
 
     def test_00_default_material_properties(self):
         # Create a default-constructed surface material

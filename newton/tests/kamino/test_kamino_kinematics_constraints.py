@@ -18,7 +18,6 @@ from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.constraints import make_unilateral_constraints_info
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.print import debug_print_data_info, debug_print_model_constraint_info
 from newton.tests.unittest_utils import NewtonTestCase
@@ -48,11 +47,6 @@ class TestKinematicsConstraints(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True for verbose output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_single_model_make_constraints(self):
         """

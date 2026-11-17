@@ -22,7 +22,6 @@ from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.test_kamino_geometry_primitive import check_contacts
 from newton.tests.unittest_utils import NewtonTestCase
@@ -241,11 +240,6 @@ class TestCollisionPipelineUnified(NewtonTestCase):
         # Generate a list of supported shape pairs
         self.supported_shape_pairs = nominal_expected_contacts_per_shape_pair.keys()
         logger.debug("Supported shape pairs for unified pipeline tests:\n%s", self.supported_shape_pairs)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_00_on_specific_primitive_shape_pair(self):
         """
@@ -613,9 +607,6 @@ class TestUnifiedWriterContactDataRegression(NewtonTestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
 
-    def tearDown(self):
-        self.default_device = None
-
     def _run_pipeline(self, builder: ModelBuilder, default_gap=0.0):
         model = ModelKamino.from_newton(builder.finalize(self.default_device))
         data = model.data()
@@ -695,9 +686,6 @@ class TestUnifiedPipelineNxnBroadphase(NewtonTestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def _make_two_sphere_builder(
         self,

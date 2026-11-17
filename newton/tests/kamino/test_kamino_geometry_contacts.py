@@ -34,7 +34,6 @@ from newton._src.solvers.kamino._src.solvers.warmstart import (
     _count_current_contacts_by_cached_pair,
     warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_backup,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import expect_contact_capacity_warning, setup_test_output, setup_tests, test_context
 from newton.tests.unittest_utils import NewtonTestCase
 
@@ -362,11 +361,6 @@ class TestGeometryContactFrames(NewtonTestCase):
 
         setup_test_output(self, verbose=self.verbose)
 
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
-
     def test_01_make_contact_frame_znorm(self):
         # Create a normal vectors
         test_normals: list[wp.vec3f] = []
@@ -455,11 +449,6 @@ class TestGeometryContactMode(NewtonTestCase):
 
         setup_test_output(self, verbose=self.verbose)
 
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
-
     def test_01_contact_mode_opening(self):
         v_input = wp.array([wp.vec3f(0.0, 0.0, 0.01)], dtype=wp.vec3f, device=self.default_device)
         mode_output = wp.zeros(shape=(1,), dtype=wp.int32, device=self.default_device)
@@ -496,11 +485,6 @@ class TestGeometryContacts(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True for detailed output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_current_pair_counts_match_legacy_warmstart_scan(self):
         """Match legacy fallback pair counts at cached sorted range starts."""
@@ -735,11 +719,6 @@ class TestGeometryContactConversions(NewtonTestCase):
         self.verbose = test_context.verbose
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     ###
     # Helpers

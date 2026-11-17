@@ -18,7 +18,6 @@ from newton._src.solvers.kamino._src.core.math import quat_exp
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils import testing
@@ -155,11 +154,6 @@ class TestKinematicsLimits(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True to enable verbose output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_00_create_empty_limits_container(self):
         """

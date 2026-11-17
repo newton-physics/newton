@@ -26,11 +26,12 @@ def setup_test_output(test: NewtonTestCase, verbose: bool = False):
 
     Warp's module-load messages and the log output of a first-time asset
     download are always allowed. When ``verbose`` is true, the Kamino loggers
-    are set to ``DEBUG`` and any stdout is allowed.
+    are set to ``DEBUG`` until the test's cleanup and any stdout is allowed.
     """
     if verbose:
         test.allowOutputRegex(r"[\s\S]+", stream="stdout")
         set_log_level(logging.DEBUG)
+        test.addCleanup(reset_log_level)
     else:
         test.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
         test.allowOutputRegex(NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, stream="stdout")

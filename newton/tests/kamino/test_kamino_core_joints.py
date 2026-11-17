@@ -11,7 +11,6 @@ import warp as wp
 
 import newton
 from newton._src.solvers.kamino._src.core.joints import JointDoFType
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.unittest_utils import NewtonTestCase
 
@@ -47,11 +46,6 @@ class TestCoreJoints(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True to enable verbose output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_joint_dof_type_enum(self):
         doftype = JointDoFType.REVOLUTE

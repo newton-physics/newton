@@ -18,7 +18,6 @@ from newton._src.solvers.kamino._src.geometry.keying import (
     make_bitmask,
     make_build_pair_key3_func,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.unittest_utils import NewtonTestCase
 
@@ -51,11 +50,6 @@ class TestPairKeyOps(NewtonTestCase):
 
         # Global numpy configurations
         np.set_printoptions(linewidth=10000, precision=10, threshold=10000, suppress=True)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_00_make_bitmask(self):
         """Test make_bitmask function for various bit sizes."""
@@ -241,11 +235,6 @@ class TestBinarySearchOps(NewtonTestCase):
         # Global numpy configurations
         np.set_printoptions(linewidth=10000, precision=10, threshold=10000, suppress=True)
 
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
-
     def test_01_binary_search_find_pair(self):
         """Test binary_search_find_pair function."""
 
@@ -366,11 +355,6 @@ class TestKeySorter(NewtonTestCase):
 
         # Global numpy configurations
         np.set_printoptions(linewidth=10000, precision=10, threshold=10000, suppress=True)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_00_make_key_sorter(self):
         """Test creation of KeySorter instance and relevant memory allocations."""

@@ -26,10 +26,6 @@ class TestSemiSparseBlockCholeskySolverBatched(NewtonTestCase):
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
 
-    def tearDown(self):
-        """Release the test device reference."""
-        self.device = None
-
     def test_solve_handles_multiple_rhs(self):
         """Solve every requested RHS using one shared factorization per batch."""
         rng = np.random.default_rng(1234)

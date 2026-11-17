@@ -13,7 +13,6 @@ import newton
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize import rcm_batch
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import get_matrix_block, get_vector_block
 from newton.tests.kamino.utils.print import debug_print_error_stats
@@ -37,11 +36,6 @@ class TestLinAlgLLTBlockedRCMSolver(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True for verbose output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_00_make_default_solver(self):
         """

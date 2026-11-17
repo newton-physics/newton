@@ -23,7 +23,6 @@ from newton._src.solvers.kamino._src.solvers.padmm.math import (
     project_to_coulomb_cone,
     project_to_coulomb_dual_cone,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
     extract_delassus,
@@ -475,11 +474,6 @@ class TestPADMMSolver(NewtonTestCase):
         # Create output directory if saving figures
         if self.savefig:
             self.output_path.mkdir(parents=True, exist_ok=True)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_00_make_padmm_default(self):
         """

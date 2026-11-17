@@ -17,7 +17,6 @@ from newton._src.solvers.kamino._src.linalg.core import (
     prefix_offsets,
     segment_local_indices,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.unittest_utils import NewtonTestCase
 
@@ -87,11 +86,6 @@ class TestLinAlgCoreMakeTolerance(NewtonTestCase):
 
         setup_test_output(self, verbose=self.verbose)
 
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
-
     def test_00_make_tolerance_from_defaults(self):
         tol = make_dtype_tolerance()
         logger.debug("tol = %s (type: %s)", tol, type(tol))
@@ -147,11 +141,6 @@ class TestLinAlgCoreDenseMultiLinearRectangularInfo(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True for verbose output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_00_make_single_rectangular_default(self):
         dims = (3, 4)
@@ -258,11 +247,6 @@ class TestLinAlgCoreDenseMultiLinearSquareInfo(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True for verbose output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_00_make_single_square_default(self):
         dims = 4

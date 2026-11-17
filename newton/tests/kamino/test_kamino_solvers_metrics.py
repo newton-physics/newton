@@ -16,7 +16,6 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJac
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver
 from newton._src.solvers.kamino._src.solvers.padmm.types import PADMMData
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
 from newton.tests.kamino.utils.extract import (
@@ -261,11 +260,6 @@ class TestSolverMetrics(NewtonTestCase):
         setup_test_output(self, verbose=self.verbose)
 
         self.seed = 42
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def _evaluate_contact_residuals(self, contacts: list[tuple[int, int, float]]) -> tuple[np.ndarray, np.ndarray]:
         """Evaluate contact residuals from explicitly supplied signed distances."""

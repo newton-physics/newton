@@ -25,9 +25,6 @@ class TestEquivalenceClasses(NewtonTestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
 
-    def tearDown(self):
-        self.default_device = None
-
     def test_01_discrete_signature_equivalence(self):
         # Create some discrete signatures
         with wp.ScopedDevice(self.default_device):

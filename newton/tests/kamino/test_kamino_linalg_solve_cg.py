@@ -25,7 +25,6 @@ from newton._src.solvers.kamino._src.linalg.sparse_matrix import (
     dense_to_block_sparse_copy_values,
 )
 from newton._src.solvers.kamino._src.linalg.utils.rand import random_spd_matrix
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import get_vector_block
 from newton.tests.kamino.utils.print import debug_print_error_stats
@@ -44,10 +43,6 @@ class TestLinalgConjugate(NewtonTestCase):
         setup_test_output(self, verbose=self.verbose)
 
         self.seed = 42
-
-    def tearDown(self):
-        if self.verbose:
-            reset_log_level()
 
     def _test_solve(self, solver_cls, problem_params, device):
         problem = RandomProblemLLT(

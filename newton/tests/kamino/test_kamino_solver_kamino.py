@@ -34,7 +34,6 @@ from newton._src.solvers.kamino._src.linalg import LDLBlockSparseSolver, LLTBloc
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.solvers import PADMMSolver
 from newton._src.solvers.kamino._src.solvers.common import tolerance_scaled_residual
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton._src.solvers.kamino.examples import print_progress_bar
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
@@ -386,11 +385,6 @@ class TestSolverKaminoConfig(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True to enable verbose output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_00_make_default(self):
         """Construct the default solver configuration."""
@@ -1198,11 +1192,6 @@ class TestSolverKaminoImpl(NewtonTestCase):
 
         self.progress = test_context.verbose  # Set to True to show progress bars during long tests
         self.seed = 42
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     ###
     # Test Solver Construction

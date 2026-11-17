@@ -339,9 +339,6 @@ class TestJacobianAssembly(NewtonTestCase):
 
         setup_test_output(self, verbose=self.verbose)
 
-    def tearDown(self):
-        self.default_device = None
-
     @requires("pxr.Usd")
     def test_finite_differences_single_joint(self):
         """Match analytic and finite-difference Jacobians on every single-joint fixture."""
@@ -475,9 +472,6 @@ class TestPerDofActuation(NewtonTestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
 
-    def tearDown(self):
-        self.default_device = None
-
     def test_reject_mixed_passive_and_actuated_dofs(self):
         """Reject a joint with a mixed passive and actuated DoF partition."""
         builder = build_unary_universal_joint_test(limits=True, ground=False)
@@ -507,9 +501,6 @@ class TestPassiveUniversalJointFrame(NewtonTestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def test_follower_joint_frame(self):
         """Test kinematic constraints and jacobian for a passive universal joint.
@@ -582,9 +573,6 @@ class TestRandomPoses(NewtonTestCase):
         self.verbose = test_context.verbose
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
 
     def _make_solve_and_check(self, model, num_poses, rng, **overrides):
         """Return a ``solve_and_check_fk_random_poses`` partial with the common defaults for random-pose tests."""
@@ -818,9 +806,6 @@ class TestFourBarTieRodAxisFrames(NewtonTestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
 
-    def tearDown(self):
-        self.default_device = None
-
     def test_axis_joint_frames_update_after_notify(self):
         """Synthetic axis frames match a fresh solver after model changes."""
         model = ModelKamino.from_newton(
@@ -871,9 +856,6 @@ class TestWarnings(NewtonTestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
 
-    def tearDown(self):
-        self.default_device = None
-
     def test_solve_fk_warns_without_base_body_when_base_provided(self):
         """
         Validate that solve_fk() warns about worlds without a base body, only when a base is provided.
@@ -910,10 +892,6 @@ class TestMultiRhsVelocity(NewtonTestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        """Release the test device reference."""
-        self.default_device = None
 
     def test_multi_rhs_matches_repeated_velocity_solves(self):
         """Match every multi-RHS body twist to an independent velocity solve."""

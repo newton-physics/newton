@@ -22,7 +22,6 @@ from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.detector import CollisionDetector
 from newton._src.solvers.kamino._src.geometry.primitive import CollisionPipelinePrimitive
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.unittest_utils import NewtonTestCase
 
@@ -89,9 +88,6 @@ class TestMarginGapNarrowphase(NewtonTestCase):
         self.default_device = wp.get_device(test_context.device)
 
         setup_test_output(self, verbose=test_context.verbose)
-
-    def tearDown(self):
-        reset_log_level()
 
     # ------------------------------------------------------------------
     # Margin tests
@@ -384,9 +380,6 @@ class TestMarginGapSolver(NewtonTestCase):
         self.default_device = wp.get_device(test_context.device)
 
         setup_test_output(self, verbose=test_context.verbose)
-
-    def tearDown(self):
-        reset_log_level()
 
     def test_10_penetrating_margin_gets_pushed_out(self):
         """Sphere placed inside the margin envelope should be pushed upward."""

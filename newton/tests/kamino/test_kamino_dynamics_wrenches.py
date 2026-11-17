@@ -23,7 +23,6 @@ from newton._src.solvers.kamino._src.dynamics.wrenches import (
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
     extract_active_constraint_vectors,
@@ -256,11 +255,6 @@ class TestDynamicsWrenches(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True for verbose output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_compute_wrenches_for_single_fourbar_with_limits_and_contacts(self):
         # Construct the test problem

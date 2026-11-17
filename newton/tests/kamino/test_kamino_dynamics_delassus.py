@@ -21,7 +21,6 @@ from newton._src.solvers.kamino._src.kinematics.constraints import get_max_const
 from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.linalg import LLTSequentialSolver
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
     extract_active_constraint_dims,
@@ -188,11 +187,6 @@ class TestDelassusOperator(NewtonTestCase):
         self.default_device = wp.get_device(test_context.device)
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_allocate_single_delassus_operator(self):
         # Model constants
@@ -843,11 +837,6 @@ class TestDelassusOperatorSparse(NewtonTestCase):
         self.dynamic_joints = True
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     ###
     # Helpers

@@ -19,7 +19,6 @@ from newton._src.solvers.kamino._src.linalg.factorize import (
     make_llt_blocked_solve_inplace_kernel,
     make_llt_blocked_solve_kernel,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import get_matrix_block, get_vector_block
 from newton.tests.kamino.utils.print import debug_print_error_stats
@@ -51,11 +50,6 @@ class TestLinAlgLLTBlocked(NewtonTestCase):
         self.factorize_kernel = make_llt_blocked_factorize_kernel(self.block_size)
         self.solve_kernel = make_llt_blocked_solve_kernel(self.block_size)
         self.solve_inplace_kernel = make_llt_blocked_solve_inplace_kernel(self.block_size)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_single_problem_dims_all_active(self):
         """

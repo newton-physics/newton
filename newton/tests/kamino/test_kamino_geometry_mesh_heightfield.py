@@ -19,7 +19,6 @@ from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino, convert_contacts_newton_to_kamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.unittest_utils import NewtonTestCase
 
@@ -302,11 +301,6 @@ class TestUnifiedPipelineMeshHeightfield(NewtonTestCase):
 
         setup_test_output(self, verbose=self.verbose)
 
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
-
     def test_01_sphere_on_flat_heightfield(self):
         """Retain a valid upward contact patch for a sphere touching a flat heightfield."""
         _, model, data = _finalize_and_get_kamino(_build_sphere_on_heightfield(), self.default_device)
@@ -427,11 +421,6 @@ class TestNewtonCollisionPathMeshHeightfield(NewtonTestCase):
 
         setup_test_output(self, verbose=self.verbose)
 
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
-
     def test_01_newton_to_kamino_heightfield(self):
         """Heightfield contacts survive Newton->Kamino conversion with correct geometry."""
         builder = _build_sphere_on_heightfield()
@@ -537,11 +526,6 @@ class TestSolverWithMeshHeightfield(NewtonTestCase):
         self.verbose = test_context.verbose
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_sphere_falls_onto_heightfield(self):
         """Sphere dropped from 0.5m above flat heightfield must rest at z ≈ SPHERE_RADIUS."""

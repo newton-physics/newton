@@ -23,7 +23,6 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import (
     SparseSystemJacobians,
 )
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_cts_jacobians, extract_dofs_jacobians
@@ -58,11 +57,6 @@ class TestKinematicsDenseSystemJacobians(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True for verbose output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_allocate_single_dense_system_jacobians_only_joints(self):
         # Construct the model description
@@ -571,11 +565,6 @@ class TestKinematicsSparseSystemJacobians(NewtonTestCase):
         setup_test_output(self, verbose=self.verbose)
 
         self.epsilon = 1e-6  # Threshold for sparse-dense comparison test
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     ###
     # Helpers

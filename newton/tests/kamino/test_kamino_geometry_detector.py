@@ -20,7 +20,6 @@ from newton._src.solvers.kamino._src.geometry.detector import (
     _estimate_fallback_world_max_contacts,
     _resolve_contact_capacity,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.test_kamino_geometry_primitive import check_contacts
 from newton.tests.unittest_utils import NewtonTestCase
@@ -41,11 +40,6 @@ class TestCollisionDetectorConfig(NewtonTestCase):
         self.default_device = wp.get_device(test_context.device)
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_00_make_default(self):
         """Test making default collision detector config."""
@@ -75,11 +69,6 @@ class TestGeometryCollisionDetector(NewtonTestCase):
         self.expected_contacts = 9  # NOTE: specialized to build_boxes_nunchaku
         logger.debug("build_func: %s", self.build_func.__name__)
         logger.debug("expected_contacts: %s", self.expected_contacts)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_primitive_pipeline(self):
         """

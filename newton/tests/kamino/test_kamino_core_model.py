@@ -26,7 +26,6 @@ from newton._src.solvers.kamino._src.core.joints import (
     JointActuationType,
 )
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests import get_kamino_basics_asset
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
@@ -55,11 +54,6 @@ class TestModel(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True for verbose output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_single_model(self):
         # Create a model builder
@@ -164,11 +158,6 @@ class TestModelConversions(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True to enable verbose output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_model_conversions_consistency_fourbar_from_builder(self):
         """
@@ -1074,11 +1063,6 @@ class TestStateControlConversions(NewtonTestCase):
 
         setup_test_output(self, verbose=self.verbose)
 
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
-
     def test_01_state_conversions(self):
         """
         Test the conversion operations between newton.State and kamino.StateKamino.
@@ -1228,9 +1212,6 @@ class TestConvertModelMaterials(NewtonTestCase):
             setup_tests(clear_cache=False)
         setup_test_output(self)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def _build_two_material_model(self) -> tuple[Model, ModelKamino]:
         """Build a model with 2 shapes sharing a material and 1 shape with a distinct one."""

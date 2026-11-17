@@ -251,9 +251,6 @@ class TestGimbal(NewtonTestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
 
-    def tearDown(self):
-        self.default_device = None
-
     def test_rotational_d6_converts_to_gimbal(self):
         """Convert a three-angular-axis D6 joint to GIMBAL."""
         model, d6 = _build_rotational_d6(_RH_AXES, self.default_device)

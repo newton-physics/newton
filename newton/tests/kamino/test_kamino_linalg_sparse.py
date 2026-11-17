@@ -21,7 +21,6 @@ from newton._src.solvers.kamino._src.linalg.blas import (
 )
 from newton._src.solvers.kamino._src.linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from newton._src.solvers.kamino._src.linalg.sparse_operator import BlockSparseLinearOperators
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton._src.solvers.kamino._src.utils.sparse import sparseplot
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.unittest_utils import NewtonTestCase
@@ -43,11 +42,6 @@ class TestBlockDType(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True for verbose output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     ###
     # Construction Tests
@@ -135,11 +129,6 @@ class TestBlockSparseMatrices(NewtonTestCase):
         setup_test_output(self, verbose=self.verbose)
 
         self.plot = test_context.verbose  # Set to True to plot sparse matrices
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     ###
     # Construction Tests
@@ -395,11 +384,6 @@ class TestBlockSparseMatrixOperations(NewtonTestCase):
         # Random number generation.
         self.seed = 42
         self.rng = None
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     ###
     # Test Helpers

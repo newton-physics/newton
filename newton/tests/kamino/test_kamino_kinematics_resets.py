@@ -17,7 +17,6 @@ from newton._src.solvers.kamino._src.core.model import DataKamino, ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMode, compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.resets import reset_joints_state_from_bodies_state, set_floating_base
 from newton._src.solvers.kamino._src.solvers import ForwardKinematicsSolver
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.solvers import SolverKamino
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.sampling import (
@@ -395,11 +394,6 @@ class TestSetFloatingBase(NewtonTestCase):
         self.progress = test_context.verbose  # Set to True to show progress bars during long tests
         self.seed = 42
 
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
-
     def test_01_set_floating_base_with_base_joint(self):
         """
         Validate that set_floating_base() sets the base pose/velocity as expected,
@@ -642,11 +636,6 @@ class TestJointBodyStateConversions(NewtonTestCase):
 
         self.progress = test_context.verbose  # Set to True to show progress bars during long tests
         self.seed = 42
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_reset_joint_states_from_body_state(self):
         """

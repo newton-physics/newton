@@ -34,7 +34,6 @@ from newton._src.solvers.kamino._src.geometry.primitive.narrowphase import (
     PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS,
     primitive_narrowphase,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level
 from newton.tests.kamino import expect_contact_capacity_warning, setup_test_output, setup_tests, test_context
 from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils import basics, testing
@@ -502,11 +501,6 @@ class TestPrimitiveBroadPhase(NewtonTestCase):
                 self.supported_shape_pairs.append((shape_A_name, shape_B_name))
         logger.debug("supported_shape_pairs:\n%s\n", self.supported_shape_pairs)
 
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
-
     def test_01_bspheres_on_each_primitive_shape_pair_exact(self):
         # Each shape pair in its own world with
         # - zero distance: (i.e., exactly touching)
@@ -725,11 +719,6 @@ class TestPrimitiveNarrowPhase(NewtonTestCase):
                 if (shape_A, shape_B) in PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS:
                     self.supported_shape_pairs.append((shape_A_name, shape_B_name))
         logger.debug("supported_shape_pairs:\n%s\n", self.supported_shape_pairs)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_on_each_primitive_shape_pair_exact(self):
         """
@@ -1025,11 +1014,6 @@ class TestPipelinePrimitive(NewtonTestCase):
         self.verbose = test_context.verbose  # Set to True for detailed output
 
         setup_test_output(self, verbose=self.verbose)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_00_make_default(self):
         """Tests the default constructor of CollisionPipelinePrimitive."""
