@@ -1408,8 +1408,10 @@ class SolverSteel(SolverBase, CouplingInterface):
       damping response is unbounded, so under a large external load the drive reaction
       can exceed the limit. ``drive_mode="rows"`` instead solves one PGS row per driven DOF with the PhysX articulation force-drive
       update and clamps its impulse, which bounds the complete reaction.
-      :attr:`~newton.Model.joint_armature` and :attr:`~newton.Model.joint_damping` are
-      applied.
+      :attr:`~newton.Model.joint_armature` is applied. Positive passive
+      :attr:`~newton.Model.joint_damping` on PRISMATIC, REVOLUTE, BALL and D6 DOFs is
+      integrated implicitly by adding ``dt * damping`` to the mass diagonal in either
+      drive mode. Passive damping is independent of drive targets and effort limits.
     - Passive joint springs: :attr:`~newton.Model.joint_stiffness` and
       :attr:`~newton.Model.joint_rest_q` on PRISMATIC, REVOLUTE and D6 DOFs, applied
       explicitly as ``stiffness * (rest_q - q)`` like :class:`~newton.solvers.SolverFeatherstone`,
@@ -1550,9 +1552,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         Like :class:`~newton.solvers.SolverMuJoCo`, the reconstruction uses the bodies' rigid mass
         and inertia, not :attr:`~newton.Model.joint_armature`. For a dynamic DOF the wrench
         projected onto the joint's motion subspace is therefore its generalized load
-        (:attr:`~newton.Control.joint_f`, explicit passive spring and damping forces and
-        joint-space rows) less ``armature * qdd``. Kinematic DOFs report the rigid-body load of
-        carrying their subtree along the prescribed motion.
+        (:attr:`~newton.Control.joint_f`, explicit passive spring forces, passive damping and
+        joint-space rows) less ``armature * qdd``. Positive passive damping on PRISMATIC,
+        REVOLUTE, BALL and D6 DOFs contributes ``-damping * (qd + dt * qdd)`` to that load,
+        where ``qd`` is the velocity after any velocity-limit prescaling and ``qdd`` is the
+        solved acceleration relative to that velocity. Thus ``qd + dt * qdd`` is the
+        end-of-step velocity. Kinematic DOFs report the rigid-body load of carrying their
+        subtree along the prescribed motion.
 
         The accounting has these limits:
 
@@ -1931,11 +1937,13 @@ class SolverSteel(SolverBase, CouplingInterface):
             relaxation: Successive over-relaxation factor of the PGS sweep.
             update_mass_matrix_interval: Rebuild and refactor the mass matrix every this many
                 calls to :meth:`step`; ``1`` rebuilds it every step. Larger values reuse a
-                stale factorization between rebuilds. A change of ``dt``, :meth:`reset` and
-                :meth:`notify_model_changed` still request a refresh of the affected
-                articulations. Under CUDA graph capture the
-                host-side cadence is baked into the graph, so the interval should divide the
-                number of steps captured per graph.
+                stale factorization between rebuilds. A change of ``dt`` beyond a relative
+                tolerance of ``1e-6``, :meth:`reset` and :meth:`notify_model_changed` request a
+                refresh of the affected articulations. Under CUDA graph capture the host-side
+                cadence is baked into the graph, so the interval should divide the
+                number of steps captured per graph. The timestep associated with each factor
+                is checked on the device, so replaying a graph after a step or graph with a
+                different timestep refreshes the factor even between scheduled rebuilds.
             enable_joint_limits: Enforce :attr:`~newton.Model.joint_limit_lower` and
                 :attr:`~newton.Model.joint_limit_upper` of PRISMATIC, REVOLUTE and D6 DOFs as
                 unilateral rows. When ``False`` (the default), no joint-limit rows are created,
@@ -2773,7 +2781,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._coupling_patch_history_restore_pending = False
         self._coupling_iteration_restarts = True
         self._mass_update_requested = wp.zeros(model.articulation_count, dtype=wp.int32, device=model.device)
-        self._last_step_dt = None
+        self._mass_factor_dt = wp.zeros(model.articulation_count, dtype=wp.float32, device=model.device)
 
         self._model_plan: _SteelModelPlan | None = None
         self._kinematic_joint_mask = wp.zeros(model.joint_count, dtype=wp.int32, device=model.device)
@@ -3300,7 +3308,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         if flags & dof_force:
             self._refresh_passive_joint_damping()
             self._refresh_passive_spring_stiffness()
-            # Augmented drive gains enter the factored mass-matrix diagonal.
+            # Augmented drive gains and passive damping enter the factored mass diagonal.
             self._mass_update_requested.fill_(1)
         if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES):
             self._refresh_passive_spring_rest_q()
@@ -3539,7 +3547,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         if world_mask is None:
             # Restart the host-side cadence; graphs captured earlier keep the values baked into them.
             self._step = 0
-            self._last_step_dt = None
             self._buffer_index = 0
             self._ws_history_dt.zero_()
             self._ws_history_generation.fill_(CONTACT_GENERATION_NONE)
@@ -7054,10 +7061,6 @@ class SolverSteel(SolverBase, CouplingInterface):
                 # Captured steps defer errors to the device; eager steps raise during preparation.
                 self._device_torsion.deferred_errors = wp.get_stream(self.model.device).is_capturing
                 self._device_torsion.begin_step(state_in, state_out)
-        if self._last_step_dt is not None and abs(self._last_step_dt - dt) > 1.0e-8:
-            # The augmented mass matrix depends on dt through the implicit drive terms.
-            self._force_mass_update = True
-        self._last_step_dt = dt
 
         model = self.model
         if control is None:
@@ -7153,7 +7156,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     device=model.device,
                 )
                 parent_wrench_prescale = self._parent_wrench_prescale
-        self._stage1_crba(state_aug)
+        self._stage1_crba(state_aug, dt)
 
         # Stage 2: factor the augmented mass matrix of every articulation group.
         self._profile_stage("factor")
@@ -8563,13 +8566,15 @@ class SolverSteel(SolverBase, CouplingInterface):
         external body forces), :attr:`~newton.Control.joint_f`, passive joint springs and damping and the
         explicit part ``u0`` of each drive, clamped to :attr:`~newton.Model.joint_effort_limit`
         (an actuator-only clamp, as MuJoCo's ``actuatorfrcrange`` and PhysX's drive
-        ``maxForce``). The implicit part ``K = dt * kd + dt^2 * ke`` is stored in
+        ``maxForce``). The implicit drive part plus ``dt * max(joint_damping, 0)`` is stored in
         ``aug_row_K`` and added to the mass-matrix diagonal by :meth:`_stage1_crba`. With
-        ``drive_mode="rows"`` drives contribute nothing here; their rows are solved
-        with the constraints.
+        ``drive_mode="rows"`` only passive damping contributes to this diagonal; drive rows are solved
+        with the constraints. Passive damping uses ``dynamics_qd``, after velocity-limit
+        prescaling; actuator drives retain their input-state velocity.
         """
         model = self.model
         body_f = state_in.body_f if state_in.body_count else None
+        dynamics_qd = self._qd_work if self._enable_joint_velocity_limits else state_in.joint_qd
         state_aug._body_ft_s.zero_()
         common_inputs = [
             model.articulation_start,
@@ -8585,7 +8590,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             model.joint_dof_dim,
             control.joint_f,
             state_in.joint_q,
-            state_in.joint_qd,
+            dynamics_qd,
             self._passive_spring_stiffness,
             self._passive_spring_rest_q,
             self._passive_joint_damping,
@@ -8599,7 +8604,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         ]
         if self._tree_plan is not None:
             self._launch_tree_tau(tau_inputs, state_aug)
-            if self._drive_mode == "augmented" and self._articulation_max_dofs > 0:
+            if self._articulation_max_dofs > 0:
                 wp.launch(
                     eval_augmented_drives,
                     dim=model.articulation_count,
@@ -8613,6 +8618,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                         model.joint_dof_dim,
                         state_in.joint_q,
                         state_in.joint_qd,
+                        self._passive_joint_damping,
+                        self._drive_mode == "augmented",
                         model.joint_target_ke,
                         model.joint_target_kd,
                         control.joint_target_q,
@@ -8627,7 +8634,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     block_dim=self._serial_kernel_block_dim,
                     device=model.device,
                 )
-        elif self._drive_mode == "augmented" and self._articulation_max_dofs > 0:
+        elif self._articulation_max_dofs > 0:
             wp.launch(
                 eval_rigid_tau_and_augmented_drives,
                 dim=model.articulation_count,
@@ -8635,6 +8642,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                     *common_inputs,
                     self._articulation_H_rows,
                     *tau_inputs,
+                    state_in.joint_qd,
+                    self._drive_mode == "augmented",
                     model.joint_target_ke,
                     model.joint_target_kd,
                     control.joint_target_q,
@@ -8714,7 +8723,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=self.model.device,
             )
 
-    def _stage1_crba(self, state_aug: State):
+    def _stage1_crba(self, state_aug: State, dt: float):
         """Build the joint-space mass matrix of articulations due for a refresh and add drive terms."""
         model = self.model
         global_flag = 1 if ((self._step % self._update_mass_matrix_interval) == 0 or self._force_mass_update) else 0
@@ -8722,8 +8731,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         wp.launch(
             build_mass_update_mask,
             dim=model.articulation_count,
-            inputs=[global_flag, self._mass_update_requested, self._dynamics_art_active],
-            outputs=[self._mass_update_mask],
+            inputs=[global_flag, dt, self._mass_update_requested, self._dynamics_art_active],
+            outputs=[self._mass_update_mask, self._mass_factor_dt],
             device=model.device,
         )
         if not global_flag:
@@ -8818,8 +8827,6 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=model.device,
                 block_dim=128,
             )
-            if self._drive_mode != "augmented":
-                continue
             wp.launch(
                 apply_augmented_mass_diagonal_grouped,
                 dim=n_arts,
