@@ -6042,6 +6042,25 @@ def compute_body_particle_contact_forces(
     contact_force[tid] = wp.spatial_vector(f_body, wp.cross(cp_world - com_world, f_body))
 
 
+@wp.func
+def record_world_residual(world_residual: wp.array[float], world: int, decrement: float):
+    """Raise a world's residual to a block's stationarity residual ``rᵀ H⁻¹ r`` [J].
+
+    ``r`` is the block's residual of the implicit Euler equations, including inertia,
+    and ``H`` its Hessian. The solve kernels hold the force ``f = -r``, so callers pass
+    ``f · Δx`` with ``Δx = H⁻¹ f``, which is equal. Global world ``-1`` uses the final
+    entry of the ``(world_count + 1,)`` array. Non-finite values record infinity,
+    because ``atomic_max`` drops NaN.
+    """
+    w = world
+    if w < 0:
+        w = world_residual.shape[0] - 1
+    value = wp.abs(decrement)
+    if not wp.isfinite(value):
+        value = wp.inf
+    wp.atomic_max(world_residual, w, value)
+
+
 @functools.cache
 def create_solve_rigid_body(has_tendons: bool, has_joint_constraints: bool):
     """Specialize tendon and joint assembly and joint-aware contact compliance to the model.
@@ -6132,9 +6151,11 @@ def create_solve_rigid_body(has_tendons: bool, has_joint_constraints: bool):
         tendon_segment_active: wp.array[int],
         tendon_segment_active_guide_l: wp.array[int],
         tendon_segment_active_guide_r: wp.array[int],
+        body_world: wp.array[wp.int32],
         # Output
         body_q_new: wp.array[wp.transform],
         body_contact_free_angular_compliance: wp.array[wp.mat33],
+        world_residual: wp.array[float],
     ):
         """
         VBD block solve step for rigid bodies.
@@ -6391,6 +6412,10 @@ def create_solve_rigid_body(has_tendons: bool, has_joint_constraints: bool):
 
         # Solve 6x6 system via direct LDL^T
         x_inc, w_world = ldlt6_solve(h_ll, h_aa, h_al, f_force, f_torque)
+        if world_residual:
+            record_world_residual(
+                world_residual, body_world[body_index], wp.dot(f_force, x_inc) + wp.dot(f_torque, w_world)
+            )
 
         # Update pose from increments
         # Convert angular increment to quaternion
