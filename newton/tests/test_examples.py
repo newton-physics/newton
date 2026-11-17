@@ -1717,7 +1717,8 @@ add_contact_example_test(
 add_contact_example_test(
     name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
-    test_options={"requires": ("trimesh",), "num-frames": 120, "world-count": 1, "solver": "kamino"},
+    # The nut starts threading at a run-dependent frame and has passed 45 degrees by frame 140 at the latest.
+    test_options={"requires": ("trimesh",), "num-frames": 240, "world-count": 1, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
     expect_output_regexes=[
