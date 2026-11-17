@@ -1278,6 +1278,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                     restitution_mix_mode=self._config.materials.restitution_mix_mode,
                     cull_speculative_contacts=self._solver_kamino.cull_speculative_contacts,
                     kinematic_only_immovable=self._config.dynamics_solver == "lox",
+                    contact_dead_zone=self._config.constraints.delta,
                 )
         else:
             self._detector = None
