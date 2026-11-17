@@ -3381,8 +3381,7 @@ def convert_qfrc_from_mj_kernel(
 
 @wp.kernel
 def update_pair_properties_kernel(
-    pairs_per_world: int,
-    mjc_pair_to_newton_pair: wp.array[wp.int32],
+    mjc_pair_to_newton_pair: wp.array2d[wp.int32],
     pair_solref_in: wp.array[wp.vec2],
     pair_solreffriction_in: wp.array[wp.vec2],
     pair_solimp_in: wp.array[vec5],
@@ -3402,10 +3401,13 @@ def update_pair_properties_kernel(
     Iterates over MuJoCo pairs [world, pair] and copies solver properties
     (solref, solimp, margin, gap, friction) from Newton custom attributes.
     MuJoCo sorts pairs during compilation and the solver may skip invalid rows, so
-    ``mjc_pair_to_newton_pair`` maps each compiled pair to its row offset within a world.
+    ``mjc_pair_to_newton_pair`` maps each world's compiled pair to its Newton pair row, or to -1
+    when the world has no such row.
     """
     world, mjc_pair = wp.tid()
-    newton_pair = world * pairs_per_world + mjc_pair_to_newton_pair[mjc_pair]
+    newton_pair = mjc_pair_to_newton_pair[world, mjc_pair]
+    if newton_pair < 0:
+        return
 
     if pair_solref_in:
         pair_solref_out[world, mjc_pair] = pair_solref_in[newton_pair]
