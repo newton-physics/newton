@@ -221,9 +221,6 @@ def ray_intersect_ellipsoid(ray_origin: wp.vec3, ray_direction: wp.vec3, semi_ax
     return t_hit, normal
 
 
-_IFACE = wp.types.matrix((3, 2), dtype=wp.int32)(1, 2, 0, 2, 0, 1)
-
-
 @wp.func
 def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3) -> tuple[float, wp.vec3]:
     """Computes ray-box intersection in the box's local frame.
@@ -240,6 +237,8 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
     normal = wp.vec3(0.0)
     t_near = -1.0e10
     t_far = 1.0e10
+    near_axis = int(0)
+    far_axis = int(0)
     hit = 1
 
     for i in range(3):
@@ -250,37 +249,25 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
             inv_d_i = 1.0 / ray_direction[i]
             t1 = (-size[i] - ray_origin[i]) * inv_d_i
             t2 = (size[i] - ray_origin[i]) * inv_d_i
-
             if t1 > t2:
                 temp = t1
                 t1 = t2
                 t2 = temp
-
-            t_near = wp.max(t_near, t1)
-            t_far = wp.min(t_far, t2)
+            if t1 > t_near:
+                t_near = t1
+                near_axis = i
+            if t2 < t_far:
+                t_far = t2
+                far_axis = i
 
     if hit == 1 and t_near <= t_far and t_far >= 0.0:
+        # The entry face faces against the ray; from inside, the exit face faces along it.
         if t_near >= 0.0:
             t_hit = t_near
+            normal[near_axis] = -wp.sign(ray_direction[near_axis])
         else:
             t_hit = t_far
-
-    if t_hit >= 0.0:
-        # Identify the hit face by matching the solved face distance to t_hit.
-        normal_local = wp.vec3(0.0)
-        for i in range(3):
-            if wp.abs(ray_direction[i]) > EPSILON:
-                for side in range(-1, 2, 2):
-                    sol = (float(side) * size[i] - ray_origin[i]) / ray_direction[i]
-                    if sol >= 0.0:
-                        id0 = _IFACE[i][0]
-                        id1 = _IFACE[i][1]
-                        p0 = ray_origin[id0] + sol * ray_direction[id0]
-                        p1 = ray_origin[id1] + sol * ray_direction[id1]
-                        if wp.abs(p0) <= size[id0] and wp.abs(p1) <= size[id1]:
-                            if wp.abs(sol - t_hit) < EPSILON:
-                                normal_local[i] = -1.0 if side < 0 else 1.0
-        normal = wp.normalize(normal_local)
+            normal[far_axis] = wp.sign(ray_direction[far_axis])
 
     return t_hit, normal
 
