@@ -225,7 +225,10 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None, depth_certif
             ``certificate(a, b, rotation, position, provider, hint)`` returns
             ``(normal, depth, verified)``, and ``certificate.cooperative`` is
             the block-cooperative variant used by the split refinement
-            kernel. MPR itself stays shape-agnostic.
+            kernel. An optional ``certificate.direct(a, b, rotation,
+            position, extend, tolerance)`` returns ``(solved, point_a,
+            point_b, normal, depth)`` when witnesses also have a closed-form
+            solution. MPR itself stays shape-agnostic.
 
     Returns:
         ``solve_mpr`` wrapper function.  The core function is available as
@@ -892,6 +895,12 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None, depth_certif
         COLLIDE_EPSILON: float = 1e-5,
     ) -> tuple[bool, wp.vec3, wp.vec3, wp.vec3, float]:
         """Refine unresolved portals with bounded four-vertex GJK raycasts."""
+        if wp.static(hasattr(certificate, "direct")):
+            solved, pa, pb, direction, depth = wp.static(certificate.direct)(
+                geom_a, geom_b, orientation_b, position_b, extend, COLLIDE_EPSILON
+            )
+            if solved:
+                return True, pa, pb, direction, depth
         collision, point_a, point_b, normal, penetration, seed, valid = solve_mpr_portal(
             geom_a, geom_b, orientation_b, position_b, extend, data_provider, wp.vec3(0.0), MAX_ITER, COLLIDE_EPSILON
         )

@@ -1,0 +1,1 @@
+Accelerate collision queries for overlapping boxes with exactly matching orientations in box-and-plane scenes while retaining minimum-depth contact witnesses. No API or configuration changes are required.

@@ -1098,6 +1098,7 @@ def create_narrow_phase_kernel_gjk_mpr(
     post_process_contact: Any = None,
     speculative: bool = False,
     _cuda_max_registers: int | None = None,
+    _direct_box_contacts: bool = False,
 ):
     """
     Create a GJK/MPR narrow phase kernel for complex convex shape collisions.
@@ -1115,6 +1116,8 @@ def create_narrow_phase_kernel_gjk_mpr(
     _ppc = post_process_contact.__name__ if post_process_contact is not None else "default"
     _module = f"narrow_phase_gjk_mpr_{external_aabb}_{speculative}_{writer_func.__name__}_{_sf}_{_ppc}"
     kernel_options = {}
+    if _direct_box_contacts:
+        _module += "_direct_boxes"
     if _cuda_max_registers is not None:
         _module += f"_r{_cuda_max_registers}"
         kernel_options["cuda_max_registers"] = _cuda_max_registers
@@ -1294,7 +1297,12 @@ def create_narrow_phase_kernel_gjk_mpr(
 
             # Find and write contacts using GJK/MPR
             wp.static(
-                create_find_contacts(writer_func, support_func=support_func, post_process_contact=post_process_contact)
+                create_find_contacts(
+                    writer_func,
+                    support_func=support_func,
+                    post_process_contact=post_process_contact,
+                    _direct_box_contacts=_direct_box_contacts,
+                )
             )(
                 pos_a,
                 pos_b,
@@ -2586,9 +2594,14 @@ class NarrowPhase:
         speculative: bool = False,
         contact_writer_supports_speculative: bool = False,
         _group_reduction: GroupReductionConfig | None = None,
+        _direct_box_contacts: bool = False,
     ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
+
+        ``_direct_box_contacts`` enables aligned-box witnesses in the fused
+        kernel. CollisionPipeline selects it for box-and-plane scenes to avoid
+        adding instruction-cache pressure to mixed-shape kernels.
 
         Args:
             max_candidate_pairs: Maximum number of candidate pairs from broad phase
@@ -2822,6 +2835,7 @@ class NarrowPhase:
                 post_process_contact=post_process_minkowski_only,
                 speculative=speculative,
                 _cuda_max_registers=fused_register_limit,
+                _direct_box_contacts=_direct_box_contacts,
             )
         else:
             self.narrow_phase_kernel = create_narrow_phase_kernel_gjk_mpr(
@@ -2830,6 +2844,7 @@ class NarrowPhase:
                 support_func=support_map_accelerated if convex_support_acceleration else support_map,
                 speculative=speculative,
                 _cuda_max_registers=fused_register_limit,
+                _direct_box_contacts=_direct_box_contacts,
             )
 
         if self.split_gjk_mpr:

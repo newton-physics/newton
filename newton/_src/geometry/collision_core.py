@@ -293,6 +293,7 @@ def create_compute_gjk_mpr_contacts(
     support_func: Any = None,
     use_precomputed_center: bool = False,
     penetration_refiner: Any = None,
+    _direct_box_contacts: bool = False,
 ):
     """
     Factory function to create a compute_gjk_mpr_contacts function with a specific writer function.
@@ -303,6 +304,7 @@ def create_compute_gjk_mpr_contacts(
         support_func: Support mapping function (defaults to support_map)
         use_precomputed_center: Whether the geometry data supplies a cached center.
         penetration_refiner: Optional physical-proxy result refinement function.
+        _direct_box_contacts: Enable closed-form witnesses for aligned boxes.
 
     Returns:
         A compute_gjk_mpr_contacts function with the writer function baked in
@@ -383,6 +385,7 @@ def create_compute_gjk_mpr_contacts(
                     post_process_contact,
                     use_precomputed_center,
                     penetration_refiner,
+                    _direct_box_contacts=_direct_box_contacts,
                 )
             )(
                 shape_a_data,
@@ -408,6 +411,7 @@ def create_compute_gjk_mpr_contacts(
                     post_process_contact,
                     use_precomputed_center,
                     penetration_refiner,
+                    _direct_box_contacts=_direct_box_contacts,
                 )
             )(
                 shape_a_data,
@@ -657,7 +661,9 @@ def check_infinite_plane_bsphere_overlap(
     return center_dist <= other_radius
 
 
-def create_find_contacts(writer_func: Any, support_func: Any = None, post_process_contact: Any = None):
+def create_find_contacts(
+    writer_func: Any, support_func: Any = None, post_process_contact: Any = None, _direct_box_contacts: bool = False
+):
     """
     Factory function to create a find_contacts function with a specific writer function.
 
@@ -669,6 +675,7 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
         writer_func: Function to write contact data (signature: (ContactData, writer_data) -> None)
         support_func: Support mapping function (defaults to support_map)
         post_process_contact: Post-processing function (defaults to post_process_axial_on_discrete_contact)
+        _direct_box_contacts: Enable closed-form witnesses for aligned boxes.
 
     Returns:
         A find_contacts function with the writer function baked in
@@ -788,6 +795,7 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
                 post_process_contact=post_process_contact,
                 support_func=support_func,
                 use_precomputed_center=True,
+                _direct_box_contacts=_direct_box_contacts,
             )
         )(
             shape_data_a,

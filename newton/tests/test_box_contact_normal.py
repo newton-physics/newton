@@ -983,5 +983,66 @@ add_function_test(
 )
 
 
+def test_aligned_box_minimum_depth(test, device):
+    """Resolve thin aligned boxes on their minimum-depth faces in either order."""
+    half = np.array(
+        [(0.8682952523, 0.1414007992, 0.0418564677), (0.0013216696, 0.0001417170, 0.1454590708)],
+        dtype=np.float32,
+    )
+    offset = np.array((-0.0014998660, -0.1393913478, 0.0565226413), dtype=np.float32)
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(margin=0.0, gap=0.0)
+    for permutation, swap in product(((0, 1, 2), (1, 2, 0), (2, 0, 1)), (False, True)):
+        builder.begin_world()
+        for side in range(2):
+            dimensions = half[1 - side if swap else side, list(permutation)]
+            position = wp.vec3(0.0) if side == 0 else wp.vec3(*(offset[list(permutation)] * (-1 if swap else 1)))
+            # Both quaternion signs encode exactly the same shared axes.
+            rotation = wp.quat(0.0, 0.0, 0.0, -1.0) if swap and side else wp.quat_identity()
+            body = builder.add_body(xform=wp.transform(position, rotation))
+            builder.add_shape_box(body, hx=dimensions[0], hy=dimensions[1], hz=dimensions[2], cfg=cfg)
+        builder.end_world()
+    # Retain the original refinement when restoring the partner's frame can
+    # lose micrometer precision; direct midpoint witnesses regress this pair.
+    builder.begin_world()
+    for dimensions, position in (
+        ((1.5588834286, 0.3293581903, 1.7311217785), (0.0, 0.0, 0.0)),
+        ((26.0947265625, 2.6542730331, 0.1001476347), (1.2109193802, -1.0094532967, 0.6591305733)),
+    ):
+        body = builder.add_body(xform=wp.transform(wp.vec3(*position)))
+        builder.add_shape_box(body, hx=dimensions[0], hy=dimensions[1], hz=dimensions[2], cfg=cfg)
+    builder.end_world()
+    model = builder.finalize(device=device)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    shapes = [contacts.rigid_contact_shape0.numpy()[:count], contacts.rigid_contact_shape1.numpy()[:count]]
+    points = [contacts.rigid_contact_point0.numpy()[:count], contacts.rigid_contact_point1.numpy()[:count]]
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    halves = model.shape_scale.numpy().astype(np.float64)
+    positions = state.body_q.numpy()[:, :3].astype(np.float64)
+    for world in range(7):
+        indices = np.flatnonzero(shapes[0] // 2 == world)
+        test.assertGreater(len(indices), 0)
+        first = 2 * world
+        expected = np.min(halves[first] + halves[first + 1] - np.abs(positions[first + 1] - positions[first]))
+        depths = []
+        for i in indices:
+            world_points = []
+            for side in range(2):
+                shape = shapes[side][i]
+                test.assertLess(abs(float(np.max(np.abs(points[side][i]) - halves[shape]))), 1.0e-6)
+                world_points.append(points[side][i] + positions[shape])
+            depths.append(-float(np.dot(world_points[1] - world_points[0], normals[i])))
+        test.assertAlmostEqual(max(depths), expected, delta=1.0e-6)
+
+
+add_function_test(
+    TestBoxContactNormal, "test_aligned_box_minimum_depth", test_aligned_box_minimum_depth, devices=get_test_devices()
+)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

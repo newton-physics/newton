@@ -2244,6 +2244,7 @@ class CollisionPipeline:
             has_meshes = False
             has_heightfields = model.heightfield_count > 0
             use_lean_gjk_mpr = False
+            direct_box_contacts = False
             mesh_sdf_texture_only = False
             mesh_sdf_identity_scale_only = False
             max_mesh_mesh_pairs = self.shape_pairs_max
@@ -2413,7 +2414,11 @@ class CollisionPipeline:
                     int(GeoType.CYLINDER),
                     int(GeoType.CONE),
                 }
-                use_lean_gjk_mpr = not bool(lean_unsupported & set(route_shape_types.tolist()))
+                route_type_set = set(route_shape_types.tolist())
+                use_lean_gjk_mpr = not bool(lean_unsupported & route_type_set)
+                # Keep this specialization out of mixed-shape kernels: even a
+                # dormant branch can increase their instruction-cache pressure.
+                direct_box_contacts = route_type_set <= {int(GeoType.BOX), int(GeoType.PLANE)}
 
                 if max_triangle_pairs is None:
                     # NXN/SAP count from shape masks without materializing the model's lazy pair array.
@@ -2500,6 +2505,7 @@ class CollisionPipeline:
                 has_meshes=has_meshes,
                 has_heightfields=has_heightfields,
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
+                _direct_box_contacts=direct_box_contacts,
                 convex_support_acceleration=model._convex_support_lut.shape[0] > 1,
                 has_generic_convex_pairs=has_generic_convex_pairs,
                 split_gjk_mpr=split_gjk_mpr,

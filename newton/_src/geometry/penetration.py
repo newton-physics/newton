@@ -274,7 +274,61 @@ def _box_hull_depth(
     return _box_hull_finish(a, b, rotation, position, upper, lower, normal, depth)
 
 
-def create_solve_box_penetration(support: Any):
+@wp.func
+def _aligned_box_witnesses(
+    a: Any, b: Any, rotation: wp.quat, position: wp.vec3, extend: float, tolerance: float
+) -> tuple[bool, wp.vec3, wp.vec3, wp.vec3, float]:
+    """Solve strictly overlapping, exactly co-oriented boxes in their shared frame."""
+    if (
+        a.shape_type == int(GeoType.BOX)
+        and b.shape_type == int(GeoType.BOX)
+        and rotation[0] == 0.0
+        and rotation[1] == 0.0
+        and rotation[2] == 0.0
+        and wp.abs(rotation[3]) == 1.0
+    ):
+        overlap = a.scale + b.scale - wp.abs(position)
+        if wp.min(overlap) <= tolerance:
+            return False, wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0), 0.0
+        # Subtracting the relative position to restore B-local witnesses must
+        # resolve a tenth of the solver tolerance, capped at one micrometer.
+        limit = wp.min(1.0e-6, 0.1 * tolerance) / 5.0e-7
+        if (
+            limit < 1.0
+            or wp.length_sq(position) > limit * limit
+            or wp.length_sq(a.scale) > limit * limit
+            or wp.length_sq(b.scale) > limit * limit
+        ):
+            return False, wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0), 0.0
+        axis = int(0)
+        if overlap[1] < overlap[axis]:
+            axis = 1
+        if overlap[2] < overlap[axis]:
+            axis = 2
+        if overlap[axis] > tolerance:
+            # Other coordinates share an interval, so its midpoint lies on
+            # both minimum-depth faces. No iterative witness recovery is needed.
+            lower = wp.max(-a.scale, position - b.scale)
+            upper = wp.min(a.scale, position + b.scale)
+            point_a = 0.5 * lower + 0.5 * upper
+            point_b = point_a
+            side = float(1.0)
+            if position[axis] < 0.0:
+                side = -1.0
+            normal = side * _axis(axis)
+            point_a[axis] = side * a.scale[axis]
+            point_b[axis] = position[axis] - side * b.scale[axis]
+            return (
+                True,
+                point_a + 0.5 * extend * normal,
+                point_b - 0.5 * extend * normal,
+                normal,
+                overlap[axis] + extend,
+            )
+    return False, wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0), 0.0
+
+
+def create_solve_box_penetration(support: Any, _direct_box_contacts: bool = False):
     """Find minimum depth for a box against a box, triangle, or convex mesh.
 
     Box and triangle pairs use the closed-form separating-axis test. Mesh
@@ -285,6 +339,9 @@ def create_solve_box_penetration(support: Any):
     bounds certify the minimum with a few support queries. Verified hulls
     that remain fall back to the exact Gauss-map test of
     :func:`_box_hull_depth`.
+
+    ``_direct_box_contacts`` attaches a closed-form witness solver for
+    strictly overlapping, co-oriented boxes to the returned certificate.
     """
 
     @wp.func
@@ -471,4 +528,6 @@ def create_solve_box_penetration(support: Any):
 
     solve.applies = box_polyhedron_pair
     solve.cooperative = cooperative_certificate
+    if _direct_box_contacts:
+        solve.direct = _aligned_box_witnesses
     return solve
