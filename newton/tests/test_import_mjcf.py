@@ -131,6 +131,34 @@ class TestImportMjcfBasic(unittest.TestCase):
                     direction = wp.transform_vector(pose, wp.vec3(0.0, 0.0, -1.0))
                     np.testing.assert_allclose(direction, data.light_xdir[light_id], atol=1e-5, err_msg=name)
 
+    @requires(*MUJOCO_MODULES)
+    def test_targeting_light_uses_bounded_masses(self):
+        """Aim a targetbodycom light at the subtree center of mass after boundmass raises a body mass."""
+        mjcf = """
+<mujoco>
+    <compiler boundmass="2"/>
+    <worldbody>
+        <light name="aim" mode="targetbodycom" target="root" pos="0 0 3"/>
+        <body name="root">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1"/>
+            <body name="child" pos="4 0 0">
+                <joint type="hinge"/>
+                <geom type="sphere" size="0.1" mass="3"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        data = mujoco.MjData(native)
+        mujoco.mj_forward(native, data)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        direction = wp.transform_vector(wp.transform(*builder.light_transform[0]), wp.vec3(0.0, 0.0, -1.0))
+        np.testing.assert_allclose(direction, data.light_xdir[0], atol=1e-5)
+
     def test_worldbody_lights_follow_parent_body(self):
         """Mount direct and framed worldbody lights on the parent body when composing into one."""
         mjcf = """

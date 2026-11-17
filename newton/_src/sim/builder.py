@@ -10472,8 +10472,8 @@ class ModelBuilder:
         values = (*light_color, intensity, *light_attenuation, cone_angle, cone_softness, focus)
         if not all(math.isfinite(v) and 0.0 <= v <= float32_max for v in values):
             raise ValueError("Light color, intensity, attenuation, cone and focus must be finite and non-negative")
-        if not any(light_attenuation):
-            raise ValueError("At least one attenuation coefficient must be positive")
+        if not any(np.float32(c) > 0.0 for c in light_attenuation):
+            raise ValueError("At least one attenuation coefficient must be positive in float32")
         if not 0.0 < cone_angle <= math.pi:
             raise ValueError(f"cone_angle must be in (0, pi] radians, got {cone_angle}")
         if cone_softness > 1.0:

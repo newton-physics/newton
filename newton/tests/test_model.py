@@ -4910,6 +4910,7 @@ class TestModelValidation(unittest.TestCase):
             (ValueError, {"intensity": float("nan")}),
             (ValueError, {"intensity": 1.0e39}),
             (ValueError, {"attenuation": (0.0, 0.0, 0.0)}),
+            (ValueError, {"attenuation": (1.0e-50, 0.0, 0.0)}),
             (ValueError, {"cone_angle": 0.0}),
             (ValueError, {"cone_angle": 4.0}),
             (ValueError, {"cone_softness": 1.5}),

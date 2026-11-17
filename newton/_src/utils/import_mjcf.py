@@ -3740,8 +3740,6 @@ def parse_mjcf(
             track_root_boundaries=True,
         )
 
-    _aim_targeting_lights()
-
     # -----------------
     # Report once outside the recursive body parser so the warning points to the caller.
     if tracking_light_names:
@@ -4653,6 +4651,10 @@ def parse_mjcf(
                 parent_body=-1,
                 articulation_label=label,
             )
+
+    # Aim after the compiler mass guards (subtree centers of mass use the final masses) and before
+    # collapsing bodies, which renumbers them.
+    _aim_targeting_lights()
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
