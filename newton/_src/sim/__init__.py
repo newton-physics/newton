@@ -4,6 +4,7 @@
 from .articulation import eval_fk, eval_ik, eval_inverse_dynamics_force, eval_jacobian, eval_mass_matrix
 from .builder import ModelBuilder
 from .collide import CollisionPipeline
+from .collision_schedule import CollisionSubstepScheduler
 from .contact_kinematics import eval_rigid_contact_kinematics
 from .contacts import Contacts
 from .control import Control
@@ -19,10 +20,12 @@ from .joint_mimic import eval_mimic
 from .model import Model
 from .rod import Rod
 from .state import State
+from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
 
 __all__ = [
     "BodyFlags",
     "CollisionPipeline",
+    "CollisionSubstepScheduler",
     "Contacts",
     "Control",
     "JointTargetMode",
@@ -33,6 +36,9 @@ __all__ = [
     "Rod",
     "State",
     "StateFlags",
+    "TendonGuide",
+    "TendonGuideFlags",
+    "TendonGuideType",
     "eval_fk",
     "eval_ik",
     "eval_inverse_dynamics_force",

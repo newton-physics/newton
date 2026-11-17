@@ -19,6 +19,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis
+from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, compute_inertia_shape, transform_inertia
 from . import utils as usd
 
@@ -32,6 +33,21 @@ def _is_enabled_collider(prim: Usd.Prim) -> bool:
     if collider := UsdPhysics.CollisionAPI(prim):
         return collider.GetCollisionEnabledAttr().Get()
     return False
+
+
+def _is_disabled_rigid_body(prim: Usd.Prim) -> bool:
+    from pxr import UsdPhysics
+
+    return UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Get() is False
+
+
+def _owns_descendants(prim: Usd.Prim) -> bool:
+    """Whether geometry below ``prim`` belongs to ``prim``'s rigid body, as the native physics parser assigns colliders."""
+    from pxr import UsdPhysics
+
+    if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+        return False
+    return not (_is_disabled_rigid_body(prim) and usd.physics_parser_skips_disabled_bodies())
 
 
 class _UsdMassProperties:
@@ -73,6 +89,7 @@ class _UsdMassProperties:
             self.warned_invalid_density.add(prim_path)
             warnings.warn(
                 f"{prim_path}: authored MassAPI density must be positive and finite; treating it as unspecified.",
+                NewtonWarning,
                 stacklevel=2,
             )
         return None
@@ -89,6 +106,7 @@ class _UsdMassProperties:
             warnings.warn(
                 f"{prim_path}: authored MassAPI diagonalInertia must have finite, nonnegative components; "
                 "treating it as unspecified.",
+                NewtonWarning,
                 stacklevel=2,
             )
         return None
@@ -110,7 +128,7 @@ class _UsdMassProperties:
     # authored-value checks and yield nondeterministic mass properties. Supported versions
     # also apply authored mass from disabled colliders after the callback
     # (https://github.com/PixarAnimationStudios/OpenUSD/pull/4164).
-    # Bypass ComputeMassProperties for either condition and use recorded enabled colliders.
+    # Bypass ComputeMassProperties for any such condition and use recorded enabled colliders.
     # Remove each workaround once the minimum supported usd-core ships its upstream fix.
     # Density is excluded from the blocked-attribute check: it is read into an initialized
     # struct member upstream and blocked density already resolves to "unspecified".
@@ -136,7 +154,12 @@ class _UsdMassProperties:
             return True
         it = iter(Usd.PrimRange(body_prim, Usd.TraverseInstanceProxies()))
         for prim in it:
-            if prim != body_prim and prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            if prim != body_prim and _owns_descendants(prim):
+                if _is_disabled_rigid_body(prim):
+                    # Before OpenUSD 26.11, ComputeMassProperties may count a nested disabled
+                    # body's colliders toward this body although the parser assigns them to
+                    # the disabled body.
+                    return True
                 it.PruneChildren()
                 continue
             if prim.HasAPI(UsdPhysics.CollisionAPI):
@@ -182,6 +205,7 @@ class _UsdMassProperties:
                 warnings.warn(
                     f"Skipping collider {prim.GetPath()}: authored MassAPI mass must be positive and finite "
                     "to derive volume and density.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
             return None
@@ -190,6 +214,7 @@ class _UsdMassProperties:
         if shape_volume <= 0.0:
             warnings.warn(
                 f"Skipping collider {prim.GetPath()}: unable to derive positive collider volume from authored shape parameters.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None
@@ -197,6 +222,7 @@ class _UsdMassProperties:
         if density <= 0.0:
             warnings.warn(
                 f"Skipping collider {prim.GetPath()}: derived density from authored mass is non-positive.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None
@@ -275,6 +301,7 @@ class _UsdMassProperties:
         if shape_mass <= 0.0:
             warnings.warn(
                 f"Skipping collider {prim.GetPath()} in mass aggregation: unable to derive positive unit-density mass.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None
@@ -388,6 +415,7 @@ class _UsdMassProperties:
         if is_expected_missing and collider_path not in self.warned_missing_collider_mass_info:
             warnings.warn(
                 f"Skipping collider {collider_path} in mass aggregation: missing usable collider mass information.",
+                NewtonWarning,
                 stacklevel=2,
             )
             self.warned_missing_collider_mass_info.add(collider_path)

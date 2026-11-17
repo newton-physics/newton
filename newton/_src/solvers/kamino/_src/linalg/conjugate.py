@@ -522,6 +522,28 @@ def make_jacobi_preconditioner(
     diag[v_idx] = el_inv
 
 
+# Overloads instantiated lazily on launch change the module hash, making the
+# compiled module depend on launch order; declare them up front instead.
+for _kernel in (
+    check_termination,
+    _cg_kernel_1,
+    _cg_kernel_2,
+    _cr_kernel_1,
+    _cr_kernel_2,
+    dot_sequential,
+    _initialize_tolerance_kernel,
+    make_jacobi_preconditioner,
+):
+    wp.overload(
+        _kernel,
+        {
+            arg.label: wp.array(dtype=wp.float32, ndim=arg.type.ndim)
+            for arg in _kernel.adj.args
+            if wp.types.is_array(arg.type) and arg.type.dtype is Any
+        },
+    )
+
+
 class ConjugateSolver(Generic[ScalarType, IndexType]):
     """Base class for conjugate iterative solvers (CG, CR).
 

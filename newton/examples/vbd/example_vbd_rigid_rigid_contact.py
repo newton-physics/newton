@@ -1,17 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example VBD Rigid Drop
-#
-# Rigid bodies of all supported shape types (sphere, box, capsule,
-# cylinder, cone, mesh bear) are dropped into a static rigid box
-# container and settle under gravity.  This exercises pure rigid-rigid
-# contact handling in the VBD solver at a small (centimeter) scale.
-#
-# Command: python -m newton.examples vbd_rigid_rigid_contact
-#
-###########################################################################
+"""Example VBD Rigid Drop
+
+Rigid bodies of all supported shape types (sphere, box, capsule,
+cylinder, cone, mesh bear) are dropped into a static rigid box
+container and settle under gravity.  This exercises pure rigid-rigid
+contact handling in the VBD solver at a small (centimeter) scale.
+
+Success criteria:
+- The scene starts paused; resume to observe the drop.
+- Sphere, box, capsule, cylinder, cone, and mesh bodies fall into the static box container.
+- The bodies settle inside the container without sustained jitter, explosive separation, or passing
+  through its walls.
+
+Runs:
+- `python -m newton.examples vbd_rigid_rigid_contact`
+"""
 
 import os
 
@@ -44,7 +49,6 @@ PARAMS = {
     "container_kd": 0,
     "container_mu": 0.8,
     "gravity": (0.0, 0.0, -9.8),
-    "initial_paused": True,
     "body_drop_offset_scale": 4.0,
     "body_drop_spacing_scale": 3.0,
     "rigid_body_contact_buffer_size": 256,
@@ -198,7 +202,6 @@ def setup_sim(builder, params):
     solver = newton.solvers.SolverVBD(
         model=model,
         iterations=params["solver_iterations"],
-        rigid_compliant_alm=True,
         rigid_body_contact_buffer_size=params["rigid_body_contact_buffer_size"],
     )
 
@@ -230,8 +233,6 @@ class Example:
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
             self.viewer.renderer.draw_wireframe = True
-        if hasattr(self.viewer, "_paused"):
-            self.viewer._paused = self.params["initial_paused"]
         self.viewer.set_camera(wp.vec3(0.35, -0.35, 0.55), -25.0, 135.0)
 
         self.capture()
@@ -245,12 +246,17 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            # With an odd substep count, copy instead of swapping on the last
+            # substep so every CUDA graph replay starts from state_0.
+            if self.sim_substeps % 2 == 1 and substep == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         self.frame += 1
@@ -286,6 +292,7 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.add_argument("--seed", type=int, default=42)
+        parser.set_defaults(paused=True)
         return parser
 
 

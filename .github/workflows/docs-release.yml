@@ -23,7 +23,7 @@ jobs:
       contents: write
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -58,9 +58,10 @@ jobs:
 
       - name: Install uv
         if: steps.version.outputs.SHOULD_DEPLOY == 'true'
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
         with:
-          version: "0.11.26"
+          version: "0.13.5"
+          prune-cache: true
 
       - name: Set up Python
         if: steps.version.outputs.SHOULD_DEPLOY == 'true'

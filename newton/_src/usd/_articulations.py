@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
 
     from ..sim.builder import ModelBuilder
     from .schema_resolver import SchemaResolverManager
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_articulations(
@@ -96,26 +99,24 @@ def _parse_articulations(
         # First check if articulation_prim itself has the PhysicsArticulationRootAPI
         if articulation_prim.HasAPI(UsdPhysics.ArticulationRootAPI):
             if verbose:
-                print(f"Extracting articulation custom attributes from {articulation_prim.GetPath()}")
+                logger.info("Extracting articulation custom attributes from %s", articulation_prim.GetPath())
             articulation_custom_attrs = usd.get_custom_attribute_values(
                 articulation_prim, builder_custom_attr_articulation
             )
         # If not, check the parent prim
         elif parent_prim is not None and parent_prim.IsValid() and parent_prim.HasAPI(UsdPhysics.ArticulationRootAPI):
             if verbose:
-                print(f"Extracting articulation custom attributes from parent {parent_prim.GetPath()}")
+                logger.info("Extracting articulation custom attributes from parent %s", parent_prim.GetPath())
             articulation_custom_attrs = usd.get_custom_attribute_values(parent_prim, builder_custom_attr_articulation)
         if verbose and articulation_custom_attrs:
-            print(f"Extracted articulation custom attributes: {articulation_custom_attrs}")
+            logger.info("Extracted articulation custom attributes: %s", articulation_custom_attrs)
         body_ids = {}
         body_labels = []
         current_body_id = 0
         art_bodies = []
         if verbose:
-            print(f"Bodies under articulation {path!s}:")
+            logger.info("Bodies under articulation %s:%s", path, "".join(f"\n\t{p!s}" for p in desc.articulatedBodies))
         for p in desc.articulatedBodies:
-            if verbose:
-                print(f"\t{p!s}")
             if p == Sdf.Path.emptyPath:
                 continue
             key = str(p)
@@ -175,7 +176,7 @@ def _parse_articulations(
             joint_desc = joint_descriptions[joint_path]
             if joint_path in mjc_equality_connect_or_weld_paths:
                 if verbose:
-                    print(f"Skipping equality connect/weld joint '{joint_path}' from articulation joint graph")
+                    logger.info("Skipping equality connect/weld joint '%s' from articulation joint graph", joint_path)
                 continue
             # it may be possible that a joint is filtered out in the middle of
             # a chain of joints, which results in a disconnected graph

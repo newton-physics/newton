@@ -26,5 +26,5 @@
 /newton/licenses/                        @newton-physics/maintainers
 
 # Solver-specific owners
-/newton/_src/solvers/kamino/             @newton-physics/disney-research
-/newton/_src/solvers/style3d/            @newton-physics/style3d-research
+/newton/_src/solvers/kamino/             @newton-physics/disney-research @newton-physics/maintainers
+/newton/_src/solvers/style3d/            @newton-physics/style3d-research @newton-physics/maintainers

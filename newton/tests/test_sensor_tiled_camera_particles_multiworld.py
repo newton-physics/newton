@@ -9,7 +9,16 @@ import warp as wp
 
 import newton
 from newton.sensors import SensorTiledCamera
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import (
+    add_function_test,
+    get_test_devices,
+    ignore_sensor_tiled_camera_deprecation,
+)
+
+
+def setUpModule():
+    # SensorTiledCamera is deprecated; these tests exercise it intentionally.
+    ignore_sensor_tiled_camera_deprecation()
 
 
 def _build_multiworld_particle_model(*, worlds: int, spacing: float):

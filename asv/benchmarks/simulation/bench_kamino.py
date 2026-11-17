@@ -50,47 +50,49 @@ def _collect_metrics_dr_legs(robot, world_count, num_frames, samples, use_policy
     )
 
 
-class _FastBenchmark:
-    """Utility base class for fast Kamino benchmarks."""
+class G1SCC:
+    """Measure steady G1 SCC frames for small and large batches.
 
-    num_frames = None
-    robot = None
+    Reuse the warmed simulation across samples to amortize model construction
+    and graph capture. Keep this benchmark outside the fast PR gate; run it
+    explicitly with ``uvx --with virtualenv asv run --bench G1SCC``.
+    """
+
+    version = "2"  # Measure consecutive samples from one warmed simulation.
+    params = [[4, 512]]
+    param_names = ["world_count"]
     number = 1
-    rounds = 2
-    repeat = None
-    world_count = None
+    rounds = 1
+    repeat = 3
+    warmup_time = 0
+    timeout = 600
 
-    def setup(self):
-        from benchmark_kamino import DRLegsBenchmarkWorkload  # noqa: PLC0415
+    def setup(self, world_count):
+        if wp.get_cuda_device_count() == 0:
+            raise SkipNotImplemented
 
-        if not hasattr(self, "_builder") or self._builder is None:
-            self._builder = DRLegsBenchmarkWorkload.create_model_builder(self.robot, self.world_count)
+        # ASV calls setup before each sample; retain the settled simulation.
+        if getattr(self, "_world_count", None) == world_count:
+            return
 
-        self.workload = DRLegsBenchmarkWorkload(
-            robot=self.robot,
-            world_count=self.world_count,
-            use_cuda_graph=True,
-            use_policy=False,
-            builder=self._builder,
-        )
+        from newton.examples.robot.example_robot_g1 import Example  # noqa: PLC0415
+        from newton.viewer import ViewerNull  # noqa: PLC0415
 
-        wp.synchronize_device()
+        args = Example.create_parser().parse_args(["--solver", "kamino", "--world-count", str(world_count)])
+        with wp.ScopedDevice("cuda:0"):
+            self.example = Example(ViewerNull(), args)
+            for _ in range(100):
+                self.example.step()
+        wp.synchronize_device(self.example.model.device)
+        self._world_count = world_count
 
-        if self.workload.graph is None or self.workload.reset_graph is None:
-            raise SkipNotImplemented("CUDA graph capture unavailable (is the CUDA mempool allocator enabled?)")
+    def time_simulate(self, world_count):
+        for _ in range(200):
+            self.example.step()
+        wp.synchronize_device(self.example.model.device)
 
-    def teardown(self):
-        workload = getattr(self, "workload", None)
-        if workload is not None:
-            workload.test_final()
-
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_simulate(self):
-        for _ in range(self.num_frames):
-            for _ in range(self.workload.decimation):
-                wp.capture_launch(self.workload.reset_graph)
-                wp.capture_launch(self.workload.graph)
-        wp.synchronize_device()
+    def teardown(self, world_count):
+        self.example.test_final()
 
 
 class _KpiBenchmark(_SimulationMetricTracks):
@@ -117,14 +119,6 @@ class _KpiBenchmark(_SimulationMetricTracks):
                 use_policy=self.use_policy,
             )
         return metrics
-
-
-class FastDRLegs(_FastBenchmark):
-    version = "2"  # effort limits now enforced for implicit PD (#3990) -> new ASV series
-    num_frames = 25
-    robot = "dr_legs"
-    repeat = 2
-    world_count = 32
 
 
 class FastMetricsDRLegs(_SimulationMetricTracksUnparameterized):
@@ -160,6 +154,7 @@ class KpiDRLegs(_KpiBenchmark):
 class NotifyDRLegs:
     """Benchmark Kamino model notifications for 2048 DR Legs worlds."""
 
+    version = "2"  # sampling/methodology changed in #3859 -> new ASV series
     number = 1
     repeat = 5
     rounds = 1
@@ -232,7 +227,7 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
-        "FastDRLegs": FastDRLegs,
+        "G1SCC": G1SCC,
         "FastMetricsDRLegs": FastMetricsDRLegs,
         "KpiDRLegs": KpiDRLegs,
         "NotifyDRLegs": NotifyDRLegs,

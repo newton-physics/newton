@@ -12,7 +12,7 @@ Those behaviors require deployment and live smoke checks.
 import textwrap
 import unittest
 from contextlib import redirect_stdout
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -142,7 +142,7 @@ class TestWatchdogLogic(unittest.TestCase):
     def test_watchdog_filters_owned_running_instances_and_applies_thresholds(self):
         """Select owned running runners at the candidate and overdue thresholds."""
         namespace = self._lambda_namespace()
-        now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
         instances = [
             self._instance(now, age_minutes=89, instance_id="i-89"),
             self._instance(now, age_minutes=90, instance_id="i-90"),
@@ -184,6 +184,16 @@ class TestWatchdogLogic(unittest.TestCase):
         )
         self.assertEqual(scan["failures"], [])
 
+        production_scan = namespace["scan_runner_instances"](
+            ["us-east-2"],
+            lambda region: FakeEc2(instances),
+            now,
+            namespace["PRODUCTION_TERMINATE_AFTER_MINUTES"],
+            120,
+            "",
+        )
+        self.assertEqual([item["instance_id"] for item in production_scan["candidates"]], ["i-120"])
+
     def test_watchdog_requires_an_exact_present_repository_tag(self):
         """Restrict cleanup candidates to an exact repository tag value.
 
@@ -191,7 +201,7 @@ class TestWatchdogLogic(unittest.TestCase):
         ``"unknown"`` in diagnostics, but must not match that fallback value.
         """
         namespace = self._lambda_namespace()
-        now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
         instances = [
             self._instance(now, instance_id="i-selected", repository="example/selected"),
             self._instance(now, instance_id="i-other", repository="example/other"),
@@ -233,25 +243,35 @@ class TestWatchdogLogic(unittest.TestCase):
         misconfigured aggressive cleanup cannot inspect or terminate runners.
         """
         namespace = self._lambda_namespace()
-        now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
-        invalid_boto3 = FakeBoto3({}, FakeCloudWatch())
+        now = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
+        invalid_boto3 = FakeBoto3({"us-east-1": FakeEc2([])}, FakeCloudWatch())
         unrestricted_environment = {
             "AWS_REGION": "us-east-1",
             "MONITORED_REGIONS": "us-east-1",
-            "TERMINATE_AFTER_MINUTES": "10",
+            "TERMINATE_AFTER_MINUTES": "119.5",
             "ALERT_AFTER_MINUTES": "120",
             "TERMINATION_ENABLED": "true",
             "REQUIRED_REPOSITORY": "",
         }
 
-        with (
-            patch.dict("os.environ", unrestricted_environment, clear=True),
-            patch.dict("sys.modules", {"boto3": SimpleNamespace(client=invalid_boto3.client)}),
-            self.assertRaisesRegex(ValueError, "RequiredRepository"),
-        ):
-            namespace["lambda_handler"]({}, None)
+        for threshold in ("10", "90", "119", "119.5"):
+            with (
+                self.subTest(threshold=threshold),
+                patch.dict(
+                    "os.environ",
+                    {**unrestricted_environment, "TERMINATE_AFTER_MINUTES": threshold},
+                    clear=True,
+                ),
+                patch.dict("sys.modules", {"boto3": SimpleNamespace(client=invalid_boto3.client)}),
+                redirect_stdout(StringIO()),
+                self.assertRaisesRegex(ValueError, "RequiredRepository"),
+            ):
+                namespace["lambda_handler"]({}, None)
 
         self.assertEqual(invalid_boto3.client_calls, [])
+
+        production_config = namespace["load_config"]({**unrestricted_environment, "TERMINATE_AFTER_MINUTES": "120"})
+        self.assertEqual(production_config["terminate_after_minutes"], 120)
 
         accepted_boto3 = FakeBoto3({"us-east-1": FakeEc2([])}, FakeCloudWatch())
         namespace["datetime"] = SimpleNamespace(now=lambda zone: now)
@@ -321,9 +341,9 @@ class TestWatchdogLogic(unittest.TestCase):
         and emit its diagnostics before it raises the collected failures.
         """
         namespace = self._lambda_namespace()
-        now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
         failed_ec2 = FakeEc2(
-            [self._instance(now, instance_id="i-termination-failed")],
+            [self._instance(now, age_minutes=120, instance_id="i-termination-failed")],
             termination_error=RuntimeError("termination denied"),
         )
         successful_ec2 = FakeEc2([self._instance(now, age_minutes=120, instance_id="i-terminated")])
@@ -339,7 +359,7 @@ class TestWatchdogLogic(unittest.TestCase):
         environment = {
             "AWS_REGION": "us-east-1",
             "MONITORED_REGIONS": "ap-northeast-1,us-east-1,us-west-2",
-            "TERMINATE_AFTER_MINUTES": "90",
+            "TERMINATE_AFTER_MINUTES": "120",
             "ALERT_AFTER_MINUTES": "120",
             "TERMINATION_ENABLED": "true",
             "REQUIRED_REPOSITORY": "",
@@ -360,7 +380,7 @@ class TestWatchdogLogic(unittest.TestCase):
         self.assertEqual(summary["owned_count"], 2)
         self.assertEqual(summary["candidate_count"], 2)
         self.assertEqual(summary["terminated_count"], 1)
-        self.assertEqual(summary["overdue_count"], 1)
+        self.assertEqual(summary["overdue_count"], 2)
         decisions = {item["instance_id"]: item for item in summary["decisions"]}
         self.assertEqual(set(decisions), {"i-terminated", "i-termination-failed"})
         self.assertEqual(decisions["i-terminated"]["decision"], "terminated")
@@ -390,7 +410,7 @@ class TestWatchdogLogic(unittest.TestCase):
                         {"MetricName": "OwnedRunnerCount", "Value": 2.0, "Unit": "Count"},
                         {"MetricName": "TerminationCandidateCount", "Value": 2.0, "Unit": "Count"},
                         {"MetricName": "TerminatedRunnerCount", "Value": 1.0, "Unit": "Count"},
-                        {"MetricName": "OverdueRunnerCount", "Value": 1.0, "Unit": "Count"},
+                        {"MetricName": "OverdueRunnerCount", "Value": 2.0, "Unit": "Count"},
                         {"MetricName": "OldestRunnerAgeMinutes", "Value": 120.0, "Unit": "Count"},
                     ],
                 }
@@ -404,7 +424,7 @@ class TestWatchdogLogic(unittest.TestCase):
         CloudWatch publishing fails and the invocation raises.
         """
         namespace = self._lambda_namespace()
-        now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
         cloudwatch = FakeCloudWatch(error=RuntimeError("metrics unavailable"))
         boto3 = FakeBoto3(
             {"us-west-2": FakeEc2([self._instance(now, instance_id="i-metric-failure")])},

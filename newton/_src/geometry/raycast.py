@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import warp as wp
 
 from ..core import MAXVAL
+from .bvh import BVH_SHAPE_INACTIVE
 from .types import GeoType
 
 if TYPE_CHECKING:
@@ -734,6 +735,34 @@ def ray_intersect_mesh_anyhit(
     return -1.0
 
 
+@wp.func
+def ray_intersect_shape_local(
+    size: wp.vec3,
+    geomtype: int,
+    ray_origin: wp.vec3,
+    ray_direction: wp.vec3,
+    enable_backface_culling: bool,
+) -> tuple[float, wp.vec3]:
+    """Intersects a ray in the shape's local frame; returns the distance and local normal, or -1.0."""
+    t_hit = -1.0
+    normal = wp.vec3(0.0)
+    if geomtype == GeoType.PLANE:
+        t_hit, normal = ray_intersect_plane(ray_origin, ray_direction, size, enable_backface_culling)
+    elif geomtype == GeoType.SPHERE:
+        t_hit, normal = ray_intersect_sphere(ray_origin, ray_direction, size[0])
+    elif geomtype == GeoType.BOX:
+        t_hit, normal = ray_intersect_box(ray_origin, ray_direction, size)
+    elif geomtype == GeoType.CAPSULE:
+        t_hit, normal = ray_intersect_capsule(ray_origin, ray_direction, size[0], size[1])
+    elif geomtype == GeoType.CYLINDER:
+        t_hit, normal = ray_intersect_cylinder(ray_origin, ray_direction, size[0], size[1], size[2])
+    elif geomtype == GeoType.CONE:
+        t_hit, normal = ray_intersect_cone(ray_origin, ray_direction, size[0], size[1])
+    elif geomtype == GeoType.ELLIPSOID:
+        t_hit, normal = ray_intersect_ellipsoid(ray_origin, ray_direction, size)
+    return t_hit, normal
+
+
 def _make_ray_intersect_shape(compute_normal: bool):
     """Build the primitive-dispatch ``@wp.func``, specialized at compile time on whether the
     surface normal is computed. ``wp.static(compute_normal)`` folds away the normal transform in
@@ -771,27 +800,9 @@ def _make_ray_intersect_shape(compute_normal: bool):
         """
         ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
 
-        t_hit = -1.0
-        normal_local = wp.vec3(0.0)
-
-        if geomtype == GeoType.PLANE:
-            t_hit, normal_local = ray_intersect_plane(
-                ray_origin_local, ray_direction_local, size, enable_backface_culling
-            )
-        elif geomtype == GeoType.SPHERE:
-            t_hit, normal_local = ray_intersect_sphere(ray_origin_local, ray_direction_local, size[0])
-        elif geomtype == GeoType.BOX:
-            t_hit, normal_local = ray_intersect_box(ray_origin_local, ray_direction_local, size)
-        elif geomtype == GeoType.CAPSULE:
-            t_hit, normal_local = ray_intersect_capsule(ray_origin_local, ray_direction_local, size[0], size[1])
-        elif geomtype == GeoType.CYLINDER:
-            t_hit, normal_local = ray_intersect_cylinder(
-                ray_origin_local, ray_direction_local, size[0], size[1], size[2]
-            )
-        elif geomtype == GeoType.CONE:
-            t_hit, normal_local = ray_intersect_cone(ray_origin_local, ray_direction_local, size[0], size[1])
-        elif geomtype == GeoType.ELLIPSOID:
-            t_hit, normal_local = ray_intersect_ellipsoid(ray_origin_local, ray_direction_local, size)
+        t_hit, normal_local = ray_intersect_shape_local(
+            size, geomtype, ray_origin_local, ray_direction_local, enable_backface_culling
+        )
 
         normal = wp.vec3(0.0)
         if wp.static(compute_normal):
@@ -829,6 +840,9 @@ def raycast_kernel(
     shape_world: wp.array[int],
     world_offsets: wp.array[wp.vec3],
     visible_worlds_mask: wp.array[int],
+    # Optional: body variant rows, whose empty rows are skipped
+    shape_variant_row: wp.array[wp.bool],
+    shape_variant_shape: wp.array[wp.int32],
 ):
     """Computes the intersection of a ray with all geometries in the scene.
 
@@ -851,8 +865,14 @@ def raycast_kernel(
         shape_world: Optional array mapping shape index to world index. Can be empty to disable world offsets.
         world_offsets: Optional array of world offsets. Can be empty to disable world offsets.
         visible_worlds_mask: Optional mask array (1=visible, 0=hidden per world). Can be empty to disable filtering.
+        shape_variant_row: Optional mask of body variant rows. Can be empty for models without variants.
+        shape_variant_shape: Variant shape each variant row holds, ``-1`` for an empty row, which is
+            skipped. Can be empty for models without variants.
     """
     shape_idx = wp.tid()
+
+    if shape_variant_row.shape[0] > 0 and shape_variant_row[shape_idx] and shape_variant_shape[shape_idx] < 0:
+        return
 
     # Skip shapes from non-visible worlds
     if visible_worlds_mask and shape_world.shape[0] > 0:
@@ -924,6 +944,7 @@ def intersect_ray(
     out_shape_id: wp.array[wp.int32] | None = None,
     out_normal: wp.array[wp.vec3] | None = None,
     fast_math: bool = True,
+    backend: Literal["warp", "optix"] = "warp",
 ):
     """Intersect rays with model shapes.
 
@@ -931,7 +952,9 @@ def intersect_ray(
     initial model state. If the queried state changes shape transforms, refit
     the BVH with :meth:`~newton.Model.bvh_refit_shapes` before raycasting
     again. Manually populated models must build the BVH with
-    :meth:`~newton.Model.bvh_build_shapes` before first use.
+    :meth:`~newton.Model.bvh_build_shapes` before first use. With
+    ``backend="optix"``, build and refit :attr:`~newton.Model.optix_shapes` by passing
+    ``backend="optix"`` to the same methods instead.
 
     Each ray is cast against the shapes of its own world (given by
     ``ray_worlds``) and against the shapes of the global world (index ``-1``),
@@ -953,7 +976,47 @@ def intersect_ray(
         out_shape_id: Optional output hit shape indices, shape [ray_count]. ``-1`` on miss.
         out_normal: Optional output hit normals, shape [ray_count, 3].
         fast_math: Whether to compile the intersection kernel with fast math enabled.
+        backend: ``"warp"`` traverses :attr:`~newton.Model.bvh_shapes`; ``"optix"``
+            (experimental) traverses :attr:`~newton.Model.optix_shapes` and cannot be recorded
+            in CUDA graphs. OptiX does not trace shapes that have left the region set when
+            the OptiX shapes were built (see :meth:`~newton.Model.bvh_build_shapes`).
+
+    Raises:
+        ValueError: If ``backend`` is unknown.
+        RuntimeError: If ``backend="optix"`` and the ``newton[optix]`` extra is missing,
+            :attr:`~newton.Model.optix_shapes` has not been built, or a CUDA graph is being captured.
     """
+
+    if backend not in ("warp", "optix"):
+        raise ValueError(f"backend must be 'warp' or 'optix', got {backend!r}")
+    if backend == "optix":
+        try:
+            from .optix import intersect_rays  # noqa: PLC0415
+        except ImportError as exc:
+            raise RuntimeError("OptiX raycasting requires the newton[optix] extra") from exc
+
+        intersect_rays(
+            model,
+            ray_origins,
+            ray_directions,
+            ray_worlds,
+            enable_global_world=enable_global_world,
+            out_dist=out_dist,
+            out_shape_id=out_shape_id,
+            out_normal=out_normal,
+            fast_math=fast_math,
+        )
+        return
+
+    if model.bvh_shape_enabled is not None and model.bvh_shape_count_enabled == 0:
+        # The shape BVH was built but no shape was selected, so every ray misses.
+        if out_dist is not None:
+            out_dist.fill_(-1.0)
+        if out_shape_id is not None:
+            out_shape_id.fill_(-1)
+        if out_normal is not None:
+            out_normal.zero_()
+        return
 
     if model.bvh_shapes is None:
         raise RuntimeError(
@@ -1004,38 +1067,39 @@ def intersect_ray(
             bvh_shape_id = wp.int32(0)
 
             while wp.bvh_query_next(query, bvh_shape_id, min_dist):
-                shape_id = wp.int32(bvh_shape_enabled[bvh_shape_id])
-                geom_type = shape_type[shape_id]
+                if bvh_shape_enabled[bvh_shape_id] != BVH_SHAPE_INACTIVE:
+                    shape_id = wp.int32(bvh_shape_enabled[bvh_shape_id])
+                    geom_type = shape_type[shape_id]
 
-                if geom_type == GeoType.MESH or geom_type == GeoType.CONVEX_MESH or geom_type == GeoType.HFIELD:
-                    geom_to_world = shape_transform_world[shape_id]
-                    ray_origin_local, ray_direction_local = map_ray_to_local(
-                        geom_to_world, origin, direction, shape_scale[shape_id]
-                    )
-                    hit_dist, hit_normal_local, _u, _v, _face = ray_intersect_mesh(
-                        ray_origin_local,
-                        ray_direction_local,
-                        shape_scale[shape_id],
-                        shape_source_ptr[shape_id],
-                        False,
-                        min_dist,
-                    )
-                    hit_normal = wp.vec3(0.0)
-                    if hit_dist >= 0.0:
-                        hit_normal = wp.normalize(wp.transform_vector(geom_to_world, hit_normal_local))
-                else:
-                    hit_dist, hit_normal = ray_intersect_shape(
-                        shape_transform_world[shape_id],
-                        shape_scale[shape_id],
-                        geom_type,
-                        origin,
-                        direction,
-                        False,
-                    )
-                if hit_dist >= 0.0 and hit_dist < min_dist:
-                    min_dist = hit_dist
-                    min_shape_id = shape_id
-                    min_normal = hit_normal
+                    if geom_type == GeoType.MESH or geom_type == GeoType.CONVEX_MESH or geom_type == GeoType.HFIELD:
+                        geom_to_world = shape_transform_world[shape_id]
+                        ray_origin_local, ray_direction_local = map_ray_to_local(
+                            geom_to_world, origin, direction, shape_scale[shape_id]
+                        )
+                        hit_dist, hit_normal_local, _u, _v, _face = ray_intersect_mesh(
+                            ray_origin_local,
+                            ray_direction_local,
+                            shape_scale[shape_id],
+                            shape_source_ptr[shape_id],
+                            False,
+                            min_dist,
+                        )
+                        hit_normal = wp.vec3(0.0)
+                        if hit_dist >= 0.0:
+                            hit_normal = wp.normalize(wp.transform_vector(geom_to_world, hit_normal_local))
+                    else:
+                        hit_dist, hit_normal = ray_intersect_shape(
+                            shape_transform_world[shape_id],
+                            shape_scale[shape_id],
+                            geom_type,
+                            origin,
+                            direction,
+                            False,
+                        )
+                    if hit_dist >= 0.0 and hit_dist < min_dist:
+                        min_dist = hit_dist
+                        min_shape_id = shape_id
+                        min_normal = hit_normal
 
         if wp.static(write_dist):
             out_dist[rayid] = wp.where(min_shape_id < 0, -1.0, min_dist)
@@ -1050,7 +1114,7 @@ def intersect_ray(
         inputs=[
             model.bvh_shapes.id,
             model.bvh_shapes_group_roots,
-            model.bvh_shape_enabled,
+            model._bvh_shape_active_leaves,
             model.bvh_shape_world_transforms,
             model.shape_type,
             model.shape_scale,

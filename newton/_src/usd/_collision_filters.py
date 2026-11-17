@@ -10,6 +10,7 @@ import itertools
 import warnings
 from typing import TYPE_CHECKING
 
+from ..exceptions import NewtonWarning
 from ..geometry import ShapeFlags
 
 if TYPE_CHECKING:
@@ -165,6 +166,7 @@ def _apply_filtered_pairs(
                 warnings.warn(
                     f"{filter_path1} <-> {filter_path2}: physics:filteredPairs was not imported "
                     f"because {bad_path}: {reason}.",
+                    NewtonWarning,
                     stacklevel=3,
                 )
                 continue

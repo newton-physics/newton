@@ -166,6 +166,30 @@ def _assert_model_arrays_unchanged(
 
 
 class TestKaminoNotifyModelChanged(unittest.TestCase):
+    def test_joint_transforms_remain_capture_safe_without_host_validation(self):
+        """Publish joint transforms eagerly and during capture without host structural checks."""
+        if not wp.get_cuda_device_count():
+            self.skipTest("CUDA capture requires a CUDA device")
+        with wp.ScopedDevice("cuda:0"):
+            model = _build_revolute()
+            solver = SolverKamino(model)
+            body_com = model.body_com.numpy()[0]
+            model.joint_X_c.assign([wp.transform(wp.vec3(0.2, 0.0, 0.0), wp.quat_identity())])
+            with mock.patch.object(
+                solver._kamino, "validate_model_structural_updates", side_effect=AssertionError("host validation")
+            ):
+                solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+                np.testing.assert_allclose(
+                    solver._model_kamino.joints.F_r_Fj.numpy()[0], [0.2, 0.0, 0.0] - body_com, atol=1e-6
+                )
+                with wp.ScopedCapture() as capture:
+                    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+                model.joint_X_c.assign([wp.transform(wp.vec3(0.4, 0.0, 0.0), wp.quat_identity())])
+                wp.capture_launch(capture.graph)
+                np.testing.assert_allclose(
+                    solver._model_kamino.joints.F_r_Fj.numpy()[0], [0.4, 0.0, 0.0] - body_com, atol=1e-6
+                )
+
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
@@ -182,39 +206,46 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             newton.ModelFlags.BODY_INERTIAL_PROPERTIES,
             newton.ModelFlags.SHAPE_PROPERTIES,
             newton.ModelFlags.JOINT_DOF_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES,
             newton.ModelFlags.ACTUATOR_PROPERTIES,
             newton.ModelFlags.CONSTRAINT_PROPERTIES,
             newton.ModelFlags.TENDON_PROPERTIES,
         )
 
-        with mock.patch.object(solver._kamino.msg, "warning") as warning:
-            for flag in noop_flags:
-                with self.subTest(flag=flag.name):
-                    warning.reset_mock()
+        for flag in noop_flags:
+            with self.subTest(flag=flag.name):
+                with self.assertNoLogs("newton", level="WARNING"):
                     solver.notify_model_changed(flag)
-                    warning.assert_not_called()
-                    _assert_model_arrays_unchanged(model, snapshot)
+                _assert_model_arrays_unchanged(model, snapshot)
 
     def test_unknown_flags_warn_without_raising(self):
         """Unknown flags warn while leaving Newton arrays untouched."""
         model = _build_revolute(limited=True)
         solver = SolverKamino(model)
         snapshot = _snapshot_model_arrays(model)
-        warning_message = "SolverKamino.notify_model_changed: flags 0x%x not yet supported"
         custom_flag = 1 << 20
+        warning_message = f"SolverKamino.notify_model_changed: flags 0x{custom_flag:x} not yet supported"
 
-        with mock.patch.object(solver._kamino.msg, "warning") as warning:
+        with self.assertLogs("newton", level="WARNING") as logs:
             solver.notify_model_changed(custom_flag)
             solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | custom_flag)
 
-        warning.assert_has_calls(
-            [
-                mock.call(warning_message, custom_flag),
-                mock.call(warning_message, custom_flag),
-            ]
-        )
-        self.assertEqual(warning.call_count, 2)
+        self.assertEqual([record.getMessage() for record in logs.records], [warning_message, warning_message])
         _assert_model_arrays_unchanged(model, snapshot)
+
+    def test_lox_negative_joint_effort_limit_raises(self):
+        """Reject negative effort limits when LOX validates model updates."""
+        model = _build_revolute(
+            dynamic=True,
+            effort_limit=5.0,
+            actuator_mode=newton.JointTargetMode.POSITION,
+        )
+        solver = SolverKamino(model, config=SolverKamino.Config(dynamics_solver="lox"))
+
+        model.joint_effort_limit.fill_(-1.0)
+        with self.assertRaisesRegex(ValueError, "Joint effort limits"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     def test_aliased_properties_reference_newton(self):
         """Every aliased Newton array shares storage with Kamino, so in-place edits need no notify."""
@@ -223,14 +254,13 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         bodies = solver._model_kamino.bodies
         joints = solver._model_kamino.joints
         geoms = solver._model_kamino.geoms
-        gravity = solver._model_kamino.gravity
 
         # (Newton model attribute, Kamino container, Kamino attribute) for each direct alias.
         # ``body_inv_mass`` and ``body_inv_inertia`` are intentionally excluded:
-        # Kamino owns masked copies so it can zero KINEMATIC/PROXY rows without
+        # Kamino owns masked copies so it can zero KINEMATIC rows without
         # mutating the underlying Newton model.
         aliased_properties = [
-            ("gravity", gravity, "vector"),
+            ("gravity", solver._model_kamino, "gravity"),
             ("body_mass", bodies, "m_i"),
             ("body_com", bodies, "i_r_com_i"),
             ("body_inertia", bodies, "i_I_i"),
@@ -494,7 +524,9 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         pointers = tuple(array.ptr for array in arrays)
         pair_values = tuple(array.numpy().copy() for array in arrays[3:])
 
+        # mu_static holds its own value after finalize, so a single-coefficient update edits the pair.
         model.shape_material_mu.assign(np.array([0.4, 0.4], dtype=np.float32))
+        model.shape_material_mu_static.assign(np.array([0.4, 0.4], dtype=np.float32))
         model.shape_material_restitution.assign(np.array([0.3, 0.3], dtype=np.float32))
         solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
 
@@ -505,6 +537,24 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         for actual, expected in zip(arrays[3:], pair_values, strict=True):
             np.testing.assert_array_equal(actual.numpy(), expected)
 
+    def test_static_friction_update_propagates_on_its_own(self):
+        """mu_static resolves to mu at finalize and is then updated independently of it."""
+        model = _build_revolute(shape_materials=((0.2, 0.1), (0.2, 0.1)))
+        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [0.2, 0.2])
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=True))
+        materials = solver._model_kamino.materials
+        self.assertEqual(len(set(solver._model_kamino.geoms.material.numpy().tolist())), 1)
+        np.testing.assert_allclose(materials.static_friction.numpy(), [DEFAULT_FRICTION, 0.2])
+
+        model.shape_material_mu_static.assign(np.array([0.5, 0.5], dtype=np.float32))
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        np.testing.assert_allclose(materials.static_friction.numpy(), [DEFAULT_FRICTION, 0.5])
+        np.testing.assert_allclose(materials.dynamic_friction.numpy(), [DEFAULT_FRICTION, 0.2])
+
+        model.shape_material_mu_static.assign(np.array([0.5, 0.6], dtype=np.float32))
+        with self.assertRaisesRegex(RuntimeError, "different friction or restitution values"):
+            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
     def test_default_material_update_propagates_to_default_pair(self):
         """Updating material zero keeps its explicit self-pair synchronized."""
         model = _build_revolute(shape_materials=((DEFAULT_FRICTION, DEFAULT_RESTITUTION),))
@@ -514,6 +564,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         np.testing.assert_array_equal(solver._model_kamino.geoms.material.numpy(), [0])
 
         model.shape_material_mu.assign([0.4])
+        model.shape_material_mu_static.assign([0.4])
         model.shape_material_restitution.assign([0.3])
         solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
 
@@ -533,6 +584,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         material_mapping = geoms.material.numpy().copy()
 
         model.shape_material_mu.assign(np.array([0.4, 0.4], dtype=np.float32))
+        model.shape_material_mu_static.assign(np.array([0.4, 0.4], dtype=np.float32))
         model.shape_material_restitution.assign(np.array([0.3, 0.3], dtype=np.float32))
         solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
 
@@ -628,8 +680,9 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
                 model.joint_target_ke.assign([value])
                 model.joint_target_kd.assign([value])
 
-                with self.assertRaisesRegex(RuntimeError, "recreate"):
-                    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+                for flag in (newton.ModelFlags.JOINT_DOF_PROPERTIES, newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES):
+                    with self.subTest(flag=flag), self.assertRaisesRegex(RuntimeError, "recreate"):
+                        solver.notify_model_changed(flag)
 
     def test_dynamic_coefficient_edit_is_allowed(self):
         """Dynamic coefficient edits are allowed while the dynamic predicate stays true."""
@@ -759,8 +812,20 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         solver = SolverKamino(model, SolverKamino.Config(dynamics_solver="padmm"))
         model.joint_friction.assign([1.0])
 
-        with self.assertRaisesRegex(RuntimeError, "joint friction allocation"):
-            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        for flag in (
+            newton.ModelFlags.JOINT_DOF_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
+        ):
+            with self.subTest(flag=flag), self.assertRaisesRegex(RuntimeError, "joint friction allocation"):
+                solver.notify_model_changed(flag)
+
+    def test_force_flag_checks_damping_allocation(self):
+        """Reject damping edits that require new dynamic constraint rows with the narrow flag."""
+        model = _build_revolute()
+        solver = SolverKamino(model)
+        model.joint_damping.fill_(1.0)
+        with self.assertRaisesRegex(RuntimeError, "joint dynamics allocation"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
 
     def test_enabling_friction_on_unallocated_axis_raises(self):
         """Reject friction enabled on an axis without a preallocated row."""
@@ -1089,6 +1154,19 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
         np.testing.assert_array_equal(solver._model_kamino.joints.act_type.numpy(), before)
 
+    def test_missing_implicit_pd_gain_raises(self):
+        """Reject implicit-PD target modes without an effective gain at construction."""
+        cases = (
+            (newton.JointTargetMode.POSITION, 0.0, 0.0),
+            (newton.JointTargetMode.VELOCITY, 1.0, 0.0),
+        )
+        for mode, ke, kd in cases:
+            with self.subTest(mode=mode.name):
+                model = _build_revolute(actuator_mode=mode, target_ke=ke, target_kd=kd)
+                with self.assertRaisesRegex(ValueError, rf"{mode.name} requires a non-zero gain \(DoF=0\)"):
+                    SolverKamino(model)
+
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     unittest.main()

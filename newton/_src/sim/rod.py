@@ -112,15 +112,16 @@ def _compute_parallel_transport_quaternions(
 class Rod:
     """Represents discrete rod input for model construction.
 
-    A rod stores prepared centerline points, segment topology, and one material
-    frame per segment. It may additionally store a capsule/cross-section radius
+    A rod stores initial centerline points, segment topology, and one material
+    frame per segment, plus optional structural-rest points and frames.
+    It may additionally store a capsule/cross-section radius
     and either uniform isotropic material properties or a complete set of
     uniform section rigidities. Geometry and constitutive data remain writable.
     Use :meth:`newton.ModelBuilder.add_rod` to create the corresponding bodies
     and rod joints.
 
     Args:
-        points: Centerline node positions in world space [m], shape ``(N, 3)``.
+        points: Initial centerline node positions in world space [m], shape ``(N, 3)``.
         edges: Optional simple-graph segment endpoint indices, shape ``(E, 2)``.
             Self-edges and duplicate undirected edges are rejected. If omitted,
             consecutive points form an ordered chain.
@@ -128,11 +129,23 @@ class Rod:
             ``(E, 4)``. If omitted, an ordered chain uses parallel transport;
             other explicit topology aligns each frame's local +Z axis
             independently to its edge.
-        closed: Whether an implicit ordered chain closes its last segment body
-            back to its first with a rod joint. Valid only when ``edges`` is
-            omitted and requires at least two segments with coincident first
-            and last points, so the closing span is represented by a segment
-            body.
+        rest_points: Optional structural-rest node positions in world space [m],
+            shape ``(N, 3)``, sharing the initial topology. Their edge lengths
+            determine capsule geometry, mass properties, anchors, and rigidity
+            discretization. If None, initial points also define rest lengths.
+        rest_quaternions: Optional structural-rest material frames in world
+            space [unitless quaternion], shape ``(E, 4)``. If None, assembly
+            transports initial material roll to the rest tangents.
+        rest_straight: Whether to use zero intrinsic bend and twist without
+            changing the initial pose or segment lengths. Requires an ordered
+            chain with at least two segments; mutually exclusive with explicit
+            rest points or frames.
+        closed: Whether to connect the last segment body to the first with a rod
+            joint. Valid only when ``edges`` is omitted and requires at least two
+            segments. If ``rest_points`` is provided, its first and last points
+            must coincide, but the initial endpoints may differ. Otherwise, the
+            first and last ``points`` must coincide. The final consecutive point
+            pair defines the loop's closing segment body.
         radius: Optional capsule radius [m]. If omitted, assembly uses 0.1 m.
             With elastic material inputs, this also defines the circular
             cross-section used to derive section rigidities and is required.
@@ -172,6 +185,12 @@ class Rod:
         recomputes ``quaternions``. After changing points or edges, call
         :meth:`compute_frames` when the material frames should follow the
         updated geometry.
+
+        Explicit rest arrays are copied and normalized on assignment. Copying
+        or assembling a rod revalidates them against its current topology.
+        :meth:`compute_frames` updates only initial frames; omitted rest frames
+        follow them during assembly, while explicit rest frames stay unchanged.
+
     """
 
     def __init__(
@@ -180,6 +199,9 @@ class Rod:
         *,
         edges: Sequence[tuple[int, int]] | np.ndarray | None = None,
         quaternions: Sequence[Quat] | np.ndarray | None = None,
+        rest_points: Sequence[Vec3] | np.ndarray | None = None,
+        rest_quaternions: Sequence[Quat] | np.ndarray | None = None,
+        rest_straight: bool = False,
         closed: bool = False,
         radius: float | None = None,
         youngs_modulus: float | None = None,
@@ -203,6 +225,11 @@ class Rod:
 
         self.closed = resolved_closed
         """Whether the implicit ordered chain closes its last segment body back to its first with a rod joint."""
+
+        self.rest_points = rest_points
+        self.rest_quaternions = rest_quaternions
+        self.rest_straight = bool(rest_straight)
+        """Whether an ordered chain has zero intrinsic bend and twist at structural rest."""
 
         self.radius = None if radius is None else float(radius)
         """Capsule radius [m], or ``None`` to use the builder default."""
@@ -235,9 +262,10 @@ class Rod:
         else:
             self.quaternions = quaternions
             self._points, self._edges, self._quaternions = self._normalize_and_validate_geometry()
+        self._normalize_and_validate_rest_geometry(self.points, self.edges)
 
     @staticmethod
-    def _normalize_points(points: Sequence[Vec3] | np.ndarray) -> np.ndarray:
+    def _normalize_points(points: Sequence[Vec3] | np.ndarray, *, name: str = "points") -> np.ndarray:
         try:
             source = np.asarray(points)
             if source.ndim != 2 or source.shape[1] != 3 or np.iscomplexobj(source):
@@ -245,11 +273,11 @@ class Rod:
             with np.errstate(over="ignore", invalid="ignore"):
                 normalized = np.array(source, dtype=np.float32, order="C", copy=True)
         except (TypeError, ValueError) as exc:
-            raise ValueError("points must have shape (N, 3)") from exc
+            raise ValueError(f"{name} must have shape (N, 3)") from exc
         if len(normalized) < 2:
-            raise ValueError("points must contain at least 2 points")
+            raise ValueError(f"{name} must contain at least 2 points")
         if not np.isfinite(normalized).all():
-            raise ValueError("points must be finite")
+            raise ValueError(f"{name} must be finite")
         return normalized
 
     @staticmethod
@@ -273,7 +301,9 @@ class Rod:
         return np.ascontiguousarray(normalized, dtype=np.int32)
 
     @staticmethod
-    def _normalize_quaternions(quaternions: Sequence[Quat] | np.ndarray, segment_count: int) -> np.ndarray:
+    def _normalize_quaternions(
+        quaternions: Sequence[Quat] | np.ndarray, segment_count: int, *, name: str = "quaternions"
+    ) -> np.ndarray:
         try:
             source = np.asarray(quaternions)
             if source.ndim != 2 or source.shape[1] != 4 or np.iscomplexobj(source):
@@ -281,14 +311,14 @@ class Rod:
             with np.errstate(over="ignore", invalid="ignore"):
                 normalized = np.array(source, dtype=np.float32, order="C", copy=True)
         except (TypeError, ValueError) as exc:
-            raise ValueError("quaternions must have shape (E, 4)") from exc
+            raise ValueError(f"{name} must have shape (E, 4)") from exc
         if len(normalized) != segment_count:
-            raise ValueError(f"quaternions must contain {segment_count} frames, got {len(normalized)}")
+            raise ValueError(f"{name} must contain {segment_count} frames, got {len(normalized)}")
         if not np.isfinite(normalized).all():
-            raise ValueError("quaternions must be finite")
+            raise ValueError(f"{name} must be finite")
         norms = np.linalg.norm(normalized.astype(np.float64), axis=1)
         if np.any(norms <= 0.0):
-            raise ValueError("quaternions must be non-zero")
+            raise ValueError(f"{name} must be non-zero")
         return np.ascontiguousarray(normalized / norms[:, None], dtype=np.float32)
 
     def _resolve_radius(self) -> float | None:
@@ -359,14 +389,22 @@ class Rod:
             raise ValueError("closed rods require ordered-chain edges")
         if self.closed and len(edges) < 2:
             raise ValueError("closed rods require at least 2 segments")
-        if self.closed and not np.allclose(points[0], points[-1], rtol=0.0, atol=1.0e-6):
+        if self.closed and self.rest_points is None and not np.allclose(points[0], points[-1], rtol=0.0, atol=1.0e-6):
             raise ValueError("closed rods require the first and last points to coincide")
         return points, edges
 
     def _normalize_and_validate_geometry(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return normalized geometry after validating the complete rod pose."""
+        """Return normalized geometry after validating the initial rod pose."""
         points, edges = self._validated_centerline()
         quaternions = self._normalize_quaternions(self.quaternions, len(edges))
+        self._validate_frame_alignment(points, edges, quaternions)
+        return points, edges, quaternions
+
+    @staticmethod
+    def _validate_frame_alignment(
+        points: np.ndarray, edges: np.ndarray, quaternions: np.ndarray, *, name: str = "quaternion"
+    ) -> None:
+        """Validate each material tangent against its segment direction."""
         local_z = wp.vec3(0.0, 0.0, 1.0)
         for segment_index, ((start_index, end_index), frame) in enumerate(zip(edges, quaternions, strict=True)):
             segment = axis_to_vec3(points[end_index] - points[start_index])
@@ -375,13 +413,50 @@ class Rod:
             alignment = float(wp.dot(direction, wp.quat_rotate(quaternion, local_z)))
             if not math.isfinite(alignment) or alignment < 0.999:
                 raise ValueError(
-                    f"quaternion at segment index {segment_index} must align local +Z with the segment direction"
+                    f"{name} at segment index {segment_index} must align local +Z with the segment direction"
                 )
-        return points, edges, quaternions
+
+    def _normalize_and_validate_rest_geometry(
+        self, points: np.ndarray, edges: np.ndarray
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """Validate optional rest data against normalized initial geometry."""
+        if self.rest_straight:
+            if self.rest_points is not None or self.rest_quaternions is not None:
+                raise ValueError("rest_straight cannot be combined with explicit rest_points or rest_quaternions")
+            if len(edges) < 2 or not self._is_ordered_chain_topology(len(points), edges):
+                raise ValueError("rest_straight requires an ordered chain with at least two segments")
+
+        rest_points = None
+        if self.rest_points is not None:
+            rest_points = self._normalize_points(self.rest_points, name="rest_points")
+            if len(rest_points) != len(points):
+                raise ValueError(f"rest_points must contain {len(points)} points, got {len(rest_points)}")
+            with np.errstate(over="ignore", invalid="ignore"):
+                lengths = np.linalg.norm(rest_points[edges[:, 1]] - rest_points[edges[:, 0]], axis=1)
+            if not np.isfinite(lengths).all() or np.any(lengths <= 1.0e-9):
+                raise ValueError("all rest_points segments must have finite length > 1e-9 m")
+            if self.closed:
+                tolerance = max(1.0e-9, 1.0e-3 * min(float(lengths[0]), float(lengths[-1])))
+                if float(np.linalg.norm(rest_points[-1] - rest_points[0])) > tolerance:
+                    raise ValueError("closed rods require the first and last rest_points to coincide")
+                # Validate the closed centerline that assembly will use.
+                rest_points[-1] = rest_points[0]
+                with np.errstate(over="ignore", invalid="ignore"):
+                    closing_length = float(np.linalg.norm(rest_points[-1] - rest_points[-2]))
+                if not math.isfinite(closing_length) or closing_length <= 1.0e-9:
+                    raise ValueError("all rest_points segments must have finite length > 1e-9 m")
+
+        rest_quaternions = None
+        if self.rest_quaternions is not None:
+            rest_quaternions = self._normalize_quaternions(self.rest_quaternions, len(edges), name="rest_quaternions")
+            self._validate_frame_alignment(
+                points if rest_points is None else rest_points, edges, rest_quaternions, name="rest quaternion"
+            )
+        return rest_points, rest_quaternions
 
     @property
     def points(self) -> np.ndarray:
-        """Writable centerline node positions in world space [m], shape ``(N, 3)``, float32."""
+        """Writable initial centerline node positions in world space [m], shape ``(N, 3)``, float32."""
         return self._points
 
     @points.setter
@@ -415,6 +490,26 @@ class Rod:
         self._quaternions = self._normalize_quaternions(value, self.segment_count)
 
     @property
+    def rest_points(self) -> np.ndarray | None:
+        """Writable structural-rest points [m], shape ``(N, 3)``, float32; None uses initial points."""
+        return self._rest_points
+
+    @rest_points.setter
+    def rest_points(self, value: Sequence[Vec3] | np.ndarray | None) -> None:
+        self._rest_points = None if value is None else self._normalize_points(value, name="rest_points")
+
+    @property
+    def rest_quaternions(self) -> np.ndarray | None:
+        """Writable rest frames [unitless quaternion], shape ``(E, 4)``, float32; None transports initial roll."""
+        return self._rest_quaternions
+
+    @rest_quaternions.setter
+    def rest_quaternions(self, value: Sequence[Quat] | np.ndarray | None) -> None:
+        self._rest_quaternions = (
+            None if value is None else self._normalize_quaternions(value, self.segment_count, name="rest_quaternions")
+        )
+
+    @property
     def point_count(self) -> int:
         """Number of centerline points."""
         return len(self.points)
@@ -426,7 +521,7 @@ class Rod:
 
     @property
     def segment_lengths(self) -> np.ndarray:
-        """Current length of every rod segment [m], shape ``(E,)``."""
+        """Initial length of every rod segment [m], shape ``(E,)``."""
         vectors = self.points[self.edges[:, 1]] - self.points[self.edges[:, 0]]
         return np.linalg.norm(vectors, axis=1)
 
@@ -478,6 +573,9 @@ class Rod:
         *,
         segment_count: int,
         twist_total: float = 0.0,
+        rest_points: Sequence[Vec3] | np.ndarray | None = None,
+        rest_quaternions: Sequence[Quat] | np.ndarray | None = None,
+        rest_straight: bool = False,
         radius: float | None = None,
         youngs_modulus: float | None = None,
         poissons_ratio: float | None = None,
@@ -487,7 +585,7 @@ class Rod:
         bend_rigidity: float | None = None,
         twist_rigidity: float | None = None,
     ) -> Rod:
-        """Create a uniformly discretized straight rod.
+        """Create a rod with a uniformly discretized straight initial centerline.
 
         Args:
             start: First centerline point in world space [m].
@@ -500,6 +598,9 @@ class Rod:
                 parallel transport [rad]. The value is distributed in
                 ``segment_count`` equal increments, including the first frame,
                 and is not retained after construction.
+            rest_points: Optional structural-rest points [m], as in :class:`Rod`.
+            rest_quaternions: Optional structural-rest frames [unitless quaternion], as in :class:`Rod`.
+            rest_straight: Whether to remove intrinsic bend and twist, as in :class:`Rod`.
             radius: Optional circular-section and capsule radius [m].
             youngs_modulus: Optional Young's modulus ``E`` [Pa].
             poissons_ratio: Optional Poisson's ratio ``nu``.
@@ -515,7 +616,7 @@ class Rod:
                 Mutually exclusive with elastic material inputs.
 
         Returns:
-            A straight rod with parallel-transported material frames.
+            A rod with a straight initial centerline and parallel-transported initial frames.
 
         Raises:
             ValueError: If the geometry, twist, material, or rigidity inputs are
@@ -527,6 +628,9 @@ class Rod:
         return Rod(
             points,
             quaternions=quaternions,
+            rest_points=rest_points,
+            rest_quaternions=rest_quaternions,
+            rest_straight=rest_straight,
             radius=radius,
             youngs_modulus=youngs_modulus,
             poissons_ratio=poissons_ratio,
@@ -578,10 +682,14 @@ class Rod:
     def copy(self) -> Rod:
         """Return an independent copy of this rod."""
         points, edges, quaternions = self._normalize_and_validate_geometry()
+        rest_points, rest_quaternions = self._normalize_and_validate_rest_geometry(points, edges)
         copied = Rod(
             points,
             edges=edges,
             quaternions=quaternions,
+            rest_points=rest_points,
+            rest_quaternions=rest_quaternions,
+            rest_straight=self.rest_straight,
             radius=self.radius,
             youngs_modulus=self.youngs_modulus,
             poissons_ratio=self.poissons_ratio,

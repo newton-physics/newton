@@ -49,7 +49,7 @@ from newton._src.controllers.impl.differential_ik._common import (
     _qd_from_y_kernel,
     _qd_in_singular_basis_damped_kernel,
     _qd_in_singular_basis_truncated_kernel,
-    _svd_one_sided_jacobi_kernel,
+    get_svd_one_sided_jacobi_kernel,
 )
 from newton._src.controllers.impl.differential_ik.model_based import ControllerDifferentialIK
 from newton._src.controllers.impl.differential_ik.model_free import ControllerDifferentialIKModelFree
@@ -59,7 +59,7 @@ devices = get_test_devices()
 
 
 def _solve_dls_svd(jacobian_np, error_np, damping_val, dof_counts, bandwidth_np, device, task_dim_val=6):
-    """Run the SVD-based solve end to end (_svd_one_sided_jacobi_kernel + _qd_in_singular_basis_damped_kernel +
+    """Run the SVD-based solve end to end (get_svd_one_sided_jacobi_kernel + _qd_in_singular_basis_damped_kernel +
     _qd_from_singular_basis_kernel), returning ``joint_qd_target`` as numpy.
 
     ``jacobian_np`` is already ``J_w`` (every test in this section uses
@@ -88,7 +88,7 @@ def _solve_dls_svd(jacobian_np, error_np, damping_val, dof_counts, bandwidth_np,
     s = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
     v = wp.zeros((robot_count, max_dofs, max_dofs), dtype=wp.float32, device=device)
     wp.launch(
-        _svd_one_sided_jacobi_kernel,
+        get_svd_one_sided_jacobi_kernel(6, max_dofs),
         dim=robot_count,
         inputs=[jacobian.view(mat_j).reshape((robot_count,)), dof_count, 1.0e-6, 30],
         outputs=[
@@ -153,7 +153,7 @@ def _solve_truncated_svd(jacobian_np, error_np, threshold_val, dof_counts, bandw
     s = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
     v = wp.zeros((robot_count, max_dofs, max_dofs), dtype=wp.float32, device=device)
     wp.launch(
-        _svd_one_sided_jacobi_kernel,
+        get_svd_one_sided_jacobi_kernel(6, max_dofs),
         dim=robot_count,
         inputs=[jacobian.view(mat_j).reshape((robot_count,)), dof_count, 1.0e-6, 30],
         outputs=[
@@ -267,7 +267,7 @@ def test_qd_from_y_ignores_garbage_in_ys_padding_slots(test: unittest.TestCase, 
 
 
 # ---------------------------------------------------------------------------
-# The SVD-based solve: _svd_one_sided_jacobi_kernel + _qd_in_singular_basis_damped_kernel
+# The SVD-based solve: get_svd_one_sided_jacobi_kernel + _qd_in_singular_basis_damped_kernel
 # + _qd_from_singular_basis_kernel (see _solve_dls_svd above) -- see the
 # section comment above _svd_one_sided_jacobi in _common.py for why it's SVD-based.
 # ---------------------------------------------------------------------------
@@ -1602,37 +1602,52 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
         self.assertAlmostEqual(float(outputs.joint_qd_target.numpy()[0]), expected, places=5)
 
     def test_dt_as_wp_array(self):
-        """step()'s dt accepts a single-element wp.array with the same result as an equal-valued float scalar."""
-        device = wp.get_device()
-        dt_scalar = 0.02
-        ctrl = ControllerDifferentialIKModelFree(
-            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.5, device=device
-        )
-        pose = _identity_transform(1, device)
-        desired = wp.array(
-            [wp.transform(p=wp.vec3(0.1, 0.0, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
-        )
-        jacobian = _identity_jacobian(1, 6, device)
+        """Accept valid array durations and reject invalid durations without changing targets."""
+        for device in devices:
+            for method in (DifferentialIKMethod.DAMPED_LEAST_SQUARES, DifferentialIKMethod.TRANSPOSE):
+                with self.subTest(device=str(device), method=method):
+                    dt_scalar = 0.02
+                    ctrl = ControllerDifferentialIKModelFree(
+                        controlled_dofs_per_robot=_dofs_arr([6], device),
+                        bandwidth=1.0,
+                        damping=0.5 if method == DifferentialIKMethod.DAMPED_LEAST_SQUARES else None,
+                        ik_method=method,
+                        device=device,
+                    )
+                    inputs, outputs = ctrl.input(), ctrl.output()
+                    inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+                    inputs.tool_pose_world = _identity_transform(1, device)
+                    inputs.desired_tool_pose_world = wp.array(
+                        [wp.transform(p=wp.vec3(0.1, 0.0, 0.0), q=wp.quat_identity())],
+                        dtype=wp.transform,
+                        device=device,
+                    )
+                    inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+                    ctrl.step(inputs=inputs, outputs=outputs, dt=dt_scalar)
+                    qd_scalar = outputs.joint_qd_target.numpy().copy()
+                    q_target_scalar = outputs.joint_q_target.numpy().copy()
+                    ctrl.step(inputs=inputs, outputs=outputs, dt=wp.array([dt_scalar], dtype=wp.float32, device=device))
+                    np.testing.assert_allclose(outputs.joint_qd_target.numpy(), qd_scalar, atol=1e-6)
+                    np.testing.assert_allclose(outputs.joint_q_target.numpy(), q_target_scalar, atol=1e-6)
 
-        inputs = ctrl.input()
-        outputs = ctrl.output()
-        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
-        inputs.tool_pose_world = pose
-        inputs.desired_tool_pose_world = desired
-        inputs.jacobian_tool_world = jacobian
-        ctrl.step(inputs=inputs, outputs=outputs, dt=dt_scalar)
-        qd_scalar = outputs.joint_qd_target.numpy().copy()
-        q_target_scalar = outputs.joint_q_target.numpy().copy()
-
-        inputs = ctrl.input()
-        outputs = ctrl.output()
-        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
-        inputs.tool_pose_world = pose
-        inputs.desired_tool_pose_world = desired
-        inputs.jacobian_tool_world = jacobian
-        ctrl.step(inputs=inputs, outputs=outputs, dt=wp.array([dt_scalar], dtype=wp.float32, device=device))
-        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), qd_scalar, atol=1e-6)
-        np.testing.assert_allclose(outputs.joint_q_target.numpy(), q_target_scalar, atol=1e-6)
+                    invalid_durations = [
+                        (wp.zeros(2, dtype=wp.float32, device=device), ValueError),
+                        (wp.zeros(1, dtype=wp.float64, device=device), TypeError),
+                        (object(), TypeError),
+                    ]
+                    invalid_durations.extend(
+                        (wp.zeros(1, dtype=wp.float32, device=other), ValueError)
+                        for other in devices
+                        if other != device
+                    )
+                    for dt, error in invalid_durations:
+                        with self.subTest(dt=dt):
+                            outputs.joint_qd_target.fill_(7.0)
+                            outputs.joint_q_target.fill_(9.0)
+                            with self.assertRaises(error):
+                                ctrl.step(inputs=inputs, outputs=outputs, dt=dt)
+                            np.testing.assert_array_equal(outputs.joint_qd_target.numpy(), np.full(6, 7.0))
+                            np.testing.assert_array_equal(outputs.joint_q_target.numpy(), np.full(6, 9.0))
 
     def test_is_graphable(self):
         """A controller with every gain baked at construction reports is_graphable() == True."""

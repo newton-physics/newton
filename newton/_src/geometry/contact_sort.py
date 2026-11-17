@@ -205,6 +205,10 @@ class ContactSorter:
 
     ``key_bit_count`` limits sorting to the populated low key bits, reducing
     radix passes without changing the full-capacity graph-capture behavior.
+
+    Set ``allocate_simple_scratch=False`` for a sorter used only by
+    :meth:`sort_full` to avoid allocating the unused simple-layout scratch.
+    Scratch allocation is fixed at construction time.
     """
 
     def __init__(
@@ -213,6 +217,7 @@ class ContactSorter:
         *,
         key_bit_count: int = 64,
         per_contact_shape_properties: bool = False,
+        allocate_simple_scratch: bool = True,
         device: Devicelike = None,
     ):
         if not 1 <= key_bit_count <= 64:
@@ -227,11 +232,13 @@ class ContactSorter:
             self._has_shape_props = per_contact_shape_properties
 
             # Scratch buffers for the simple gather (NarrowPhase.launch path).
-            self._simple_pair_buf = wp.zeros(capacity, dtype=wp.vec2i)
-            self._simple_position_buf = wp.zeros(capacity, dtype=wp.vec3)
-            self._simple_normal_buf = wp.zeros(capacity, dtype=wp.vec3)
-            self._simple_penetration_buf = wp.zeros(capacity, dtype=float)
-            self._simple_tangent_buf = wp.zeros(capacity, dtype=wp.vec3)
+            self._has_simple_scratch = allocate_simple_scratch
+            simple_capacity = capacity if allocate_simple_scratch else 0
+            self._simple_pair_buf = wp.zeros(simple_capacity, dtype=wp.vec2i)
+            self._simple_position_buf = wp.zeros(simple_capacity, dtype=wp.vec3)
+            self._simple_normal_buf = wp.zeros(simple_capacity, dtype=wp.vec3)
+            self._simple_penetration_buf = wp.zeros(simple_capacity, dtype=float)
+            self._simple_tangent_buf = wp.zeros(simple_capacity, dtype=wp.vec3)
             self._simple_match_index_buf = wp.zeros(1, dtype=wp.int32)
 
             # Scratch buffers for the full gather (CollisionPipeline.collide path).
@@ -289,6 +296,8 @@ class ContactSorter:
                 permuted alongside the other contact fields during sorting.
             device: Device to launch on.
         """
+        if not self._has_simple_scratch:
+            raise ValueError("sort_simple requires allocate_simple_scratch=True")
         n = self._capacity
 
         has_tangent = contact_tangent is not None and contact_tangent.shape[0] > 0
@@ -427,25 +436,23 @@ class ContactSorter:
 
     @property
     def scratch_pos_world(self) -> wp.array:
-        """Shared scratch buffer for external cross-frame world-space positions.
+        """Transient position scratch available to sequential pipeline stages.
 
-        Sized ``capacity`` :class:`wp.vec3`.  Reserved for use by
-        :class:`~newton._src.geometry.contact_match.ContactMatcher`, which
-        repurposes the sorter's unused ``point0`` scratch between frames to
-        store the previous frame's world-space contact positions.
+        Sized ``capacity`` :class:`wp.vec3`.  :meth:`sort_full` overwrites this
+        storage on every call, so it cannot hold state across frames;
+        :class:`~newton._src.geometry.contact_match.ContactMatcher` keeps its
+        previous-frame history in buffers it owns.
 
         .. note::
-            The buffer is **only idle between frames** — i.e. between the end
-            of one :meth:`sort_full` call and the start of the next.  Writes
-            outside that window will corrupt the next sort.  Do not write to
-            this buffer unless you are implementing cross-frame state that
-            coordinates with the pipeline's per-frame call order.
+            Contents are only meaningful to the stage that wrote them, until
+            the next :meth:`sort_full` call.  Coordinate any reuse with the
+            pipeline's per-frame call order.
         """
         return self._full_point0_buf
 
     @property
     def scratch_normal(self) -> wp.array:
-        """Shared scratch buffer for external cross-frame world-space normals.
+        """Transient normal scratch available to sequential pipeline stages.
 
         Sized ``capacity`` :class:`wp.vec3`.  Companion to
         :attr:`scratch_pos_world`; see that property for usage constraints.

@@ -1,7 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 ICON_SIZES = (16, 32, 64)
 
@@ -35,8 +38,7 @@ def create_and_save_emoji_png(character: str, size: int, filename: str):
     try:
         font = ImageFont.truetype(font_path, size=font_size)
     except OSError:
-        print(f"Warning: Font '{font_path}' not found. Using default font.")
-        print("The icon may not render in color.")
+        logger.warning("Font '%s' not found. Using default font.\nThe icon may not render in color.", font_path)
         font = ImageFont.load_default()
 
     # Calculate position to center the character
@@ -49,7 +51,7 @@ def create_and_save_emoji_png(character: str, size: int, filename: str):
 
     # Save the image as a PNG file
     image.save(filename, "PNG")
-    print(f"Successfully created {filename}")
+    logger.info("Successfully created %s", filename)
 
 
 if __name__ == "__main__":

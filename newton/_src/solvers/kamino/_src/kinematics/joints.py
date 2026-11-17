@@ -13,7 +13,13 @@ import warp as wp
 
 from .....sim.articulation import transform_3d_rotational_axes
 from ..core.data import DataKamino
-from ..core.joints import DofActuationPath, JointActuationType, JointCorrectionMode, JointDoFType
+from ..core.joints import (
+    DofActuationPath,
+    JointActuationType,
+    JointCorrectionMode,
+    JointDoFType,
+    clamp_joint_effort_wp,
+)
 from ..core.math import FLOAT32_MAX, quat_log, quat_twist_angle
 from ..core.model import ModelKamino
 from ..core.types import (
@@ -899,6 +905,7 @@ def compute_and_write_joint_implicit_dynamics(
     model_joint_b_j: wp.array[wp.float32],
     model_joint_k_p_j: wp.array[wp.float32],
     model_joint_k_d_j: wp.array[wp.float32],
+    model_joint_tau_j_max: wp.array[wp.float32],
     model_joint_dof_act_types: wp.array[wp.int32],
     model_joint_dof_act_paths: wp.array[wp.int32],
     data_joint_q_j: wp.array[wp.float32],
@@ -966,6 +973,11 @@ def compute_and_write_joint_implicit_dynamics(
             elif act_type == JointActuationType.POSITION_VELOCITY_FORCE:
                 m_j += dt * k_d_j + dt * dt * k_p_j
                 tau_j_tot += pd_tau_j_ff + k_p_j * q_j_err + k_d_j * pd_dq_j_ref
+
+            if act_type == JointActuationType.PASSIVE or act_type == JointActuationType.FORCE:
+                # Bound the actuator command, not the passive armature/damping reaction.
+                # With zero PD gains, tau_j_tot coincides with the command torque.
+                tau_j_tot = clamp_joint_effort_wp(tau_j_tot, model_joint_tau_j_max[dofs_offset_j])
 
         # Enforce minimum mass to avoid division by zero
         m_j = wp.max(1e-6, m_j)
@@ -1074,7 +1086,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
     Generates the kernel to compute the joint states based on the current body states.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _compute_joints_data(
         # Inputs:
         model_time_dt: wp.array[wp.float32],
@@ -1197,6 +1209,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
             model_joint_b_j,
             model_joint_k_p_j,
             model_joint_k_d_j,
+            model_joint_tau_j_max,
             model_joint_dof_act_types,
             model_joint_dof_act_paths,
             data_joint_q_j,

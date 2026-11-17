@@ -17,7 +17,7 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 def _make_solver(name, model):
     """Construct a rigid solver for the conveyor regression."""
     if name == "vbd":
-        return newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True)
+        return newton.solvers.SolverVBD(model, iterations=5)
     if name == "semi_implicit":
         return newton.solvers.SolverSemiImplicit(model)
     if name == "featherstone":
@@ -106,7 +106,8 @@ def test_mesh_surface_velocity_moves_rigid_body(test, device, solver_name):
     model = builder.finalize(device=device)
     mesh.mesh.velocities.fill_(wp.vec3(1.0, 0.0, 0.0))
     solver = _make_solver(solver_name, model)
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    # Keep equal-scored mesh contacts independent of CUDA allocation order.
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
     contacts = pipeline.contacts()
     state_in = model.state()
     state_out = model.state()
@@ -279,7 +280,8 @@ def test_mesh_surface_velocity_moves_rigid_body_through_coupled_solver(test, dev
             )
         ],
     )
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    # Keep the conveyor trajectory independent of CUDA contact-reduction ties.
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
     contacts = pipeline.contacts()
     state_in = model.state()
     state_out = model.state()

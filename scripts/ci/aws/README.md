@@ -38,9 +38,11 @@ The runner workflows apply repository, trigger, workload, and run identifiers as
 
 | Parameter | Default | Purpose |
 | --- | --- | --- |
-| `TerminateAfterMinutes` | `90` | Age at which an owned running instance becomes a cleanup candidate. Accepts values from `1` through `120`. |
+| `TerminateAfterMinutes` | `120` | Age at which an owned running instance becomes a cleanup candidate. Accepts values from `1` through `120`. |
 | `TerminationEnabled` | `false` | Enables termination when set to `true`. `false` is shadow mode, which records instances that the watchdog would terminate without terminating them. |
-| `RequiredRepository` | Empty string | Requires an exact repository tag when nonempty. It must be set when termination is enabled with `TerminateAfterMinutes` below `90`. It is additional to, not a replacement for, the permanent ownership boundary. |
+| `RequiredRepository` | Empty string | Requires an exact repository tag when nonempty. It must be set when termination is enabled with `TerminateAfterMinutes` below `120`. It is additional to, not a replacement for, the permanent ownership boundary. |
+
+The 120-minute termination threshold is measured from EC2 launch, leaving 40 minutes beyond an 80-minute job timeout for boot, runner registration, queueing, and cleanup. Checks run every 15 minutes, so an instance can remain active until the next scan, roughly 135 minutes after launch. The overdue alert threshold remains 120 minutes.
 
 The permanent ownership boundary is `created-by=github-actions-newton-role`. The watchdog discovers only instances with this tag, and its IAM policy permits termination only for instances with the same tag.
 
@@ -102,7 +104,7 @@ aws --profile "$AWS_PROFILE" cloudformation describe-stacks \
 }
 ```
 
-Use the committed template and a reviewed CloudFormation change set. This update example keeps cleanup disabled explicitly. `AlertTopicArn` uses the current stack value; creating a new stack requires supplying that required parameter with the real SNS topic ARN outside this document.
+Use the committed template and a reviewed CloudFormation change set. This update example explicitly sets the termination age to 120 minutes while preserving the current cleanup enablement, repository restriction, and notification topic. Updating the template default alone does not replace an existing stack parameter value. Creating a new stack requires supplying the required `AlertTopicArn` with the real SNS topic ARN outside this document.
 
 ```bash
 aws --profile "$AWS_PROFILE" cloudformation create-change-set \
@@ -113,9 +115,9 @@ aws --profile "$AWS_PROFILE" cloudformation create-change-set \
   --template-body file://scripts/ci/aws/overdue-newton-github-runner-watchdog.yaml \
   --parameters \
     'ParameterKey=AlertTopicArn,UsePreviousValue=true' \
-    'ParameterKey=TerminateAfterMinutes,ParameterValue=90' \
-    'ParameterKey=TerminationEnabled,ParameterValue=false' \
-    'ParameterKey=RequiredRepository,ParameterValue=' \
+    'ParameterKey=TerminateAfterMinutes,ParameterValue=120' \
+    'ParameterKey=TerminationEnabled,UsePreviousValue=true' \
+    'ParameterKey=RequiredRepository,UsePreviousValue=true' \
   --capabilities CAPABILITY_NAMED_IAM
 
 aws --profile "$AWS_PROFILE" cloudformation wait change-set-create-complete \
