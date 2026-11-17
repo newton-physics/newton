@@ -745,10 +745,18 @@ def parse_usd(
             return (body_idx, wp.vec3())
 
         body_prim = stage.GetPrimAtPath(body_path)
-        body_world = usd.get_transform(body_prim, local=False, xform_cache=xform_cache)
-        target_world = usd.get_transform(target_prim, local=False, xform_cache=xform_cache)
-        local_tf = wp.transform_inverse(body_world) * target_world
-        return (body_idx, local_tf.p)
+        # Express the anchor in the rigid frame the importer gives the body
+        # (usd.get_transform's rotation, also correct under ancestor shear or tiny
+        # scales), but subtract the world positions in USD's double precision:
+        # casting both world poses to Warp first loses small authored site
+        # offsets, even for a pure translation. The target's world position keeps
+        # scale and reset-xform semantics.
+        body_rot = usd.get_transform(body_prim, local=False, xform_cache=xform_cache).q
+        body_quat = Gf.Quatd(float(body_rot[3]), float(body_rot[0]), float(body_rot[1]), float(body_rot[2]))
+        body_pos = xform_cache.GetLocalToWorldTransform(body_prim).ExtractTranslation()
+        target_pos = xform_cache.GetLocalToWorldTransform(target_prim).ExtractTranslation()
+        local_pos = body_quat.GetNormalized().GetInverse().Transform(target_pos - body_pos)
+        return (body_idx, wp.vec3(*local_pos))
 
     def _get_first_target(prim: Usd.Prim, rel_name: str) -> str:
         """Return the first target path of *rel_name* on *prim*, or ``""`` for world."""
