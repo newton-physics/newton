@@ -8534,6 +8534,9 @@ class TestImportMjcfComposition(unittest.TestCase):
                     f"Shape pair ({shape1}, {shape2}) should be filtered due to <exclude body1='body1' body2='body2'/>",
                 )
 
+        # Sites on the excluded bodies add no filter pairs.
+        self.assertEqual(len(filter_pairs), 4)
+
         # The test above verifies that body1-body2 pairs are correctly filtered.
         # We don't need to verify body3 interactions as that would require running
         # a full simulation to observe collision behavior.
