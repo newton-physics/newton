@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -8,10 +10,10 @@ import warp as wp
 from ..geometry import Gaussian, GeoType, raycast
 from ..geometry.bvh import BVH_SHAPE_INACTIVE
 from . import gaussians, render_optix
-from .types import MeshData, RenderConfig
+from .types import MeshData, RenderConfig, RenderState
 
 if TYPE_CHECKING:
-    from .render_context import RenderContext
+    from ..geometry.optix import OptixShapes
 
 
 NO_HIT_SHAPE_ID = wp.uint32(0xFFFFFFFF)
@@ -98,7 +100,7 @@ def get_group_roots(group_roots: wp.array[wp.int32], world_index: wp.int32, want
 
 
 def create_closest_hit_function(
-    config: RenderConfig, state: "RenderContext.RenderState", optix=None, with_normal: bool = True
+    config: RenderConfig, state: RenderState, with_normal: bool = True, optix: OptixShapes | None = None
 ) -> wp.Function:
     """Closest hit of a camera ray; without ``with_normal``, only the distance, shape and face are found."""
     shade_gaussians = gaussians.create_shade_function(config, state)
@@ -402,7 +404,9 @@ def create_closest_hit_function(
     return closest_hit
 
 
-def create_first_hit_function(config: RenderConfig, state: "RenderContext.RenderState", optix=None) -> wp.Function:
+def create_first_hit_function(
+    config: RenderConfig, state: RenderState, optix: OptixShapes | None = None
+) -> wp.Function:
 
     @wp.func
     def first_hit_shape(

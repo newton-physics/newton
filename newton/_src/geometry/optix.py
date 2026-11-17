@@ -154,7 +154,14 @@ def compute_optix_shape_instances(
         wp.uint32(si),
         wp.uint32(wp.where(kind == GeoType.MESH or kind == GeoType.BOX, 0, 1)),
         wp.uint32(mask),
-        wp.uint32(wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT))),
+        # Boxes keep the analytic box's behavior: their inside faces are visible with culling.
+        wp.uint32(
+            wp.where(
+                kind == GeoType.BOX,
+                wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT | wo.InstanceFlags.DISABLE_TRIANGLE_FACE_CULLING)),
+                wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT)),
+            )
+        ),
     )
 
 
@@ -264,15 +271,15 @@ def create_pipeline(shapes: OptixShapes, kernel: wp.Kernel, *, enable_backface_c
 
 def intersect_rays(
     model: Model,
-    ray_origins,
-    ray_directions,
-    ray_worlds,
+    ray_origins: wp.array[wp.vec3],
+    ray_directions: wp.array[wp.vec3],
+    ray_worlds: wp.array[wp.int32],
     *,
-    enable_global_world,
-    out_dist,
-    out_shape_id,
-    out_normal,
-    fast_math,
+    enable_global_world: bool,
+    out_dist: wp.array[float] | None,
+    out_shape_id: wp.array[wp.int32] | None,
+    out_normal: wp.array[wp.vec3] | None,
+    fast_math: bool,
 ) -> None:
     """Intersect rays with :attr:`Model.optix_shapes`."""
     shapes = model.optix_shapes
@@ -305,7 +312,14 @@ def intersect_rays(
     )
 
 
-def _create_ray_pipeline(shapes, enable_global_world, write_dist, write_shape_id, write_normal, fast_math):
+def _create_ray_pipeline(
+    shapes: OptixShapes,
+    enable_global_world: bool,
+    write_dist: bool,
+    write_shape_id: bool,
+    write_normal: bool,
+    fast_math: bool,
+) -> wo.Pipeline:
     grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
 
     @wp.func
@@ -318,7 +332,7 @@ def _create_ray_pipeline(shapes, enable_global_world, write_dist, write_shape_id
         distance: float,
         shape: int,
         normal: wp.vec3,
-    ):
+    ) -> tuple[float, int, wp.vec3]:
         plane_distance, plane_normal = raycast.ray_intersect_shape(
             shape_transforms[si], shape_sizes[si], GeoType.PLANE, origin, direction, False
         )

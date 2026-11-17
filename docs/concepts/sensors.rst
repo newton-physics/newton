@@ -117,7 +117,9 @@ attributes, and usage examples.
 * :class:`~newton.sensors.SensorCamera` -- raytraced color, HDR color, depth, forward-depth, normal, albedo, and
   shape-index rendering; one view per camera transform, mapped to worlds via a per-view selector. Deformable
   visual meshes render too; see :ref:`deformable-visual-camera-output`. Installing ``newton[optix]`` enables
-  experimental OptiX ray tracing with ``backend="optix"``.
+  experimental OptiX ray tracing with ``backend="optix"``; build its shapes with
+  ``model.bvh_build_shapes(state, backend="optix")`` and refit them with
+  ``model.bvh_refit_shapes(state, backend="optix")``.
 * :class:`~newton.sensors.SensorTiledCamera` -- deprecated; superseded by :class:`~newton.sensors.SensorCamera`.
 
 Camera Rays from USD and Calibration Data

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Literal
 
 import numpy as np
@@ -24,6 +24,7 @@ from .types import (
     MeshData,
     RenderConfig,
     RenderOrder,
+    RenderState,
     TextureData,
 )
 
@@ -63,22 +64,6 @@ def _render_types(shape_types: np.ndarray) -> np.ndarray:
 
 
 class RenderContext:
-    @dataclass(unsafe_hash=True)
-    class RenderState:
-        """Mutable flags tracking which render outputs are active."""
-
-        num_gaussians: int = 0
-        has_particles: bool = False
-        has_world_indices: bool = False
-        has_triangle_mesh_textures: bool = False
-        render_color: bool = False
-        render_depth: bool = False
-        render_forward_depth: bool = False
-        render_shape_index: bool = False
-        render_normal: bool = False
-        render_albedo: bool = False
-        render_hdr_color: bool = False
-
     DEFAULT_CLEAR_DATA = ClearData()
     DEFAULT_RENDER_CONFIG = RenderConfig()
 
@@ -109,7 +94,7 @@ class RenderContext:
         """
         self._model = model
         self._deformable_surface_mode = deformable_surface_mode
-        self._render_state = RenderContext.RenderState()
+        self._render_state = RenderState()
 
         self._kernel_cache: dict[tuple, wp.Kernel] = {}
 
@@ -492,8 +477,9 @@ class RenderContext:
         geometry, refit them via
         :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles` before calling this
-        method. The OptiX backend instead traces :attr:`~newton.Model.optix_shapes`, built and
-        refit by the same methods with ``backend="optix"``.
+        method. The OptiX backend instead traces :attr:`~newton.Model.optix_shapes`, built with
+        ``bvh_build_shapes(state, backend="optix")`` and refit with
+        ``bvh_refit_shapes(state, backend="optix")``.
 
         Args:
             state: Current simulation state (for particle positions).

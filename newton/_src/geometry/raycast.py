@@ -940,8 +940,9 @@ def intersect_ray(
     the BVH with :meth:`~newton.Model.bvh_refit_shapes` before raycasting
     again. Manually populated models must build the BVH with
     :meth:`~newton.Model.bvh_build_shapes` before first use. With
-    ``backend="optix"``, build and refit :attr:`~newton.Model.optix_shapes` by passing
-    ``backend="optix"`` to the same methods instead.
+    ``backend="optix"``, build and refit :attr:`~newton.Model.optix_shapes` with
+    ``bvh_build_shapes(state, backend="optix")`` and ``bvh_refit_shapes(state, backend="optix")``
+    instead.
 
     Each ray is cast against the shapes of its own world (given by
     ``ray_worlds``) and against the shapes of the global world (index ``-1``),

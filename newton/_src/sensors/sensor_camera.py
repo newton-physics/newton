@@ -186,7 +186,6 @@ class SensorCamera:
         self.default_clear_data: ClearData = default_clear_data if default_clear_data is not None else ClearData()
         """Clear values used by :meth:`update` when its ``clear_data`` argument is ``None``."""
         if default_render_config is None:
-            # Pixel-major order suits the Warp BVH, whose worlds share a layout; OptiX is fastest in tiles.
             order = RenderOrder.TILED if backend == "optix" else RenderOrder.PIXEL_PRIORITY
             default_render_config = RenderConfig(render_order=order)
         self.default_render_config: RenderConfig = default_render_config
@@ -1030,8 +1029,8 @@ class SensorCamera:
         :meth:`~newton.Model.bvh_refit_particles` (both are built initially by
         :meth:`~newton.ModelBuilder.finalize`) before calling this; otherwise the
         render reads stale bounds. With the OptiX backend, build
-        :attr:`~newton.Model.optix_shapes` once and refit them by passing ``backend="optix"``
-        to the same methods instead. Deformable triangle-mesh points are synced from
+        :attr:`~newton.Model.optix_shapes` once with ``bvh_build_shapes(state, backend="optix")``
+        and refit them with ``bvh_refit_shapes(state, backend="optix")`` instead. Deformable triangle-mesh points are synced from
         *state* automatically (see ``sync_deformables``).
 
         The camera looks along its local ``-Z`` axis with ``+Y`` up and ``+X``

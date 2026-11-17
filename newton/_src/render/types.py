@@ -161,11 +161,7 @@ class RenderConfig:
     """
 
     render_order: RenderOrder = RenderOrder.PIXEL_PRIORITY
-    """Render traversal order (see :class:`RenderOrder`).
-
-    The Warp backend is usually fastest with ``PIXEL_PRIORITY`` and the OptiX backend with
-    ``TILED``, the default of an OptiX :class:`~newton.sensors.SensorCamera`.
-    """
+    """Render traversal order (see :class:`RenderOrder`)."""
 
     anti_aliasing: AntiAliasing = AntiAliasing.NONE
     """Anti-aliasing mode applied to multisampled ray bundles (see :class:`AntiAliasing`).
@@ -199,6 +195,23 @@ class RenderConfig:
 
     gaussians_max_num_hits: int = 20
     """Maximum Gaussian hits accumulated per ray."""
+
+
+@dataclass(unsafe_hash=True)
+class RenderState:
+    """Mutable flags tracking which render outputs are active."""
+
+    num_gaussians: int = 0
+    has_particles: bool = False
+    has_world_indices: bool = False
+    has_triangle_mesh_textures: bool = False
+    render_color: bool = False
+    render_depth: bool = False
+    render_forward_depth: bool = False
+    render_shape_index: bool = False
+    render_normal: bool = False
+    render_albedo: bool = False
+    render_hdr_color: bool = False
 
 
 @dataclass(unsafe_hash=True)

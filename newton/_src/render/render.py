@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -8,10 +10,19 @@ import warp as wp
 from ..geometry import Gaussian, GeoType
 from ..utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
-from .types import AntiAliasing, ClearData, MeshData, RenderConfig, RenderOrder, TextureData, WorldRenderFlag
+from .types import (
+    AntiAliasing,
+    ClearData,
+    MeshData,
+    RenderConfig,
+    RenderOrder,
+    RenderState,
+    TextureData,
+    WorldRenderFlag,
+)
 
 if TYPE_CHECKING:
-    from .render_context import RenderContext
+    from ..geometry.optix import OptixShapes
 
 
 _MSAA_SURFACE_SLOTS = 4
@@ -78,8 +89,8 @@ def _unpack_rgba(packed: wp.uint32):
 
 
 def create_kernel(
-    config: RenderConfig, state: "RenderContext.RenderState", clear_data: ClearData, optix=None
-) -> wp.kernel:
+    config: RenderConfig, state: RenderState, clear_data: ClearData, optix: OptixShapes | None = None
+) -> wp.Kernel:
     compute_lighting = lighting.create_compute_lighting_function(config, state, optix)
     sample_texture = textures.create_sample_texture_function(config)
 
@@ -89,7 +100,7 @@ def create_kernel(
         or state.render_normal
         or (state.render_albedo and config.enable_textures)
     )
-    raytrace_closest_hit = raytrace.create_closest_hit_function(config, state, optix, with_normal)
+    raytrace_closest_hit = raytrace.create_closest_hit_function(config, state, with_normal, optix)
 
     if config.output_color_space == ColorSpace.LINEAR:
         clear_data = ClearData(

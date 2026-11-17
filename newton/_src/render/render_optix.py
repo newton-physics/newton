@@ -7,14 +7,21 @@
 :attr:`OptixShapes.world_planes` flattened; the other Warp BVH arguments are unused.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import warp as wp
 
 from ..geometry import Gaussian, GeoType, raycast
 from . import raytrace
-from .types import MeshData
+from .types import MeshData, RenderConfig
+
+if TYPE_CHECKING:
+    from ..geometry.optix import OptixShapes
 
 
-def create_closest_hit(config, shapes):
+def create_closest_hit(config: RenderConfig, shapes: OptixShapes) -> wp.Function:
     from ..geometry.optix import ray_interval, wo, world_offset  # noqa: PLC0415
 
     grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
@@ -127,7 +134,7 @@ def create_closest_hit(config, shapes):
     return closest_hit_shape
 
 
-def create_first_hit(config, shapes):
+def create_first_hit(config: RenderConfig, shapes: OptixShapes) -> wp.Function:
     from ..geometry.optix import ray_interval, wo, world_offset  # noqa: PLC0415
 
     grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
