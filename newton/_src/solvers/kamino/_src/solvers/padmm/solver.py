@@ -21,7 +21,7 @@ from ...core.size import SizeKamino
 from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.limits import LimitsKamino
-from ...linalg import RedundantRowShift
+from ...linalg import LLTBlockedRCMSolver, LLTBlockedSolver, RedundantRowShift
 from ...utils.tile import get_block_dim, get_tile_size
 from .kernels import (
     _apply_dual_preconditioner_to_solution,
@@ -152,6 +152,7 @@ class PADMMSolver:
 
         # Declare the detection of redundant kinematic joint constraints
         self._redundant_joints: RedundantRowShift | None = None
+        self._reuse_redundant_joints: bool = False
         self._kinematic_cts_offset: wp.array[wp.int32] | None = None
         self._num_kinematic_cts: wp.array[wp.int32] | None = None
 
@@ -315,10 +316,12 @@ class PADMMSolver:
                 raise ValueError("Dropping redundant joint constraints requires dense dynamics.")
             self._kinematic_cts_offset = model.info.joint_kinematic_cts_group_offset
             self._num_kinematic_cts = model.info.num_joint_kinematic_cts
+            self._reuse_redundant_joints = self._config[0].redundant_joint_reuse
             self._redundant_joints = RedundantRowShift(
                 num_worlds=self._size.num_worlds,
                 max_rows=self._size.max_of_num_kinematic_joint_cts,
                 threshold=tolerance,
+                max_dim=self._size.max_of_max_total_cts if self._reuse_redundant_joints else 0,
                 device=self._device,
             )
 
@@ -338,6 +341,10 @@ class PADMMSolver:
         This does not modify the scratch solver state (`self._data.state`), since that is
         unconditionally reinitialized by `coldstart()`/`warmstart()`.
         """
+        # Detect the redundant joint rows again at the next solve
+        if self._redundant_joints is not None:
+            self._redundant_joints.reset(world_mask)
+
         # If no world mask is provided, reset the solution cache of all worlds
         if world_mask is None:
             self._data.solution.zero()
@@ -645,14 +652,14 @@ class PADMMSolver:
             problem._delassus._solver.prepare_solve()
         else:
             # Drop the redundant kinematic joint constraints from the bare Delassus matrix
+            solver = problem._delassus._solver
+            reuse = self._reuse_redundant_joints and isinstance(solver, (LLTBlockedSolver, LLTBlockedRCMSolver))
             if self._redundant_joints is not None:
-                self._redundant_joints.apply(
-                    problem.data.dim,
-                    problem.data.mio,
-                    self._kinematic_cts_offset,
-                    self._num_kinematic_cts,
-                    problem.data.D,
-                )
+                args = (problem.data.dim, problem.data.mio, self._kinematic_cts_offset, self._num_kinematic_cts)
+                if reuse:
+                    self._redundant_joints.shift(*args, problem.data.D)
+                else:
+                    self._redundant_joints.apply(*args, problem.data.D)
 
             # Update the proximal regularization term in the Delassus matrix
             wp.launch(
@@ -674,6 +681,27 @@ class PADMMSolver:
 
             # Compute Cholesky/LDLT factorization of the Delassus matrix
             problem._delassus.compute(reset_to_zero=True)
+
+            # Drop the redundant joint constraints again where the reused ones fail the check
+            if self._redundant_joints is not None and reuse:
+                data = problem.data
+                permuted = isinstance(solver, LLTBlockedRCMSolver)
+                self._redundant_joints.check(
+                    data.dim,
+                    data.mio,
+                    data.vio,
+                    self._kinematic_cts_offset,
+                    self._num_kinematic_cts,
+                    data.D,
+                    solver.L,
+                    solver.stride,
+                    solver.P if permuted else None,
+                    solver.inv_P if permuted else None,
+                )
+                self._redundant_joints.eliminate(
+                    data.dim, data.mio, self._kinematic_cts_offset, self._redundant_joints.pivot_rows, data.D
+                )
+                solver.refactorize(data.D, self._redundant_joints.refactor_dim)
 
     def _step(self, problem: DualProblem):
         """

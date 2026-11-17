@@ -15,7 +15,12 @@ from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions
-from newton._src.solvers.kamino._src.linalg import ConjugateResidualSolver, LDLBlockSparseSolver, LLTBlockedSolver
+from newton._src.solvers.kamino._src.linalg import (
+    ConjugateResidualSolver,
+    LDLBlockSparseSolver,
+    LLTBlockedRCMSolver,
+    LLTBlockedSolver,
+)
 from newton._src.solvers.kamino._src.linalg.utils.matrix import SquareSymmetricMatrixProperties
 from newton._src.solvers.kamino._src.linalg.utils.range import in_range_via_gaussian_elimination
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
@@ -1144,13 +1149,14 @@ class TestPADMMSolver(unittest.TestCase):
             self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, 0.0], [1.0 / den, 0.0, mu / den])
 
 
-def make_redundant_fourbar(device: wp.DeviceLike, sparse: bool) -> TestSetup:
+def make_redundant_fourbar(device: wp.DeviceLike, sparse: bool, linear_solver: type | None = None) -> TestSetup:
     """Creates a fixed-base four-bar linkage, whose closed loop makes the bilateral constraints redundant."""
     return TestSetup(
         builder_fn=basics.build_boxes_fourbar,
         max_world_contacts=8,
         device=device,
         sparse=sparse,
+        linear_solver=linear_solver,
         fixedbase=True,
         limits=False,
         ground=False,
@@ -1316,6 +1322,53 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
                 self.assertLess(status[0.0]["iterations"], status[1.0]["iterations"])
                 np.testing.assert_allclose(v_plus[0.0], v_plus[1.0], rtol=0.0, atol=1e-3 * np.abs(v_plus[1.0]).max())
                 np.testing.assert_allclose(lambdas[0.0], lambdas[1.0], rtol=0.0, atol=1e-3 * np.abs(lambdas[1.0]).max())
+
+    def test_05_redundant_joint_reuse(self):
+        """Reusing the dropped joint rows that pass the check gives the solution of the detection at every step."""
+        for linear_solver in (LLTBlockedSolver, LLTBlockedRCMSolver):
+            with self.subTest(linear_solver=linear_solver.__name__):
+                status, v_plus, lambdas, shifted = {}, {}, {}, {}
+                for reuse in (False, True):
+                    test = make_redundant_fourbar(self.default_device, sparse=False, linear_solver=linear_solver)
+                    config = PADMMSolver.Config(
+                        redundant_joint_tolerance=1e-5,
+                        redundant_joint_reuse=reuse,
+                        joint_rho_scale=0.0,
+                        max_iterations=500,
+                    )
+                    solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
+
+                    # The first solve detects the redundant rows, and the second one reuses them if enabled
+                    for _ in range(2):
+                        test.build()
+                        solver.coldstart()
+                        solver.solve(problem=test.problem)
+                    status[reuse] = solver.data.status.numpy()[0]
+                    v_plus[reuse] = solver.data.solution.v_plus.numpy()
+                    lambdas[reuse] = solver.data.solution.lambdas.numpy()
+                    shifted[reuse] = solver._redundant_joints.shifted.numpy()
+                    if reuse:
+                        self.assertEqual(int(solver._redundant_joints.pivot_rows.numpy().sum()), 0)
+
+                        # Check that a reset detects the redundant rows again
+                        solver.reset()
+                        test.build()
+                        solver.coldstart()
+                        solver.solve(problem=test.problem)
+                        self.assertGreater(int(solver._redundant_joints.pivot_rows.numpy().sum()), 0)
+                        np.testing.assert_array_equal(solver._redundant_joints.shifted.numpy(), shifted[True])
+
+                # Check that both detect the same rows and converge to the same solution
+                self.assertTrue(bool(status[False]["converged"]))
+                self.assertTrue(bool(status[True]["converged"]))
+                self.assertGreater(int(shifted[True].sum()), 0)
+                np.testing.assert_array_equal(shifted[True], shifted[False])
+                np.testing.assert_allclose(
+                    v_plus[True], v_plus[False], rtol=0.0, atol=1e-4 * np.abs(v_plus[False]).max()
+                )
+                np.testing.assert_allclose(
+                    lambdas[True], lambdas[False], rtol=0.0, atol=1e-4 * np.abs(lambdas[False]).max()
+                )
 
 
 ###

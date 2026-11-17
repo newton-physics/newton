@@ -88,6 +88,23 @@ def _mark_structural_tiles(
     wp.atomic_max(pattern, tpo[world] + wp.max(row, col) * tiles + wp.min(row, col), 1)
 
 
+@wp.kernel
+def _copy_permuted_diagonal(
+    dim: wp.array[wp.int32],
+    ld: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    inverse: wp.array[wp.int32],
+    A: wp.array[wp.float32],
+    A_hat: wp.array[wp.float32],
+):
+    """Copy the diagonal of the blocks with a nonzero dimension into their permuted copy."""
+    world, row = wp.tid()
+    if row < dim[world]:
+        stride = ld[world] + 1
+        A_hat[mio[world] + inverse[vio[world] + row] * stride] = A[mio[world] + row * stride]
+
+
 PARALLEL_FACTORIZATION_MAX_BLOCKS_PER_SM = 2
 """Batches with at least this many blocks per SM use the per-block factorization."""
 
@@ -293,6 +310,41 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
     def _stride(self) -> wp.array[wp.int32]:
         """Per-block matrix row strides."""
         return self._operator.info.maxdim if self._capacity_stride else self._operator.info.dim
+
+    @property
+    def stride(self) -> wp.array[wp.int32]:
+        """The row stride of each block of :attr:`L`."""
+        return self._stride()
+
+    def refactorize(self, A: wp.array[wp.float32], dim: wp.array[wp.int32]) -> None:
+        """
+        Refactorizes the blocks with a nonzero dimension in ``dim`` after changes of the diagonal of ``A``, and
+        keeps the factors of the others. The permutation and the tile pattern of the last factorization are kept.
+
+        Args:
+            A: The flat array of the matrix blocks, which differ from the last factorization only on the diagonal.
+            dim: The dimension of each block to refactorize, or zero to keep its factor, of shape ``(num_blocks,)``.
+        """
+        info = self._operator.info
+        wp.launch(
+            _copy_permuted_diagonal,
+            dim=(info.num_blocks, self._max_dim),
+            inputs=[dim, self._stride(), info.mio, info.vio, self._inv_P, A, self._A_hat],
+            device=self._device,
+        )
+        llt_blocked_rcm_factorize(
+            ld=self._stride(),
+            kernel=self._factorize_kernel,
+            dim=dim,
+            mio=info.mio,
+            tpo=self._tpo,
+            A=self._A_hat,
+            tile_pattern=self._tile_pattern,
+            L=self._L,
+            num_blocks=info.num_blocks,
+            block_dim=self._factorize_block_dim,
+            device=self._device,
+        )
 
     ###
     # Implementation

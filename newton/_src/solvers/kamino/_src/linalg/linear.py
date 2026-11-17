@@ -791,6 +791,33 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             x=x,
         )
 
+    ###
+    # Partial refactorization
+    ###
+
+    @property
+    def stride(self) -> wp.array[wp.int32]:
+        """The row stride of each block of :attr:`L`."""
+        return self._operator.info.dim
+
+    def refactorize(self, A: wp.array[ScalarType], dim: wp.array[wp.int32]) -> None:
+        """
+        Refactorizes the blocks with a nonzero dimension in ``dim``, and keeps the factors of the others.
+
+        Args:
+            A: The flat array of the matrix blocks.
+            dim: The dimension of each block to refactorize, or zero to keep its factor, of shape ``(num_blocks,)``.
+        """
+        factorize.llt_blocked_factorize(
+            kernel=self._factorize_kernel,
+            num_blocks=self._operator.info.num_blocks,
+            block_dim=self._factorize_block_dim,
+            dim=dim,
+            mio=self._operator.info.mio,
+            A=A,
+            L=self._L,
+        )
+
 
 ###
 # Iterative solvers
