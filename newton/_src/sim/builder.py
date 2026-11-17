@@ -86,7 +86,7 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
-from ..utils.deprecation import RemovedAttribute
+from ..utils.deprecation import RemovedAttribute, deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .body_variants import (
     _BodyVariants,
@@ -11788,11 +11788,13 @@ class ModelBuilder:
     # endregion
 
     # particles
+    @deprecate_nonkeyword_arguments
     def add_particle(
         self,
         pos: Vec3,
         vel: Vec3,
         mass: float,
+        *,
         radius: float | None = None,
         flags: int = ParticleFlags.ACTIVE,
         custom_attributes: dict[str, Any] | None = None,
@@ -11834,15 +11836,16 @@ class ModelBuilder:
 
         return particle_id
 
+    @deprecate_nonkeyword_arguments
     def add_particles(
         self,
         pos: list[Vec3],
         vel: list[Vec3],
         mass: list[float],
+        *,
         radius: list[float] | None = None,
         flags: list[int] | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        *,
         label: str | None = None,
     ):
         """Adds a group of particles to the model.
@@ -12001,6 +12004,7 @@ class ModelBuilder:
             )
         return attachment
 
+    @deprecate_nonkeyword_arguments
     def add_spring(
         self,
         i: int,
@@ -12008,6 +12012,7 @@ class ModelBuilder:
         ke: float,
         kd: float,
         control: float,
+        *,
         custom_attributes: dict[str, Any] | None = None,
     ):
         """Adds a spring between two particles in the system
@@ -12262,12 +12267,14 @@ class ModelBuilder:
             )
         return areas_list
 
+    @deprecate_nonkeyword_arguments
     def add_tetrahedron(
         self,
         i: int,
         j: int,
         k: int,
         l: int,
+        *,
         k_mu: float = 1.0e3,
         k_lambda: float = 1.0e3,
         k_damp: float = 0.0,
@@ -13053,7 +13060,7 @@ class ModelBuilder:
 
                     p = wp.quat_rotate(rot, v) + pos
 
-                    self.add_particle(p, vel, m, particle_radius)
+                    self.add_particle(p, vel, m, radius=particle_radius)
 
         # dict of open faces
         faces = {}
@@ -13067,7 +13074,7 @@ class ModelBuilder:
                 del faces[key]
 
         def add_tet(i: int, j: int, k: int, l: int):
-            self.add_tetrahedron(i, j, k, l, k_mu, k_lambda, k_damp)
+            self.add_tetrahedron(i, j, k, l, k_mu=k_mu, k_lambda=k_lambda, k_damp=k_damp)
 
             add_face(i, k, j)
             add_face(j, k, l)
@@ -13299,7 +13306,7 @@ class ModelBuilder:
             p = wp.quat_rotate(rot, wp.vec3(v[0], v[1], v[2]) * scale) + pos
 
             p_custom = {k: arr[vi] for k, arr in particle_custom.items()} if particle_custom else None
-            self.add_particle(p, vel, 0.0, particle_radius, custom_attributes=p_custom)
+            self.add_particle(p, vel, 0.0, radius=particle_radius, custom_attributes=p_custom)
 
         # add tetrahedra
         for t in range(num_tets):
@@ -13314,9 +13321,9 @@ class ModelBuilder:
                 v1,
                 v2,
                 v3,
-                float(k_mu_arr[t]),
-                float(k_lambda_arr[t]),
-                float(k_damp_arr[t]),
+                k_mu=float(k_mu_arr[t]),
+                k_lambda=float(k_lambda_arr[t]),
+                k_damp=float(k_damp_arr[t]),
                 custom_attributes=t_custom,
             )
 

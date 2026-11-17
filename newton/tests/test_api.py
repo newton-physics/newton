@@ -208,6 +208,34 @@ class TestApi(unittest.TestCase):
         self.assertEqual(link_sig.parameters["xform"].kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertEqual(solver_sig.parameters["angular_damping"].kind, inspect.Parameter.KEYWORD_ONLY)
 
+    def test_particle_element_options_are_keyword_only(self):
+        """Rebind positional particle and element options with a deprecation warning."""
+        import warp as wp  # noqa: PLC0415
+
+        import newton  # noqa: PLC0415
+
+        for method_name, first_option in (
+            ("add_particle", "radius"),
+            ("add_particles", "radius"),
+            ("add_spring", "custom_attributes"),
+            ("add_tetrahedron", "k_mu"),
+        ):
+            with self.subTest(method=method_name):
+                parameter = inspect.signature(getattr(newton.ModelBuilder, method_name)).parameters[first_option]
+                self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "Passing 'radius' positionally"):
+            builder.add_particle(wp.vec3(0.0), wp.vec3(0.0), 1.0, 0.25)
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "Passing 'radius', 'flags' positionally"):
+            corners = [wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)]
+            builder.add_particles(corners, [wp.vec3(0.0)] * 3, [1.0] * 3, [0.5] * 3, [0] * 3)
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "Passing 'k_mu', 'k_lambda' positionally"):
+            builder.add_tetrahedron(0, 1, 2, 3, 10.0, 20.0)
+        self.assertEqual(builder.particle_radius, [0.25, 0.5, 0.5, 0.5])
+        self.assertEqual(builder.particle_flags[1:], [0, 0, 0])
+        self.assertEqual(builder.tet_materials[0][:2], (10.0, 20.0))
+
     def test_shape_opacity_follows_color(self):
         """Keep shape display arguments adjacent and keyword-only."""
         import newton  # noqa: PLC0415
