@@ -292,61 +292,6 @@ def _mujoco_warp_deterministic_modules() -> list[Any]:
     ]
 
 
-_MUJOCO_WARP_DYNAMIC_RECORD_MODULES = frozenset({"mujoco_warp._src.smooth"})
-
-
-def _mujoco_warp_max_constraint_row_width(mj_model: MjModel) -> int:
-    """Return a model-derived upper bound for sparse constraint row width."""
-    nv = int(mj_model.nv)
-    if nv == 0:
-        return 0
-
-    chain_widths = []
-    seen_welded_bodies = set()
-    for body_id in range(int(mj_model.nbody)):
-        welded_body_id = int(mj_model.body_weldid[body_id])
-        if welded_body_id in seen_welded_bodies:
-            continue
-        seen_welded_bodies.add(welded_body_id)
-
-        dof_id = int(mj_model.body_dofadr[welded_body_id]) + int(mj_model.body_dofnum[welded_body_id]) - 1
-        width = 0
-        while dof_id >= 0:
-            width += 1
-            dof_id = int(mj_model.dof_parentid[dof_id])
-        chain_widths.append(width)
-
-    chain_widths.sort(reverse=True)
-    body_pair_width = sum(chain_widths[:2])
-    tendon_pair_width = 2 * max((int(width) for width in mj_model.ten_J_rownnz), default=0)
-    flex_width = max((int(width) for width in mj_model.flexedge_J_rownnz), default=0)
-
-    # Actuator moment rows are state-dependent for some transmission types, so
-    # retain the full-DOF bound whenever the model contains actuators.
-    actuator_width = nv if int(mj_model.nu) > 0 else 0
-    return min(nv, max(1, body_pair_width, tendon_pair_width, flex_width, actuator_width))
-
-
-def _mujoco_warp_deterministic_max_records(mj_model: MjModel, mjw_data: MjWarpData) -> int:
-    """Compute a safe per-thread deterministic atomic record bound."""
-    # Generated dense contact-Jacobian kernels let one thread accumulate a
-    # record for every allocated constraint row. Sparse Hessian kernels can
-    # visit every element in a constraint row's lower-triangular product.
-    constraint_records = int(mjw_data.njmax)
-    row_width = _mujoco_warp_max_constraint_row_width(mj_model)
-    hessian_records = row_width * (row_width + 1) // 2
-
-    # Spatial tendon kernels walk both endpoint chains for every path segment.
-    # Tendon armature kernels can write both halves of a dense matrix, which is
-    # the one-segment lower bound used here for fixed tendons.
-    tendon_records = 0
-    for path_size, row_width in zip(mj_model.tendon_num, mj_model.ten_J_rownnz, strict=True):
-        segment_count = max(int(path_size) - 1, 1)
-        tendon_records = max(tendon_records, 2 * segment_count * int(row_width))
-
-    return max(1, constraint_records, hessian_records, tendon_records)
-
-
 def _mesh_scale_key(mesh: Mesh, scale: np.ndarray) -> tuple[int, tuple[float, float, float], int]:
     return hash(mesh), tuple(float(s) for s in scale), mesh.maxhullvert
 
@@ -905,7 +850,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     _mujoco_warp = None
     _versions_checked = False
     _convert_mjw_contacts_to_newton_kernel = None
-    _generated_kernel_deterministic_options: tuple[wp.DeterministicMode, int] | None = None
 
     @staticmethod
     def _tile_world_mapping(template: np.ndarray, nworld: int, stride: int) -> np.ndarray:
@@ -957,34 +901,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             cls._versions_checked = True
         return cls._mujoco, cls._mujoco_warp
 
-    def _prepare_generated_kernels(self) -> None:
-        """Invalidate MJWarp's generated kernels when determinism changes."""
-        options = (self._deterministic, self._deterministic_max_records)
-        if SolverMuJoCo._generated_kernel_deterministic_options == options:
-            return
-
-        # MJWarp's factory cache key does not include Warp module options.
-        # Recreate unique kernels so they inherit this solver's configuration.
-        from mujoco_warp._src import warp_util
-
-        warp_util._KERNEL_CACHE.clear()
-        SolverMuJoCo._generated_kernel_deterministic_options = options
-
     def _set_mujoco_warp_module_options(self) -> None:
-        """Configure loaded shared modules without overriding code-generated bounds."""
-        # The contact conversion kernel lives in its own fast-math module.
-        contact_module = convert_newton_contacts_to_mjwarp_kernel.module
-        for module in [*_mujoco_warp_deterministic_modules(), kernels, contact_module]:
-            max_records = (
-                self._deterministic_max_records
-                if getattr(module, "__name__", None) in _MUJOCO_WARP_DYNAMIC_RECORD_MODULES
-                else 0
+        """Reset inherited Warp modes while preserving backend-owned record bounds."""
+        for module in _mujoco_warp_deterministic_modules():
+            self._set_module_options({"deterministic": wp.DeterministicMode.NOT_GUARANTEED}, module=module)
+        # Native factories select deterministic reductions through model flags.
+        # Newton contact conversion is separate and retains the requested mode.
+        for module in (kernels, convert_newton_contacts_to_mjwarp_kernel.module):
+            self._set_module_options(
+                {"deterministic": self._deterministic, "deterministic_max_records": 0}, module=module
             )
-            options = {
-                "deterministic": self._deterministic,
-                "deterministic_max_records": max_records,
-            }
-            self._set_module_options(options, module=module)
 
     @staticmethod
     def _parse_integrator(value: str | int, context: dict[str, Any] | None = None) -> int:
@@ -1499,6 +1425,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         array. Runtime ``dof_springref`` is a deprecated alias to ``Model.joint_rest_q`` when
         their layouts and values coincide and raises an error otherwise; see
         :ref:`mujoco-joint-spring-migration`.
+        ``dof_springdamper`` holds construction-time pairs (time constant [s], damping ratio).
+        Solver construction resolves positive pairs into ``Model.joint_stiffness`` and
+        ``Model.joint_damping`` and clears the consumed pairs to zero. Positive pairs on
+        joints without MuJoCo DOFs raise ``ValueError``. Notifications do not read this
+        input. Use the core gains for runtime edits, or assign new pairs before
+        constructing another solver to resolve them again.
         Custom attributes use ``CustomAttribute.usd_attribute_name`` with the ``mjc:`` prefix (e.g. ``"mjc:condim"``)
         to leverage the MuJoCo USD schema where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
         """
@@ -1859,6 +1791,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mjcf_attribute_name="sleep",
                 mjcf_value_transformer=cls._parse_sleep_policy,
                 usd_value_transformer=cls._parse_sleep_policy,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="dof_springdamper",
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:springdamper",
+                mjcf_attribute_name="springdamper",
             )
         )
         builder.add_custom_attribute(
@@ -4572,10 +4516,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
                 :class:`warp.DeterministicMode`, or ``None`` to inherit
-                ``wp.config.deterministic``. Modes other than
-                ``NOT_GUARANTEED`` currently fail to compile MuJoCo Warp's kernels
-                with Warp 1.19; the CPU backend (``use_mujoco_cpu=True``) is
-                always deterministic. See :doc:`/concepts/determinism`.
+                ``wp.config.deterministic``. MuJoCo Warp native determinism
+                flags map ``RUN_TO_RUN`` to ``DeterminismType.ALL`` before
+                model-constant initialization. This requests the backend's
+                available deterministic operations, not an end-to-end guarantee.
+                In MuJoCo Warp 4.0.0, contact and constraint sorting are still
+                unimplemented hooks; enabling their flags does not sort rows.
+                With Newton contacts, separately enable deterministic ordering on
+                :class:`newton.CollisionPipeline`. Neither setting guarantees
+                bitwise equality across devices, batch sizes, or backend versions.
+                Native backends reject modes stronger than ``RUN_TO_RUN``.
+                See :ref:`mujoco-determinism` for downstream limitations.
             strict_capacity: If ``True``, raise a ``RuntimeError`` when the
                 Newton contact pipeline buffer *capacity*
                 (``contacts.rigid_contact_max``) exceeds MuJoCo Warp's buffer
@@ -4593,6 +4544,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 weld so it can be switched to kinematic at runtime. If ``False``, only roots
                 that are kinematic in some world at construction get one, which keeps the
                 compiled MuJoCo model free of unused welds.
+
         """
         if update_data_interval is not None:
             warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
@@ -4656,7 +4608,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._initial_model_sync = True
         self._deterministic = deterministic if deterministic is not None else wp.config.deterministic
         self._strict_capacity = strict_capacity
-        self._deterministic_max_records = 0
+        if not use_mujoco_cpu and self._deterministic not in (
+            wp.DeterministicMode.NOT_GUARANTEED,
+            wp.DeterministicMode.RUN_TO_RUN,
+        ):
+            raise ValueError(
+                "Native MuJoCo Warp determinism supports only NOT_GUARANTEED and RUN_TO_RUN, "
+                f"got {self._deterministic!r} "
+                f"from {'wp.config.deterministic' if deterministic is None else 'deterministic'}; "
+                "pass deterministic=wp.DeterministicMode.RUN_TO_RUN or NOT_GUARANTEED to override"
+            )
         if not use_mujoco_cpu:
             # MJWarp's step pipeline spans several modules (forward dynamics,
             # smooth dynamics, constraints, solver, and optional collision).
@@ -5044,12 +5005,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         original_mode = wp.config.deterministic
         original_max_records = wp.config.deterministic_max_records
         try:
-            # MJWarp creates several ``module="unique"`` kernels lazily while
-            # stepping. Those generated modules do not inherit options from the
-            # source Python modules above, so keep the solver options active
-            # while the step path compiles/captures its kernels.
-            wp.config.deterministic = self._deterministic
-            wp.config.deterministic_max_records = self._deterministic_max_records
+            # Lazy native factories explicitly select supported reductions.
+            wp.config.deterministic = wp.DeterministicMode.NOT_GUARANTEED
+            wp.config.deterministic_max_records = 0
             yield
         finally:
             wp.config.deterministic = original_mode
@@ -5059,7 +5017,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _scoped_mujoco_warp_execution(self):
         """Prepare and apply all solver-local MJWarp compilation options."""
         self._apply_module_options()
-        self._prepare_generated_kernels()
         with self._scoped_deterministic_config():
             yield
 
@@ -6675,10 +6632,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         filtered = model.shape_collision_filter_mask(np.asarray(candidate_pairs, dtype=np.int64).reshape((-1, 2)))
         # A body pair is excluded when every one of its shape pairs is
-        # filtered (vacuously true when either body has no colliding shapes).
+        # filtered. Pairs without colliding shapes cannot collide and need no exclude.
         unfiltered_cumulative = np.concatenate(([0], np.cumsum(~filtered)))
         segment_ends = np.cumsum(pair_counts)
-        excluded = unfiltered_cumulative[segment_ends] == unfiltered_cumulative[segment_ends - pair_counts]
+        excluded = (pair_counts > 0) & (
+            unfiltered_cumulative[segment_ends] == unfiltered_cumulative[segment_ends - pair_counts]
+        )
         return [(selected_bodies[bodies_a[k]], selected_bodies[bodies_b[k]]) for k in np.flatnonzero(excluded)]
 
     @staticmethod
@@ -9345,6 +9304,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             batch_sizes = dict.fromkeys(_MJW_BATCHED_MODEL_FIELDS, nworld) if nworld > 1 else None
             try:
                 self.mjw_model = mujoco_warp.put_model(self.mj_model, batch_sizes=batch_sizes)
+                # Constants computed by notify_model_changed also reduce floats.
+                # Enabling the option after construction is already too late.
+                flags = mujoco_warp.DeterminismType
+                self.mjw_model.opt.deterministic = (
+                    flags.NONE if self._deterministic == wp.DeterministicMode.NOT_GUARANTEED else flags.ALL
+                )
             finally:
                 # MuJoCo Warp consumes only the compiled runtime policy. Keep
                 # the authoring policy on the CPU model for inspection and MJCF export.
@@ -9558,7 +9523,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # dof_to_mjc_joint[template_dof] -> mjc_joint
             jnt_to_newton_dof_template = np.full(njnt, -1, dtype=np.int32)
             for template_dof, mjc_jnt in enumerate(dof_to_mjc_joint):
-                if mjc_jnt >= 0:
+                if mjc_jnt >= 0 and jnt_to_newton_dof_template[mjc_jnt] < 0:
                     jnt_to_newton_dof_template[mjc_jnt] = template_dof
             mjc_jnt_to_newton_dof_np = self._tile_world_mapping(jnt_to_newton_dof_template, nworld, dofs_per_world)
             self.mjc_jnt_to_newton_dof = wp.array(mjc_jnt_to_newton_dof_np, dtype=wp.int32)
@@ -9784,12 +9749,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     self._mocap_root_moved = wp.zeros(nworld, dtype=wp.bool, device=self.model.device)
 
             if not self.use_mujoco_cpu:
-                if self._deterministic != wp.DeterministicMode.NOT_GUARANTEED:
-                    self._deterministic_max_records = _mujoco_warp_deterministic_max_records(
-                        self.mj_model, self.mjw_data
-                    )
                 self._set_mujoco_warp_module_options()
-                self._prepare_generated_kernels()
 
             # expand per-world solver option fields (model fields are batched by put_model)
             self._expand_option_fields(self.mjw_model, nworld)
@@ -9811,6 +9771,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 eq_data[..., 11] = 0.0
                 self.mjw_model.eq_data.assign(eq_data)
                 self.mj_model.eq_data[:, 11] = 0.0
+            self._resolve_joint_springdamper(spec)
             self._resolve_joint_target_damping(spec, joint_target_position_rows)
             if not self.use_mujoco_cpu:
                 # Keep the host template coherent after construction. Runtime
@@ -11477,6 +11438,85 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mj_model.tendon_margin[:] = self.mjw_model.tendon_margin.numpy()[0]
             self.mj_model.tendon_solimp_lim[:] = self.mjw_model.tendon_solimp_lim.numpy()[0]
             self.mj_model.tendon_armature[:] = self.mjw_model.tendon_armature.numpy()[0]
+
+    def _resolve_joint_springdamper(self, spec: Any) -> None:
+        """Consume imported time constants [s] and damping ratios into per-world core gains."""
+        springdamper = getattr(getattr(self.model, "mujoco", None), "dof_springdamper", None)
+        if springdamper is None:
+            return
+        ratios = springdamper.numpy()
+        unresolved = np.all(ratios > 0.0, axis=1)
+        if not np.any(unresolved):
+            return
+
+        mapping = self.mjc_dof_to_newton_dof.numpy()
+        unresolved[mapping[mapping >= 0]] = False
+        if np.any(unresolved):
+            dof = np.flatnonzero(unresolved)[0]
+            joint = np.searchsorted(self.model.joint_qd_start.numpy(), dof, side="right") - 1
+            label = self.model.joint_label[joint]
+            world = self.model.joint_world.numpy()[joint]
+            raise ValueError(
+                f"springdamper on joint {label!r} (Newton world {world}) requires a corresponding MuJoCo DOF"
+            )
+        ratios = ratios.copy()
+
+        locked = self._kinematic_weld_eq is not None and np.any(
+            self._notify_body_flags.numpy() & int(BodyFlags.KINEMATIC)
+        )
+        refresh_inertia = locked or (self.use_mujoco_cpu and mapping.shape[0] > 1)
+        if refresh_inertia:
+            # Native CPU constants cover only world 0. Evaluate physical inertia in the existing batched model.
+            self._update_dof_armature()
+            self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
+        if self.use_mujoco_cpu and mapping.shape[0] == 1 and not locked:
+            invweight = self.mj_model.dof_invweight0[None, :]
+        else:
+            invweight = self.mjw_model.dof_invweight0.numpy().copy()
+        if locked:
+            self._set_const_0()
+        if refresh_inertia:
+            self._notify_connect_constraints_changed(False, False)
+
+        stiffness = self.model.joint_stiffness.numpy().copy()
+        damping = self.model.joint_damping.numpy().copy()
+        starts = self.mj_model.jnt_dofadr
+        minval = self._mujoco.mjMINVAL
+        for joint, start in enumerate(starts):
+            end = starts[joint + 1] if joint + 1 < len(starts) else self.mj_model.nv
+            indices = mapping[:, start:end]
+            pairs = ratios[np.maximum(indices, 0)]
+            enabled = np.all(indices >= 0, axis=1) & np.any(np.all(pairs > 0.0, axis=2), axis=1)
+            inconsistent = enabled & np.any(pairs != pairs[:, :1], axis=(1, 2))
+            if np.any(inconsistent):
+                world = np.flatnonzero(inconsistent)[0]
+                newton_joint = self.mjc_jnt_to_newton_jnt.numpy()[world, joint]
+                label = self.model.joint_label[newton_joint]
+                raise ValueError(
+                    f"springdamper must be uniform across all DOFs of joint {label!r} (MuJoCo world {world})"
+                )
+            if not np.any(enabled):
+                continue
+            timeconst, dampratio = pairs[enabled, 0].T
+            # Match MuJoCo's joint-wise averaging and minimum denominators, including BALL joints.
+            inertia = (end - start) / np.maximum(minval, np.sum(invweight[enabled, start:end], axis=1))
+            selected = indices[enabled]
+            stiffness[selected] = (inertia / np.maximum(minval, (timeconst * dampratio) ** 2))[:, None]
+            damping[selected] = (2.0 * inertia / np.maximum(minval, timeconst))[:, None]
+            ratios[selected] = 0.0
+            if enabled[0]:
+                spec.joints[joint].stiffness[0] = float(stiffness[indices[0, 0]])
+                spec.joints[joint].damping[0] = float(damping[indices[0, 0]])
+        self.model.joint_stiffness.assign(stiffness)
+        self.model.joint_damping.assign(damping)
+        springdamper.assign(ratios)
+        self.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+        if not self.use_mujoco_cpu:
+            self.mj_model.jnt_stiffness[:] = self.mjw_model.jnt_stiffness.numpy()[0]
+            # The native host model applies actuator damping separately.
+            dofs = mapping[0]
+            mapped = dofs >= 0
+            self.mj_model.dof_damping[mapped] = damping[dofs[mapped]]
 
     def _resolve_joint_target_damping(self, spec: Any, position_source_rows: dict[int, int]) -> None:
         """Resolve imported damping once, after publishing each world's inertia and gains."""

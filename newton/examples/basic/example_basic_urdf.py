@@ -25,15 +25,19 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the URDF articulation simulation with the requested solver options."""
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.solver_type = args.solver if hasattr(args, "solver") and args.solver else "xpbd"
+        if self.solver_type != "kamino":
+            configure_ldl(None, args)
         self.sim_substeps = 5 if self.solver_type == "kamino" else 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -110,6 +114,7 @@ class Example:
             )
             solver_config.use_collision_detector = True
             solver_config.integrator = "moreau"
+            configure_ldl(solver_config, args)
             solver_config.scc.max_alternating_iterations = 8
             solver_config.scc.use_schur_complement = True
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
@@ -213,7 +218,9 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=100)
         parser.add_argument(

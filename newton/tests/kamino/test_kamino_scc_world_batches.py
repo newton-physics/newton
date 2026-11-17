@@ -72,13 +72,12 @@ class TestKaminoSCCWorldBatches(unittest.TestCase):
         problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
         configs = [
             kamino_config.SCCSolverConfig(
+                bilateral_solver_type="LLTB",  # This regression exercises the dense inverse batching path.
                 tolerance=0.0,
                 regularization=1.0e-5,
                 max_alternating_iterations=iterations,
                 inequality_sweeps_per_iteration=sweeps,
                 bilateral_solve_interval=interval,
-                # The fused matrix-free inverse is specific to LLTB.
-                bilateral_solver_type="LLTB",
             )
             for iterations, sweeps, interval in ((1, 1, 1), (4, 1, 2), (3, 2, 99))
         ]

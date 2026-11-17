@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import itertools
 import unittest
 from itertools import product
 from types import SimpleNamespace
@@ -23,10 +22,16 @@ from newton._src.solvers.kamino._src.geometry.keying import KeySorter
 from newton._src.solvers.kamino._src.integrators.euler import integrate_euler_semi_implicit
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions, update_constraints_info
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians
-from newton._src.solvers.kamino._src.linalg import LLTBlockedRCMSolver, LLTBlockedSolver
+from newton._src.solvers.kamino._src.linalg import (
+    DenseLinearOperatorData,
+    DenseSquareMultiLinearInfo,
+    LDLBlockSparseSolver,
+    LLTBlockedRCMSolver,
+    LLTBlockedSolver,
+)
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
-from newton._src.solvers.kamino._src.solvers.scc import SCCSolver
+from newton._src.solvers.kamino._src.solvers.scc import SCCSolver, sparse_factor
 from newton._src.solvers.kamino._src.solvers.scc.kernels import (
     BILATERAL_FAILED_PIVOT_SHIFT,
     _find_bilateral_factor_row_start,
@@ -388,10 +393,18 @@ def _evaluate_solution_metrics(test: TestSetup, solver: SCCSolver) -> dict[str, 
 
 class TestSCCSolver(NewtonTestCase):
     def setUp(self):
+        """Initialize the device and permit asset-download messages in the cold-cache DR Legs regression."""
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
         self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
+        # Any DR Legs regression can be first to populate a cold asset cache.
+        self.allowOutputRegex(
+            r"Cloning https://github\.com/newton-physics/newton-assets\.git "
+            r"\(ref: 261cd1f429619d8ef4f546bd788ab9dea906b5e1\)\.\.\.\n"
+            r"Successfully downloaded folder to: [^\n]+[/\\]disneyresearch\n?",
+            stream="stdout",
+        )
 
     def test_00_sparse_projection_is_allocated_only_for_schur(self):
         """Allocate the large sparse response workspace only for Schur solves."""
@@ -781,6 +794,7 @@ class TestSCCSolver(NewtonTestCase):
         self.assertIsNotNone(solver.data)
 
     def test_02_public_solver_step_with_scc(self):
+        """Verify the public SCC solver steps with opt-in LDL and finite state and diagnostics."""
         builder = newton.ModelBuilder()
         SolverKamino.register_custom_attributes(builder)
         builder.default_shape_cfg.margin = 0.0
@@ -811,6 +825,7 @@ class TestSCCSolver(NewtonTestCase):
                 max_alternating_iterations=500,
                 inequality_sweeps_per_iteration=1,
                 tolerance=1e-5,
+                bilateral_solver_type="LDL",
             )
         solver = SolverKamino(model, config=config)
         state_in = model.state()
@@ -821,6 +836,8 @@ class TestSCCSolver(NewtonTestCase):
         self.assertTrue(np.all(np.isfinite(body_q)))
         self.assertTrue(np.all(np.isfinite(body_qd)))
         self.assertIsInstance(solver._solver_kamino.solver_fd, SCCSolver)
+        self.assertIsInstance(solver._solver_kamino.solver_fd._bilateral_solver, LDLBlockSparseSolver)
+        self.assertIsNone(solver._solver_kamino.solver_fd.data.bilateral_operator.mat)
         self.assertFalse(solver._solver_kamino.config.dynamics.preconditioning)
         self.assertIsNotNone(solver._solver_kamino.solver_fd.data.info)
 
@@ -1410,6 +1427,12 @@ class TestSCCSolver(NewtonTestCase):
 
     def test_03d1_sparse_scc_honors_per_world_bilateral_intervals(self):
         """Restrict sparse bilateral re-solves to each world's configured interval."""
+        for backend, ordering in (("LLTB", None), ("LDL", "meca"), ("LDL", "rcm")):
+            with self.subTest(backend=backend, ordering=ordering):
+                self._check_sparse_bilateral_intervals(backend, ordering)
+
+    def _check_sparse_bilateral_intervals(self, backend, ordering):
+        """Compare batched bilateral solve intervals against independent worlds for the selected backend."""
         builder = newton.ModelBuilder()
         builder.replicate(builder=basics.build_boxes_hinged(), copy_count=2)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
@@ -1428,16 +1451,17 @@ class TestSCCSolver(NewtonTestCase):
         )
         problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
         configs = [
-            # The fused small-inverse path that owns these re-solves is specific to LLTB.
             kamino_config.SCCSolverConfig(
                 max_alternating_iterations=3,
                 bilateral_solve_interval=1,
-                bilateral_solver_type="LLTB",
+                bilateral_solver_type=backend,
+                bilateral_solver_kwargs={"ordering": ordering} if ordering else {},
             ),
             kamino_config.SCCSolverConfig(
                 max_alternating_iterations=3,
                 bilateral_solve_interval=99,
-                bilateral_solver_type="LLTB",
+                bilateral_solver_type=backend,
+                bilateral_solver_kwargs={"ordering": ordering} if ordering else {},
             ),
         ]
         solver = SCCSolver(
@@ -1450,6 +1474,9 @@ class TestSCCSolver(NewtonTestCase):
             config=configs,
             warmstart=WarmStartMode.NONE,
         )
+        self.assertIsInstance(solver._bilateral_solver, LDLBlockSparseSolver if backend == "LDL" else LLTBlockedSolver)
+        if ordering is not None:
+            self.assertEqual(solver._bilateral_solver.ordering, ordering)
         active_dim_updates = []
         set_bilateral_active_dim = solver._sparse_path.set_bilateral_active_dim
 
@@ -1471,8 +1498,8 @@ class TestSCCSolver(NewtonTestCase):
         # Sweeps stay fused; only the final solution matvec applies J^T separately.
         self.assertEqual(body_products.call_count, 1)
         self.assertIs(body_products.call_args.args[1], problem.delassus._vec_temp_body_space)
-        # CUDA prepares the RHS and scatters the result in the same solve CTA.
-        self.assertEqual(separate_bilateral_solves.call_count, 0 if self.device.is_cuda else 4)
+        # LLTB fuses the CUDA solve; LDL uses its level-scheduled triangular solves.
+        self.assertEqual(separate_bilateral_solves.call_count, 0 if self.device.is_cuda and backend == "LLTB" else 4)
 
         joint_dims = problem.data.njc.numpy()
         self.assertEqual([block_iteration for block_iteration, _ in active_dim_updates], [0, 1, -1])
@@ -1516,8 +1543,8 @@ class TestSCCSolver(NewtonTestCase):
             ):
                 fallback.solve(problem)
         self.assertEqual(fallback.data.state.bilateral_coupling.size, 1)
-        # CUDA fuses RHS construction; CPU adds four products to the final matvec.
-        self.assertEqual(body_products.call_count, 1 if self.device.is_cuda else 5)
+        # The LLTB CUDA inverse fuses RHS construction; other paths add four products.
+        self.assertEqual(body_products.call_count, 1 if self.device.is_cuda and backend == "LLTB" else 5)
         self.assertIs(body_products.call_args.args[1], problem.delassus._vec_temp_body_space)
         np.testing.assert_array_equal(fallback.data.state.bilateral_active_dim.numpy(), joint_dims)
         np.testing.assert_allclose(fallback.data.solution.lambdas.numpy(), expected, atol=2e-5, rtol=2e-5)
@@ -2084,6 +2111,157 @@ class TestSCCSolver(NewtonTestCase):
                 for residual in ("r_p", "r_d", "r_c", "r_b"):
                     np.testing.assert_allclose(status[residual], first_status[residual], rtol=1e-5, atol=1e-8)
 
+    def test_03i2_dense_ldl_response_solves_only_coupling_columns(self):
+        """Solve only the bilateral-unilateral coupling columns read by the dense projected operator."""
+        test = TestSetup(
+            builder_fn=basics.build_boxes_hinged,
+            max_world_contacts=8,
+            gravity=True,
+            perturb=True,
+            device=self.device,
+            sparse=False,
+        )
+        test.build()
+        calls = []
+        solve_matrix = LDLBlockSparseSolver.solve_matrix
+
+        def record(solver, b, x, **layout):
+            calls.append(
+                (b, {key: value.numpy().copy() for key, value in layout.items() if isinstance(value, wp.array)})
+            )
+            solve_matrix(solver, b, x, **layout)
+
+        config = kamino_config.SCCSolverConfig(
+            max_alternating_iterations=4, bilateral_solver_type="LDL", use_schur_complement=True
+        )
+        with mock.patch.object(LDLBlockSparseSolver, "solve_matrix", autospec=True, side_effect=record):
+            solver = _solve_scc(test.model, test.problem, config=config, setup=test)
+
+        state = solver.data.state
+        response_calls = [layout for b, layout in calls if b is state.projected_D]
+        self.assertEqual(len(response_calls), 1)
+        layout = response_calls[0]
+        dim, njc = test.problem.data.dim.numpy(), test.problem.data.njc.numpy()
+        self.assertTrue(np.any((njc > 0) & (dim > njc)))
+        np.testing.assert_array_equal(layout["offsets"], state.projected_mio.numpy() + njc)
+        np.testing.assert_array_equal(layout["strides"], dim)
+        np.testing.assert_array_equal(layout["columns"], dim - njc)
+
+    def test_03i3_sparse_ldl_response_skips_discarded_passes(self):
+        """Match mixed compact/full LDL responses to dense references, including reuse and graph replay."""
+        rng = np.random.default_rng(4925)
+        basis = rng.normal(size=(8, 8))
+        matrices = [
+            (basis @ basis.T + 2.0 * np.eye(8)).astype(np.float32),
+            np.array([[3.0, 0.7], [0.7, 2.5]], dtype=np.float32),
+        ]
+        right_hand_sides = [[rng.normal(size=shape).astype(np.float32) for shape in ((8, 2), (2, 4))] for _ in range(2)]
+        # World 0 fits compact Schur; the coupled two-row world 1 must use a
+        # full response. World 2 is inactive, with a reserved sentinel entry.
+        njc, nu, capacity = [8, 2, 0], [2, 4, 0], [3, 4, 1]
+        offsets = [0, 24, 32]
+        block_rows = [[[0, 2, 5], [1, 3], [4, 6, 7]], [[0], [1]], [[0]]]
+        block_edges = [[(0, 1), (1, 2), (0, 2)], [(0, 1)], []]
+        for device in (wp.get_device("cpu"), *wp.get_cuda_devices()[:1]):
+
+            def i32(values, device=device):
+                """Copy the response layout to the selected device."""
+                return wp.array(values, dtype=wp.int32, device=device)
+
+            info = DenseSquareMultiLinearInfo()
+            info.finalize([8, 2, 1], dtype=wp.float32, device=device)
+            info.dim.assign(njc)
+            scale = np.linspace(0.5, 1.6, info.total_vec_size).astype(np.float32)
+            normalized = [
+                a * scale[o : o + n, None] * scale[None, o : o + n]
+                for a, o, n in zip(matrices, (0, 8), njc[:2], strict=True)
+            ]
+            matrix = wp.array(
+                np.concatenate([*(a.ravel() for a in normalized), [0.0]]).astype(np.float32), device=device
+            )
+            state = SCCState()
+            state.bilateral_response_mio = i32(offsets)
+            state.bilateral_response_stride = i32(capacity)
+            state.bilateral_preconditioner = wp.array(scale, device=device)
+            state.bilateral_coupling = wp.zeros(33, device=device)
+            state.bilateral_response_factor = wp.zeros(33, device=device)
+            state.bilateral_response = wp.zeros(33, device=device)
+            sparse_factor.allocate_response(state, 3, device)
+            problem = SimpleNamespace(data=SimpleNamespace(dim=i32([10, 6, 0]), njc=i32(njc), mio=i32([0, 100, 136])))
+            for ordering in ("meca", "rcm"):
+                solver = LDLBlockSparseSolver(
+                    operator=DenseLinearOperatorData(info=info, mat=matrix),
+                    block_rows=block_rows,
+                    block_edges=block_edges,
+                    ordering=ordering,
+                )
+                solver.compute(matrix)
+                path = SimpleNamespace(
+                    bilateral_solver=solver,
+                    data=SimpleNamespace(state=state),
+                    size=SimpleNamespace(num_worlds=3, max_of_num_bilateral_joint_cts=max(njc)),
+                    unilateral_strides_host=capacity,
+                    device=device,
+                )
+                # Observe pass selection while every call performs the real solve.
+                with (
+                    mock.patch.object(solver, "solve_triangular", wraps=solver.solve_triangular) as triangular,
+                    mock.patch.object(solver, "solve_diagonal", wraps=solver.solve_diagonal) as diagonal,
+                ):
+                    for compact in (False, True):
+                        graph = None
+                        triangular.reset_mock()
+                        diagonal.reset_mock()
+                        full_columns = [0 if compact else 2, 4, 0]
+                        whitened_columns = [2 if compact else 0, 0, 0]
+                        for rhs_index, rhs in enumerate(right_hand_sides):
+                            with self.subTest(device=device, ordering=ordering, compact=compact, rhs=rhs_index):
+                                strides = [2 if compact else capacity[0], capacity[1]]
+                                coupling = np.full(33, -123.0, dtype=np.float32)
+                                written = np.zeros(33, dtype=bool)
+                                for b, offset, stride in zip(rhs, offsets[:2], strides, strict=True):
+                                    rows, columns = b.shape
+                                    coupling[offset : offset + rows * stride].reshape(rows, stride)[:, :columns] = b
+                                    written[offset : offset + rows * stride].reshape(rows, stride)[:, :columns] = True
+                                state.bilateral_coupling.assign(coupling)
+                                state.bilateral_response.fill_(-321.0)
+                                if graph is not None:
+                                    wp.capture_launch(graph)
+                                else:
+                                    sparse_factor.response_sparse(path, problem, compact)
+                                if device.is_cuda and graph is None:
+                                    with wp.ScopedCapture(device=device) as capture:
+                                        sparse_factor.response_sparse(path, problem, compact)
+                                    graph = capture.graph
+                                    wp.capture_launch(graph)
+                                response = state.bilateral_response.numpy()
+                                for world, (a, b, offset, stride) in enumerate(
+                                    zip(matrices, rhs, offsets[:2], strides, strict=True)
+                                ):
+                                    actual = response[offset : offset + len(a) * stride].reshape(len(a), stride)[
+                                        :, : b.shape[1]
+                                    ]
+                                    expected = np.linalg.solve(a.astype(np.float64), b)
+                                    if compact and world == 0:
+                                        actual, expected = actual.T @ actual, b.T @ expected
+                                    np.testing.assert_allclose(actual, expected, atol=3e-6, rtol=3e-6)
+                                np.testing.assert_array_equal(response[~written], -321.0)
+                                np.testing.assert_array_equal(state.bilateral_response_columns.numpy(), nu)
+                                np.testing.assert_array_equal(
+                                    state.bilateral_response_full_columns.numpy(), full_columns
+                                )
+                                np.testing.assert_array_equal(
+                                    state.bilateral_response_whitened_columns.numpy(), whitened_columns
+                                )
+                                for call in triangular.call_args_list:
+                                    expected_columns = nu if call.kwargs["forward"] else full_columns
+                                    np.testing.assert_array_equal(call.kwargs["columns"].numpy(), expected_columns)
+                                for call in diagonal.call_args_list:
+                                    expected_columns = (
+                                        whitened_columns if call.kwargs.get("inverse_sqrt") else full_columns
+                                    )
+                                    np.testing.assert_array_equal(call.kwargs["columns"].numpy(), expected_columns)
+
     def test_04_scc_solve_active_joint_limit(self):
         """Resolve an active joint limit through the inequality solver."""
         builder = testing.build_unary_revolute_joint_test(limits=True, ground=False)
@@ -2202,17 +2380,22 @@ class TestSCCSolver(NewtonTestCase):
         self.assertIsInstance(solver._solver_kamino.solver_fd, SCCSolver)
 
     def test_08a_public_solver_heterogeneous_contact_rollout_with_scc(self):
-        """Use Cholesky for heterogeneous dense and sparse SCC rollouts."""
+        """Exercise bilateral backends in heterogeneous dense and sparse SCC rollouts."""
         builder = newton.ModelBuilder()
         SolverKamino.register_custom_attributes(builder)
         basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
         model = builder.finalize(device=self.device, skip_validation_joints=True)
 
-        for sparse, bilateral_solver_type in itertools.product((False, True), ("LLTB", "LLTBRCM")):
-            with self.subTest(sparse=sparse, bilateral_solver_type=bilateral_solver_type):
+        for sparse, (bilateral_solver_type, ordering) in product(
+            (False, True), (("LLTB", None), ("LLTBRCM", None), ("LDL", "meca"), ("LDL", "rcm"))
+        ):
+            with self.subTest(sparse=sparse, bilateral_solver_type=bilateral_solver_type, ordering=ordering):
                 config = SolverKamino.Config(
                     dynamics_solver="scc",
-                    scc=kamino_config.SCCSolverConfig(bilateral_solver_type=bilateral_solver_type),
+                    scc=kamino_config.SCCSolverConfig(
+                        bilateral_solver_type=bilateral_solver_type,
+                        bilateral_solver_kwargs={"ordering": ordering} if ordering else {},
+                    ),
                     sparse_dynamics=sparse,
                     sparse_jacobian=True,
                     use_collision_detector=True,
@@ -2244,11 +2427,18 @@ class TestSCCSolver(NewtonTestCase):
                 self.assertTrue(np.all(np.isfinite(status["r_d"])))
                 self.assertLess(float(np.max(np.abs(state_in.body_qd.numpy()))), 100.0)
                 self.assertIsInstance(scc_solver, SCCSolver)
-                self.assertIsInstance(scc_solver._bilateral_solver, (LLTBlockedSolver, LLTBlockedRCMSolver))
+                backend_type = {
+                    "LLTB": LLTBlockedSolver,
+                    "LLTBRCM": LLTBlockedRCMSolver,
+                    "LDL": LDLBlockSparseSolver,
+                }[bilateral_solver_type]
+                self.assertIsInstance(scc_solver._bilateral_solver, backend_type)
+                if ordering is not None:
+                    self.assertEqual(scc_solver._bilateral_solver.ordering, ordering)
                 joint_dims = solver._solver_kamino._model.info.num_joint_bilateral_cts.numpy()
                 self.assertTrue(np.any(joint_dims == 0))
                 self.assertTrue(np.any(joint_dims > 0))
-                if bilateral_solver_type == "LLTB":
+                if bilateral_solver_type != "LLTBRCM":
                     # LLTB pads joint-free worlds to one row; LLTBRCM uses a shared capacity stride.
                     np.testing.assert_array_equal(
                         scc_solver.data.bilateral_operator.info.dimensions,
@@ -3034,69 +3224,76 @@ class TestSCCSolver(NewtonTestCase):
         initial_speed = 3.0
         dt = 2.0e-3
         steps = 50
+        frictions = (0.1, 0.3, 0.8)
 
-        for friction in (0.1, 0.3, 0.8):
-            builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-            SolverKamino.register_custom_attributes(builder)
+        # One world per friction value, so each solver configuration steps the whole sweep once.
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        bodies = []
+        for friction in frictions:
+            world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            SolverKamino.register_custom_attributes(world)
             shape_cfg = newton.ModelBuilder.ShapeConfig(mu=friction, gap=0.0, margin=0.0)
-            body = builder.add_link(
+            body = world.add_link(
                 xform=wp.transformf((0.0, 0.0, 0.1), wp.quat_identity()),
                 mass=1.0,
             )
-            builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
-            joint = builder.add_joint_free(parent=-1, child=body)
-            builder.add_articulation([joint])
-            builder.add_ground_plane(cfg=shape_cfg)
-            model = builder.finalize(device=self.device)
+            # Kamino names materials after shape labels, so they must differ between worlds.
+            world.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg, label=f"box_mu_{friction}")
+            joint = world.add_joint_free(parent=-1, child=body)
+            world.add_articulation([joint])
+            world.add_ground_plane(cfg=shape_cfg)
+            bodies.append(builder.body_count)
+            builder.add_world(world)
+        model = builder.finalize(device=self.device)
 
-            expected_speed = initial_speed - friction * 9.81 * dt * steps
-            expected_distance = initial_speed * dt * steps - friction * 9.81 * dt * dt * steps * (steps + 1) / 2.0
-            for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
-                with self.subTest(friction=friction, sparse=sparse, unilateral_solver=unilateral_solver):
-                    config = SolverKamino.Config(
-                        dynamics_solver="scc",
-                        scc=kamino_config.SCCSolverConfig(unilateral_solver=unilateral_solver),
-                        use_collision_detector=True,
-                        sparse_dynamics=sparse,
-                        sparse_jacobian=sparse,
-                        collision_detector=kamino_config.CollisionDetectorConfig(
-                            max_contacts=16,
-                            max_contacts_per_world=16,
-                            max_contacts_per_pair=8,
-                        ),
-                    )
-                    # Resolve the correction for the analytical velocity/distance checks.
-                    config.scc.apgd.max_nonlinear_corrections = 8
-                    solver = SolverKamino(model, config=config)
-                    state_0 = model.state()
-                    state_1 = model.state()
-                    joint_qd = state_0.joint_qd.numpy()
-                    joint_qd[0] = initial_speed
-                    state_0.joint_qd.assign(joint_qd)
-                    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
+            with self.subTest(sparse=sparse, unilateral_solver=unilateral_solver):
+                config = SolverKamino.Config(
+                    dynamics_solver="scc",
+                    scc=kamino_config.SCCSolverConfig(unilateral_solver=unilateral_solver),
+                    use_collision_detector=True,
+                    sparse_dynamics=sparse,
+                    sparse_jacobian=sparse,
+                    collision_detector=kamino_config.CollisionDetectorConfig(
+                        max_contacts=16 * len(frictions),
+                        max_contacts_per_world=16,
+                        max_contacts_per_pair=8,
+                    ),
+                )
+                # Resolve the correction for the analytical velocity/distance checks.
+                config.scc.apgd.max_nonlinear_corrections = 8
+                solver = SolverKamino(model, config=config)
+                state_0 = model.state()
+                state_1 = model.state()
+                joint_qd = state_0.joint_qd.numpy().reshape(len(frictions), -1).copy()
+                joint_qd[:, 0] = initial_speed
+                state_0.joint_qd.assign(joint_qd.reshape(-1))
+                newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
-                    for _ in range(steps):
-                        solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
-                        state_0, state_1 = state_1, state_0
+                for _ in range(steps):
+                    solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
+                    state_0, state_1 = state_1, state_0
 
-                    self.assertGreater(int(solver._contacts_kamino.world_active_contacts.numpy()[0]), 0)
-                    self.assertAlmostEqual(
-                        float(state_0.body_qd.numpy()[body, 0]),
-                        expected_speed,
-                        delta=1.0e-4,
-                    )
-                    self.assertAlmostEqual(
-                        float(state_0.body_q.numpy()[body, 0]),
-                        expected_distance,
-                        delta=1.0e-5,
-                    )
+                active_contacts = solver._contacts_kamino.world_active_contacts.numpy()
+                positions = state_0.body_q.numpy()
+                velocities = state_0.body_qd.numpy()
+                for world_index, (friction, body) in enumerate(zip(frictions, bodies, strict=True)):
+                    with self.subTest(friction=friction):
+                        expected_speed = initial_speed - friction * 9.81 * dt * steps
+                        expected_distance = (
+                            initial_speed * dt * steps - friction * 9.81 * dt * dt * steps * (steps + 1) / 2.0
+                        )
+                        self.assertGreater(int(active_contacts[world_index]), 0)
+                        self.assertAlmostEqual(float(velocities[body, 0]), expected_speed, delta=1.0e-4)
+                        self.assertAlmostEqual(float(positions[body, 0]), expected_distance, delta=1.0e-5)
 
     def test_08d3_scc_friction_propagates_through_fixed_joint(self):
         """Converge articulated contact friction at a 2 kHz step rate."""
         friction = 0.2
         initial_speed = 3.0
         dt = 5.0e-4
-        steps = 200
+        steps = 50
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         SolverKamino.register_custom_attributes(builder)
@@ -3164,22 +3361,22 @@ class TestSCCSolver(NewtonTestCase):
                     velocities[[contact_body, carried_body], 0],
                     expected_speed,
                     rtol=0.0,
-                    atol=2.0e-4,
+                    atol=5.0e-5,
                 )
                 np.testing.assert_allclose(
                     positions[[contact_body, carried_body], 0],
                     expected_distance,
                     rtol=0.0,
-                    atol=2.0e-5,
+                    atol=1.25e-6,
                 )
                 self.assertAlmostEqual(
                     float(positions[carried_body, 2] - positions[contact_body, 2]),
                     0.1,
-                    delta=1.0e-5,
+                    delta=2.5e-6,
                 )
                 self.assertLess(
                     float(np.linalg.norm(velocities[carried_body] - velocities[contact_body])),
-                    1.0e-4,
+                    2.5e-5,
                 )
 
     def test_08d4_scc_incline_friction_threshold(self):
@@ -3315,6 +3512,7 @@ class TestSCCSolver(NewtonTestCase):
 
     @requires("git", "pxr.Usd")
     def test_08b_dr_legs_contact_capacity_scales_with_world_count(self):
+        """Scale DR Legs contact capacity with the replicated world count."""
         if not self.device.is_cuda:
             self.skipTest("Dr Legs multi-world capacity regression uses the CUDA graph path")
 
@@ -3338,9 +3536,15 @@ class TestSCCSolver(NewtonTestCase):
 
     @requires("git", "pxr.Usd")
     def test_09_dr_legs_scc_first_contact_remains_finite(self):
+        """Verify DR Legs remains finite at first contact with LLTBRCM and both LDL orderings."""
         if not self.device.is_cuda:
             self.skipTest("Dr Legs SCC first-contact regression uses the CUDA graph path")
+        for backend, ordering in (("LLTBRCM", None), ("LDL", "meca"), ("LDL", "rcm")):
+            with self.subTest(backend=backend, ordering=ordering):
+                self._check_dr_legs_first_contact(backend, ordering)
 
+    def _check_dr_legs_first_contact(self, backend, ordering):
+        """Exercise the first DR Legs contact with the requested bilateral backend and ordering."""
         from types import SimpleNamespace  # noqa: PLC0415
 
         from newton.examples.kamino.example_kamino_robot_dr_legs import Example  # noqa: PLC0415
@@ -3350,6 +3554,8 @@ class TestSCCSolver(NewtonTestCase):
             world_count=1,
             use_kamino_contacts=True,
             dynamics_solver="scc",
+            bilateral_solver_type=backend,
+            ldl_ordering=ordering,
         )
         example = Example(ViewerNull(num_frames=1), args)
 
