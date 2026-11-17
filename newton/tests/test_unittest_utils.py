@@ -164,6 +164,7 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
 
         class ReportsOutput(NewtonTestCase):
             def test_output(self):
+                """Print reported and unreported expected and allowed output."""
                 self.expectOutputRegex(r"expected output\n", stream="stdout", report=True)
                 self.allowOutputRegex(r"reported output\n", stream="stdout", report=True)
                 self.expectOutputRegex(r"hidden required output\n", stream="stdout")
