@@ -2965,6 +2965,176 @@ def Xform "Root" (
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_label[joint_id], "my_custom_joint")
 
+    @requires("pxr.Usd")
+    def test_lights_import(self):
+        """Import UsdLux distant and sphere lights with their mounts, shaping, color and visibility."""
+        from pxr import Usd, UsdLux
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Xform "Body" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        float physics:mass = 1
+        float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+
+        def Xform "Mount"
+        {
+            double3 xformOp:translate = (0.5, 0, 0)
+            float3 xformOp:scale = (2, 2, 2)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+
+            def SphereLight "Lamp" (prepend apiSchemas = ["ShapingAPI", "ShadowAPI"])
+            {
+                float inputs:shaping:cone:angle = 30
+                float inputs:shaping:cone:softness = 0.25
+                float inputs:shaping:focus = 2
+                bool inputs:shadow:enable = 0
+                bool inputs:enableColorTemperature = 1
+                float inputs:colorTemperature = 3000
+            }
+        }
+    }
+
+    def DistantLight "Sun"
+    {
+        float inputs:intensity = 2
+        float inputs:exposure = 1
+        color3f inputs:color = (1, 0.5, 0.25)
+        float xformOp:rotateX = 90
+        uniform token[] xformOpOrder = ["xformOp:rotateX"]
+    }
+
+    def SphereLight "Hemisphere" (prepend apiSchemas = ["ShapingAPI"])
+    {
+        double3 xformOp:translate = (0, 0, 4)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def SphereLight "Omni" (prepend apiSchemas = ["ShapingAPI"])
+    {
+        float inputs:shaping:cone:angle = 180
+    }
+
+    def SphereLight "Hidden"
+    {
+        token visibility = "invisible"
+    }
+
+    def DomeLight "Dome" {}
+}
+"""
+        )
+        builder = newton.ModelBuilder()
+        offset = wp.transform((0.0, 0.0, 2.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * math.pi))
+        with self.assertLogs("newton", level="WARNING") as logs:
+            result = builder.add_usd(stage, xform=offset)
+        self.assertTrue(any("/World/Dome" in line for line in logs.output))
+        lights = result["path_light_map"]
+        self.assertEqual(
+            set(lights), {"/World/Body/Mount/Lamp", "/World/Sun", "/World/Hemisphere", "/World/Omni", "/World/Hidden"}
+        )
+        self.assertEqual(builder.light_label, list(lights))
+
+        lamp = lights["/World/Body/Mount/Lamp"]
+        self.assertEqual(builder.light_body[lamp], 0)
+        self.assertEqual(builder.light_type[lamp], newton.LightType.SPOT)
+        # The mount scale is dropped from the light frame.
+        np.testing.assert_allclose(builder.light_transform[lamp], [0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], atol=1e-6)
+        self.assertAlmostEqual(builder.light_cone_angle[lamp], math.radians(30.0), places=6)
+        self.assertAlmostEqual(builder.light_cone_softness[lamp], 0.25, places=6)
+        self.assertAlmostEqual(builder.light_focus[lamp], 2.0, places=6)
+        self.assertFalse(builder.light_cast_shadow[lamp])
+        np.testing.assert_allclose(builder.light_color[lamp], UsdLux.BlackbodyTemperatureAsRgb(3000.0), rtol=1e-6)
+        self.assertEqual(builder.light_intensity[lamp], 1.0)
+        np.testing.assert_allclose(builder.light_attenuation[lamp], (0.0, 0.0, 1.0))
+
+        sun = lights["/World/Sun"]
+        self.assertEqual(builder.light_body[sun], -1)
+        self.assertEqual(builder.light_type[sun], newton.LightType.DIRECTIONAL)
+        self.assertEqual(builder.light_intensity[sun], 4.0)
+        np.testing.assert_allclose(builder.light_color[sun], (1.0, 0.5, 0.25))
+        self.assertTrue(builder.light_cast_shadow[sun])
+        # rotateX(90) turns the -Z emission axis to +Y; the import xform's yaw turns +Y to -X.
+        direction = wp.transform_vector(wp.transform(*builder.light_transform[sun]), wp.vec3(0.0, 0.0, -1.0))
+        np.testing.assert_allclose(direction, (-1.0, 0.0, 0.0), atol=1e-6)
+
+        # ShapingAPI's 90-degree fallback cone makes a hemispherical spot light.
+        hemisphere = lights["/World/Hemisphere"]
+        self.assertEqual(builder.light_type[hemisphere], newton.LightType.SPOT)
+        self.assertAlmostEqual(builder.light_cone_angle[hemisphere], math.radians(90.0), places=6)
+        np.testing.assert_allclose(builder.light_transform[hemisphere][:3], (0.0, 0.0, 6.0), atol=1e-6)
+        self.assertTrue(builder.light_enabled[hemisphere])
+        # A 180-degree cone does not limit the light, so it stays a point light.
+        self.assertEqual(builder.light_type[lights["/World/Omni"]], newton.LightType.POINT)
+        self.assertEqual(builder.light_type[lights["/World/Hidden"]], newton.LightType.POINT)
+        self.assertFalse(builder.light_enabled[lights["/World/Hidden"]])
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, load_lights=False)
+        self.assertEqual(builder.light_count, 0)
+        self.assertEqual(result["path_light_map"], {})
+
+    @requires("pxr.Usd")
+    def test_lights_follow_collapsed_bodies(self):
+        """Mount a light on a body merged by collapse_fixed_joints in the surviving parent's frame."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Xform "Base" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+    {
+        float physics:mass = 1
+        float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+    }
+
+    def Xform "Tip" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        float physics:mass = 1
+        float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+
+        def SphereLight "Lamp"
+        {
+            double3 xformOp:translate = (0.25, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+
+    def PhysicsFixedJoint "Weld"
+    {
+        rel physics:body0 = </World/Base>
+        rel physics:body1 = </World/Tip>
+        point3f physics:localPos0 = (0, 0, 1)
+        point3f physics:localPos1 = (0, 0, 0)
+    }
+}
+"""
+        )
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, collapse_fixed_joints=True)
+        lamp = result["path_light_map"]["/World/Tip/Lamp"]
+        self.assertEqual(builder.light_body[lamp], result["path_body_map"]["/World/Base"])
+        np.testing.assert_allclose(builder.light_transform[lamp][:3], (0.25, 0.0, 1.0), atol=1e-6)
+
 
 def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating):
     """Verify model based on the UsdPhysics Parsing Utils"""

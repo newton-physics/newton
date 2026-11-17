@@ -1983,6 +1983,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.edge_count = len(edge_order)
         view.tet_count = len(tet_order)
         view.muscle_count = 0
+        # Compact views have no lights: their body indices no longer match the model's lights, and
+        # renderers draw the full model.
+        view.light_count = 0
+        view.light_label = []
         view.curve_count = len(compact.order(frequency.CURVE))
         view.surface_count = len(compact.order(frequency.SURFACE))
         view.volume_count = len(compact.order(frequency.VOLUME))

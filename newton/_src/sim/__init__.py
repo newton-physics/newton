@@ -17,6 +17,7 @@ from .enums import (
 )
 from .inverse_dynamics import eval_inverse_dynamics_passive
 from .joint_mimic import eval_mimic
+from .light import LightType
 from .model import Model
 from .rod import Rod
 from .state import State
@@ -30,6 +31,7 @@ __all__ = [
     "Control",
     "JointTargetMode",
     "JointType",
+    "LightType",
     "Model",
     "ModelBuilder",
     "ModelFlags",

@@ -62,6 +62,98 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 class TestImportMjcfBasic(unittest.TestCase):
     @requires(*MUJOCO_MODULES)
+    def test_lights_match_native_mujoco(self):
+        """Match native MuJoCo light properties and poses through defaults, frames and moving bodies."""
+        mjcf = """
+<mujoco>
+    <compiler angle="radian"/>
+    <default>
+        <light diffuse="0.5 0.5 0.5"/>
+        <default class="red"><light diffuse="1 0 0" castshadow="false"/></default>
+    </default>
+    <worldbody>
+        <light name="spot" pos="0 0 3" dir="0 1 -1" cutoff="30" exponent="5"/>
+        <light name="sun" directional="true" dir="1 0 -1"/>
+        <light name="bulb" type="point" class="red" pos="1 1 1" attenuation="1 0.1 0.01" active="false"/>
+        <light name="up" type="spot" pos="0 0 -1" dir="0 0 1"/>
+        <frame pos="1 2 3" euler="0 0 1.5707963267948966">
+            <light name="framed" type="directional" pos="0.2 0.3 0.4" dir="1 0 0"/>
+            <body name="arm" pos="0.4 0.5 0.6" euler="0 0.7853981633974483 0">
+                <joint name="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+                <frame pos="0.1 0.2 0.3" euler="0 0 0.5235987755982988">
+                    <light name="mounted" pos="0.2 0 0.1" dir="0 1 0"/>
+                </frame>
+            </body>
+        </frame>
+    </worldbody>
+</mujoco>
+"""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        data = mujoco.MjData(native)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        self.assertEqual(builder.light_count, native.nlight)
+        lights = {label.rsplit("/", 1)[-1]: index for index, label in enumerate(builder.light_label)}
+
+        for name, index in lights.items():
+            with self.subTest(properties=name):
+                light = native.light(name)
+                self.assertEqual(int(builder.light_type[index]), int(light.type[0]))
+                np.testing.assert_allclose(builder.light_color[index], light.diffuse, rtol=1e-6)
+                self.assertEqual(builder.light_intensity[index], 1.0)
+                np.testing.assert_allclose(builder.light_attenuation[index], light.attenuation, rtol=1e-6)
+                self.assertAlmostEqual(builder.light_cone_angle[index], np.radians(light.cutoff[0]), places=6)
+                self.assertEqual(builder.light_cone_softness[index], 0.0)
+                self.assertAlmostEqual(builder.light_focus[index], float(light.exponent[0]), places=6)
+                self.assertEqual(builder.light_cast_shadow[index], bool(light.castshadow[0]))
+                self.assertEqual(builder.light_enabled[index], bool(light.active[0]))
+
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        for angle in (0.0, 0.7):
+            with self.subTest(angle=angle):
+                data.qpos[:] = angle
+                mujoco.mj_forward(native, data)
+                model.joint_q.assign([angle])
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                bodies = state.body_q.numpy()
+                for name, index in lights.items():
+                    light_id = native.light(name).id
+                    body = builder.light_body[index]
+                    pose = wp.transform(*builder.light_transform[index])
+                    if body >= 0:
+                        pose = wp.transform(wp.vec3(*bodies[body][:3]), wp.quat(*bodies[body][3:])) * pose
+                    np.testing.assert_allclose(pose.p, data.light_xpos[light_id], atol=1e-5, err_msg=name)
+                    direction = wp.transform_vector(pose, wp.vec3(0.0, 0.0, -1.0))
+                    np.testing.assert_allclose(direction, data.light_xdir[light_id], atol=1e-5, err_msg=name)
+
+    def test_light_import_options(self):
+        """Skip lights when disabled or of an unsupported type, and keep tracking lights as fixed mounts."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <light name="image" type="image"/>
+        <body name="b">
+            <geom type="sphere" size="0.1"/>
+            <light name="tracking" mode="targetbody" target="b" pos="0 0 1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_lights=False)
+        self.assertEqual(builder.light_count, 0)
+
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton", level="WARNING") as logs:
+            builder.add_mjcf(mjcf)
+        self.assertTrue(any("image" in message for message in logs.output))
+        self.assertEqual([label.rsplit("/", 1)[-1] for label in builder.light_label], ["tracking"])
+        self.assertEqual(builder.light_body, [0])
+
+    @requires(*MUJOCO_MODULES)
     def test_compiler_balanceinertia_matches_native_mujoco(self):
         """Balance invalid inertia only when the MJCF compiler requests it."""
         body = """

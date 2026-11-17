@@ -91,17 +91,21 @@ class SensorCamera:
     :attr:`RenderConfig.enable_backface_culling` to ``False`` to render both
     sides with camera-facing normals.
 
-    The scene is lit by the light from :meth:`create_default_light`, if any,
-    plus hemispheric ambient light (see :meth:`set_ambient_light`) when
-    :attr:`RenderConfig.enable_ambient_lighting` is set.
+    The scene is lit by the model's lights (see
+    :meth:`~newton.ModelBuilder.add_light`), the light from
+    :meth:`create_default_light`, if any, and hemispheric ambient light (see
+    :meth:`set_ambient_light`) when :attr:`RenderConfig.enable_ambient_lighting`
+    is set. Model lights are posed from the bodies in the state passed to
+    :meth:`update` and read their color, intensity and other properties from
+    the model on every update, so changes to the model's light arrays apply
+    without recompiling. A light in a world lights only views of that world;
+    global lights and the sensor's own light light every view.
 
     .. experimental::
 
         Rendering of lights authored on the model, and how they combine with
         the sensor's own lights, may change without a formal deprecation
-        cycle. Future releases are expected to import lights authored in USD
-        and MJCF into the model and render them, which changes the color
-        output of scenes that author lights.
+        cycle.
 
     The render configuration types are exposed as nested attributes (e.g.
     ``SensorCamera.RenderConfig``, ``SensorCamera.ClearData``,
@@ -861,7 +865,8 @@ class SensorCamera:
     ) -> None:
         """Create a default directional light for the rendered scene.
 
-        This light replaces any light created before.
+        This light replaces any light created before with this method. The
+        model's lights are rendered in addition to it.
 
         Args:
             enable_shadows: Enable shadow casting for this light. Shadows are

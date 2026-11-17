@@ -13,15 +13,16 @@ from ...core import Axis
 from ...geometry import GeoType, Mesh
 from ...geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals, _DeformableVisualSkinBatches
 from ...sim import Model, State
+from ...sim.light import LightType
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
 from .types import (
     AntiAliasing,
     ClearData,
     DeformableSurfaceMode,
-    LightType,
     MeshData,
     RenderConfig,
+    RenderLight,
     RenderOrder,
     TextureData,
 )
@@ -53,6 +54,46 @@ def _gather_variant_render_data(
             shape_texture_ids[shape] = shape_texture_override[shape]
         else:
             shape_texture_ids[shape] = variant_texture_ids[variant_shape]
+
+
+@wp.kernel(enable_backward=False)
+def _update_model_lights(
+    light_slot: wp.array[wp.int32],
+    light_body: wp.array[wp.int32],
+    light_transform: wp.array[wp.transformf],
+    light_type: wp.array[wp.int32],
+    light_color: wp.array[wp.vec3f],
+    light_intensity: wp.array[wp.float32],
+    light_attenuation: wp.array[wp.vec3f],
+    light_cone_angle: wp.array[wp.float32],
+    light_cone_softness: wp.array[wp.float32],
+    light_focus: wp.array[wp.float32],
+    light_cast_shadow: wp.array[wp.bool],
+    light_enabled: wp.array[wp.bool],
+    body_q: wp.array[wp.transformf],
+    # outputs
+    lights: wp.array[RenderLight],
+):
+    """Pose the model lights from the body state and write them to their render slots."""
+    i = wp.tid()
+    xform = light_transform[i]
+    body = light_body[i]
+    if body >= 0 and body < body_q.shape[0]:
+        xform = wp.transform_multiply(body_q[body], xform)
+
+    light = RenderLight()
+    light.type = light_type[i]
+    light.enabled = light_enabled[i]
+    light.cast_shadow = light_cast_shadow[i]
+    light.position = wp.transform_get_translation(xform)
+    light.direction = wp.normalize(wp.transform_vector(xform, wp.vec3f(0.0, 0.0, -1.0)))
+    light.color = light_color[i] * light_intensity[i]
+    light.attenuation = light_attenuation[i]
+    cone_angle = light_cone_angle[i]
+    light.cos_cone_outer = wp.cos(cone_angle)
+    light.cos_cone_inner = wp.cos(cone_angle * (1.0 - wp.clamp(light_cone_softness[i], 0.0, 1.0)))
+    light.focus = light_focus[i]
+    lights[light_slot[i]] = light
 
 
 def _render_types(shape_types: np.ndarray) -> np.ndarray:
@@ -142,12 +183,15 @@ class RenderContext:
         self._checkerboard_texture_id: int | None = None
         self._mesh_data_source: list[MeshData] = []
 
-        self._lights_active: wp.array[wp.bool] | None = None
-        self._lights_type: wp.array[wp.int32] | None = None
-        self._lights_cast_shadow: wp.array[wp.bool] | None = None
-        self._lights_position: wp.array[wp.vec3f] | None = None
-        self._lights_orientation: wp.array[wp.vec3f] | None = None
-        self._lights_color: wp.array[wp.vec3f] | None = None
+        # Lights are laid out as [sensor lights, global model lights, world 0 lights, world 1 lights, ...]:
+        # the render kernel shades the first _light_global_count lights in every world and the range
+        # [_light_world_start[w], _light_world_start[w + 1]) in world w only.
+        self._sensor_lights: list[RenderLight] = []
+        self._lights: wp.array[RenderLight] | None = None
+        self._light_global_count = 0
+        self._light_world_start: wp.array[wp.int32] | None = None
+        self._model_light_slots: wp.array[wp.int32] | None = None
+        self._build_light_layout()
 
         self._ambient_sky_color = wp.vec3f(*DEFAULT_AMBIENT_SKY_COLOR)
         self._ambient_ground_color = wp.vec3f(*DEFAULT_AMBIENT_GROUND_COLOR)
@@ -380,13 +424,77 @@ class RenderContext:
             if self.up_axis != Axis.Z:
                 rot = Axis.Z.quat_between_axes(self.up_axis)
                 direction = wp.vec3f(wp.quat_rotate(rot, wp.vec3(direction)))
-        light_color = wp.vec3f(1.0) if color is None else wp.vec3f(*(float(c) for c in color))
-        self._lights_active = wp.array([True], dtype=wp.bool, device=self.device)
-        self._lights_type = wp.array([LightType.DIRECTIONAL], dtype=wp.int32, device=self.device)
-        self._lights_cast_shadow = wp.array([enable_shadows], dtype=wp.bool, device=self.device)
-        self._lights_position = wp.array([wp.vec3f(0.0)], dtype=wp.vec3f, device=self.device)
-        self._lights_orientation = wp.array([direction], dtype=wp.vec3f, device=self.device)
-        self._lights_color = wp.array([light_color], dtype=wp.vec3f, device=self.device)
+        light = RenderLight()
+        light.type = int(LightType.DIRECTIONAL)
+        light.enabled = True
+        light.cast_shadow = bool(enable_shadows)
+        light.position = wp.vec3f(0.0)
+        light.direction = wp.normalize(wp.vec3f(*(float(c) for c in direction)))
+        light.color = wp.vec3f(1.0) if color is None else wp.vec3f(*(float(c) for c in color))
+        light.attenuation = wp.vec3f(1.0, 0.0, 0.0)
+        light.cos_cone_outer = -1.0
+        light.cos_cone_inner = -1.0
+        light.focus = 0.0
+        self._sensor_lights = [light]
+        self._build_light_layout()
+
+    def _build_light_layout(self) -> None:
+        """Allocate the render lights and assign every sensor and model light its slot.
+
+        Sensor lights are written here; model lights are posed into their slots before each render.
+        """
+        model = self.model
+        sensor_count = len(self._sensor_lights)
+        model_count = model.light_count
+        world_count = model.world_count
+        if model_count > 0:
+            light_world = model.light_world.numpy()
+            # Global lights first, then each world's lights in world order (stable within a world).
+            order = np.argsort(np.where(light_world < 0, -1, light_world), kind="stable")
+            slots = np.empty(model_count, dtype=np.int32)
+            slots[order] = sensor_count + np.arange(model_count, dtype=np.int32)
+            global_count = int(np.count_nonzero(light_world < 0))
+            world_starts = np.searchsorted(np.sort(light_world[light_world >= 0]), np.arange(world_count + 1))
+            self._model_light_slots = wp.array(slots, dtype=wp.int32, device=self.device)
+        else:
+            global_count = 0
+            world_starts = np.zeros(world_count + 1, dtype=np.int64)
+            self._model_light_slots = None
+        self._light_global_count = sensor_count + global_count
+        self._light_world_start = wp.array(
+            (self._light_global_count + world_starts).astype(np.int32), dtype=wp.int32, device=self.device
+        )
+        self._lights = wp.empty(sensor_count + model_count, dtype=RenderLight, device=self.device)
+        if sensor_count:
+            sensor_lights = wp.array(self._sensor_lights, dtype=RenderLight, device=self.device)
+            wp.copy(self._lights, sensor_lights, count=sensor_count)
+
+    def _update_model_lights(self, state: State) -> None:
+        """Pose the model's lights for *state* in their render slots."""
+        model = self.model
+        if self._model_light_slots is None:
+            return
+        wp.launch(
+            _update_model_lights,
+            dim=model.light_count,
+            inputs=[
+                self._model_light_slots,
+                model.light_body,
+                model.light_transform,
+                model.light_type,
+                model.light_color,
+                model.light_intensity,
+                model.light_attenuation,
+                model.light_cone_angle,
+                model.light_cone_softness,
+                model.light_focus,
+                model.light_cast_shadow,
+                model.light_enabled,
+                state.body_q,
+            ],
+            outputs=[self._lights],
+            device=self.device,
+        )
 
     def assign_checkerboard_material(
         self,
@@ -630,6 +738,7 @@ class RenderContext:
                 pixels_per_view = tiles_x * tiles_y * config.tile_width * config.tile_height
 
             self._gather_variant_render_data()
+            self._update_model_lights(state)
             wp.launch(
                 kernel=render_kernel,
                 dim=(view_count * pixels_per_view),
@@ -637,7 +746,7 @@ class RenderContext:
                     # Model and config
                     view_count,
                     model.world_count,
-                    self.light_count,
+                    self._light_global_count,
                     width,
                     height,
                     # Camera
@@ -678,12 +787,8 @@ class RenderContext:
                     # Textures
                     self._texture_data,
                     # Lights
-                    self._lights_active,
-                    self._lights_type,
-                    self._lights_cast_shadow,
-                    self._lights_position,
-                    self._lights_orientation,
-                    self._lights_color,
+                    self._lights,
+                    self._light_world_start,
                     self._get_ambient_lighting(),
                     # Outputs
                     color_image,
@@ -697,12 +802,6 @@ class RenderContext:
                 device=self.device,
                 block_dim=config.block_dim,
             )
-
-    @property
-    def light_count(self) -> int:
-        if self._lights_active is not None:
-            return self._lights_active.shape[0]
-        return 0
 
     @property
     def _has_triangle_mesh(self) -> bool:

@@ -420,6 +420,8 @@ class Model:
         """Experimental frequency for recorded deformable volumes (see :attr:`~newton.Model.volume_count`)."""
         ACTUATOR = 26
         """Attribute frequency follows the number of actuators (see :attr:`~newton.Model.actuator_count`)."""
+        LIGHT = 28
+        """Attribute frequency follows the number of model lights (see :attr:`~newton.Model.light_count`)."""
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -484,6 +486,19 @@ class Model:
                 raise ValueError(f"Attribute compaction policy {self.compaction_policy!r} requires a reference domain")
 
     _CORE_ATTRIBUTE_SPECS: ClassVar[dict[str, AttributeSpec]] = {
+        "light_label": AttributeSpec(AttributeFrequency.LIGHT),
+        "light_world": AttributeSpec(AttributeFrequency.LIGHT, references=AttributeFrequency.WORLD),
+        "light_body": AttributeSpec(AttributeFrequency.LIGHT, references=AttributeFrequency.BODY),
+        "light_transform": AttributeSpec(AttributeFrequency.LIGHT),
+        "light_type": AttributeSpec(AttributeFrequency.LIGHT),
+        "light_color": AttributeSpec(AttributeFrequency.LIGHT),
+        "light_intensity": AttributeSpec(AttributeFrequency.LIGHT),
+        "light_attenuation": AttributeSpec(AttributeFrequency.LIGHT),
+        "light_cone_angle": AttributeSpec(AttributeFrequency.LIGHT),
+        "light_cone_softness": AttributeSpec(AttributeFrequency.LIGHT),
+        "light_focus": AttributeSpec(AttributeFrequency.LIGHT),
+        "light_cast_shadow": AttributeSpec(AttributeFrequency.LIGHT),
+        "light_enabled": AttributeSpec(AttributeFrequency.LIGHT),
         "tendon_label": AttributeSpec(AttributeFrequency.TENDON),
         "tendon_world": AttributeSpec(AttributeFrequency.TENDON, references=AttributeFrequency.WORLD),
         "tendon_start": AttributeSpec(
@@ -863,6 +878,7 @@ class Model:
         AttributeFrequency.TETRAHEDRON: "tet_count",
         AttributeFrequency.SPRING: "spring_count",
         AttributeFrequency.TENDON: "tendon_count",
+        AttributeFrequency.LIGHT: "light_count",
         AttributeFrequency.TENDON_GUIDE: "tendon_guide_count",
         AttributeFrequency.TENDON_SEGMENT: "tendon_segment_count",
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
@@ -1266,6 +1282,45 @@ class Model:
         """Particle spring activation [dimensionless], shape [spring_count], float."""
         self.spring_constraint_lambdas: wp.array[wp.float32] | None = None
         """Lagrange multipliers for spring constraints (internal use)."""
+
+        # lights
+        self.light_count: int = 0
+        """Number of model lights."""
+        self.light_label: list[str] = []
+        """Light labels, shape (light_count,)."""
+        self.light_world: wp.array[wp.int32] | None = None
+        """Owning world of each light, shape [light_count], int. ``-1`` is the global world;
+        a global light illuminates every world, while a light in a world illuminates only that world."""
+        self.light_body: wp.array[wp.int32] | None = None
+        """Parent body of each light, shape [light_count], int. ``-1`` means the light is fixed."""
+        self.light_transform: wp.array[wp.transformf] | None = None
+        """Light frame relative to its parent body, or its world pose for fixed lights [m, unitless quaternion],
+        shape [light_count], transform. Lights emit along their local -Z axis; the position of
+        :attr:`~newton.LightType.DIRECTIONAL` lights is ignored."""
+        self.light_type: wp.array[wp.int32] | None = None
+        """Type of each light (:class:`~newton.LightType`), shape [light_count], int."""
+        self.light_color: wp.array[wp.vec3f] | None = None
+        """Linear RGB color of each light, shape [light_count], vec3."""
+        self.light_intensity: wp.array[wp.float32] | None = None
+        """Scale of each light's color, shape [light_count], float. A white directional light of intensity 1
+        lights a surface facing it to its full albedo; point and spot lights reach that at a distance where
+        :attr:`light_attenuation` evaluates to 1."""
+        self.light_attenuation: wp.array[wp.vec3f] | None = None
+        """Constant, linear and quadratic distance falloff of point and spot lights [unitless, 1/m, 1/m²],
+        shape [light_count], vec3. The light is scaled by ``1 / (c + l * d + q * d²)`` at distance ``d`` [m].
+        ``(0, 0, 1)`` is the physical inverse-square law, ``(1, 0, 0)`` disables the falloff."""
+        self.light_cone_angle: wp.array[wp.float32] | None = None
+        """Half-angle of each spot light's cone around its -Z axis [rad], shape [light_count], float."""
+        self.light_cone_softness: wp.array[wp.float32] | None = None
+        """Fraction of each spot light's cone over which it fades out toward the cone edge, in [0, 1],
+        shape [light_count], float. ``0`` is a hard edge."""
+        self.light_focus: wp.array[wp.float32] | None = None
+        """Exponent of each spot light's off-axis cosine falloff, shape [light_count], float.
+        ``0`` lights the cone uniformly."""
+        self.light_cast_shadow: wp.array[wp.bool] | None = None
+        """Whether each light casts shadows, shape [light_count], bool."""
+        self.light_enabled: wp.array[wp.bool] | None = None
+        """Whether each light illuminates the scene, shape [light_count], bool."""
 
         # tendons (cable-driven mechanisms)
         self.tendon_count: int = 0
