@@ -12,7 +12,10 @@ from functools import cache
 import warp as wp
 
 from ..core.math import FLOAT32_EPS
+from ..core.types import vec6f
 from .factorize._array_ptr import get_float32_array_offset_ptr
+from .factorize.llt_blocked import llt_blocked_factorize, make_llt_blocked_factorize_kernel
+from .sparse_matrix import BlockSparseMatrices
 
 ###
 # Module interface
@@ -39,6 +42,15 @@ _WARP_SIZE = wp.constant(wp.int32(32))
 _SHARED_MEMORY_MARGIN = 2048
 """Bytes of shared memory per block reserved for the tile allocator."""
 
+_ROW_ENTRIES = wp.constant(wp.int32(2))
+"""Largest number of non-zero Jacobian blocks of a row assembled by :meth:`RedundantRowShift.assemble`."""
+
+_FACTOR_BLOCK_SIZE = 32
+"""Tile size of the factorization of the check."""
+
+_FACTOR_BLOCK_DIM = 128
+"""Number of threads per world of the factorization of the check."""
+
 _CHECK_TILE = 32
 """Tile size of the triangular solves of the check."""
 
@@ -46,16 +58,13 @@ _CHECK_COLUMNS = 16
 """Number of right-hand sides of the triangular solves of the check."""
 
 _CHECK_ITERATIONS = 2
-"""Number of inverse iterations estimating the smallest eigenvalue of the shifted matrix."""
+"""Number of inverse iterations estimating the smallest eigenvalue of the shifted block."""
 
 _CHECK_BLOCK_DIM = 128
 """Number of threads per world of the check."""
 
 _SHIFTED_ROW_MARGIN = wp.constant(wp.float32(10.0))
 """Factor of the threshold above which the residual of a shifted row fails the check."""
-
-_REFERENCE_MARGIN = wp.constant(wp.float32(0.1))
-"""Factor of the reference eigenvalue below which the kept rows fail the check."""
 
 _ITERATE_SEED = wp.constant(wp.int32(5381))
 """Seed of the initial iterate of the inverse iterations."""
@@ -111,32 +120,111 @@ def _packed(i: wp.int32, j: wp.int32) -> wp.int32:
     return i * (i + 1) // 2 + j
 
 
+@wp.func
+def _row_shift(diagonal: wp.float32, shifted: wp.int32) -> wp.float32:
+    """Return the shift of a block row from its diagonal."""
+    return wp.where(shifted != 0, wp.max(diagonal, FLOAT32_EPS), wp.float32(0.0))
+
+
+@wp.func
+def _mass_weighted_product(J_a: vec6f, J_b: vec6f, inv_m: wp.float32, inv_I: wp.mat33f) -> wp.float32:
+    """Return the product ``J_a M^-1 J_b^T`` of two Jacobian blocks of a body."""
+    linear = inv_m * wp.dot(wp.vec3f(J_a[0], J_a[1], J_a[2]), wp.vec3f(J_b[0], J_b[1], J_b[2]))
+    angular = wp.dot(wp.vec3f(J_a[3], J_a[4], J_a[5]), inv_I @ wp.vec3f(J_b[3], J_b[4], J_b[5]))
+    return linear + angular
+
+
 ###
 # Kernels
 ###
 
 
 @wp.kernel
-def _shift_stored_rows(
+def _store_block_diagonal(
     # Inputs:
-    dim: wp.array[wp.int32],
     mio: wp.array[wp.int32],
+    ld: wp.array[wp.int32],
     row_offset: wp.array[wp.int32],
     num_rows: wp.array[wp.int32],
-    shifted: wp.array2d[wp.int32],
+    A: wp.array[wp.float32],
     # Outputs:
-    D: wp.array[wp.float32],
     diagonal: wp.array2d[wp.float32],
 ):
-    """Store the diagonal of the block rows, and shift the rows shifted by the last elimination."""
+    """Store the diagonal of the block of each matrix."""
     wid, i = wp.tid()
     if i >= num_rows[wid]:
         return
-    index = mio[wid] + (row_offset[wid] + i) * (dim[wid] + 1)
-    value = D[index]
-    diagonal[wid, i] = value
-    if shifted[wid, i] != 0:
-        D[index] = value + wp.max(value, FLOAT32_EPS)
+    row = row_offset[wid] + i
+    diagonal[wid, i] = A[mio[wid] + row * ld[wid] + row]
+
+
+@wp.kernel
+def _collect_row_entries(
+    # Inputs:
+    row_offset: wp.array[wp.int32],
+    num_rows: wp.array[wp.int32],
+    nzb_start: wp.array[wp.int32],
+    num_nzb: wp.array[wp.int32],
+    nzb_coords: wp.array2d[wp.int32],
+    # Outputs:
+    num_entries: wp.array2d[wp.int32],
+    entries: wp.array3d[wp.int32],
+):
+    """Collect the non-zero Jacobian blocks of the rows of the block of each world."""
+    wid, k = wp.tid()
+    if k >= num_nzb[wid]:
+        return
+    index = nzb_start[wid] + k
+    i = nzb_coords[index, 0] - row_offset[wid]
+    if i < 0 or i >= num_rows[wid]:
+        return
+    slot = wp.atomic_add(num_entries, wid, i, 1)
+    if slot < _ROW_ENTRIES:
+        entries[wid, i, slot] = index
+
+
+@wp.kernel
+def _assemble_block(
+    # Inputs:
+    row_offset: wp.array[wp.int32],
+    num_rows: wp.array[wp.int32],
+    row_start: wp.array[wp.int32],
+    bodies_offset: wp.array[wp.int32],
+    inv_m: wp.array[wp.float32],
+    inv_I: wp.array[wp.mat33f],
+    nzb_coords: wp.array2d[wp.int32],
+    nzb_values: wp.array[vec6f],
+    preconditioner: wp.array[wp.float32],
+    num_entries: wp.array2d[wp.int32],
+    entries: wp.array3d[wp.int32],
+    block_mio: wp.array[wp.int32],
+    block_ld: wp.int32,
+    # Outputs:
+    block: wp.array[wp.float32],
+    diagonal: wp.array2d[wp.float32],
+):
+    """Assemble the lower triangle of the block ``P J M^-1 J^T P`` of the rows of each world."""
+    wid, i, j = wp.tid()
+    if i >= num_rows[wid] or j > i:
+        return
+
+    # Sum the products of the Jacobian blocks of the bodies shared by both rows
+    value = wp.float32(0.0)
+    for a in range(wp.min(num_entries[wid, i], _ROW_ENTRIES)):
+        index_a = entries[wid, i, a]
+        body = nzb_coords[index_a, 1] // 6
+        for b in range(wp.min(num_entries[wid, j], _ROW_ENTRIES)):
+            index_b = entries[wid, j, b]
+            if nzb_coords[index_b, 1] // 6 == body:
+                g = bodies_offset[wid] + body
+                value += _mass_weighted_product(nzb_values[index_a], nzb_values[index_b], inv_m[g], inv_I[g])
+    if preconditioner:
+        start = row_start[wid] + row_offset[wid]
+        value *= preconditioner[start + i] * preconditioner[start + j]
+
+    block[block_mio[wid] + i * block_ld + j] = value
+    if i == j:
+        diagonal[wid, i] = value
 
 
 @wp.kernel
@@ -145,17 +233,72 @@ def _reset_shifted_rows(
     world_mask: wp.array[wp.bool],
     # Outputs:
     shifted: wp.array2d[wp.int32],
+    shifts: wp.array2d[wp.float32],
     initialized: wp.array[wp.int32],
-    reference: wp.array[wp.float32],
 ):
     """Clear the shifted rows of the masked worlds."""
     wid, i = wp.tid()
     if not world_mask[wid]:
         return
     shifted[wid, i] = 0
+    shifts[wid, i] = 0.0
     if i == 0:
         initialized[wid] = 0
-        reference[wid] = 0.0
+
+
+@wp.kernel
+def _update_shifts(
+    # Inputs:
+    mio: wp.array[wp.int32],
+    ld: wp.array[wp.int32],
+    row_offset: wp.array[wp.int32],
+    num_rows: wp.array[wp.int32],
+    shifted: wp.array2d[wp.int32],
+    diagonal: wp.array2d[wp.float32],
+    shift_matrix: wp.bool,
+    # Outputs:
+    shifts: wp.array2d[wp.float32],
+    A: wp.array[wp.float32],
+):
+    """Store the shift of each block row, and add it to the diagonal of the matrices if ``shift_matrix``."""
+    wid, i = wp.tid()
+    value = wp.float32(0.0)
+    if i < num_rows[wid]:
+        value = _row_shift(diagonal[wid, i], shifted[wid, i])
+    shifts[wid, i] = value
+    if shift_matrix and value != 0.0:
+        row = row_offset[wid] + i
+        A[mio[wid] + row * ld[wid] + row] += value
+
+
+@wp.kernel
+def _copy_shifted_block(
+    # Inputs:
+    mio: wp.array[wp.int32],
+    ld: wp.array[wp.int32],
+    row_offset: wp.array[wp.int32],
+    num_rows: wp.array[wp.int32],
+    A: wp.array[wp.float32],
+    diagonal: wp.array2d[wp.float32],
+    shifted: wp.array2d[wp.int32],
+    initialized: wp.array[wp.int32],
+    factor_mio: wp.array[wp.int32],
+    # Outputs:
+    factor_dim: wp.array[wp.int32],
+    factor: wp.array[wp.float32],
+):
+    """Copy the shifted block of the initialized worlds, with a row stride of its dimension, for its factorization."""
+    wid, i, j = wp.tid()
+    n = wp.where(initialized[wid] != 0, num_rows[wid], 0)
+    if i == 0 and j == 0:
+        factor_dim[wid] = n
+    if i >= n or j >= n:
+        return
+    value = diagonal[wid, i] + _row_shift(diagonal[wid, i], shifted[wid, i])
+    if i != j:
+        start = mio[wid] + row_offset[wid] * (ld[wid] + 1)
+        value = A[start + wp.max(i, j) * ld[wid] + wp.min(i, j)]
+    factor[factor_mio[wid] + i * n + j] = value
 
 
 @cache
@@ -163,9 +306,6 @@ def _make_shift_redundant_rows_kernel(block_dim: int, max_rows: int, shared: boo
     """
     Create the elimination kernel of the blocks of up to ``max_rows`` rows, and the sizes of its float and
     int scratch per world.
-
-    The elimination reads the diagonal of the block from the stored diagonal, since the matrix holds the shifts
-    of the last elimination, and updates these shifts in the matrix.
 
     The float scratch holds the pivot column, the diagonal and the pivot search, and the int scratch holds
     the row status and the pivot search. The scratch is in static shared memory if ``shared``, and in the
@@ -184,22 +324,20 @@ def _make_shift_redundant_rows_kernel(block_dim: int, max_rows: int, shared: boo
     @wp.kernel(module="unique", enable_backward=False)
     def _shift_redundant_rows(
         # Inputs:
-        dim: wp.array[wp.int32],
         mio: wp.array[wp.int32],
+        ld: wp.array[wp.int32],
         row_offset: wp.array[wp.int32],
         num_rows: wp.array[wp.int32],
         threshold: wp.float32,
         diagonal: wp.array2d[wp.float32],
-        eigenvalue: wp.array[wp.float32],
+        A: wp.array[wp.float32],
         # Scratch:
         global_triangle: wp.array2d[wp.float32],
         global_floats: wp.array2d[wp.float32],
         global_ints: wp.array2d[wp.int32],
         # Outputs:
-        D: wp.array[wp.float32],
         shifted: wp.array2d[wp.int32],
         initialized: wp.array[wp.int32],
-        reference: wp.array[wp.float32],
     ):
         wid, tid = wp.tid()
         threads = wp.block_dim()
@@ -210,8 +348,8 @@ def _make_shift_redundant_rows_kernel(block_dim: int, max_rows: int, shared: boo
         n = num_rows[wid]
         if n == 0:
             return
-        ld = dim[wid]
-        start = mio[wid] + row_offset[wid] * (ld + 1)
+        stride = ld[wid]
+        start = mio[wid] + row_offset[wid] * (stride + 1)
 
         # Select the elimination scratch of the world
         if wp.static(shared):
@@ -227,10 +365,10 @@ def _make_shift_redundant_rows_kernel(block_dim: int, max_rows: int, shared: boo
         else:
             triangle = global_triangle[wid]
 
-        # Copy the strict lower triangle of the block and its stored diagonal
+        # Copy the lower triangle of the block
         for i in range(warp, n, warps):
             for j in range(lane, i, lanes):
-                triangle[_packed(i, j)] = D[start + i * ld + j]
+                triangle[_packed(i, j)] = A[start + i * stride + j]
         for i in range(tid, n, threads):
             value = diagonal[wid, i]
             triangle[_packed(i, i)] = value
@@ -252,13 +390,13 @@ def _make_shift_redundant_rows_kernel(block_dim: int, max_rows: int, shared: boo
             floats[ratio_offset + tid] = ratio
             ints[rows + tid] = row
             _sync_threads()
-            stride = threads // 2
-            while stride > 0:
-                if tid < stride and floats[ratio_offset + tid + stride] > floats[ratio_offset + tid]:
-                    floats[ratio_offset + tid] = floats[ratio_offset + tid + stride]
-                    ints[rows + tid] = ints[rows + tid + stride]
+            half = threads // 2
+            while half > 0:
+                if tid < half and floats[ratio_offset + tid + half] > floats[ratio_offset + tid]:
+                    floats[ratio_offset + tid] = floats[ratio_offset + tid + half]
+                    ints[rows + tid] = ints[rows + tid + half]
                 _sync_threads()
-                stride = stride // 2
+                half = half // 2
             p = ints[rows]
             best_ratio = floats[ratio_offset]
             if p < 0:
@@ -289,34 +427,21 @@ def _make_shift_redundant_rows_kernel(block_dim: int, max_rows: int, shared: boo
                         triangle[base + j] = triangle[base + j] - factor * floats[j]
             _sync_threads()
 
-        # Update the shift of the rows whose status changed
+        # Store the shifted rows
         _sync_threads()
-        changed = wp.int32(0)
         for i in range(tid, n, threads):
-            dropped = wp.where(ints[i] == _ROW_SHIFTED, 1, 0)
-            change = dropped - shifted[wid, i]
-            if change != 0:
-                D[start + i * (ld + 1)] += wp.float32(change) * floats[diagonal_offset + i]
-                changed = 1
-            shifted[wid, i] = dropped
-        ints[rows + tid] = changed
-        _sync_threads()
-
-        # Keep the eigenvalue checked on an unchanged set as the reference of the next checks
+            shifted[wid, i] = wp.where(ints[i] == _ROW_SHIFTED, 1, 0)
         if tid == 0:
-            for k in range(1, threads):
-                changed = wp.max(changed, ints[rows + k])
-            reference[wid] = wp.where(changed == 0, eigenvalue[wid], wp.float32(0.0))
             initialized[wid] = 1
 
     return _shift_redundant_rows, float_size, int_size
 
 
 @cache
-def _make_check_kernel(permuted: bool):
+def _make_check_kernel():
     """
-    Create the kernel checking the shifted rows of each world from the Cholesky factor ``L`` of the shifted
-    and regularized matrix ``K``, stored with the row stride ``ld`` and permuted by ``perm`` if ``permuted``.
+    Create the kernel checking the shifted rows of each world from the Cholesky factor of its shifted block,
+    stored with a row stride of its dimension.
     """
     tile = _CHECK_TILE
     columns = _CHECK_COLUMNS
@@ -375,35 +500,15 @@ def _make_check_kernel(permuted: bool):
             wp.tile_upper_solve_inplace(wp.tile_transpose(L_diag), rhs)
             wp.tile_store(X_i, rhs, offset=(i, 0))
 
-    @wp.func
-    def original_row(perm: wp.array[wp.int32], vstart: wp.int32, h: wp.int32) -> wp.int32:
-        if wp.static(permuted):
-            return perm[vstart + h]
-        return h
-
-    @wp.func
-    def factor_row(inverse_perm: wp.array[wp.int32], vstart: wp.int32, row: wp.int32) -> wp.int32:
-        if wp.static(permuted):
-            return inverse_perm[vstart + row]
-        return row
-
     @wp.kernel(module="unique", enable_backward=False)
     def _check_shifted_rows(
         # Inputs:
-        dim: wp.array[wp.int32],
-        mio: wp.array[wp.int32],
-        vio: wp.array[wp.int32],
-        row_offset: wp.array[wp.int32],
         num_rows: wp.array[wp.int32],
-        ld: wp.array[wp.int32],
-        perm: wp.array[wp.int32],
-        inverse_perm: wp.array[wp.int32],
-        D: wp.array[wp.float32],
+        factor_dim: wp.array[wp.int32],
+        factor_mio: wp.array[wp.int32],
         L: wp.array[wp.float32],
         diagonal: wp.array2d[wp.float32],
         shifted: wp.array2d[wp.int32],
-        initialized: wp.array[wp.int32],
-        reference: wp.array[wp.float32],
         threshold: wp.float32,
         # Scratch:
         X: wp.array3d[wp.float32],
@@ -411,25 +516,19 @@ def _make_check_kernel(permuted: bool):
         column_rows: wp.array2d[wp.int32],
         # Outputs:
         pivot_rows: wp.array[wp.int32],
-        refactor_dim: wp.array[wp.int32],
         eigenvalue_out: wp.array[wp.float32],
     ):
         wid, tid = wp.tid()
         threads = wp.block_dim()
-        n = dim[wid]
         rows = num_rows[wid]
-        if rows == 0 or initialized[wid] == 0:
+        n = factor_dim[wid]
+        if n == 0:
             if tid == 0:
                 pivot_rows[wid] = rows
-                refactor_dim[wid] = wp.where(rows > 0, n, 0)
                 eigenvalue_out[wid] = 0.0
             return
-        offset = row_offset[wid]
-        start = mio[wid]
-        vstart = vio[wid]
         padded = ((n + tile - 1) // tile) * tile
-        stride = ld[wid]
-        L_i = wp.array(ptr=get_float32_array_offset_ptr(L, start), shape=(stride, stride), dtype=wp.float32)
+        L_i = wp.array(ptr=get_float32_array_offset_ptr(L, factor_mio[wid]), shape=(n, n), dtype=wp.float32)
         X_i = X[wid]
         V_i = V[wid]
 
@@ -441,7 +540,7 @@ def _make_check_kernel(permuted: bool):
             partial += value * value
         inv_norm = 1.0 / wp.sqrt(wp.tile_sum(wp.tile(partial))[0])
         count = wp.int32(0)
-        for i in range(tid, rows, threads):
+        for i in range(tid, n, threads):
             count += shifted[wid, i]
         num_shifted = wp.tile_sum(wp.tile(count))[0]
 
@@ -450,7 +549,6 @@ def _make_check_kernel(permuted: bool):
         slots = columns - 1
         passes = wp.max(_CHECK_ITERATIONS, (num_shifted + slots - 1) // slots)
         rayleigh = wp.float32(0.0)
-        correction = wp.float32(0.0)
         failed = wp.int32(0)
         for p in range(passes):
             iterate = p < _CHECK_ITERATIONS
@@ -458,19 +556,19 @@ def _make_check_kernel(permuted: bool):
                 h = k // columns
                 value = wp.float32(0.0)
                 if iterate and k - h * columns == 0 and h < n:
-                    o = original_row(perm, vstart, h)
-                    value = wp.sqrt(wp.max(D[start + o * (n + 1)], FLOAT32_EPS)) * V_i[h] * inv_norm
+                    K = diagonal[wid, h] + _row_shift(diagonal[wid, h], shifted[wid, h])
+                    value = wp.sqrt(wp.max(K, FLOAT32_EPS)) * V_i[h] * inv_norm
                 X_i[h, k - h * columns] = value
             if tid < columns:
                 column_rows[wid, tid] = -1
             _sync_threads()
             if tid == 0:
                 k = wp.int32(0)
-                for i in range(rows):
+                for i in range(n):
                     if shifted[wid, i] != 0:
                         c = 1 + k - p * slots
                         if c >= 1 and c < columns:
-                            X_i[factor_row(inverse_perm, vstart, offset + i), c] = 1.0
+                            X_i[i, c] = 1.0
                             column_rows[wid, c] = i
                         k += 1
             _sync_threads()
@@ -478,65 +576,41 @@ def _make_check_kernel(permuted: bool):
             backward(L_i, X_i, n, tid)
             _sync_threads()
 
-            # Accumulate the Rayleigh quotient of the inverse, and the regularization of the block rows
+            # Accumulate the Rayleigh quotient of the inverse of the Jacobi-scaled block
             if iterate:
                 quotient = wp.float32(0.0)
                 norm = wp.float32(0.0)
-                regularization = wp.float32(0.0)
                 for h in range(tid, n, threads):
-                    o = original_row(perm, vstart, h)
-                    K = wp.max(D[start + o * (n + 1)], FLOAT32_EPS)
+                    K = diagonal[wid, h] + _row_shift(diagonal[wid, h], shifted[wid, h])
                     x = V_i[h] * inv_norm
-                    z = wp.sqrt(K) * X_i[h, 0]
+                    z = wp.sqrt(wp.max(K, FLOAT32_EPS)) * X_i[h, 0]
                     quotient += x * z
                     norm += z * z
-                    i = o - offset
-                    if i >= 0 and i < rows:
-                        d = diagonal[wid, i]
-                        shift = wp.where(shifted[wid, i] != 0, wp.max(d, FLOAT32_EPS), wp.float32(0.0))
-                        regularization += x * x * (K - d - shift) / K
                     V_i[h] = z
                 rayleigh = wp.tile_sum(wp.tile(quotient))[0]
-                correction = wp.tile_sum(wp.tile(regularization))[0]
                 inv_norm = 1.0 / wp.sqrt(wp.tile_sum(wp.tile(norm))[0])
 
-            # A shifted row is independent if its Schur complement exceeds its shift and regularization
-            # NOTE: The Schur complement is the residual of a ridge regression of the row on the other rows,
-            # with the coefficients -u_o / u_s of the column u of the inverse. The penalty of the coefficients
-            # by the regularization of the other block rows is removed, but not by the shifts.
+            # A shifted row is independent if its Schur complement exceeds its shift
+            # NOTE: The Schur complement is the residual of a ridge regression of the row on the other rows, with
+            # the coefficients -u_o / u_s of the column u of the inverse, penalized by the shifts of the other rows.
             independent = wp.int32(0)
             if tid >= 1 and tid < columns:
                 i = column_rows[wid, tid]
                 if i >= 0:
-                    u_s = X_i[factor_row(inverse_perm, vstart, offset + i), tid]
-                    penalty = wp.float32(0.0)
-                    for h in range(n):
-                        j = original_row(perm, vstart, h) - offset
-                        if j >= 0 and j < rows and j != i:
-                            d = diagonal[wid, j]
-                            shift = wp.where(shifted[wid, j] != 0, wp.max(d, FLOAT32_EPS), wp.float32(0.0))
-                            u_o = X_i[h, tid]
-                            penalty += u_o * u_o * (D[start + (offset + j) * (n + 1)] - d - shift)
-                    o = offset + i
-                    d = diagonal[wid, i]
-                    schur = 1.0 / u_s - penalty / (u_s * u_s)
-                    residual = (schur - (D[start + o * (n + 1)] - d)) / wp.max(d, FLOAT32_EPS)
+                    d = wp.max(diagonal[wid, i], FLOAT32_EPS)
+                    residual = (1.0 / X_i[i, tid] - d) / d
                     if not (residual <= _SHIFTED_ROW_MARGIN * threshold):
                         independent = 1
             failed += wp.tile_sum(wp.tile(independent))[0]
 
-        # The kept rows are dependent if the unregularized eigenvalue is small, or much smaller than its reference
-        eigenvalue = 1.0 / rayleigh - correction
-        limit = threshold
-        if reference[wid] > 0.0:
-            limit = wp.min(threshold, _REFERENCE_MARGIN * reference[wid])
-        if not (eigenvalue >= limit):
+        # The kept rows are dependent if the smallest eigenvalue is small
+        eigenvalue = 1.0 / rayleigh
+        if not (eigenvalue >= threshold):
             failed += 1
 
-        # Select the world for a new elimination and refactorization
+        # Select the world for a new elimination
         if tid == 0:
             pivot_rows[wid] = wp.where(failed > 0, rows, 0)
-            refactor_dim[wid] = wp.where(failed > 0, n, 0)
             eigenvalue_out[wid] = eigenvalue
 
     return _check_shifted_rows
@@ -556,33 +630,31 @@ class RedundantRowShift:
     Schur complement diagonal over its original diagonal, i.e. the squared sine of the angle between
     the row and the span of the rows eliminated before it, so it does not depend on the row scaling.
     The rows whose relative pivot is below ``threshold`` are numerically redundant. Their pivot is shifted
-    by their original diagonal before the elimination proceeds, and the same shift is added to the
-    diagonal of the matrix.
+    by their original diagonal before the elimination proceeds, and the same shift is stored in :attr:`shifts`.
 
-    The shifted matrix is positive definite on the block and can be factorized in any order. Since each
-    shifted row lies in the span of the other rows of the block, the solutions of consistent systems
+    The matrix shifted by :attr:`shifts` is positive definite on the block and can be factorized in any order.
+    Since each shifted row lies in the span of the other rows of the block, the solutions of consistent systems
     with the shifted matrix carry no impulse on the shifted rows and solve the original system.
 
-    The elimination runs in float32 on a packed copy of the lower triangle of each block, with one thread
-    block per world, and does not synchronize with the host. On CUDA devices, the copy is kept in shared
-    memory if it fits, and in global memory otherwise.
+    The block is read from the matrices loaded with :meth:`load`, which :meth:`detect` shifts in-place, or
+    assembled from a block-sparse Jacobian with :meth:`assemble`. The elimination runs in float32 on a packed
+    copy of the lower triangle of each block, with one thread block per world, and does not synchronize with
+    the host. On CUDA devices, the copy is kept in shared memory if it fits, and in global memory otherwise.
 
-    Instead of repeating the elimination at every call with :meth:`apply`, the shifted rows of the last
-    elimination can be reused with :meth:`shift`, and checked with :meth:`check` from the Cholesky factor of
-    the shifted matrix. The check fails if the smallest eigenvalue of the Jacobi-scaled matrix, without its
-    regularization on the block, is below ``threshold``, i.e. if the kept rows became dependent, or if the
-    Schur complement of a shifted row exceeds ten times ``threshold`` relative to its diagonal, i.e. if the
-    shifted row became independent. :meth:`eliminate` then repeats the elimination of the failed worlds only.
-    The coupling of the block with the other rows can also lower the eigenvalue, e.g. with hyperstatic contacts,
-    which the elimination of the block cannot fix. So, when the elimination of a failed world keeps the same rows,
-    its eigenvalue becomes the reference of the next checks, which only fail below a tenth of it.
+    Instead of repeating the elimination at every call, :meth:`detect` can reuse the shifted rows of the last
+    elimination, and check them from the Cholesky factor of the shifted block with :meth:`check`. The check
+    fails if the smallest eigenvalue of the Jacobi-scaled shifted block is below ``threshold``, i.e. if the
+    kept rows became dependent, or if the Schur complement of a shifted row exceeds its shift by ten times
+    ``threshold`` relative to its diagonal, i.e. if the shifted row became independent. The elimination is
+    then repeated for the failed worlds only.
 
     Args:
         num_worlds: The number of worlds.
         max_rows: The largest number of rows of the block across worlds.
         threshold: The relative pivot below which a row is shifted. Must be in ``[0, 1)``.
-        block_dim: The number of threads per world. Must be a power of two of at least 32.
-        max_dim: The largest dimension of the matrices, required by :meth:`check`.
+        block_dim: The number of threads per world of the elimination. Must be a power of two of at least 32.
+        check: Whether to allocate the scratch of :meth:`check`.
+        sparse: Whether to allocate the blocks assembled by :meth:`assemble`.
         device: The device on which to allocate the scratch memory.
     """
 
@@ -592,7 +664,8 @@ class RedundantRowShift:
         max_rows: int,
         threshold: float,
         block_dim: int = 512,
-        max_dim: int = 0,
+        check: bool = False,
+        sparse: bool = False,
         device: wp.DeviceLike = None,
     ):
         if not 0.0 <= threshold < 1.0:
@@ -603,6 +676,7 @@ class RedundantRowShift:
         self.threshold = threshold
         self.block_dim = block_dim
         self.num_worlds = num_worlds
+        self.max_rows = max_rows
 
         # Keep the lower triangles in shared memory if they fit
         rows = max(max_rows, 1)
@@ -623,23 +697,39 @@ class RedundantRowShift:
 
         self.shifted = wp.zeros((num_worlds, rows), dtype=wp.int32, device=device)
         """Flags of the rows of each block shifted by the last elimination, of shape ``(num_worlds, max_rows)``."""
+        self.shifts = wp.zeros((num_worlds, rows), dtype=wp.float32, device=device)
+        """The diagonal shift of the rows of each block, of shape ``(num_worlds, max_rows)``."""
         self._diagonal = wp.zeros((num_worlds, rows), dtype=wp.float32, device=device)
         self._initialized = wp.zeros(num_worlds, dtype=wp.int32, device=device)
         self._eigenvalue = wp.zeros(num_worlds, dtype=wp.float32, device=device)
-        self._reference = wp.zeros(num_worlds, dtype=wp.float32, device=device)
-
         self.pivot_rows = wp.zeros(num_worlds, dtype=wp.int32, device=device)
         """The number of block rows of each world to eliminate again after the last check, zero if it passed."""
-        self.refactor_dim = wp.zeros(num_worlds, dtype=wp.int32, device=device)
-        """The dimension of each matrix to refactorize after the last check, zero if it passed."""
+
+        # Allocate the dense blocks of each world, with a row stride of ``max_rows``
+        self._block_mio = wp.array([w * rows * rows for w in range(num_worlds)], dtype=wp.int32, device=device)
+        self._block = None
+        if sparse:
+            self._block = wp.zeros(num_worlds * rows * rows, dtype=wp.float32, device=device)
+            self._block_ld = wp.full(num_worlds, rows, dtype=wp.int32, device=device)
+            self._block_offset = wp.zeros(num_worlds, dtype=wp.int32, device=device)
+            self._num_entries = wp.zeros((num_worlds, rows), dtype=wp.int32, device=device)
+            self._entries = wp.zeros((num_worlds, rows, _ROW_ENTRIES), dtype=wp.int32, device=device)
 
         # Allocate the scratch of the check
-        self._rhs = None
-        if max_dim > 0:
-            padded = ((max_dim + _CHECK_TILE - 1) // _CHECK_TILE) * _CHECK_TILE
+        self._factor = None
+        if check:
+            padded = ((rows + _CHECK_TILE - 1) // _CHECK_TILE) * _CHECK_TILE
+            self._factor = wp.zeros(num_worlds * rows * rows, dtype=wp.float32, device=device)
+            self._factor_dim = wp.zeros(num_worlds, dtype=wp.int32, device=device)
+            self._factor_kernel = make_llt_blocked_factorize_kernel(_FACTOR_BLOCK_SIZE)
             self._rhs = wp.zeros((num_worlds, padded, _CHECK_COLUMNS), dtype=wp.float32, device=device)
             self._iterate = wp.zeros((num_worlds, padded), dtype=wp.float32, device=device)
             self._column_rows = wp.zeros((num_worlds, _CHECK_COLUMNS), dtype=wp.int32, device=device)
+
+        # The block source of the last call to `load` or `assemble`
+        self._source: tuple | None = None
+        self._num_rows: wp.array[wp.int32] | None = None
+        self._shift_matrix = False
 
     def reset(self, world_mask: wp.array[wp.bool] | None = None):
         """
@@ -651,18 +741,18 @@ class RedundantRowShift:
         """
         if world_mask is None:
             self.shifted.zero_()
+            self.shifts.zero_()
             self._initialized.zero_()
-            self._reference.zero_()
         else:
             wp.launch(
                 _reset_shifted_rows,
                 dim=self.shifted.shape,
                 inputs=[world_mask],
-                outputs=[self.shifted, self._initialized, self._reference],
+                outputs=[self.shifted, self.shifts, self._initialized],
                 device=self.shifted.device,
             )
 
-    def apply(
+    def load(
         self,
         dim: wp.array[wp.int32],
         mio: wp.array[wp.int32],
@@ -671,146 +761,184 @@ class RedundantRowShift:
         D: wp.array[wp.float32],
     ):
         """
-        Shifts the diagonal of the numerically redundant rows of a diagonal block of each matrix in-place.
+        Selects a diagonal block of row-major dense matrices, which :meth:`detect` shifts in-place, and stores
+        its diagonal.
 
         Args:
             dim: The dimension of each matrix, of shape ``(num_worlds,)``.
-            mio: The index offset of each row-major matrix in ``D``, of shape ``(num_worlds,)``.
+            mio: The index offset of each matrix in ``D``, of shape ``(num_worlds,)``.
             row_offset: The first row of the block in each matrix, of shape ``(num_worlds,)``.
             num_rows: The number of rows of the block in each matrix, of shape ``(num_worlds,)``.
             D: The flat array of the matrices.
         """
-        self.shift(dim, mio, row_offset, num_rows, D)
-        self.eliminate(dim, mio, row_offset, num_rows, D)
-
-    def shift(
-        self,
-        dim: wp.array[wp.int32],
-        mio: wp.array[wp.int32],
-        row_offset: wp.array[wp.int32],
-        num_rows: wp.array[wp.int32],
-        D: wp.array[wp.float32],
-    ):
-        """
-        Shifts the diagonal of the rows shifted by the last elimination in-place, and stores the diagonal of the
-        block of each matrix for :meth:`eliminate` and :meth:`check`.
-
-        Args:
-            dim: The dimension of each matrix, of shape ``(num_worlds,)``.
-            mio: The index offset of each row-major matrix in ``D``, of shape ``(num_worlds,)``.
-            row_offset: The first row of the block in each matrix, of shape ``(num_worlds,)``.
-            num_rows: The number of rows of the block in each matrix, of shape ``(num_worlds,)``.
-            D: The flat array of the matrices.
-        """
+        self._source = (mio, dim, row_offset, D)
+        self._num_rows = num_rows
+        self._shift_matrix = True
         wp.launch(
-            _shift_stored_rows,
+            _store_block_diagonal,
             dim=self.shifted.shape,
-            inputs=[dim, mio, row_offset, num_rows, self.shifted],
-            outputs=[D, self._diagonal],
+            inputs=[*self._source[:3], num_rows, D],
+            outputs=[self._diagonal],
             device=D.device,
         )
 
-    def eliminate(
+    def assemble(
         self,
-        dim: wp.array[wp.int32],
-        mio: wp.array[wp.int32],
         row_offset: wp.array[wp.int32],
         num_rows: wp.array[wp.int32],
-        D: wp.array[wp.float32],
+        jacobian: BlockSparseMatrices,
+        bodies_offset: wp.array[wp.int32],
+        inv_m: wp.array[wp.float32],
+        inv_I: wp.array[wp.mat33f],
+        preconditioner: wp.array[wp.float32] | None = None,
     ):
         """
-        Repeats the elimination of the blocks shifted by :meth:`shift`, and updates their shifts in-place.
-
-        Only the diagonal stored by :meth:`shift` and the strict lower triangle of each block are read, so the
-        diagonal of ``D`` may hold additional terms, e.g. a regularization. Worlds with zero rows are skipped.
+        Assembles the block ``P J M^-1 J^T P`` of the rows of each world from its block-sparse Jacobian ``J``,
+        whose rows have at most two non-zero blocks, and stores its diagonal.
 
         Args:
-            dim: The dimension of each matrix, of shape ``(num_worlds,)``.
-            mio: The index offset of each row-major matrix in ``D``, of shape ``(num_worlds,)``.
-            row_offset: The first row of the block in each matrix, of shape ``(num_worlds,)``.
-            num_rows: The number of rows of the block to eliminate in each matrix, of shape ``(num_worlds,)``,
-                e.g. :attr:`pivot_rows`.
-            D: The flat array of the matrices.
+            row_offset: The first row of the block in each Jacobian, of shape ``(num_worlds,)``.
+            num_rows: The number of rows of the block in each Jacobian, of shape ``(num_worlds,)``.
+            jacobian: The block-sparse Jacobians, with ``1 x 6`` blocks per body.
+            bodies_offset: The index of the first body of each world, of shape ``(num_worlds,)``.
+            inv_m: The inverse mass of each body.
+            inv_I: The inverse inertia of each body.
+            preconditioner: The diagonal ``P`` of each world, indexed by the row start of the Jacobians,
+                or ``None`` for the identity.
         """
+        if self._block is None:
+            raise ValueError("Assembling the blocks requires `sparse`.")
+        rows = max(self.max_rows, 1)
+        self._source = (self._block_mio, self._block_ld, self._block_offset, self._block)
+        self._num_rows = num_rows
+        self._shift_matrix = False
+        device = self._block.device
+        self._num_entries.zero_()
+        wp.launch(
+            _collect_row_entries,
+            dim=(self.num_worlds, jacobian.max_of_num_nzb),
+            inputs=[row_offset, num_rows, jacobian.nzb_start, jacobian.num_nzb, jacobian.nzb_coords],
+            outputs=[self._num_entries, self._entries],
+            device=device,
+        )
+        wp.launch(
+            _assemble_block,
+            dim=(self.num_worlds, rows, rows),
+            inputs=[
+                row_offset,
+                num_rows,
+                jacobian.row_start,
+                bodies_offset,
+                inv_m,
+                inv_I,
+                jacobian.nzb_coords,
+                jacobian.nzb_values,
+                preconditioner,
+                self._num_entries,
+                self._entries,
+                self._block_mio,
+                rows,
+            ],
+            outputs=[self._block, self._diagonal],
+            device=device,
+        )
+
+    def detect(self, reuse: bool = False):
+        """
+        Eliminates the blocks selected by the last :meth:`load` or :meth:`assemble`, or only those failing
+        :meth:`check` if ``reuse``, and updates :attr:`shifts`, which are added to the diagonal of the loaded
+        matrices.
+
+        Args:
+            reuse: Whether to keep the shifted rows of the last elimination where they pass the check.
+        """
+        if self._source is None:
+            raise ValueError("The blocks must be loaded or assembled first.")
+        num_rows = self._num_rows
+        if reuse:
+            self.check()
+            num_rows = self.pivot_rows
         wp.launch_tiled(
             self._kernel,
             dim=self.num_worlds,
             inputs=[
-                dim,
-                mio,
-                row_offset,
+                *self._source[:3],
                 num_rows,
                 wp.float32(self.threshold),
                 self._diagonal,
-                self._eigenvalue,
+                self._source[3],
                 self._triangle,
                 self._floats,
                 self._ints,
             ],
-            outputs=[D, self.shifted, self._initialized, self._reference],
+            outputs=[self.shifted, self._initialized],
             block_dim=self.block_dim,
-            device=D.device,
+            device=self.shifted.device,
+        )
+        wp.launch(
+            _update_shifts,
+            dim=self.shifted.shape,
+            inputs=[*self._source[:3], self._num_rows, self.shifted, self._diagonal, self._shift_matrix],
+            outputs=[self.shifts, self._source[3]],
+            device=self.shifted.device,
         )
 
-    def check(
-        self,
-        dim: wp.array[wp.int32],
-        mio: wp.array[wp.int32],
-        vio: wp.array[wp.int32],
-        row_offset: wp.array[wp.int32],
-        num_rows: wp.array[wp.int32],
-        D: wp.array[wp.float32],
-        L: wp.array[wp.float32],
-        ld: wp.array[wp.int32],
-        perm: wp.array[wp.int32] | None = None,
-        inverse_perm: wp.array[wp.int32] | None = None,
-    ):
+    def check(self):
         """
-        Checks the rows shifted by :meth:`shift` from the Cholesky factors of the shifted matrices, and selects
-        the worlds that fail the check, or that were never eliminated, in :attr:`pivot_rows` and
-        :attr:`refactor_dim`.
-
-        Args:
-            dim: The dimension of each matrix, of shape ``(num_worlds,)``.
-            mio: The index offset of each row-major matrix in ``D`` and ``L``, of shape ``(num_worlds,)``.
-            vio: The index offset of the rows of each matrix in ``perm``, of shape ``(num_worlds,)``.
-            row_offset: The first row of the block in each matrix, of shape ``(num_worlds,)``.
-            num_rows: The number of rows of the block in each matrix, of shape ``(num_worlds,)``.
-            D: The flat array of the shifted matrices, with any regularization.
-            L: The flat array of the lower Cholesky factors of the matrices of ``D``.
-            ld: The row stride of each factor in ``L``, of shape ``(num_worlds,)``.
-            perm: The original row of each row of the factors, if they factorize ``P D P^T``.
-            inverse_perm: The row of the factors of each original row, if ``perm`` is given.
+        Checks the rows shifted by the last elimination on the blocks selected by the last :meth:`load` or
+        :meth:`assemble`, and selects the worlds that fail the check, or that were never eliminated,
+        in :attr:`pivot_rows`.
         """
-        if self._rhs is None:
-            raise ValueError("Checking the shifted rows requires `max_dim`.")
-        permuted = perm is not None
+        if self._factor is None:
+            raise ValueError("Checking the shifted rows requires `check`.")
+        if self._source is None:
+            raise ValueError("The blocks must be loaded or assembled first.")
+        rows = max(self.max_rows, 1)
+        device = self._factor.device
 
-        # The permutations are not read by the unpermuted kernel
-        wp.launch_tiled(
-            _make_check_kernel(permuted),
-            dim=self.num_worlds,
+        # Copy and factorize the shifted blocks
+        wp.launch(
+            _copy_shifted_block,
+            dim=(self.num_worlds, rows, rows),
             inputs=[
-                dim,
-                mio,
-                vio,
-                row_offset,
-                num_rows,
-                ld,
-                perm if permuted else dim,
-                inverse_perm if permuted else dim,
-                D,
-                L,
+                *self._source[:3],
+                self._num_rows,
+                self._source[3],
                 self._diagonal,
                 self.shifted,
                 self._initialized,
-                self._reference,
+                self._block_mio,
+            ],
+            outputs=[self._factor_dim, self._factor],
+            device=device,
+        )
+        llt_blocked_factorize(
+            kernel=self._factor_kernel,
+            dim=self._factor_dim,
+            mio=self._block_mio,
+            A=self._factor,
+            L=self._factor,
+            num_blocks=self.num_worlds,
+            block_dim=_FACTOR_BLOCK_DIM,
+        )
+
+        # Check the shifted rows from the factors
+        wp.launch_tiled(
+            _make_check_kernel(),
+            dim=self.num_worlds,
+            inputs=[
+                self._num_rows,
+                self._factor_dim,
+                self._block_mio,
+                self._factor,
+                self._diagonal,
+                self.shifted,
                 wp.float32(self.threshold),
                 self._rhs,
                 self._iterate,
                 self._column_rows,
             ],
-            outputs=[self.pivot_rows, self.refactor_dim, self._eigenvalue],
+            outputs=[self.pivot_rows, self._eigenvalue],
             block_dim=_CHECK_BLOCK_DIM,
-            device=D.device,
+            device=device,
         )

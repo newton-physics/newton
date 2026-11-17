@@ -403,6 +403,9 @@ def _update_delassus_proximal_regularization_sparse(
     solver_penalty: wp.array[PADMMPenalty],
     solver_status: wp.array[PADMMStatus],
     solver_state_rho_scale: wp.array[wp.float32],
+    shift_row_offset: wp.array[wp.int32],
+    shift_num_rows: wp.array[wp.int32],
+    shifts: wp.array2d[wp.float32],
     # Outputs:
     delassus_eta: wp.array[wp.float32],
 ):
@@ -428,7 +431,14 @@ def _update_delassus_proximal_regularization_sparse(
         return
 
     # Set the proximal regularization term: eta + rho
-    delassus_eta[mio + tid] = solver_config[wid].eta + solver_penalty[wid].rho * solver_state_rho_scale[mio + tid]
+    eta = solver_config[wid].eta + solver_penalty[wid].rho * solver_state_rho_scale[mio + tid]
+
+    # Add the shifts of the redundant rows, if any
+    if shifts:
+        row = tid - shift_row_offset[wid]
+        if row >= 0 and row < shift_num_rows[wid]:
+            eta += shifts[wid, row]
+    delassus_eta[mio + tid] = eta
 
 
 @wp.kernel

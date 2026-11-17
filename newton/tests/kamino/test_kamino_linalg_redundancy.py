@@ -60,37 +60,18 @@ class RedundantProblem:
         self.row_offset = wp.array(offsets, dtype=wp.int32, device=device)
         self.rows = wp.array(num_rows, dtype=wp.int32, device=device)
         self.D = wp.array(flat, dtype=wp.float32, device=device)
+        self.D_in = flat.copy()
         self.maxdim = maxdim
 
     def shifted_matrix(self, w: int) -> np.ndarray:
         n, start = self.dims[w], w * self.maxdim * self.maxdim
         return self.D.numpy()[start : start + n * n].reshape(n, n)
 
-    def regularize_and_factorize(self, eta: float, perms: list[np.ndarray] | None = None):
-        """
-        Adds ``eta`` times the diagonal to the matrices in-place, and returns the flat lower Cholesky factors
-        of the matrices, or of the matrices permuted by ``perms``, with the flat permutations and their inverses.
-        """
-        D = self.D.numpy()
-        L = np.zeros_like(D)
-        perm = np.zeros(len(self.dims) * self.maxdim, dtype=np.int32)
-        inverse = np.zeros_like(perm)
-        for w, n in enumerate(self.dims):
-            start, vstart = w * self.maxdim * self.maxdim, w * self.maxdim
-            K = D[start : start + n * n].reshape(n, n).astype(np.float64)
-            K += eta * np.diag(np.diag(K))
-            D[start : start + n * n] = K.ravel()
-            p = np.arange(n) if perms is None else perms[w]
-            L[start : start + n * n] = np.linalg.cholesky(K[np.ix_(p, p)]).ravel()
-            perm[vstart : vstart + n] = p
-            inverse[vstart + p] = np.arange(n)
-        self.D.assign(D)
-        device = self.D.device
-        return (
-            wp.array(L, dtype=wp.float32, device=device),
-            wp.array(perm, dtype=wp.int32, device=device),
-            wp.array(inverse, dtype=wp.int32, device=device),
-        )
+    def detect(self, shift: RedundantRowShift, reuse: bool = False):
+        """Restores the original matrices, and shifts their redundant rows."""
+        self.D.assign(self.D_in)
+        shift.load(self.dim, self.mio, self.row_offset, self.rows, self.D)
+        shift.detect(reuse)
 
 
 class TestRedundantRowShift(unittest.TestCase):
@@ -105,18 +86,20 @@ class TestRedundantRowShift(unittest.TestCase):
             dims=[12, 20, 30], offsets=[0, 3, 5], num_rows=[8, 12, 20], num_redundant=[2, 0, 5], device=self.device
         )
         shift = RedundantRowShift(len(problem.dims), problem.max_rows, threshold=1e-5, device=self.device)
-        shift.apply(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
+        problem.detect(shift)
         shifted = shift.shifted.numpy()
+        shifts = shift.shifts.numpy()
         for w, D in enumerate(problem.matrices):
             offset, rows = problem.offsets[w], problem.num_rows[w]
             block = slice(offset, offset + rows)
             expected = reference_shifted_rows(D[block, block], 1e-5)
             np.testing.assert_array_equal(shifted[w, :rows].astype(bool), expected)
+            np.testing.assert_array_equal(shifts[w, :rows], np.where(expected, np.diag(D)[block], 0.0))
 
             # Only the diagonal of the shifted rows changes, by its original value
             difference = problem.shifted_matrix(w).astype(np.float64) - D
             change = np.zeros(len(D))
-            change[offset : offset + rows] = np.where(expected, np.diag(D)[block], 0.0)
+            change[block] = shifts[w, :rows]
             np.testing.assert_allclose(difference, np.diag(change), rtol=1e-6, atol=0.0)
 
     def test_01_shifted_system_solves_original(self):
@@ -125,7 +108,7 @@ class TestRedundantRowShift(unittest.TestCase):
             dims=[16, 24], offsets=[2, 0], num_rows=[10, 18], num_redundant=[3, 4], device=self.device
         )
         shift = RedundantRowShift(len(problem.dims), problem.max_rows, threshold=1e-5, device=self.device)
-        shift.apply(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
+        problem.detect(shift)
         shifted = shift.shifted.numpy()
         rng = np.random.default_rng(3)
         for w, matrix in enumerate(problem.matrices):
@@ -143,10 +126,9 @@ class TestRedundantRowShift(unittest.TestCase):
         problem = RedundantProblem(
             dims=[10, 8], offsets=[1, 0], num_rows=[6, 0], num_redundant=[0, 0], device=self.device
         )
-        D_in = problem.D.numpy().copy()
         shift = RedundantRowShift(len(problem.dims), problem.max_rows, threshold=1e-5, device=self.device)
-        shift.apply(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
-        np.testing.assert_array_equal(problem.D.numpy(), D_in)
+        problem.detect(shift)
+        np.testing.assert_array_equal(problem.D.numpy(), problem.D_in)
         self.assertEqual(int(shift.shifted.numpy().sum()), 0)
 
     def test_03_shared_and_global_triangles(self):
@@ -156,11 +138,16 @@ class TestRedundantRowShift(unittest.TestCase):
                 problem = RedundantProblem(
                     dims=[rows + 20], offsets=[10], num_rows=[rows], num_redundant=[6], device=self.device
                 )
-                shift = RedundantRowShift(1, rows, threshold=1e-5, device=self.device)
+                shift = RedundantRowShift(1, rows, threshold=1e-5, check=True, device=self.device)
                 self.assertEqual(shift.shared_triangle, shared and wp.get_device(self.device).is_cuda)
-                shift.apply(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
+                problem.detect(shift)
                 block = slice(10, 10 + rows)
                 expected = reference_shifted_rows(problem.matrices[0][block, block], 1e-5)
+                np.testing.assert_array_equal(shift.shifted.numpy()[0].astype(bool), expected)
+
+                # Check that the shifted rows pass the check
+                problem.detect(shift, reuse=True)
+                self.assertEqual(int(shift.pivot_rows.numpy()[0]), 0)
                 np.testing.assert_array_equal(shift.shifted.numpy()[0].astype(bool), expected)
 
     def test_04_graph_capture(self):
@@ -168,16 +155,19 @@ class TestRedundantRowShift(unittest.TestCase):
         if not wp.get_device(self.device).is_cuda:
             self.skipTest("Requires a CUDA device")
         problem = RedundantProblem(dims=[12], offsets=[0], num_rows=[8], num_redundant=[2], device=self.device)
-        D_in = problem.D.numpy().copy()
-        shift = RedundantRowShift(1, problem.max_rows, threshold=1e-5, device=self.device)
-        shift.apply(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
-        expected = problem.D.numpy().copy()
-        problem.D.assign(D_in)
-        with wp.ScopedCapture(device=self.device) as capture:
-            shift.apply(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
-        problem.D.assign(D_in)
-        wp.capture_launch(capture.graph)
-        np.testing.assert_array_equal(problem.D.numpy(), expected)
+        for reuse in (False, True):
+            with self.subTest(reuse=reuse):
+                shift = RedundantRowShift(1, problem.max_rows, threshold=1e-5, check=reuse, device=self.device)
+                problem.detect(shift, reuse)
+                expected = problem.D.numpy().copy()
+                shift.reset()
+                problem.D.assign(problem.D_in)
+                with wp.ScopedCapture(device=self.device) as capture:
+                    shift.load(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
+                    shift.detect(reuse)
+                problem.D.assign(problem.D_in)
+                wp.capture_launch(capture.graph)
+                np.testing.assert_array_equal(problem.D.numpy(), expected)
 
 
 class TestRedundantRowCheck(unittest.TestCase):
@@ -188,122 +178,85 @@ class TestRedundantRowCheck(unittest.TestCase):
         self.problem = RedundantProblem(
             dims=[30, 40, 50], offsets=[4, 0, 10], num_rows=[20, 30, 36], num_redundant=[3, 5, 6], device=self.device
         )
-        problem = self.problem
-        self.D_in = problem.D.numpy().copy()
-        self.vio = wp.array([w * problem.maxdim for w in range(3)], dtype=wp.int32, device=self.device)
-        self.shift = RedundantRowShift(3, problem.max_rows, threshold=1e-5, max_dim=problem.maxdim, device=self.device)
-        self.shift.apply(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
+        self.shift = RedundantRowShift(3, self.problem.max_rows, threshold=1e-5, check=True, device=self.device)
+        self.problem.detect(self.shift)
         self.reference = self.shift.shifted.numpy().copy()
-        rng = np.random.default_rng(5)
-        self.perms = [rng.permutation(n) for n in problem.dims]
 
-    def check(self, flags: np.ndarray, permuted: bool = False, eta: float = 1e-5) -> np.ndarray:
-        """Shifts the given rows of the original matrices, factorizes them, and returns the worlds failing the check."""
+    def check(self, flags: np.ndarray) -> np.ndarray:
+        """Checks the given shifted rows of the original matrices, and returns the worlds failing the check."""
         problem = self.problem
-        problem.D.assign(self.D_in)
+        problem.D.assign(problem.D_in)
         self.shift.shifted.assign(flags)
-        self.shift.shift(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
-        L, perm, inverse = problem.regularize_and_factorize(eta, self.perms if permuted else None)
-        self.shift.check(
-            problem.dim,
-            problem.mio,
-            self.vio,
-            problem.row_offset,
-            problem.rows,
-            problem.D,
-            L,
-            problem.dim,
-            perm if permuted else None,
-            inverse if permuted else None,
-        )
+        self.shift.load(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
+        self.shift.check()
         pivot_rows = self.shift.pivot_rows.numpy()
         np.testing.assert_array_equal(pivot_rows, np.where(pivot_rows > 0, problem.num_rows, 0))
-        np.testing.assert_array_equal(self.shift.refactor_dim.numpy(), np.where(pivot_rows > 0, problem.dims, 0))
         return pivot_rows > 0
 
     def test_00_valid_rows_pass(self):
-        """The rows shifted by the elimination pass the check, with and without a permutation of the factors."""
-        for permuted in (False, True):
-            with self.subTest(permuted=permuted):
-                np.testing.assert_array_equal(self.check(self.reference, permuted), [False] * 3)
+        """The rows shifted by the elimination pass the check."""
+        np.testing.assert_array_equal(self.check(self.reference), [False] * 3)
 
     def test_01_dependent_kept_rows_fail(self):
         """Keeping a redundant row makes the kept rows dependent and fails the check."""
         rng = np.random.default_rng(1)
-        for permuted in (False, True):
-            with self.subTest(permuted=permuted):
+        for trial in range(5):
+            with self.subTest(trial=trial):
                 flags = self.reference.copy()
                 for w in range(3):
                     flags[w, rng.choice(np.flatnonzero(flags[w]))] = 0
-                np.testing.assert_array_equal(self.check(flags, permuted), [True] * 3)
+                np.testing.assert_array_equal(self.check(flags), [True] * 3)
 
     def test_02_independent_shifted_rows_fail(self):
         """Shifting a kept row, which is independent of the other kept rows, fails the check."""
         rng = np.random.default_rng(2)
-        for permuted in (False, True):
-            with self.subTest(permuted=permuted):
+        for trial in range(5):
+            with self.subTest(trial=trial):
                 flags = self.reference.copy()
                 for w in range(3):
                     kept = np.flatnonzero(flags[w, : self.problem.num_rows[w]] == 0)
                     flags[w, rng.choice(kept)] = 1
-                np.testing.assert_array_equal(self.check(flags, permuted), [True] * 3)
+                np.testing.assert_array_equal(self.check(flags), [True] * 3)
 
     def test_03_eliminate_failed_worlds(self):
         """Only the worlds failing the check are eliminated again, which restores their shifts."""
         problem = self.problem
         flags = self.reference.copy()
         flags[1, np.flatnonzero(flags[1])[0]] = 0
-        np.testing.assert_array_equal(self.check(flags), [False, True, False])
-        D_checked = problem.D.numpy().copy()
-        self.shift.eliminate(problem.dim, problem.mio, problem.row_offset, self.shift.pivot_rows, problem.D)
+        self.shift.shifted.assign(flags)
+        problem.detect(self.shift, reuse=True)
+        np.testing.assert_array_equal(self.shift.pivot_rows.numpy() > 0, [False, True, False])
         np.testing.assert_array_equal(self.shift.shifted.numpy(), self.reference)
 
-        # Only the diagonal of the restored row changes, by its original value
-        difference = problem.D.numpy().astype(np.float64) - D_checked
-        row = problem.offsets[1] + np.flatnonzero(flags[1] != self.reference[1])[0]
-        start = problem.maxdim * problem.maxdim
-        expected = np.zeros_like(difference)
-        expected[start + row * (problem.dims[1] + 1)] = self.D_in[start + row * (problem.dims[1] + 1)]
-        np.testing.assert_allclose(difference, expected, rtol=1e-6, atol=0.0)
+        # Only the diagonal of the shifted rows changes, by its original value
+        for w, D in enumerate(problem.matrices):
+            offset, rows = problem.offsets[w], problem.num_rows[w]
+            change = np.zeros(len(D))
+            change[offset : offset + rows] = np.where(self.reference[w, :rows], np.diag(D)[offset : offset + rows], 0)
+            difference = problem.shifted_matrix(w).astype(np.float64) - D
+            np.testing.assert_allclose(difference, np.diag(change), rtol=1e-6, atol=0.0)
 
-    def test_04_reference_of_unchanged_rows(self):
-        """Valid rows failing the check because of the other rows pass the next checks, until they become dependent."""
+    def test_04_never_eliminated_worlds_fail(self):
+        """The worlds never eliminated, or reset, fail the check."""
+        self.shift.reset()
+        np.testing.assert_array_equal(self.check(self.reference), [True] * 3)
+        self.problem.detect(self.shift)
+        mask = wp.array([False, True, False], dtype=wp.bool, device=self.device)
+        self.shift.reset(mask)
+        np.testing.assert_array_equal(self.check(self.reference), [False, True, False])
+
+    def test_05_coupling_with_other_rows(self):
+        """The check only depends on the block, not on its coupling with the other rows."""
         self.problem = RedundantProblem(
-            dims=[40], offsets=[4], num_rows=[24], num_redundant=[4], device=self.device, coupling=1e-2
+            dims=[40], offsets=[4], num_rows=[24], num_redundant=[4], device=self.device, coupling=1e-3
         )
-        problem = self.problem
-        self.D_in = problem.D.numpy().copy()
-        self.vio = wp.zeros(1, dtype=wp.int32, device=self.device)
-        self.shift = RedundantRowShift(1, problem.max_rows, threshold=1e-5, max_dim=problem.maxdim, device=self.device)
-        self.shift.apply(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
+        self.shift = RedundantRowShift(1, self.problem.max_rows, threshold=1e-5, check=True, device=self.device)
+        self.problem.detect(self.shift)
         reference = self.shift.shifted.numpy().copy()
-        self.perms = [np.random.default_rng(4).permutation(40)]
-
-        for permuted in (False, True):
-            with self.subTest(permuted=permuted):
-                self.shift.reset()
-                self.shift.shifted.assign(reference)
-                self.shift._initialized.fill_(1)
-
-                # Check that the valid rows fail, and that the elimination keeps them as the reference
-                self.assertTrue(self.check(reference, permuted, eta=1e-6)[0])
-                eigenvalue = float(self.shift._eigenvalue.numpy()[0])
-                self.assertGreater(eigenvalue, 0.0)
-                self.assertLess(eigenvalue, 1e-5)
-                self.shift.eliminate(problem.dim, problem.mio, problem.row_offset, self.shift.pivot_rows, problem.D)
-                np.testing.assert_array_equal(self.shift.shifted.numpy(), reference)
-                self.assertEqual(float(self.shift._reference.numpy()[0]), eigenvalue)
-
-                # Check that the same rows now pass, but not with a kept redundant row
-                self.assertFalse(self.check(reference, permuted, eta=1e-6)[0])
-                flags = reference.copy()
-                flags[0, np.flatnonzero(flags[0])[0]] = 0
-                self.assertTrue(self.check(flags, permuted, eta=1e-6)[0])
-
-                # Check that a reset clears the reference
-                self.shift.reset()
-                self.shift._initialized.fill_(1)
-                self.assertTrue(self.check(reference, permuted, eta=1e-6)[0])
+        self.assertFalse(self.check(reference)[0])
+        flags = reference.copy()
+        flags[0, np.flatnonzero(flags[0])[0]] = 0
+        self.assertTrue(self.check(flags)[0])
 
 
 if __name__ == "__main__":

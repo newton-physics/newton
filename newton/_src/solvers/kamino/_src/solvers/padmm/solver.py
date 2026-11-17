@@ -21,7 +21,7 @@ from ...core.size import SizeKamino
 from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.limits import LimitsKamino
-from ...linalg import LLTBlockedRCMSolver, LLTBlockedSolver, RedundantRowShift
+from ...linalg import RedundantRowShift
 from ...utils.tile import get_block_dim, get_tile_size
 from .kernels import (
     _apply_dual_preconditioner_to_solution,
@@ -130,7 +130,7 @@ class PADMMSolver:
                 This setting is intended only for analysis and debugging purposes, as it
                 will increase memory consumption and reduce wall-clock time.
             problem: The dual problem to be solved, if known at construction.
-                Allows checking at construction that the options support the problem.
+                Required to drop the redundant joint constraints of sparse problems.
         """
 
         # Declare the internal solver config cache
@@ -237,6 +237,7 @@ class PADMMSolver:
                 will increase memory consumption and reduce wall-clock time.
             problem: The dual problem to be solved, if known at allocation.
                 Subsequent solves must then be performed on the same problem.
+                Required to drop the redundant joint constraints of sparse problems.
         """
 
         # Ensure the model is valid
@@ -312,8 +313,6 @@ class PADMMSolver:
         self._redundant_joints = None
         tolerance = self._config[0].redundant_joint_tolerance
         if tolerance > 0.0:
-            if problem is not None and problem.sparse:
-                raise ValueError("Dropping redundant joint constraints requires dense dynamics.")
             self._kinematic_cts_offset = model.info.joint_kinematic_cts_group_offset
             self._num_kinematic_cts = model.info.num_joint_kinematic_cts
             self._reuse_redundant_joints = self._config[0].redundant_joint_reuse
@@ -321,7 +320,8 @@ class PADMMSolver:
                 num_worlds=self._size.num_worlds,
                 max_rows=self._size.max_of_num_kinematic_joint_cts,
                 threshold=tolerance,
-                max_dim=self._size.max_of_max_total_cts if self._reuse_redundant_joints else 0,
+                check=self._reuse_redundant_joints,
+                sparse=problem is not None and problem.sparse,
                 device=self._device,
             )
 
@@ -464,8 +464,10 @@ class PADMMSolver:
         """
         if self._problem is not None and problem is not self._problem:
             raise ValueError("The problem must be the one provided to `finalize()`.")
-        if self._redundant_joints is not None and problem.sparse:
-            raise ValueError("Dropping redundant joint constraints requires dense dynamics.")
+        if self._redundant_joints is not None and problem.sparse and self._problem is None:
+            raise ValueError(
+                "Dropping redundant joint constraints of sparse problems requires the problem at `finalize()`."
+            )
 
         # Pass the PADMM-owned tolerance array to the iterative linear solver (if present), so the
         # inexact-ADMM tolerance schedule (set in the convergence kernel) drives the inner solve.
@@ -602,7 +604,9 @@ class PADMMSolver:
         )
 
     def _update_sparse_regularization(self, problem: DualProblem):
-        """Propagate eta + rho to the sparse Delassus diagonal regularization."""
+        """Propagate eta + rho, and the shifts of the redundant joint rows, to the sparse Delassus diagonal
+        regularization."""
+        detection = self._redundant_joints
         wp.launch(
             kernel=_update_delassus_proximal_regularization_sparse,
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
@@ -613,6 +617,9 @@ class PADMMSolver:
                 self._data.penalty,
                 self._data.status,
                 self._data.state.rho_scale,
+                self._kinematic_cts_offset,
+                self._num_kinematic_cts,
+                detection.shifts if detection is not None else None,
                 problem.delassus._eta,
             ],
             device=self.device,
@@ -644,7 +651,22 @@ class PADMMSolver:
         Args:
             problem: The dual forward dynamics problem to be solved.
         """
+        detection = self._redundant_joints
         if problem.sparse:
+            # Detect the redundant kinematic joint constraints from the assembled kinematic block
+            if detection is not None:
+                delassus = problem.delassus
+                detection.assemble(
+                    self._kinematic_cts_offset,
+                    self._num_kinematic_cts,
+                    delassus.constraint_jacobian,
+                    delassus._model.info.bodies_offset,
+                    delassus._model.bodies.inv_m_i,
+                    delassus._data.bodies.inv_I_i,
+                    problem.data.P,
+                )
+                detection.detect(self._reuse_redundant_joints)
+
             self._update_sparse_regularization(problem)
             # Let a raw-Jacobian linear solver (e.g. the fused single-kernel CR) rebuild its
             # per-step index structures here, before the (possibly graph-captured) iteration loop,
@@ -652,14 +674,10 @@ class PADMMSolver:
             problem._delassus._solver.prepare_solve()
         else:
             # Drop the redundant kinematic joint constraints from the bare Delassus matrix
-            solver = problem._delassus._solver
-            reuse = self._reuse_redundant_joints and isinstance(solver, (LLTBlockedSolver, LLTBlockedRCMSolver))
-            if self._redundant_joints is not None:
-                args = (problem.data.dim, problem.data.mio, self._kinematic_cts_offset, self._num_kinematic_cts)
-                if reuse:
-                    self._redundant_joints.shift(*args, problem.data.D)
-                else:
-                    self._redundant_joints.apply(*args, problem.data.D)
+            if detection is not None:
+                data = problem.data
+                detection.load(data.dim, data.mio, self._kinematic_cts_offset, self._num_kinematic_cts, data.D)
+                detection.detect(self._reuse_redundant_joints)
 
             # Update the proximal regularization term in the Delassus matrix
             wp.launch(
@@ -681,27 +699,6 @@ class PADMMSolver:
 
             # Compute Cholesky/LDLT factorization of the Delassus matrix
             problem._delassus.compute(reset_to_zero=True)
-
-            # Drop the redundant joint constraints again where the reused ones fail the check
-            if self._redundant_joints is not None and reuse:
-                data = problem.data
-                permuted = isinstance(solver, LLTBlockedRCMSolver)
-                self._redundant_joints.check(
-                    data.dim,
-                    data.mio,
-                    data.vio,
-                    self._kinematic_cts_offset,
-                    self._num_kinematic_cts,
-                    data.D,
-                    solver.L,
-                    solver.stride,
-                    solver.P if permuted else None,
-                    solver.inv_P if permuted else None,
-                )
-                self._redundant_joints.eliminate(
-                    data.dim, data.mio, self._kinematic_cts_offset, self._redundant_joints.pivot_rows, data.D
-                )
-                solver.refactorize(data.D, self._redundant_joints.refactor_dim)
 
     def _step(self, problem: DualProblem):
         """

@@ -747,18 +747,19 @@ class PADMMSolverConfig:
     dropped rows then carry no impulse, while the other rows still enforce their constraints. The dropped rows
     follow the changes of the redundancies across the configurations of the system, see
     `redundant_joint_reuse`. The implicit joint dynamics rows are never dropped.\n
-    Only supported by dense dynamics. The setting of the first world applies to all worlds.
+    With sparse dynamics, the kinematic joint block of the Delassus matrix is assembled from the constraint
+    Jacobian, and the doubled diagonal is added to the regularization of the linear solver.
+    The setting of the first world applies to all worlds.
     Must be in the range [0, 1). Defaults to `0.0`, which disables the detection.
     """
 
     redundant_joint_reuse: bool = True
     """
     Whether to keep the dropped redundant joint constraints of the previous step while they remain valid.\n
-    The Delassus matrix is factorized with the previously dropped rows, and its factors are checked for kept
-    rows that became dependent, or dropped rows that became independent, at `redundant_joint_tolerance`. Only
-    the worlds that fail the check repeat the detection and the factorization, which avoids most of its cost.
-    Otherwise, the detection runs in every world at every step.\n
-    Only supported by the `LLTB` and `LLTBRCM` linear solvers, other solvers repeat the detection at every step.
+    The kinematic joint block of the Delassus matrix is factorized with the previously dropped rows, and its
+    factors are checked for kept rows that became dependent, or dropped rows that became independent, at
+    `redundant_joint_tolerance`. Only the worlds that fail the check repeat the detection, which avoids most
+    of its cost. Otherwise, the detection runs in every world at every step.\n
     The setting of the first world applies to all worlds. Defaults to `True`.
     """
 

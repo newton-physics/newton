@@ -17,9 +17,11 @@ from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions
 from newton._src.solvers.kamino._src.linalg import (
     ConjugateResidualSolver,
+    ConjugateResidualSolverFused,
     LDLBlockSparseSolver,
     LLTBlockedRCMSolver,
     LLTBlockedSolver,
+    LLTSequentialSolver,
 )
 from newton._src.solvers.kamino._src.linalg.utils.matrix import SquareSymmetricMatrixProperties
 from newton._src.solvers.kamino._src.linalg.utils.range import in_range_via_gaussian_elimination
@@ -1259,42 +1261,74 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
 
     def test_02_redundant_joint_shift(self):
         """Dropping the redundant joint rows leaves no impulse on them and preserves the solution velocities."""
-        v_plus, lambdas = [], []
-        for tolerance in (0.0, 1e-5):
-            test = make_redundant_fourbar(self.default_device, sparse=False)
-            config = PADMMSolver.Config(redundant_joint_tolerance=tolerance, max_iterations=500)
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                v_plus, lambdas = [], []
+                for tolerance in (0.0, 1e-5):
+                    test = make_redundant_fourbar(self.default_device, sparse)
+                    config = PADMMSolver.Config(redundant_joint_tolerance=tolerance, max_iterations=500)
+                    solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
+
+                    # Remove the null-space components of the free velocity
+                    test.build()
+                    bases = delassus_null_bases(test.problem)
+                    v_f = test.problem.data.v_f.numpy()
+                    vio = test.problem.data.vio.numpy()
+                    for w, basis in enumerate(bases):
+                        block = v_f[vio[w] : vio[w] + basis.shape[0]]
+                        block -= basis @ (basis.T @ block)
+                    test.problem.data.v_f.assign(v_f)
+
+                    solver.coldstart()
+                    solver.solve(problem=test.problem)
+                    self.assertTrue(bool(solver.data.status.numpy()[0]["converged"]))
+                    v_plus.append(solver.data.solution.v_plus.numpy())
+                    lambdas.append(solver.data.solution.lambdas.numpy())
+
+                # Check that exactly the redundant rows are shifted and carry no impulse
+                shifted = solver._redundant_joints.shifted.numpy()
+                offset = test.model.info.joint_kinematic_cts_group_offset.numpy()
+                for w, basis in enumerate(bases):
+                    rows = vio[w] + offset[w] + np.flatnonzero(shifted[w])
+                    self.assertEqual(len(rows), basis.shape[1])
+                    np.testing.assert_allclose(lambdas[1][rows], 0.0, atol=1e-4 * np.abs(lambdas[1]).max())
+                np.testing.assert_allclose(v_plus[1], v_plus[0], rtol=0.0, atol=1e-3 * np.abs(v_plus[0]).max())
+
+    def test_03_redundant_joint_sparse_block(self):
+        """The kinematic joint block assembled from the sparse Jacobian matches the dense Delassus matrix."""
+        blocks, shifts = [], []
+        for sparse in (False, True):
+            test = make_redundant_fourbar(self.default_device, sparse)
+            config = PADMMSolver.Config(redundant_joint_tolerance=1e-5, max_iterations=1)
             solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
-
-            # Remove the null-space components of the free velocity
             test.build()
-            bases = delassus_null_bases(test.problem)
-            v_f = test.problem.data.v_f.numpy()
-            vio = test.problem.data.vio.numpy()
-            for w, basis in enumerate(bases):
-                block = v_f[vio[w] : vio[w] + basis.shape[0]]
-                block -= basis @ (basis.T @ block)
-            test.problem.data.v_f.assign(v_f)
-
+            D = extract_delassus(test.problem.delassus, only_active_dims=True)
             solver.coldstart()
             solver.solve(problem=test.problem)
-            self.assertTrue(bool(solver.data.status.numpy()[0]["converged"]))
-            v_plus.append(solver.data.solution.v_plus.numpy())
-            lambdas.append(solver.data.solution.lambdas.numpy())
-
-        # Check that exactly the redundant rows are shifted and carry no impulse
-        shifted = solver._redundant_joints.shifted.numpy()
-        offset = test.model.info.joint_kinematic_cts_group_offset.numpy()
-        for w, basis in enumerate(bases):
-            rows = vio[w] + offset[w] + np.flatnonzero(shifted[w])
-            self.assertEqual(len(rows), basis.shape[1])
-            np.testing.assert_allclose(lambdas[1][rows], 0.0, atol=1e-4 * np.abs(lambdas[1]).max())
-        np.testing.assert_allclose(v_plus[1], v_plus[0], rtol=0.0, atol=1e-3 * np.abs(v_plus[0]).max())
-
-    def test_03_redundant_joint_shift_requires_dense_dynamics(self):
-        test = make_redundant_fourbar(self.default_device, sparse=True)
-        config = PADMMSolver.Config(redundant_joint_tolerance=1e-5)
-        with self.assertRaises(ValueError):
-            PADMMSolver(model=test.model, config=config, problem=test.problem)
+            detection = solver._redundant_joints
+            offset = test.model.info.joint_kinematic_cts_group_offset.numpy()
+            num_rows = test.model.info.num_joint_kinematic_cts.numpy()
+            rows = detection.max_rows
+            for w in range(len(D)):
+                kinematic = slice(offset[w], offset[w] + num_rows[w])
+                if sparse:
+                    block = detection._block.numpy()[w * rows * rows : (w + 1) * rows * rows].reshape(rows, rows)
+                    blocks.append(np.tril(block[: num_rows[w], : num_rows[w]]))
+                else:
+                    blocks.append(np.tril(D[w][kinematic, kinematic]))
+            shifts.append(detection.shifts.numpy())
+        # Check that both blocks match, and that both shift as many rows, keeping a basis of the rows
+        # NOTE: The rows of the symmetric linkage are tied, so the roundoff may shift different ones
+        num_worlds = len(blocks) // 2
+        for w in range(num_worlds):
+            dense, assembled = blocks[w], blocks[num_worlds + w]
+            np.testing.assert_allclose(assembled, dense, rtol=1e-5, atol=1e-6 * np.abs(dense).max())
+            B = (dense + np.tril(dense, -1).T).astype(np.float64)
+            rank = np.linalg.matrix_rank(B, tol=1e-6 * np.abs(B).max())
+            for shift in shifts:
+                kept = shift[w, : len(B)] == 0
+                self.assertEqual(int(kept.sum()), rank)
+                self.assertEqual(np.linalg.matrix_rank(B[np.ix_(kept, kept)], tol=1e-6 * np.abs(B).max()), rank)
 
     def test_04_joint_rho_scale(self):
         """Removing the penalty of the bilateral joint rows preserves the solution and speeds up convergence."""
@@ -1325,11 +1359,19 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
 
     def test_05_redundant_joint_reuse(self):
         """Reusing the dropped joint rows that pass the check gives the solution of the detection at every step."""
-        for linear_solver in (LLTBlockedSolver, LLTBlockedRCMSolver):
-            with self.subTest(linear_solver=linear_solver.__name__):
+        for sparse, linear_solver in (
+            (False, LLTBlockedSolver),
+            (False, LLTBlockedRCMSolver),
+            (False, LLTSequentialSolver),
+            (False, LDLBlockSparseSolver),
+            (False, ConjugateResidualSolver),
+            (True, ConjugateResidualSolver),
+            (True, ConjugateResidualSolverFused),
+        ):
+            with self.subTest(sparse=sparse, linear_solver=linear_solver.__name__):
                 status, v_plus, lambdas, shifted = {}, {}, {}, {}
                 for reuse in (False, True):
-                    test = make_redundant_fourbar(self.default_device, sparse=False, linear_solver=linear_solver)
+                    test = make_redundant_fourbar(self.default_device, sparse, linear_solver=linear_solver)
                     config = PADMMSolver.Config(
                         redundant_joint_tolerance=1e-5,
                         redundant_joint_reuse=reuse,
