@@ -2511,9 +2511,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 raise ValueError(f"MjcActuator {prim.GetPath()} has unsupported number of targets: {len(target_paths)}")
             return str(target_paths[0])
 
-        def get_registered_string_values(attribute_name: str) -> list[str]:
+        def get_registered_string_values(importing_builder: ModelBuilder, attribute_name: str) -> list[str]:
             """Return registered string values for a custom attribute."""
-            attr = builder.custom_attributes.get(attribute_name)
+            attr = importing_builder.custom_attributes.get(attribute_name)
             if attr is None or attr.values is None:
                 return []
             if isinstance(attr.values, dict):
@@ -2524,6 +2524,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         def resolve_actuator_target(
             prim,
+            importing_builder: ModelBuilder,
         ) -> tuple[int, int, str]:
             """Resolve actuator target to (trntype, target_index, target_path).
 
@@ -2532,13 +2533,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             prim traversal order.
             """
             target_path = resolve_actuator_target_path(prim)
-            joint_dof_names = get_registered_string_values("mujoco:joint_dof_label")
+            joint_dof_names = get_registered_string_values(importing_builder, "mujoco:joint_dof_label")
             try:
                 return int(SolverMuJoCo.TrnType.JOINT), joint_dof_names.index(target_path), target_path
             except ValueError:
                 pass
 
-            tendon_names = get_registered_string_values("mujoco:tendon_label")
+            tendon_names = get_registered_string_values(importing_builder, "mujoco:tendon_label")
             try:
                 return int(SolverMuJoCo.TrnType.TENDON), tendon_names.index(target_path), target_path
             except ValueError:
@@ -2548,8 +2549,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # as shapes with the SITE flag in the builder.  We return a sentinel
             # target_index of 0 here; the actual site name will be resolved by
             # the SITE branch in ``_init_actuators`` via ``site_label_to_name``.
-            for i, label in enumerate(builder.shape_label):
-                if label == target_path and (builder.shape_flags[i] & ShapeFlags.SITE):
+            for i, label in enumerate(importing_builder.shape_label):
+                if label == target_path and (importing_builder.shape_flags[i] & ShapeFlags.SITE):
                     return int(SolverMuJoCo.TrnType.SITE), 0, target_path
 
             return -1, -1, target_path
@@ -2625,8 +2626,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # using actuator_target_label.
         def resolve_actuator_transmission_type(_: str, context: dict[str, Any]) -> int:
             """Resolve transmission type for a USD actuator prim from its target path."""
-            prim = context["prim"]
-            trntype, _target_idx, _target_path = resolve_actuator_target(prim)
+            # Resolve against the importing builder; the transformer may have been
+            # copied from another builder by add_builder().
+            trntype, _target_idx, _target_path = resolve_actuator_target(context["prim"], context["builder"])
             if trntype < 0:
                 return int(SolverMuJoCo.TrnType.JOINT)
             return trntype
@@ -2634,6 +2636,33 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         def resolve_actuator_target_label(_: str, context: dict[str, Any]) -> str:
             """Resolve target path label for a USD actuator prim."""
             return resolve_actuator_target_path(context["prim"])
+
+        def resolve_actuator_transmission_ids(_: str, context: dict[str, Any]) -> wp.vec2i | None:
+            """Resolve the optional reference site of a USD site transmission."""
+            prim = context["prim"]
+            authored_attr = prim.GetAttribute("newton:mujoco:actuator_trnid")
+            authored = authored_attr.Get() if authored_attr and authored_attr.HasAuthoredValue() else None
+            rel = prim.GetRelationship("mjc:refSite")
+            reference_paths = rel.GetTargets() if rel else []
+            if not reference_paths:
+                return None if authored is None else wp.vec2i(int(authored[0]), int(authored[1]))
+            if len(reference_paths) != 1:
+                raise ValueError(
+                    f"MjcActuator {prim.GetPath()} has unsupported number of reference sites: {len(reference_paths)}"
+                )
+            reference_path = str(reference_paths[0])
+            # Resolve against the importing builder and this import's prims (see
+            # resolve_actuator_transmission_type).
+            importing_builder = context["builder"]
+            shape = context["result"]["path_shape_map"].get(reference_path)
+            if shape is None or not importing_builder.shape_flags[shape] & ShapeFlags.SITE:
+                logger.warning(
+                    "MjcActuator %s references site '%s', which was not imported as a site; ignoring mjc:refSite.",
+                    prim.GetPath(),
+                    reference_path,
+                )
+                return None if authored is None else wp.vec2i(int(authored[0]), int(authored[1]))
+            return wp.vec2i(-1 if authored is None else int(authored[0]), shape)
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -2644,6 +2673,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 default=wp.vec2i(-1, -1),
                 namespace="mujoco",
                 reference_value_transformer=_remap_actuator_trnid,
+                usd_attribute_name="*",
+                usd_value_transformer=resolve_actuator_transmission_ids,
             )
         )
 
