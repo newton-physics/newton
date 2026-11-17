@@ -9,16 +9,6 @@ import warp as wp
 from ...utils.color import ColorSpace
 
 
-class LightType(enum.IntEnum):
-    """Light types supported by the Warp raytracer."""
-
-    SPOTLIGHT = 0
-    """Spotlight."""
-
-    DIRECTIONAL = 1
-    """Directional Light."""
-
-
 class RenderOrder(enum.IntEnum):
     """Render Order"""
 
@@ -125,10 +115,11 @@ class RenderConfig:
     """Projection mode for texture-mapped shapes without UVs."""
 
     enable_shadows: bool = False
-    """Enable shadow rays for directional lights.
+    """Enable shadow rays for lights that cast shadows.
 
-    Shadows are only rendered when a light also casts them (e.g. a light created
-    via :meth:`~newton.sensors.SensorCamera.create_default_light` with
+    Shadows are only rendered when a light also casts them (a model light with
+    :attr:`~newton.Model.light_cast_shadow` set, or a light created via
+    :meth:`~newton.sensors.SensorCamera.create_default_light` with
     ``enable_shadows=True``); with no shadow-casting light this setting has no
     effect.
     """
@@ -239,3 +230,32 @@ class TextureData:
 
     texture: wp.Texture2D
     repeat: wp.vec2f
+
+
+@wp.struct
+class RenderLight:
+    """World-space light as shaded by the render kernel.
+
+    Attributes:
+        type: Light type (:class:`~newton.LightType`).
+        enabled: Whether the light contributes to shading.
+        cast_shadow: Whether the light casts shadows.
+        position: World-space position [m] (ignored for directional lights).
+        direction: World-space unit emission direction (ignored for point lights).
+        color: Linear RGB color scaled by the light intensity.
+        attenuation: Constant, linear and quadratic distance falloff coefficients.
+        cos_cone_outer: Cosine of the spot cone half-angle; no light reaches beyond it.
+        cos_cone_inner: Cosine of the spot half-angle where the soft cone edge begins.
+        focus: Exponent of the spot light's off-axis cosine falloff.
+    """
+
+    type: wp.int32
+    enabled: wp.bool
+    cast_shadow: wp.bool
+    position: wp.vec3f
+    direction: wp.vec3f
+    color: wp.vec3f
+    attenuation: wp.vec3f
+    cos_cone_outer: wp.float32
+    cos_cone_inner: wp.float32
+    focus: wp.float32

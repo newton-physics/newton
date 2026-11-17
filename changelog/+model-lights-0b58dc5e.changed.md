@@ -1,0 +1,1 @@
+Render lights authored in USD and MJCF assets in `SensorCamera`, which changes the color output of scenes that author lights. Pass `load_lights=False` to `add_usd()` or `parse_lights=False` to `add_mjcf()`, or set `Model.light_enabled` to `False`, to keep the previous lighting.

@@ -8,7 +8,16 @@ import warp as wp
 from ...geometry import Gaussian, GeoType
 from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
-from .types import AntiAliasing, ClearData, MeshData, RenderConfig, RenderOrder, TextureData, WorldRenderFlag
+from .types import (
+    AntiAliasing,
+    ClearData,
+    MeshData,
+    RenderConfig,
+    RenderLight,
+    RenderOrder,
+    TextureData,
+    WorldRenderFlag,
+)
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -238,12 +247,8 @@ def create_kernel(
         triangle_mesh_texture_ids: wp.array[wp.int32],
         mesh_data: wp.array[MeshData],
         texture_data: wp.array[TextureData],
-        light_active: wp.array[wp.bool],
-        light_type: wp.array[wp.int32],
-        light_cast_shadow: wp.array[wp.bool],
-        light_positions: wp.array[wp.vec3f],
-        light_orientations: wp.array[wp.vec3f],
-        light_colors: wp.array[wp.vec3f],
+        lights: wp.array[RenderLight],
+        light_world_start: wp.array[wp.int32],
         ambient_lighting: wp.array[wp.vec3f],
     ) -> ShadeResult:
         result = ShadeResult()
@@ -320,7 +325,14 @@ def create_kernel(
                 ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
                 shaded_color = wp.cw_mul(albedo_color, ambient_color)
 
-            for light_index in range(light_count):
+            # Global lights come first, then the lights of each world in order.
+            world_light_start = light_world_start[world_index]
+            world_light_count = light_world_start[world_index + 1] - world_light_start
+            for i in range(light_count + world_light_count):
+                light_index = i
+                if i >= light_count:
+                    light_index = world_light_start + i - light_count
+                light = lights[light_index]
                 light_contribution = compute_lighting(
                     world_index,
                     bvh_shapes_size,
@@ -334,11 +346,7 @@ def create_kernel(
                     shape_sizes,
                     shape_transforms,
                     shape_source_ptr,
-                    light_active[light_index],
-                    light_type[light_index],
-                    light_cast_shadow[light_index],
-                    light_positions[light_index],
-                    light_orientations[light_index],
+                    light,
                     particles_position,
                     particles_radius,
                     topology_particle_mask,
@@ -347,7 +355,7 @@ def create_kernel(
                     closest_hit.normal,
                     hit_point,
                 )
-                shaded_color = shaded_color + wp.cw_mul(albedo_color, light_colors[light_index]) * light_contribution
+                shaded_color = shaded_color + wp.cw_mul(albedo_color, light.color) * light_contribution
 
         result.color = shaded_color
         return result
@@ -386,12 +394,8 @@ def create_kernel(
         mesh_data: wp.array[MeshData],
         gaussians_data: wp.array[Gaussian.Data],
         texture_data: wp.array[TextureData],
-        light_active: wp.array[wp.bool],
-        light_type: wp.array[wp.int32],
-        light_cast_shadow: wp.array[wp.bool],
-        light_positions: wp.array[wp.vec3f],
-        light_orientations: wp.array[wp.vec3f],
-        light_colors: wp.array[wp.vec3f],
+        lights: wp.array[RenderLight],
+        light_world_start: wp.array[wp.int32],
         ambient_lighting: wp.array[wp.vec3f],
     ) -> RenderSample:
         result = RenderSample()
@@ -475,12 +479,8 @@ def create_kernel(
             triangle_mesh_texture_ids,
             mesh_data,
             texture_data,
-            light_active,
-            light_type,
-            light_cast_shadow,
-            light_positions,
-            light_orientations,
-            light_colors,
+            lights,
+            light_world_start,
             ambient_lighting,
         )
         result.albedo = shade.albedo
@@ -533,12 +533,8 @@ def create_kernel(
         # Textures
         texture_data: wp.array[TextureData],
         # Lights
-        light_active: wp.array[wp.bool],
-        light_type: wp.array[wp.int32],
-        light_cast_shadow: wp.array[wp.bool],
-        light_positions: wp.array[wp.vec3f],
-        light_orientations: wp.array[wp.vec3f],
-        light_colors: wp.array[wp.vec3f],
+        lights: wp.array[RenderLight],
+        light_world_start: wp.array[wp.int32],
         ambient_lighting: wp.array[wp.vec3f],
         # Outputs
         out_color: wp.array[wp.uint32],
@@ -637,12 +633,8 @@ def create_kernel(
                 mesh_data,
                 gaussians_data,
                 texture_data,
-                light_active,
-                light_type,
-                light_cast_shadow,
-                light_positions,
-                light_orientations,
-                light_colors,
+                lights,
+                light_world_start,
                 ambient_lighting,
             )
             if not sample.hit:
@@ -740,12 +732,8 @@ def create_kernel(
                     mesh_data,
                     gaussians_data,
                     texture_data,
-                    light_active,
-                    light_type,
-                    light_cast_shadow,
-                    light_positions,
-                    light_orientations,
-                    light_colors,
+                    lights,
+                    light_world_start,
                     ambient_lighting,
                 )
                 if not sample.hit:
@@ -924,12 +912,8 @@ def create_kernel(
                             triangle_mesh_texture_ids,
                             mesh_data,
                             texture_data,
-                            light_active,
-                            light_type,
-                            light_cast_shadow,
-                            light_positions,
-                            light_orientations,
-                            light_colors,
+                            lights,
+                            light_world_start,
                             ambient_lighting,
                         )
                         sample_color = shade.color

@@ -1554,6 +1554,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY: attachment_order,
             # WORLD rows include the global world -1 after the local worlds.
             model.AttributeFrequency.WORLD: list(range(model.world_count + 1)),
+            # Compact views hide every light; references to lights become -1.
+            model.AttributeFrequency.LIGHT: [],
         }
         built_in_frequency_orders.update(self._compact_deformable_orders(built_in_frequency_orders))
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
@@ -1983,6 +1985,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.edge_count = len(edge_order)
         view.tet_count = len(tet_order)
         view.muscle_count = 0
+        # Compact views have no lights: their body indices no longer match the model's lights, and
+        # renderers draw the full model. The empty LIGHT order clears the light arrays.
+        view.light_count = 0
         view.curve_count = len(compact.order(frequency.CURVE))
         view.surface_count = len(compact.order(frequency.SURFACE))
         view.volume_count = len(compact.order(frequency.VOLUME))

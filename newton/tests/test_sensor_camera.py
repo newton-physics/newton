@@ -10,7 +10,6 @@ import warp as wp
 
 import newton
 from newton._src.geometry.types import SH_C0
-from newton._src.sensors.sensor_camera_render.types import LightType
 from newton._src.sensors.sensor_camera_render.utils import Utils
 from newton.sensors import (
     SensorCamera,
@@ -609,14 +608,17 @@ class TestSensorCamera(unittest.TestCase):
             indices=[0, 1, 2, 3, 4, 5],
             density=1.0,
         )
-        model = builder.finalize(device="cpu")
-        camera = SensorCamera(model)
-        camera.create_default_light()
         # A nearby spotlight makes shading vary across one planar face, so this
         # test can distinguish per-face reuse from per-sample shading.
-        camera._render_context._lights_type = wp.array([LightType.SPOTLIGHT], dtype=wp.int32, device="cpu")
-        camera._render_context._lights_position = wp.array([wp.vec3f(-0.5, 0.0, 0.0)], dtype=wp.vec3f, device="cpu")
-        camera._render_context._lights_orientation = wp.array([wp.vec3f(0.0, 0.0, -1.0)], dtype=wp.vec3f, device="cpu")
+        builder.add_light(
+            -1,
+            xform=wp.transform((-0.5, 0.0, 0.0), wp.quat_identity()),
+            light_type=newton.LightType.SPOT,
+            cone_angle=0.6,
+            cone_softness=0.5,
+        )
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
         state = model.state()
         transforms = self._identity_transforms(1)
         ray_values = np.zeros((1, 1, 3, 2, 3), dtype=np.float32)
@@ -1696,6 +1698,168 @@ def _optix_variant(test):
 
 for _name in ("test_fully_transparent_shape_does_not_occlude", "test_convex_hull_renders_like_its_mesh"):
     setattr(TestSensorCamera, f"{_name}_optix", _optix_variant(getattr(TestSensorCamera, _name)))
+
+
+class TestSensorCameraModelLights(unittest.TestCase):
+    """Render lights declared on the model."""
+
+    # Linear albedo of the sphere in TestSensorCamera._sphere_world_builder().
+    ALBEDO = np.where(
+        np.array([0.25, 0.5, 0.75]) <= 0.04045,
+        np.array([0.25, 0.5, 0.75]) / 12.92,
+        ((np.array([0.25, 0.5, 0.75]) + 0.055) / 1.055) ** 2.4,
+    )
+    NO_AMBIENT = SensorCamera.RenderConfig(enable_ambient_lighting=False)
+
+    @staticmethod
+    def _center_hdr(
+        model: newton.Model, state: newton.State | None = None, camera: SensorCamera | None = None, **kwargs
+    ):
+        """Linear color of the center pixel, where the camera ray hits the sphere at (0, 0, -1.25) facing +Z."""
+        camera = camera or SensorCamera(model)
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device=model.device)
+        view_count = kwargs.pop("view_count", 1)
+        hdr = camera.allocate_image_color_hdr(view_count, 1, 1)
+        camera.update(
+            state if state is not None else model.state(),
+            TestSensorCamera._identity_transforms(view_count, device=model.device),
+            rays,
+            hdr_color_image=hdr,
+            render_config=kwargs.pop("render_config", TestSensorCameraModelLights.NO_AMBIENT),
+            **kwargs,
+        )
+        return hdr.numpy().reshape(view_count, 3)
+
+    @staticmethod
+    def _camera(model: newton.Model, backend: str) -> SensorCamera:
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        return SensorCamera(model, backend=backend)
+
+    def _render_with_light(self, device, backend: str = "warp", **light_kwargs) -> np.ndarray:
+        builder = TestSensorCamera._sphere_world_builder()
+        builder.add_light(-1, **light_kwargs)
+        model = builder.finalize(device=device)
+        return self._center_hdr(model, camera=self._camera(model, backend))[0]
+
+    def test_model_light_shading(self, device: str | None = None, backend: str = "warp") -> None:
+        """Verify directional, point and spot lights from the model shade the analytic expected color."""
+        a = self.ALBEDO
+        spot_xform = wp.transform((0.5, 0.0, 0.0), wp.quat_identity())
+        # From the spot at (0.5, 0, 0) the hit point lies 21.8 degrees off the -Z axis.
+        cos_spot = 1.25 / math.sqrt(0.25 + 1.5625)
+        cases = {
+            "directional": ({"color": (0.5, 1.0, 2.0), "intensity": 3.0}, a * (1.5, 3.0, 6.0)),
+            "disabled": ({"enabled": False}, np.zeros(3)),
+            "point_inverse_square": (
+                {"light_type": newton.LightType.POINT, "intensity": 2.0},
+                a * 2.0 / 1.25**2,
+            ),
+            "point_linear": (
+                {"light_type": newton.LightType.POINT, "attenuation": (1.0, 0.5, 0.0)},
+                a / (1.0 + 0.5 * 1.25),
+            ),
+            "spot_inside_cone": (
+                {
+                    "light_type": newton.LightType.SPOT,
+                    "xform": spot_xform,
+                    "cone_angle": math.radians(30.0),
+                    "focus": 2.0,
+                },
+                a * cos_spot * cos_spot**2 / (0.25 + 1.5625),
+            ),
+            "spot_outside_cone": (
+                {"light_type": newton.LightType.SPOT, "xform": spot_xform, "cone_angle": math.radians(20.0)},
+                np.zeros(3),
+            ),
+            "spot_facing_away": (
+                {
+                    "light_type": newton.LightType.SPOT,
+                    "xform": wp.transform((0.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi)),
+                },
+                np.zeros(3),
+            ),
+        }
+        devices = get_test_devices() if device is None else [device]
+        for test_device in devices:
+            for name, (light_kwargs, expected) in cases.items():
+                with self.subTest(device=str(test_device), light=name):
+                    color = self._render_with_light(test_device, backend, **light_kwargs)
+                    np.testing.assert_allclose(color, expected, rtol=1.0e-4, atol=1.0e-6)
+
+    def test_model_lights_follow_state_and_model_arrays(self) -> None:
+        """Verify mounted lights follow the body state and light properties are read on every update."""
+        builder = TestSensorCamera._sphere_world_builder()
+        lamp = builder.add_body(xform=wp.transform((0.0, 0.0, 0.0), wp.quat_identity()))
+        builder.add_light(lamp, light_type=newton.LightType.POINT)
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
+        state = model.state()
+        near = self._center_hdr(model, state, camera)[0]
+        np.testing.assert_allclose(near, self.ALBEDO / 1.25**2, rtol=1.0e-4)
+        kernel_count = len(camera._render_context._kernel_cache)
+
+        # Move the lamp body 1.25 m farther from the sphere: the hit point is now 2.5 m away.
+        body_q = state.body_q.numpy()
+        body_q[lamp, 2] = 1.25
+        state.body_q.assign(body_q)
+        far = self._center_hdr(model, state, camera)[0]
+        np.testing.assert_allclose(far, near / 4.0, rtol=1.0e-4)
+
+        model.light_intensity.fill_(4.0)
+        model.light_color.fill_(wp.vec3f(1.0, 0.0, 0.5))
+        scaled = self._center_hdr(model, state, camera)[0]
+        np.testing.assert_allclose(scaled, near * np.array([1.0, 0.0, 0.5]), rtol=1.0e-4)
+        model.light_enabled.fill_(False)
+        np.testing.assert_allclose(self._center_hdr(model, state, camera)[0], 0.0, atol=1.0e-7)
+        self.assertEqual(len(camera._render_context._kernel_cache), kernel_count)
+
+    def test_world_lights_light_only_their_world(self) -> None:
+        """Verify per-world lights, global lights and the sensor light combine per view."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        world_colors = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 0.0))
+        for color in world_colors:
+            world = TestSensorCamera._sphere_world_builder()
+            if any(color):
+                world.add_light(-1, color=color)
+            builder.add_world(world)
+        # The global light is declared after the world lights; the renderer still shades it in every world.
+        builder.add_light(-1, color=(0.0, 0.0, 1.0), label="global")
+        model = builder.finalize(device="cpu")
+        np.testing.assert_array_equal(model.light_world.numpy(), [0, 1, -1])
+
+        camera = SensorCamera(model)
+        colors = self._center_hdr(model, camera=camera, view_count=3)
+        expected = self.ALBEDO * np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0]])
+        np.testing.assert_allclose(colors, expected, rtol=1.0e-4, atol=1.0e-7)
+
+        camera.create_default_light(enable_shadows=False, direction=wp.vec3(0.0, 0.0, -1.0), color=(1.0, 1.0, 1.0))
+        colors = self._center_hdr(model, camera=camera, view_count=3)
+        np.testing.assert_allclose(colors, expected + self.ALBEDO, rtol=1.0e-4, atol=1.0e-7)
+
+    def test_model_light_shadows(self, device: str = "cpu", backend: str = "warp") -> None:
+        """Verify model lights cast shadows only when both the light and the render config enable them."""
+        builder = TestSensorCamera._sphere_world_builder()
+        # An occluder on the shadow ray toward a light shining along (1, 0, -1), off the camera ray.
+        builder.add_shape_sphere(-1, xform=wp.transform((-0.6, 0.0, -0.65), wp.quat_identity()), radius=0.2)
+        light_xform = wp.transform(
+            (0.0, 0.0, 0.0), wp.quat_between_vectors(wp.vec3(0.0, 0.0, -1.0), wp.normalize(wp.vec3(1.0, 0.0, -1.0)))
+        )
+        builder.add_light(-1, xform=light_xform, label="shadowed")
+        builder.add_light(-1, xform=light_xform, cast_shadow=False, label="unshadowed")
+        model = builder.finalize(device=device)
+        camera = self._camera(model, backend)
+        lit = self.ALBEDO * math.sqrt(0.5)
+        shadows = SensorCamera.RenderConfig(enable_ambient_lighting=False, enable_shadows=True)
+
+        np.testing.assert_allclose(self._center_hdr(model, camera=camera)[0], 2.0 * lit, rtol=1.0e-4)
+        np.testing.assert_allclose(
+            self._center_hdr(model, camera=camera, render_config=shadows)[0], 1.3 * lit, rtol=1.0e-4
+        )
+
+
+for _name in ("test_model_light_shading", "test_model_light_shadows"):
+    setattr(TestSensorCameraModelLights, f"{_name}_optix", _optix_variant(getattr(TestSensorCameraModelLights, _name)))
 
 
 class TestSensorCameraDeformable(unittest.TestCase):

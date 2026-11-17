@@ -1318,9 +1318,13 @@ imported when loading an MJCF or USD asset into Newton, and that
   rangefinder, touch, camera-based, …). Newton has its own sensor
   pipeline (:doc:`/concepts/sensors`) that is independent of the MuJoCo
   solver.
-- **Cameras and lights** declared in MJCF/USD. Newton uses its own viewer
-  and lighting pipeline; camera/light primitives in the source asset are
-  ignored.
+- **Cameras** declared in MJCF/USD. Newton uses its own viewer and camera
+  pipeline; camera primitives in the source asset are ignored.
+- **Lights** (``<light>``). They are imported as Newton model lights (see
+  :meth:`~newton.ModelBuilder.add_light`) and rendered by
+  :class:`~newton.sensors.SensorCamera`, but
+  :class:`~newton.solvers.SolverMuJoCo` does not pass them to the MuJoCo
+  model, and the viewers use their own lighting.
 - **Keyframes** (``<keyframe>``) — MuJoCo's saved-state / reset mechanism
   is not imported.
 - **Composite and flex** (``<composite>``, ``<flex>``) — MuJoCo's built-in

@@ -109,6 +109,7 @@ from .graph_coloring import (
     construct_particle_graph,
 )
 from .joint_mimic import _SUPPORTED_JOINT_TYPES
+from .light import LightType
 from .model import Model, _pack_shape_pair_codes
 from .rod import Rod
 from .shape_contact_pairs import _ShapeContactPairs
@@ -2270,6 +2271,34 @@ class ModelBuilder:
         self.spring_control: list[float] = []
         """Spring control activations accumulated for :attr:`Model.spring_control`."""
 
+        # lights
+        self.light_label: list[str] = []
+        """Labels accumulated for :attr:`Model.light_label`."""
+        self.light_world: list[int] = []
+        """World indices accumulated for :attr:`Model.light_world`."""
+        self.light_body: list[int] = []
+        """Parent body indices accumulated for :attr:`Model.light_body`."""
+        self.light_transform: list[Transform] = []
+        """Light mount transforms accumulated for :attr:`Model.light_transform`."""
+        self.light_type: list[LightType] = []
+        """Light types accumulated for :attr:`Model.light_type`."""
+        self.light_color: list[tuple[float, float, float]] = []
+        """Linear RGB colors accumulated for :attr:`Model.light_color`."""
+        self.light_intensity: list[float] = []
+        """Intensities accumulated for :attr:`Model.light_intensity`."""
+        self.light_attenuation: list[tuple[float, float, float]] = []
+        """Distance falloff coefficients accumulated for :attr:`Model.light_attenuation`."""
+        self.light_cone_angle: list[float] = []
+        """Spot cone half-angles [rad] accumulated for :attr:`Model.light_cone_angle`."""
+        self.light_cone_softness: list[float] = []
+        """Spot cone softness values accumulated for :attr:`Model.light_cone_softness`."""
+        self.light_focus: list[float] = []
+        """Spot focus exponents accumulated for :attr:`Model.light_focus`."""
+        self.light_cast_shadow: list[bool] = []
+        """Shadow flags accumulated for :attr:`Model.light_cast_shadow`."""
+        self.light_enabled: list[bool] = []
+        """Enabled flags accumulated for :attr:`Model.light_enabled`."""
+
         # tendons (cable-driven mechanisms)
         self.tendon_label: list[str] = []
         """Names of authored tendon routes."""
@@ -2757,6 +2786,11 @@ class ModelBuilder:
     def _equality_constraint_count(self) -> int:
         """Number of equality constraints added to this builder (from the ``mujoco:equality_constraint`` counter)."""
         return self._custom_frequency_counts.get("mujoco:equality_constraint", 0)
+
+    @property
+    def light_count(self) -> int:
+        """Number of declared lights."""
+        return len(self.light_label)
 
     @property
     def tendon_count(self) -> int:
@@ -4402,6 +4436,18 @@ class ModelBuilder:
                 targets = shape_transform_start + moved_copies[:, None] * counts["shape"] + static_shapes[None]
                 store_transform_rows(self.shape_transform, targets.ravel(), transformed.reshape(-1, 7))
 
+        # Fixed lights move with their copy, like static shapes.
+        attribute_specs.pop("light_transform")
+        light_transform_start = len(self.light_transform)
+        self.light_transform.extend(source_list("light_transform") * copy_count)
+        if counts["light"] and len(moved_copies):
+            fixed_lights = np.flatnonzero(np.asarray(builder.light_body, dtype=np.int64) == -1)
+            if len(fixed_lights):
+                source = pack_transforms([builder.light_transform[light] for light in fixed_lights.tolist()])
+                transformed = transform_multiply_rows(moved_xforms[:, None], source[None])
+                targets = light_transform_start + moved_copies[:, None] * counts["light"] + fixed_lights[None]
+                store_transform_rows(self.light_transform, targets.ravel(), transformed.reshape(-1, 7))
+
         # World guides carry their own frame; body-local guides follow the placed body.
         world_guides = np.flatnonzero(np.asarray(builder.tendon_guide_body, dtype=np.int64) == -1)
         for name in ("tendon_guide_offset", "tendon_guide_axis"):
@@ -5186,6 +5232,7 @@ class ModelBuilder:
         bodies_follow_joint_ordering: bool = True,
         skip_mesh_approximation: bool = False,
         load_sites: bool = True,
+        load_lights: bool = True,
         load_visual_shapes: bool = True,
         load_static_visual_shapes: bool = True,
         hide_collision_shapes: bool = False,
@@ -5298,6 +5345,15 @@ class ModelBuilder:
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+            load_lights: If True, ``UsdLux.DistantLight`` and ``UsdLux.SphereLight`` prims are added as model
+                lights (see :meth:`~newton.ModelBuilder.add_light`), attached to their nearest imported rigid-body
+                ancestor or fixed in the world. Distant lights become directional lights; sphere lights become
+                point lights, or spot lights when ``UsdLux.ShapingAPI`` limits their cone or sets a focus. The intensity is
+                ``inputs:intensity * 2 ** inputs:exposure``, imported unchanged: physically scaled values, such as
+                the ``DistantLight`` fallback of 50000, saturate the color output of
+                :class:`~newton.sensors.SensorCamera` unless :attr:`~newton.Model.light_intensity` is rescaled.
+                Invisible lights are imported disabled. Other light types (e.g. dome and rect lights) are skipped
+                and logged. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
                 Also imports experimental deformable visual meshes; see :ref:`usd-deformable-visual-import`.
             load_static_visual_shapes: If True, supported visual-only geometry outside
@@ -5427,6 +5483,8 @@ class ModelBuilder:
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                * - ``"path_light_map"``
+                  - Mapping from prim path (str) of an imported ``UsdLux`` light to the respective light index in :class:`~newton.ModelBuilder`
                 * - ``"path_particle_map"``
                   - Mapping from an imported particle-simulation ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
                 * - ``"path_cable_map"``
@@ -5494,6 +5552,7 @@ class ModelBuilder:
             bodies_follow_joint_ordering=bodies_follow_joint_ordering,
             skip_mesh_approximation=skip_mesh_approximation,
             load_sites=load_sites,
+            load_lights=load_lights,
             load_visual_shapes=load_visual_shapes,
             load_static_visual_shapes=load_static_visual_shapes,
             hide_collision_shapes=hide_collision_shapes,
@@ -5523,6 +5582,7 @@ class ModelBuilder:
         parse_visuals_as_colliders: bool = False,
         parse_meshes: bool = True,
         parse_sites: bool = True,
+        parse_lights: bool = True,
         parse_visuals: bool = True,
         parse_mujoco_options: bool = True,
         up_axis: AxisType = Axis.Z,
@@ -5644,6 +5704,14 @@ class ModelBuilder:
             parse_visuals_as_colliders: If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
             parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
             parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+            parse_lights: Whether ``<light>`` elements should be added as model lights (see
+                :meth:`~newton.ModelBuilder.add_light`). ``diffuse`` becomes the light color at intensity 1,
+                ``cutoff`` and ``exponent`` become the spot cone angle and focus, and ``attenuation``,
+                ``castshadow`` and ``active`` are kept. Tracking lights (``mode`` other than ``fixed``) are
+                imported as fixed mounts on their body, which match MuJoCo only at the initial pose (lights
+                that target a body are aimed at its initial position), and are logged at debug level. With
+                ``parent_body``, worldbody lights follow the parent body. Image-based lights are skipped and
+                logged. Default is True.
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -5712,6 +5780,7 @@ class ModelBuilder:
             parse_visuals_as_colliders=parse_visuals_as_colliders,
             parse_meshes=parse_meshes,
             parse_sites=parse_sites,
+            parse_lights=parse_lights,
             parse_visuals=parse_visuals,
             parse_mujoco_options=parse_mujoco_options,
             up_axis=up_axis,
@@ -9220,6 +9289,13 @@ class ModelBuilder:
                     merge_xform, self.attachment_particle_body_body_point[i]
                 )
 
+        # Remap lights like shapes: a light on a merged body moves to the surviving parent (or the
+        # world) with its mount re-expressed in that frame.
+        for light, old_body in enumerate(self.light_body):
+            self.light_body[light], merge_xform = remap_body_frame(old_body)
+            if merge_xform is not None:
+                self.light_transform[light] = merge_xform * self.light_transform[light]
+
         # Generic entity-reference remap for any custom attribute that points at bodies or joints
         # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
         # Body references follow merges: a reference to a body that was merged into its parent
@@ -10308,6 +10384,136 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
         )
+
+    def add_light(
+        self,
+        body: int,
+        *,
+        xform: Transform | None = None,
+        light_type: LightType | int = LightType.DIRECTIONAL,
+        color: Vec3 = (1.0, 1.0, 1.0),
+        intensity: float = 1.0,
+        attenuation: Vec3 = (0.0, 0.0, 1.0),
+        cone_angle: float = math.pi / 4.0,
+        cone_softness: float = 0.0,
+        focus: float = 0.0,
+        cast_shadow: bool = True,
+        enabled: bool = True,
+        label: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Add a light rigidly attached to a body or fixed in the current world.
+
+        Lights emit along their local ``-Z`` axis, like ``UsdLux`` lights. Lights
+        added inside a world context illuminate only that world. Lights added at
+        global scope (world ``-1``) illuminate every world, just as global shapes
+        such as the ground appear in every world.
+
+        A surface point with albedo ``a`` and unit normal ``n`` receives
+        ``a * color * intensity * max(n · l, 0) * falloff`` from the light, where
+        ``l`` points from the surface toward the light. The falloff is 1 for
+        directional lights; point and spot lights are scaled by
+        ``1 / (c + l * d + q * d²)`` at distance ``d``, and spot lights also by
+        their cone.
+
+        Args:
+            body: Parent body index (an integer), or ``-1`` for a fixed light.
+            xform: Light frame relative to the parent body [m, unitless
+                quaternion]; the world pose for ``body == -1``. Defaults to identity,
+                which points a directional or spot light along ``-Z``.
+            light_type: Light type (see :class:`~newton.LightType`).
+            color: Linear RGB color, each component non-negative.
+            intensity: Non-negative scale of ``color``. A white directional light
+                of intensity 1 lights a surface facing it to its full albedo.
+            attenuation: Constant, linear and quadratic distance falloff
+                coefficients ``(c, l, q)`` of point and spot lights [unitless, 1/m,
+                1/m²], non-negative and not all zero. The default ``(0, 0, 1)`` is
+                the physical inverse-square law; ``(1, 0, 0)`` disables the falloff.
+            cone_angle: Half-angle of a spot light's cone around its ``-Z`` axis
+                [rad], in ``(0, pi]``. Surfaces outside the cone are not lit.
+            cone_softness: Fraction of the cone angle over which a spot light fades
+                out toward the cone edge, in ``[0, 1]``. ``0`` is a hard edge, like
+                ``UsdLux`` ``shaping:cone:softness``.
+            focus: Non-negative exponent of a spot light's off-axis cosine falloff,
+                like ``UsdLux`` ``shaping:focus`` and the MJCF ``exponent``. ``0``
+                lights the cone uniformly.
+            cast_shadow: Whether the light casts shadows. A renderer may also need
+                shadows enabled in its own settings (see
+                :attr:`newton.sensors.SensorCamera.RenderConfig.enable_shadows`).
+            enabled: Whether the light illuminates the scene.
+            label: Unique label; defaults to ``light_{index}``.
+            custom_attributes: Values of declared ``LIGHT``-frequency custom
+                attributes.
+
+        Returns:
+            The light index.
+
+        Note:
+            :class:`~newton.sensors.SensorCamera` renders model lights; the
+            viewers (e.g. :class:`~newton.viewer.ViewerGL`) do not use them yet.
+        """
+        if not self._is_integer_scalar(body):
+            raise TypeError(f"Light body must be an integer index, got {type(body).__name__}")
+        body = int(body)
+        if body < -1 or body >= self.body_count:
+            raise ValueError(f"Light body {body} is out of range for a builder with {self.body_count} bodies")
+        light_type = LightType(light_type)
+
+        light_color = tuple(float(c) for c in color)
+        light_attenuation = tuple(float(c) for c in attenuation)
+        if len(light_color) != 3 or len(light_attenuation) != 3:
+            raise ValueError("color and attenuation must have three components")
+        intensity = float(intensity)
+        cone_angle = float(cone_angle)
+        cone_softness = float(cone_softness)
+        focus = float(focus)
+        # Light data is stored as float32: reject values that would overflow there.
+        float32_max = float(np.finfo(np.float32).max)
+        values = (*light_color, intensity, *light_attenuation, cone_angle, cone_softness, focus)
+        if not all(math.isfinite(v) and 0.0 <= v <= float32_max for v in values):
+            raise ValueError("Light color, intensity, attenuation, cone and focus must be finite and non-negative")
+        if not any(np.float32(c) > 0.0 for c in light_attenuation):
+            raise ValueError("At least one attenuation coefficient must be positive in float32")
+        if not 0.0 < cone_angle <= math.pi:
+            raise ValueError(f"cone_angle must be in (0, pi] radians, got {cone_angle}")
+        if cone_softness > 1.0:
+            raise ValueError(f"cone_softness must be in [0, 1], got {cone_softness}")
+        light_xform = wp.transform() if xform is None else wp.transform(*xform)
+        cast_shadow = bool(cast_shadow)
+        enabled = bool(enabled)
+
+        # Validate custom attributes before changing any light array.
+        for name in custom_attributes or {}:
+            attribute = self.custom_attributes.get(name)
+            if attribute is None:
+                raise AttributeError(
+                    f"Custom attribute '{name}' is not defined; declare it with add_custom_attribute()"
+                )
+            if attribute.frequency != Model.AttributeFrequency.LIGHT:
+                frequency = getattr(attribute.frequency, "name", attribute.frequency)
+                raise ValueError(f"Custom attribute '{name}' has frequency {frequency}, expected LIGHT")
+
+        light = self.light_count
+        self.light_label.append(label or f"light_{light}")
+        self.light_world.append(self.body_world[body] if body >= 0 else self.current_world)
+        self.light_body.append(body)
+        self.light_transform.append(light_xform)
+        self.light_type.append(light_type)
+        self.light_color.append(light_color)
+        self.light_intensity.append(intensity)
+        self.light_attenuation.append(light_attenuation)
+        self.light_cone_angle.append(cone_angle)
+        self.light_cone_softness.append(cone_softness)
+        self.light_focus.append(focus)
+        self.light_cast_shadow.append(cast_shadow)
+        self.light_enabled.append(enabled)
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=light,
+                custom_attrs=custom_attributes,
+                expected_frequency=Model.AttributeFrequency.LIGHT,
+            )
+        return light
 
     def approximate_meshes(
         self,
@@ -13959,6 +14165,10 @@ class ModelBuilder:
                 # Collect all non-negative world indices for contiguity check
                 all_world_indices.update(non_neg_values)
 
+        # Lights may be declared in any world order (renderers group them by world), but a world that only
+        # contains lights still counts as populated.
+        all_world_indices.update(world for world in self.light_world if world >= 0)
+
         # Check contiguity: all world indices should form a sequence 0, 1, 2, ..., n-1
         if all_world_indices:
             world_list = sorted(all_world_indices)
@@ -16531,6 +16741,24 @@ class ModelBuilder:
             m.spring_stiffness = _to_wp_array(self.spring_stiffness, wp.float32, requires_grad=requires_grad)
             m.spring_damping = _to_wp_array(self.spring_damping, wp.float32, requires_grad=requires_grad)
             m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
+
+            # ---------------------
+            # lights
+
+            m.light_count = self.light_count
+            m.light_label = list(self.light_label)
+            m.light_world = wp.array(self.light_world, dtype=wp.int32)
+            m.light_body = wp.array(self.light_body, dtype=wp.int32)
+            m.light_transform = wp.array(self.light_transform, dtype=wp.transformf)
+            m.light_type = wp.array(self.light_type, dtype=wp.int32)
+            m.light_color = wp.array(self.light_color, dtype=wp.vec3f)
+            m.light_intensity = wp.array(self.light_intensity, dtype=wp.float32)
+            m.light_attenuation = wp.array(self.light_attenuation, dtype=wp.vec3f)
+            m.light_cone_angle = wp.array(self.light_cone_angle, dtype=wp.float32)
+            m.light_cone_softness = wp.array(self.light_cone_softness, dtype=wp.float32)
+            m.light_focus = wp.array(self.light_focus, dtype=wp.float32)
+            m.light_cast_shadow = wp.array(self.light_cast_shadow, dtype=wp.bool)
+            m.light_enabled = wp.array(self.light_enabled, dtype=wp.bool)
 
             # ---------------------
             # tendons

@@ -6,8 +6,9 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...core import MAXVAL
+from ...sim.light import LightType
 from . import raytrace
-from .types import RenderConfig
+from .types import RenderConfig, RenderLight
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -32,11 +33,7 @@ def create_compute_lighting_function(
         shape_sizes: wp.array[wp.vec3f],
         shape_transforms: wp.array[wp.transformf],
         shape_source_ptr: wp.array[wp.uint64],
-        light_active: wp.bool,
-        light_type: wp.int32,
-        light_cast_shadow: wp.bool,
-        light_position: wp.vec3f,
-        light_orientation: wp.vec3f,
+        light: RenderLight,
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
         topology_particle_mask: wp.array[wp.bool],
@@ -45,46 +42,55 @@ def create_compute_lighting_function(
         normal: wp.vec3f,
         hit_point: wp.vec3f,
     ) -> wp.float32:
+        """Return the fraction of the light's color that reaches ``hit_point``, including ``n · l``."""
         light_contribution = wp.float32(0.0)
 
-        if not light_active:
+        if not light.enabled:
             return light_contribution
 
         L = wp.vec3f(0.0, 0.0, 0.0)
         dist_to_light = wp.float32(MAXVAL)
         attenuation = wp.float32(1.0)
 
-        if light_type == 1:  # directional light
-            L = wp.normalize(-light_orientation)
+        if light.type == wp.static(int(LightType.DIRECTIONAL)):
+            L = -light.direction
         else:
-            to_light = light_position - hit_point
+            to_light = light.position - hit_point
             dist_to_light = wp.length(to_light)
-            L = wp.normalize(to_light)
-            attenuation = 1.0 / (1.0 + 0.02 * dist_to_light * dist_to_light)
-            if light_type == 0:  # spot light
-                spot_dir = wp.normalize(light_orientation)
-                cos_theta = wp.dot(-L, spot_dir)
-                inner = 0.95
-                outer = 0.85
-                spot_factor = wp.min(1.0, wp.max(0.0, (cos_theta - outer) / (inner - outer)))
-                attenuation = attenuation * spot_factor
+            if dist_to_light == 0.0:
+                return light_contribution
+            L = to_light / dist_to_light
+            c = light.attenuation
+            falloff = c[0] + c[1] * dist_to_light + c[2] * dist_to_light * dist_to_light
+            # The coefficients are non-negative and not all zero, so the falloff is positive here.
+            if falloff <= 0.0:
+                return light_contribution
+            attenuation = 1.0 / falloff
+            if light.type == wp.static(int(LightType.SPOT)):
+                cos_theta = wp.dot(-L, light.direction)
+                if cos_theta < light.cos_cone_outer:
+                    return light_contribution
+                if light.cos_cone_inner > light.cos_cone_outer:
+                    attenuation = attenuation * wp.smoothstep(light.cos_cone_outer, light.cos_cone_inner, cos_theta)
+                if light.focus > 0.0:
+                    attenuation = attenuation * wp.pow(wp.max(cos_theta, 0.0), light.focus)
 
         ndotl = wp.max(0.0, wp.dot(normal, L))
 
-        if ndotl == 0.0:
+        if ndotl == 0.0 or attenuation == 0.0:
             return light_contribution
 
         visible = wp.float32(1.0)
         shadow_min_visibility = wp.float32(0.3)  # reduce shadow darkness (0: full black, 1: no shadow)
 
-        if wp.static(config.enable_shadows) and light_cast_shadow:
+        if wp.static(config.enable_shadows) and light.cast_shadow:
             # Nudge the origin slightly along the surface normal to avoid
             # self-intersection when casting shadow rays
             eps = 1.0e-4
             shadow_origin = hit_point + normal * eps
             # Distance-limited shadows: cap by dist_to_light (for non-directional)
             max_t = wp.max(wp.float32(1.0e-4), wp.float32(dist_to_light - 1.0e-3))
-            if light_type == 1:  # directional light
+            if light.type == wp.static(int(LightType.DIRECTIONAL)):
                 max_t = wp.float32(1.0e8)
 
             shadow_hit = raytrace_first_hit(

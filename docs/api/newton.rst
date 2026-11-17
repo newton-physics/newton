@@ -39,6 +39,7 @@ newton
    Heightfield
    JointTargetMode
    JointType
+   LightType
    Mesh
    Model
    ModelBuilder

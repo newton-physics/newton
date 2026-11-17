@@ -9,7 +9,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton import Axis, Mesh, Model, ModelBuilder, NewtonDeprecationWarning, Rod
+from newton import Axis, LightType, Mesh, Model, ModelBuilder, NewtonDeprecationWarning, Rod
 from newton._src.geometry.contact_reduction import NUM_VOXEL_DEPTH_SLOTS, compute_voxel_resolution_from_aabb
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
 from newton.actuators import BatteryConstantResistance, DriveOutputSpace, DrivePD, MotorDC
@@ -1158,6 +1158,45 @@ class TestModelBuilderReplicate(unittest.TestCase):
         np.testing.assert_array_equal(batteries.actuators.numpy(), [1, 2])
         np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 1, 2])
         np.testing.assert_array_equal(batteries.world.numpy(), [1, 2])
+
+    def test_replicate_and_collapse_move_lights(self) -> None:
+        """Verify fixed lights follow replicated copies and lights on merged bodies follow the merge."""
+        source = ModelBuilder()
+        root = source.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        child = source.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joints = [
+            source.add_joint_free(root),
+            source.add_joint_fixed(root, child, parent_xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity())),
+        ]
+        source.add_articulation(joints)
+        mounted = source.add_light(child, xform=wp.transform((0.0, 0.5, 0.0), wp.quat_identity()))
+        fixed_xform = wp.transform((1.0, 0.0, 0.0), wp.quat_rpy(0.3, 0.0, 0.0))
+        fixed = source.add_light(-1, xform=fixed_xform, light_type=LightType.SPOT)
+        source.collapse_fixed_joints()
+        self.assertEqual(source.light_body[mounted], root)
+        np.testing.assert_allclose(np.asarray(source.light_transform[mounted])[:3], [0.0, 0.5, 1.0], atol=1e-6)
+
+        xforms = [
+            wp.transform((2.0, 0.0, 0.0), wp.quat_rpy(0.0, 0.0, 0.5 * np.pi)),
+            wp.transform((0.0, 3.0, 0.0), wp.quat_identity()),
+        ]
+        scene = ModelBuilder()
+        scene.replicate(source, len(xforms), xforms=xforms)
+        model = scene.finalize(device="cpu")
+        np.testing.assert_array_equal(model.light_world.numpy(), [0, 0, 1, 1])
+        np.testing.assert_array_equal(model.light_type.numpy(), [1, 0, 1, 0])
+        for copy, xform in enumerate(xforms):
+            with self.subTest(copy=copy):
+                offset = copy * source.light_count
+                self.assertEqual(scene.light_body[offset + mounted], copy * source.body_count + root)
+                np.testing.assert_allclose(
+                    np.asarray(scene.light_transform[offset + mounted]),
+                    np.asarray(source.light_transform[mounted]),
+                    atol=1e-6,
+                )
+                np.testing.assert_allclose(
+                    np.asarray(scene.light_transform[offset + fixed]), np.asarray(xform * fixed_xform), atol=1e-6
+                )
 
 
 @wp.kernel

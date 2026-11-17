@@ -1505,6 +1505,25 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertAlmostEqual(model.mjcf_default.numpy()[body], 3.0, places=5)
         self.assertAlmostEqual(model.urdf_default.numpy()[body], 5.0, places=5)
 
+    def test_light_custom_attributes(self) -> None:
+        """Verify LIGHT-frequency custom attributes are stored per light and replicated."""
+        source = newton.ModelBuilder()
+        source.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="temperature",
+                namespace="test",
+                frequency=newton.Model.AttributeFrequency.LIGHT,
+                dtype=wp.float32,
+                default=0.0,
+            )
+        )
+        source.add_light(-1, custom_attributes={"test:temperature": 3000.0})
+        source.add_light(-1)
+        scene = newton.ModelBuilder()
+        scene.replicate(source, 2)
+        model = scene.finalize(device=self.device)
+        np.testing.assert_array_equal(model.test.temperature.numpy(), [3000.0, 0.0, 3000.0, 0.0])
+
 
 class TestCustomFrequencyAttributes(unittest.TestCase):
     """Test custom attributes with custom frequencies."""

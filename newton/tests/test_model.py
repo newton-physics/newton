@@ -4359,6 +4359,19 @@ class TestModelWorld(unittest.TestCase):
         self.assertTrue(np.array_equal(joint_coord_world_start, np.array([7, 9, 11, 13, 27])))
         self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 30, 30])))
 
+    def test_world_with_only_lights_is_contiguous(self):
+        """Count a world that only contains lights when checking that worlds are contiguous."""
+        builder = ModelBuilder()
+        builder.begin_world()
+        builder.add_light(-1)
+        builder.end_world()
+        builder.begin_world()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.end_world()
+        model = builder.finalize(device="cpu")
+        np.testing.assert_array_equal(model.light_world.numpy(), [0])
+        np.testing.assert_array_equal(model.body_world.numpy(), [1])
+
     def test_world_count_tracking(self):
         """Test that world_count is properly tracked when using add_world."""
         main_builder = ModelBuilder()
@@ -4876,6 +4889,44 @@ class TestModelValidation(unittest.TestCase):
             control.clear()
         except Exception as e:
             self.fail(f"control.clear() raised {type(e).__name__}: {e}")
+
+    def test_add_light_rejects_invalid_input_without_side_effects(self) -> None:
+        """Verify rejected lights leave the builder unchanged."""
+        builder = newton.ModelBuilder()
+        builder.add_body()
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="tag", namespace="test", frequency=newton.Model.AttributeFrequency.SHAPE, dtype=wp.float32
+            )
+        )
+        builder.add_light(-1, label="valid")
+        invalid = (
+            (TypeError, {"body": 0.9}),
+            (TypeError, {"body": "0"}),
+            (ValueError, {"body": 1}),
+            (ValueError, {"light_type": 7}),
+            (ValueError, {"color": (1.0, -0.1, 1.0)}),
+            (ValueError, {"color": (1.0, 1.0)}),
+            (ValueError, {"intensity": float("nan")}),
+            (ValueError, {"intensity": 1.0e39}),
+            (ValueError, {"attenuation": (0.0, 0.0, 0.0)}),
+            (ValueError, {"attenuation": (1.0e-50, 0.0, 0.0)}),
+            (ValueError, {"cone_angle": 0.0}),
+            (ValueError, {"cone_angle": 4.0}),
+            (ValueError, {"cone_softness": 1.5}),
+            (ValueError, {"focus": -1.0}),
+            (AttributeError, {"custom_attributes": {"test:missing": 1.0}}),
+            (ValueError, {"custom_attributes": {"test:tag": 1.0}}),
+            (Exception, {"xform": (1.0, 2.0)}),
+            (ValueError, {"cast_shadow": np.array([True, False])}),
+        )
+        for error, overrides in invalid:
+            kwargs = {"body": -1, **overrides}
+            with self.subTest(**{k: str(v) for k, v in kwargs.items()}), self.assertRaises(error):
+                builder.add_light(**kwargs)
+        self.assertEqual(builder.light_count, 1)
+        for name in ("light_label", "light_world", "light_body", "light_transform", "light_type", "light_enabled"):
+            self.assertEqual(len(getattr(builder, name)), 1, name)
 
 
 class TestRemovedJointTargetAliases(unittest.TestCase):
