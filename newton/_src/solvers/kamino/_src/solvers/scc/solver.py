@@ -16,7 +16,13 @@ from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.jacobians import SparseSystemJacobians
 from ...kinematics.limits import LimitsKamino
-from ...linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo, LLTBlockedRCMSolver, LLTBlockedSolver
+from ...linalg import (
+    DenseLinearOperatorData,
+    DenseSquareMultiLinearInfo,
+    LDLBlockSparseSolver,
+    LLTBlockedRCMSolver,
+    LLTBlockedSolver,
+)
 from ..common import (
     WarmStartMode,
     apply_dual_preconditioner_to_solution,
@@ -24,6 +30,7 @@ from ..common import (
     warmstart_joint_constraints,
     warmstart_limit_constraints,
 )
+from . import sparse_factor
 from .apgd import UnilateralAPGD
 from .apgd_kernels import guard_convergence
 from .kernels import (
@@ -119,7 +126,7 @@ class SCCSolver:
         self._collect_info: bool = False
         self._size: SizeKamino | None = None
         self._data: SCCData | None = None
-        self._bilateral_solver: LLTBlockedSolver | LLTBlockedRCMSolver | None = None
+        self._bilateral_solver: LLTBlockedSolver | LLTBlockedRCMSolver | LDLBlockSparseSolver | None = None
         self._use_schur_complement: bool = False
         self._max_alternating_iterations: int = 1
         self._bilateral_solve_after_block: tuple[bool, ...] = ()
@@ -325,7 +332,7 @@ class SCCSolver:
         )
 
     def _allocate_bilateral_solver(self, model: ModelKamino):
-        """Allocate the reduced dense operator used for bilateral SCC solves."""
+        """Allocate the bilateral vector layout and the selected factor storage."""
         self._bilateral_solver = None
         self._data.bilateral_operator = None
         if model.size.sum_of_num_bilateral_joint_cts == 0:
@@ -348,11 +355,13 @@ class SCCSolver:
             kwargs.setdefault("factorize_block_size", 64)
             kwargs.setdefault("solve_block_dim", 256)
             solver_class = LLTBlockedSolver
-        else:
+        elif solver_type == "LLTBRCM":
             kwargs.setdefault("capacity_stride", True)
             if self._device.is_cuda and model.size.num_worlds >= 2048:
                 kwargs.setdefault("solve_block_dim", 128)
             solver_class = LLTBlockedRCMSolver
+        else:
+            solver_class = LDLBlockSparseSolver
 
         bilateral_joint_cts_per_world = model.info.num_joint_bilateral_cts.numpy().astype(int).tolist()
         # LLT metadata requires positive blocks; assembly makes zero-row worlds disconnected identities.
@@ -368,7 +377,11 @@ class SCCSolver:
         operator.info.finalize(capacities, dtype=float32, device=self._device)
         self._data.bilateral_dim = wp.array(factor_dims, dtype=wp.int32, device=self._device)
         operator.info.dim = self._data.bilateral_dim
-        operator.mat = wp.zeros(shape=(operator.info.total_mat_size,), dtype=float32, device=self._device)
+        if solver_type == "LDL":
+            rows, edges = sparse_factor.joint_block_pattern(model, capacities)
+            kwargs.update(block_rows=rows, block_edges=edges)
+        else:
+            operator.mat = wp.zeros(shape=(operator.info.total_mat_size,), dtype=float32, device=self._device)
         self._data.state.bilateral_rhs = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
         self._data.state.bilateral_solution = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
         self._data.state.bilateral_preconditioner = wp.zeros(
@@ -376,6 +389,8 @@ class SCCSolver:
         )
         self._data.bilateral_operator = operator
         self._bilateral_solver = solver_class(operator=operator, device=self._device, **kwargs)
+        if solver_type == "LDL":
+            sparse_factor.allocate_response(self._data.state, model.size.num_worlds, self._device)
 
     @staticmethod
     def _check_config(
@@ -931,6 +946,9 @@ class SCCSolver:
         """Extract, symmetrically scale, and factor the bilateral block ``D_bb``."""
         operator = self._data.bilateral_operator
         operator.info.dim = self._data.bilateral_dim
+        if isinstance(self._bilateral_solver, LDLBlockSparseSolver):
+            sparse_factor.factor_dense(self._bilateral_solver, problem, self._data.state.bilateral_preconditioner)
+            return
         wp.launch(
             kernel=_copy_bilateral_block,
             dim=(
@@ -1063,27 +1081,30 @@ class SCCSolver:
         permutation = self._bilateral_solver.P if use_permutation else self._data.state.projected_mio
         unilateral_begin = 0
         unilateral_count = self._max_unilateral_rows
-        wp.launch(
-            kernel=_solve_bilateral_contact_response,
-            dim=(self._size.num_worlds, unilateral_count),
-            inputs=[
-                problem.data.dim,
-                problem.data.mio,
-                problem.data.njc,
-                operator.info.mio,
-                operator.info.maxdim,
-                operator.info.vio,
-                self._data.state.bilateral_preconditioner,
-                self._data.state.projected_mio,
-                problem.data.D,
-                self._bilateral_solver.L,
-                permutation,
-                use_permutation,
-                unilateral_begin,
-                self._data.state.projected_D,
-            ],
-            device=self.device,
-        )
+        if isinstance(self._bilateral_solver, LDLBlockSparseSolver):
+            sparse_factor.response_dense(self, problem)
+        else:
+            wp.launch(
+                kernel=_solve_bilateral_contact_response,
+                dim=(self._size.num_worlds, unilateral_count),
+                inputs=[
+                    problem.data.dim,
+                    problem.data.mio,
+                    problem.data.njc,
+                    operator.info.mio,
+                    operator.info.maxdim,
+                    operator.info.vio,
+                    self._data.state.bilateral_preconditioner,
+                    self._data.state.projected_mio,
+                    problem.data.D,
+                    self._bilateral_solver.L,
+                    permutation,
+                    use_permutation,
+                    unilateral_begin,
+                    self._data.state.projected_D,
+                ],
+                device=self.device,
+            )
         wp.launch(
             kernel=_assemble_bilateral_contact_response,
             dim=(
