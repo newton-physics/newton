@@ -62,7 +62,10 @@ def create_compute_lighting_function(
             L = to_light / dist_to_light
             c = light.attenuation
             falloff = c[0] + c[1] * dist_to_light + c[2] * dist_to_light * dist_to_light
-            attenuation = 1.0 / wp.max(falloff, 1.0e-6)
+            # The coefficients are non-negative and not all zero, so the falloff is positive here.
+            if falloff <= 0.0:
+                return light_contribution
+            attenuation = 1.0 / falloff
             if light.type == wp.static(int(LightType.SPOT)):
                 cos_theta = wp.dot(-L, light.direction)
                 if cos_theta < light.cos_cone_outer:

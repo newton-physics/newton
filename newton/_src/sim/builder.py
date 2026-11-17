@@ -14163,6 +14163,10 @@ class ModelBuilder:
                 # Collect all non-negative world indices for contiguity check
                 all_world_indices.update(non_neg_values)
 
+        # Lights may be declared in any world order (renderers group them by world), but a world that only
+        # contains lights still counts as populated.
+        all_world_indices.update(world for world in self.light_world if world >= 0)
+
         # Check contiguity: all world indices should form a sequence 0, 1, 2, ..., n-1
         if all_world_indices:
             world_list = sorted(all_world_indices)

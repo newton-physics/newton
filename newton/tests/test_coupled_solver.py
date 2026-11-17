@@ -1346,9 +1346,19 @@ class TestSolverCoupledBasic(unittest.TestCase):
     def test_compact_views_hide_lights(self):
         """Hide lights from compact entry views, whose body indices no longer match the model."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="lamp",
+                namespace="test",
+                frequency=newton.Model.AttributeFrequency.BODY,
+                references=newton.Model.AttributeFrequency.LIGHT,
+                dtype=wp.int32,
+                default=-1,
+            )
+        )
         builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         body_a = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        body_b = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        body_b = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), custom_attributes={"test:lamp": 0})
         builder.add_light(body_b, light_type=newton.LightType.POINT, label="mounted")
         builder.add_light(-1, label="fixed")
         external_particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
@@ -1374,6 +1384,9 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(view.light_body.shape[0], 0)
         self.assertEqual(view.light_label, [])
         self.assertEqual(len(model.light_label), 2)
+        # References to the hidden lights become -1.
+        np.testing.assert_array_equal(model.test.lamp.numpy(), [-1, -1, 0])
+        np.testing.assert_array_equal(view.test.lamp.numpy(), [-1, -1])
 
     def test_noncompact_views_hide_cross_entry_attachments(self):
         """Filter attachment ownership even when an owned joint's out-of-entry child prevents compaction."""

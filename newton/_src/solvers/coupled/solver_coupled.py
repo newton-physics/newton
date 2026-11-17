@@ -1984,9 +1984,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.tet_count = len(tet_order)
         view.muscle_count = 0
         # Compact views have no lights: their body indices no longer match the model's lights, and
-        # renderers draw the full model.
+        # renderers draw the full model. The empty LIGHT projection clears the light arrays.
         view.light_count = 0
-        view.light_label = []
         view.curve_count = len(compact.order(frequency.CURVE))
         view.surface_count = len(compact.order(frequency.SURFACE))
         view.volume_count = len(compact.order(frequency.VOLUME))
@@ -2105,6 +2104,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         projections_by_frequency = dict(compact.projections)
         shape_frequency = self.model.AttributeFrequency.SHAPE
         projections_by_frequency[shape_frequency] = _compact_index_projection(shape_order, self.model.shape_count)
+        # Compact views hide every light; references to lights become -1.
+        projections_by_frequency[self.model.AttributeFrequency.LIGHT] = _compact_index_projection(
+            [], self.model.light_count
+        )
         return projections_by_frequency
 
     def _set_compact_custom_frequency_counts(

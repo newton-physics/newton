@@ -4359,6 +4359,19 @@ class TestModelWorld(unittest.TestCase):
         self.assertTrue(np.array_equal(joint_coord_world_start, np.array([7, 9, 11, 13, 27])))
         self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 30, 30])))
 
+    def test_world_with_only_lights_is_contiguous(self):
+        """Count a world that only contains lights when checking that worlds are contiguous."""
+        builder = ModelBuilder()
+        builder.begin_world()
+        builder.add_light(-1)
+        builder.end_world()
+        builder.begin_world()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.end_world()
+        model = builder.finalize(device="cpu")
+        np.testing.assert_array_equal(model.light_world.numpy(), [0])
+        np.testing.assert_array_equal(model.body_world.numpy(), [1])
+
     def test_world_count_tracking(self):
         """Test that world_count is properly tracked when using add_world."""
         main_builder = ModelBuilder()
