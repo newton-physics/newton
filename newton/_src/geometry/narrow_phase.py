@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import math
 from typing import Any
 
@@ -99,6 +100,8 @@ from ..utils.heightfield import (
 from .penetration import create_solve_box_penetration
 
 _SPARSE_GJK_PAIR_CAPACITY_THRESHOLD = 1_000_000
+_CUDA_MAX_REGISTERS_SUPPORTED = "cuda_max_registers" in inspect.signature(wp.kernel).parameters
+_FUSED_CUDA_RESOURCE_PAIR_THRESHOLD = 1_024
 
 
 @wp.func
@@ -1094,6 +1097,7 @@ def create_narrow_phase_kernel_gjk_mpr(
     support_func: Any = None,
     post_process_contact: Any = None,
     speculative: bool = False,
+    _cuda_max_registers: int | None = None,
 ):
     """
     Create a GJK/MPR narrow phase kernel for complex convex shape collisions.
@@ -1110,10 +1114,14 @@ def create_narrow_phase_kernel_gjk_mpr(
     _sf = support_func.__name__ if support_func is not None else "default"
     _ppc = post_process_contact.__name__ if post_process_contact is not None else "default"
     _module = f"narrow_phase_gjk_mpr_{external_aabb}_{speculative}_{writer_func.__name__}_{_sf}_{_ppc}"
+    kernel_options = {}
+    if _cuda_max_registers is not None:
+        _module += f"_r{_cuda_max_registers}"
+        kernel_options["cuda_max_registers"] = _cuda_max_registers
     accelerated_support = support_func in (support_map_accelerated, support_map_lean_accelerated)
     provider_type = AcceleratedSupportMapDataProvider if accelerated_support else SupportMapDataProvider
 
-    @wp.kernel(enable_backward=False, module=_module)
+    @wp.kernel(enable_backward=False, module=_module, **kernel_options)
     def narrow_phase_kernel_gjk_mpr(
         candidate_pair: wp.array[wp.vec2i],
         candidate_pair_count: wp.array[int],
@@ -2780,6 +2788,19 @@ class NarrowPhase:
         if candidate_pair_work_estimate < 0:
             raise ValueError("candidate_pair_work_estimate must be non-negative or None")
         self.split_gjk_mpr = device_obj.is_cuda and has_generic_convex_pairs and split_gjk_mpr
+        # Limit the large fused query's register footprint without changing its
+        # numerical checks. Keep CPU, analytic-only, and split pipelines intact.
+        fused_register_limit = (
+            128
+            if device_obj.is_cuda
+            and has_generic_convex_pairs
+            and candidate_pair_work_estimate >= _FUSED_CUDA_RESOURCE_PAIR_THRESHOLD
+            and not self.split_gjk_mpr
+            and _CUDA_MAX_REGISTERS_SUPPORTED
+            else None
+        )
+        self._fused_block_dim = 32 if fused_register_limit is not None else self.block_dim
+        self._primitive_block_dim = self._fused_block_dim
         # Create the appropriate kernel variants
         # Primitive kernel handles lightweight primitives and routes remaining pairs
         self.primitive_kernel = create_narrow_phase_primitive_kernel(
@@ -2800,6 +2821,7 @@ class NarrowPhase:
                 support_func=support_map_lean_accelerated if convex_support_acceleration else support_map_lean,
                 post_process_contact=post_process_minkowski_only,
                 speculative=speculative,
+                _cuda_max_registers=fused_register_limit,
             )
         else:
             self.narrow_phase_kernel = create_narrow_phase_kernel_gjk_mpr(
@@ -2807,6 +2829,7 @@ class NarrowPhase:
                 contact_func,
                 support_func=support_map_accelerated if convex_support_acceleration else support_map,
                 speculative=speculative,
+                _cuda_max_registers=fused_register_limit,
             )
 
         if self.split_gjk_mpr:
@@ -3086,18 +3109,16 @@ class NarrowPhase:
             else None
         )
         # Split-convex blocks distribute independent serial pair queries across
-        # lanes. Use one warp while preserving the block distribution; lanes
-        # grid-stride over larger block queues. That suits the accelerated
-        # hill-climb support map, whose per-pair cost is long and uneven. The
-        # exhaustive support scan is shorter and far more uniform, and does
-        # better with the full block: num_blocks is sized against self.block_dim,
-        # so the narrower block also launches a quarter of the threads used by
-        # the rest of the narrow phase, which throttles large replicated scenes.
+        # lanes. Accelerated queries retain their one-warp worker budget.
+        # Exhaustive queries spread the existing worker count across one-warp
+        # blocks, avoiding a quarter-sized grid on large replicated scenes.
         if device_obj.is_cuda:
             self.split_convex_block_dim = 32 if convex_support_acceleration else self.block_dim
         else:
             self.split_convex_block_dim = self.block_dim
         self.split_convex_total_num_threads = self.split_convex_block_dim * num_blocks
+        if device_obj.is_cuda:
+            self.split_convex_block_dim = 32
         # One-warp blocks spread sparse, serial-per-lane triangle solves across
         # more SMs without reducing the total number of launched threads.
         self.mesh_triangle_block_dim = 32 if device_obj.is_cuda else self.block_dim
@@ -3266,7 +3287,7 @@ class NarrowPhase:
                         self.total_num_threads,
                     ],
                     device=device,
-                    block_dim=self.block_dim,
+                    block_dim=self._fused_block_dim,
                     record_tape=False,
                 )
 
@@ -3476,7 +3497,7 @@ class NarrowPhase:
                 self._unit_scale_sdf_rescaled,
             ],
             device=device,
-            block_dim=self.block_dim,
+            block_dim=self._primitive_block_dim,
             record_tape=False,
         )
 
