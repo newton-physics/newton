@@ -112,9 +112,18 @@ The importer uses standard point and material representations:
 
 One import call currently accepts one MPM owner scene. The result's
 ``path_particle_map`` maps every imported Points path to its half-open
-particle range, and ``particle_scene_path`` contains the governing
-``UsdPhysics.Scene`` prim path. Solver configuration remains an explicit
-solver-specific step.
+particle range in the importing builder, and ``particle_scene_path`` contains
+the governing ``UsdPhysics.Scene`` prim path. Solver configuration remains an
+explicit solver-specific step.
+
+Each imported Points prim is also recorded as a
+:ref:`point set <deformable-objects>` labeled with its prim path. Unlike
+``path_particle_map``, point sets follow
+:meth:`~newton.ModelBuilder.add_builder` and
+:meth:`~newton.ModelBuilder.replicate`, so use
+:attr:`~newton.Model.point_set_label` or
+:class:`~newton.selection.DeformablePointSetView` to find a Points prim's
+particles in a composed model.
 
 .. code-block:: python
 
@@ -1116,7 +1125,7 @@ Custom Attributes from USD
 USD assets can define custom attributes that become part of the model/state/control attributes, see :ref:`custom_attributes` for more information.
 Besides the programmatic way of defining custom attributes through the :meth:`newton.ModelBuilder.add_custom_attribute` method, Newton's USD importer also supports declaring custom attributes from within a USD stage.
 
-Custom values at ``CURVE``, ``SURFACE``, or ``VOLUME`` frequency are not imported
+Custom values at ``CURVE``, ``SURFACE``, ``VOLUME``, or ``POINT_SET`` frequency are not imported
 automatically yet. See :ref:`usd_deformable_custom_values` for a builder
 assignment example after import.
 

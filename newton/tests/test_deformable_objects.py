@@ -9,7 +9,7 @@ import warnings
 import numpy as np
 
 import newton
-from newton.tests._deformable_test_utils import _add_curve, _add_surface, _add_volume
+from newton.tests._deformable_test_utils import _add_curve, _add_point_set, _add_surface, _add_volume
 from newton.tests.unittest_utils import get_test_devices
 
 
@@ -26,7 +26,7 @@ class TestDeformableObjects(unittest.TestCase):
     def test_empty_builder_has_no_deformable_objects(self):
         """Keep deformable identity lists empty when no objects have been added."""
         builder = newton.ModelBuilder()
-        for family in ("curve", "surface", "volume"):
+        for family in ("curve", "surface", "volume", "point_set"):
             self.assertEqual(getattr(builder, f"{family}_label"), [])
             self.assertEqual(getattr(builder, f"{family}_world"), [])
         model = builder.finalize(device="cpu")
@@ -42,6 +42,7 @@ class TestDeformableObjects(unittest.TestCase):
             ("surface", {"particle": (0, 4), "tri": (0, 2), "edge": (0, 5)}, _add_surface, {"grid": True}),
             ("volume", {"particle": (0, 4), "tet": (0, 1)}, _add_volume, {}),
             ("volume", {"particle": (0, 8), "tet": (0, 5)}, _add_volume, {"grid": True}),
+            ("point_set", {"particle": (0, 4)}, _add_point_set, {}),
         )
         for device in get_test_devices():
             for family, ranges, add, kwargs in constructors:
@@ -57,12 +58,30 @@ class TestDeformableObjects(unittest.TestCase):
                             self.assertEqual(_ranges(builder, family, kind), [bounds])
                             self.assertEqual(getattr(model, f"{kind}_count"), bounds[1])
 
+    def test_particles_record_point_sets_only_with_labels(self):
+        """Record labeled particle batches without recording particles of other constructors."""
+        builder = newton.ModelBuilder()
+        positions = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+        builder.add_particles(positions, [(0.0, 0.0, 0.0)] * 3, [1.0] * 3)
+        builder.add_particle((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 1.0)
+        _add_surface(builder)
+        _add_volume(builder)
+        self.assertEqual((builder.point_set_label, builder.point_set_world), ([], []))
+
+        builder.begin_world()
+        builder.add_particles(positions, [(0.0, 0.0, 0.0)] * 3, [1.0] * 3, label="sand")
+        builder.add_particles([], [], [], label="empty")
+        builder.end_world()
+        self.assertEqual((builder.point_set_label, builder.point_set_world), (["sand", "empty"], [0, 0]))
+        self.assertEqual(_ranges(builder, "point_set", "particle"), [(12, 15), (15, 15)])
+
     def test_builder_label_edits_preserve_simulation_data(self):
         """Retain edited builder labels without changing ranges or finalized physics arrays."""
         builder = newton.ModelBuilder()
         _add_curve(builder)
         _add_surface(builder)
         _add_volume(builder)
+        _add_point_set(builder)
         before = builder.finalize(device="cpu")
         kinds = (
             ("curve", "body"),
@@ -72,16 +91,18 @@ class TestDeformableObjects(unittest.TestCase):
             ("surface", "edge"),
             ("volume", "particle"),
             ("volume", "tet"),
+            ("point_set", "particle"),
         )
         ranges_before = [_ranges(builder, family, kind) for family, kind in kinds]
 
         builder.curve_label[0] = "/Template/Cable"
         builder.surface_label = ["/Template/Cloth"]
         builder.volume_label[:] = ["/Template/Toy"]
+        builder.point_set_label[0] = "/Template/Sand"
         after = builder.finalize(device="cpu")
         self.assertEqual(
-            (builder.curve_label, builder.surface_label, builder.volume_label),
-            (["/Template/Cable"], ["/Template/Cloth"], ["/Template/Toy"]),
+            (builder.curve_label, builder.surface_label, builder.volume_label, builder.point_set_label),
+            (["/Template/Cable"], ["/Template/Cloth"], ["/Template/Toy"], ["/Template/Sand"]),
         )
         self.assertEqual([_ranges(builder, family, kind) for family, kind in kinds], ranges_before)
         for name in ("body_q", "body_mass", "particle_q", "particle_mass", "joint_type", "tri_indices", "tet_indices"):
@@ -90,20 +111,24 @@ class TestDeformableObjects(unittest.TestCase):
     def test_generated_labels_and_repeated_labels(self):
         """Generate one name per constructor call while allowing explicit labels to repeat."""
         builder = newton.ModelBuilder()
-        for add in (_add_curve, _add_surface, _add_volume):
+        for add in (_add_curve, _add_surface, _add_volume, _add_point_set):
             add(builder)
             add(builder)
             add(builder, label="same")
             add(builder, label="same")
-        for family in ("curve", "surface", "volume"):
+        for family in ("curve", "surface", "volume", "point_set"):
             self.assertEqual(getattr(builder, f"{family}_label"), [f"{family}_0", f"{family}_1", "same", "same"])
-        for family, kind, count in (("curve", "body", 3), ("surface", "particle", 4), ("volume", "particle", 4)):
-            offset = 16 if family == "volume" else 0
+        for family, kind, count, offset in (
+            ("curve", "body", 3, 0),
+            ("surface", "particle", 4, 0),
+            ("volume", "particle", 4, 16),
+            ("point_set", "particle", 4, 32),
+        ):
             self.assertEqual(
                 _ranges(builder, family, kind), [(offset + i * count, offset + (i + 1) * count) for i in range(4)]
             )
         model = builder.finalize(device="cpu")
-        self.assertEqual((model.body_count, model.particle_count), (12, 32))
+        self.assertEqual((model.body_count, model.particle_count), (12, 48))
 
     def test_composition_and_replication_offset_every_family(self):
         """Preserve rebased identities and disjoint ranges through both cloning paths."""
@@ -111,9 +136,11 @@ class TestDeformableObjects(unittest.TestCase):
         _add_curve(prototype, topology="graph")
         _add_surface(prototype)
         _add_volume(prototype, grid=True)
+        _add_point_set(prototype)
         prototype.curve_label[0] = "cable"
         prototype.surface_label[0] = "cloth"
         prototype.volume_label[0] = "toy"
+        prototype.point_set_label[0] = "sand"
         prefixes = ["env_0", "env_1"]
 
         for replicate in (False, True):
@@ -125,20 +152,26 @@ class TestDeformableObjects(unittest.TestCase):
                     for prefix in prefixes:
                         scene.add_world(prototype, label_prefix=prefix)
                 model = scene.finalize(device="cpu")
-                for family, label in (("curve", "cable"), ("surface", "cloth"), ("volume", "toy")):
+                for family, label in (
+                    ("curve", "cable"),
+                    ("surface", "cloth"),
+                    ("volume", "toy"),
+                    ("point_set", "sand"),
+                ):
                     self.assertEqual(getattr(scene, f"{family}_label"), [f"{prefix}/{label}" for prefix in prefixes])
                     self.assertEqual(getattr(scene, f"{family}_world"), [0, 1])
                 for family, kind, expected in (
                     ("curve", "body", [(0, 3), (3, 6)]),
                     ("curve", "joint", [(0, 3), (3, 6)]),
-                    ("surface", "particle", [(0, 4), (12, 16)]),
+                    ("surface", "particle", [(0, 4), (16, 20)]),
                     ("surface", "tri", [(0, 2), (14, 16)]),
                     ("surface", "edge", [(0, 5), (23, 28)]),
-                    ("volume", "particle", [(4, 12), (16, 24)]),
+                    ("volume", "particle", [(4, 12), (20, 28)]),
                     ("volume", "tet", [(0, 5), (5, 10)]),
+                    ("point_set", "particle", [(12, 16), (28, 32)]),
                 ):
                     self.assertEqual(_ranges(scene, family, kind), expected)
-                self.assertEqual((model.body_count, model.particle_count, model.world_count), (6, 24, 2))
+                self.assertEqual((model.body_count, model.particle_count, model.world_count), (6, 32, 2))
         self.assertEqual((prototype.curve_label, prototype.curve_world), (["cable"], [-1]))
 
     def test_heterogeneous_worlds_keep_global_and_empty_worlds(self):

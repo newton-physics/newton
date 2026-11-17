@@ -10,7 +10,7 @@ import warp as wp
 
 import newton
 from newton import NewtonWarning
-from newton.tests._deformable_test_utils import _add_curve, _add_surface, _add_volume
+from newton.tests._deformable_test_utils import _add_curve, _add_point_set, _add_surface, _add_volume
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -21,6 +21,7 @@ def test_empty_model_has_empty_public_deformable_arrays(test, device):
         ("curve", ("body", "joint")),
         ("surface", ("particle", "tri", "edge")),
         ("volume", ("particle", "tet")),
+        ("point_set", ("particle",)),
     ):
         with test.subTest(device=device, family=family):
             test.assertEqual(getattr(model, f"{family}_count"), 0)
@@ -40,9 +41,10 @@ def test_mixed_model_exposes_deformable_ranges(test, device):
     _add_curve(builder, label="cable")
     _add_surface(builder, label="cloth")
     _add_volume(builder, label="toy")
+    _add_point_set(builder, label="sand")
     model = builder.finalize(device=device)
 
-    for family, label in (("curve", "cable"), ("surface", "cloth"), ("volume", "toy")):
+    for family, label in (("curve", "cable"), ("surface", "cloth"), ("volume", "toy"), ("point_set", "sand")):
         test.assertEqual(getattr(model, f"{family}_count"), 1)
         test.assertEqual(getattr(model, f"{family}_label"), [label])
         np.testing.assert_array_equal(getattr(model, f"{family}_world").numpy(), [-1])
@@ -55,6 +57,7 @@ def test_mixed_model_exposes_deformable_ranges(test, device):
         ("surface_edge", (0, 5)),
         ("volume_particle", (5, 9)),
         ("volume_tet", (0, 1)),
+        ("point_set_particle", (9, 13)),
     ):
         for suffix, endpoint in zip(("start", "end"), expected, strict=True):
             array = getattr(model, f"{name}_{suffix}")
@@ -551,13 +554,19 @@ class TestModelDeformableObjects(unittest.TestCase):
     def test_model_identities_are_independent_builder_snapshots(self):
         """Copy edited builder labels and keep previously finalized models unchanged."""
         builder = newton.ModelBuilder()
-        for add in (_add_curve, _add_surface, _add_volume):
+        families = (
+            ("curve", _add_curve),
+            ("surface", _add_surface),
+            ("volume", _add_volume),
+            ("point_set", _add_point_set),
+        )
+        for _family, add in families:
             add(builder, label="original")
         before = builder.finalize(device="cpu")
-        for family in ("curve", "surface", "volume"):
+        for family, _add in families:
             getattr(builder, f"{family}_label")[0] = "edited"
         after = builder.finalize(device="cpu")
-        for family, add in (("curve", _add_curve), ("surface", _add_surface), ("volume", _add_volume)):
+        for family, add in families:
             self.assertEqual(getattr(before, f"{family}_label"), ["original"])
             self.assertEqual(getattr(after, f"{family}_label"), ["edited"])
             add(builder, label="later")
@@ -572,6 +581,7 @@ class TestModelDeformableObjects(unittest.TestCase):
         _add_curve(prototype, label="cable", topology="graph")
         _add_surface(prototype, label="cloth")
         _add_volume(prototype, label="toy", grid=True)
+        _add_point_set(prototype, label="sand")
         for replicate in (False, True):
             with self.subTest(replicate=replicate):
                 builder = newton.ModelBuilder()
@@ -581,17 +591,23 @@ class TestModelDeformableObjects(unittest.TestCase):
                     builder.add_world(prototype, label_prefix="a")
                     builder.add_world(prototype, label_prefix="b")
                 model = builder.finalize(device="cpu")
-                for family, label in (("curve", "cable"), ("surface", "cloth"), ("volume", "toy")):
+                for family, label in (
+                    ("curve", "cable"),
+                    ("surface", "cloth"),
+                    ("volume", "toy"),
+                    ("point_set", "sand"),
+                ):
                     self.assertEqual(getattr(model, f"{family}_label"), [f"a/{label}", f"b/{label}"])
                     np.testing.assert_array_equal(getattr(model, f"{family}_world").numpy(), [0, 1])
                 for name, starts, ends in (
                     ("curve_body", [0, 3], [3, 6]),
                     ("curve_joint", [0, 3], [3, 6]),
-                    ("surface_particle", [0, 12], [4, 16]),
+                    ("surface_particle", [0, 16], [4, 20]),
                     ("surface_tri", [0, 14], [2, 16]),
                     ("surface_edge", [0, 23], [5, 28]),
-                    ("volume_particle", [4, 16], [12, 24]),
+                    ("volume_particle", [4, 20], [12, 28]),
                     ("volume_tet", [0, 5], [5, 10]),
+                    ("point_set_particle", [12, 28], [16, 32]),
                 ):
                     np.testing.assert_array_equal(getattr(model, f"{name}_start").numpy(), starts)
                     np.testing.assert_array_equal(getattr(model, f"{name}_end").numpy(), ends)

@@ -871,6 +871,10 @@ class ModelBuilder:
             "tet_start": Model.AttributeFrequency.TETRAHEDRON,
             "tet_end": Model.AttributeFrequency.TETRAHEDRON,
         },
+        "point_set": {
+            "particle_start": Model.AttributeFrequency.PARTICLE,
+            "particle_end": Model.AttributeFrequency.PARTICLE,
+        },
     }
 
     # Lazy snapshots of a plain ModelBuilder's attribute names; see _base_builder_attributes().
@@ -1640,8 +1644,9 @@ class ModelBuilder:
               ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``
 
         For experimental deformable object types, use ``Model.AttributeFrequency.CURVE``,
-        ``SURFACE``, or ``VOLUME``. The strings ``"curve"``, ``"surface"``, and ``"volume"``
-        refer to custom frequencies, regardless of registration order.
+        ``SURFACE``, ``VOLUME``, or ``POINT_SET``. The strings ``"curve"``, ``"surface"``,
+        ``"volume"``, and ``"point_set"`` refer to custom frequencies, regardless of
+        registration order.
         Registration preserves the supplied value of this field.
 
         Special handling:
@@ -2505,7 +2510,8 @@ class ModelBuilder:
         # Applications may edit labels; the builder assigns worlds during construction
         # and cloning. Private [start, end) ranges locate simulation data in builder
         # arrays: rod-backed curves use bodies/joints, triangle surfaces use
-        # particles/triangles/edges, and tetrahedral volumes use particles/tets.
+        # particles/triangles/edges, tetrahedral volumes use particles/tets, and
+        # point sets use particles only.
         self.curve_label: list[str] = []
         """Labels of rod-backed deformable objects, aligned with :attr:`curve_world`.
 
@@ -2603,6 +2609,33 @@ class ModelBuilder:
         """Inclusive tetrahedron-range start of each deformable volume."""
         self._volume_tet_end: list[int] = []
         """Exclusive tetrahedron-range end of each deformable volume."""
+
+        self.point_set_label: list[str] = []
+        """Labels of particle-only deformable objects, aligned with :attr:`point_set_world`.
+
+        :meth:`add_particle_grid` records one point set per call, and
+        :meth:`add_particles` records one when it receives a ``label``.
+        USD imports record one entry per simulation ``Points`` prim.
+        See :ref:`deformable-objects` for builder-time identity updates.
+
+        .. experimental::
+
+           Builder-time deformable object identities may change without notice.
+        """
+        self.point_set_world: list[int] = []
+        """World index corresponding to each entry in :attr:`point_set_label`.
+
+        Assigned by the builder during construction and cloning. Do not edit this list;
+        use the world-assignment methods described in :ref:`deformable-objects`.
+
+        .. experimental::
+
+           Builder-time deformable object identities may change without notice.
+        """
+        self._point_set_particle_start: list[int] = []
+        """Inclusive particle-range start of each deformable point set."""
+        self._point_set_particle_end: list[int] = []
+        """Exclusive particle-range end of each deformable point set."""
 
         self.joint_dof_count: int = 0
         """Total joint DoF count propagated to :attr:`Model.joint_dof_count`."""
@@ -5000,6 +5033,14 @@ class ModelBuilder:
         self._volume_particle_end.append(particle_range[1])
         self._volume_tet_start.append(tet_range[0])
         self._volume_tet_end.append(tet_range[1])
+
+    def _record_point_set_deformable_object(self, label: str | None, particle_range: tuple[int, int]) -> None:
+        """Register a point set as an addressable, world-tagged deformable object."""
+        label = label or f"point_set_{len(self.point_set_label)}"
+        self.point_set_label.append(label)
+        self.point_set_world.append(self.current_world)
+        self._point_set_particle_start.append(particle_range[0])
+        self._point_set_particle_end.append(particle_range[1])
 
     # region importers
     def add_urdf(
@@ -11801,6 +11842,8 @@ class ModelBuilder:
         radius: list[float] | None = None,
         flags: list[int] | None = None,
         custom_attributes: dict[str, Any] | None = None,
+        *,
+        label: str | None = None,
     ):
         """Adds a group of particles to the model.
 
@@ -11811,6 +11854,14 @@ class ModelBuilder:
             radius: The radius of the particles used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
             flags: The flags that control the dynamical behavior of the particles, see :class:`newton.ParticleFlags`.
             custom_attributes: Dictionary of custom attribute names to lists of values (one value for each particle).
+            label: Optional name that records the added particles as one point set in
+                :attr:`point_set_label`. If None, no point set is recorded, so other
+                constructors can add particles without creating one.
+                See :ref:`deformable-objects`.
+
+                .. experimental::
+
+                   Point-set recording may change without notice.
 
         Note:
             Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
@@ -11861,6 +11912,9 @@ class ModelBuilder:
                 custom_attrs=custom_attributes,
                 expected_frequency=Model.AttributeFrequency.PARTICLE,
             )
+
+        if label is not None:
+            self._record_point_set_deformable_object(label, (particle_start, self.particle_count))
 
     def add_attachment_particle_body(
         self,
@@ -12796,6 +12850,7 @@ class ModelBuilder:
         radius_std: float = 0.0,
         flags: list[int] | int | None = None,
         custom_attributes: dict[str, Any] | None = None,
+        label: str | None = None,
     ):
         """
         Adds a regular 3D grid of particles to the model.
@@ -12820,6 +12875,12 @@ class ModelBuilder:
             radius_std: Standard deviation for particle radii. If > 0, radii are sampled from a normal distribution.
             flags: Flags to assign to each particle. If None, uses the builder's default.
             custom_attributes: Dictionary of custom attribute names to values for the particles.
+            label: Optional name appended to :attr:`point_set_label` for this grid; if None,
+                a generated ``point_set_N`` label is used. See :ref:`deformable-objects`.
+
+                .. experimental::
+
+                   Point-set recording may change without notice.
 
         Returns:
             Nothing. The builder is updated in place.
@@ -12872,6 +12933,7 @@ class ModelBuilder:
                     # Scalar value - broadcast to all particles
                     broadcast_custom_attrs[key] = [value] * num_particles
 
+        particle_start = self.particle_count
         self.add_particles(
             pos=points.tolist(),
             vel=velocity.tolist(),
@@ -12880,6 +12942,7 @@ class ModelBuilder:
             flags=flags,
             custom_attributes=broadcast_custom_attrs,
         )
+        self._record_point_set_deformable_object(label, (particle_start, self.particle_count))
 
     def add_soft_grid(
         self,

@@ -421,6 +421,8 @@ class Model:
         """Experimental frequency for recorded deformable volumes (see :attr:`~newton.Model.volume_count`)."""
         ACTUATOR = 26
         """Attribute frequency follows the number of actuators (see :attr:`~newton.Model.actuator_count`)."""
+        POINT_SET = 27
+        """Experimental frequency for recorded deformable point sets (see :attr:`~newton.Model.point_set_count`)."""
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -832,6 +834,14 @@ class Model:
         "volume_tet_end": AttributeSpec(
             AttributeFrequency.VOLUME, references=AttributeFrequency.TETRAHEDRON, compaction_policy="end"
         ),
+        "point_set_label": AttributeSpec(AttributeFrequency.POINT_SET),
+        "point_set_world": AttributeSpec(AttributeFrequency.POINT_SET, references=AttributeFrequency.WORLD),
+        "point_set_particle_start": AttributeSpec(
+            AttributeFrequency.POINT_SET, references=AttributeFrequency.PARTICLE, compaction_policy="range_start"
+        ),
+        "point_set_particle_end": AttributeSpec(
+            AttributeFrequency.POINT_SET, references=AttributeFrequency.PARTICLE, compaction_policy="end"
+        ),
         "constraint_mimic_joint0": AttributeSpec(
             AttributeFrequency.CONSTRAINT_MIMIC,
             references=AttributeFrequency.JOINT,
@@ -876,6 +886,7 @@ class Model:
         AttributeFrequency.CURVE: "curve_count",
         AttributeFrequency.SURFACE: "surface_count",
         AttributeFrequency.VOLUME: "volume_count",
+        AttributeFrequency.POINT_SET: "point_set_count",
     }
 
     class AttributeNamespace:
@@ -1776,6 +1787,19 @@ class Model:
         self.volume_tet_end: wp.array[wp.int32] | None = None
         """Experimental exclusive end of each volume's tetrahedron range, shape [volume_count]."""
 
+        self.point_set_label: list[str] = []
+        """Experimental labels of particle-only deformable objects, shape [point_set_count].
+
+        Copied from :attr:`ModelBuilder.point_set_label` at finalization.
+        Treat this list as read-only; edit labels on the builder.
+        """
+        self.point_set_world: wp.array[wp.int32] | None = None
+        """Experimental world indices for :attr:`point_set_label`, shape [point_set_count]. -1 means global."""
+        self.point_set_particle_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each point set's particle range, shape [point_set_count]."""
+        self.point_set_particle_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each point set's particle range, shape [point_set_count]."""
+
         self.soft_contact_ke: float = 1.0e3
         """Stiffness of soft contacts [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kd: float = 10.0
@@ -1876,6 +1900,8 @@ class Model:
         """Experimental number of recorded triangle-surface deformable objects."""
         self.volume_count: int = 0
         """Experimental number of recorded tetrahedral deformable objects."""
+        self.point_set_count: int = 0
+        """Experimental number of recorded particle-only deformable objects."""
         self.joint_dof_count: int = 0
         """Total number of velocity degrees of freedom of all joints. Equals the number of joint axes."""
         self.joint_coord_count: int = 0
@@ -3467,8 +3493,8 @@ class Model:
                 Use a Model.AttributeFrequency enum for built-in domains or a
                 string for custom frequencies. Existing built-in strings such as
                 ``"body"`` and ``"world"`` are also supported. Use enums for
-                ``CURVE``, ``SURFACE``, and ``VOLUME``; their string names refer
-                to custom frequencies.
+                ``CURVE``, ``SURFACE``, ``VOLUME``, and ``POINT_SET``; their string
+                names refer to custom frequencies.
 
         Raises:
             AttributeError: If the attribute already exists or is on the wrong device.

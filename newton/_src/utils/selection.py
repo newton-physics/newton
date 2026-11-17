@@ -10,7 +10,7 @@ import warnings
 import weakref
 from fnmatch import fnmatch
 from types import NoneType
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
 import warp as wp
@@ -2734,16 +2734,25 @@ _scatter_object_spatial_kernel = wp.overload(
 
 
 class _DeformableViewBase:
-    """Share family-filtered selection, element ranges, and state-array access."""
+    """Share family-filtered selection, element ranges, and state-array access.
+
+    Subclasses name their geometric family and the element ranges it records.
+    State accessors come from the particle and body state mixins.
+    """
+
+    _family: ClassVar[Literal["curve", "surface", "volume", "point_set"]]
+    """Geometric family whose ``Model`` labels, worlds, and ranges this view selects."""
+    _range_attributes: ClassVar[tuple[tuple[str, str], ...]]
+    """Pairs of element kind and the infix of its ``Model.<family>_<infix>_start/end`` range arrays."""
 
     def __init__(
         self,
         model: Model,
         pattern: str | list[str] | re.Pattern[str] | list[int],
         *,
-        family: Literal["curve", "surface", "volume"],
         verbose: bool | None = None,
     ) -> None:
+        family = self._family
         self.model = model
         self.device = model.device
 
@@ -2826,13 +2835,8 @@ class _DeformableViewBase:
         self._required_lengths: dict[str, int] = {}
         # Key by the container, not the array: cached array views retain their backing arrays.
         self._attribute_arrays = weakref.WeakKeyDictionary()
-        range_attributes = {
-            "curve": {"body": "body", "joint": "joint"},
-            "surface": {"particle": "particle", "triangle": "tri", "edge": "edge"},
-            "volume": {"particle": "particle", "tetrahedron": "tet"},
-        }[family]
-        self._kinds = tuple(range_attributes)
-        for kind, attribute in range_attributes.items():
+        self._kinds = tuple(kind for kind, _attribute in self._range_attributes)
+        for kind, attribute in self._range_attributes:
             starts = getattr(model, f"{family}_{attribute}_start").numpy()
             ends = getattr(model, f"{family}_{attribute}_end").numpy()
             kind_ranges = [(int(starts[i]), int(ends[i])) for i in flat_ids]
@@ -2884,8 +2888,9 @@ class _DeformableViewBase:
         """Elements of ``kind`` per selected deformable object, or ``None`` when counts differ.
 
         Current rods record ``body``/``joint`` ranges, triangle surfaces record
-        ``particle``/``triangle``/``edge`` ranges, and tetrahedral volumes record
-        ``particle``/``tetrahedron`` ranges. Batched reads and writes require a
+        ``particle``/``triangle``/``edge`` ranges, tetrahedral volumes record
+        ``particle``/``tetrahedron`` ranges, and point sets record ``particle``
+        ranges. Batched reads and writes require a
         common count; :meth:`ranges` remains available when counts differ.
         ``particle_count`` and ``body_count`` are convenience properties for
         this query on their corresponding state element kinds.
@@ -3204,8 +3209,12 @@ class _DeformableViewBase:
         )
 
 
-class _DeformableParticleView(_DeformableViewBase):
-    """Share particle state and property access without prescribing a geometric family."""
+class _ParticleStateMixin:
+    """Read and write particle state for deformable views whose family records particle ranges.
+
+    Combine with :class:`_DeformableViewBase`, which provides the selection and
+    the gather/scatter helpers used here.
+    """
 
     @property
     def particle_count(self) -> int | None:
@@ -3349,8 +3358,12 @@ class _DeformableParticleView(_DeformableViewBase):
         self._scatter("particle", values, _scatter_object_vec3_kernel, target.particle_qd, wp.vec3, mask)
 
 
-class _DeformableBodyView(_DeformableViewBase):
-    """Read and write body state for selected deformable objects."""
+class _BodyStateMixin:
+    """Read and write body state for deformable views whose family records body ranges.
+
+    Combine with :class:`_DeformableViewBase`, which provides the selection and
+    the gather/scatter helpers used here.
+    """
 
     @property
     def body_count(self) -> int | None:
@@ -3460,7 +3473,7 @@ class _DeformableBodyView(_DeformableViewBase):
         self._scatter("body", values, _scatter_object_spatial_kernel, target.body_qd, wp.spatial_vector, mask)
 
 
-class DeformableCurveView(_DeformableBodyView):
+class DeformableCurveView(_BodyStateMixin, _DeformableViewBase):
     """Select curves by label and read or update their segment body state.
 
     .. experimental::
@@ -3469,7 +3482,7 @@ class DeformableCurveView(_DeformableBodyView):
 
     Currently supports rod-backed curves with body and joint ranges. The family
     describes geometry, not a solver: particle-based curves are not supported yet.
-    Matching surfaces and volumes are excluded from the selection.
+    Matching surfaces, volumes, and point sets are excluded from the selection.
 
     After fixed-joint collapse, the view describes the curve's surviving segment
     bodies and joints. Curves with no remaining bodies are omitted. Use
@@ -3487,17 +3500,11 @@ class DeformableCurveView(_DeformableBodyView):
             logging level.
     """
 
-    def __init__(
-        self,
-        model: Model,
-        pattern: str | list[str] | re.Pattern[str] | list[int],
-        *,
-        verbose: bool | None = None,
-    ) -> None:
-        super().__init__(model, pattern, family="curve", verbose=verbose)
+    _family = "curve"
+    _range_attributes = (("body", "body"), ("joint", "joint"))
 
 
-class DeformableSurfaceView(_DeformableParticleView):
+class DeformableSurfaceView(_ParticleStateMixin, _DeformableViewBase):
     """Select surfaces by label and read or update their particle state.
 
     .. experimental::
@@ -3506,8 +3513,8 @@ class DeformableSurfaceView(_DeformableParticleView):
 
     Currently supports triangle surfaces with particle, triangle, and edge ranges.
     Particle getters also read inverse masses and flags from the Model.
-    The family describes geometry, not a solver. Matching curves and volumes are
-    excluded from the selection.
+    The family describes geometry, not a solver. Matching curves, volumes, and
+    point sets are excluded from the selection.
 
     See :ref:`deformable-selection` for world layout, getter-result lifetime,
     masked writes, and CUDA graph capture.
@@ -3520,17 +3527,11 @@ class DeformableSurfaceView(_DeformableParticleView):
             logging level.
     """
 
-    def __init__(
-        self,
-        model: Model,
-        pattern: str | list[str] | re.Pattern[str] | list[int],
-        *,
-        verbose: bool | None = None,
-    ) -> None:
-        super().__init__(model, pattern, family="surface", verbose=verbose)
+    _family = "surface"
+    _range_attributes = (("particle", "particle"), ("triangle", "tri"), ("edge", "edge"))
 
 
-class DeformableVolumeView(_DeformableParticleView):
+class DeformableVolumeView(_ParticleStateMixin, _DeformableViewBase):
     """Select volumes by label and read or update their particle state.
 
     .. experimental::
@@ -3539,8 +3540,9 @@ class DeformableVolumeView(_DeformableParticleView):
 
     Currently supports tetrahedral volumes with particle and tetrahedron ranges.
     Particle getters also read inverse masses and flags from the Model.
-    The family describes geometry, not a solver: solver-owned MPM data is not
-    supported. Matching curves and surfaces are excluded from the selection.
+    The family describes geometry, not a solver. Particle-only objects such as
+    MPM materials are point sets; use :class:`DeformablePointSetView` for them.
+    Matching curves, surfaces, and point sets are excluded from the selection.
 
     See :ref:`deformable-selection` for world layout, getter-result lifetime,
     masked writes, and CUDA graph capture.
@@ -3553,11 +3555,37 @@ class DeformableVolumeView(_DeformableParticleView):
             logging level.
     """
 
-    def __init__(
-        self,
-        model: Model,
-        pattern: str | list[str] | re.Pattern[str] | list[int],
-        *,
-        verbose: bool | None = None,
-    ) -> None:
-        super().__init__(model, pattern, family="volume", verbose=verbose)
+    _family = "volume"
+    _range_attributes = (("particle", "particle"), ("tetrahedron", "tet"))
+
+
+class DeformablePointSetView(_ParticleStateMixin, _DeformableViewBase):
+    """Select point sets by label and read or update their particle state.
+
+    .. experimental::
+
+       This API may change while deformable selection is developed.
+
+    Point sets are particle-only deformable objects, such as granular, snow, or
+    fluid materials, with particle ranges and no connectivity. They are recorded
+    by :meth:`~newton.ModelBuilder.add_particle_grid`, by
+    :meth:`~newton.ModelBuilder.add_particles` with a ``label``, and by USD
+    simulation ``Points`` imports. Particle getters also read inverse masses and
+    flags from the Model. Solver-owned per-particle state, such as MPM
+    deformation history, is not covered by the view's accessors; use
+    :meth:`ranges` to address it. Matching curves, surfaces, and volumes are
+    excluded from the selection.
+
+    See :ref:`deformable-selection` for world layout, getter-result lifetime,
+    masked writes, and CUDA graph capture.
+
+    Args:
+        model: Model containing the finalized deformable objects.
+        pattern: Label glob, list of label globs, compiled regular expression,
+            or unique ascending indices into :attr:`~newton.Model.point_set_label`.
+        verbose: If True, log a short selection summary. If None, follow Warp's
+            logging level.
+    """
+
+    _family = "point_set"
+    _range_attributes = (("particle", "particle"),)
