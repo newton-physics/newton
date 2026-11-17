@@ -156,7 +156,13 @@ automatically. For the hydroelastic opt-in, follow
 :ref:`mujoco-hydroelastic-patch-response` and set mode ``0`` on both shapes
 before constructing the solver.
 
-If an existing model uses force-space mode, evaluate damping and timestep safety
+For hydroelastic patch pressure contacts with the default pressure law, tune
+``kh`` instead of ``ke``/``kd``; normal damping is automatic. If increasing
+``kh`` no longer reduces penetration, reduce ``dt`` or increase substeps.
+The gain and ``solimp`` recipes below exclude these contacts; see
+:ref:`mujoco-hydroelastic-patch-response`.
+
+For other force-space contacts, evaluate damping and timestep safety
 with :ref:`contact-stiffness-sanity-checks`. The mode does not add friction,
 normal force, contacts, or controller effort. If ``refsafe`` limits the requested
 positive-format response, reduce ``dt`` or increase substeps rather than

@@ -510,6 +510,9 @@ Set the mode when adding each hydroelastic shape, before constructing the solver
         custom_attributes={"mujoco:solref_mode": 0},
     )
 
+USD assets cannot select this mode directly. For imported shapes, set
+``mujoco:solref_mode`` in the builder after import and before finalization.
+
 Use MuJoCo-Warp with Newton contacts (``use_mujoco_contacts=False``),
 ``cone="elliptic"``, and Euler, implicit, or implicitfast integration. Recreate the solver and CUDA
 graphs after changing which shapes select this mode. Default, raw, and mixed
@@ -517,8 +520,10 @@ pairs keep their existing response. Other solver settings use the existing
 contact mapping. Existing force-space hydroelastic pairs change response and
 may need retuning.
 
-This mode chooses normal damping automatically; ``kd`` and per-contact damping
-do not tune it. It also limits stiffness and damping according to the timestep.
+This mode takes normal stiffness from contact geometry and the pressure law
+(``kh`` for the default law), so ``ke`` does not tune it. It chooses normal
+damping automatically; ``kd`` and per-contact damping do not tune it.
+It also limits stiffness and damping according to the timestep.
 Use smaller steps if this limit makes a stiff patch too soft. Friction uses a
 damping rate of ``1 / dt`` for any positive ``kf``; changing its positive value
 does not tune this rate. ``kf=0`` still disables friction.
