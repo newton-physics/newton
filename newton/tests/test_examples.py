@@ -85,6 +85,10 @@ _DIFFSIM_DRONE_LOSS_OUTPUT_RE = rf"(?:{_DIFFSIM_DRONE_LOSS_LINE_RE}){{10}}"
 _DIFFSIM_BACKFLIP_GRADIENT_OUTPUT_RE = (
     r"settle done: z_stand=\d\.\d{4}\n"
     r"(?:grad check qd?\[\d+\]: tape=-?\d\.\d{5}e[+-]\d{2} fd=-?\d\.\d{5}e[+-]\d{2} rel=\d\.\d{2}e[+-]\d{2}\n?){6}"
+    # the loss-stage adjoint guard line (pinned: if it stops printing, the
+    # guard itself has been removed)
+    r"loss-stage adjoint guard: order tape=-?\d\.\d{5}e[+-]\d{2} fd=-?\d\.\d{5}e[+-]\d{2}; "
+    r"band tape=-?\d\.\d{5}e[+-]\d{2} fd=-?\d\.\d{5}e[+-]\d{2}\n"
     r"gradient check passed"
 )
 _BASIC_PLOTTING_OUTPUT_RE = (
