@@ -261,6 +261,7 @@ def eval_mujoco_coupling_gravity_acceleration_kernel(
     body_world: wp.array[wp.int32],
     mjc_body_to_newton: wp.array2d[wp.int32],
     body_gravcomp: wp.array2d[float],
+    option_world: int,
     out: wp.array[wp.vec3],
 ):
     body = wp.tid()
@@ -269,8 +270,12 @@ def eval_mujoco_coupling_gravity_acceleration_kernel(
         gravity_world = body_world[body]
 
     mujoco_world = int(0)
-    if body_gravcomp.shape[0] > 1 and gravity_world >= 0:
-        mujoco_world = gravity_world
+    if body_gravcomp.shape[0] > 1:
+        if gravity_world >= 0:
+            mujoco_world = gravity_world
+    else:
+        # A single MuJoCo world applies one gravity to all its bodies; see update_model_properties_kernel.
+        gravity_world = option_world
 
     g = wp.vec3(0.0, 0.0, 0.0)
     if gravity_world >= -1 and gravity_world < gravity.shape[0]:
@@ -459,16 +464,13 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
-    # Values to clear - see _zero_collision_arrays kernel from mujoco_warp
-    nworld_in: int,
-    ncollision_out: wp.array[int],
     # Fast-path generation tracking
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
     tid_to_cid: wp.array[wp.int32],
 ):
-    # nacon_out must be zeroed before this kernel is launched so that
-    # wp.atomic_add below produces the correct compacted count.
+    # nacon_out is scratch storage, initialized to zero by the solver and
+    # reset by _sync_nacon_count after each pass.
     #
     # When the contact set hasn't changed since the last full pass
     # (contact_generation == last_contact_generation), the kernel takes a
@@ -497,7 +499,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     count,
                     naconmax,
                 )
-            ncollision_out[0] = 0
 
         if count > naconmax:
             count = naconmax
@@ -729,10 +730,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
         # and is invariant across substeps.  The fast path is only correct
         # when collide() has not been called since the last full pass.
 
-        # _sync_nacon_count restores nacon_out from the full pass.
-        if tid == 0:
-            ncollision_out[0] = 0
-
         cid = tid_to_cid[tid]
         # Defensive bounds check: a stale tid_to_cid (e.g. cached from a
         # previous mjw_data with larger naconmax) could otherwise produce
@@ -782,17 +779,22 @@ def convert_newton_contacts_to_mjwarp_kernel(
 @wp.kernel(enable_backward=False)
 def _sync_nacon_count(
     nacon: wp.array[wp.int32],
+    contact_count: wp.array[wp.int32],
+    ncollision: wp.array[wp.int32],
     last_nacon_count: wp.array[wp.int32],
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
 ):
-    """Snapshot nacon after a full conversion pass, or restore it after a fast pass."""
+    """Publish the compacted count and reset scratch storage for the next pass."""
     gen = contact_generation[0]
     if gen == last_contact_generation[0]:
         nacon[0] = last_nacon_count[0]
     else:
-        last_nacon_count[0] = nacon[0]
+        nacon[0] = contact_count[0]
+        last_nacon_count[0] = contact_count[0]
         last_contact_generation[0] = gen
+    contact_count[0] = 0
+    ncollision[0] = 0
 
 
 @wp.kernel
@@ -1093,9 +1095,10 @@ def sync_qpos0_kernel(
     joint_qd_start: wp.array[wp.int32],
     joint_dof_dim: wp.array2d[wp.int32],
     joint_child: wp.array[wp.int32],
+    joint_X_c: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
     dof_ref: wp.array[wp.float32],
-    dof_springref: wp.array[wp.float32],
+    joint_rest_q: wp.array[wp.float32],
     mj_q_start: wp.array[wp.int32],
     # outputs
     qpos0: wp.array2d[wp.float32],
@@ -1103,9 +1106,9 @@ def sync_qpos0_kernel(
 ):
     """Sync MuJoCo qpos0 and qpos_spring from Newton model data.
 
-    For hinge/slide: qpos0 = ref, qpos_spring = springref.
+    For hinge/slide: qpos0 = ref, qpos_spring = joint_rest_q + ref.
     For free: qpos0 from body_q (pos + quat in wxyz order).
-    For ball: qpos0 = [1, 0, 0, 0] (identity quaternion in wxyz).
+    For ball: qpos0 = [1, 0, 0, 0] (identity quaternion in wxyz), qpos_spring from joint_rest_q.
     """
     worldid, jntid = wp.tid()
 
@@ -1116,6 +1119,7 @@ def sync_qpos0_kernel(
 
     type = joint_type[jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+    wq_i = joint_q_start[joints_per_world * worldid + jntid]
 
     if type == JointType.FREE:
         child = joint_child[jntid]
@@ -1140,10 +1144,9 @@ def sync_qpos0_kernel(
         qpos0[worldid, q_i + 1] = 0.0
         qpos0[worldid, q_i + 2] = 0.0
         qpos0[worldid, q_i + 3] = 0.0
-        qpos_spring[worldid, q_i + 0] = 1.0
-        qpos_spring[worldid, q_i + 1] = 0.0
-        qpos_spring[worldid, q_i + 2] = 0.0
-        qpos_spring[worldid, q_i + 3] = 0.0
+        rest_wxyz = ball_spring_rest_wxyz(joint_X_c[joints_per_world * worldid + jntid], joint_rest_q, wq_i)
+        for i in range(4):
+            qpos_spring[worldid, q_i + i] = rest_wxyz[i]
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):
@@ -1151,10 +1154,40 @@ def sync_qpos0_kernel(
             springref = float(0.0)
             if dof_ref:
                 ref = dof_ref[wqd_i + i]
-            if dof_springref:
-                springref = dof_springref[wqd_i + i]
+            springref = joint_rest_q[wq_i + i] + ref
             qpos0[worldid, q_i + i] = ref
             qpos_spring[worldid, q_i + i] = springref
+
+
+@wp.kernel
+def sync_ball_qpos_spring_kernel(
+    joints_per_world: int,
+    joint_type: wp.array[wp.int32],
+    joint_q_start: wp.array[wp.int32],
+    joint_X_c: wp.array[wp.transform],
+    joint_rest_q: wp.array[wp.float32],
+    mj_q_start: wp.array[wp.int32],
+    # outputs
+    qpos_spring: wp.array2d[wp.float32],
+):
+    """Refresh BALL qpos_spring after a child joint frame change."""
+    worldid, jntid = wp.tid()
+    q_i = mj_q_start[jntid]
+    if q_i < 0 or joint_type[jntid] != JointType.BALL:
+        return
+    wj = joints_per_world * worldid + jntid
+    rest_wxyz = ball_spring_rest_wxyz(joint_X_c[wj], joint_rest_q, joint_q_start[wj])
+    for i in range(4):
+        qpos_spring[worldid, q_i + i] = rest_wxyz[i]
+
+
+@wp.func
+def ball_spring_rest_wxyz(X_c: wp.transform, joint_rest_q: wp.array[wp.float32], wq_i: int) -> wp.quat:
+    """Express a BALL rest quaternion in MuJoCo's wxyz child-frame coordinates."""
+    # Same child-frame conjugation as convert_warp_coords_to_mj_kernel applies to joint_q.
+    q_cj = X_c.q
+    rest = wp.quat(joint_rest_q[wq_i + 0], joint_rest_q[wq_i + 1], joint_rest_q[wq_i + 2], joint_rest_q[wq_i + 3])
+    return quat_xyzw_to_wxyz(q_cj * rest * wp.quat_inverse(q_cj))
 
 
 @wp.kernel
@@ -1606,35 +1639,21 @@ def apply_mjc_body_f_kernel(
     mjc_body_to_newton: wp.array2d[wp.int32],
     body_flags: wp.array[wp.int32],
     body_f: wp.array[wp.spatial_vector],
-    body_mass: wp.array[float],
-    body_world: wp.array[wp.int32],
-    gravity: wp.array[wp.vec3],
-    body_gravcomp: wp.array2d[float],
     # outputs
     xfrc_applied: wp.array2d[wp.spatial_vector],
 ):
     """Apply Newton body forces to MuJoCo xfrc_applied array.
 
     Iterates over MuJoCo bodies [world, mjc_body], looks up the Newton body
-    index, copies its force, and corrects for body-specific gravity when a
-    MuJoCo world contains both local and global bodies.
+    index, and copies its force (zero if ``body_f`` is not given).
     """
     world, mjc_body = wp.tid()
     newton_body = mjc_body_to_newton[world, mjc_body]
-    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
+    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0 or not body_f:
         xfrc_applied[world, mjc_body] = wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0))
         return
 
-    f = body_f[newton_body]
-    v = wp.vec3(f[0], f[1], f[2])
-    w = wp.vec3(f[3], f[4], f[5])
-
-    gravity_world = body_world[newton_body]
-    if gravity_world >= -1 and gravity_world < gravity.shape[0]:
-        gravcomp = body_gravcomp[world, mjc_body]
-        v += body_mass[newton_body] * (1.0 - gravcomp) * (gravity[gravity_world] - gravity[world])
-
-    xfrc_applied[world, mjc_body] = wp.spatial_vector(v, w)
+    xfrc_applied[world, mjc_body] = body_f[newton_body]
 
 
 @wp.kernel
@@ -2029,6 +2048,7 @@ def update_actuator_properties_kernel(
     newton_actuator_dynprm: wp.array[vec10],
     newton_actuator_ctrlrange: wp.array[wp.vec2],
     newton_actuator_forcerange: wp.array[wp.vec2],
+    newton_actuator_has_forcerange: wp.array[wp.int32],
     newton_actuator_actrange: wp.array[wp.vec2],
     newton_actuator_gear: wp.array[wp.spatial_vector],
     newton_actuator_cranklength: wp.array[float],
@@ -2046,8 +2066,7 @@ def update_actuator_properties_kernel(
 ):
     """Update MuJoCo actuator properties from Newton custom attributes.
 
-    JOINT_TARGET actuators take gains from joint target arrays, but their control ranges still come from the
-    corresponding MuJoCo actuator custom attributes.
+    JOINT_TARGET gains come from joint arrays; control and authored force ranges come from actuator attributes.
 
     Args:
         mjc_actuator_ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
@@ -2058,6 +2077,7 @@ def update_actuator_properties_kernel(
         newton_actuator_dynprm: Newton's model.mujoco.actuator_dynprm
         newton_actuator_ctrlrange: Newton's model.mujoco.actuator_ctrlrange
         newton_actuator_forcerange: Newton's model.mujoco.actuator_forcerange
+        newton_actuator_has_forcerange: Whether each Newton actuator has an authored force range
         newton_actuator_actrange: Newton's model.mujoco.actuator_actrange
         newton_actuator_gear: Newton's model.mujoco.actuator_gear
         newton_actuator_cranklength: Newton's model.mujoco.actuator_cranklength
@@ -2075,6 +2095,8 @@ def update_actuator_properties_kernel(
     actuator_ctrlrange[world, actuator] = newton_actuator_ctrlrange[world_newton_idx]
 
     if source != CTRL_SOURCE_CTRL_DIRECT:
+        if newton_actuator_has_forcerange and newton_actuator_has_forcerange[world_newton_idx]:
+            actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
         return
 
     # High-level DC-motor parameters and force ranges are resolved together
@@ -2117,9 +2139,11 @@ def update_dof_force_properties_kernel(
 
     dof_frictionloss[world, mjc_dof] = joint_friction[newton_dof]
     if joint_damping:
-        dof_damping[world, mjc_dof] = joint_damping[newton_dof]
+        damping = joint_damping[newton_dof]
         if actuator_dof_damping:
-            dof_damping[world, mjc_dof] += actuator_dof_damping[mjc_dof]
+            damping += actuator_dof_damping[mjc_dof]
+        # Each [world, dof] has one writer; avoid lowering += to an atomic.
+        dof_damping[world, mjc_dof] = damping
     if dof_solimp:
         dof_solimp_out[world, mjc_dof] = dof_solimp[newton_dof]
     if dof_solref:
@@ -2379,8 +2403,8 @@ def update_joint_transforms_kernel(
     body_pos[world, mjc_body] = tf.p
     body_quat[world, mjc_body] = quat_xyzw_to_wxyz(tf.q)
 
-    # Update joint axis and position (DOF-indexed for axis)
-    if newton_dof >= 0:
+    # Only hinge and slide joints use a motion axis.
+    if newton_dof >= 0 and jtype >= 2:
         axis = newton_joint_axis[newton_dof]
         jnt_axis[world, mjc_jnt] = wp.quat_rotate(child_xform.q, axis)
     jnt_pos[world, mjc_jnt] = child_xform.p
@@ -2390,11 +2414,13 @@ def update_joint_transforms_kernel(
 def update_model_properties_kernel(
     # Newton model properties
     gravity_src: wp.array[wp.vec3],
+    option_world: int,
     # MuJoCo model properties
     gravity_dst: wp.array[wp.vec3f],
 ):
     world_idx = wp.tid()
-    gravity_dst[world_idx] = gravity_src[world_idx]
+    # A single MuJoCo world that simulates global world -1 (option_world < 0) uses its gravity.
+    gravity_dst[world_idx] = gravity_src[wp.where(option_world < 0, option_world, world_idx)]
 
 
 @wp.kernel
@@ -3010,9 +3036,11 @@ def update_tendon_properties_kernel(
     if tendon_stiffness:
         tendon_stiffness_out[world, mjc_tendon] = tendon_stiffness[newton_tendon]
     if tendon_damping:
-        tendon_damping_out[world, mjc_tendon] = tendon_damping[newton_tendon]
+        damping = tendon_damping[newton_tendon]
         if actuator_tendon_damping:
-            tendon_damping_out[world, mjc_tendon] += actuator_tendon_damping[mjc_tendon]
+            damping += actuator_tendon_damping[mjc_tendon]
+        # Each [world, tendon] has one writer; keep accumulation local.
+        tendon_damping_out[world, mjc_tendon] = damping
     if tendon_frictionloss:
         tendon_frictionloss_out[world, mjc_tendon] = tendon_frictionloss[newton_tendon]
     if tendon_range:

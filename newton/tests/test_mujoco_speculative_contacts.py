@@ -160,9 +160,8 @@ class TestMuJoCoSpeculativeContacts(unittest.TestCase):
         body = builder.add_body()
         builder.add_shape_box(body, hx=0.01, hy=0.01, hz=0.01)
         model = builder.finalize(device="cuda:0")
-        for options in ({}, {"use_mujoco_contacts": False, "use_mujoco_cpu": True}):
-            with self.subTest(options=options), self.assertRaises(ValueError):
-                SolverMuJoCo(model, use_speculative_contacts=True, **options)
+        with self.assertRaisesRegex(ValueError, "requires Newton contacts"):
+            SolverMuJoCo(model, use_speculative_contacts=True)
         with self.assertRaisesRegex(ValueError, "Euler or implicitfast"):
             SolverMuJoCo(model, use_mujoco_contacts=False, use_speculative_contacts=True, integrator="rk4")
         solver = SolverMuJoCo(model, use_mujoco_contacts=False, use_speculative_contacts=True)

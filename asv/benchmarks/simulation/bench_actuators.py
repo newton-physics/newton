@@ -45,7 +45,9 @@ class _ActuatorBenchmark:
 
     ``drive`` selects the response: ``implicit`` (from
     :meth:`JointSpaceResponse.refresh`, usable with any solver) or
-    ``implicit_from_solve`` (from MuJoCo's factorized inertia).
+    ``implicit_from_solve`` (from MuJoCo's factorized inertia), and
+    ``implicit_bias`` (``implicit`` with the gravity and Coriolis bias force
+    from :func:`newton.eval_inverse_dynamics_passive`).
     Each CUDA graph replay advances two steps.
     """
 
@@ -92,6 +94,12 @@ class _ActuatorBenchmark:
             self.response = JointSpaceResponse(model)
             self.actuator.set_effort_mode_implicit(self.response)
             self.solve_inverse = None
+            self.bias_force = None
+            if drive == "implicit_bias":
+                dof_count = model.joint_dof_count
+                self.gravity_force = wp.zeros(dof_count, dtype=float)
+                self.coriolis_force = wp.zeros(dof_count, dtype=float)
+                self.bias_force = wp.zeros(dof_count, dtype=float)
             if drive == "implicit_from_solve":
                 import mujoco_warp  # noqa: PLC0415
 
@@ -118,8 +126,13 @@ class _ActuatorBenchmark:
             self.response.refresh_from_solve(self.solve_inverse, dof_map=self.solver.mjc_dof_to_newton_dof)
         else:
             self.response.refresh(state_in)
+        if self.bias_force is not None:
+            newton.eval_inverse_dynamics_passive(
+                self.model, state_in, gravity_force=self.gravity_force, coriolis_force=self.coriolis_force
+            )
+            wp.map(wp.add, self.gravity_force, self.coriolis_force, out=self.bias_force)
         self.control.joint_f.zero_()
-        self.actuator.step(state_in, self.control, dt=self.DT)
+        self.actuator.step(state_in, self.control, dt=self.DT, bias_force=self.bias_force)
         self.solver.step(state_in, state_out, self.control, None, self.DT)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
@@ -131,12 +144,14 @@ class _ActuatorBenchmark:
     def teardown(self, drive, world_count):
         if not np.all(np.isfinite(self.state_0.joint_q.numpy())):
             raise RuntimeError("Actuator benchmark produced non-finite joint positions.")
+        if self.bias_force is not None and not np.any(self.bias_force.numpy()):
+            raise RuntimeError("Actuator benchmark produced an all-zero bias force.")
 
 
 class ActuatorG1(_ActuatorBenchmark):
     """Time 200 steps of 1024 G1 robots on SolverMuJoCo for each response source."""
 
-    params = [["implicit", "implicit_from_solve"], [1024]]
+    params = [["implicit", "implicit_from_solve", "implicit_bias"], [1024]]
     repeat = 3
 
 

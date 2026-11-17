@@ -26,11 +26,11 @@ __all__ = [
     "ConfigBase",
     "ConstrainedDynamicsConfig",
     "ConstraintStabilizationConfig",
-    "DVIAPGDConfig",
-    "DVISolverConfig",
     "ForwardKinematicsSolverConfig",
     "LOXSolverConfig",
     "PADMMSolverConfig",
+    "SCCAPGDConfig",
+    "SCCSolverConfig",
 ]
 
 
@@ -224,14 +224,34 @@ class CollisionDetectorConfig(ConfigBase):
         self.validate()
 
 
+_CONSTRAINT_RECOVERY_FIELDS = (
+    "joint_recovery_time",
+    "joint_recovery_speed",
+    "limit_recovery_time",
+    "limit_recovery_speed",
+    "contact_recovery_time",
+    "contact_recovery_speed",
+    "contact_compliance",
+    "limit_compliance",
+)
+
+
 @dataclass
 class ConstraintStabilizationConfig(ConfigBase):
     """
     A container to hold configurations for global constraint stabilization parameters.
 
-    These parameters serve as global defaults/overrides, to be used
-    in combination with the per-constraint stabilization parameters
-    specified in the model, if the latter are provided.
+    PADMM and SCC share these settings. The recovery times are the spring-damper
+    time scales ``c / k`` [s], giving the Euler positional bias ``phi / (dt + time)``.
+    Compliant rows under Moreau use the midpoint violation and ``dt / 2 + time``.
+    Their speed caps apply only to positional recovery. Bilateral joints remain
+    hard; contacts and limits can opt into model stiffness/damping.
+
+    The dimensionless ``alpha``, ``beta``, and ``gamma`` fields retain their
+    legacy meaning. They apply to hard rows without an explicit recovery time.
+    A recovery time takes precedence over the corresponding legacy fraction.
+    Leaving all new settings at their defaults preserves the existing law.
+    The new settings currently support PADMM and SCC, not LOX.
     """
 
     alpha: float = 0.01
@@ -258,8 +278,70 @@ class ConstraintStabilizationConfig(ConfigBase):
     delta: float = 1.0e-6
     """
     Contact penetration margin used for unilateral contact constraints.\n
+    Contacts within this distance [m] of touching get no stabilization bias, and external
+    contacts separated by no more than it are never culled as speculative.\n
     Must be non-negative.\n
     Defaults to `1.0e-6`.
+    """
+
+    joint_recovery_time: float | None = field(default=None, kw_only=True)
+    """Global bilateral recovery time [s]; ``None`` retains legacy ``alpha / dt``."""
+
+    joint_recovery_speed: float = field(default=math.inf, kw_only=True)
+    """Maximum bilateral recovery speed [m/s or rad/s], applied independently to each row.
+
+    The same numerical cap applies to linear and angular rows. Zero disables
+    positional recovery; infinity leaves recovery uncapped.
+    """
+
+    limit_recovery_time: float | None = field(default=None, kw_only=True)
+    """Global limit recovery time [s], overriding model ``c / k`` when set.
+
+    ``None`` uses model damping for compliant limits and legacy ``beta / dt``
+    for hard limits. An override sets effective damping to ``k * time`` in
+    both the bias and the impulse-space compliance.
+    """
+
+    limit_recovery_speed: float = field(default=math.inf, kw_only=True)
+    """Maximum limit recovery speed [m/s or rad/s], applied independently to each row.
+
+    The same numerical cap applies to linear and angular limits. Zero disables
+    positional recovery; infinity leaves recovery uncapped.
+    """
+
+    contact_recovery_time: float | None = field(default=None, kw_only=True)
+    """Global contact recovery time [s], overriding model ``c / k`` when set.
+
+    ``None`` uses model damping for compliant contacts and legacy ``gamma / dt``
+    for hard contacts. Speculative positive gaps retain their ``gap / dt``
+    closing allowance independently of this setting and the recovery-speed cap.
+    """
+
+    contact_recovery_speed: float = field(default=math.inf, kw_only=True)
+    """Maximum normal penetration recovery speed [m/s]; infinity leaves recovery uncapped."""
+
+    contact_compliance: bool = field(default=False, kw_only=True)
+    """Use positive normal contact stiffness and damping as an implicit spring-damper.
+
+    Positive per-contact stiffness takes precedence over the arithmetic mean of
+    the two shape materials. Compliance is added only to the normal row as
+    ``1 / (dt * (k * position_dt + c))``, where ``position_dt`` is ``dt`` for
+    Euler and ``dt / 2`` for Moreau's remaining pose update. Moreau evaluates the
+    violation at the midpoint and requires the internal collision detector.
+    Non-positive or infinite stiffness retains hard contact.
+    Compliant contacts obtain their bounce from the spring-damper and ignore
+    material restitution. Tangential rows retain the existing Coulomb law.
+    This option supports PADMM and SCC. LOX's separate option uses per-contact
+    stiffness only and does not fall back to shape materials.
+    """
+
+    limit_compliance: bool = field(default=False, kw_only=True)
+    """Use positive ``Model.joint_limit_ke`` and ``joint_limit_kd`` for implicit limits.
+
+    Non-positive or infinite stiffness retains hard limits. This setting does not change
+    limit detection, drive gains, or passive joint damping.
+    Compliance uses the remaining pose-update interval: ``dt`` for Euler and
+    ``dt / 2`` for Moreau, whose limit violations are evaluated at the midpoint.
     """
 
     @override
@@ -323,36 +405,53 @@ class ConstraintStabilizationConfig(ConfigBase):
         Args:
             model: The Newton model from which to parse configurations.
         """
-        cfg = ConstraintStabilizationConfig(**kwargs)
-
-        # Parse solver-specific attributes imported from USD
+        # Retain legacy model precedence; new recovery settings are Python-only.
+        values = dict(kwargs)
         kamino_attrs = getattr(model, "kamino", None)
         if kamino_attrs is not None:
-            if hasattr(kamino_attrs, "constraints_alpha"):
-                cfg.alpha = float(kamino_attrs.constraints_alpha.numpy()[0])
-            if hasattr(kamino_attrs, "constraints_beta"):
-                cfg.beta = float(kamino_attrs.constraints_beta.numpy()[0])
-            if hasattr(kamino_attrs, "constraints_gamma"):
-                cfg.gamma = float(kamino_attrs.constraints_gamma.numpy()[0])
-
-        # Return the fully constructed config with configurations
-        # parsed from the model's custom attributes if available,
-        # otherwise using defaults or provided kwargs.
-        return cfg
+            for name in ("alpha", "beta", "gamma"):
+                attribute = getattr(kamino_attrs, f"constraints_{name}", None)
+                if attribute is not None:
+                    values[name] = float(attribute.numpy()[0])
+        return ConstraintStabilizationConfig(**values)
 
     @override
     def validate(self) -> None:
         """
         Validates the current values held by the :class:`ConstraintStabilizationConfig` instance.
         """
-        if self.alpha < 0.0 or self.alpha > 1.0:
+        if not math.isfinite(self.alpha) or self.alpha < 0.0 or self.alpha > 1.0:
             raise ValueError(f"Invalid alpha: {self.alpha}. Must be in range [0, 1.0].")
-        if self.beta < 0.0 or self.beta > 1.0:
+        if not math.isfinite(self.beta) or self.beta < 0.0 or self.beta > 1.0:
             raise ValueError(f"Invalid beta: {self.beta}. Must be in range [0, 1.0].")
-        if self.gamma < 0.0 or self.gamma > 1.0:
+        if not math.isfinite(self.gamma) or self.gamma < 0.0 or self.gamma > 1.0:
             raise ValueError(f"Invalid gamma: {self.gamma}. Must be in range [0, 1.0].")
-        if self.delta < 0.0:
+        if not math.isfinite(self.delta) or self.delta < 0.0:
             raise ValueError(f"Invalid delta: {self.delta}. Must be non-negative.")
+        for name in _CONSTRAINT_RECOVERY_FIELDS:
+            value = getattr(self, name)
+            if name.endswith("_compliance"):
+                if not isinstance(value, bool):
+                    raise TypeError(f"{name} must be a boolean.")
+            elif name.endswith("_time"):
+                if value is not None and (not math.isfinite(value) or value < 0.0):
+                    raise ValueError(f"{name} must be None or finite and non-negative [s].")
+            elif math.isnan(value) or value < 0.0:
+                raise ValueError(f"{name} must be non-negative; infinity means unlimited recovery.")
+
+    def _has_recovery_settings(self) -> bool:
+        """Identify opt-in shared recovery settings for backend validation."""
+        for name in _CONSTRAINT_RECOVERY_FIELDS:
+            value = getattr(self, name)
+            if name.endswith("_time"):
+                if value is not None:
+                    return True
+            elif name.endswith("_compliance"):
+                if value:
+                    return True
+            elif value != math.inf:
+                return True
+        return False
 
     @override
     def __post_init__(self):
@@ -372,7 +471,7 @@ class ConstrainedDynamicsConfig(ConfigBase):
     Defaults to `True`.
     """
 
-    linear_solver_type: Literal["LLTB", "LLTBRCM", "CR", "CRF"] = "LLTB"
+    linear_solver_type: Literal["LLTB", "LLTBRCM", "LDL", "CR", "CRF"] = "LLTB"
     """
     The type of linear solver to use for the dynamics problem.\n
     See :class:`LinearSolverType` for available options.\n
@@ -380,6 +479,10 @@ class ConstrainedDynamicsConfig(ConfigBase):
     RCM-reordered semi-sparse variant is available as 'LLTBRCM'
     (:class:`LLTBlockedRCMSolver`) and is currently opt-in pending further
     performance optimization.
+    ``LDL`` selects block-sparse LDL transpose with an explicit diagonal D.
+    Its default ordering is MECA; set ``linear_solver_kwargs={"ordering": "rcm"}``
+    for Reverse Cuthill-McKee. Dense PADMM uses a full block pattern to
+    accommodate changing contacts; sparse PADMM does not support it.
     """
 
     linear_solver_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -390,7 +493,8 @@ class ConstrainedDynamicsConfig(ConfigBase):
 
     cull_speculative_contacts: bool = True
     """
-    Whether to cull speculative (= separated) contacts in the dynamics solve.
+    Whether to cull speculative contacts, i.e. external contacts separated by more than
+    :attr:`ConstraintStabilizationConfig.delta`, in the dynamics solve.
     These contacts have occasionally led to numerical instabilities, and
     can yield inaccurate restitutive impacts.
 
@@ -800,24 +904,24 @@ class PADMMSolverConfig:
 
 
 @dataclass(kw_only=True)
-class DVIAPGDConfig:
+class SCCAPGDConfig:
     """Controls for the APGD unilateral subsolver.
 
     Select APGD and set these controls before constructing the solver::
 
-        config = newton.solvers.SolverKamino.Config(dynamics_solver="dvi")
-        config.dvi.unilateral_solver = "apgd"
-        config.dvi.apgd.max_iterations = 64
-        config.dvi.apgd.max_nonlinear_corrections = 1
-        config.dvi.apgd.tolerance = 1.0e-5
+        config = newton.solvers.SolverKamino.Config(dynamics_solver="scc")
+        config.scc.unilateral_solver = "apgd"
+        config.scc.apgd.max_iterations = 64
+        config.scc.apgd.max_nonlinear_corrections = 1
+        config.scc.apgd.tolerance = 1.0e-5
         solver = newton.solvers.SolverKamino(model, config=config)
 
     Iteration budgets are upper limits. The inner and nonlinear loops stop
     early in each world when their residual meets :attr:`tolerance`.
     The nonlinear correction loop is separate
     from the bilateral/unilateral alternation controlled by
-    :attr:`DVISolverConfig.max_alternating_iterations` and
-    :attr:`DVISolverConfig.bilateral_solve_interval`. Schur mode eliminates
+    :attr:`SCCSolverConfig.max_alternating_iterations` and
+    :attr:`SCCSolverConfig.bilateral_solve_interval`. Schur mode eliminates
     bilateral rows during the unilateral solve and recovers their impulses
     afterward.
 
@@ -865,7 +969,7 @@ class DVIAPGDConfig:
     it at the accepted impulse after relaxation. Both use a unit projection
     step, independent of the APGD step size and contact count. The residual
     type is fixed. Backtracking uses a curvature test instead. Full-system
-    status checks use the independent :attr:`DVISolverConfig.tolerance`.
+    status checks use the independent :attr:`SCCSolverConfig.tolerance`.
     """
 
     relaxation: float = 1.0
@@ -893,9 +997,9 @@ class DVIAPGDConfig:
 
 
 @dataclass
-class DVISolverConfig:
+class SCCSolverConfig:
     """
-    A container to hold configurations for the DVI forward dynamics solver.
+    Configure the Split Constraint Coupling (SCC) forward dynamics solver.
     """
 
     unilateral_solver: Literal["pgs", "apgd"] = field(default="pgs", kw_only=True)
@@ -906,7 +1010,7 @@ class DVISolverConfig:
     Nonlinear convergence depends on the contact problem and iteration budget.
     """
 
-    apgd: DVIAPGDConfig = field(default_factory=DVIAPGDConfig, kw_only=True)
+    apgd: SCCAPGDConfig = field(default_factory=SCCAPGDConfig, kw_only=True)
     """APGD iteration controls; unused by the default PGS backend."""
 
     tolerance: float = 1e-5
@@ -930,7 +1034,7 @@ class DVISolverConfig:
 
     max_alternating_iterations: int = 24
     """
-    Maximum number of outer DVI iterations alternating direct bilateral
+    Maximum number of outer SCC iterations alternating direct bilateral
     solves with projected inequality solves. Must be greater than zero.
     This schedule is also used when no bilateral constraints are present;
     in that case, the bilateral solve is skipped. APGD uses its own iteration
@@ -941,7 +1045,7 @@ class DVISolverConfig:
     inequality_sweeps_per_iteration: int = 2
     """
     Number of projected Gauss-Seidel sweeps used for unilateral inequalities
-    during each alternating DVI iteration. Contacts use graph-colored sweeps
+    during each alternating SCC iteration. Contacts use graph-colored sweeps
     on CUDA. Unused by APGD. Must be greater than zero. Defaults to `2`.
     """
 
@@ -969,7 +1073,7 @@ class DVISolverConfig:
 
     bilateral_solve_interval: int = 1
     """
-    Number of alternating DVI iterations between repeated direct bilateral solves.
+    Number of alternating SCC iterations between repeated direct bilateral solves.
     This controls coupling when Schur elimination is disabled.
     Larger values trade coupling accuracy for fewer direct solves. Must be greater
     than zero. Defaults to `1`.
@@ -977,17 +1081,23 @@ class DVISolverConfig:
 
     tangential_warmstart_scale: float = 0.97
     """
-    Scale applied to cached tangential contact reactions before a DVI solve.
+    Scale applied to cached tangential contact reactions before an SCC solve.
     Normal reactions remain fully warm-started. Must be in the range `[0, 1]`.
     Defaults to `0.97`.
     """
 
-    bilateral_solver_type: Literal["LLTB", "LLTBRCM"] = "LLTB"
+    bilateral_solver_type: Literal["LLTB", "LLTBRCM", "LDL"] = "LLTB"
     """
     Direct linear solver used for the bilateral constraint block.
-    ``LLTBRCM`` can accelerate large sparse articulated systems, while
-    ``LLTB`` remains preferable for small or dense systems. Defaults to
-    ``LLTB``.
+    Defaults to ``LLTB``, the dense blocked Cholesky solver. Opt in to
+    ``LDL`` for a block-sparse LDL transpose factorization with unit-lower L,
+    explicit diagonal D, and one padded block per joint.
+    MECA (minimum edge creation) is the default LDL block ordering. Set
+    ``bilateral_solver_kwargs={"ordering": "rcm"}`` for Reverse Cuthill-McKee,
+    or ``{"ordering": "meca"}`` to select the default explicitly.
+    It requires a positive-definite matrix and uses no numerical pivoting.
+    ``LLTB`` selects dense blocked Cholesky and
+    ``LLTBRCM`` selects the RCM-reordered semi-sparse implementation.
     """
 
     bilateral_solver_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -998,7 +1108,7 @@ class DVISolverConfig:
 
     warmstart_mode: Literal["none", "internal", "containers"] = "containers"
     """
-    Warmstart mode to be used for the DVI solver.
+    Warmstart mode to be used for the SCC solver.
     Uses the same choices as the other dual dynamics solvers. Defaults to `containers`.
     """
 
@@ -1018,22 +1128,22 @@ class DVISolverConfig:
     @override
     @staticmethod
     def register_custom_attributes(builder: ModelBuilder) -> None:
-        """Register DVI custom attributes supported by the Kamino USD schema.
+        """Register SCC custom attributes supported by the Kamino USD schema.
 
-        DVI-specific tuning options are currently Python-only. The shared
+        SCC-specific tuning options are currently Python-only. The shared
         ``max_solver_iterations`` attribute is registered by
         :class:`PADMMSolverConfig` and parsed by every dynamics solver.
         """
 
     @override
     @staticmethod
-    def from_model(model: Model, **kwargs: dict[str, Any]) -> DVISolverConfig:
-        """Creates a :class:`DVISolverConfig` from model attributes if available.
+    def from_model(model: Model, **kwargs: dict[str, Any]) -> SCCSolverConfig:
+        """Creates a :class:`SCCSolverConfig` from model attributes if available.
 
         Args:
             model: The Newton model from which to parse configurations.
         """
-        cfg = DVISolverConfig(**kwargs)
+        cfg = SCCSolverConfig(**kwargs)
         kamino_attrs = getattr(model, "kamino", None)
         if kamino_attrs is not None and hasattr(kamino_attrs, "max_solver_iterations"):
             max_alternating_iterations = int(kamino_attrs.max_solver_iterations.numpy()[0])
@@ -1050,8 +1160,8 @@ class DVISolverConfig:
 
         if self.unilateral_solver not in {"pgs", "apgd"}:
             raise ValueError("`unilateral_solver` must be 'pgs' or 'apgd'.")
-        if not isinstance(self.apgd, DVIAPGDConfig):
-            raise TypeError("`apgd` must be a DVIAPGDConfig.")
+        if not isinstance(self.apgd, SCCAPGDConfig):
+            raise TypeError("`apgd` must be an SCCAPGDConfig.")
         self.apgd.validate()
         if self.tolerance < 0.0:
             raise ValueError(f"Invalid tolerance: {self.tolerance}. Must be non-negative.")
@@ -1077,9 +1187,9 @@ class DVISolverConfig:
             raise ValueError(
                 f"Invalid tangential warmstart scale: {self.tangential_warmstart_scale}. Must be in the range [0, 1]."
             )
-        if self.bilateral_solver_type not in {"LLTB", "LLTBRCM"}:
+        if self.bilateral_solver_type not in {"LLTB", "LLTBRCM", "LDL"}:
             raise ValueError(
-                f"Invalid bilateral solver type: {self.bilateral_solver_type}. Must be one of ['LLTB', 'LLTBRCM']."
+                f"Invalid bilateral solver type: {self.bilateral_solver_type}. Must be one of ['LLTB', 'LLTBRCM', 'LDL']."
             )
         WarmStartMode.from_string(self.warmstart_mode)
         WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
@@ -1092,7 +1202,7 @@ class DVISolverConfig:
         }
         if self.contact_warmstart_method not in implemented_contact_warmstart_methods:
             raise ValueError(
-                f"DVI contact warmstart method is not implemented: {self.contact_warmstart_method}. "
+                f"SCC contact warmstart method is not implemented: {self.contact_warmstart_method}. "
                 f"Choose one of {sorted(implemented_contact_warmstart_methods)}."
             )
 
@@ -1112,7 +1222,7 @@ class LOXSolverConfig:
         following the normal deprecation policy. It supports rigid bodies
         only; cable and deformable extensions are not supported.
 
-    Unlike the PADMM and DVI backends, LOX advances kinematic bodies, and massless bodies
+    Unlike the PADMM and SCC backends, LOX advances kinematic bodies, and massless bodies
     whose only joints are free joints to the world, with their velocity in ``state_in.body_qd``.
     Bodies welded to a kinematic body move rigidly with it. LOX keeps speculative contacts
     regardless of :attr:`ConstrainedDynamicsConfig.cull_speculative_contacts`.
@@ -1121,7 +1231,7 @@ class LOXSolverConfig:
     problem of the optional solution metrics, and it always warm-starts from its containers.
     LOX bounds joint drift with :attr:`joint_max_correction`, :attr:`position_tolerance` and
     :attr:`rotation_tolerance`, so it ignores :attr:`ConstraintStabilizationConfig.alpha`.
-    ``SolverKamino.Config.collect_solver_info`` collects the PADMM and DVI iteration logs; LOX
+    ``SolverKamino.Config.collect_solver_info`` collects the PADMM and SCC iteration logs; LOX
     reports its iterations and residuals through ``SolverKamino.status``.
     """
 
@@ -1294,6 +1404,8 @@ class LOXSolverConfig:
     their penetration per step, and ignore restitution. Other contacts, and contacts
     detected by Kamino's own collision pipelines, remain hard. :class:`~newton.CollisionPipeline`
     provides per-contact stiffness only for hydroelastic contacts.
+    This option requires the LOX backend. For PADMM and SCC, use
+    ``constraints.contact_compliance``, which also falls back to shape materials.
     """
 
     contact_implicit_restitution: bool = False

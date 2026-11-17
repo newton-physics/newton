@@ -5,7 +5,7 @@
 
 Shows how to programmatically create a variety of
 collision shapes using the newton.ModelBuilder() API.
-Supports XPBD (default), VBD, and Kamino DVI solvers.
+Supports XPBD (default), VBD, and Kamino SCC solvers.
 
 Success criteria:
 - Seven shapes appear: ellipsoid, cylinder, sphere, capsule, box, bunny, and cone.
@@ -115,12 +115,12 @@ class Example:
         elif self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model,
-                dynamics_solver="dvi",
+                dynamics_solver="scc",
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
             solver_config.dynamics.cull_speculative_contacts = False
-            solver_config.dvi.max_alternating_iterations = 2
+            solver_config.scc.max_alternating_iterations = 2
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=5)
@@ -128,6 +128,11 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+
+        # Input state of the last substep, used to place rendered contacts.
+        self.contact_state = newton.State()
+        self.contact_state.body_q = wp.clone(self.state_0.body_q)
+        self.contact_state.body_qd = wp.clone(self.state_0.body_qd)
 
         if self.solver_type == "kamino":
             self.collision_interval = 2
@@ -179,17 +184,27 @@ class Example:
                     )
             else:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
+
+            last_substep = substep == self.sim_substeps - 1
+            if last_substep:
+                wp.copy(self.contact_state.body_q, self.state_0.body_q)
+                wp.copy(self.contact_state.body_qd, self.state_0.body_qd)
+
             self.solver.step(
                 self.state_0,
                 self.state_1,
                 self.control,
                 self.contacts,
                 self.sim_dt,
-                observables=self.solver_observables if substep == self.sim_substeps - 1 else None,
+                observables=self.solver_observables if last_substep else None,
             )
 
-            # swap states
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            # With an odd substep count, copy instead of swapping on the last
+            # substep so every CUDA graph replay starts from state_0.
+            if self.sim_substeps % 2 == 1 and last_substep:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         if self.graph:
@@ -272,7 +287,7 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         if self.contacts is not None:
-            self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
+            self.viewer.log_contacts(self.contacts, self.contact_state, observables=self.solver_observables)
         self.viewer.end_frame()
 
 

@@ -279,6 +279,9 @@ class SolverBase:
         CONTACT_F = "contact_f"
         """Spatial contact forces aligned with a :class:`~newton.Contacts` container."""
 
+        SOLVER_RESIDUAL = "solver_residual"
+        """Per-world convergence residual of the most recent step; see :ref:`solver_residual_observable`."""
+
         def __init_subclass__(cls, **kwargs: Any) -> None:
             """Reject invalid or conflicting kind declarations when a subclass is defined."""
             super().__init_subclass__(**kwargs)
@@ -377,6 +380,18 @@ class SolverBase:
             dtype=wp.spatial_vector, frequency=Model.AttributeFrequency.CONTACT
         )
         """Contact forces [N, N·m], shape ``(rigid_contact_max + soft_contact_max,)`` of the allocation contacts."""
+
+        solver_residual: wp.array[wp.float32] | None = field(  # noqa: RUF009
+            dtype=wp.float32, frequency=Model.AttributeFrequency.WORLD
+        )
+        """Per-world convergence residual of the latest step, shape ``(world_count + 1,)``.
+
+        The final entry is global world ``-1``, as in per-world reset masks.
+        A nonnegative, solver-defined measure where smaller is closer to
+        convergence. Each solver documents its definition and units; values are
+        comparable only within one solver configuration. See
+        :ref:`solver_residual_observable`.
+        """
 
         _kinds: frozenset[str] = dataclass_field(default_factory=frozenset, init=False, repr=False)
         _solver: SolverBase | None = dataclass_field(default=None, init=False, repr=False)
@@ -622,10 +637,17 @@ class SolverBase:
             )
         if collision_pipeline is not None and collision_pipeline.model is not model:
             raise ValueError("collision_pipeline and solver must use the same model")
+        pipeline_contacts = None if collision_pipeline is None else collision_pipeline.contacts()
+        if (
+            pipeline_contacts is not None
+            and pipeline_contacts.rigid_contact_body_pair_reduced
+            and not type(self).supports_body_pair_reduced_contacts
+        ):
+            raise ValueError(f"{type(self).__name__} cannot own a pipeline with body-pair contact reduction")
         self.collision_pipeline = collision_pipeline
         """The solver-owned collision pipeline, or ``None`` when detection is driven externally."""
         if collision_pipeline is not None:
-            self._pipeline_contacts = collision_pipeline.contacts()
+            self._pipeline_contacts = pipeline_contacts
         elif not hasattr(self, "_pipeline_contacts"):
             # Preserve contact storage assigned by existing SolverBase subclasses
             # before calling super().__init__().
@@ -865,7 +887,12 @@ class SolverBase:
             setattr(
                 observables,
                 name,
-                wp.zeros(count, dtype=spec.dtype, device=self.model.device, requires_grad=requires_grad),
+                wp.zeros(
+                    self._observable_shape(kind, count),
+                    dtype=spec.dtype,
+                    device=self.model.device,
+                    requires_grad=requires_grad,
+                ),
             )
         yield observables
 
@@ -929,6 +956,16 @@ class SolverBase:
                 )
         self._validate_native_contact_export(observables, contacts)
         observables._contact_layouts.update(dict.fromkeys(contact_fields, contacts))
+
+    def _observable_shape(self, kind: str, rows: int) -> tuple[int, ...]:
+        """Return the array shape allocated for observable ``kind``.
+
+        ``rows`` follows the field's declared frequency. Solvers override this
+        hook to add trailing or leading dimensions that depend on their
+        configuration, such as an iteration axis; the default is ``(rows,)``.
+        """
+        del kind
+        return (rows,)
 
     def _validate_native_contact_export(self, observables: SolverBase.Observables, contacts: Contacts) -> None:
         """Check that ``contacts`` can hold the contacts a native backend exports.
@@ -1104,6 +1141,51 @@ class SolverBase:
         """
         self._normalize_reset_world_mask(world_mask)
 
+    supports_body_pair_reduced_contacts: bool = True
+    """Whether this solver accepts the collision pipeline's body-pair-reduced contacts.
+
+    Reduction selects ordinary :class:`newton.Contacts` rows, retaining their
+    shape ids, materials, normal convention, and body-local witnesses. Built-in
+    consumers accept these rows just as they accept mesh/SDF-reduced contacts;
+    the solver does not need a separate reduction implementation. Contact
+    placement and count can affect compliance and friction, as with mesh/SDF
+    reduction. A custom solver with a more restrictive contact contract may
+    explicitly set this capability to ``False``.
+
+    .. experimental::
+    """
+
+    def _require_unreduced_contacts(
+        self,
+        contacts: Contacts | None,
+        *,
+        supports_body_pair_reduced_contacts: bool | None = None,
+        configuration: str | None = None,
+    ) -> None:
+        """Enforce an explicit opt-out from the pipeline's reduced contact rows.
+
+        Args:
+            contacts: Contact buffer the solver will consume.
+            supports_body_pair_reduced_contacts: Per-call capability override.
+                ``None`` uses the solver class declaration.
+            configuration: Optional configuration label included in an error.
+        """
+        if supports_body_pair_reduced_contacts is None:
+            supports_body_pair_reduced_contacts = type(self).supports_body_pair_reduced_contacts
+        if supports_body_pair_reduced_contacts or not isinstance(contacts, Contacts):
+            return
+        if contacts.rigid_contact_body_pair_reduced:
+            subject = type(self).__name__
+            if configuration:
+                raise ValueError(
+                    f"{subject} with {configuration} is not validated for body-pair-reduced contacts; "
+                    f"disable body_pair_reduction or {configuration}"
+                )
+            raise ValueError(
+                f"{subject} is not validated for body-pair-reduced contacts; disable body_pair_reduction "
+                "or use a solver with supports_body_pair_reduced_contacts=True"
+            )
+
     def step(
         self,
         state_in: State,
@@ -1160,13 +1242,19 @@ class SolverBase:
         * ``ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES``: Joint armature has changed.
         * ``ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES``: Joint reference poses
           or spring references have changed, including Rod rest rotations in
-          ``Model.joint_target_q``.
+          ``Model.joint_rest_q``.
         * ``ModelFlags.BODY_PROPERTIES``: Rigid-body pose or velocity buffers
           have changed.
         * ``ModelFlags.BODY_INERTIAL_PROPERTIES``: Rigid-body mass or inertia
           tensors have changed.
-        * ``ModelFlags.SHAPE_PROPERTIES``: Shape transforms or geometry have
-          changed.
+        * ``ModelFlags.SHAPE_PROPERTIES``: Shape transforms, scales, or
+          materials have changed.
+        * ``ModelFlags.SHAPE_TYPE_AND_SOURCE``: Shapes changed type or source,
+          for example variant rows that took other variant shapes or were
+          emptied by :meth:`~newton.Model.select_body_variants`. Pass the flags
+          to every solver: some cache data derived from shapes, such as
+          :class:`~newton.solvers.SolverVBD`'s body radii for rigid-soft
+          contact truncation.
         * ``ModelFlags.MODEL_PROPERTIES``: Model global properties (e.g.,
           gravity) have changed.
         * ``ModelFlags.CONSTRAINT_PROPERTIES``: Constraint definitions,

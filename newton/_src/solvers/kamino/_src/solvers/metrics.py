@@ -1637,7 +1637,7 @@ class SolutionMetrics:
             inputs=[
                 # Inputs:
                 model.time.dt,
-                model.gravity.vector,
+                model.gravity,
                 model.bodies.wid,
                 model.bodies.m_i,
                 data.bodies.I_i,

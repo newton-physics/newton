@@ -5,12 +5,17 @@
 Unit tests for random matrix and problem generation utilities in `linalg/utils/random.py`.
 """
 
+import logging
 import unittest
 
 import numpy as np
 
+import newton
 import newton.tests.kamino.utils.rand as rand
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.tests import setup_tests, test_context
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -22,6 +27,17 @@ class TestRandomSymmetricMatrix(unittest.TestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for verbose output
+
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
+        else:
+            reset_log_level()
+
+    def tearDown(self):
+        if self.verbose:
+            reset_log_level()
 
     def test_matrix_symmetry(self):
         dim = 5
@@ -70,6 +86,17 @@ class TestRandomProblemCholesky(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
+        else:
+            reset_log_level()
+
+    def tearDown(self):
+        if self.verbose:
+            reset_log_level()
+
     def test_generate_small_lower(self):
         dim = 10
         problem = rand.RandomProblemLLT(dims=[dim], seed=42, upper=False)
@@ -94,6 +121,17 @@ class TestRandomProblemLDLT(unittest.TestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for verbose output
+
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
+        else:
+            reset_log_level()
+
+    def tearDown(self):
+        if self.verbose:
+            reset_log_level()
 
     def test_generate_small_lower(self):
         dim = 10
@@ -120,6 +158,7 @@ class TestRandomProblemLDLT(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

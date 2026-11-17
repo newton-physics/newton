@@ -26,6 +26,7 @@ supporting both a Z-up and X-up convention.
 from __future__ import annotations
 
 import functools
+import logging
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Literal
@@ -42,8 +43,9 @@ from ..core.model import ModelKamino
 from ..core.types import (
     to_warp_int32_array,
 )
-from ..utils import logger as msg
 from .keying import build_pair_key2
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -305,17 +307,18 @@ class ContactsKaminoData:
     """
 
     stiffness: wp.array[wp.float32] | None = None
-    """Normal stiffness of each active contact [N/m]; zero selects hard contact.
+    """Normal stiffness of each active contact [N/m], transported from Newton contacts.
 
-    Shape of ``(model_max_contacts_host,)``. Transported from Newton's per-contact
-    ``rigid_contact_stiffness``; used by compliant LOX contacts.
+    Shape of ``(model_max_contacts_host,)``. Positive per-contact
+    ``rigid_contact_stiffness`` takes precedence when compliance is enabled.
+    Zero selects shape-material fallback on PADMM/SCC and hard contact on LOX.
     """
 
     damping: wp.array[wp.float32] | None = None
     """Normal damping of each active contact [N s/m]; used with a positive :attr:`stiffness`.
 
     Shape of ``(model_max_contacts_host,)``. Transported from Newton's per-contact
-    ``rigid_contact_damping``; used by compliant LOX contacts.
+    ``rigid_contact_damping``; used by compliant PADMM, SCC, and LOX contacts.
     """
 
     margins: wp.array[wp.vec2f] | None = None
@@ -760,7 +763,7 @@ class ContactsKamino:
 
     @property
     def stiffness(self) -> wp.array[wp.float32]:
-        """Return the normal stiffness of each contact [N/m]; zero selects hard contact."""
+        """Return normal stiffness [N/m]; zero inherits shape gains on PADMM/SCC and stays hard on LOX."""
         self._assert_has_data()
         return self._data.stiffness
 
@@ -917,7 +920,7 @@ class ContactsKamino:
 
         # Skip allocation if there are no contacts to allocate
         if model_max_contacts == 0:
-            msg.debug("ContactsKamino: Skipping contact data allocations since total requested capacity was `0`.")
+            logger.debug("ContactsKamino: Skipping contact data allocations since total requested capacity was `0`.")
             return
 
         # Allocate the contacts data on the specified device
@@ -994,7 +997,7 @@ def make_convert_contacts_newton_to_kamino(
         friction_mix_mode: The mixing mode to use for friction.
         restitution_mix_mode: The mixing mode to use for restitution.
         cull_speculative: If ``True``, skip speculative contacts, i.e., contacts
-            with positive margin-shifted distance.
+            whose margin-shifted distance exceeds the kernel's ``contact_dead_zone``.
         kinematic_only_immovable: Whether only KINEMATIC bodies are immovable,
             see :func:`is_immovable_for_kamino`.
 
@@ -1033,6 +1036,7 @@ def make_convert_contacts_newton_to_kamino(
         body_inv_mass: wp.array[wp.float32],
         body_inv_inertia: wp.array[wp.mat33f],
         body_flags: wp.array[wp.int32],
+        contact_dead_zone: wp.float32,
         # Outputs:
         kamino_model_active: wp.array[wp.int32],
         kamino_world_active: wp.array[wp.int32],
@@ -1134,10 +1138,10 @@ def make_convert_contacts_newton_to_kamino(
         # and the per-shape surface thicknesses stored in rigid_contact_margin*.
         distance = contact_surface_separation(p0_world, p1_world, normal, margin_0, margin_1)
 
-        # Cull speculative contacts whose margin-shifted surfaces have not yet
-        # made contact (positive gap distance).
+        # Cull speculative contacts. The dynamics treat separations within the dead-zone
+        # as touching, so rounding must not drop a resting contact.
         if wp.static(cull_speculative):
-            if distance > 0.0:
+            if distance > contact_dead_zone:
                 return
 
         # Ensure static body is always Kamino A, dynamic body is Kamino B
@@ -1473,6 +1477,7 @@ def convert_contacts_newton_to_kamino(
     restitution_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "min",
     cull_speculative_contacts: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
     kinematic_only_immovable: bool = False,
+    contact_dead_zone: float = 1.0e-6,
 ):
     """
     Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
@@ -1515,11 +1520,14 @@ def convert_contacts_newton_to_kamino(
         restitution_mix_mode:
             The mixing mode to use for contact restitution. Defaults to `"min"`.
         cull_speculative_contacts:
-            If ``True`` (the default), drop speculative contacts (contacts with
-            positive margin-shifted distance).
+            If ``True`` (the default), drop speculative contacts (contacts whose
+            margin-shifted distance exceeds ``contact_dead_zone``).
         kinematic_only_immovable:
             Whether only KINEMATIC bodies are immovable, see
             :func:`is_immovable_for_kamino`. Defaults to ``False``.
+        contact_dead_zone:
+            Margin-shifted distance [m] up to which a contact counts as touching and is
+            not culled; should match ``ConstraintStabilizationConfig.delta``.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_out.model_max_contacts_host == 0 or contacts_in.rigid_contact_max == 0:
@@ -1543,7 +1551,7 @@ def convert_contacts_newton_to_kamino(
     # Issue warning to the user if the number of contacts to
     # convert exceeds the capacity of the output contacts.
     if contacts_in.rigid_contact_max > contacts_out.model_max_contacts_host:
-        msg.warning(
+        logger.warning(
             "Newton `rigid_contact_max` (%d) exceeds Kamino `model_max_contacts_host` (%d); active contacts may be truncated.",
             contacts_in.rigid_contact_max,
             contacts_out.model_max_contacts_host,
@@ -1602,6 +1610,7 @@ def convert_contacts_newton_to_kamino(
             model.body_inv_mass,
             model.body_inv_inertia,
             model.body_flags,
+            contact_dead_zone,
         ],
         outputs=[
             contacts_out.model_active_contacts,
@@ -1704,7 +1713,7 @@ def convert_contacts_kamino_to_newton(
 
     # Only Kamino-generated contacts can be truncated during export.
     if clear_output and contacts_in.model_max_contacts_host > contacts_out.rigid_contact_max:
-        msg.warning(
+        logger.warning(
             "Kamino `model_max_contacts_host` (%d) exceeds Newton `rigid_contact_max` (%d); active contacts may be truncated.",
             contacts_in.model_max_contacts_host,
             contacts_out.rigid_contact_max,
