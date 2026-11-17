@@ -541,6 +541,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 viewer.camera_speed = value
 
+    @requires("pyglet")
     def test_gui_keyboard_movement_uses_viewer_camera_speed(self):
         """Move at the configured speed while keeping the orbit pivot centered."""
         camera = Camera(pos=(0.0, 0.0, 0.0))
@@ -571,6 +572,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
                 camera.orbit(0, 0)
                 np.testing.assert_allclose(camera.pos, position, atol=1e-6)
 
+    @requires("pyglet")
     def test_camera_deceleration_is_capped(self):
         """Check that the camera deceleration is capped to avoid flipping the camera velocity direction."""
         camera = Camera(pos=(0.0, 0.0, 0.0))
