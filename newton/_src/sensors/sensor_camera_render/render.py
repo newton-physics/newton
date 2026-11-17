@@ -83,15 +83,13 @@ def create_kernel(
     compute_lighting = lighting.create_compute_lighting_function(config, state, optix)
     sample_texture = textures.create_sample_texture_function(config)
 
-    if (
+    with_normal = (
         state.render_color
         or state.render_hdr_color
         or state.render_normal
         or (state.render_albedo and config.enable_textures)
-    ):
-        raytrace_closest_hit = raytrace.create_closest_hit_function(config, state, optix)
-    else:
-        raytrace_closest_hit = raytrace.create_closest_hit_depth_only_function(config, state, optix)
+    )
+    raytrace_closest_hit = raytrace.create_closest_hit_function(config, state, optix, with_normal)
 
     if config.output_color_space == ColorSpace.LINEAR:
         clear_data = ClearData(
