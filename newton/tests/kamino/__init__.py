@@ -33,6 +33,8 @@ def setup_test_output(test: NewtonTestCase, verbose: bool = False):
         test.allowOutputRegex(r"[\s\S]+", stream="stdout", report=True)
         set_log_level(logging.DEBUG)
         test.addCleanup(reset_log_level)
+        # Start the test's output on its own line, after the test name.
+        print()
     else:
         test.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
         test.allowOutputRegex(NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, stream="stdout")
