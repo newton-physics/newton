@@ -3,11 +3,13 @@
 
 """Regressions for captured sparse assembly and numerical ordering."""
 
+import unittest
 from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
@@ -20,7 +22,7 @@ from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _build_sparse_bilateral_block,
     _set_sparse_bilateral_diagonal,
 )
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.unittest_utils import NewtonTestCase
 
 
@@ -358,3 +360,9 @@ class TestKaminoSparseAssemblyQuality(NewtonTestCase):
                 )
                 factor = np.tril(candidate.L.numpy().reshape(n, n)).astype(np.float64)
                 self.assertLess(_relative_error(factor @ factor.T, oracle[np.ix_(order, order)]), 2.0e-6)
+
+
+if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
+    unittest.main()

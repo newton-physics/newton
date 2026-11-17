@@ -23,7 +23,7 @@ from newton.examples.kamino.example_kamino_earworm_flowers import (
     play_song,
 )
 from newton.examples.kamino.utils.hoberman import generate_sphere
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
 from newton.tests.unittest_utils import NewtonTestCase
 
@@ -235,4 +235,5 @@ class TestEarwormPlayback(NewtonTestCase):
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

@@ -12,7 +12,7 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino.config import ConstrainedDynamicsConfig, ConstraintStabilizationConfig
 from newton.solvers import SolverKamino
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.unittest_utils import NewtonTestCase
 
 
@@ -588,4 +588,5 @@ class TestKaminoConstraintCompliance(NewtonTestCase):
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

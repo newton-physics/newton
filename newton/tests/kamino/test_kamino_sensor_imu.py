@@ -10,7 +10,7 @@ import warp as wp
 
 import newton
 from newton.sensors import SensorIMU
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.unittest_utils import NewtonTestCase, add_function_test, get_test_devices
 
 DT = 1.0 / 120.0
@@ -376,4 +376,5 @@ add_function_test(
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main(verbosity=2)

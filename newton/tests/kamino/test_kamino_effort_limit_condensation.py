@@ -13,7 +13,7 @@ import newton
 from newton._src.solvers.kamino._src.solvers.scc.effort_limit_condensation import EffortLimitCondensation
 from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import make_compact_schur_pgs_kernel
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCStatus
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.unittest_utils import NewtonTestCase
 
 
@@ -238,4 +238,5 @@ class TestKaminoEffortLimitCondensation(NewtonTestCase):
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

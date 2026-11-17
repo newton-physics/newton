@@ -9,9 +9,10 @@ from itertools import product
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize.ldl_sparse import LDLBlockSparseSolver
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.unittest_utils import NewtonTestCase
 
 
@@ -297,4 +298,6 @@ class TestLDLBlockSparseSolver(NewtonTestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

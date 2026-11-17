@@ -3,6 +3,7 @@
 
 """Regressions for batching independent sparse SCC worlds."""
 
+import unittest
 from types import SimpleNamespace
 from unittest import mock
 
@@ -15,7 +16,7 @@ from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.scc import SCCSolver
 from newton._src.solvers.kamino._src.solvers.scc import sparse as sparse_scc
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.kamino.test_kamino_solvers_scc import _make_sparse_dual_problem
 from newton.tests.kamino.utils.make import make_containers, update_containers
 from newton.tests.unittest_utils import NewtonTestCase
@@ -151,3 +152,9 @@ class TestKaminoSCCWorldBatches(NewtonTestCase):
                 for graph in graphs:
                     wp.capture_launch(graph)
                 check_results()
+
+
+if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
+    unittest.main()

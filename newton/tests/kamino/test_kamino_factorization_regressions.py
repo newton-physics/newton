@@ -3,9 +3,12 @@
 
 """Regressions for Kamino blocked factors and tiled pointer offsets."""
 
+import unittest
+
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import (
     get_float32_array_offset_ptr,
@@ -18,7 +21,7 @@ from newton._src.solvers.kamino._src.solvers.scc.kernels import (
     _find_bilateral_factor_row_start,
     _find_bilateral_factor_row_start_rcm,
 )
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.unittest_utils import NewtonTestCase
 
 
@@ -298,3 +301,9 @@ class TestKaminoPointerOffsets(NewtonTestCase):
                     device=device,
                 )
                 np.testing.assert_array_equal(offsets.numpy(), expected)
+
+
+if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
+    unittest.main()

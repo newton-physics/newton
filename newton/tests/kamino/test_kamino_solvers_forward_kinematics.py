@@ -575,12 +575,13 @@ class TestRandomPoses(NewtonTestCase):
     """Validate FK solves on random poses for multiple models."""
 
     def setUp(self):
-        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.has_cuda = self.default_device.is_cuda
         self.verbose = test_context.verbose
+
+        setup_test_output(self, verbose=self.verbose)
 
     def tearDown(self):
         self.default_device = None

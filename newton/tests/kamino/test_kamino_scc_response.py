@@ -3,9 +3,12 @@
 
 """Regressions for blocked and split Kamino SCC responses."""
 
+import unittest
+
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import make_llt_blocked_rcm_solve_kernel
 from newton._src.solvers.kamino._src.solvers.scc.kernels import (
     _solve_bilateral_unilateral_response_compact,
@@ -19,7 +22,7 @@ from newton._src.solvers.kamino._src.solvers.scc.response import (
 from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _assemble_compact_unilateral_schur_tiled,
 )
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.unittest_utils import NewtonTestCase
 
 
@@ -396,3 +399,9 @@ class TestSplitResponse(NewtonTestCase):
             np.testing.assert_array_equal(sb[gap_mask], -123.0)
             np.testing.assert_array_equal(q[1].numpy(), expected_q)
             np.testing.assert_array_equal(q[0].numpy(), expected_q)
+
+
+if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
+    unittest.main()

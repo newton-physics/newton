@@ -3,9 +3,12 @@
 
 """Regressions for Kamino SCC Schur assembly, sweeps, and residuals."""
 
+import unittest
+
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.solvers.scc.kernels import _compute_scc_status_residuals
 from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _apply_small_bilateral_inverse,
@@ -18,7 +21,7 @@ from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _prepare_full_sparse_unilateral_schur as kernel,
 )
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCStatus
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.unittest_utils import NewtonTestCase
 
 
@@ -487,3 +490,9 @@ class TestSCCResiduals(NewtonTestCase):
                 residual = abs(velocities[vector_offsets[2]])
                 self.assertEqual(outputs[1]["r_b"][2], residual)
                 self.assertEqual(outputs[1]["r_d"][2], residual)
+
+
+if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
+    unittest.main()

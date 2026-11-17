@@ -19,7 +19,7 @@ from newton._src.solvers.kamino._src.solvers.scc.joint_blocks import (
     _build_body_masks,
     _build_topology,
 )
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.unittest_utils import NewtonTestCase
 
 
@@ -655,4 +655,5 @@ class TestKaminoJointBlocks(NewtonTestCase):
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

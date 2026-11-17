@@ -25,7 +25,7 @@ from newton._src.solvers.kamino._src.solvers.scc.apgd import UnilateralAPGD
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCStatus, convert_config_to_struct
 from newton._src.solvers.kamino.config import ConstrainedDynamicsConfig, SCCAPGDConfig, SCCSolverConfig
 from newton.solvers import SolverKamino
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.kamino.test_kamino_solver_kamino_joint_friction import (
     _run_hold_and_breakaway_test,
     _run_spin_down_test,
@@ -1073,4 +1073,5 @@ class TestSCCAPGDDynamics(NewtonTestCase):
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

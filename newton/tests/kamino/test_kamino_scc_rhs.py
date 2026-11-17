@@ -3,12 +3,14 @@
 
 """Dense references for cached bilateral right-hand sides."""
 
+import unittest
 from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.solvers.scc.solver import SCCSolver
 from newton._src.solvers.kamino._src.solvers.scc.sparse import _build_sparse_bilateral_row_nzb_topology
@@ -18,7 +20,7 @@ from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     make_sparse_bilateral_inverse_kernel,
 )
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCState
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.unittest_utils import NewtonTestCase
 
 
@@ -306,3 +308,9 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                                 )
                                 np.testing.assert_allclose(result.numpy()[:n], reference, atol=2e-6)
                                 np.testing.assert_array_equal(result.numpy()[n:], -123.0)
+
+
+if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
+    unittest.main()

@@ -15,7 +15,7 @@ from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.solvers.scc import sparse
 from newton._src.solvers.kamino._src.solvers.scc.coupling import PackedCoupling
 from newton._src.solvers.kamino._src.solvers.scc.joint_blocks import JointBlockSolver
-from newton.tests.kamino import setup_test_output
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.kamino.test_kamino_joint_blocks import _fixture, _packed_matrix
 from newton.tests.unittest_utils import NewtonTestCase
 
@@ -214,4 +214,5 @@ class TestKaminoPackedCoupling(NewtonTestCase):
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()
