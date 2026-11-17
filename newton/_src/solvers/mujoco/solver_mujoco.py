@@ -3657,13 +3657,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         pair_world = model.mujoco.pair_world.numpy()
         template_rows = np.flatnonzero(pair_world == template_world)
-        world_rows = [np.flatnonzero(pair_world == world) for world in range(nworld)]
+        # Group the local rows by world once, keeping their order within each world.
+        local = np.flatnonzero((pair_world >= 0) & (pair_world < nworld))
+        local_rows = local[np.argsort(pair_world[local], kind="stable")]
+        world_counts = np.bincount(pair_world[local], minlength=nworld)
+        world_starts = np.cumsum(world_counts) - world_counts
 
         def world_columns(row: int) -> np.ndarray:
             if pair_world[row] < 0:
                 return np.full(nworld, row, dtype=np.int32)
             rank = int(np.searchsorted(template_rows, row))
-            return np.array([rows[rank] if rank < len(rows) else -1 for rows in world_rows], dtype=np.int32)
+            rows = local_rows[np.minimum(world_starts + rank, len(local_rows) - 1)]
+            return np.where(rank < world_counts, rows, -1).astype(np.int32)
 
         def key(geom1: int, geom2: int) -> tuple[int, int]:
             return (min(geom1, geom2), max(geom1, geom2))
