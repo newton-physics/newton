@@ -14,7 +14,7 @@ from newton._src.sensors.sensor_camera_render.utils import Utils
 from newton.sensors import (
     SensorCamera,
 )
-from newton.tests.unittest_utils import get_test_devices
+from newton.tests.unittest_utils import get_test_devices, requires
 
 # Transform placing a camera at the origin looking down -Z (identity pose). A
 # camera with this transform sees a sphere placed at z = -2.
@@ -733,21 +733,23 @@ class TestSensorCamera(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "camera_rays must be on the model device"):
             camera.update(state, cuda_transforms, cpu_rays)
 
-    def test_fully_transparent_shape_does_not_occlude(self) -> None:
+    def test_fully_transparent_shape_does_not_occlude(self, device: str = "cpu", backend: str = "warp") -> None:
         """A shape with opacity 0 is skipped, so the shape behind it stays visible."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         ball_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -3.0), q=wp.quat_identity()))
         ball = builder.add_shape_sphere(ball_body, radius=0.5, color=(1.0, 0.0, 0.0))
         helper_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -1.5), q=wp.quat_identity()))
         helper = builder.add_shape_box(helper_body, hx=1.0, hy=1.0, hz=0.05, opacity=0.0)
-        model = builder.finalize(device="cpu")
-        camera = SensorCamera(model)
-        rays = self._rays(8, 8, fov=math.radians(40.0))
-        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device="cpu")
-        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device="cpu")
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        camera = SensorCamera(model, backend=backend)
+        rays = self._rays(8, 8, fov=math.radians(40.0), device=device)
+        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device=device)
+        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device=device)
         camera.update(
             model.state(),
-            self._identity_transforms(1),
+            self._identity_transforms(1, device),
             rays,
             depth_image=depth,
             shape_index_image=shape_index,
@@ -785,7 +787,7 @@ class TestSensorCamera(unittest.TestCase):
         camera.update(state, camera_transforms, rays, depth_image=depth)
         self.assertEqual(float(depth.numpy()[center]), 0.0)
 
-    def test_convex_hull_renders_like_its_mesh(self) -> None:
+    def test_convex_hull_renders_like_its_mesh(self, device: str = "cpu", backend: str = "warp") -> None:
         """Verify convex-hull shapes render, matching the same geometry added as a triangle mesh.
 
         The box mesh has per-face vertices with normals and UVs, which the hull's collision mesh
@@ -800,16 +802,18 @@ class TestSensorCamera(unittest.TestCase):
                 builder.add_shape_convex_hull(-1, mesh=mesh)
             else:
                 builder.add_shape_mesh(-1, mesh=mesh)
-            model = builder.finalize(device="cpu")
-            camera = SensorCamera(model)
+            model = builder.finalize(device=device)
+            if backend == "optix":
+                model.bvh_build_shapes(model.state(), backend="optix")
+            camera = SensorCamera(model, backend=backend)
             # Camera 2 m above the origin looking down -Z at the box's top face (z = 0.1 m).
             above = np.array([[0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
             depth = camera.allocate_image_depth(1, width, height)
             normal = camera.allocate_image_normal(1, width, height)
             camera.update(
                 model.state(),
-                wp.array(above, dtype=wp.transformf, device="cpu"),
-                self._rays(width, height, math.radians(30.0)),
+                wp.array(above, dtype=wp.transformf, device=device),
+                self._rays(width, height, math.radians(30.0), device=device),
                 depth_image=depth,
                 normal_image=normal,
             )
@@ -1683,6 +1687,19 @@ class TestSensorCamera(unittest.TestCase):
         np.testing.assert_allclose(color, [expected] * 3, atol=1e-4)
 
 
+def _optix_variant(test):
+    @requires("warp_optix")
+    @unittest.skipUnless(wp.is_cuda_available(), "requires CUDA")
+    def run(self):
+        test(self, device="cuda:0", backend="optix")
+
+    return run
+
+
+for _name in ("test_fully_transparent_shape_does_not_occlude", "test_convex_hull_renders_like_its_mesh"):
+    setattr(TestSensorCamera, f"{_name}_optix", _optix_variant(getattr(TestSensorCamera, _name)))
+
+
 class TestSensorCameraModelLights(unittest.TestCase):
     """Render lights declared on the model."""
 
@@ -1713,12 +1730,19 @@ class TestSensorCameraModelLights(unittest.TestCase):
         )
         return hdr.numpy().reshape(view_count, 3)
 
-    def _render_with_light(self, device, **light_kwargs) -> np.ndarray:
+    @staticmethod
+    def _camera(model: newton.Model, backend: str) -> SensorCamera:
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        return SensorCamera(model, backend=backend)
+
+    def _render_with_light(self, device, backend: str = "warp", **light_kwargs) -> np.ndarray:
         builder = TestSensorCamera._sphere_world_builder()
         builder.add_light(-1, **light_kwargs)
-        return self._center_hdr(builder.finalize(device=device))[0]
+        model = builder.finalize(device=device)
+        return self._center_hdr(model, camera=self._camera(model, backend))[0]
 
-    def test_model_light_shading(self) -> None:
+    def test_model_light_shading(self, device: str | None = None, backend: str = "warp") -> None:
         """Verify directional, point and spot lights from the model shade the analytic expected color."""
         a = self.ALBEDO
         spot_xform = wp.transform((0.5, 0.0, 0.0), wp.quat_identity())
@@ -1756,10 +1780,10 @@ class TestSensorCameraModelLights(unittest.TestCase):
                 np.zeros(3),
             ),
         }
-        for device in get_test_devices():
+        for device in get_test_devices() if device is None else [device]:
             for name, (light_kwargs, expected) in cases.items():
                 with self.subTest(device=str(device), light=name):
-                    color = self._render_with_light(device, **light_kwargs)
+                    color = self._render_with_light(device, backend, **light_kwargs)
                     np.testing.assert_allclose(color, expected, rtol=1.0e-4, atol=1.0e-6)
 
     def test_model_lights_follow_state_and_model_arrays(self) -> None:
@@ -1812,7 +1836,7 @@ class TestSensorCameraModelLights(unittest.TestCase):
         colors = self._center_hdr(model, camera=camera, view_count=3)
         np.testing.assert_allclose(colors, expected + self.ALBEDO, rtol=1.0e-4, atol=1.0e-7)
 
-    def test_model_light_shadows(self) -> None:
+    def test_model_light_shadows(self, device: str = "cpu", backend: str = "warp") -> None:
         """Verify model lights cast shadows only when both the light and the render config enable them."""
         builder = TestSensorCamera._sphere_world_builder()
         # An occluder on the shadow ray toward a light shining along (1, 0, -1), off the camera ray.
@@ -1822,12 +1846,15 @@ class TestSensorCameraModelLights(unittest.TestCase):
         )
         builder.add_light(-1, xform=light_xform, label="shadowed")
         builder.add_light(-1, xform=light_xform, cast_shadow=False, label="unshadowed")
-        model = builder.finalize(device="cpu")
+        model = builder.finalize(device=device)
+        camera = self._camera(model, backend)
         lit = self.ALBEDO * math.sqrt(0.5)
         shadows = SensorCamera.RenderConfig(enable_ambient_lighting=False, enable_shadows=True)
 
-        np.testing.assert_allclose(self._center_hdr(model)[0], 2.0 * lit, rtol=1.0e-4)
-        np.testing.assert_allclose(self._center_hdr(model, render_config=shadows)[0], 1.3 * lit, rtol=1.0e-4)
+        np.testing.assert_allclose(self._center_hdr(model, camera=camera)[0], 2.0 * lit, rtol=1.0e-4)
+        np.testing.assert_allclose(
+            self._center_hdr(model, camera=camera, render_config=shadows)[0], 1.3 * lit, rtol=1.0e-4
+        )
 
     def test_replicate_and_collapse_move_lights(self) -> None:
         """Verify fixed lights follow replicated copies and lights on merged bodies follow the merge."""
@@ -1922,6 +1949,10 @@ class TestSensorCameraModelLights(unittest.TestCase):
         scene.replicate(source, 2)
         model = scene.finalize(device="cpu")
         np.testing.assert_array_equal(model.test.temperature.numpy(), [3000.0, 0.0, 3000.0, 0.0])
+
+
+for _name in ("test_model_light_shading", "test_model_light_shadows"):
+    setattr(TestSensorCameraModelLights, f"{_name}_optix", _optix_variant(getattr(TestSensorCameraModelLights, _name)))
 
 
 class TestSensorCameraDeformable(unittest.TestCase):
