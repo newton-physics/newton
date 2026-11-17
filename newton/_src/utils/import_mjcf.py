@@ -2374,14 +2374,22 @@ def parse_mjcf(
 
     def _aim_targeting_lights():
         """Point lights that track a body at the target's initial position, as MuJoCo does at the initial pose."""
+        # Each body's first joint is its tree joint; later joints into the same body (e.g. equality loop joints)
+        # close kinematic loops and are not part of the subtree.
         children: dict[int, list[int]] = {}
+        parented: set[int] = set()
         for parent, child in zip(builder.joint_parent, builder.joint_child, strict=True):
-            children.setdefault(parent, []).append(child)
+            if child not in parented:
+                parented.add(child)
+                children.setdefault(parent, []).append(child)
 
         def subtree_com(root: int) -> np.ndarray:
-            bodies, stack = [], [root]
+            bodies, stack, visited = [], [root], set()
             while stack:
                 body = stack.pop()
+                if body in visited:
+                    continue
+                visited.add(body)
                 bodies.append(body)
                 stack.extend(children.get(body, ()))
             masses = np.array([builder.body_mass[b] for b in bodies], dtype=np.float64)

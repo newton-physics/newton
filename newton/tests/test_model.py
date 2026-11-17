@@ -4918,6 +4918,7 @@ class TestModelValidation(unittest.TestCase):
             (AttributeError, {"custom_attributes": {"test:missing": 1.0}}),
             (ValueError, {"custom_attributes": {"test:tag": 1.0}}),
             (Exception, {"xform": (1.0, 2.0)}),
+            (ValueError, {"cast_shadow": np.array([True, False])}),
         )
         for error, overrides in invalid:
             kwargs = {"body": -1, **overrides}

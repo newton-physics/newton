@@ -10479,6 +10479,8 @@ class ModelBuilder:
         if cone_softness > 1.0:
             raise ValueError(f"cone_softness must be in [0, 1], got {cone_softness}")
         light_xform = wp.transform() if xform is None else wp.transform(*xform)
+        cast_shadow = bool(cast_shadow)
+        enabled = bool(enabled)
 
         # Validate custom attributes before changing any light array.
         for name in custom_attributes or {}:
@@ -10503,8 +10505,8 @@ class ModelBuilder:
         self.light_cone_angle.append(cone_angle)
         self.light_cone_softness.append(cone_softness)
         self.light_focus.append(focus)
-        self.light_cast_shadow.append(bool(cast_shadow))
-        self.light_enabled.append(bool(enabled))
+        self.light_cast_shadow.append(cast_shadow)
+        self.light_enabled.append(enabled)
         if custom_attributes:
             self._process_custom_attributes(
                 entity_index=light,

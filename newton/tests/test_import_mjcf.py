@@ -145,9 +145,17 @@ class TestImportMjcfBasic(unittest.TestCase):
             <body name="child" pos="4 0 0">
                 <joint type="hinge"/>
                 <geom type="sphere" size="0.1" mass="3"/>
+                <body name="grandchild" pos="0 1 0">
+                    <joint type="hinge"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
             </body>
         </body>
     </worldbody>
+    <equality>
+        <!-- A loop joint from the grandchild back to the root must not enter the subtree traversal. -->
+        <connect body1="grandchild" body2="root" anchor="0 0 0"/>
+    </equality>
 </mujoco>
 """
         mujoco, _ = SolverMuJoCo.import_mujoco()
@@ -155,7 +163,8 @@ class TestImportMjcfBasic(unittest.TestCase):
         data = mujoco.MjData(native)
         mujoco.mj_forward(native, data)
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
+        builder.add_mjcf(mjcf, convert_mjc_equality_constraints=True)
+        self.assertEqual(builder.joint_count, 4)
         direction = wp.transform_vector(wp.transform(*builder.light_transform[0]), wp.vec3(0.0, 0.0, -1.0))
         np.testing.assert_allclose(direction, data.light_xdir[0], atol=1e-5)
 
