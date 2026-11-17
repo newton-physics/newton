@@ -2249,6 +2249,7 @@ class CollisionPipeline:
             use_lean_gjk_mpr = False
             direct_box_contacts = False
             tetrahedron_separation = False
+            ellipsoid_contacts = False
             mesh_sdf_texture_only = False
             mesh_sdf_identity_scale_only = False
             max_mesh_mesh_pairs = self.shape_pairs_max
@@ -2423,6 +2424,21 @@ class CollisionPipeline:
                     int(GeoType.CONE),
                 }
                 route_type_set = set(route_shape_types.tolist())
+                if int(GeoType.ELLIPSOID) in route_type_set:
+                    ellipsoid_capacity = capacity(route_rows & (route_types == int(GeoType.ELLIPSOID)))
+                    smooth_capacity = ellipsoid_capacity | capacity(route_rows & (route_types == int(GeoType.SPHERE)))
+                    if self.broad_phase_mode == "explicit":
+                        shape_a, shape_b = explicit_pairs_host.T
+                        ellipsoid_contacts = bool(
+                            np.any(
+                                (ellipsoid_capacity[shape_a] & smooth_capacity[shape_b])
+                                | (smooth_capacity[shape_a] & ellipsoid_capacity[shape_b])
+                            )
+                        )
+                    else:
+                        ellipsoid_contacts = (
+                            _compute_per_world_mask_pair_max(model, ellipsoid_capacity, smooth_capacity) > 0
+                        )
                 use_lean_gjk_mpr = not bool(lean_unsupported & route_type_set)
                 # Keep this specialization out of mixed-shape kernels: even a
                 # dormant branch can increase their instruction-cache pressure.
@@ -2520,6 +2536,7 @@ class CollisionPipeline:
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
                 _direct_box_contacts=direct_box_contacts,
                 _tetrahedron_separation=tetrahedron_separation,
+                _ellipsoid_contacts=ellipsoid_contacts,
                 convex_support_acceleration=model._convex_support_lut.shape[0] > 1,
                 has_generic_convex_pairs=has_generic_convex_pairs,
                 split_gjk_mpr=split_gjk_mpr,

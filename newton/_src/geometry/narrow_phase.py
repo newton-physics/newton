@@ -69,6 +69,7 @@ from ..geometry.contact_reduction_global import (
     write_contact_to_reducer,
 )
 from ..geometry.contact_sort import ContactSorter
+from ..geometry.ellipsoid_contact import collide_ellipsoids
 from ..geometry.flags import ShapeFlags
 from ..geometry.mpr import create_solve_mpr, create_support_map_function
 from ..geometry.sdf_contact import (
@@ -505,6 +506,7 @@ def create_narrow_phase_primitive_kernel(
     sparse_gjk_pairs: bool = False,
     hydroelastic_enabled: bool = False,
     _tetrahedron_separation: bool = False,
+    _ellipsoid_contacts: bool = False,
 ):
     """
     Create a kernel for fast analytical collision detection of primitive shapes.
@@ -520,6 +522,7 @@ def create_narrow_phase_primitive_kernel(
         sparse_gjk_pairs: Preserve broad-phase pair indices in the GJK buffer.
         hydroelastic_enabled: Route hydroelastic pairs to the SDF-SDF pipeline.
         _tetrahedron_separation: Reject distant four-vertex hulls using padded local bounds.
+        _ellipsoid_contacts: Try fixed-storage sphere-ellipsoid and ellipsoid-ellipsoid contacts.
 
     Returns:
         A warp kernel for primitive collision detection
@@ -527,6 +530,8 @@ def create_narrow_phase_primitive_kernel(
     _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}_{sparse_gjk_pairs}_{hydroelastic_enabled}"
     if _tetrahedron_separation:
         _module += "_tetrahedra"
+    if _ellipsoid_contacts:
+        _module += "_ellipsoids"
 
     @wp.func(module=_module)
     def _check_unit_scale_sdf(
@@ -772,7 +777,10 @@ def create_narrow_phase_primitive_kernel(
 
             # Route pairs without an analytical path before allocating contact
             # storage and walking the primitive dispatch chain.
-            if (
+            smooth_pair = False
+            if wp.static(_ellipsoid_contacts):
+                smooth_pair = (type_a == GeoType.SPHERE or type_a == GeoType.ELLIPSOID) and type_b == GeoType.ELLIPSOID
+            if not smooth_pair and (
                 type_a >= GeoType.ELLIPSOID
                 or type_b == GeoType.CONE
                 or (type_a == GeoType.CAPSULE and type_b > GeoType.CAPSULE and type_b != GeoType.CYLINDER)
@@ -1015,6 +1023,22 @@ def create_narrow_phase_primitive_kernel(
                 contact_dist_0, contact_pos_0, contact_normal = collide_sphere_box(
                     pos_a, sphere_radius, pos_b, box_rot, box_size
                 )
+
+            if wp.static(_ellipsoid_contacts):
+                if smooth_pair:
+                    radii_a = scale_a
+                    if is_sphere_a:
+                        radii_a = wp.vec3(scale_a[0])
+                    solved, distance, center, normal = collide_ellipsoids(
+                        radii_a,
+                        scale_b,
+                        wp.quat_inverse(quat_a) * quat_b,
+                        wp.quat_rotate_inv(quat_a, pos_b - pos_a),
+                    )
+                    if solved:
+                        contact_dist_0 = distance
+                        contact_pos_0 = pos_a + wp.quat_rotate(quat_a, center)
+                        contact_normal = wp.quat_rotate(quat_a, normal)
 
             # =====================================================================
             # Write all contacts (single write block for 0 to 4 contacts)
@@ -2672,6 +2696,7 @@ class NarrowPhase:
         _group_reduction: GroupReductionConfig | None = None,
         _direct_box_contacts: bool = False,
         _tetrahedron_separation: bool = False,
+        _ellipsoid_contacts: bool = False,
     ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -2682,6 +2707,9 @@ class NarrowPhase:
 
         ``_tetrahedron_separation`` enables conservative local-frame bounds
         tests before routing tetrahedral pairs to convex queries.
+
+        ``_ellipsoid_contacts`` enables a fixed-storage contact query for
+        sphere-ellipsoid and ellipsoid-ellipsoid pairs before general queries.
 
         Args:
             max_candidate_pairs: Maximum number of candidate pairs from broad phase
@@ -2902,6 +2930,7 @@ class NarrowPhase:
             sparse_gjk_pairs=self.sparse_gjk_pairs,
             hydroelastic_enabled=hydroelastic_sdf is not None,
             _tetrahedron_separation=_tetrahedron_separation,
+            _ellipsoid_contacts=_ellipsoid_contacts,
         )
         # GJK/MPR kernel handles remaining convex-convex pairs. Only models with cooked
         # support data select the accelerated support function; other models

@@ -1,0 +1,1 @@
+Accelerate sphere-ellipsoid and ellipsoid-ellipsoid overlaps with fixed-storage contact queries, avoiding zero-normal contacts in deep overlaps while retaining the general convex fallback for unresolved pairs.

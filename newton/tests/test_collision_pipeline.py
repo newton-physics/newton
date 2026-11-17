@@ -8217,5 +8217,72 @@ add_function_test(
 )
 
 
+def test_ellipsoid_pair_surface_witnesses(test, device):
+    """Deep smooth overlaps must retain unit normals and physical witnesses."""
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(margin=0.0, gap=0.01)
+    axis = wp.normalize(wp.vec3(1.0, 2.0, 3.0))
+    cases = ((0, 6), (6, 13))
+    radii = []
+    for first, second in cases:
+        builder.begin_world()
+        for index in (first, second):
+            angle = 2.0 * np.pi * (index % 5) / 5.0
+            position = wp.vec3(0.12 * np.cos(angle), 0.12 * np.sin(angle), 0.25 + 0.05 * (index // 7))
+            rotation = wp.quat_from_axis_angle(axis, 0.11 + 0.13 * index)
+            body = builder.add_body(xform=wp.transform(position, rotation))
+            if index == 0:
+                builder.add_shape_sphere(body, radius=0.5, cfg=cfg)
+                radii.append((0.5, 0.5, 0.5))
+            else:
+                builder.add_shape_ellipsoid(body, rx=0.5, ry=0.4, rz=0.35, cfg=cfg)
+                radii.append((0.5, 0.4, 0.35))
+        builder.end_world()
+    model = builder.finalize(device=device)
+    state = model.state()
+    for mode in ("explicit", "sap", "nxn"):
+        with test.subTest(broad_phase=mode):
+            pipeline = newton.CollisionPipeline(model, broad_phase=mode)
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertEqual(count, len(cases))
+            normals = contacts.rigid_contact_normal.numpy()[:count]
+            np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1e-5)
+            for side in (0, 1):
+                shapes = getattr(contacts, f"rigid_contact_shape{side}").numpy()[:count]
+                points = getattr(contacts, f"rigid_contact_point{side}").numpy()[:count]
+                points += getattr(contacts, f"rigid_contact_offset{side}").numpy()[:count]
+                scaled = points / np.asarray(radii)[shapes]
+                np.testing.assert_allclose(np.linalg.norm(scaled, axis=1), 1.0, atol=1e-5)
+
+            gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
+            if gc_was_enabled:
+                gc.disable()
+            try:
+                with wp.ScopedCapture(device=device) as capture:
+                    pipeline.collide(state, contacts)
+            finally:
+                if gc_was_enabled:
+                    gc.enable()
+            initial_poses = state.body_q.numpy()
+            separated = initial_poses.copy()
+            separated[:, 0] += 20.0 * np.arange(model.body_count)
+            state.body_q.assign(separated)
+            wp.capture_launch(capture.graph)
+            test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+            state.body_q.assign(initial_poses)
+            wp.capture_launch(capture.graph)
+            test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), len(cases))
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_ellipsoid_pair_surface_witnesses",
+    test_ellipsoid_pair_surface_witnesses,
+    devices=get_cuda_test_devices(),
+)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)
