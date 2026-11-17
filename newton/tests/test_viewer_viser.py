@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import io
 import json
 import re
@@ -24,10 +23,11 @@ import newton
 from newton._src.geometry.types import SH_C0
 from newton.examples import _ExampleBrowser
 from newton.examples.basic.example_basic_pendulum import Example as PendulumExample
+from newton.tests.unittest_utils import requires
 from newton.viewer import ViewerViser
 
 
-@unittest.skipUnless(importlib.util.find_spec("viser"), "Requires viser")
+@requires("viser")
 class TestViewerViserInteraction(unittest.TestCase):
     def test_contact_disks_reuse_mesh_when_contact_count_changes(self) -> None:
         """Changing active contacts updates instances without replacing Viser geometry."""
@@ -808,8 +808,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                 viewer.close()
 
 
-@unittest.skipUnless(importlib.util.find_spec("trimesh") is not None, "Requires trimesh")
-@unittest.skipUnless(importlib.util.find_spec("PIL") is not None, "Requires Pillow")
+@requires("trimesh", "PIL")
 class TestViewerViserTextures(unittest.TestCase):
     def _roundtrip_textured_mesh(self, channels):
         import trimesh
@@ -841,13 +840,13 @@ class TestViewerViserTextures(unittest.TestCase):
         self.assertEqual(material.metallicFactor, 0.0)
 
 
-@unittest.skipUnless(importlib.util.find_spec("viser"), "Requires viser")
+@requires("viser")
 class TestViewerViserBindHost(unittest.TestCase):
     """``host`` controls the bind address and has to be reflected in the browser URL."""
 
     # Newton prints its own URL after viser has spoken, so anything asserted
     # against the whole buffer can match Newton's line instead of viser's.
-    _NEWTON_URL_LINE = re.compile(r"^Viser server running at:.*$", re.MULTILINE)
+    _NEWTON_URL_LINE = re.compile(r"^.*Viser server running at:.*$", re.MULTILINE)
 
     def _viewer(self, **kwargs):
         kwargs.setdefault("verbose", False)

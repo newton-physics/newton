@@ -9,6 +9,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize import rcm_batch
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
@@ -160,7 +161,7 @@ class TestLinAlgLLTBlockedRCMSolver(unittest.TestCase):
         )
 
         solver.compute(matrix_wp)
-        permutation_1 = solver.P.numpy()
+        permutation_1 = solver.P.numpy().copy()
         reorder_calls = 0
         reorder = solver._reorder_callback
 
@@ -332,7 +333,7 @@ class TestLinAlgLLTBlockedRCMSolver(unittest.TestCase):
         )
 
         reorder()
-        cached = permutation.numpy()
+        cached = permutation.numpy().copy()
         matrix_wp.assign(star_matrix.reshape(-1))
         reorder()
         np.testing.assert_array_equal(permutation.numpy(), cached)
@@ -845,6 +846,7 @@ class TestLinAlgLLTBlockedRCMSolver(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # TODO: How can we get these to work?

@@ -2240,6 +2240,12 @@ def _step(case):
 
 @unittest.skipUnless(wp.is_cuda_available(), "Sparse integrated solve requires CUDA")
 class TestSteelSparseSolver(unittest.TestCase):
+    def test_nesterov_momentum_bypasses_the_sparse_factor(self):
+        """Solve on the general sweep, which alone carries Nesterov momentum."""
+        model = _build_model()
+        self.assertEqual(_make_solver(model, True)._sparse_mass_matrix_size, 9)
+        self.assertIsNone(_make_solver(model, True, nesterov_momentum=True)._sparse_mass_matrix_size)
+
     def test_heterogeneous_worlds_do_not_invent_joint_support(self):
         """Admit a robot-only world and a separate free-only world without oversized row support."""
         dense, sparse = _case(False, heterogeneous=True), _case(True, heterogeneous=True)

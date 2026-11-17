@@ -3,6 +3,7 @@
 
 """Scenes, solver settings and helpers shared by the SolverSteel test modules."""
 
+import sys
 import warnings
 from types import SimpleNamespace
 
@@ -21,6 +22,16 @@ from newton._src.solvers.steel.solver_steel import _get_pgs_solve_propagation_co
 from newton.solvers import SolverBase, SolverSteel
 
 CONTACT_MAX = 8192
+
+
+def printf_capture_is_reliable() -> bool:
+    """Whether a test may assert on stdout captured around a kernel's ``wp.printf``.
+
+    On Windows the printf output of a kernel cannot be reliably captured by a ``StdOutCapture`` that
+    redirected stdout inside the process, on CUDA as on the CPU, so Warp's own print tests skip the
+    platform. The row-overflow tests check the device-side flags there and leave the text unread.
+    """
+    return sys.platform != "win32"
 
 
 def _heap(device, nx=6, ny=6, nz=3, pitch=0.042, half=0.02, kinematic_tray=False):

@@ -25,6 +25,7 @@ from newton._src.viewer.gui.workspace import ViewerWorkspace
 from newton._src.viewer.viewer_model_tree import ModelTree
 from newton._src.viewer.viewer_navigation import SelectionNavigation
 from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
+from newton.tests.unittest_utils import requires
 from newton.viewer import ViewerGL, ViewerNull
 
 
@@ -36,6 +37,7 @@ def _assert_vec_close(test, actual, expected, tol=1.0e-6):
     np.testing.assert_allclose(_as_np(actual), np.array(expected, dtype=float), atol=tol, rtol=0.0)
 
 
+@requires("pyglet")
 class TestViewerCameraOrbit(unittest.TestCase):
     def test_follow_selection_hold_toggle_and_orbit(self) -> None:
         import pyglet

@@ -1,1 +1,0 @@
-Add `ModelBuilder.inertia_relative_tolerance`, `inertia_absolute_tolerance`, and `inertia_correction` to configure mass/inertia validation without changing its defaults, and `finalize(skip_validation_inertia=True)` to skip the entire stage.

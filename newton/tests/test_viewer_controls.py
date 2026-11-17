@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import gc
-import importlib.util
 import inspect
 import sys
 import unittest
@@ -43,7 +42,7 @@ from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_history import FrameHistory
 from newton._src.viewer.viewer_model_tree import ModelTree
 from newton._src.viewer.viewer_null import ViewerNull
-from newton.tests.unittest_utils import get_test_devices, import_pyglet_window, patch_sys_module
+from newton.tests.unittest_utils import get_test_devices, import_pyglet_window, patch_sys_module, requires
 
 
 @wp.kernel
@@ -58,12 +57,10 @@ def _scale_history_display(
     display_particle_q[i] = particle_q[i] * 0.01
 
 
+@requires("imgui_bundle")
 class TestViewerUI(unittest.TestCase):
     def setUp(self) -> None:
-        try:
-            from imgui_bundle import imgui, imguizmo
-        except ImportError as exc:
-            self.skipTest(f"Viewer UI dependencies not available: {exc}")
+        from imgui_bundle import imgui, imguizmo
 
         context = imgui.create_context()
         # A previous native viewer test may have left another context current.
@@ -478,7 +475,7 @@ class TestViewerBaseShouldStep(unittest.TestCase):
             self.assertTrue(viewer.should_step())
 
 
-@unittest.skipUnless(importlib.util.find_spec("imgui_bundle"), "Requires imgui_bundle")
+@requires("imgui_bundle")
 class TestViewerGuiRecovery(unittest.TestCase):
     def test_callback_failure_leaves_next_frame_usable(self):
         """Unwind real ImGui windows and styles without a renderer or model."""
@@ -1898,12 +1895,10 @@ class TestCollisionInspector(unittest.TestCase):
                 self.assertTrue(np.any(high <= low))
 
 
+@requires("imgui_bundle", "pyglet")
 class TestViewerGizmos(unittest.TestCase):
     def setUp(self) -> None:
-        try:
-            from imgui_bundle import imgui, imguizmo
-        except ImportError:
-            self.skipTest("imgui_bundle is required")
+        from imgui_bundle import imgui, imguizmo
 
         self.imgui = imgui
         self.giz = imguizmo.im_guizmo
