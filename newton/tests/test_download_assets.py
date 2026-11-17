@@ -145,15 +145,15 @@ class TestDownloadAssets(unittest.TestCase):
                         self.assertEqual(ref_path.stat().st_mtime, expired_mtime)
                     temporary.unlink(missing_ok=True)
 
-    def test_downloads_folders_with_leading_special_characters(self):
-        """Download literal directory names that sparse-checkout otherwise parses specially."""
-        folder_names = ("-models", "!models")
+    def test_downloads_literal_folder_paths(self):
+        """Download the repository root and special directory names by branch and commit SHA."""
+        folder_names = (".", "-models", "!models")
         for folder in folder_names:
             asset_path = Path(self.work_dir, folder, "asset.txt")
-            asset_path.parent.mkdir()
+            asset_path.parent.mkdir(exist_ok=True)
             asset_path.write_text(f"{folder}\n", encoding="utf-8")
             self.work.index.add([str(asset_path)])
-        commit = self.work.index.commit("Add directories with leading special characters")
+        commit = self.work.index.commit("Add root asset and directories with special names")
         self.work.git.push("origin", "main")
 
         with tempfile.TemporaryDirectory(prefix="nwtn_cache_sha_") as sha_cache_dir:
@@ -162,7 +162,12 @@ class TestDownloadAssets(unittest.TestCase):
                     with self.subTest(ref=ref, folder=folder):
                         path = download_git_folder(self.remote_dir, folder, cache_dir, ref=ref)
                         self.assertEqual((path / "asset.txt").read_text(encoding="utf-8"), f"{folder}\n")
-                        self.assertFalse((path.parent / "assets").exists())
+                        if folder == ".":
+                            self.assertEqual(path.parent, Path(cache_dir))
+                            self.assertTrue(path.name.endswith(f"_{commit.tree.hexsha}"))
+                            self.assertEqual(download_git_folder(self.remote_dir, "./", cache_dir, ref=ref), path)
+                        else:
+                            self.assertFalse((path.parent / "assets").exists())
 
     def test_reuse_identical_content_across_refs(self):
         """Reuse unchanged assets across commits, branches, and tags."""

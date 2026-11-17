@@ -440,7 +440,7 @@ def download_git_folder(
                 try:
                     commit = repo.commit(checkout_ref)
                     try:
-                        tree = commit.tree / folder_path
+                        tree = commit.tree if folder_path == "." else commit.tree / folder_path
                     except KeyError as e:
                         raise RuntimeError(f"Folder '{folder_path}' not found in repository {git_url}") from e
                     if tree.type != "tree":
