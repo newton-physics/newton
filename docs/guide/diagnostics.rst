@@ -35,6 +35,23 @@ go only to the configured handlers. This happens when your application calls
 :func:`logging.basicConfig`, under pytest's log capture, and in host
 applications and frameworks that configure logging themselves.
 
+Rich console output
+^^^^^^^^^^^^^^^^^^^
+
+Call :func:`newton.utils.setup_console_logging` from a script's
+``if __name__ == "__main__":`` block to switch this default output to a
+format that prefixes each record with its time, source file and line, and
+level name, colored by level when printed to a terminal:
+
+.. code-block:: text
+
+    [2026-11-02 10:15:42,108][import_mjcf.py:412][INFO]: Parsing MJCF file
+
+It also prints the script's own records. Scripts log through the
+``__main__`` logger, which is outside the ``newton`` logger tree, so their
+``INFO`` records are otherwise dropped unless logging is configured. Pass
+``rich=False`` to keep the plain format.
+
 Controlling log output
 ----------------------
 

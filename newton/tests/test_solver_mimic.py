@@ -106,7 +106,6 @@ def _test_solver_mimic(test, device, solver_name):
                 solver = newton.solvers.SolverVBD(
                     model,
                     iterations=4,
-                    rigid_compliant_alm=True,
                 )
                 generalized = False
             else:

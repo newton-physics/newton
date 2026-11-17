@@ -1645,11 +1645,11 @@ def apply_mjc_body_f_kernel(
     """Apply Newton body forces to MuJoCo xfrc_applied array.
 
     Iterates over MuJoCo bodies [world, mjc_body], looks up the Newton body
-    index, and copies its force.
+    index, and copies its force (zero if ``body_f`` is not given).
     """
     world, mjc_body = wp.tid()
     newton_body = mjc_body_to_newton[world, mjc_body]
-    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
+    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0 or not body_f:
         xfrc_applied[world, mjc_body] = wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0))
         return
 
@@ -2139,9 +2139,11 @@ def update_dof_force_properties_kernel(
 
     dof_frictionloss[world, mjc_dof] = joint_friction[newton_dof]
     if joint_damping:
-        dof_damping[world, mjc_dof] = joint_damping[newton_dof]
+        damping = joint_damping[newton_dof]
         if actuator_dof_damping:
-            dof_damping[world, mjc_dof] += actuator_dof_damping[mjc_dof]
+            damping += actuator_dof_damping[mjc_dof]
+        # Each [world, dof] has one writer; avoid lowering += to an atomic.
+        dof_damping[world, mjc_dof] = damping
     if dof_solimp:
         dof_solimp_out[world, mjc_dof] = dof_solimp[newton_dof]
     if dof_solref:
@@ -3034,9 +3036,11 @@ def update_tendon_properties_kernel(
     if tendon_stiffness:
         tendon_stiffness_out[world, mjc_tendon] = tendon_stiffness[newton_tendon]
     if tendon_damping:
-        tendon_damping_out[world, mjc_tendon] = tendon_damping[newton_tendon]
+        damping = tendon_damping[newton_tendon]
         if actuator_tendon_damping:
-            tendon_damping_out[world, mjc_tendon] += actuator_tendon_damping[mjc_tendon]
+            damping += actuator_tendon_damping[mjc_tendon]
+        # Each [world, tendon] has one writer; keep accumulation local.
+        tendon_damping_out[world, mjc_tendon] = damping
     if tendon_frictionloss:
         tendon_frictionloss_out[world, mjc_tendon] = tendon_frictionloss[newton_tendon]
     if tendon_range:
