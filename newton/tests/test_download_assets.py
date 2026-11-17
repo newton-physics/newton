@@ -79,10 +79,15 @@ class TestDownloadAssets(unittest.TestCase):
 
     def test_download_and_refresh(self):
         """Keep a stable path until the requested folder's contents change."""
-        # Initial download
-        p1 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
+        # A trailing slash must work on a fresh cache, before parent-cache reuse is possible.
+        p1 = download_git_folder(self.remote_dir, f"{self.asset_rel}/", cache_dir=self.cache_dir, ref="main")
         self.assertTrue(p1.exists())
         self.assertEqual((p1 / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+        for folder_path in (self.asset_rel, f"./{self.asset_rel}", self.asset_rel.replace("/", "\\") + "\\"):
+            with self.subTest(folder_path=folder_path):
+                cached = download_git_folder(self.remote_dir, folder_path, cache_dir=self.cache_dir, ref="main")
+                self.assertEqual(cached, p1)
+                self.assertEqual((cached / "foo.txt").read_text(encoding="utf-8"), "v1\n")
         # Navigate up past folder_path segments to reach the SHA-named cache root
         depth = len(Path(self.asset_rel).parts)
         cache_dir_1 = p1
@@ -142,7 +147,7 @@ class TestDownloadAssets(unittest.TestCase):
     def test_reuse_identical_content_across_refs(self):
         """Reuse unchanged assets across commits, branches, and tags."""
         first_commit = self.work.head.commit.hexsha
-        first = download_git_folder(self.remote_dir, self.asset_rel, self.cache_dir, ref=first_commit)
+        first = download_git_folder(self.remote_dir, f"./{self.asset_rel}", self.cache_dir, ref=first_commit)
         first_root = first.parents[len(Path(self.asset_rel).parts) - 1]
         tree_hash = (self.work.head.commit.tree / self.asset_rel).hexsha
         self.assertTrue(first_root.name.endswith(f"_{tree_hash}"))

@@ -8,6 +8,7 @@ import errno
 import hashlib
 import logging
 import os
+import posixpath
 import re
 import shutil
 import stat
@@ -313,7 +314,8 @@ def download_git_folder(
 
     Args:
         git_url: The git repository URL (HTTPS or SSH).
-        folder_path: Path to the folder within the repository.
+        folder_path: Path to the folder within the repository. Redundant separators
+            and dot components are normalized before cache lookup.
         cache_dir: Directory to cache downloads. If ``None``, use
             :attr:`newton.config.cache_dir_assets`. If that setting is ``None``,
             download into a fresh temporary directory kept until process exit.
@@ -350,7 +352,7 @@ def download_git_folder(
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
 
-    folder_path = folder_path.replace("\\", "/")
+    folder_path = posixpath.normpath(folder_path.replace("\\", "/"))
     ref_key = _ref_key(git_url, folder_path, ref)
     repo_name = Path(git_url.rstrip("/")).stem.replace(".git", "")
     base_prefix = _cache_prefix(repo_name, folder_path)
