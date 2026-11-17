@@ -466,6 +466,7 @@ def _create_shape_aabb_kernel(tight_tetrahedra: bool = False) -> wp.Kernel:
         aabb_upper: wp.array[wp.vec3],
         geom_data: wp.array[wp.vec4],
         geom_xform: wp.array[wp.transform],
+        narrow_phase_counters: wp.array[wp.int32],
     ):
         """Compute AABBs, narrow-phase geometry data, and zero collision counters.
 
@@ -474,8 +475,8 @@ def _create_shape_aabb_kernel(tight_tetrahedra: bool = False) -> wp.Kernel:
         """
         shape_id = wp.tid()
 
-        # Thread 0: zero contact counters, bump contact generation, and zero the
-        # broad phase candidate-pair count in a single fused step.
+        # Clear collision counters and bump the contact generation before
+        # either broad or narrow phase can consume their work queues.
         if shape_id == 0:
             for c in range(num_contact_counters):
                 contact_counters[c] = 0
@@ -486,6 +487,8 @@ def _create_shape_aabb_kernel(tight_tetrahedra: bool = False) -> wp.Kernel:
                 g = g + 1
             contact_generation[0] = g
             broad_phase_pair_count[0] = 0
+            for c in range(narrow_phase_counters.shape[0]):
+                narrow_phase_counters[c] = 0
 
         # Empty variant rows have their collision flags cleared; give them an empty AABB because broad
         # phases include every row that could hold a colliding variant shape.
@@ -3271,6 +3274,7 @@ class CollisionPipeline:
                 self.narrow_phase.shape_aabb_upper,
                 self.geom_data,
                 self.geom_transform,
+                getattr(self.narrow_phase, "_counter_array", None),
             ],
             device=self.device,
             record_tape=False,
@@ -3412,6 +3416,7 @@ class CollisionPipeline:
                 support_vertex_offsets=model._convex_support_vertex_offsets,
                 support_neighbors=model._convex_support_neighbors,
                 hydroelastic_shape_sdf_data_prepared=self._hydro_shape_sdf_data_prepared,
+                _counters_prepared=model.shape_count > 0,
             )
         if self._speculative_enabled:
             narrow_phase_extension_kwargs.update(

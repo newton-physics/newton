@@ -450,7 +450,9 @@ class TestCollisionPipeline(unittest.TestCase):
                 self.__dict__ = wrapped.__dict__
 
             def launch_custom_write(self, **kwargs):
+                np.testing.assert_array_equal(self._counter_array.numpy(), 0)
                 new_parameters = {
+                    "_counters_prepared",
                     "collision_update_dt",
                     "hydroelastic_shape_sdf_data_prepared",
                     "max_speculative_extension",
@@ -475,6 +477,9 @@ class TestCollisionPipeline(unittest.TestCase):
         pipeline.narrow_phase = LegacyNarrowPhase(pipeline.narrow_phase)
         contacts = pipeline.contacts()
 
+        # The bounds pass must clear routed work before dispatching an expert
+        # narrow phase, including one that retains the legacy call signature.
+        pipeline.narrow_phase._counter_array.fill_(37)
         pipeline.collide(model.state(), contacts)
 
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
@@ -4881,13 +4886,13 @@ def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):
     fused = newton.CollisionPipeline(
         model,
         broad_phase="sap",
-        shape_pairs_max=_SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD,
+        shape_pairs_max=_SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD - 1,
         deterministic=True,
         rigid_contact_max=16384,
         verify_buffers=False,
     )
     test.assertTrue(split.narrow_phase.split_gjk_mpr)
-    fused.narrow_phase.split_gjk_mpr = False
+    test.assertFalse(fused.narrow_phase.split_gjk_mpr)
 
     state = model.state()
     body_q = state.body_q.numpy()
@@ -4926,6 +4931,25 @@ def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):
             rtol=1.0e-5,
             atol=1.0e-5,
         )
+
+    # Replay the same graph across empty, sparse, and dense query batches.
+    # Both the work counters and the fused kernel's runtime assignment must
+    # follow the new poses rather than the batch used while recording.
+    body_world = model.body_world.numpy()
+    for active_worlds in (0, 1, 768):
+        replay_q = body_q.copy()
+        inactive = body_world >= active_worlds
+        replay_q[inactive, 0] += 1000.0 + 10.0 * np.arange(len(body_world))[inactive]
+        replay_q[inactive, 2] += 100.0
+        state.body_q.assign(replay_q)
+        wp.capture_launch(capture.graph)
+        test.assertEqual(int(fused.narrow_phase.gjk_candidate_pairs_count.numpy()[0]), 2 * active_worlds)
+        replay_count = int(fused_contacts.rigid_contact_count.numpy()[0])
+        test.assertEqual(replay_count, int(split_contacts.rigid_contact_count.numpy()[0]))
+        if active_worlds:
+            test.assertGreater(replay_count, 0)
+        else:
+            test.assertEqual(replay_count, 0)
 
 
 add_function_test(

@@ -1164,6 +1164,7 @@ def create_narrow_phase_kernel_gjk_mpr(
     speculative: bool = False,
     _cuda_max_registers: int | None = None,
     _direct_box_contacts: bool = False,
+    _dense_query_packing: bool = False,
 ):
     """
     Create a GJK/MPR narrow phase kernel for complex convex shape collisions.
@@ -1180,6 +1181,8 @@ def create_narrow_phase_kernel_gjk_mpr(
     _sf = support_func.__name__ if support_func is not None else "default"
     _ppc = post_process_contact.__name__ if post_process_contact is not None else "default"
     _module = f"narrow_phase_gjk_mpr_{external_aabb}_{speculative}_{writer_func.__name__}_{_sf}_{_ppc}"
+    if _dense_query_packing:
+        _module += "_dense"
     kernel_options = {}
     if _direct_box_contacts:
         _module += "_direct_boxes"
@@ -1226,6 +1229,14 @@ def create_narrow_phase_kernel_gjk_mpr(
 
         block_dim = wp.block_dim()
         num_blocks = total_num_threads // block_dim
+        if wp.static(_dense_query_packing):
+            if num_work_items >= _FUSED_CUDA_RESOURCE_PAIR_THRESHOLD:
+                # Keep sparse batches distributed across the original blocks.
+                # Dense batches share each warp without reducing solver work.
+                # Retain enough independent blocks to hide query latency.
+                items_per_warp = block_dim // 2
+                packed_blocks = wp.max(num_blocks // 4, (num_work_items + items_per_warp - 1) // items_per_warp)
+                num_blocks = wp.min(num_blocks, packed_blocks)
         block_index = tid // block_dim
         lane = tid - block_index * block_dim
 
@@ -2906,6 +2917,11 @@ class NarrowPhase:
                 speculative=speculative,
                 _cuda_max_registers=fused_register_limit,
                 _direct_box_contacts=_direct_box_contacts,
+                _dense_query_packing=(
+                    fused_register_limit is not None
+                    and not (has_meshes or has_heightfields or hydroelastic_sdf is not None)
+                    and _group_reduction is None
+                ),
             )
         else:
             self.narrow_phase_kernel = create_narrow_phase_kernel_gjk_mpr(
@@ -3418,6 +3434,7 @@ class NarrowPhase:
         shape_body: wp.array[wp.int32] | None = None,
         writer_data: Any,
         device: Devicelike | None = None,  # Device to launch on
+        _counters_prepared: bool = False,
     ) -> None:
         """
         Launch narrow phase collision detection with a custom contact writer struct.
@@ -3487,6 +3504,7 @@ class NarrowPhase:
             shape_body: Per-shape body index, required with group reduction.
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
+            _counters_prepared: Whether the caller already cleared the routed-work counters.
         """
         if device is None:
             device = self.device if self.device is not None else candidate_pair.device
@@ -3522,7 +3540,7 @@ class NarrowPhase:
         shape_angular_velocity = self._empty_vec3 if shape_angular_velocity is None else shape_angular_velocity
 
         # Clear counters only when a routed or split path consumes them.
-        if (
+        if not _counters_prepared and (
             self.has_generic_convex_pairs
             or self.has_meshes
             or self.has_heightfields

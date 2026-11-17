@@ -1,0 +1,1 @@
+Reduce collision-launch overhead by resetting routed-work counters alongside shape bounds and packing dense CUDA convex-query batches in box, sphere, and convex-hull scenes. No API or configuration changes are required.
