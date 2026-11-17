@@ -79,7 +79,7 @@ from ..geometry.sdf_contact import (
 )
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.sdf_texture import TextureSDFData
-from ..geometry.simplex_solver import create_solve_closest_distance
+from ..geometry.simplex_solver import GJK_CUTOFF_TOLERANCE, coordinate_scale, create_solve_closest_distance
 from ..geometry.support_function import (
     AcceleratedSupportMapDataProvider,
     GenericShapeData,
@@ -451,11 +451,60 @@ def _write_contact_simple_speculative(
     _write_contact_simple_at_index(contact_data, writer_data, index, normal, separation)
 
 
+@wp.func
+def _tetrahedra_separated(
+    source_a: wp.uint64,
+    source_b: wp.uint64,
+    scale_a: wp.vec3,
+    scale_b: wp.vec3,
+    pose_a: wp.transform,
+    pose_b: wp.transform,
+    threshold: float,
+) -> bool:
+    """Reject four-vertex hulls only when their padded bounds separate in A's frame."""
+    if source_a == wp.uint64(0) or source_b == wp.uint64(0):
+        return False
+    mesh_a = wp.mesh_get(source_a)
+    mesh_b = wp.mesh_get(source_b)
+    if mesh_a.points.shape[0] != 4 or mesh_b.points.shape[0] != 4:
+        return False
+    position_a = wp.transform_get_translation(pose_a)
+    position_b = wp.transform_get_translation(pose_b)
+    orientation_a = wp.transform_get_rotation(pose_a)
+    rotation = wp.quat_inverse(orientation_a) * wp.transform_get_rotation(pose_b)
+    position = wp.quat_rotate_inv(orientation_a, position_b - position_a)
+    first_a = wp.cw_mul(mesh_a.points[0], scale_a)
+    first_b = wp.cw_mul(mesh_b.points[0], scale_b)
+    magnitude = wp.max(1.0, coordinate_scale(position) + coordinate_scale(first_a) + coordinate_scale(first_b))
+    first_b = wp.quat_rotate(rotation, first_b) + position
+    lower_a = first_a
+    upper_a = first_a
+    lower_b = first_b
+    upper_b = first_b
+    for index in range(1, 4):
+        point_a = wp.cw_mul(mesh_a.points[index], scale_a)
+        point_b = wp.cw_mul(mesh_b.points[index], scale_b)
+        magnitude = wp.max(
+            magnitude, coordinate_scale(position) + coordinate_scale(point_a) + coordinate_scale(point_b)
+        )
+        point_b = wp.quat_rotate(rotation, point_b) + position
+        lower_a = wp.min(lower_a, point_a)
+        upper_a = wp.max(upper_a, point_a)
+        lower_b = wp.min(lower_b, point_b)
+        upper_b = wp.max(upper_b, point_b)
+    # Cover world-coordinate rounding even at zero gap, and cancellation
+    # while transforming offset source vertices into the relative frame.
+    world_scale = coordinate_scale(position_a) + coordinate_scale(position_b)
+    cutoff = wp.max(threshold, 0.0) + GJK_CUTOFF_TOLERANCE * world_scale + 1.0e-5 * magnitude
+    return wp.max(wp.max(lower_b - upper_a), wp.max(lower_a - upper_b)) > cutoff
+
+
 def create_narrow_phase_primitive_kernel(
     writer_func: Any,
     speculative: bool = False,
     sparse_gjk_pairs: bool = False,
     hydroelastic_enabled: bool = False,
+    _tetrahedron_separation: bool = False,
 ):
     """
     Create a kernel for fast analytical collision detection of primitive shapes.
@@ -470,11 +519,14 @@ def create_narrow_phase_primitive_kernel(
         speculative: Enable predictive contact admission.
         sparse_gjk_pairs: Preserve broad-phase pair indices in the GJK buffer.
         hydroelastic_enabled: Route hydroelastic pairs to the SDF-SDF pipeline.
+        _tetrahedron_separation: Reject distant four-vertex hulls using padded local bounds.
 
     Returns:
         A warp kernel for primitive collision detection
     """
     _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}_{sparse_gjk_pairs}_{hydroelastic_enabled}"
+    if _tetrahedron_separation:
+        _module += "_tetrahedra"
 
     @wp.func(module=_module)
     def _check_unit_scale_sdf(
@@ -704,6 +756,19 @@ def create_narrow_phase_primitive_kernel(
                 if idx < shape_pairs_mesh.shape[0]:
                     shape_pairs_mesh[idx] = wp.vec2i(shape_a, shape_b)
                 continue
+
+            if wp.static(_tetrahedron_separation):
+                if type_a == GeoType.CONVEX_MESH and type_b == GeoType.CONVEX_MESH:
+                    if _tetrahedra_separated(
+                        shape_source[shape_a],
+                        shape_source[shape_b],
+                        scale_a,
+                        scale_b,
+                        shape_transform[shape_a],
+                        shape_transform[shape_b],
+                        shape_gap[shape_a] + shape_gap[shape_b] + data_a[3] + data_b[3],
+                    ):
+                        continue
 
             # Route pairs without an analytical path before allocating contact
             # storage and walking the primitive dispatch chain.
@@ -2595,6 +2660,7 @@ class NarrowPhase:
         contact_writer_supports_speculative: bool = False,
         _group_reduction: GroupReductionConfig | None = None,
         _direct_box_contacts: bool = False,
+        _tetrahedron_separation: bool = False,
     ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -2602,6 +2668,9 @@ class NarrowPhase:
         ``_direct_box_contacts`` enables aligned-box witnesses in the fused
         kernel. CollisionPipeline selects it for box-and-plane scenes to avoid
         adding instruction-cache pressure to mixed-shape kernels.
+
+        ``_tetrahedron_separation`` enables conservative local-frame bounds
+        tests before routing tetrahedral pairs to convex queries.
 
         Args:
             max_candidate_pairs: Maximum number of candidate pairs from broad phase
@@ -2821,6 +2890,7 @@ class NarrowPhase:
             speculative=speculative,
             sparse_gjk_pairs=self.sparse_gjk_pairs,
             hydroelastic_enabled=hydroelastic_sdf is not None,
+            _tetrahedron_separation=_tetrahedron_separation,
         )
         # GJK/MPR kernel handles remaining convex-convex pairs. Only models with cooked
         # support data select the accelerated support function; other models

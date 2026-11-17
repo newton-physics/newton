@@ -2245,6 +2245,7 @@ class CollisionPipeline:
             has_heightfields = model.heightfield_count > 0
             use_lean_gjk_mpr = False
             direct_box_contacts = False
+            tetrahedron_separation = False
             mesh_sdf_texture_only = False
             mesh_sdf_identity_scale_only = False
             max_mesh_mesh_pairs = self.shape_pairs_max
@@ -2274,6 +2275,10 @@ class CollisionPipeline:
                     )
                     if tetrahedron_count >= _TETRAHEDRON_AABB_MIN_SHAPE_COUNT:
                         self._compute_shape_aabbs = _create_shape_aabb_kernel(tight_tetrahedra=True)
+                        tetrahedron_separation = bool(
+                            tetrahedron_count
+                            == np.count_nonzero(route_mask & (shape_types == int(GeoType.CONVEX_MESH)))
+                        )
                 # A variant row can take the geometry of any variant shape it can hold at runtime, so
                 # the stages cover every variant shape a routed row can hold, appended as extra
                 # rows, and capacities count each row as any of them.
@@ -2419,6 +2424,11 @@ class CollisionPipeline:
                 # Keep this specialization out of mixed-shape kernels: even a
                 # dormant branch can increase their instruction-cache pressure.
                 direct_box_contacts = route_type_set <= {int(GeoType.BOX), int(GeoType.PLANE)}
+                tetrahedron_separation = tetrahedron_separation and route_type_set <= {
+                    int(GeoType.BOX),
+                    int(GeoType.PLANE),
+                    int(GeoType.CONVEX_MESH),
+                }
 
                 if max_triangle_pairs is None:
                     # NXN/SAP count from shape masks without materializing the model's lazy pair array.
@@ -2506,6 +2516,7 @@ class CollisionPipeline:
                 has_heightfields=has_heightfields,
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
                 _direct_box_contacts=direct_box_contacts,
+                _tetrahedron_separation=tetrahedron_separation,
                 convex_support_acceleration=model._convex_support_lut.shape[0] > 1,
                 has_generic_convex_pairs=has_generic_convex_pairs,
                 split_gjk_mpr=split_gjk_mpr,
