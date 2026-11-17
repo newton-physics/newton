@@ -34,6 +34,7 @@ from ..geometry import Mesh, ShapeFlags, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode, JointType
 from ..sim.model import Model
+from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET
 from ..solvers.mujoco.enums import EqType, _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 from ..solvers.mujoco.equality import _add_equality_constraint, _register_equality_constraint_attributes
 from ..solvers.mujoco.utils import (
@@ -134,6 +135,75 @@ class _CableAttachmentCandidate:
     target_path: str
 
 
+def _restrict_to_collision_masks(builder: ModelBuilder, domain_attr: ModelBuilder.CustomAttribute, domain: int) -> None:
+    """Restrict the colliders of one USD import to their authored MuJoCo masks.
+
+    Builder-assigned collision groups are kept, so the masks only add explicit
+    filter pairs and never widen a group restriction, including against shapes
+    added after the import. Pair relations are evaluated once per
+    ``(contype, conaffinity, group)`` class, so memory scales with the number of
+    classes and rejected pairs rather than with all collider pairs.
+    """
+    domain_shapes = [shape for shape, shape_domain in domain_attr.values.items() if shape_domain == domain]
+    contype = builder.custom_attributes["mujoco:contype"].values
+    conaffinity = builder.custom_attributes["mujoco:conaffinity"].values
+    classes: dict[tuple[int, int, int], list[int]] = {}
+    for shape in domain_shapes:
+        if not builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES:
+            continue
+        group = int(builder.shape_collision_group[shape])
+        if group == 0:
+            # Collisions are disabled for this shape; its masks must not enable them in MuJoCo.
+            del domain_attr.values[shape]
+            continue
+        collision_type = int(contype[shape]) & 0xFFFFFFFF
+        collision_affinity = int(conaffinity[shape]) & 0xFFFFFFFF
+        if collision_type == 0 and collision_affinity == 0:
+            # MuJoCo never collides such shapes; add_mjcf() lowers them to group 0 too.
+            builder.shape_collision_group[shape] = 0
+            continue
+        classes.setdefault((collision_type, collision_affinity, group), []).append(shape)
+    if not classes:
+        return
+
+    keys = list(classes)
+    class_type = np.asarray([key[0] for key in keys], dtype=np.uint32)
+    class_affinity = np.asarray([key[1] for key in keys], dtype=np.uint32)
+    class_group = np.asarray([key[2] for key in keys], dtype=np.int64)
+    class_bodies = [{builder.shape_body[shape] for shape in classes[key]} for key in keys]
+    masked = {shape for members in classes.values() for shape in members}
+    prefiltered = {
+        (min(shape_a, shape_b), max(shape_a, shape_b))
+        for shape_a, shape_b in builder._shape_collision_filter_pairs.explicit_pairs
+        if shape_a in masked and shape_b in masked
+    }
+    masks_widen_groups = False
+    for i in range(len(keys)):
+        masks_allow = ((class_type[i] & class_affinity[i:]) != 0) | ((class_type[i:] & class_affinity[i]) != 0)
+        group, other_groups = class_group[i], class_group[i:]
+        groups_allow = ((group > 0) & ((other_groups == group) | (other_groups < 0))) | (
+            (group < 0) & (other_groups != group)
+        )
+        for offset in np.flatnonzero(groups_allow & ~masks_allow):
+            members_a, members_b = classes[keys[i]], classes[keys[i + offset]]
+            pairs = itertools.combinations(members_a, 2) if offset == 0 else itertools.product(members_a, members_b)
+            for shape_a, shape_b in pairs:
+                pair = (min(shape_a, shape_b), max(shape_a, shape_b))
+                if pair not in prefiltered:
+                    builder.add_shape_collision_filter_pair(*pair)
+        if not masks_widen_groups:
+            for offset in np.flatnonzero(~groups_allow & masks_allow):
+                # MuJoCo never collides geoms of one body, so only pairs across bodies matter.
+                if len(class_bodies[i] | class_bodies[i + offset]) > 1:
+                    masks_widen_groups = True
+                    break
+    if masks_widen_groups:
+        # The groups reject pairs the masks allow, so SolverMuJoCo must regenerate masks
+        # from the Newton groups instead of forwarding the authored ones.
+        for shape in domain_shapes:
+            domain_attr.values.pop(shape, None)
+
+
 def parse_usd(
     builder: ModelBuilder,
     source: str | UsdStage,
@@ -174,6 +244,13 @@ def parse_usd(
     The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
     See :ref:`usd_parsing` for more information.
+
+    When MuJoCo custom attributes are registered, colliders authoring both
+    ``mjc:contype`` and ``mjc:conaffinity`` preserve their 32-bit masks in a
+    mask domain local to this import. These masks also restrict Newton collisions
+    through filter pairs while builder collision groups, USD collision groups, and
+    explicit filtered pairs keep their exclusions; ``(0, 0)`` masks disable
+    collisions.
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
@@ -1441,6 +1518,18 @@ def parse_usd(
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.SHAPE]
     )
+    # Mask bits are local to one imported asset, just as for add_mjcf().
+    collision_mask_domain_key = "mujoco:collision_mask_domain"
+    collision_mask_domain_attr = builder.custom_attributes.get(collision_mask_domain_key)
+    collision_mask_domain = (
+        max(
+            (int(value) for value in collision_mask_domain_attr.values.values()),
+            default=MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
+        )
+        + 1
+        if collision_mask_domain_attr is not None
+        else MUJOCO_COLLISION_MASK_DOMAIN_UNSET
+    )
     builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.BODY]
     )
@@ -1946,6 +2035,7 @@ def parse_usd(
         path_shape_map=path_shape_map,
         path_shape_scale=path_shape_scale,
         builder_custom_attr_shape=builder_custom_attr_shape,
+        collision_mask_domain=collision_mask_domain,
         bodies_with_visual_shapes=bodies_with_visual_shapes,
         incoming_world_xform=incoming_world_xform,
         usd_axis_to_axis=usd_axis_to_axis,
@@ -2399,6 +2489,12 @@ def parse_usd(
         path_soft_map=path_soft_map,
         body_owner=_deformable_prims.body_owner,
     )
+
+    # Restrict the imported colliders to their masks after USD groups and explicit
+    # filters are applied, without widening either. Solver mask regeneration then
+    # retains the restrictions across imports.
+    if collision_mask_domain_attr is not None:
+        _restrict_to_collision_masks(builder, collision_mask_domain_attr, collision_mask_domain)
 
     def _resolve_newton_mimic(joint_prim: Usd.Prim) -> tuple[Sdf.Path | None, float, float]:
         """Resolve the mimic leader joint and coefficients from a follower joint prim.
