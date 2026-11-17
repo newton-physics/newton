@@ -145,6 +145,25 @@ class TestDownloadAssets(unittest.TestCase):
                         self.assertEqual(ref_path.stat().st_mtime, expired_mtime)
                     temporary.unlink(missing_ok=True)
 
+    def test_downloads_folders_with_leading_special_characters(self):
+        """Download literal directory names that sparse-checkout otherwise parses specially."""
+        folder_names = ("-models", "!models")
+        for folder in folder_names:
+            asset_path = Path(self.work_dir, folder, "asset.txt")
+            asset_path.parent.mkdir()
+            asset_path.write_text(f"{folder}\n", encoding="utf-8")
+            self.work.index.add([str(asset_path)])
+        commit = self.work.index.commit("Add directories with leading special characters")
+        self.work.git.push("origin", "main")
+
+        with tempfile.TemporaryDirectory(prefix="nwtn_cache_sha_") as sha_cache_dir:
+            for ref, cache_dir in (("main", self.cache_dir), (commit.hexsha, sha_cache_dir)):
+                for folder in folder_names:
+                    with self.subTest(ref=ref, folder=folder):
+                        path = download_git_folder(self.remote_dir, folder, cache_dir, ref=ref)
+                        self.assertEqual((path / "asset.txt").read_text(encoding="utf-8"), f"{folder}\n")
+                        self.assertFalse((path.parent / "assets").exists())
+
     def test_reuse_identical_content_across_refs(self):
         """Reuse unchanged assets across commits, branches, and tags."""
         first_commit = self.work.head.commit.hexsha

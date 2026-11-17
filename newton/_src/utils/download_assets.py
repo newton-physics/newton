@@ -421,7 +421,7 @@ def download_git_folder(
                     try:
                         repo.create_remote("origin", git_url)
                         repo.git.sparse_checkout("init")
-                        repo.git.sparse_checkout("set", folder_path)
+                        repo.git.sparse_checkout("set", "--cone", "--skip-checks", "--", folder_path)
                         repo.git.fetch("origin", ref, "--depth=1", "--filter=blob:none")
                     except BaseException:
                         repo.close()
@@ -448,7 +448,7 @@ def download_git_folder(
                     final_dir = cache_path / f"{base_prefix}_{tree.hexsha}"
                     # Avoid materializing unchanged files when another ref already cached them.
                     if not (final_dir / folder_path).is_dir():
-                        repo.git.sparse_checkout("set", folder_path)
+                        repo.git.sparse_checkout("set", "--cone", "--skip-checks", "--", folder_path)
                         repo.git.checkout(checkout_ref)
                     latest_commit = commit.hexsha
                 finally:
