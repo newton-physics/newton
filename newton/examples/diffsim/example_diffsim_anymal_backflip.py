@@ -53,10 +53,10 @@ Second Warp auto-adjoint pitfall (measured on Warp 1.19.0, identical on CPU
 and CUDA): the backward of a RUNTIME-bound ``for`` loop replays the loop
 body once with the loop variable at its final value and every loop-carried
 variable at its INITIAL value, evaluates the loop's adjoint seed with those
-mis-replayed values, and scatters the result onto the last element. A
+wrongly replayed values, and scatters the result onto the last element. A
 running min/max whose seed is nonzero therefore deposits a huge wrong
 adjoint on the last index (for the apex band: ``2 * c_band * (z_low -
-(-1e9))``), a seed that evaluates to zero through mis-replayed gates
+(-1e9))``), a seed that evaluates to zero through the wrongly replayed gates
 (sigmoid of a replayed -1e9) deposits nothing, and even a plain prefix sum
 loses its gradient unless the seed is a constant. No differentiable kernel
 here may carry state through a runtime-bound loop. The loss stage instead
@@ -1764,9 +1764,7 @@ class Example:
         )
         paw_body_g = wp.array([0, 0, 0, 0], dtype=wp.int32)
         paw_center_g = wp.array(
-            np.array(
-                [[0.0, 0.0, -0.495], [0.0, 0.0, -0.3], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=np.float32
-            ),
+            np.array([[0.0, 0.0, -0.495], [0.0, 0.0, -0.3], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=np.float32),
             dtype=wp.vec3,
         )
         paw_r_g = wp.array([0.0, 0.0, 0.0, 0.0], dtype=wp.float32)
