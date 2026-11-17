@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 import warnings
 from dataclasses import dataclass
+from functools import cache
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -51,7 +52,7 @@ from ..geometry.support_function import (
     pack_mesh_ptr,
 )
 from ..geometry.tri_mesh_collision import TriMeshCollisionDetector
-from ..geometry.types import GeoType
+from ..geometry.types import GeoType, Mesh
 from ..sim.contacts import GENERATION_SENTINEL, Contacts
 from ..sim.model import Model
 from ..sim.shape_contact_pairs import (
@@ -433,208 +434,245 @@ def _record_reduction_overflow(
 
 
 _EMPTY_AABB_EXTENT = wp.constant(1.0e30)
+_TETRAHEDRON_AABB_MIN_SHAPE_COUNT = 128
 
 
-@wp.kernel(enable_backward=False)
-def compute_shape_aabbs(
-    body_q: wp.array[wp.transform],
-    shape_transform: wp.array[wp.transform],
-    shape_body: wp.array[int],
-    shape_type: wp.array[int],
-    shape_scale: wp.array[wp.vec3],
-    shape_collision_radius: wp.array[float],
-    shape_source_ptr: wp.array[wp.uint64],
-    shape_margin: wp.array[float],
-    shape_gap: wp.array[float],
-    shape_collision_aabb_lower: wp.array[wp.vec3],
-    shape_collision_aabb_upper: wp.array[wp.vec3],
-    shape_flags: wp.array[wp.int32],
-    shape_variant_row: wp.array[wp.bool],
-    # Fused counter arrays — zeroed by thread 0 to avoid separate kernel launches.
-    contact_counters: wp.array[wp.int32],
-    contact_generation: wp.array[wp.int32],
-    broad_phase_pair_count: wp.array[wp.int32],
-    num_contact_counters: int,
-    # outputs
-    aabb_lower: wp.array[wp.vec3],
-    aabb_upper: wp.array[wp.vec3],
-    geom_data: wp.array[wp.vec4],
-    geom_xform: wp.array[wp.transform],
-):
-    """Compute AABBs, narrow-phase geometry data, and zero collision counters.
+@cache
+def _create_shape_aabb_kernel(tight_tetrahedra: bool = False) -> wp.Kernel:
+    """Specialize tetrahedral bounds without changing other pipelines' kernel body."""
 
-    Fuses AABB computation, narrow-phase data preparation, contact counter
-    zeroing, and generation bumping into a single kernel launch.
-    """
-    shape_id = wp.tid()
+    @wp.kernel(enable_backward=False, module=f"compute_shape_aabbs_{tight_tetrahedra}")
+    def compute_shape_aabbs(
+        body_q: wp.array[wp.transform],
+        shape_transform: wp.array[wp.transform],
+        shape_body: wp.array[int],
+        shape_type: wp.array[int],
+        shape_scale: wp.array[wp.vec3],
+        shape_collision_radius: wp.array[float],
+        shape_source_ptr: wp.array[wp.uint64],
+        shape_margin: wp.array[float],
+        shape_gap: wp.array[float],
+        shape_collision_aabb_lower: wp.array[wp.vec3],
+        shape_collision_aabb_upper: wp.array[wp.vec3],
+        shape_flags: wp.array[wp.int32],
+        shape_variant_row: wp.array[wp.bool],
+        # Fused counter arrays — zeroed by thread 0 to avoid separate kernel launches.
+        contact_counters: wp.array[wp.int32],
+        contact_generation: wp.array[wp.int32],
+        broad_phase_pair_count: wp.array[wp.int32],
+        num_contact_counters: int,
+        # outputs
+        aabb_lower: wp.array[wp.vec3],
+        aabb_upper: wp.array[wp.vec3],
+        geom_data: wp.array[wp.vec4],
+        geom_xform: wp.array[wp.transform],
+    ):
+        """Compute AABBs, narrow-phase geometry data, and zero collision counters.
 
-    # Thread 0: zero contact counters, bump contact generation, and zero the
-    # broad phase candidate-pair count in a single fused step.
-    if shape_id == 0:
-        for c in range(num_contact_counters):
-            contact_counters[c] = 0
-        g = contact_generation[0]
-        if g == 2147483647:
-            g = 0
+        Fuses AABB computation, narrow-phase data preparation, contact counter
+        zeroing, and generation bumping into a single kernel launch.
+        """
+        shape_id = wp.tid()
+
+        # Thread 0: zero contact counters, bump contact generation, and zero the
+        # broad phase candidate-pair count in a single fused step.
+        if shape_id == 0:
+            for c in range(num_contact_counters):
+                contact_counters[c] = 0
+            g = contact_generation[0]
+            if g == 2147483647:
+                g = 0
+            else:
+                g = g + 1
+            contact_generation[0] = g
+            broad_phase_pair_count[0] = 0
+
+        # Empty variant rows have their collision flags cleared; give them an empty AABB because broad
+        # phases include every row that could hold a colliding variant shape.
+        if shape_variant_row.shape[0] > 0 and shape_variant_row[shape_id]:
+            if (shape_flags[shape_id] & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)) == 0:
+                aabb_lower[shape_id] = wp.vec3(_EMPTY_AABB_EXTENT)
+                aabb_upper[shape_id] = wp.vec3(-_EMPTY_AABB_EXTENT)
+                return
+
+        rigid_id = shape_body[shape_id]
+        geo_type = shape_type[shape_id]
+
+        # Compute world transform
+        if rigid_id == -1:
+            X_ws = shape_transform[shape_id]
         else:
-            g = g + 1
-        contact_generation[0] = g
-        broad_phase_pair_count[0] = 0
+            X_ws = wp.transform_multiply(body_q[rigid_id], shape_transform[shape_id])
 
-    # Empty variant rows have their collision flags cleared; give them an empty AABB because broad
-    # phases include every row that could hold a colliding variant shape.
-    if shape_variant_row.shape[0] > 0 and shape_variant_row[shape_id]:
-        if (shape_flags[shape_id] & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)) == 0:
-            aabb_lower[shape_id] = wp.vec3(_EMPTY_AABB_EXTENT)
-            aabb_upper[shape_id] = wp.vec3(-_EMPTY_AABB_EXTENT)
-            return
+        pos = wp.transform_get_translation(X_ws)
+        orientation = wp.transform_get_rotation(X_ws)
 
-    rigid_id = shape_body[shape_id]
-    geo_type = shape_type[shape_id]
+        margin = shape_margin[shape_id]
 
-    # Compute world transform
-    if rigid_id == -1:
-        X_ws = shape_transform[shape_id]
-    else:
-        X_ws = wp.transform_multiply(body_q[rigid_id], shape_transform[shape_id])
+        # Enlarge AABB by per-shape effective gap for contact detection
+        effective_gap = margin + shape_gap[shape_id]
+        margin_vec = wp.vec3(effective_gap, effective_gap, effective_gap)
 
-    pos = wp.transform_get_translation(X_ws)
-    orientation = wp.transform_get_rotation(X_ws)
+        # Check if this is an infinite plane or a shape with a pre-computed local AABB
+        scale = shape_scale[shape_id]
+        is_infinite_plane = (geo_type == GeoType.PLANE) and (scale[0] == 0.0 and scale[1] == 0.0)
+        has_local_aabb = geo_type == GeoType.MESH or geo_type == GeoType.HFIELD or geo_type == GeoType.CONVEX_MESH
 
-    margin = shape_margin[shape_id]
+        tetrahedron = False
+        if wp.static(tight_tetrahedra):
+            if geo_type == GeoType.CONVEX_MESH:
+                tetrahedron = wp.mesh_get(shape_source_ptr[shape_id]).points.shape[0] == 4
 
-    # Enlarge AABB by per-shape effective gap for contact detection
-    effective_gap = margin + shape_gap[shape_id]
-    margin_vec = wp.vec3(effective_gap, effective_gap, effective_gap)
+        geom_scale = scale
 
-    # Check if this is an infinite plane or a shape with a pre-computed local AABB
-    scale = shape_scale[shape_id]
-    is_infinite_plane = (geo_type == GeoType.PLANE) and (scale[0] == 0.0 and scale[1] == 0.0)
-    has_local_aabb = geo_type == GeoType.MESH or geo_type == GeoType.HFIELD or geo_type == GeoType.CONVEX_MESH
-
-    geom_scale = scale
-
-    if is_infinite_plane:
-        # Clamp to the half space the plane bounds, replacing a bounding-sphere
-        # fallback whose 1e6 m cube made every shape a permanent ground-plane
-        # candidate. A nearly-aligned normal's surface rises by
-        # (|n_j| + |n_k|) * d / |n_i| at lateral offset d from the anchor, so
-        # bounding d by the reach this AABB itself admits keeps the clamp
-        # conservative for every shape it does not already prune laterally; a
-        # tilted plane's rise exceeds that reach and the bound stays unbounded.
-        normal = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
-        # Matches compute_shape_radius's infinite-plane radius.
-        HALF_SPACE_EXTENT = 1.0e6
-        half_extents = wp.vec3(HALF_SPACE_EXTENT, HALF_SPACE_EXTENT, HALF_SPACE_EXTENT)
-        lo = pos - half_extents - margin_vec
-        hi = pos + half_extents + margin_vec
-        for i in range(3):
-            n_i = normal[i]
-            # Below this the rise exceeds HALF_SPACE_EXTENT anyway, and the division stays well conditioned.
-            if wp.abs(n_i) > 0.5:
-                lateral = wp.abs(normal[(i + 1) % 3]) + wp.abs(normal[(i + 2) % 3])
-                rise = lateral * HALF_SPACE_EXTENT / wp.abs(n_i)
-                if n_i > 0.0:
-                    hi[i] = wp.min(hi[i], pos[i] + rise + effective_gap)
-                else:
-                    lo[i] = wp.max(lo[i], pos[i] - rise - effective_gap)
-        aabb_lower[shape_id] = lo
-        aabb_upper[shape_id] = hi
-    elif geo_type == GeoType.SPHERE:
-        radius = scale[0]
-        half_extents = wp.vec3(radius, radius, radius)
-        aabb_lower[shape_id] = pos - half_extents - margin_vec
-        aabb_upper[shape_id] = pos + half_extents + margin_vec
-    elif geo_type == GeoType.BOX:
-        # The absolute rotation maps local half-extents to exact world AABB extents.
-        r0 = wp.quat_rotate(orientation, wp.vec3(1.0, 0.0, 0.0))
-        r1 = wp.quat_rotate(orientation, wp.vec3(0.0, 1.0, 0.0))
-        r2 = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
-        half_extents = wp.vec3(
-            wp.abs(r0[0]) * scale[0] + wp.abs(r1[0]) * scale[1] + wp.abs(r2[0]) * scale[2],
-            wp.abs(r0[1]) * scale[0] + wp.abs(r1[1]) * scale[1] + wp.abs(r2[1]) * scale[2],
-            wp.abs(r0[2]) * scale[0] + wp.abs(r1[2]) * scale[1] + wp.abs(r2[2]) * scale[2],
-        )
-        aabb_lower[shape_id] = pos - half_extents - margin_vec
-        aabb_upper[shape_id] = pos + half_extents + margin_vec
-    elif geo_type == GeoType.CAPSULE:
-        radius = scale[0]
-        half_height = scale[1]
-        axis = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
-        half_extents = wp.vec3(radius, radius, radius) + wp.abs(axis) * half_height
-        aabb_lower[shape_id] = pos - half_extents - margin_vec
-        aabb_upper[shape_id] = pos + half_extents + margin_vec
-    elif geo_type == GeoType.CYLINDER:
-        radius = scale[0]
-        half_height = scale[1]
-        barrel_radius = scale[2]
-        # Imported MuJoCo site display sizes may use scale[2] without barrel semantics.
-        if barrel_radius >= half_height and barrel_radius > 0.0:
-            radius += (half_height * half_height) / (
-                barrel_radius + wp.sqrt(barrel_radius * barrel_radius - half_height * half_height)
+        if is_infinite_plane:
+            # Clamp to the half space the plane bounds, replacing a bounding-sphere
+            # fallback whose 1e6 m cube made every shape a permanent ground-plane
+            # candidate. A nearly-aligned normal's surface rises by
+            # (|n_j| + |n_k|) * d / |n_i| at lateral offset d from the anchor, so
+            # bounding d by the reach this AABB itself admits keeps the clamp
+            # conservative for every shape it does not already prune laterally; a
+            # tilted plane's rise exceeds that reach and the bound stays unbounded.
+            normal = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+            # Matches compute_shape_radius's infinite-plane radius.
+            HALF_SPACE_EXTENT = 1.0e6
+            half_extents = wp.vec3(HALF_SPACE_EXTENT, HALF_SPACE_EXTENT, HALF_SPACE_EXTENT)
+            lo = pos - half_extents - margin_vec
+            hi = pos + half_extents + margin_vec
+            for i in range(3):
+                n_i = normal[i]
+                # Below this the rise exceeds HALF_SPACE_EXTENT anyway, and the division stays well conditioned.
+                if wp.abs(n_i) > 0.5:
+                    lateral = wp.abs(normal[(i + 1) % 3]) + wp.abs(normal[(i + 2) % 3])
+                    rise = lateral * HALF_SPACE_EXTENT / wp.abs(n_i)
+                    if n_i > 0.0:
+                        hi[i] = wp.min(hi[i], pos[i] + rise + effective_gap)
+                    else:
+                        lo[i] = wp.max(lo[i], pos[i] - rise - effective_gap)
+            aabb_lower[shape_id] = lo
+            aabb_upper[shape_id] = hi
+        elif geo_type == GeoType.SPHERE:
+            radius = scale[0]
+            half_extents = wp.vec3(radius, radius, radius)
+            aabb_lower[shape_id] = pos - half_extents - margin_vec
+            aabb_upper[shape_id] = pos + half_extents + margin_vec
+        elif geo_type == GeoType.BOX:
+            # The absolute rotation maps local half-extents to exact world AABB extents.
+            r0 = wp.quat_rotate(orientation, wp.vec3(1.0, 0.0, 0.0))
+            r1 = wp.quat_rotate(orientation, wp.vec3(0.0, 1.0, 0.0))
+            r2 = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+            half_extents = wp.vec3(
+                wp.abs(r0[0]) * scale[0] + wp.abs(r1[0]) * scale[1] + wp.abs(r2[0]) * scale[2],
+                wp.abs(r0[1]) * scale[0] + wp.abs(r1[1]) * scale[1] + wp.abs(r2[1]) * scale[2],
+                wp.abs(r0[2]) * scale[0] + wp.abs(r1[2]) * scale[1] + wp.abs(r2[2]) * scale[2],
             )
-        r0 = wp.quat_rotate(orientation, wp.vec3(1.0, 0.0, 0.0))
-        r1 = wp.quat_rotate(orientation, wp.vec3(0.0, 1.0, 0.0))
-        r2 = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
-        half_extents = wp.vec3(
-            radius * wp.sqrt(r0[0] * r0[0] + r1[0] * r1[0]) + half_height * wp.abs(r2[0]),
-            radius * wp.sqrt(r0[1] * r0[1] + r1[1] * r1[1]) + half_height * wp.abs(r2[1]),
-            radius * wp.sqrt(r0[2] * r0[2] + r1[2] * r1[2]) + half_height * wp.abs(r2[2]),
-        )
-        aabb_lower[shape_id] = pos - half_extents - margin_vec
-        aabb_upper[shape_id] = pos + half_extents + margin_vec
-    elif has_local_aabb:
-        # Pre-computed local AABB transformed to world space.
-        # Scale is already baked into shape_collision_aabb by the builder,
-        # so we only need to handle the rotation here.
-        local_lo = shape_collision_aabb_lower[shape_id]
-        local_hi = shape_collision_aabb_upper[shape_id]
+            aabb_lower[shape_id] = pos - half_extents - margin_vec
+            aabb_upper[shape_id] = pos + half_extents + margin_vec
+        elif geo_type == GeoType.CAPSULE:
+            radius = scale[0]
+            half_height = scale[1]
+            axis = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+            half_extents = wp.vec3(radius, radius, radius) + wp.abs(axis) * half_height
+            aabb_lower[shape_id] = pos - half_extents - margin_vec
+            aabb_upper[shape_id] = pos + half_extents + margin_vec
+        elif geo_type == GeoType.CYLINDER:
+            radius = scale[0]
+            half_height = scale[1]
+            barrel_radius = scale[2]
+            # Imported MuJoCo site display sizes may use scale[2] without barrel semantics.
+            if barrel_radius >= half_height and barrel_radius > 0.0:
+                radius += (half_height * half_height) / (
+                    barrel_radius + wp.sqrt(barrel_radius * barrel_radius - half_height * half_height)
+                )
+            r0 = wp.quat_rotate(orientation, wp.vec3(1.0, 0.0, 0.0))
+            r1 = wp.quat_rotate(orientation, wp.vec3(0.0, 1.0, 0.0))
+            r2 = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+            half_extents = wp.vec3(
+                radius * wp.sqrt(r0[0] * r0[0] + r1[0] * r1[0]) + half_height * wp.abs(r2[0]),
+                radius * wp.sqrt(r0[1] * r0[1] + r1[1] * r1[1]) + half_height * wp.abs(r2[1]),
+                radius * wp.sqrt(r0[2] * r0[2] + r1[2] * r1[2]) + half_height * wp.abs(r2[2]),
+            )
+            aabb_lower[shape_id] = pos - half_extents - margin_vec
+            aabb_upper[shape_id] = pos + half_extents + margin_vec
+        elif wp.static(tight_tetrahedra) and tetrahedron:
+            # Four transformed vertices give exact tetrahedral bounds. Keep the
+            # scan bounded; larger hulls retain the cached local-box path.
+            mesh = wp.mesh_get(shape_source_ptr[shape_id])
+            rotation = wp.quat_to_matrix(orientation)
+            lo = wp.vec3(1.0e30)
+            hi = wp.vec3(-1.0e30)
+            vertex_magnitude = float(0.0)
+            for i in range(4):
+                scaled_point = wp.cw_mul(mesh.points[i], scale)
+                vertex_magnitude = wp.max(vertex_magnitude, wp.max(wp.abs(scaled_point)))
+                point = rotation * scaled_point + pos
+                lo = wp.min(lo, point)
+                hi = wp.max(hi, point)
+            # Bound transform roundoff before translation can cancel a large
+            # authoring offset. Final world coordinates alone understate it.
+            magnitude = wp.max(wp.abs(pos)) + vertex_magnitude
+            padding = margin_vec + wp.vec3(2.0e-6 * wp.max(1.0, magnitude))
+            aabb_lower[shape_id] = lo - padding
+            aabb_upper[shape_id] = hi + padding
+        elif has_local_aabb:
+            # Pre-computed local AABB transformed to world space.
+            # Scale is already baked into shape_collision_aabb by the builder,
+            # so we only need to handle the rotation here.
+            local_lo = shape_collision_aabb_lower[shape_id]
+            local_hi = shape_collision_aabb_upper[shape_id]
 
-        center = (local_lo + local_hi) * 0.5
-        half = (local_hi - local_lo) * 0.5
+            center = (local_lo + local_hi) * 0.5
+            half = (local_hi - local_lo) * 0.5
 
-        # Rotate center to world frame
-        world_center = wp.quat_rotate(orientation, center) + pos
+            # Rotate center to world frame
+            world_center = wp.quat_rotate(orientation, center) + pos
 
-        # Rotated AABB half-extents via abs of rotation matrix columns
-        r0 = wp.quat_rotate(orientation, wp.vec3(1.0, 0.0, 0.0))
-        r1 = wp.quat_rotate(orientation, wp.vec3(0.0, 1.0, 0.0))
-        r2 = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+            # Rotated AABB half-extents via abs of rotation matrix columns
+            r0 = wp.quat_rotate(orientation, wp.vec3(1.0, 0.0, 0.0))
+            r1 = wp.quat_rotate(orientation, wp.vec3(0.0, 1.0, 0.0))
+            r2 = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
 
-        world_half = wp.vec3(
-            wp.abs(r0[0]) * half[0] + wp.abs(r1[0]) * half[1] + wp.abs(r2[0]) * half[2],
-            wp.abs(r0[1]) * half[0] + wp.abs(r1[1]) * half[1] + wp.abs(r2[1]) * half[2],
-            wp.abs(r0[2]) * half[0] + wp.abs(r1[2]) * half[1] + wp.abs(r2[2]) * half[2],
-        )
+            world_half = wp.vec3(
+                wp.abs(r0[0]) * half[0] + wp.abs(r1[0]) * half[1] + wp.abs(r2[0]) * half[2],
+                wp.abs(r0[1]) * half[0] + wp.abs(r1[1]) * half[1] + wp.abs(r2[1]) * half[2],
+                wp.abs(r0[2]) * half[0] + wp.abs(r1[2]) * half[1] + wp.abs(r2[2]) * half[2],
+            )
 
-        aabb_lower[shape_id] = world_center - world_half - margin_vec
-        aabb_upper[shape_id] = world_center + world_half + margin_vec
-    else:
-        # Use support function to compute tight AABB
-        # Create generic shape data
-        shape_data = GenericShapeData()
-        shape_data.shape_type = geo_type
-        if geo_type == GeoType.PLANE:
-            geom_scale = wp.vec3(scale[0] * 0.5, scale[1] * 0.5, 0.0)
-        shape_data.scale = geom_scale
-        shape_data.auxiliary = wp.vec3(0.0, 0.0, 0.0)
-        shape_data.center = wp.vec3(0.0, 0.0, 0.0)
+            aabb_lower[shape_id] = world_center - world_half - margin_vec
+            aabb_upper[shape_id] = world_center + world_half + margin_vec
+        else:
+            # Use support function to compute tight AABB
+            # Create generic shape data
+            shape_data = GenericShapeData()
+            shape_data.shape_type = geo_type
+            if geo_type == GeoType.PLANE:
+                geom_scale = wp.vec3(scale[0] * 0.5, scale[1] * 0.5, 0.0)
+            shape_data.scale = geom_scale
+            shape_data.auxiliary = wp.vec3(0.0, 0.0, 0.0)
+            shape_data.center = wp.vec3(0.0, 0.0, 0.0)
 
-        # For CONVEX_MESH, pack the mesh pointer
-        if geo_type == GeoType.CONVEX_MESH:
-            shape_data.auxiliary = pack_mesh_ptr(shape_source_ptr[shape_id])
+            # For CONVEX_MESH, pack the mesh pointer
+            if geo_type == GeoType.CONVEX_MESH:
+                shape_data.auxiliary = pack_mesh_ptr(shape_source_ptr[shape_id])
 
-        data_provider = SupportMapDataProvider()
+            data_provider = SupportMapDataProvider()
 
-        # Compute tight AABB using helper function
-        aabb_min_world, aabb_max_world = compute_tight_aabb_from_support(shape_data, orientation, pos, data_provider)
+            # Compute tight AABB using helper function
+            aabb_min_world, aabb_max_world = compute_tight_aabb_from_support(
+                shape_data, orientation, pos, data_provider
+            )
 
-        aabb_lower[shape_id] = aabb_min_world - margin_vec
-        aabb_upper[shape_id] = aabb_max_world + margin_vec
+            aabb_lower[shape_id] = aabb_min_world - margin_vec
+            aabb_upper[shape_id] = aabb_max_world + margin_vec
 
-    # Narrow-phase geometry data (reuses X_ws and scale already computed above)
-    geom_data[shape_id] = wp.vec4(geom_scale[0], geom_scale[1], geom_scale[2], margin)
-    geom_xform[shape_id] = X_ws
+        # Narrow-phase geometry data (reuses X_ws and scale already computed above)
+        geom_data[shape_id] = wp.vec4(geom_scale[0], geom_scale[1], geom_scale[2], margin)
+        geom_xform[shape_id] = X_ws
+
+    return compute_shape_aabbs
+
+
+compute_shape_aabbs = _create_shape_aabb_kernel()
 
 
 @wp.kernel(enable_backward=False)
@@ -2073,6 +2111,7 @@ class CollisionPipeline:
         self.model = model
         self.shape_count = shape_count
         self.device = device
+        self._compute_shape_aabbs = compute_shape_aabbs
         self.reduce_contacts = reduce_contacts
         self._body_pair_reduction = body_pair_reduction
         self.requires_grad = requires_grad
@@ -2221,6 +2260,19 @@ class CollisionPipeline:
                     route_mask = np.zeros(len(shape_types), dtype=bool)
                     pair_shapes = explicit_pairs_host.ravel()
                     route_mask[pair_shapes[(pair_shapes >= 0) & (pair_shapes < len(shape_types))]] = True
+                # Variant rows may change their source geometry at runtime.
+                # Keep their existing kernel, as well as CPU and tiny scenes.
+                if wp.get_device(device).is_cuda and variant_options is None:
+                    tetrahedron_count = sum(
+                        routed
+                        and shape_type == int(GeoType.CONVEX_MESH)
+                        and isinstance(mesh, Mesh)
+                        and len(mesh.vertices) == 4
+                        # Prefix model views can retain their parent's source list.
+                        for shape_type, mesh, routed in zip(shape_types, model.shape_source, route_mask, strict=False)
+                    )
+                    if tetrahedron_count >= _TETRAHEDRON_AABB_MIN_SHAPE_COUNT:
+                        self._compute_shape_aabbs = _create_shape_aabb_kernel(tight_tetrahedra=True)
                 # A variant row can take the geometry of any variant shape it can hold at runtime, so
                 # the stages cover every variant shape a routed row can hold, appended as extra
                 # rows, and capacities count each row as any of them.
@@ -3176,7 +3228,7 @@ class CollisionPipeline:
         # Compute AABBs for all shapes, zero counters, bump generation.
         # Fuses contacts.clear() + broad_phase_pair_count.zero_() + AABB update.
         wp.launch(
-            kernel=compute_shape_aabbs,
+            kernel=self._compute_shape_aabbs,
             dim=model.shape_count,
             inputs=[
                 state.body_q,

@@ -8017,5 +8017,103 @@ add_function_test(
 )
 
 
+def test_small_hull_broad_phase_bounds(test, device):
+    """Cull separated tetrahedra using padded world vertices, including reflected and off-origin hulls."""
+    vertices = np.array([[-0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [0.5, -0.5, 0.5], [-0.5, 0.5, 0.5]], dtype=np.float32)
+    vertices += np.array([0.3, -0.2, 0.7], dtype=np.float32)
+    offset = np.array([1000.0, -2000.0, 3000.0], dtype=np.float32)
+    meshes = [
+        newton.Mesh(v, [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], compute_inertia=False)
+        for v in (vertices, vertices + offset)
+    ]
+    expected_vertices = []
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(margin=0.003, gap=0.007)
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.63)
+    local = wp.transform(wp.vec3(0.1, -0.03, 0.05), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.2))
+    # 128 routed hulls activate the CUDA specialization; two additional worlds
+    # cover static transforms, which do not produce static-static candidate pairs.
+    for world in range(66):
+        builder.begin_world()
+        scale = (-1.0, 0.7, 1.2) if world % 2 else (1.0, 0.7, 1.2)
+        mesh = meshes[int(world >= 32)]
+        shift = (
+            wp.quat_rotate(rotation * wp.transform_get_rotation(local), wp.vec3(*(offset * scale)))
+            if world >= 32
+            else wp.vec3(0.0)
+        )
+        position = wp.vec3(10.0, -2.0, 3.0) - shift
+        xform = wp.transform_multiply(wp.transform(position, rotation), local)
+        points = np.array([wp.transform_point(xform, wp.vec3(*(v * scale))) for v in mesh.vertices])
+        spacing = float(np.ptp(points[:, 0])) + 2.0 * (cfg.margin + cfg.gap) + 0.08
+        for side in range(2):
+            pose = wp.transform(position + wp.vec3(side * spacing, 0.0, 0.0), rotation)
+            if world < 64:
+                body = builder.add_body(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+                builder.add_shape_convex_hull(body, mesh=mesh, scale=scale, xform=local, cfg=cfg)
+            else:
+                builder.add_shape_convex_hull(
+                    -1, mesh=mesh, scale=scale, xform=wp.transform_multiply(pose, local), cfg=cfg
+                )
+            expected_vertices.append(np.asarray(mesh.vertices, dtype=np.float64))
+        builder.end_world()
+    model = builder.finalize(device=device)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    test.assertEqual(int(pipeline.broad_phase_pair_count.numpy()[0]), 0)
+
+    def check_bounds():
+        poses = state.body_q.numpy()
+        transforms, bodies = model.shape_transform.numpy(), model.shape_body.numpy()
+        scales = model.shape_scale.numpy()
+        lower, upper = pipeline.narrow_phase.shape_aabb_lower.numpy(), pipeline.narrow_phase.shape_aabb_upper.numpy()
+        for shape, body in enumerate(bodies):
+            transform = wp.transform(*transforms[shape])
+            if body >= 0:
+                transform = wp.transform_multiply(wp.transform(*poses[body]), transform)
+            rotation_matrix = np.asarray(wp.quat_to_matrix(wp.transform_get_rotation(transform))).reshape(3, 3)
+            scaled_vertices = expected_vertices[shape] * scales[shape]
+            points = scaled_vertices @ rotation_matrix.astype(np.float64).T
+            points += np.asarray(wp.transform_get_translation(transform))
+            expected_lower = points.min(axis=0) - cfg.margin - cfg.gap
+            expected_upper = points.max(axis=0) + cfg.margin + cfg.gap
+            np.testing.assert_array_less(lower[shape], expected_lower)
+            np.testing.assert_array_less(expected_upper, upper[shape])
+            # Roundoff scales with the transformed input coordinates, including
+            # cases whose large authoring offset cancels the body translation.
+            magnitude = max(
+                1.0, np.max(np.abs(scaled_vertices)), np.max(np.abs(wp.transform_get_translation(transform)))
+            )
+            np.testing.assert_allclose(lower[shape], expected_lower, atol=1e-5 * magnitude, rtol=0)
+            np.testing.assert_allclose(upper[shape], expected_upper, atol=1e-5 * magnitude, rtol=0)
+
+    check_bounds()
+    poses = state.body_q.numpy()
+    for pose in poses:
+        pose[3:] = np.asarray(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3) * wp.quat(*pose[3:]))
+    state.body_q.assign(poses)
+    gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
+    if gc_was_enabled:
+        gc.disable()
+    try:
+        with wp.ScopedCapture(device=device) as capture:
+            pipeline.collide(state, contacts)
+    finally:
+        if gc_was_enabled:
+            gc.enable()
+    wp.capture_launch(capture.graph)
+    check_bounds()
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_small_hull_broad_phase_bounds",
+    test_small_hull_broad_phase_bounds,
+    devices=get_cuda_test_devices(),
+)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)
