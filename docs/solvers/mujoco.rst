@@ -819,8 +819,9 @@ itself only when ``selfcollide`` is set through ``add_flex``. Flex
 contacts require ``use_mujoco_contacts=True``; the solver rejects models with
 flexes otherwise. In exported contacts, the flex side has shape
 ``-1``; :class:`~newton.sensors.SensorContact` and the viewer skip these
-contacts. With separate worlds, every world must have the same elements and
-authored flexes.
+contacts. With separate worlds, every world must have the same elements,
+element materials, particle masses, radii, and active flags, and authored
+flexes, because MuJoCo builds the flexes from the first world.
 
 To control a flex directly, use ``add_flex`` from
 :doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>` on existing Newton
@@ -860,11 +861,26 @@ dozen particles, as in the ``mujoco_flex`` example
 
 .. note::
 
-   MuJoCo Warp 4.0.1 and earlier treat geom ``gap`` as a contact-inclusion
-   offset for flex-plane contacts, so a flex rests about ``gap`` below a plane,
-   and the solver warns. Set the plane's ``gap`` to zero when it supports
-   flexes. MuJoCo Warp fixes this in
-   `google-deepmind/mujoco_warp@2c15447 <https://github.com/google-deepmind/mujoco_warp/commit/2c15447ff45ad56f4ba19541b538d3413406620e>`__.
+   Flex support is waiting on a MuJoCo Warp release that includes
+   `google-deepmind/mujoco_warp@3cbc2f3 <https://github.com/google-deepmind/mujoco_warp/commit/3cbc2f3599a4f9143f36e6bfea2aa44639e3ac22>`__
+   or later. Newton currently pins MuJoCo Warp 3.17, and no release up to 4.0.1
+   includes these changes:
+
+   * Known issue, fixed in
+     `2c15447 <https://github.com/google-deepmind/mujoco_warp/commit/2c15447ff45ad56f4ba19541b538d3413406620e>`__:
+     older versions treat geom ``gap`` as a contact-inclusion offset for
+     flex-plane contacts, so a flex rests about ``gap`` below a plane, and the
+     solver warns. Until then, set the ``gap`` of planes that support flexes to
+     zero.
+   * Performance: batched ``set_const`` inverse-weight computation
+     (`f5a54d7 <https://github.com/google-deepmind/mujoco_warp/commit/f5a54d7ee4750f61b715838cd9796c790da0b21a>`__),
+     the main flex-dependent startup cost, plus faster flex
+     contact capping
+     (`16be8de <https://github.com/google-deepmind/mujoco_warp/commit/16be8ded336a1ad69b00a35f60f9ac63f62d4049>`__),
+     per-world reductions
+     (`7e5710f <https://github.com/google-deepmind/mujoco_warp/commit/7e5710f92815d15afacc1c3e9ec22a4e263de2fa>`__),
+     and flex elasticity
+     (`3cbc2f3 <https://github.com/google-deepmind/mujoco_warp/commit/3cbc2f3599a4f9143f36e6bfea2aa44639e3ac22>`__).
 
 
 .. _mujoco-collision-pipeline:

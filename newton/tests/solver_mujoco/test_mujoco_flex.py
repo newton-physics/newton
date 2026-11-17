@@ -352,19 +352,21 @@ class TestMuJoCoFlex(unittest.TestCase):
         ground = builder.add_ground_plane()
         model = builder.finalize()
         solver = SolverMuJoCo(model)
-        sensor = newton.sensors.SensorContact(model, sensing_shapes=[ground])
+        sensor = newton.sensors.SensorContact(model, sensing_shapes=[ground], request_contact_attributes=False)
+        contacts = newton.Contacts(solver.get_max_contact_count(), 0, device=model.device)
+        observables = solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts)
 
         state_0, state_1 = model.state(), model.state()
         control = model.control()
         for _ in range(250):
             solver.step(state_0, state_1, control, None, 2.0e-3)
             state_0, state_1 = state_1, state_0
-        contacts = newton.Contacts(
-            solver.get_max_contact_count(), 0, device=model.device, requested_attributes={"force"}
-        )
         solver.update_contacts(contacts, state_0)
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
-        sensor.update(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 2.0e-3, observables=observables)
+        # The flex contacts carry force, but their flex side has no shape to attribute it to.
+        self.assertGreater(np.abs(observables.contact_f.numpy()).sum(), 0.0)
+        sensor.update(state_1, contacts, observables=observables)
         np.testing.assert_array_equal(sensor.total_force.numpy(), 0.0)
 
     def test_only_active_element_particles_are_simulated(self):
@@ -402,26 +404,40 @@ class TestMuJoCoFlex(unittest.TestCase):
         model = builder.finalize()
         self.assertEqual(SolverMuJoCo(model, use_mujoco_contacts=False).mj_model.nv, 6)
 
-        # A flex whose particles are all pinned has no joints.
-        builder = _builder()
-        _add_rope(builder, 0.0)
-        builder.particle_mass = [0.0] * builder.particle_count
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        self.assertEqual((solver.mj_model.nflex, solver.mj_model.nv), (1, 0))
-
     def test_worlds_must_share_flex_layout(self):
-        """Worlds whose elements or authored flexes differ are rejected."""
-        builder = _builder()
-        for authored in (True, False):
-            builder.begin_world()
-            triangles = _add_cloth(builder, 0.0)
-            if authored:
-                mujoco.add_flex(builder, triangles=triangles)
-            builder.end_world()
-        model = builder.finalize()
-        with self.assertRaises(ValueError):
-            SolverMuJoCo(model)
+        """Worlds whose elements, materials, particles, or authored flexes differ are rejected."""
+
+        def build(*authored):
+            builder = _builder()
+            for kwargs in authored:
+                builder.begin_world()
+                triangles = _add_cloth(builder, 0.0)
+                if kwargs is not None:
+                    mujoco.add_flex(builder, triangles=triangles, **kwargs)
+                builder.end_world()
+            return builder.finalize()
+
+        with self.assertRaisesRegex(ValueError, "flexes in world 1"):
+            SolverMuJoCo(build({}, None))
+        with self.assertRaisesRegex(ValueError, "flexes in world 1"):
+            SolverMuJoCo(build({"young": 1.0e4}, {"young": 2.0e4}))
+
+        # Per-world particle and material values are rejected because world 0's values would be used.
+        model = build(None, None)
+        SolverMuJoCo(model)
+        first = model.particle_world_start.numpy()[1]
+        for name, index, value in (
+            ("particle_mass", first, 0.0),
+            ("particle_mass", first, 1.0),
+            ("tri_materials", model.tri_count // 2, 1.0),
+        ):
+            with self.subTest(name=name, value=value):
+                model = build(None, None)
+                values = getattr(model, name).numpy()
+                values[index] = value
+                getattr(model, name).assign(values)
+                with self.assertRaisesRegex(ValueError, "world 1 differ"):
+                    SolverMuJoCo(model)
 
 
 if __name__ == "__main__":

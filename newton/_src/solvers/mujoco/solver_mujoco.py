@@ -11920,6 +11920,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         3. Corresponding joints have the same linear/angular DOF counts in each world
         4. Global world (-1) only contains static shapes (no bodies, joints, or constraints)
         5. Actuator layouts, template-only properties, and high-level DC-motor parameters match across worlds
+        6. Flex particle properties, elements, materials, and authored flexes match across worlds
 
         Args:
             model: The Newton model to validate.
@@ -12031,9 +12032,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     f"World 0 has {expected} {entity_name}, but world {w} has {counts[w]}."
                 )
 
-        # Flexes are built from the template world, so every world needs the same
-        # elements over its own particles and the same authored-flex assignment.
+        # Particle bodies and flexes are built from the template world, so every world needs the
+        # same particle properties, and the same elements, materials, and authored flexes over its
+        # own particles.
         if len(particle_world):
+            active = model.particle_flags.numpy() & int(ParticleFlags.ACTIVE) != 0
+            particles = np.column_stack(
+                (model.particle_mass.numpy(), model.particle_radius.numpy(), active, self._flex_particles)
+            )
+            particles[~self._flex_particles, :3] = 0.0  # Particles without a flex body are not converted.
+            particles = particles[np.argsort(particle_world, kind="stable")].reshape(world_count, -1, 4)
+            differs = np.any(particles != particles[0], axis=(1, 2))
+            if np.any(differs):
+                raise ValueError(
+                    "SolverMuJoCo requires homogeneous worlds. The particle masses, radii, or active "
+                    f"flags in world {np.argmax(differs)} differ from world 0."
+                )
             particle_start = model.particle_world_start.numpy()
             mujoco_attrs = getattr(model, "mujoco", None)
             for name, (dim, attribute, _, field) in flex.ELEMENTS.items():
@@ -12043,8 +12057,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 elems = indices.numpy().reshape(-1, dim + 1)
                 worlds = particle_world[elems[:, 0]]
                 owner = getattr(mujoco_attrs, attribute, None)
-                owned = owner.numpy() >= 0 if owner is not None else np.zeros(len(elems), dtype=bool)
-                layout = np.column_stack((elems - particle_start[worlds][:, None], owned))
+                owner = owner.numpy() if owner is not None else np.full(len(elems), -1)
+                owned = owner >= 0
+                # Authored flexes are compared by their row offset within the world and their settings.
+                first_row = np.full(world_count, np.iinfo(np.int32).max)
+                np.minimum.at(first_row, worlds[owned], owner[owned])
+                row = np.where(owned, owner - first_row[worlds], -1)
+                columns = [elems - particle_start[worlds][:, None], row]
+                if name == "springs":
+                    columns += [model.spring_stiffness.numpy(), model.spring_damping.numpy()]
+                else:
+                    # Only the Lame parameters of tetrahedron and triangle materials are converted.
+                    columns.append(getattr(model, field.replace("indices", "materials")).numpy()[:, :2])
+                if owned.any():
+                    for setting in flex.FLEX_ATTRIBUTES.keys() - {"label"}:
+                        values = getattr(mujoco_attrs, f"flex_{setting}").numpy()[np.maximum(owner, 0)]
+                        columns.append(np.where(owned[:, None], values.reshape(len(elems), -1), 0))
+                layout = np.column_stack(columns)
                 counts = np.bincount(worlds, minlength=world_count)
                 if np.all(counts == counts[0]):
                     layout = layout[np.argsort(worlds, kind="stable")].reshape(world_count, counts[0], -1)
@@ -12053,7 +12082,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     differs = counts != counts[0]
                 if np.any(differs):
                     raise ValueError(
-                        f"SolverMuJoCo requires homogeneous worlds. The {name} or their flexes "
+                        f"SolverMuJoCo requires homogeneous worlds. The {name}, their materials, or their flexes "
                         f"in world {np.argmax(differs)} differ from world 0."
                     )
 

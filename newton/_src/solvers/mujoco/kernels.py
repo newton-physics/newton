@@ -3738,7 +3738,7 @@ def collect_overflow_kernel(
     overflow_out[worldid] = newton_bits | mjw_overflow[worldid]
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def convert_warp_particles_to_mj_kernel(
     particle_q: wp.array[wp.vec3],
     particle_qd: wp.array[wp.vec3],
@@ -3772,7 +3772,7 @@ def convert_warp_particles_to_mj_kernel(
         qvel[world, va + k] = v[k]
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def convert_mj_particles_to_warp_kernel(
     qpos: wp.array2d[wp.float32],
     qvel: wp.array2d[wp.float32],

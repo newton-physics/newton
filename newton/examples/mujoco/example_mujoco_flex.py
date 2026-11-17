@@ -51,7 +51,7 @@ def build_world() -> newton.ModelBuilder:
     """Build one world: a cloth above a rigid box, and a cable above a soft block beside it."""
     builder = newton.ModelBuilder()
     SolverMuJoCo.register_custom_attributes(builder)
-    # MuJoCo Warp deactivates flex contacts with a nonzero gap, so keep shape gaps at zero.
+    # MuJoCo Warp 4.0.1 and earlier sink flexes into shapes by the shape's gap, so keep gaps at zero.
     builder.default_shape_cfg.gap = 0.0
 
     box = builder.add_body(xform=wp.transform((0.0, 0.0, BOX_HALF), wp.quat_identity()), label="box")
@@ -150,7 +150,7 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        """Advance the scene by one rendered frame."""
+        """Run the substeps of one rendered frame."""
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)

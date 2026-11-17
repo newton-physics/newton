@@ -204,10 +204,10 @@ def add_flex(
         "mujoco:flex_solimp": _vector(builder, "mujoco:flex_solimp", solimp, 5),
     }
     row = _prepare_custom_frequency_row(builder, "mujoco:flex", values, custom_attributes)
-    flex = builder.add_custom_values(**row)["mujoco:flex_young"]
+    index = builder.add_custom_values(**row)["mujoco:flex_young"]
     for i in indices:
-        owner[int(i)] = flex
-    return flex
+        owner[int(i)] = index
+    return index
 
 
 def _converted_elements(model: Model) -> dict[str, tuple[np.ndarray, np.ndarray]]:
