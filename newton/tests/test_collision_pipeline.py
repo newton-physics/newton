@@ -7342,7 +7342,7 @@ def test_mesh_sdf_backend_keeps_bvh_without_volume_sdf(test, device):
         device, [(-0.2, -0.2, 0.505), (0.2, -0.2, 0.505), (0.0, 0.2, 0.505)], force_sdf=False
     )
     _pipeline, expected, _state = _collide_mesh_backend(model, "bvh")
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "cube_mesh"):
+    with test.assertWarnsRegex(newton.NewtonWarning, "cube_mesh"):
         pipeline, contacts, _state = _collide_mesh_backend(model, "sdf")
     test.assertEqual(len(pipeline._soft_sdf_mesh_shapes), 0)
     test.assertIsNotNone(pipeline._soft_mesh_contact_data)
@@ -7361,7 +7361,7 @@ def test_mesh_sdf_backend_deep_triangle_matches_exact_distance(test, device):
     points = [(-0.05, -0.04, 0.35), (0.06, -0.03, 0.35), (0.0, 0.07, 0.36)]
     model = _mesh_backend_cube_model(device, points)
     with warnings.catch_warnings():
-        warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+        warnings.simplefilter("error", newton.NewtonWarning)
         pipeline, contacts, state = _collide_mesh_backend(model, "sdf")
     np.testing.assert_array_equal(pipeline._soft_sdf_mesh_shapes, [0])
     test.assertIsNone(pipeline._soft_mesh_contact_data)
@@ -7393,7 +7393,7 @@ def test_mesh_sdf_backend_deep_triangle_matches_exact_distance(test, device):
         enabled = model.shape_flags.numpy()
         model.shape_flags.assign(enabled & ~int(ShapeFlags.COLLIDE_PARTICLES))
         with warnings.catch_warnings():
-            warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+            warnings.simplefilter("error", newton.NewtonWarning)
             pipeline = newton.CollisionPipeline(
                 model,
                 broad_phase="nxn",
@@ -7414,7 +7414,7 @@ def test_mesh_sdf_backend_deep_triangle_matches_exact_distance(test, device):
     with test.subTest(check="ignored without full-surface contact"):
         _pipeline, expected, _state = _collide_mesh_backend(model, "bvh", full_surface=False)
         with warnings.catch_warnings():
-            warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+            warnings.simplefilter("error", newton.NewtonWarning)
             pipeline, contacts, _state = _collide_mesh_backend(model, "sdf", full_surface=False)
         test.assertEqual(len(pipeline._soft_sdf_mesh_shapes), 0)
         test.assertEqual(len(pipeline._soft_sdf_vertex_pairs), 0)
@@ -7465,7 +7465,7 @@ def test_mesh_sdf_backend_mixed_scene_routes_each_mesh(test, device):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         pipeline, contacts, state = _collide_mesh_backend(model, "sdf")
-    messages = [str(w.message) for w in caught if issubclass(w.category, newton.exceptions.NewtonWarning)]
+    messages = [str(w.message) for w in caught if issubclass(w.category, newton.NewtonWarning)]
     test.assertEqual(len(messages), 1)
     test.assertIn("bvh_mesh", messages[0])
     test.assertNotIn("sdf_mesh", messages[0])
