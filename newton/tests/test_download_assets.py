@@ -360,23 +360,50 @@ class TestDownloadAssets(unittest.TestCase):
         self.assertEqual(p1, p2)
 
     def test_offline_returns_cached(self):
-        """When git ls-remote fails and cache exists, return cached version."""
-        p1 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
-        self.assertTrue(p1.exists())
-        depth = len(Path(self.asset_rel).parts)
-        cache_dir_1 = p1
-        for _ in range(depth):
-            cache_dir_1 = cache_dir_1.parent
-
-        # Expire TTL
+        """Throttle offline retries for direct and parent cache hits without changing content."""
+        parent = download_git_folder(self.remote_dir, "assets", cache_dir=self.cache_dir, ref="main")
+        ref_path = _ref_path(parent.parent, _ref_key(self.remote_dir, "assets", "main"))
+        cached_commit = ref_path.read_text(encoding="ascii")
         old_mtime = time.time() - 7200
-        ref_path = _ref_path(cache_dir_1, _ref_key(self.remote_dir, self.asset_rel, "main"))
-        os.utime(ref_path, (old_mtime, old_mtime))
 
-        # Simulate offline
-        with mock.patch("newton._src.utils.download_assets._get_latest_commit_via_git", return_value=None):
-            p2 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
-        self.assertEqual(p1, p2)
+        # Make the local remote unavailable so the real Git lookup fails immediately.
+        remote_head = Path(self.remote_dir) / "HEAD"
+        offline_head = remote_head.with_name("HEAD.offline")
+        remote_head.rename(offline_head)
+        try:
+            for folder_path in ("assets", self.asset_rel):
+                with self.subTest(folder_path=folder_path):
+                    os.utime(ref_path, (old_mtime, old_mtime))
+                    expected = parent.parent / folder_path
+                    with mock.patch(
+                        "newton._src.utils.download_assets._get_latest_commit_via_git",
+                        wraps=_get_latest_commit_via_git,
+                    ) as resolve:
+                        for _ in range(2):
+                            cached = download_git_folder(self.remote_dir, folder_path, self.cache_dir, ref="main")
+                            self.assertEqual(cached, expected)
+                            self.assertEqual((parent / "x" / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+                        resolve.assert_called_once_with(self.remote_dir, "main")
+                        self.assertGreater(ref_path.stat().st_mtime, old_mtime)
+                        os.utime(ref_path, (old_mtime, old_mtime))
+                        self.assertEqual(
+                            download_git_folder(self.remote_dir, folder_path, self.cache_dir, ref="main"), expected
+                        )
+                        self.assertEqual(resolve.call_count, 2)
+                    self.assertGreater(ref_path.stat().st_mtime, old_mtime)
+                    self.assertEqual(ref_path.read_text(encoding="ascii"), cached_commit)
+
+            # Explicit refresh must still check the unavailable remote within the TTL.
+            with mock.patch(
+                "newton._src.utils.download_assets._get_latest_commit_via_git", wraps=_get_latest_commit_via_git
+            ) as resolve:
+                refreshed = download_git_folder(
+                    self.remote_dir, "assets", self.cache_dir, ref="main", force_refresh=True
+                )
+                self.assertEqual(refreshed, parent)
+                resolve.assert_called_once_with(self.remote_dir, "main")
+        finally:
+            offline_head.rename(remote_head)
 
     def test_offline_no_cache_raises(self):
         """When git ls-remote fails and no cache exists, raise RuntimeError."""

@@ -381,6 +381,11 @@ def download_git_folder(
 
     if latest_commit is None:
         if cached is not None:
+            # Throttle failed remote checks without changing the cached ref resolution.
+            try:
+                os.utime(_ref_path(cached, cached_key), None)
+            except OSError as e:
+                logger.debug("Could not update cached ref check time for %s: %s", cached, e)
             return cached_target
         raise RuntimeError(
             f"Cannot determine remote commit SHA for {git_url} (ref: {ref}) and no cached version exists."
