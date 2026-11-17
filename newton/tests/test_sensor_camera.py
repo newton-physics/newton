@@ -10,8 +10,8 @@ import warp as wp
 
 import newton
 from newton._src.geometry.types import SH_C0
-from newton._src.sensors.sensor_camera_render.types import LightType
-from newton._src.sensors.sensor_camera_render.utils import Utils
+from newton._src.render.types import LightType
+from newton._src.render.utils import Utils
 from newton.sensors import (
     SensorCamera,
 )

@@ -9,13 +9,13 @@
 
 import warp as wp
 
-from ...geometry import Gaussian, GeoType, raycast
+from ..geometry import Gaussian, GeoType, raycast
 from . import raytrace
 from .types import MeshData
 
 
 def create_closest_hit(config, shapes):
-    from ...geometry.optix import ray_interval, wo, world_offset  # noqa: PLC0415
+    from ..geometry.optix import ray_interval, wo, world_offset  # noqa: PLC0415
 
     grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
     planes_per_world = shapes.world_planes.shape[1]
@@ -128,7 +128,7 @@ def create_closest_hit(config, shapes):
 
 
 def create_first_hit(config, shapes):
-    from ...geometry.optix import ray_interval, wo, world_offset  # noqa: PLC0415
+    from ..geometry.optix import ray_interval, wo, world_offset  # noqa: PLC0415
 
     grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
     planes_per_world = shapes.world_planes.shape[1]

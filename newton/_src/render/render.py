@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ...geometry import Gaussian, GeoType
-from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
+from ..geometry import Gaussian, GeoType
+from ..utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
 from .types import AntiAliasing, ClearData, MeshData, RenderConfig, RenderOrder, TextureData, WorldRenderFlag
 
@@ -35,7 +35,7 @@ class TraceResult:
     """Geometry recovered by tracing one camera ray, retained so shading can be deferred.
 
     ``MSAA`` traces every subsample first and shades distinct surfaces afterwards, so the
-    full :class:`~newton._src.sensors.sensor_camera_render.raytrace.ClosestHit` and the
+    full :class:`~newton._src.render.raytrace.ClosestHit` and the
     world-space ray are kept to shade later.
     """
 

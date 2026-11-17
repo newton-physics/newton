@@ -7,12 +7,12 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ...geometry import Gaussian
-from ...geometry.bvh import compute_ellipsoid_bounds
-from ...geometry.raycast import map_ray_to_local
-from ...geometry.types import SH_C0
-from ...math import safe_div
-from ...utils.color import ColorSpace, srgb_to_linear_wp
+from ..geometry import Gaussian
+from ..geometry.bvh import compute_ellipsoid_bounds
+from ..geometry.raycast import map_ray_to_local
+from ..geometry.types import SH_C0
+from ..math import safe_div
+from ..utils.color import ColorSpace, srgb_to_linear_wp
 from .types import GaussianRenderMode, RenderConfig
 
 if TYPE_CHECKING:

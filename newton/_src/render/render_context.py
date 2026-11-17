@@ -10,11 +10,11 @@ from typing import Literal
 import numpy as np
 import warp as wp
 
-from ...core import Axis
-from ...geometry import GeoType, Mesh
-from ...geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals, _DeformableVisualSkinBatches
-from ...sim import Model, State
-from ...utils import load_texture, normalize_texture
+from ..core import Axis
+from ..geometry import GeoType, Mesh
+from ..geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals, _DeformableVisualSkinBatches
+from ..sim import Model, State
+from ..utils import load_texture, normalize_texture
 from .render import create_kernel
 from .types import (
     AntiAliasing,
@@ -221,7 +221,7 @@ class RenderContext:
             if self._has_particles or self._has_triangle_mesh:
                 raise RuntimeError("The OptiX camera backend does not support particles or deformable surfaces")
             try:
-                from ...geometry import optix  # noqa: PLC0415
+                from ..geometry import optix  # noqa: PLC0415
             except ImportError as exc:
                 raise RuntimeError("The OptiX camera backend requires the newton[optix] extra") from exc
             optix.check_supported(model)
@@ -652,7 +652,7 @@ class RenderContext:
                 # Copies: the factories capture them in wp.static, and shared modules may recompile.
                 render_kernel = create_kernel(replace(config), replace(self._render_state), replace(clear_data), optix)
                 if optix is not None:
-                    from ...geometry.optix import create_pipeline  # noqa: PLC0415
+                    from ..geometry.optix import create_pipeline  # noqa: PLC0415
 
                     render_kernel = create_pipeline(
                         optix, render_kernel, enable_backface_culling=config.enable_backface_culling
@@ -671,7 +671,7 @@ class RenderContext:
             if optix is None:
                 launch, launch_options = wp.launch, {"device": self.device, "block_dim": config.block_dim}
             else:
-                from ...geometry.optix import wo  # noqa: PLC0415
+                from ..geometry.optix import wo  # noqa: PLC0415
 
                 launch, launch_options = wo.launch, {}
             launch(

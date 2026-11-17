@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ...geometry import Gaussian, GeoType, raycast
-from ...geometry.bvh import BVH_SHAPE_INACTIVE
+from ..geometry import Gaussian, GeoType, raycast
+from ..geometry.bvh import BVH_SHAPE_INACTIVE
 from . import gaussians, render_optix
 from .types import MeshData, RenderConfig
 
