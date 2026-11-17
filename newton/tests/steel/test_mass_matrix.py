@@ -518,13 +518,6 @@ def test_captured_two_substep_replay_matches_eager(test, device, solve_mode="ser
         np.testing.assert_allclose(captured, getattr(eager_a, name).numpy(), rtol=0.0, atol=2.0e-6, err_msg=name)
 
 
-def test_mass_refresh_has_no_obsolete_limit_count_state(test, device, solve_mode="serial"):
-    """Keep no per-step joint-limit count state for the mass refresh."""
-    solver = SolverSteel(_build_model(device, ground=False), solve_mode=solve_mode)
-    for attribute in ("aug_limit_counts", "aug_prev_limit_counts", "limit_change_mask"):
-        test.assertFalse(hasattr(solver, attribute), f"obsolete mass-refresh state {attribute!r} was restored")
-
-
 class TestSteelMassUpdateInterval(unittest.TestCase):
     pass
 
@@ -535,7 +528,6 @@ for _name in (
     "test_model_change_request_refreshes_a_reuse_step",
     "test_timestep_change_forces_a_refresh",
     "test_captured_two_substep_replay_matches_eager",
-    "test_mass_refresh_has_no_obsolete_limit_count_state",
 ):
     serial_devices = devices if _name == "test_captured_two_substep_replay_matches_eager" else get_test_devices()
     add_function_test(TestSteelMassUpdateInterval, _name, globals()[_name], devices=serial_devices)

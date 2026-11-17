@@ -16,6 +16,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
@@ -456,5 +457,6 @@ class TestMarginGapSolver(unittest.TestCase):
 ###
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     setup_tests()
     unittest.main(verbosity=2)

@@ -279,6 +279,9 @@ class SolverBase:
         CONTACT_F = "contact_f"
         """Spatial contact forces aligned with a :class:`~newton.Contacts` container."""
 
+        SOLVER_RESIDUAL = "solver_residual"
+        """Per-world convergence residual of the most recent step; see :ref:`solver_residual_observable`."""
+
         def __init_subclass__(cls, **kwargs: Any) -> None:
             """Reject invalid or conflicting kind declarations when a subclass is defined."""
             super().__init_subclass__(**kwargs)
@@ -377,6 +380,18 @@ class SolverBase:
             dtype=wp.spatial_vector, frequency=Model.AttributeFrequency.CONTACT
         )
         """Contact forces [N, N·m], shape ``(rigid_contact_max + soft_contact_max,)`` of the allocation contacts."""
+
+        solver_residual: wp.array[wp.float32] | None = field(  # noqa: RUF009
+            dtype=wp.float32, frequency=Model.AttributeFrequency.WORLD
+        )
+        """Per-world convergence residual of the latest step, shape ``(world_count + 1,)``.
+
+        The final entry is global world ``-1``, as in per-world reset masks.
+        A nonnegative, solver-defined measure where smaller is closer to
+        convergence. Each solver documents its definition and units; values are
+        comparable only within one solver configuration. See
+        :ref:`solver_residual_observable`.
+        """
 
         _kinds: frozenset[str] = dataclass_field(default_factory=frozenset, init=False, repr=False)
         _solver: SolverBase | None = dataclass_field(default=None, init=False, repr=False)
@@ -872,7 +887,12 @@ class SolverBase:
             setattr(
                 observables,
                 name,
-                wp.zeros(count, dtype=spec.dtype, device=self.model.device, requires_grad=requires_grad),
+                wp.zeros(
+                    self._observable_shape(kind, count),
+                    dtype=spec.dtype,
+                    device=self.model.device,
+                    requires_grad=requires_grad,
+                ),
             )
         yield observables
 
@@ -936,6 +956,16 @@ class SolverBase:
                 )
         self._validate_native_contact_export(observables, contacts)
         observables._contact_layouts.update(dict.fromkeys(contact_fields, contacts))
+
+    def _observable_shape(self, kind: str, rows: int) -> tuple[int, ...]:
+        """Return the array shape allocated for observable ``kind``.
+
+        ``rows`` follows the field's declared frequency. Solvers override this
+        hook to add trailing or leading dimensions that depend on their
+        configuration, such as an iteration axis; the default is ``(rows,)``.
+        """
+        del kind
+        return (rows,)
 
     def _validate_native_contact_export(self, observables: SolverBase.Observables, contacts: Contacts) -> None:
         """Check that ``contacts`` can hold the contacts a native backend exports.

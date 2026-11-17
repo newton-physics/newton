@@ -1,15 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 import warp as wp
 
 from ...geometry import Gaussian, GeoType, raycast
 from ...geometry.bvh import BVH_SHAPE_INACTIVE
-from . import gaussians
+from . import gaussians, render_optix
 from .types import MeshData, RenderConfig
 
 if TYPE_CHECKING:
@@ -59,6 +57,27 @@ def _ray_intersect_mesh_smooth(
     if t < 0.0:
         return t, normal_local, u, v, face
 
+    return (
+        t,
+        _mesh_hit_normal(transform, scale, mesh_id, shape_mesh_data_id, mesh_data, normal_local, face, u, v),
+        u,
+        v,
+        face,
+    )
+
+
+@wp.func
+def _mesh_hit_normal(
+    transform: wp.transformf,
+    scale: wp.vec3f,
+    mesh_id: wp.uint64,
+    shape_mesh_data_id: wp.int32,
+    mesh_data: wp.array[MeshData],
+    normal_local: wp.vec3f,
+    face: wp.int32,
+    u: wp.float32,
+    v: wp.float32,
+) -> wp.vec3f:
     if shape_mesh_data_id > -1:
         normals = mesh_data[shape_mesh_data_id].normals
         if normals.shape[0] > 0:
@@ -68,7 +87,7 @@ def _ray_intersect_mesh_smooth(
             vertex_normal = normals[n0] * u + normals[n1] * v + normals[n2] * (1.0 - u - v)
             normal_local = raycast.safe_div_vec3(vertex_normal, scale)
 
-    return t, wp.normalize(wp.transform_vector(transform, normal_local)), u, v, face
+    return wp.normalize(wp.transform_vector(transform, normal_local))
 
 
 @wp.func
@@ -78,7 +97,7 @@ def get_group_roots(group_roots: wp.array[wp.int32], world_index: wp.int32, want
     return group_roots[world_index]
 
 
-def create_closest_hit_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
+def create_closest_hit_function(config: RenderConfig, state: "RenderContext.RenderState", optix=None) -> wp.Function:
     shade_gaussians = gaussians.create_shade_function(config, state)
 
     @wp.func
@@ -116,62 +135,60 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
 
                 while wp.bvh_query_next(query, shape_index, closest_hit.distance):
                     si = shape_enabled[shape_index]
-                    if si == BVH_SHAPE_INACTIVE:
-                        continue
+                    if si != BVH_SHAPE_INACTIVE:
+                        hit_distance = wp.float32(-1.0)
+                        hit_normal = wp.vec3f(0.0)
+                        hit_u = wp.float32(0.0)
+                        hit_v = wp.float32(0.0)
+                        hit_face_id = wp.int32(-1)
+                        hit_color = wp.vec3f(0.0)
 
-                    hit_distance = wp.float32(-1.0)
-                    hit_normal = wp.vec3f(0.0)
-                    hit_u = wp.float32(0.0)
-                    hit_v = wp.float32(0.0)
-                    hit_face_id = wp.int32(-1)
-                    hit_color = wp.vec3f(0.0)
+                        shape_type = shape_types[si]
+                        # Heightfields are triangulated meshes; RenderContext remaps
+                        # HFIELD -> MESH, so this branch renders them too.
+                        if shape_type == GeoType.MESH:
+                            hit_distance, hit_normal, hit_u, hit_v, hit_face_id = _ray_intersect_mesh_smooth(
+                                shape_transforms[si],
+                                shape_sizes[si],
+                                ray_origin_world,
+                                ray_dir_world,
+                                shape_source_ptr[si],
+                                shape_mesh_data_ids[si],
+                                mesh_data,
+                                wp.static(config.enable_backface_culling),
+                                closest_hit.distance,
+                            )
+                        elif shape_type == GeoType.GAUSSIAN:
+                            if num_gaussians_hit < wp.static(state.num_gaussians):
+                                gaussians_hit[num_gaussians_hit] = si
+                                num_gaussians_hit += 1
+                                # gaussian_id = shape_source_ptr[si]
+                                # hit_distance, hit_normal, hit_color = shade_gaussians(
+                                #     shape_transforms[si],
+                                #     shape_sizes[si],
+                                #     ray_origin_world,
+                                #     ray_dir_world,
+                                #     gaussians_data[gaussian_id],
+                                #     closest_hit.distance
+                                # )
+                        else:
+                            hit_distance, hit_normal = raycast.ray_intersect_shape(
+                                shape_transforms[si],
+                                shape_sizes[si],
+                                shape_type,
+                                ray_origin_world,
+                                ray_dir_world,
+                                wp.static(config.enable_backface_culling),
+                            )
 
-                    shape_type = shape_types[si]
-                    # Heightfields are triangulated meshes; RenderContext remaps
-                    # HFIELD -> MESH, so this branch renders them too.
-                    if shape_type == GeoType.MESH:
-                        hit_distance, hit_normal, hit_u, hit_v, hit_face_id = _ray_intersect_mesh_smooth(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_source_ptr[si],
-                            shape_mesh_data_ids[si],
-                            mesh_data,
-                            wp.static(config.enable_backface_culling),
-                            closest_hit.distance,
-                        )
-                    elif shape_type == GeoType.GAUSSIAN:
-                        if num_gaussians_hit < wp.static(state.num_gaussians):
-                            gaussians_hit[num_gaussians_hit] = si
-                            num_gaussians_hit += 1
-                            # gaussian_id = shape_source_ptr[si]
-                            # hit_distance, hit_normal, hit_color = shade_gaussians(
-                            #     shape_transforms[si],
-                            #     shape_sizes[si],
-                            #     ray_origin_world,
-                            #     ray_dir_world,
-                            #     gaussians_data[gaussian_id],
-                            #     closest_hit.distance
-                            # )
-                    else:
-                        hit_distance, hit_normal = raycast.ray_intersect_shape(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            shape_type,
-                            ray_origin_world,
-                            ray_dir_world,
-                            wp.static(config.enable_backface_culling),
-                        )
-
-                    if hit_distance >= 0.0 and hit_distance < closest_hit.distance:
-                        closest_hit.distance = hit_distance
-                        closest_hit.normal = hit_normal
-                        closest_hit.shape_index = si
-                        closest_hit.bary_u = hit_u
-                        closest_hit.bary_v = hit_v
-                        closest_hit.face_idx = hit_face_id
-                        closest_hit.color = hit_color
+                        if hit_distance >= 0.0 and hit_distance < closest_hit.distance:
+                            closest_hit.distance = hit_distance
+                            closest_hit.normal = hit_normal
+                            closest_hit.shape_index = si
+                            closest_hit.bary_u = hit_u
+                            closest_hit.bary_v = hit_v
+                            closest_hit.face_idx = hit_face_id
+                            closest_hit.color = hit_color
 
                 # Temporary workaround. Warp BVH queries share some stack data,
                 # which breaks nested wp.bvh_query_ray calls.
@@ -281,6 +298,9 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
 
         return closest_hit
 
+    if optix is not None:
+        closest_hit_shape = render_optix.create_closest_hit(config, optix)
+
     @wp.func
     def closest_hit(
         bvh_shapes_size: wp.int32,
@@ -355,7 +375,9 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
     return closest_hit
 
 
-def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
+def create_closest_hit_depth_only_function(
+    config: RenderConfig, state: "RenderContext.RenderState", optix=None
+) -> wp.Function:
     shade_gaussians = gaussians.create_shade_function(config, state)
 
     @wp.func
@@ -391,43 +413,41 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
 
                 while wp.bvh_query_next(query, shape_index, closest_hit.distance):
                     si = shape_enabled[shape_index]
-                    if si == BVH_SHAPE_INACTIVE:
-                        continue
+                    if si != BVH_SHAPE_INACTIVE:
+                        hit_dist = -1.0
 
-                    hit_dist = -1.0
+                        shape_type = shape_types[si]
+                        # Heightfields are triangulated meshes; RenderContext remaps
+                        # HFIELD -> MESH, so this branch renders them too.
+                        if shape_type == GeoType.MESH:
+                            ray_origin_local, ray_direction_local = raycast.map_ray_to_local(
+                                shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
+                            )
+                            hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh_no_normal(
+                                ray_origin_local,
+                                ray_direction_local,
+                                shape_sizes[si],
+                                shape_source_ptr[si],
+                                wp.static(config.enable_backface_culling),
+                                closest_hit.distance,
+                            )
+                        elif shape_type == GeoType.GAUSSIAN:
+                            if num_gaussians_hit < wp.static(state.num_gaussians):
+                                gaussians_hit[num_gaussians_hit] = si
+                                num_gaussians_hit += 1
+                        else:
+                            hit_dist, _normal = raycast.ray_intersect_shape_no_normal(
+                                shape_transforms[si],
+                                shape_sizes[si],
+                                shape_type,
+                                ray_origin_world,
+                                ray_dir_world,
+                                wp.static(config.enable_backface_culling),
+                            )
 
-                    shape_type = shape_types[si]
-                    # Heightfields are triangulated meshes; RenderContext remaps
-                    # HFIELD -> MESH, so this branch renders them too.
-                    if shape_type == GeoType.MESH:
-                        ray_origin_local, ray_direction_local = raycast.map_ray_to_local(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
-                        )
-                        hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh_no_normal(
-                            ray_origin_local,
-                            ray_direction_local,
-                            shape_sizes[si],
-                            shape_source_ptr[si],
-                            wp.static(config.enable_backface_culling),
-                            closest_hit.distance,
-                        )
-                    elif shape_type == GeoType.GAUSSIAN:
-                        if num_gaussians_hit < wp.static(state.num_gaussians):
-                            gaussians_hit[num_gaussians_hit] = si
-                            num_gaussians_hit += 1
-                    else:
-                        hit_dist, _normal = raycast.ray_intersect_shape_no_normal(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            shape_type,
-                            ray_origin_world,
-                            ray_dir_world,
-                            wp.static(config.enable_backface_culling),
-                        )
-
-                    if hit_dist > -1.0 and hit_dist < closest_hit.distance:
-                        closest_hit.distance = hit_dist
-                        closest_hit.shape_index = si
+                        if hit_dist > -1.0 and hit_dist < closest_hit.distance:
+                            closest_hit.distance = hit_dist
+                            closest_hit.shape_index = si
 
                 if num_gaussians_hit > 0:
                     for gi in range(num_gaussians_hit):
@@ -523,6 +543,9 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
 
         return closest_hit
 
+    if optix is not None:
+        closest_hit_shape_depth_only = render_optix.create_closest_hit(config, optix)
+
     @wp.func
     def closest_hit_depth_only(
         bvh_shapes_size: wp.int32,
@@ -596,7 +619,8 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
     return closest_hit_depth_only
 
 
-def create_first_hit_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
+def create_first_hit_function(config: RenderConfig, state: "RenderContext.RenderState", optix=None) -> wp.Function:
+
     @wp.func
     def first_hit_shape(
         bvh_shapes_size: wp.int32,
@@ -623,35 +647,33 @@ def create_first_hit_function(config: RenderConfig, state: RenderContext.RenderS
 
                 while wp.bvh_query_next(query, shape_index, max_dist):
                     si = shape_enabled[shape_index]
-                    if si == BVH_SHAPE_INACTIVE:
-                        continue
+                    if si != BVH_SHAPE_INACTIVE:
+                        hit_dist = wp.float32(-1)
 
-                    hit_dist = wp.float32(-1)
-
-                    shape_type = shape_types[si]
-                    # Heightfields are triangulated meshes; RenderContext remaps
-                    # HFIELD -> MESH, so this branch renders them too.
-                    if shape_type == GeoType.MESH:
-                        ray_origin_local, ray_direction_local = raycast.map_ray_to_local(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
-                        )
-                        hit_dist = raycast.ray_intersect_mesh_anyhit(
-                            ray_origin_local,
-                            ray_direction_local,
-                            shape_source_ptr[si],
-                            max_dist,
-                        )
-                    else:
-                        hit_dist, _normal = raycast.ray_intersect_shape_no_normal(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            shape_type,
-                            ray_origin_world,
-                            ray_dir_world,
-                            wp.static(config.enable_backface_culling),
-                        )
-                    if hit_dist > -1 and hit_dist < max_dist:
-                        return True
+                        shape_type = shape_types[si]
+                        # Heightfields are triangulated meshes; RenderContext remaps
+                        # HFIELD -> MESH, so this branch renders them too.
+                        if shape_type == GeoType.MESH:
+                            ray_origin_local, ray_direction_local = raycast.map_ray_to_local(
+                                shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
+                            )
+                            hit_dist = raycast.ray_intersect_mesh_anyhit(
+                                ray_origin_local,
+                                ray_direction_local,
+                                shape_source_ptr[si],
+                                max_dist,
+                            )
+                        else:
+                            hit_dist, _normal = raycast.ray_intersect_shape_no_normal(
+                                shape_transforms[si],
+                                shape_sizes[si],
+                                shape_type,
+                                ray_origin_world,
+                                ray_dir_world,
+                                wp.static(config.enable_backface_culling),
+                            )
+                        if hit_dist > -1 and hit_dist < max_dist:
+                            return True
 
         return False
 
@@ -720,6 +742,9 @@ def create_first_hit_function(config: RenderConfig, state: RenderContext.RenderS
                 if hit_dist >= 0.0:
                     return True
         return False
+
+    if optix is not None:
+        first_hit_shape = render_optix.create_first_hit(config, optix)
 
     @wp.func
     def first_hit(
