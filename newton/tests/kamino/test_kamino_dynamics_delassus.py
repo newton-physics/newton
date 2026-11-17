@@ -1607,7 +1607,8 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         wp.capture_launch(capture.graph)
         expected = wp.zeros_like(y)
         delassus.matvec(x, expected, mask)
-        np.testing.assert_allclose(y.numpy(), expected.numpy(), rtol=1e-6, atol=1e-6)
+        # Graph and direct launches may accumulate float32 atomics in different orders.
+        np.testing.assert_allclose(y.numpy(), expected.numpy(), rtol=1e-4, atol=1e-3)
 
 
 ###
