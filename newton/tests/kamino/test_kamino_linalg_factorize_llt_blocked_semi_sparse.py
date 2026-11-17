@@ -8,6 +8,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_semi_sparse import (
     SemiSparseBlockCholeskySolverBatched,
 )
@@ -89,5 +90,6 @@ class TestSemiSparseBlockCholeskySolverBatched(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     setup_tests()
     unittest.main(verbosity=2)

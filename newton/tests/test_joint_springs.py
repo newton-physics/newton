@@ -12,7 +12,13 @@ import warp as wp
 import newton
 from newton.solvers import SolverFeatherstone, SolverMuJoCo, SolverSemiImplicit, SolverSteel
 from newton.solvers.experimental.coupled import ModelView, SolverCoupled
-from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 from newton.usd import SchemaResolverMjc, SchemaResolverNewton
 
 # Construction arguments of each solver on the CPU.
@@ -126,7 +132,7 @@ class TestJointSprings(unittest.TestCase):
             )
         np.testing.assert_allclose(builder.joint_rest_q, [0, 0, 0, 1])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_usd_without_solver_registration(self):
         """Read MuJoCo USD spring properties into core fields without solver registration."""
         from pxr import Sdf, Usd, UsdPhysics
@@ -318,6 +324,7 @@ class TestJointSprings(unittest.TestCase):
                         model = combined.finalize(device="cpu")
                         np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.0, 0.0], atol=1e-7)
 
+    @requires(*MUJOCO_MODULES)
     def test_imported_core_edits_are_authoritative(self):
         """Allow core edits after registered import and preserve the rest pose when only ref changes."""
         builder = _slider_builder(register=True)
@@ -331,6 +338,7 @@ class TestJointSprings(unittest.TestCase):
         np.testing.assert_allclose(solver.mj_model.qpos_spring, [1.0], atol=1e-6)
         np.testing.assert_allclose(solver.mj_model.jnt_stiffness, [5.0])
 
+    @requires(*MUJOCO_MODULES)
     def test_legacy_authored_values_and_conflicts(self):
         """Convert legacy inputs once, preserve them through replication, and reject core conflicts."""
         for conflict in (None, "stiffness", "rest_q"):
@@ -373,6 +381,7 @@ class TestJointSprings(unittest.TestCase):
                 np.testing.assert_allclose(replicated.joint_stiffness.numpy(), [3, 3])
                 np.testing.assert_allclose(replicated.joint_rest_q.numpy(), [0.5, 0.5], atol=1e-7)
 
+    @requires(*MUJOCO_MODULES)
     def test_legacy_springref_default(self):
         """Default legacy springref to zero without changing core-authored rest coordinates."""
         for joint_type, legacy, rest_q in product(("revolute", "prismatic"), (False, True), (None, 0.0, 0.4)):
@@ -403,7 +412,7 @@ class TestJointSprings(unittest.TestCase):
                     replicated.joint_rest_q.numpy(), np.tile([0, 0, 0, 1, expected_rest], 2), atol=1e-7
                 )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_usd_legacy_springref_default(self):
         """Preserve MuJoCo's omitted springref with default USD schema resolvers."""
         from pxr import Usd
@@ -437,18 +446,28 @@ class TestJointSprings(unittest.TestCase):
 
 
 class TestJointSpringDynamics(unittest.TestCase):
+    def _check_imported_spring_force(self, solver_cls, **kwargs):
+        model = _slider_builder(register=True).finalize(device="cpu")
+        solver = solver_cls(model, **kwargs)
+        state, out = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        solver.step(state, out, model.control(), None, 0.001)
+        newton.eval_ik(model, out, out.joint_q, out.joint_qd)
+        np.testing.assert_allclose(out.joint_qd.numpy(), [0.0005], rtol=1e-4, atol=1e-7)
+
     def test_imported_spring_force(self):
         """Accelerate an undriven unit-mass slider using its imported spring."""
         for solver_cls, kwargs in CPU_SOLVER_KWARGS.items():
-            with self.subTest(solver=solver_cls.__name__):
-                model = _slider_builder(register=True).finalize(device="cpu")
-                solver = solver_cls(model, **kwargs)
-                state, out = model.state(), model.state()
-                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                solver.step(state, out, model.control(), None, 0.001)
-                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
-                np.testing.assert_allclose(out.joint_qd.numpy(), [0.0005], rtol=1e-4, atol=1e-7)
+            if solver_cls is not SolverMuJoCo:
+                with self.subTest(solver=solver_cls.__name__):
+                    self._check_imported_spring_force(solver_cls, **kwargs)
 
+    @requires(*MUJOCO_MODULES)
+    def test_imported_spring_force_mujoco(self):
+        """Accelerate an undriven unit-mass slider using its imported spring in MuJoCo."""
+        self._check_imported_spring_force(SolverMuJoCo, **CPU_SOLVER_KWARGS[SolverMuJoCo])
+
+    @requires(*MUJOCO_MODULES)
     def test_coupled_spring_updates(self):
         """Apply core rest edits to compacted solvers with core or legacy builder inputs."""
         for solver_cls, legacy in product(CPU_SOLVER_KWARGS, (False, True)):
@@ -539,6 +558,7 @@ class TestJointSpringDynamics(unittest.TestCase):
                 force = 2 * (2 - q) - 0.5 * 0.1 + (0 if outside else 3 * (0.5 - q))
                 np.testing.assert_allclose(out.joint_qd.numpy(), [0.1 + 0.001 * force], atol=1e-6)
 
+    @requires(*MUJOCO_MODULES)
     def test_d6_springs_after_quaternion_joint(self):
         """Index D6 rest coordinates correctly after a ball joint changes the coordinate offset."""
         for solver_cls, kwargs in CPU_SOLVER_KWARGS.items():
@@ -583,6 +603,7 @@ class TestJointSpringDynamics(unittest.TestCase):
         np.testing.assert_allclose(model.joint_stiffness.grad.numpy(), [0.00025], atol=1e-7)
         np.testing.assert_allclose(model.joint_rest_q.grad.numpy(), [0.002], atol=1e-7)
 
+    @requires(*MUJOCO_MODULES)
     def test_spring_equilibrium(self):
         """Keep scalar joints at their spring rest coordinates without installing drives."""
         for solver_cls, joint_type in product(CPU_SOLVER_KWARGS, ("revolute", "prismatic")):
@@ -636,6 +657,7 @@ def test_angular_spring_quaternion_sign_and_preload(test, device):
                 np.testing.assert_allclose(out.joint_qd.numpy(), [0.01 * (rest - angle)], atol=1e-6)
 
 
+@requires(*MUJOCO_MODULES)
 def test_cuda_graph_runtime_updates(test, device):
     """Apply core spring updates to already captured solver steps."""
     for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo, SolverSteel):

@@ -17,7 +17,7 @@ import newton
 from newton import ModelFlags
 from newton._src.solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 @wp.kernel
@@ -61,6 +61,7 @@ def _make_model(
     return builder.finalize(device=device)
 
 
+@requires(*MUJOCO_MODULES)
 class TestMuJoCoForceProperties(unittest.TestCase):
     SPRINGDAMPER_XML = """<mujoco>
         <default><joint springdamper="0.2 1.5" armature="0.01" stiffness="0.5" damping="0.7"/></default>
