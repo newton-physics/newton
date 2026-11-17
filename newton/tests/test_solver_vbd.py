@@ -7426,6 +7426,8 @@ def test_mesh_sdf_backend_supports_resting_triangle(test, device):
     particle_q = state_in.particle_q.numpy()
     test.assertTrue(np.isfinite(particle_q).all())
     test.assertGreater(float(_cube_signed_distance(particle_q).min()), -5.0e-3)
+    # A triangle that fell through the cube would also be outside it: require it at the top face.
+    test.assertGreater(float(particle_q[:, 2].min()), 0.5 - 5.0e-3)
     # The triangle stays over the top face instead of sliding off.
     test.assertLess(float(np.abs(particle_q[:, :2]).max()), 0.3)
 
