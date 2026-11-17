@@ -22,12 +22,14 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 from newton.tests import get_kamino_basics_asset
 from newton.tests.utils import basics
 
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        """Build the Kamino heterogeneous-world simulation with the requested solver options."""
         # Set simulation run-time configurations
         self.fps = 50
         self.sim_dt = 0.0025
@@ -97,6 +99,7 @@ class Example:
         solver_config.padmm.contact_warmstart_method = "geom_pair_net_force"
 
         # Create the Kamino solver for the given model
+        configure_ldl(solver_config, args)
         self.solver = newton.solvers.SolverKamino(model=self.model, config=solver_config)
 
         # Create state, control, and contacts data containers
@@ -168,6 +171,8 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        """Check finite states and the example's motion and constraint criteria."""
+        assert np.isfinite(self.state_0.body_qd.numpy()).all(), "Body velocities must remain finite"
         body_q = self.state_0.body_q.numpy()
         assert np.isfinite(body_q).all(), "Non-finite body poses"
         # Every platform's top face lies at z = 0. Bodies resting on or jointed above it must stay on
@@ -197,7 +202,9 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         parser.add_argument(
             "--from-usd",
             action=argparse.BooleanOptionalAction,
