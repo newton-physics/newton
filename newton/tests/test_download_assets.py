@@ -122,6 +122,23 @@ class TestDownloadAssets(unittest.TestCase):
         self.assertEqual(cache_dir_2, cache_dir_3)
         self.assertEqual((p3 / "foo.txt").read_text(encoding="utf-8"), "v2\n")
 
+        if sys.platform == "win32":
+            ref_path = _ref_path(cache_dir_3, _ref_key(self.remote_dir, self.asset_rel, "main"))
+            temporary = _temp_cache_path(ref_path)
+            # Windows readers prevent replacement or deletion until their handles close.
+            for locked_path in (ref_path, temporary):
+                with self.subTest(locked_path=locked_path.name):
+                    temporary.touch()
+                    os.utime(ref_path, (old_mtime, old_mtime))
+                    expired_mtime = ref_path.stat().st_mtime
+                    with locked_path.open("rb"):
+                        cached = download_git_folder(self.remote_dir, self.asset_rel, self.cache_dir, ref="main")
+                        self.assertEqual(cached, p3)
+                        self.assertEqual((cached / "foo.txt").read_text(encoding="utf-8"), "v2\n")
+                        self.assertEqual(ref_path.read_text(encoding="ascii"), self.work.head.commit.hexsha)
+                        self.assertEqual(ref_path.stat().st_mtime, expired_mtime)
+                    temporary.unlink(missing_ok=True)
+
     def test_reuse_identical_content_across_refs(self):
         """Reuse unchanged assets across commits, branches, and tags."""
         first_commit = self.work.head.commit.hexsha
@@ -163,6 +180,15 @@ class TestDownloadAssets(unittest.TestCase):
                     )
                     self.assertEqual(old, first)
                     self.assertEqual((old / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+
+        # Ref metadata can be unavailable even when the requested content is ready.
+        metadata_dir = first_root / ".git" / "newton-refs"
+        metadata_dir.rename(metadata_dir.with_name("newton-refs-backup"))
+        metadata_dir.write_text("blocked", encoding="ascii")
+        reused = download_git_folder(self.remote_dir, self.asset_rel, self.cache_dir, ref=second_commit)
+        self.assertEqual(reused, first)
+        self.assertEqual((reused / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+        self.assertEqual(metadata_dir.read_text(encoding="ascii"), "blocked")
 
     def test_global_asset_cache_directory(self):
         """Use the configured asset directory and preserve explicit overrides."""
@@ -314,6 +340,9 @@ class TestDownloadAssets(unittest.TestCase):
             and not _TEMP_DIR_RE.search(e.name[len(base_prefix) :])
         ]
         self.assertEqual(len(entries), 1, f"Expected 1 cache dir, got {len(entries)}: {entries}")
+        ref_path = _ref_path(entries[0], _ref_key(self.remote_dir, self.asset_rel, "main"))
+        self.assertEqual(ref_path.read_text(encoding="ascii"), self.work.head.commit.hexsha)
+        self.assertEqual(list(ref_path.parent.iterdir()), [ref_path])
 
     def test_within_ttl_skips_network(self):
         """Within TTL, return cached path without calling git ls-remote."""
@@ -643,6 +672,25 @@ class TestFindCachedVersion(unittest.TestCase):
 
     def tearDown(self):
         _safe_rmtree(self.base)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows file-sharing semantics required")
+    def test_ref_write_retries_file_contention(self):
+        """Replace ref metadata after a Windows reader releases the file."""
+        directory = self.cache_path / f"{self.base_prefix}_{'a' * 40}"
+        _write_cached_ref(directory, self.ref_key, "b" * 40)
+        path = _ref_path(directory, self.ref_key)
+        old_mtime = time.time() - 7200
+        os.utime(path, (old_mtime, old_mtime))
+
+        with path.open("rb") as reader:
+            # Release the real OS lock on the retry without relying on thread timing.
+            with mock.patch("newton._src.utils.download_assets.time.sleep", side_effect=lambda _: reader.close()):
+                _write_cached_ref(directory, self.ref_key, "c" * 40)
+
+        self.assertEqual(path.read_text(encoding="ascii"), "c" * 40)
+        self.assertGreater(path.stat().st_mtime, old_mtime)
+        self.assertEqual(_find_cached_version(self.cache_path, self.base_prefix, self.ref_key), directory)
+        self.assertEqual(list(path.parent.iterdir()), [path])
 
     def test_returns_none_when_no_match(self):
         """Return no match when this request has not been cached."""

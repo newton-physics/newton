@@ -172,15 +172,29 @@ def _read_cached_ref(cache_dir: Path, ref_key: str) -> str | None:
 
 
 def _write_cached_ref(cache_dir: Path, ref_key: str, commit: str) -> None:
-    """Atomically record a ref resolution without changing cached asset contents."""
+    """Record a ref atomically, tolerating write failures for already-available assets."""
     path = _ref_path(cache_dir, ref_key)
-    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = _temp_cache_path(path)
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         temporary.write_text(commit, encoding="ascii")
-        os.replace(temporary, path)
+        for attempt in range(5):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                # Windows readers and concurrent writers can briefly prevent replacement.
+                if attempt == 4:
+                    raise
+                time.sleep(0.1)
+    except OSError as e:
+        # Metadata controls future cache lookup; it must not hide usable asset contents.
+        logger.debug("Could not update cached ref %s: %s", path, e)
     finally:
-        temporary.unlink(missing_ok=True)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as e:
+            logger.debug("Could not remove temporary cached ref %s: %s", temporary, e)
 
 
 def _find_cached_version(cache_path: Path, base_prefix: str, ref_key: str) -> Path | None:
