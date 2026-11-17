@@ -751,6 +751,8 @@ already be enabled in the imported model.
     solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
 
 
+.. _mujoco-flexes:
+
 Particles and flexes
 --------------------
 
@@ -772,6 +774,7 @@ zero mass or without :attr:`~newton.ParticleFlags.ACTIVE` get no joints. They
 are pinned at their ``particle_q`` in each world and follow it when it changes.
 :meth:`~newton.solvers.SolverMuJoCo.reset` restores flex particles with
 :attr:`~newton.StateFlags.PARTICLE_Q` and :attr:`~newton.StateFlags.PARTICLE_QD`.
+``State.particle_f`` is applied to the joints of simulated particles.
 
 Elements that no authored flex covers are grouped into one flex per
 dimension:
@@ -815,7 +818,8 @@ including shapes that do not collide with other shapes. A flex collides with
 itself only when ``selfcollide`` is set through ``add_flex``. Flex
 contacts require ``use_mujoco_contacts=True``; the solver rejects models with
 flexes otherwise. In exported contacts, the flex side has shape
-``-1``. With separate worlds, every world must have the same elements and
+``-1``; :class:`~newton.sensors.SensorContact` and the viewer skip these
+contacts. With separate worlds, every world must have the same elements and
 authored flexes.
 
 To control a flex directly, use ``add_flex`` from
@@ -856,9 +860,11 @@ dozen particles, as in the ``mujoco_flex`` example
 
 .. note::
 
-   MuJoCo Warp treats geom ``gap`` as a contact-inclusion offset for
-   flex-plane contacts, so a flex rests about ``gap`` below a plane. Set the
-   plane's ``gap`` to zero when it supports flexes.
+   MuJoCo Warp 4.0.1 and earlier treat geom ``gap`` as a contact-inclusion
+   offset for flex-plane contacts, so a flex rests about ``gap`` below a plane,
+   and the solver warns. Set the plane's ``gap`` to zero when it supports
+   flexes. MuJoCo Warp fixes this in
+   `google-deepmind/mujoco_warp@2c15447 <https://github.com/google-deepmind/mujoco_warp/commit/2c15447ff45ad56f4ba19541b538d3413406620e>`__.
 
 
 .. _mujoco-collision-pipeline:

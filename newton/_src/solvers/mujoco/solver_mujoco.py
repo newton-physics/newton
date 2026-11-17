@@ -76,6 +76,7 @@ from .kernels import (
     apply_mjc_body_f_kernel,
     apply_mjc_control_kernel,
     apply_mjc_free_joint_f_to_body_f_kernel,
+    apply_mjc_particle_f_kernel,
     apply_mjc_qfrc_kernel,
     build_ref_q_kernel,
     capture_actuator_dampratio_kernel,
@@ -3575,7 +3576,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """
         if len(particles) == 0:
             return []
-        mujoco, _ = self.import_mujoco()
+        mujoco, mujoco_warp = self.import_mujoco()
         converted = flex._converted_elements(model)
 
         # Reserve a mask bit that no geom uses as contype. Flexes use it as both masks, so they
@@ -3633,7 +3634,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             materials = element_materials[dim]
             owner = getattr(attrs, attribute).numpy() if flex_count else np.full(len(elems), -1)
             selected = convert & np.all(local[elems] >= 0, axis=1)
-            groups = [(row, owner == row) for row in np.unique(owner[selected & (owner >= 0)])]
+            groups = [(row, selected & (owner == row)) for row in np.unique(owner[selected & (owner >= 0)])]
             unowned = selected & (owner < 0)
             if dim == 2:
                 # Surface triangles of a tetrahedral mesh would duplicate its 3D flex.
@@ -3683,6 +3684,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     if mu + lam > 0.0:
                         mj_flex.young = mu * (3.0 * lam + 2.0 * mu) / (mu + lam)
                         mj_flex.poisson = lam / (2.0 * (mu + lam))
+
+        # TODO: Remove once Newton requires a MuJoCo Warp release with google-deepmind/mujoco_warp@2c15447.
+        if spec.flexes and not self.use_mujoco_cpu and _version_lt(_release(mujoco_warp.__version__), (4, 0, 2)):
+            planes = [
+                geom.name
+                for geom in spec.geoms
+                if geom.name in particle_geoms and geom.type == mujoco.mjtGeom.mjGEOM_PLANE and geom.gap > 0.0
+            ]
+            if planes:
+                warnings.warn(
+                    f"MuJoCo Warp {mujoco_warp.__version__} lets flexes sink into planes by the plane's gap. "
+                    f"Set the gap of planes {planes} to zero, for example with "
+                    "`builder.default_shape_cfg.gap = 0.0` before `add_ground_plane()`.",
+                    NewtonWarning,
+                    stacklevel=_external_warning_stacklevel(),
+                )
         return bodies
 
     def _init_pairs(self, model: Model, spec: Any, shape_mapping: dict[int, str], template_world: int) -> None:
@@ -6443,10 +6460,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ],
                 device=model.device,
             )
+        apply_particle_f = state.particle_f is not None and self._particle_qvel_adr.shape[0] > 0
+        if apply_particle_f:
+            wp.launch(
+                apply_mjc_particle_f_kernel,
+                dim=(nworld, self._particle_qvel_adr.shape[0]),
+                inputs=[state.particle_f, self._particle_qvel_adr],
+                outputs=[qfrc],
+                device=model.device,
+            )
         if not is_mjwarp:
             mj_data.xfrc_applied = xfrc.numpy()
             if apply_control:
                 mj_data.ctrl[:] = ctrl.numpy().flatten()
+            if apply_control or apply_particle_f:
                 mj_data.qfrc_applied[:] = qfrc.numpy()
 
     def _update_mjc_data(
@@ -9511,9 +9538,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Slide-joint coordinates of each particle body, or -1 for pinned particles and
         # particles without a body, whose state the solver leaves untouched.
         particle_body = np.array([-1 if body is None else body.id for body in particle_bodies], dtype=np.int32)
-        particle_jnt = np.where(particle_body >= 0, self.mj_model.body_jntadr[particle_body], -1)
-        particle_qpos_adr = np.where(particle_jnt >= 0, self.mj_model.jnt_qposadr[particle_jnt], -1)
-        particle_qvel_adr = np.where(particle_jnt >= 0, self.mj_model.jnt_dofadr[particle_jnt], -1)
+        # Index -1 selects the appended -1, which also covers models without joints.
+        particle_jnt = np.append(self.mj_model.body_jntadr, -1)[particle_body]
+        particle_qpos_adr = np.append(self.mj_model.jnt_qposadr, -1)[particle_jnt]
+        particle_qvel_adr = np.append(self.mj_model.jnt_dofadr, -1)[particle_jnt]
         self._particle_qpos_adr = wp.array(particle_qpos_adr, dtype=wp.int32, device=model.device)
         self._particle_qvel_adr = wp.array(particle_qvel_adr, dtype=wp.int32, device=model.device)
         self._particle_pinned_body = wp.array(

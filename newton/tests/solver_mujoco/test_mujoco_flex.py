@@ -11,11 +11,12 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverMuJoCo, mujoco
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 def _builder() -> newton.ModelBuilder:
     builder = newton.ModelBuilder()
-    # MuJoCo Warp applies geom gap as a contact-inclusion offset for flex-plane contacts.
+    # MuJoCo Warp 4.0.1 and earlier sink flexes into planes by the plane's gap.
     builder.default_shape_cfg.gap = 0.0
     return builder
 
@@ -46,6 +47,7 @@ def _add_rope(builder: newton.ModelBuilder, x: float, **particle_kwargs) -> rang
     return range(start, builder.spring_count)
 
 
+@requires(*MUJOCO_MODULES)
 class TestMuJoCoFlex(unittest.TestCase):
     def test_element_dimensions_map_to_flexes(self):
         """Tetrahedra, triangles, and springs become 3D, 2D, and 1D flexes without duplicates."""
@@ -114,6 +116,55 @@ class TestMuJoCoFlex(unittest.TestCase):
         np.testing.assert_allclose(q[:, pinned], q0[:, pinned])
         np.testing.assert_allclose(q[:, :pinned, 2], 0.02, atol=5.0e-3)
         np.testing.assert_allclose(q[1, :, 0] - q[0, :, 0], 1.0, atol=1.0e-3)
+
+    def test_cloth_rests_on_ground_with_default_gap(self):
+        """A cloth rests on a default ground plane, or the solver warns where MuJoCo Warp sinks it by the gap."""
+        import mujoco_warp
+
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.1),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.01,
+            tri_ke=1.0e3,
+            tri_ka=1.0e3,
+            particle_radius=0.02,
+        )
+        builder.add_ground_plane()
+        model = builder.finalize()
+
+        if tuple(int(v) for v in mujoco_warp.__version__.split(".")[:3]) <= (4, 0, 1):
+            with self.assertWarnsRegex(newton.NewtonWarning, "sink into planes"):
+                SolverMuJoCo(model)
+            return
+        solver = SolverMuJoCo(model)
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        for _ in range(150):
+            solver.step(state_0, state_1, control, None, 2.0e-3)
+            state_0, state_1 = state_1, state_0
+        np.testing.assert_allclose(state_0.particle_q.numpy()[:, 2], 0.02, atol=5.0e-3)
+
+    def test_particle_forces_accelerate_flex_particles(self):
+        """``State.particle_f`` accelerates the particle it is applied to."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        _add_rope(builder, 0.0)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        state_0, state_1 = model.state(), model.state()
+        state_0.particle_f.assign(np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32))
+        dt = 1.0e-3
+        solver.step(state_0, state_1, model.control(), None, dt)
+        # The spring is at rest, so only the applied force accelerates the last particle.
+        np.testing.assert_allclose(
+            state_1.particle_qd.numpy(), [[0.0, 0.0, 0.0]] * 2 + [[0.0, 0.0, dt / 0.01]], atol=1.0e-6
+        )
 
     def test_authored_flexes_keep_settings_in_each_world(self):
         """Authored flexes keep their settings per world, and the remaining elements are grouped automatically."""
@@ -294,12 +345,35 @@ class TestMuJoCoFlex(unittest.TestCase):
         np.testing.assert_allclose(state_0.particle_q.numpy(), model.particle_q.numpy())
         np.testing.assert_allclose(state_0.particle_qd.numpy(), 0.0)
 
+    def test_contact_sensor_skips_flex_contacts(self):
+        """Contact sensors skip exported flex contacts, whose flex side has no shape."""
+        builder = _builder()
+        _add_cloth(builder, 0.0)
+        ground = builder.add_ground_plane()
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        sensor = newton.sensors.SensorContact(model, sensing_shapes=[ground])
+
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        for _ in range(250):
+            solver.step(state_0, state_1, control, None, 2.0e-3)
+            state_0, state_1 = state_1, state_0
+        contacts = newton.Contacts(
+            solver.get_max_contact_count(), 0, device=model.device, requested_attributes={"force"}
+        )
+        solver.update_contacts(contacts, state_0)
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+        sensor.update(state_0, contacts)
+        np.testing.assert_array_equal(sensor.total_force.numpy(), 0.0)
+
     def test_only_active_element_particles_are_simulated(self):
         """Free particles and elements of inactive particles are left to other solvers."""
         builder = _builder()
-        _add_cloth(builder, 0.0)
+        triangles = _add_cloth(builder, 0.0)
         cloth_particles = builder.particle_count
-        _add_cloth(builder, 1.0)
+        # An authored flex may also cover elements of inactive particles.
+        mujoco.add_flex(builder, triangles=[*triangles, *_add_cloth(builder, 1.0)])
         for p in range(cloth_particles, builder.particle_count):
             builder.particle_flags[p] &= ~int(newton.ParticleFlags.ACTIVE)
         builder.add_particle((2.0, 0.0, 1.0), (0.0, 0.0, 0.0), 0.01)
@@ -327,6 +401,14 @@ class TestMuJoCoFlex(unittest.TestCase):
         builder.add_particle((0.0, 0.0, 1.0), (0.0, 0.0, 0.0), 0.01)
         model = builder.finalize()
         self.assertEqual(SolverMuJoCo(model, use_mujoco_contacts=False).mj_model.nv, 6)
+
+        # A flex whose particles are all pinned has no joints.
+        builder = _builder()
+        _add_rope(builder, 0.0)
+        builder.particle_mass = [0.0] * builder.particle_count
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        self.assertEqual((solver.mj_model.nflex, solver.mj_model.nv), (1, 0))
 
     def test_worlds_must_share_flex_layout(self):
         """Worlds whose elements or authored flexes differ are rejected."""

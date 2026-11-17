@@ -1643,6 +1643,23 @@ def apply_mjc_control_kernel(
             mj_ctrl[world, actuator] = mujoco_ctrl[world_ctrl_idx]
 
 
+@wp.kernel(enable_backward=False)
+def apply_mjc_particle_f_kernel(
+    particle_f: wp.array[wp.vec3],
+    particle_qvel_adr: wp.array[wp.int32],
+    # outputs
+    qfrc_applied: wp.array2d[float],
+):
+    """Apply particle forces to the slide joints of the particle bodies, which follow the world axes."""
+    worldid, p = wp.tid()
+    adr = particle_qvel_adr[p]
+    if adr < 0:
+        return
+    f = particle_f[worldid * particle_qvel_adr.shape[0] + p]
+    for axis in range(3):
+        qfrc_applied[worldid, adr + axis] = f[axis]
+
+
 @wp.kernel
 def apply_mjc_body_f_kernel(
     mjc_body_to_newton: wp.array2d[wp.int32],
