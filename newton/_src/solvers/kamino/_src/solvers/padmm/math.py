@@ -312,13 +312,11 @@ def compute_gemv(
     """
     Computes the generalized matrix-vector product `c =  b + (A - sigma * I_n)@ x`.
 
-    The matrix `A` is stored using row-major order in flat array with allocation size `maxdim x maxdim`,
-    with active dimensions `dim x dim`,
-    where `dim` is the number of rows and columns. The vectors `x, b, c` are stored in flat arrays with
-    dimensions `dim`, starting from the vector index offset `vio`.
+    `A` is one world's matrix row, containing the active `dim x dim` matrix in row-major order.
+    The vectors `x, b, c` are stored in flat arrays with dimensions `dim`, starting from the vector
+    index offset `vio`.
 
     Args:
-        maxdim: The maximum dimension of the matrix `A`.
         dim: The active dimension of the matrix `A` and the vectors `x, b, c`.
         vio: The vector index offset (i.e. start index) for the vectors `x, b, c`.
         A: Input matrix `A` stored in row-major order.

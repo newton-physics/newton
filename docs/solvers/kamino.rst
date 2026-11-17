@@ -328,6 +328,12 @@ largest world. This design has the following consequences:
 If worlds differ substantially, for example a few large mechanisms among many
 small ones, consider simulating each group with its own model and solver.
 
+The dense storage row of each world is limited to 2\ :sup:`31` bytes by the
+32-bit array strides of Warp, which bounds a single world's dense Delassus
+matrix to about 23,000 constraints. Larger worlds raise an error during
+solver construction; for these, consider sparse Jacobians and dynamics
+(``sparse_jacobian=True`` and ``sparse_dynamics=True``).
+
 Inspecting terminal status
 --------------------------
 

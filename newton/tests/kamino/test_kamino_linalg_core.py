@@ -329,6 +329,30 @@ class TestLinAlgCoreDenseMultiLinearSquareInfo(unittest.TestCase):
             self.assertEqual(info.dim.numpy()[i], n)
             self.assertEqual(info.vio.numpy()[i], sum(d for d in dims[:i]))
 
+    def test_03_reject_strided_arrays(self):
+        """Reject arrays whose elements are not adjacent along the last dimension."""
+        dims = [4, 3]
+        for info_type, finalize_dims in (
+            (DenseSquareMultiLinearInfo, dims),
+            (DenseRectangularMultiLinearInfo, [(n, n) for n in dims]),
+        ):
+            with self.subTest(info_type=info_type.__name__):
+                info = info_type()
+                info.finalize(dimensions=finalize_dims, device=self.default_device)
+                rows, cols = info.matrix_shape
+                matrix = wp.zeros((rows + 1, 2 * cols), dtype=wp.float32, device=self.default_device)
+                vector = wp.zeros(2 * sum(dims), dtype=wp.float32, device=self.default_device)
+
+                # Views with a larger row stride remain compatible.
+                self.assertTrue(info.is_matrix_compatible(matrix[:, :cols]))
+                self.assertTrue(info.is_rhs_compatible(vector[: sum(dims)]))
+                self.assertTrue(info.is_input_compatible(vector[: sum(dims)]))
+
+                # Strided views would be misread by raw-pointer block views.
+                self.assertFalse(info.is_matrix_compatible(matrix[:, ::2]))
+                self.assertFalse(info.is_rhs_compatible(vector[::2]))
+                self.assertFalse(info.is_input_compatible(vector[::2]))
+
 
 ###
 # Test execution

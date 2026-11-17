@@ -173,21 +173,21 @@ class LinearSolver(ABC, Generic[ScalarType, IndexType]):
     def compute(self, A: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         """Ingest matrix data and pre-compute any rhs-independent intermediate data."""
         if not self._operator.info.is_matrix_compatible(A):
-            raise ValueError("The provided flat matrix data array does not have enough memory!")
+            raise ValueError("The provided matrix data array has an incompatible dtype, shape or element stride.")
         self._compute_impl(A=A, **kwargs)
 
     def solve(self, b: wp.array[ScalarType], x: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         """Solves the multi-linear systems `A @ x = b`."""
         if not self._operator.info.is_rhs_compatible(b):
-            raise ValueError("The provided flat rhs vector data array does not have enough memory!")
+            raise ValueError("The provided rhs vector data array has an incompatible dtype, size or element stride.")
         if not self._operator.info.is_input_compatible(x):
-            raise ValueError("The provided flat input vector data array does not have enough memory!")
+            raise ValueError("The provided input vector data array has an incompatible dtype, size or element stride.")
         self._solve_impl(b=b, x=x, **kwargs)
 
     def solve_inplace(self, x: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         """Solves the multi-linear systems `A @ x = b` in-place, where `x` is initialized with rhs data."""
         if not self._operator.info.is_input_compatible(x):
-            raise ValueError("The provided flat input vector data array does not have enough memory!")
+            raise ValueError("The provided input vector data array has an incompatible dtype, size or element stride.")
         self._solve_inplace_impl(x=x, **kwargs)
 
 
@@ -432,9 +432,13 @@ class IterativeSolver(LinearSolver[ScalarType, IndexType]):
         """Solves the multi-linear systems `A @ x = b`."""
         if self._operator is not None:
             if not self._operator.info.is_rhs_compatible(b):
-                raise ValueError("The provided flat rhs vector data array does not have enough memory!")
+                raise ValueError(
+                    "The provided rhs vector data array has an incompatible dtype, size or element stride."
+                )
             if not self._operator.info.is_input_compatible(x):
-                raise ValueError("The provided flat input vector data array does not have enough memory!")
+                raise ValueError(
+                    "The provided input vector data array has an incompatible dtype, size or element stride."
+                )
         if zero_x:
             x.zero_()
         self._solve_impl(b=b, x=x, **kwargs)

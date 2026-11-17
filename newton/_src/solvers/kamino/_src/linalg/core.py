@@ -54,6 +54,14 @@ def validate_dense_matrix_shape(shape: tuple[int, ...], dtype: type[FloatType]) 
             raise ValueError(f"Dense matrix row stride is {row_bytes} bytes; Warp supports at most {stride_limit}.")
 
 
+def _has_unit_inner_stride(a: wp.array) -> bool:
+    """Check that consecutive elements along the last dimension are adjacent in memory.
+
+    Required by kernels that wrap raw pointers into contiguous per-block views.
+    """
+    return a.strides[-1] == wp.types.type_size_in_bytes(a.dtype)
+
+
 ###
 # Types
 ###
@@ -295,16 +303,20 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
     def is_matrix_compatible(self, A: wp.array2d[ScalarType]) -> bool:
         """Checks if the provided matrix data array is compatible with the specified info structure."""
         return (
-            A.dtype == self.dtype and A.ndim == 2 and A.shape[0] >= self.num_blocks and A.shape[1] >= self.max_mat_size
+            A.dtype == self.dtype
+            and A.ndim == 2
+            and A.shape[0] >= self.num_blocks
+            and A.shape[1] >= self.max_mat_size
+            and _has_unit_inner_stride(A)
         )
 
     def is_rhs_compatible(self, b: wp.array[ScalarType]) -> bool:
         """Checks if the provided rhs vector data array is compatible with the specified info structure."""
-        return b.dtype == self.dtype and b.size >= self.total_rhs_size
+        return b.dtype == self.dtype and b.size >= self.total_rhs_size and _has_unit_inner_stride(b)
 
     def is_input_compatible(self, x: wp.array[ScalarType]) -> bool:
         """Checks if the provided input vector data array is compatible with the specified info structure."""
-        return x.dtype == self.dtype and x.size >= self.total_inp_size
+        return x.dtype == self.dtype and x.size >= self.total_inp_size and _has_unit_inner_stride(x)
 
     def __str__(self) -> str:
         return (
@@ -515,15 +527,16 @@ class DenseSquareMultiLinearInfo(Generic[ScalarType, IndexType]):
             and A.ndim == 2
             and A.shape[0] >= self.num_blocks
             and A.shape[1] >= self.max_dimension**2
+            and _has_unit_inner_stride(A)
         )
 
     def is_rhs_compatible(self, b: wp.array[ScalarType]) -> bool:
         """Checks if the provided rhs vector data array is compatible with the specified info structure."""
-        return b.dtype == self.dtype and b.size >= self.total_vec_size
+        return b.dtype == self.dtype and b.size >= self.total_vec_size and _has_unit_inner_stride(b)
 
     def is_input_compatible(self, x: wp.array[ScalarType]) -> bool:
         """Checks if the provided input vector data array is compatible with the specified info structure."""
-        return x.dtype == self.dtype and x.size >= self.total_vec_size
+        return x.dtype == self.dtype and x.size >= self.total_vec_size and _has_unit_inner_stride(x)
 
     def __str__(self) -> str:
         return (
