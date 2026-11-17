@@ -433,6 +433,13 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         tape (earlier steps' adjoints would read later steps' rewritten
         values, and later steps' covector deposits would be consumed again).
 
+        Memory: each gradient-recording step owns its own J/M/P/H/L (plus
+        H_mimic when mimics exist) in both primal and adjoint storage -
+        roughly 2 x 4 B x (size of J + M + P + H + L) per world per recorded
+        step. On ANYmal-D's single 13-joint articulation (J 1404 + M 6084 +
+        P 1404 + H 324 + L 324 floats) that is ~76 KB per world per step, so
+        a 1601-step tape for one world holds ~120 MB of solver scratch.
+
         The views alias the flat arrays and cost nothing; they serve the
         ``use_tile_gemm`` path, which produces H and its Cholesky factor in
         one fused launch per distinct articulation size (compiled once at
