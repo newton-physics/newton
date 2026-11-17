@@ -1,0 +1,1 @@
+Fix inaccurate effort-limited implicit PD and joint friction in `SolverKamino` with PADMM when a joint's armature is much larger than the inertia of the bodies it connects. Effort-limit and friction rows are now decoupled from the joint's armature or damping row.

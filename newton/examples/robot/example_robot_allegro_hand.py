@@ -30,6 +30,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton import JointTargetMode, ModelFlags
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 @wp.kernel
@@ -83,6 +84,8 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.solver_type = args.solver
+        if self.solver_type != "kamino":
+            configure_ldl(None, args)
         self.world_count = args.world_count
         if self.world_count is None:
             self.world_count = 100
@@ -156,16 +159,17 @@ class Example:
 
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
-            solver_config.dvi.max_alternating_iterations = 8
-            solver_config.dvi.bilateral_solve_interval = 8
-            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
-            solver_config.dvi.omega = 1.2
-            solver_config.dvi.contact_warmstart_method = (
+            solver_config.scc.max_alternating_iterations = 8
+            solver_config.scc.bilateral_solve_interval = 8
+            solver_config.scc.bilateral_solver_type = "LLTBRCM"
+            configure_ldl(solver_config, args)
+            solver_config.scc.omega = 1.2
+            solver_config.scc.contact_warmstart_method = (
                 "key_and_position_with_net_force_backup_and_tangential_net_force"
             )
-            solver_config.dvi.use_schur_complement = True
+            solver_config.scc.use_schur_complement = True
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(
@@ -252,7 +256,9 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=None)
