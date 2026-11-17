@@ -10,8 +10,8 @@ import warp as wp
 
 import newton
 from newton._src.geometry.types import SH_C0
-from newton._src.sensors.sensor_camera_render.types import LightType
-from newton._src.sensors.sensor_camera_render.utils import Utils
+from newton._src.render.types import LightType
+from newton._src.render.utils import Utils
 from newton.sensors import (
     SensorCamera,
 )
@@ -756,6 +756,27 @@ class TestSensorCamera(unittest.TestCase):
         self.assertEqual(int(shape_index.numpy()[0, 4, 4]), ball)
         self.assertNotIn(helper, np.unique(shape_index.numpy()))
         self.assertAlmostEqual(float(depth.numpy()[0, 4, 4]), 2.5, delta=0.05)
+
+    def test_camera_inside_box_sees_its_walls(self, device: str = "cpu", backend: str = "warp") -> None:
+        """A camera inside a box sees the box's walls with the default backface culling."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        box = builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=1.0)
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        camera = SensorCamera(model, backend=backend)
+        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device=device)
+        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device=device)
+        camera.update(
+            model.state(),
+            self._identity_transforms(1, device),
+            self._rays(8, 8, fov=math.radians(40.0), device=device),
+            depth_image=depth,
+            shape_index_image=shape_index,
+        )
+
+        np.testing.assert_array_equal(shape_index.numpy(), box)
+        self.assertAlmostEqual(float(depth.numpy()[0, 4, 4]), 1.0, delta=0.05)
 
     def test_update_renders_from_camera_transforms(self) -> None:
         """Verify SensorCamera renders from the camera transforms passed to update."""
@@ -1694,7 +1715,11 @@ def _optix_variant(test):
     return run
 
 
-for _name in ("test_fully_transparent_shape_does_not_occlude", "test_convex_hull_renders_like_its_mesh"):
+for _name in (
+    "test_fully_transparent_shape_does_not_occlude",
+    "test_convex_hull_renders_like_its_mesh",
+    "test_camera_inside_box_sees_its_walls",
+):
     setattr(TestSensorCamera, f"{_name}_optix", _optix_variant(getattr(TestSensorCamera, _name)))
 
 
