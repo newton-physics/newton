@@ -1022,6 +1022,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
     @staticmethod
+    def _warn_unsupported_usd_collision_mask(value: Any, context: dict[str, Any]) -> None:
+        """Warn that a USD collision mask is ignored and leave the shape's mask unset."""
+        warnings.warn(
+            f"Ignoring '{context['attr'].usd_attribute_name}' on {context['prim'].GetPath()}: the MjcPhysics "
+            "schema does not define it, and Newton does not read MuJoCo collision masks from USD. Express "
+            "collision filtering with newton:selfCollisionEnabled, PhysicsFilteredPairsAPI, or "
+            "PhysicsCollisionGroup.",
+            NewtonWarning,
+            stacklevel=_external_warning_stacklevel(),
+        )
+        return None
+
+    @staticmethod
     def _parse_enable_disable(value: str | bool | int, context: dict[str, Any] | None = None) -> bool:
         """Parse MuJoCo enable/disable values."""
         if isinstance(value, bool | np.bool_):
@@ -1606,6 +1619,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.int64,
                 default=MUJOCO_COLLISION_MASK_UNSET,
                 namespace="mujoco",
+                # MjcPhysics does not define this name; read it only to warn that it is ignored.
+                usd_attribute_name="mjc:contype",
+                usd_value_transformer=cls._warn_unsupported_usd_collision_mask,
                 mjcf_attribute_name="contype",
             )
         )
@@ -1617,6 +1633,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.int64,
                 default=MUJOCO_COLLISION_MASK_UNSET,
                 namespace="mujoco",
+                usd_attribute_name="mjc:conaffinity",
+                usd_value_transformer=cls._warn_unsupported_usd_collision_mask,
                 mjcf_attribute_name="conaffinity",
             )
         )

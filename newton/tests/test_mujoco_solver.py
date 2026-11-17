@@ -7743,7 +7743,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collision_masks_ignore_mjc_usd_attributes(self):
-        """Ignore ``mjc:contype`` and ``mjc:conaffinity``, which MjcPhysics does not define."""
+        """Warn about and ignore ``mjc:contype`` and ``mjc:conaffinity``, which MjcPhysics does not define."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -7756,9 +7756,16 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
         model = builder.finalize()
 
+        messages = [str(w.message) for w in caught if issubclass(w.category, NewtonWarning)]
+        for name in ("mjc:contype", "mjc:conaffinity"):
+            self.assertEqual(
+                sum(f"Ignoring '{name}' on /body" in message for message in messages), 1, msg=f"{name}: {messages}"
+            )
         self.assertEqual(model.mujoco.contype.numpy().tolist(), [MUJOCO_COLLISION_MASK_UNSET])
         self.assertEqual(model.mujoco.conaffinity.numpy().tolist(), [MUJOCO_COLLISION_MASK_UNSET])
 
