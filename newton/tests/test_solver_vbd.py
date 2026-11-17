@@ -7373,13 +7373,16 @@ def test_mesh_sdf_backend_pushes_penetrating_triangle_out(test, device):
     ``deep`` places a triangle 0.15 m below the cube's top face, beyond the contact band.
     ``pierced`` places one vertex inside near the +x face and two vertices outside above the
     top face. In both, every step must reduce the penetration until it is within the contact
-    band, and the triangle must then stay near the surface.
+    band. The triangle must then not sink deeper than the band again, and the particles that
+    started inside must finish no more than 0.02 m inward of the face they started nearest to.
     """
+    # Points, then the particles and the axis checked at the end against their nearest face: the
+    # top face for the deep triangle, the +x face for the inside vertex of the pierced one.
     cases = {
-        "deep": [(-0.05, -0.04, 0.35), (0.06, -0.03, 0.35), (0.0, 0.07, 0.36)],
-        "pierced": [(0.30, 0.0, 0.62), (0.44, 0.0, 0.30), (0.30, 0.25, 0.62)],
+        "deep": ([(-0.05, -0.04, 0.35), (0.06, -0.03, 0.35), (0.0, 0.07, 0.36)], slice(None), 2),
+        "pierced": ([(0.30, 0.0, 0.62), (0.44, 0.0, 0.30), (0.30, 0.25, 0.62)], 1, 0),
     }
-    for name, points in cases.items():
+    for name, (points, exit_particles, exit_axis) in cases.items():
         with test.subTest(case=name):
             model, pipeline = _mesh_sdf_backend_cube_scene(device, points, gravity=(0.0, 0.0, 0.0))
             np.testing.assert_array_equal(pipeline._soft_sdf_mesh_shapes, [0])
@@ -7400,8 +7403,12 @@ def test_mesh_sdf_backend_pushes_penetrating_triangle_out(test, device):
             test.assertTrue(
                 np.all(np.diff(depth[: near_surface + 1]) < 0.0), f"deep penetration must decrease every step: {depth}"
             )
-            test.assertLess(
-                float(depth[near_surface:].max()), 0.02, f"the triangle must stay near the surface: {depth}"
+            test.assertLess(float(depth[near_surface:].max()), 0.02, f"the triangle must not sink back deeper: {depth}")
+            # An exterior position alone would also accept a triangle that crossed the cube.
+            test.assertGreater(
+                float(np.min(particle_q[exit_particles, exit_axis])),
+                0.5 - 0.02,
+                f"the particles must finish at their nearest face: {particle_q}",
             )
 
 

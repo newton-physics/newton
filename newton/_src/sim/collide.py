@@ -1919,11 +1919,19 @@ class CollisionPipeline:
                 each collision, so such a mesh adds candidate pairs and default contact capacity
                 even while that flag is clear. A mesh without one that collides with particles at
                 construction keeps ``"bvh"`` contacts, and a warning lists such meshes. With a
-                nonuniform shape scale, bake the scale into the SDF (``Mesh.build_sdf(scale=...)``)
-                for correct depth and direction deep inside the mesh. The
+                nonuniform shape scale, bake that same scale into the SDF
+                (``Mesh.build_sdf(scale=...)``) for correct depth and direction deep inside the
+                mesh; an SDF baked with another scale does not match the shape. The
                 complete feature-pair coverage used by rigid-soft Divide-and-Truncate holds only
-                for meshes on ``"bvh"`` contacts. Gradients through ``"sdf"`` mesh contacts are
-                not validated. Fixed at construction.
+                for meshes on ``"bvh"`` contacts. ``"sdf"`` contacts ignore per-vertex mesh
+                surface velocities (``Mesh.mesh.velocities``), which ``"bvh"`` and per-particle
+                mesh contacts apply to friction and normal contact damping; the motion of the
+                shape's body is applied by all of them. For a mesh that is not watertight,
+                ``"bvh"`` signs distances with pseudo-normals, while an SDF built with
+                ``Mesh.build_sdf(sign_method="auto")`` or through ``force_sdf`` uses winding
+                numbers, so the two back-ends can classify inside and outside differently near
+                an opening. Gradients through ``"sdf"`` mesh contacts are not validated. Fixed
+                at construction.
             requires_grad: Whether pipeline-generated soft contacts and the
                 deprecated automatic rigid-contact outputs require gradients.
                 If None, uses ``model.requires_grad``. Explicit calls to

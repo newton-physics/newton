@@ -1732,7 +1732,10 @@ Full-surface deformable-rigid contacts query rigid meshes with the back-end
 selected by ``rigid_soft_full_surface_mesh_backend``. With ``"sdf"``, a mesh that
 carries a volume SDF reports one contact per deformable vertex, edge, and face
 from that SDF, as analytic shapes do; these contacts carry no rigid feature and
-:class:`~solvers.SolverVBD` applies all of them. A mesh without a volume SDF
+:class:`~solvers.SolverVBD` applies all of them. They ignore per-vertex mesh
+surface velocities (``Mesh.mesh.velocities``), which ``"bvh"`` and per-particle
+mesh contacts apply to friction and normal contact damping; the motion of the
+shape's body is still applied. A mesh without a volume SDF
 keeps the default ``"bvh"`` contacts, which the rest of this section describes.
 
 With the ``"bvh"`` mesh back-end, detection retains
