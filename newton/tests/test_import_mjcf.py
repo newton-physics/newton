@@ -447,16 +447,28 @@ class TestImportMjcfBasic(unittest.TestCase):
     </body>
   </worldbody>
 </mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize(device="cpu")
-        index = {label.rsplit("/", 1)[-1]: i for i, label in enumerate(model.shape_label)}
-        pairs = model.shape_collision_filter_pairs
 
-        def pair(a, b):
-            i, j = index[a], index[b]
-            return (min(i, j), max(i, j)) in pairs
+        def filtered(filter_parent=True):
+            builder = newton.ModelBuilder()
+            builder.default_shape_cfg.collision_filter_parent = filter_parent
+            builder.add_mjcf(mjcf)
+            model = builder.finalize(device="cpu")
+            index = {label.rsplit("/", 1)[-1]: i for i, label in enumerate(model.shape_label)}
+            pairs = model.shape_collision_filter_pairs
 
+            def pair(a, b):
+                i, j = index[a], index[b]
+                return (min(i, j), max(i, j)) in pairs
+
+            return pair
+
+        # Opting out of parent filtering leaves every imported pair eligible.
+        pair = filtered(filter_parent=False)
+        self.assertFalse(pair("finger_geom", "wrist_geom"))
+        self.assertFalse(pair("pad_geom", "wrist_geom"))
+        self.assertFalse(pair("mount_a_geom", "mount_b_geom"))
+
+        pair = filtered()
         # Bodies welded to the same parent belong to one weld body, so they never collide.
         self.assertTrue(pair("mount_a_geom", "mount_b_geom"))
         # The finger's weld body (finger + pad) does not collide with its parent weld body (wrist + mounts).

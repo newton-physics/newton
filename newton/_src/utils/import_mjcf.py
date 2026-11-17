@@ -508,40 +508,48 @@ def _add_weld_group_filters(builder: ModelBuilder, joint_indices: list[int], sta
     MuJoCo treats bodies attached through fixed joints as one weld body: their geoms never collide with
     each other, and with ``filterparent`` (enabled by default) a weld body does not collide with its
     parent weld body unless that parent is the world. The builder only filters a joint's direct parent
-    and child, which misses fixed-joint chains such as finger pads hanging below a slide joint. Like the
-    builder's direct parent/child filtering, the parent weld group is always filtered.
+    and child, which misses fixed-joint chains such as finger pads hanging below a slide joint.
+
+    The same opt-outs as the builder's direct parent/child filtering apply: nothing is filtered when
+    ``builder.default_shape_cfg.collision_filter_parent`` is ``False``, and a weld group is filtered
+    against its parent weld group only when its root joint has ``collision_filter_parent`` enabled.
     """
-    parent_of: dict[int, int] = {}
-    fixed: dict[int, bool] = {}
-    for joint in joint_indices:
-        child = builder.joint_child[joint]
-        parent_of[child] = builder.joint_parent[joint]
-        fixed[child] = builder.joint_type[joint] == JointType.FIXED
+    if not builder.default_shape_cfg.collision_filter_parent:
+        return
+    joint_of: dict[int, int] = {builder.joint_child[joint]: joint for joint in joint_indices}
 
     def weld_of(body: int) -> int:
-        while body in parent_of and fixed[body]:
-            body = parent_of[body]
+        while body in joint_of and builder.joint_type[joint_of[body]] == JointType.FIXED:
+            body = builder.joint_parent[joint_of[body]]
         return body
 
-    groups: dict[int, list[int]] = {}
+    # Weld root -> body -> colliding shapes. Grouping by body keeps single-body groups free of pair work.
+    groups: dict[int, dict[int, list[int]]] = {}
     for shape in range(start_shape, end_shape):
         if builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES:
-            groups.setdefault(weld_of(builder.shape_body[shape]), []).append(shape)
-    for root, shapes in groups.items():
+            body = builder.shape_body[shape]
+            groups.setdefault(weld_of(body), {}).setdefault(body, []).append(shape)
+    for root, bodies in groups.items():
         if root == -1:
             # Skip the world group to avoid adding filter pairs against every worldbody geom. Jointless
             # top-level bodies are dynamic bodies with a fixed joint to the world, so contacts between
             # them are still reported, unlike in MuJoCo.
             continue
-        for a, shape_a in enumerate(shapes):
-            for shape_b in shapes[a + 1 :]:
-                if builder.shape_body[shape_a] != builder.shape_body[shape_b]:
-                    builder.add_shape_collision_filter_pair(shape_a, shape_b)
-        if root in parent_of:
-            parent_root = weld_of(parent_of[root])
-            for shape_b in groups.get(parent_root, []) if parent_root != -1 else []:
-                for shape_a in shapes:
-                    builder.add_shape_collision_filter_pair(shape_a, shape_b)
+        body_shapes = list(bodies.values())
+        for i, shapes_a in enumerate(body_shapes):
+            for shapes_b in body_shapes[i + 1 :]:
+                for shape_a in shapes_a:
+                    for shape_b in shapes_b:
+                        builder.add_shape_collision_filter_pair(shape_a, shape_b)
+        if root in joint_of and builder.joint_collision_filter_parent[joint_of[root]]:
+            parent_root = weld_of(builder.joint_parent[joint_of[root]])
+            if parent_root == -1:
+                continue
+            for parent_shapes in groups.get(parent_root, {}).values():
+                for shapes in body_shapes:
+                    for shape_a in shapes:
+                        for shape_b in parent_shapes:
+                            builder.add_shape_collision_filter_pair(shape_a, shape_b)
 
 
 def parse_mjcf(
