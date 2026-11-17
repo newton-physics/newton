@@ -422,12 +422,17 @@ class TestImportMjcfBasic(unittest.TestCase):
     def test_fixed_joint_chains_filter_like_mujoco_weld_bodies(self):
         """Bodies joined by fixed joints act as one weld body for contact filtering, as in MuJoCo."""
         mjcf = """<mujoco>
-  <option><flag filterparent="{flag}"/></option>
   <worldbody>
     <geom name="floor" type="plane" size="1 1 0.1"/>
     <body name="wrist" pos="0 0 0.5">
       <joint name="hinge" type="hinge" axis="0 0 1"/>
       <geom name="wrist_geom" type="capsule" size="0.03 0.05"/>
+      <body name="mount_a" pos="0.03 0 0">
+        <geom name="mount_a_geom" type="box" size="0.01 0.01 0.01"/>
+      </body>
+      <body name="mount_b" pos="0.04 0 0">
+        <geom name="mount_b_geom" type="box" size="0.01 0.01 0.01"/>
+      </body>
       <body name="finger" pos="0 0.02 -0.05">
         <joint name="slide" type="slide" axis="0 1 0"/>
         <geom name="finger_geom" type="box" size="0.01 0.01 0.02"/>
@@ -442,32 +447,25 @@ class TestImportMjcfBasic(unittest.TestCase):
     </body>
   </worldbody>
 </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize(device="cpu")
+        index = {label.rsplit("/", 1)[-1]: i for i, label in enumerate(model.shape_label)}
+        pairs = model.shape_collision_filter_pairs
 
-        def filtered(flag):
-            builder = newton.ModelBuilder()
-            builder.add_mjcf(mjcf.format(flag=flag))
-            model = builder.finalize(device="cpu")
-            index = {label.rsplit("/", 1)[-1]: i for i, label in enumerate(model.shape_label)}
-            pairs = model.shape_collision_filter_pairs
+        def pair(a, b):
+            i, j = index[a], index[b]
+            return (min(i, j), max(i, j)) in pairs
 
-            def pair(a, b):
-                i, j = index[a], index[b]
-                return (min(i, j), max(i, j)) in pairs
-
-            return pair
-
-        pair = filtered("enable")
-        # The pad is welded to the finger (no joint), so the two are one body for contacts.
-        self.assertTrue(pair("pad_geom", "finger_geom"))
-        # filterparent: the finger's weld body (finger + pad) does not collide with its parent, the wrist.
+        # Bodies welded to the same parent belong to one weld body, so they never collide.
+        self.assertTrue(pair("mount_a_geom", "mount_b_geom"))
+        # The finger's weld body (finger + pad) does not collide with its parent weld body (wrist + mounts).
         self.assertTrue(pair("pad_geom", "wrist_geom"))
-        self.assertTrue(pair("finger_geom", "wrist_geom"))
+        self.assertTrue(pair("pad_geom", "mount_a_geom"))
+        self.assertTrue(pair("finger_geom", "mount_b_geom"))
         # Siblings and the world still collide.
         self.assertFalse(pair("pad_geom", "other_geom"))
         self.assertFalse(pair("pad_geom", "floor"))
-        pair = filtered("disable")
-        self.assertTrue(pair("pad_geom", "finger_geom"))
-        self.assertFalse(pair("pad_geom", "wrist_geom"))
 
     @requires("PIL", "scipy", *MUJOCO_MODULES)
     def test_mujoco_binary_msh_mesh(self):
