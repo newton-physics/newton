@@ -195,6 +195,37 @@ class TestDownloadAssets(unittest.TestCase):
         self.assertEqual((reused / "foo.txt").read_text(encoding="utf-8"), "v1\n")
         self.assertEqual(metadata_dir.read_text(encoding="ascii"), "blocked")
 
+    def test_distinct_repository_folder_identities(self):
+        """Keep identical trees from distinct repository and folder pairs independently usable."""
+        for folder_path in ("baz", "bar_baz"):
+            target = Path(self.work_dir, folder_path)
+            shutil.copytree(Path(self.work_dir, self.asset_rel), target)
+            self.work.index.add([str(target / "foo.txt")])
+        self.work.index.commit("Add identical assets at different paths")
+        tree_hash = (self.work.head.commit.tree / "baz").hexsha
+        self.assertEqual(tree_hash, (self.work.head.commit.tree / "bar_baz").hexsha)
+
+        downloads = Path(self.cache_dir) / "downloads"
+        roots = set()
+        paths = []
+        # The first two requests used the same readable prefix; the third shares a basename.
+        for repo_path, folder_path in (("foo_bar.git", "baz"), ("foo.git", "bar_baz"), ("other/foo_bar.git", "baz")):
+            with self.subTest(repo_path=repo_path, folder_path=folder_path):
+                remote = Path(self.cache_dir) / "remotes" / repo_path
+                with git.Repo.clone_from(self.work_dir, remote, bare=True):
+                    pass
+                path = download_git_folder(str(remote), folder_path, downloads, ref="main")
+                self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+                self.assertEqual(path.name, folder_path)
+                self.assertTrue(path.parent.name.endswith(f"_{tree_hash}"))
+                self.assertNotIn(path.parent, roots)
+                roots.add(path.parent)
+                paths.append(path)
+
+        self.assertEqual(set(downloads.iterdir()), roots)
+        for path in paths:
+            self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+
     def test_global_asset_cache_directory(self):
         """Use the configured asset directory and preserve explicit overrides."""
         configured = Path(self.cache_dir) / "configured"
@@ -335,8 +366,7 @@ class TestDownloadAssets(unittest.TestCase):
                 f.result()
 
         # All threads should have resolved to the same SHA directory
-        repo_name = Path(self.remote_dir.rstrip("/")).stem
-        base_prefix = _cache_prefix(repo_name, self.asset_rel)
+        base_prefix = _cache_prefix(self.remote_dir, self.asset_rel)
         entries = [
             e
             for e in Path(self.cache_dir).iterdir()
@@ -784,33 +814,33 @@ class TestFindParentCache(unittest.TestCase):
     def test_finds_parent_with_tree_hash(self):
         """Find a parent containing the requested subfolder at the same ref."""
         parent_key = _ref_key("http://example.git", "unitree_g1", "main")
-        parent_dir = self.cache_path / f"repo_unitree_g1_{'a' * 40}"
+        base_prefix = _cache_prefix("http://example.git", "unitree_g1")
+        parent_dir = self.cache_path / f"{base_prefix}_{'a' * 40}"
         (parent_dir / "unitree_g1" / "usd").mkdir(parents=True)
         _write_cached_ref(parent_dir, parent_key, "b" * 40)
 
-        result = _find_parent_cache(self.cache_path, "repo", "unitree_g1/usd", "main", "http://example.git")
+        result = _find_parent_cache(self.cache_path, "unitree_g1/usd", "main", "http://example.git")
         self.assertIsNotNone(result)
         parent, target, key = result
         self.assertEqual(parent, parent_dir)
         self.assertEqual(key, parent_key)
         self.assertTrue(target.exists())
-        self.assertIsNone(
-            _find_parent_cache(self.cache_path, "repo", "unitree_g1/usd", "other-branch", "http://example.git")
-        )
+        self.assertIsNone(_find_parent_cache(self.cache_path, "unitree_g1/usd", "other-branch", "http://example.git"))
 
     def test_returns_none_when_subfolder_missing(self):
         """Returns None if parent exists but subfolder does not."""
         parent_key = _ref_key("http://example.git", "unitree_g1", "main")
-        parent_dir = self.cache_path / f"repo_unitree_g1_{'a' * 40}"
+        base_prefix = _cache_prefix("http://example.git", "unitree_g1")
+        parent_dir = self.cache_path / f"{base_prefix}_{'a' * 40}"
         parent_dir.mkdir(parents=True)
         _write_cached_ref(parent_dir, parent_key, "b" * 40)
 
-        result = _find_parent_cache(self.cache_path, "repo", "unitree_g1/usd", "main", "http://example.git")
+        result = _find_parent_cache(self.cache_path, "unitree_g1/usd", "main", "http://example.git")
         self.assertIsNone(result)
 
     def test_returns_none_for_single_path(self):
         """Single-segment paths have no parent to check."""
-        result = _find_parent_cache(self.cache_path, "repo", "unitree_g1", "main", "http://example.git")
+        result = _find_parent_cache(self.cache_path, "unitree_g1", "main", "http://example.git")
         self.assertIsNone(result)
 
 

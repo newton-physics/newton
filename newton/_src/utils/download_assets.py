@@ -16,7 +16,6 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from urllib.parse import quote
 
 from ... import config
 
@@ -150,9 +149,10 @@ def _cleanup_stale_temp_dirs(cache_path: Path, base_prefix: str, max_age: float 
         pass
 
 
-def _cache_prefix(repo_name: str, folder_path: str) -> str:
-    """Escape folder separators without conflating paths such as a/b and a_b."""
-    return f"{repo_name}_{quote(folder_path, safe='')}"
+def _cache_prefix(git_url: str, folder_path: str) -> str:
+    """Identify a repository and normalized folder independently of the requested ref."""
+    # Leave room for Git's internal paths under temporary checkouts on Windows.
+    return hashlib.sha256(f"{git_url}\0{folder_path}".encode()).hexdigest()[:16]
 
 
 def _ref_key(git_url: str, folder_path: str, ref: str) -> str:
@@ -254,19 +254,17 @@ def _get_latest_commit_via_git(git_url: str, ref: str) -> str | None:
 
 def _find_parent_cache(
     cache_path: Path,
-    repo_name: str,
     folder_path: str,
     ref: str,
     git_url: str,
 ) -> tuple[Path, Path, str] | None:
     """Check if folder_path exists inside an already-cached parent folder.
 
-    For example, if folder_path is "unitree_g1/usd" and we have
-    "newton-assets_unitree_g1_<tree-hash>" cached, return the paths.
+    For example, if folder_path is "unitree_g1/usd" and "unitree_g1" is
+    already cached for this repository and ref, return the paths.
 
     Args:
         cache_path: The base cache directory
-        repo_name: Repository name (e.g., "newton-assets")
         folder_path: The requested folder path (e.g., "unitree_g1/usd")
         ref: Git branch, tag, or commit SHA.
         git_url: Full git URL for hash computation
@@ -283,7 +281,7 @@ def _find_parent_cache(
 
     for parent_path in parent_paths:
         parent_key = _ref_key(git_url, parent_path, ref)
-        base_prefix = _cache_prefix(repo_name, parent_path)
+        base_prefix = _cache_prefix(git_url, parent_path)
 
         cached = _find_cached_version(cache_path, base_prefix, parent_key)
         if cached is None:
@@ -306,8 +304,9 @@ def download_git_folder(
 ) -> Path:
     """Downloads a specific folder from a git repository into a local cache.
 
-    Cache directory names include the requested folder's full Git tree hash,
-    which covers file names, contents, and modes. Identical folder contents
+    Cache directory names combine a hash of the repository URL and normalized
+    folder path with the folder's full Git tree hash, which covers file names,
+    contents, and modes. Unchanged contents of the same repository folder
     share a directory across refs and commits, including commits that only
     change other assets. Ref resolutions are stored separately as metadata.
     Different contents remain available until :func:`clear_git_cache` is called.
@@ -354,8 +353,7 @@ def download_git_folder(
 
     folder_path = posixpath.normpath(folder_path.replace("\\", "/"))
     ref_key = _ref_key(git_url, folder_path, ref)
-    repo_name = Path(git_url.rstrip("/")).stem.replace(".git", "")
-    base_prefix = _cache_prefix(repo_name, folder_path)
+    base_prefix = _cache_prefix(git_url, folder_path)
 
     ttl_seconds = 3600
     cached_key = ref_key
@@ -365,7 +363,7 @@ def download_git_folder(
         cached = None
         cached_target = None
     if cached is None and not force_refresh:
-        parent_result = _find_parent_cache(cache_path, repo_name, folder_path, ref, git_url)
+        parent_result = _find_parent_cache(cache_path, folder_path, ref, git_url)
         if parent_result is not None:
             cached, cached_target, cached_key = parent_result
 
@@ -523,8 +521,9 @@ def download_asset(
 ) -> Path:
     """Download a specific folder from the newton-assets GitHub repository into a local cache.
 
-    The cache directory is named using the asset folder's full Git tree hash,
-    so identical contents share a directory across revisions. Older cache
+    The cache directory is named using the repository and folder identity hash
+    plus the folder's full Git tree hash, so unchanged contents of the same
+    asset folder share a directory across revisions. Older cache
     formats are left untouched and are downloaded again on first use. Use the
     returned path instead of constructing a cache directory name.
 
