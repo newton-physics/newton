@@ -10,6 +10,7 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
+from ...geometry.hashtable import HASHTABLE_EMPTY_KEY, _hashtable_hash, hashtable_find
 from ...geometry.inertia import _eig_inertia
 from ...sim import BodyFlags, JointTargetMode, JointType
 from ...sim.articulation import eval_joint_motion
@@ -18,6 +19,8 @@ from .constants import (
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
     DEFAULT_LIMIT_SOLREF_TIMECONST,
     HINGE_CONNECT_HALF_SPAN,
+    MJ_MAXIMP,
+    MJ_MINIMP,
     MJ_MINMU,
     MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
@@ -406,6 +409,76 @@ def eval_mujoco_coupling_effective_mass_block_kernel(
 
 
 # Kernel functions
+@wp.func
+def _hydroelastic_pair_key(a: int, b: int) -> wp.uint64:
+    return (wp.uint64(wp.min(a, b)) << wp.uint64(32)) | wp.uint64(wp.max(a, b))
+
+
+@wp.kernel(module="unique")
+def accumulate_hydroelastic_stiffness(
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_enabled: wp.array[bool],
+    count: wp.array[int],
+    shape0: wp.array[int],
+    shape1: wp.array[int],
+    point0: wp.array[wp.vec3],
+    point1: wp.array[wp.vec3],
+    normal: wp.array[wp.vec3],
+    margin0: wp.array[float],
+    margin1: wp.array[float],
+    stiffness: wp.array[float],
+    generation: wp.array[int],
+    pressure: wp.array[bool],
+    pressure_generation: wp.array[int],
+    pair_keys: wp.array[wp.uint64],
+    pair_stiffness: wp.array[float],
+):
+    """Sum exported pressure-contact stiffness for enabled shape pairs.
+
+    Consumers clear the pair table before each launch. Classification is retained
+    until the contact generation changes, so reused activation rows keep their meaning.
+    """
+    tid = wp.tid()
+    if tid >= count[0]:
+        return
+    a, b = shape0[tid], shape1[tid]
+    if a < 0 or b < 0:
+        return
+    if not shape_enabled[a] or not shape_enabled[b]:
+        pressure[tid] = False
+        return
+    if pressure_generation[tid] != generation[0]:
+        xa, xb = wp.transform_identity(), wp.transform_identity()
+        if shape_body[a] >= 0:
+            xa = body_q[shape_body[a]]
+        if shape_body[b] >= 0:
+            xb = body_q[shape_body[b]]
+        # Keep the stiffness meaning fixed until collision detection replaces the row.
+        pressure[tid] = (
+            contact_surface_separation(
+                wp.transform_point(xa, point0[tid]),
+                wp.transform_point(xb, point1[tid]),
+                normal[tid],
+                margin0[tid],
+                margin1[tid],
+            )
+            < 0.0
+        )
+        pressure_generation[tid] = generation[0]
+    if pressure[tid] and stiffness[tid] > 0.0:
+        key = _hydroelastic_pair_key(a, b)
+        mask = pair_keys.shape[0] - 1
+        slot = _hashtable_hash(key, mask)
+        # Only the stiffness sum needs deterministic reduction; slot assignment may vary.
+        for _ in range(pair_keys.shape[0]):
+            previous = wp.atomic_cas(pair_keys, slot, HASHTABLE_EMPTY_KEY, key)
+            if previous == HASHTABLE_EMPTY_KEY or previous == key:
+                wp.atomic_add(pair_stiffness, slot, stiffness[tid])
+                break
+            slot = (slot + 1) & mask
+
+
 # fast math only approximates div/sqrt here; keep transcendentals out of this kernel
 @wp.kernel(module="unique", module_options={"fast_math": True})
 def convert_newton_contacts_to_mjwarp_kernel(
@@ -468,6 +541,11 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
     tid_to_cid: wp.array[wp.int32],
+    opt_timestep: wp.array[float],
+    hydroelastic_pressure: wp.array[bool],
+    hydroelastic_pair_keys: wp.array[wp.uint64],
+    hydroelastic_pair_stiffness: wp.array[float],
+    hydroelastic: bool,
 ):
     # nacon_out is scratch storage, initialized to zero by the solver and
     # reset by _sync_nacon_count after each pass.
@@ -485,7 +563,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
     gen = contact_generation[0]
     last_gen = last_contact_generation[0]
-    needs_full = gen != last_gen
+    # Selected patches refresh timestep-dependent parameters on every substep.
+    needs_full = gen != last_gen or hydroelastic
 
     if needs_full:
         # ── FULL PATH ────────────────────────────────────────────────────
@@ -584,6 +663,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
             geoms,
             worldid,
         )
+
+        material_impedance = solimp[1]
 
         if rigid_contact_stiffness:
             friction_scale = rigid_contact_friction[tid]
@@ -687,6 +768,23 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     dampratio = 1.0
                 solref = wp.vec2(timeconst, dampratio)
 
+        if hydroelastic and hydroelastic_pressure[tid]:
+            slot = hashtable_find(_hydroelastic_pair_key(shape_a, shape_b), hydroelastic_pair_keys)
+            if slot >= 0 and rigid_contact_stiffness[tid] > 0.0 and invweight > 0.0:
+                total = hydroelastic_pair_stiffness[slot]
+                # Distribute the patch impedance, preserving native contact frames and constraints.
+                imp0 = wp.clamp(material_impedance, MJ_MINIMP, MJ_MAXIMP)
+                r0 = imp0 / (1.0 - imp0)
+                weight = rigid_contact_stiffness[tid] / total
+                imp = wp.clamp(weight * r0 / (1.0 + weight * r0), MJ_MINIMP, MJ_MAXIMP)
+                h = opt_timestep[0]
+                omega2 = wp.min(total * invweight / r0, 0.25 / (h * h))
+                damping = wp.min(2.0 * wp.sqrt(omega2), 1.0 / h)
+                solref = wp.vec2(-omega2 * imp, -damping * imp)
+                solimp = vec5(imp, imp, 0.001, 1.0, 0.5)
+                if condim > 1:
+                    solreffriction = wp.vec2(0.0, -imp / h)
+
         cid = wp.atomic_add(nacon_out, 0, 1)
         if cid >= naconmax:
             tid_to_cid[tid] = -1
@@ -784,10 +882,11 @@ def _sync_nacon_count(
     last_nacon_count: wp.array[wp.int32],
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
+    force_full: bool,
 ):
     """Publish the compacted count and reset scratch storage for the next pass."""
     gen = contact_generation[0]
-    if gen == last_contact_generation[0]:
+    if gen == last_contact_generation[0] and not force_full:
         nacon[0] = last_nacon_count[0]
     else:
         nacon[0] = contact_count[0]

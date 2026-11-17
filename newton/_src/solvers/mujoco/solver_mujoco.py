@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import warnings
+import weakref
 from array import array
 from collections.abc import Iterable
 from contextlib import contextmanager
@@ -19,11 +20,13 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
+from warp._src.deterministic import det_buffer_allocation_scope
 
 from ...core._warnings import _external_warning_stacklevel
 from ...core.types import MAXVAL, Axis, override, vec5, vec10
 from ...exceptions import NewtonDeprecationWarning, NewtonWarning
 from ...geometry import GeoType, Mesh, ShapeFlags
+from ...geometry.hashtable import HASHTABLE_EMPTY_KEY
 from ...sim import (
     BodyFlags,
     Contacts,
@@ -73,6 +76,7 @@ from .geometry import build_shape_layout, compile_layout_collision_masks
 from .joint_springs import finalize_springref, finalize_stiffness
 from .kernels import (
     _sync_nacon_count,
+    accumulate_hydroelastic_stiffness,
     apply_mjc_body_f_kernel,
     apply_mjc_control_kernel,
     apply_mjc_free_joint_f_to_body_f_kernel,
@@ -907,7 +911,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._set_module_options({"deterministic": wp.DeterministicMode.NOT_GUARANTEED}, module=module)
         # Native factories select deterministic reductions through model flags.
         # Newton contact conversion is separate and retains the requested mode.
-        for module in (kernels, convert_newton_contacts_to_mjwarp_kernel.module):
+        for module in (
+            kernels,
+            convert_newton_contacts_to_mjwarp_kernel.module,
+            accumulate_hydroelastic_stiffness.module,
+        ):
             self._set_module_options(
                 {"deterministic": self._deterministic, "deterministic_max_records": 0}, module=module
             )
@@ -4557,6 +4565,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
         mujoco_attrs = getattr(model, "mujoco", None)
+        solref_mode = getattr(mujoco_attrs, "solref_mode", None)
+        self._hydroelastic_shape_enabled = None
+        if not use_mujoco_cpu and not use_mujoco_contacts and solref_mode is not None:
+            required_flags = ShapeFlags.HYDROELASTIC | ShapeFlags.COLLIDE_SHAPES
+            enabled = ((model.shape_flags.numpy() & required_flags) == required_flags) & (
+                solref_mode.numpy() == SOLREF_MODE_FORCE_SPACE
+            )
+            if np.count_nonzero(enabled) >= 2:
+                self._hydroelastic_shape_enabled = wp.array(enabled, dtype=bool, device=model.device)
+        self._hydroelastic_pair_keys = None
+        self._hydroelastic_pair_stiffness = None
+        self._hydroelastic_contact_cache = weakref.WeakKeyDictionary()
+
         if enable_sleeping is None:
             if mujoco_attrs is not None and hasattr(mujoco_attrs, "enable_sleeping"):
                 enable_sleeping = bool(mujoco_attrs.enable_sleeping.numpy()[0])
@@ -4965,6 +4986,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # first run inside a CUDA graph that is discarded without replay.
             self._create_inverse_shape_mapping()
             self._contact_tid_to_cid = wp.full(self.mjw_data.naconmax, -1, dtype=wp.int32, device=self.device)
+        if self._hydroelastic_shape_enabled is not None:
+            # Power-of-two capacity keeps the pair table at most half full.
+            capacity = 1 << (2 * self.mjw_data.naconmax - 1).bit_length()
+            self._hydroelastic_pair_keys = wp.empty(capacity, dtype=wp.uint64, device=self.device)
+            self._hydroelastic_pair_stiffness = wp.empty(capacity, dtype=float, device=self.device)
         self._initial_model_sync = False
         self._update_data_interval = 1 if update_data_interval is None else update_data_interval
         self._step = 0
@@ -5704,6 +5730,55 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         bodies_per_world = self.model.body_count // self.model.world_count
         mujoco_attrs = getattr(model, "mujoco", None)
         shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
+        hydroelastic = (
+            self._hydroelastic_shape_enabled is not None
+            and contacts.rigid_contact_stiffness is not None
+            and self.mjw_model.opt.cone == self._mujoco_warp.ConeType.ELLIPTIC
+            and self.mjw_model.opt.integrator
+            in (
+                self._mujoco_warp.IntegratorType.EULER,
+                self._mujoco_warp.IntegratorType.IMPLICIT,
+                self._mujoco_warp.IntegratorType.IMPLICITFAST,
+            )
+        )
+        if hydroelastic:
+            # Aliased Contacts wrappers share one generation buffer and must retain row classification.
+            cache = self._hydroelastic_contact_cache.get(contacts.contact_generation)
+            if cache is None:
+                # Retain caches across graphs; replay must not reset a reused row's classification.
+                with det_buffer_allocation_scope(model.device, model.device.is_capturing):
+                    cache = (
+                        wp.zeros(launch_dim, dtype=bool, device=model.device),
+                        wp.full(launch_dim, _GENERATION_SENTINEL, dtype=int, device=model.device),
+                    )
+                self._hydroelastic_contact_cache[contacts.contact_generation] = cache
+            hydroelastic_pressure, hydroelastic_generation = cache
+            self._hydroelastic_pair_keys.fill_(HASHTABLE_EMPTY_KEY)
+            self._hydroelastic_pair_stiffness.zero_()
+            wp.launch(
+                accumulate_hydroelastic_stiffness,
+                dim=launch_dim,
+                inputs=[
+                    state_in.body_q,
+                    model.shape_body,
+                    self._hydroelastic_shape_enabled,
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    contacts.rigid_contact_normal,
+                    contacts.rigid_contact_margin0,
+                    contacts.rigid_contact_margin1,
+                    contacts.rigid_contact_stiffness,
+                    contacts.contact_generation,
+                    hydroelastic_pressure,
+                    hydroelastic_generation,
+                    self._hydroelastic_pair_keys,
+                    self._hydroelastic_pair_stiffness,
+                ],
+                device=model.device,
+            )
         wp.launch(
             convert_newton_contacts_to_mjwarp_kernel,
             dim=(launch_dim,),
@@ -5766,6 +5841,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 contacts.contact_generation,
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
+                self.mjw_model.opt.timestep,
+                hydroelastic_pressure if hydroelastic else None,
+                self._hydroelastic_pair_keys if hydroelastic else None,
+                self._hydroelastic_pair_stiffness if hydroelastic else None,
+                hydroelastic,
             ],
             device=model.device,
             block_dim=block_dim,
@@ -5786,6 +5866,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._last_nacon_count,
                 contacts.contact_generation,
                 self._last_contact_generation,
+                hydroelastic,
             ],
             device=model.device,
         )
