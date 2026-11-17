@@ -918,14 +918,18 @@ class RenderContext:
         self._texture_data_source = []
         texture_hashes = {}
         mesh_hashes = {}
+        # Holding the last image stops glibc from returning the decode buffers to the OS after every texture.
+        last_pixels = None
 
         def texture_id(texture, texture_hash):
+            nonlocal last_pixels
             if texture is None or not load_textures:
                 return -1
             if texture_hash not in texture_hashes:
                 pixels = load_texture(texture)
                 if pixels is None:
                     raise ValueError(f"Failed to load texture: {texture}")
+                last_pixels = pixels
                 pixels = normalize_texture(pixels, require_channels=True)
                 if pixels.shape[2] == 3:
                     # RGB and grayscale sources need an opaque alpha channel.

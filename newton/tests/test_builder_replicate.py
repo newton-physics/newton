@@ -10,6 +10,7 @@ import numpy as np
 import warp as wp
 
 from newton import Axis, LightType, Mesh, Model, ModelBuilder, NewtonDeprecationWarning, Rod
+from newton._src.geometry.contact_reduction import NUM_VOXEL_DEPTH_SLOTS, compute_voxel_resolution_from_aabb
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
 from newton.actuators import BatteryConstantResistance, DriveOutputSpace, DrivePD, MotorDC
 from newton.tests.unittest_utils import HOST_TRANSFORMS_BIT_EXACT, add_function_test, get_test_devices
@@ -166,6 +167,93 @@ class TestModelBuilderReplicate(unittest.TestCase):
             actual_entry = actual.actuator_entries[key]
             for field in ("indices", "pos_indices", "drive_args", "input_processor_args", "clamping_args"):
                 self.assertEqual(getattr(expected_entry, field), getattr(actual_entry, field))
+
+    def test_finalize_shape_arrays_mixed_geometries_and_empty(self):
+        """Vectorized finalize shape passes handle empty builders and mixed replicated geometries."""
+        empty_model = ModelBuilder().finalize(device="cpu")
+        self.assertEqual(empty_model.shape_count, 0)
+        self.assertEqual(len(empty_model._shape_mesh_boundary_start), 1)
+        self.assertEqual(len(empty_model.shape_heightfield_index), 1)
+        self.assertEqual(len(empty_model._shape_edge_range), 1)
+
+        proto = ModelBuilder()
+        body = proto.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), label="b")
+        j = proto.add_joint_free(parent=-1, child=body, label="j")
+        proto.add_articulation([j], label="a")
+        s_sphere_small = proto.add_shape_sphere(body=body, radius=0.05)
+        s_sphere_large = proto.add_shape_sphere(body=body, radius=0.12)
+        s_capsule = proto.add_shape_capsule(body=body, radius=0.04, half_height=0.12)
+        proto.add_shape_cylinder(body=body, radius=0.06, half_height=0.10)
+        proto.add_shape_ellipsoid(body, rx=0.05, ry=0.07, rz=0.09)
+        s_box = proto.add_shape_box(body=body, hx=0.08, hy=0.06, hz=0.04)
+        proto.add_shape_cone(body=body, radius=0.05, half_height=0.11)
+        s_plane = proto.add_shape_plane(width=0.0, length=0.0)
+        tet_verts = np.array([[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]], dtype=np.float32)
+        tet_idx = np.array([0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3], dtype=np.int32)
+        hull_mesh = Mesh(tet_verts, tet_idx, compute_inertia=False)
+        s_hull = proto.add_shape_convex_hull(body=body, mesh=hull_mesh, scale=(1.5, 1.0, 0.5))
+        s_mesh = proto.add_shape_mesh(body=body, mesh=hull_mesh, scale=(-1.0, 1.0, 1.0))
+        n_proto = proto.shape_count
+
+        rep_scene = ModelBuilder()
+        rep_scene.replicate(proto, 3)
+        seq_scene = ModelBuilder()
+        for _ in range(3):
+            seq_scene.add_world(proto)
+
+        rep_m = rep_scene.finalize(device="cpu")
+        seq_m = seq_scene.finalize(device="cpu")
+        aabb_lo = rep_m.shape_collision_aabb_lower.numpy()
+        aabb_hi = rep_m.shape_collision_aabb_upper.numpy()
+        interior = rep_m._shape_interior_point.numpy()
+        vox = rep_m._shape_voxel_resolution.numpy()
+        support = rep_m._shape_support_data.numpy()
+        edge_range = rep_m._shape_edge_range.numpy()
+
+        np.testing.assert_allclose(aabb_lo, seq_m.shape_collision_aabb_lower.numpy())
+        np.testing.assert_allclose(aabb_hi, seq_m.shape_collision_aabb_upper.numpy())
+        np.testing.assert_allclose(interior, seq_m._shape_interior_point.numpy())
+        np.testing.assert_array_equal(vox, seq_m._shape_voxel_resolution.numpy())
+        np.testing.assert_array_equal(support, seq_m._shape_support_data.numpy())
+        np.testing.assert_array_equal(edge_range, seq_m._shape_edge_range.numpy())
+
+        expected_sphere_vox = compute_voxel_resolution_from_aabb(
+            np.array([-0.05, -0.05, -0.05]), np.array([0.05, 0.05, 0.05]), NUM_VOXEL_DEPTH_SLOTS
+        )
+        expected_cap_vox = compute_voxel_resolution_from_aabb(
+            np.array([-0.04, -0.04, -0.16]), np.array([0.04, 0.04, 0.16]), NUM_VOXEL_DEPTH_SLOTS
+        )
+        for w in range(3):
+            base = w * n_proto
+            np.testing.assert_allclose(aabb_lo[base + s_sphere_small], [-0.05, -0.05, -0.05])
+            np.testing.assert_allclose(aabb_hi[base + s_sphere_small], [0.05, 0.05, 0.05])
+            np.testing.assert_allclose(aabb_lo[base + s_sphere_large], [-0.12, -0.12, -0.12])
+            np.testing.assert_allclose(aabb_hi[base + s_sphere_large], [0.12, 0.12, 0.12])
+            np.testing.assert_allclose(aabb_lo[base + s_capsule], [-0.04, -0.04, -0.16])
+            np.testing.assert_allclose(aabb_hi[base + s_capsule], [0.04, 0.04, 0.16])
+            np.testing.assert_allclose(aabb_lo[base + s_plane], [-1.0, -1.0, -1.0])
+            np.testing.assert_allclose(aabb_hi[base + s_plane], [1.0, 1.0, 1.0])
+            np.testing.assert_allclose(aabb_lo[base + s_hull], [0.0, 0.0, 0.0])
+            np.testing.assert_allclose(aabb_hi[base + s_hull], [0.3, 0.2, 0.1])
+            np.testing.assert_allclose(aabb_lo[base + s_mesh], [-0.2, 0.0, 0.0])
+            np.testing.assert_allclose(aabb_hi[base + s_mesh], [0.0, 0.2, 0.2])
+
+            np.testing.assert_allclose(interior[base + s_sphere_small], [0.0, 0.0, 0.0])
+            np.testing.assert_allclose(interior[base + s_hull], [0.075, 0.05, 0.025], atol=1e-6)
+            np.testing.assert_allclose(interior[base + s_mesh], [0.0, 0.0, 0.0])
+
+            np.testing.assert_array_equal(vox[base + s_sphere_small], expected_sphere_vox)
+            np.testing.assert_array_equal(vox[base + s_capsule], expected_cap_vox)
+            np.testing.assert_array_equal(vox[base + s_plane], [1, 1, 1])
+
+            np.testing.assert_array_equal(support[base + s_sphere_small], [-1, -1, -1, 0])
+            self.assertNotEqual(int(support[base + s_hull, 3]), 0)
+            np.testing.assert_array_equal(edge_range[base + s_sphere_small], [-1, 0])
+            np.testing.assert_array_equal(edge_range[base + s_box], [-1, 0])
+            self.assertGreaterEqual(int(edge_range[base + s_hull, 0]), 0)
+            self.assertEqual(int(edge_range[base + s_hull, 1]), 6)
+            self.assertGreaterEqual(int(edge_range[base + s_mesh, 0]), 0)
+            self.assertEqual(int(edge_range[base + s_mesh, 1]), 6)
 
     def test_replicate_matches_add_world_loop(self):
         """Match repeated world composition with replicated builder arrays."""

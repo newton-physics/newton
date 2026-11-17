@@ -541,6 +541,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                     "The SCC solver currently requires `dynamics.preconditioning=False` so convergence checks and "
                     "contact cone updates stay in physical constraint units."
                 )
+            if self.dynamics_solver == "padmm" and self.sparse_dynamics and self.dynamics.linear_solver_type == "LDL":
+                raise ValueError("Sparse PADMM does not support LDL; use dense PADMM or an iterative linear solver.")
             if (
                 self.dynamics_solver == "padmm"
                 and not self.sparse_dynamics
@@ -1276,6 +1278,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                     restitution_mix_mode=self._config.materials.restitution_mix_mode,
                     cull_speculative_contacts=self._solver_kamino.cull_speculative_contacts,
                     kinematic_only_immovable=self._config.dynamics_solver == "lox",
+                    contact_dead_zone=self._config.constraints.delta,
                 )
         else:
             self._detector = None
