@@ -240,7 +240,6 @@ def test_soft_contact_accumulation_thread_counts(test, device):
         solver = newton.solvers.SolverVBD(
             model,
             iterations=2,
-            rigid_compliant_alm=True,
             rigid_body_particle_contact_buffer_size=1024,
         )
         solver._body_particle_contact_threads = threads
@@ -560,7 +559,7 @@ def test_cloth_under_finite_plane_shelf(test, device):
     builder.color()
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, enable_rigid_soft_full_surface_contact=True)
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
+    solver = newton.solvers.SolverVBD(model, iterations=10)
     state_0, state_1, control, contacts = model.state(), model.state(), model.control(), pipeline.contacts()
     pipeline.collide(state_0, contacts)
     count = int(contacts.soft_contact_count.numpy()[0])
@@ -601,7 +600,7 @@ def test_cloth_settles_on_heightfield_stairs(test, device):
     builder.color()
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, enable_rigid_soft_full_surface_contact=True)
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
+    solver = newton.solvers.SolverVBD(model, iterations=10)
     state_0, state_1, control, contacts = model.state(), model.state(), model.control(), pipeline.contacts()
     for _ in range(600):
         pipeline.collide(state_0, contacts)
@@ -825,7 +824,6 @@ def test_dat_budget_counts_full_surface_mesh_queries(test, device):
             solver = newton.solvers.SolverVBD(
                 model,
                 iterations=1,
-                rigid_compliant_alm=True,
                 rigid_soft_enable_dat=True,
                 collision_pipeline=pipeline,
             )
@@ -1611,7 +1609,7 @@ def test_mesh_force_mask_matches_compacted_solve(test, device):
                             state_out.particle_q.numpy(),
                             state_out.body_q.numpy() if dynamic else np.empty((0, 7)),
                             observations.contact_f.numpy()[selected.rigid_contact_max :],
-                            solver.body_particle_contact_penalty_k.numpy(),
+                            solver.body_particle_contact_material_ke.numpy(),
                         )
                     )
                 np.testing.assert_allclose(results[0][0], results[1][0], atol=1.0e-7, rtol=1.0e-6)
@@ -1884,7 +1882,7 @@ def test_mesh_complete_rigid_indices_and_reuse(test, device):
     state.particle_q.assign(np.array([(-0.01, -0.01, 0.0), (0.01, -0.01, 0.0), (0.0, 0.01, 0.0)], dtype=np.float32))
     pipeline.collide(state, contacts)
     count = int(contacts.soft_contact_count.numpy()[0])
-    features_np = contacts._soft_contact_mesh_features.numpy()[:count, 0]
+    features_np = contacts._soft_contact_mesh_features.numpy()[:count, 0].copy()
     recovery_np = (features_np >= 0) & ((features_np & int(soft_contacts_mesh._MESH_FEATURE_RECOVERY)) != 0)
     test.assertTrue(np.any(recovery_np))
     test.assertTrue(

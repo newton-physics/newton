@@ -181,7 +181,7 @@ class RenderConfig:
 
     Launch-time tuning only: it does not affect kernel codegen, so the renderer
     excludes it from the kernel cache key and changing it never triggers a
-    recompilation.
+    recompilation. The OptiX backend ignores it.
     """
 
     max_distance: float = 1000.0

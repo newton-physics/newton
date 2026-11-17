@@ -73,6 +73,7 @@ from ..geometry.inertia import (
     _INERTIA_ABS_FLOOR,
     _INERTIA_REL_TOL,
     _inverse_inertia,
+    _validate_hollow_thickness,
     compute_body_inverses_kernel,
     validate_and_correct_inertia_kernel,
     verify_and_correct_inertia,
@@ -128,6 +129,16 @@ else:
     UsdStage = Any
 
 logger = logging.getLogger(__name__)
+
+
+class _BodyFrameOriginUnset:
+    """Mark an omitted deprecated ``add_rod`` body-frame origin."""
+
+    def __repr__(self) -> str:
+        return "_DEPRECATED_BODY_FRAME_ORIGIN_UNSET"
+
+
+_DEPRECATED_BODY_FRAME_ORIGIN_UNSET: Any = _BodyFrameOriginUnset()
 
 
 def _convex_hull_interior_point(vertices: np.ndarray, indices: np.ndarray | None) -> np.ndarray:
@@ -888,15 +899,6 @@ class ModelBuilder:
         if color is None:
             return None
         return (float(color[0]), float(color[1]), float(color[2]))
-
-    @staticmethod
-    def _resolve_rod_body_frame_origin(
-        method_name: str,
-        body_frame_origin: Literal["start", "com"],
-    ) -> Literal["start", "com"]:
-        if body_frame_origin not in ("start", "com"):
-            raise ValueError(f"{method_name}: body_frame_origin must be 'start' or 'com', got {body_frame_origin!r}")
-        return body_frame_origin
 
     @staticmethod
     def _rod_segment_direction(start: Vec3, end: Vec3) -> tuple[wp.vec3, float]:
@@ -4216,7 +4218,8 @@ class ModelBuilder:
                 self._merge_builder_copies(builder, worlds, xforms, label_prefixes, array_backed=True)
 
             if separate_worlds:
-                self.world_gravity.extend(builder._gravity_as_vector() for _ in range(copy_count))
+                gravity = tuple(builder._gravity_as_vector())
+                self.world_gravity.extend(wp.vec3(*gravity) for _ in range(copy_count))
                 self.world_count += copy_count
             else:
                 self._adopt_builder_gravity(builder)
@@ -4614,18 +4617,24 @@ class ModelBuilder:
         self.joint_constraint_count += copy_count * counts["joint_constraint"]
 
         custom_attributes = self._prepare_builder_custom_attributes(builder)
+        kinds = tuple(counts)
+        offset_rows = np.stack([starts(kind) for kind in kinds], axis=1).tolist()
+        has_actuators = bool(builder.actuator_entries)
+        has_batteries = bool(builder.battery_entries)
         for copy_index, world in enumerate(worlds.tolist()):
-            entity_offsets = {kind: int(starts(kind)[copy_index]) for kind in counts}
+            entity_offsets = dict(zip(kinds, offset_rows[copy_index], strict=True))
             self._merge_builder_custom_attributes(
                 builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes
             )
-            self._merge_builder_actuators(
-                builder,
-                int(joint_dof_starts[copy_index]),
-                int(joint_coord_starts[copy_index]),
-                entity_offsets["actuator"],
-            )
-            self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
+            if has_actuators:
+                self._merge_builder_actuators(
+                    builder,
+                    int(joint_dof_starts[copy_index]),
+                    int(joint_coord_starts[copy_index]),
+                    entity_offsets["actuator"],
+                )
+            if has_batteries:
+                self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
         self.actuator_count += copy_count * counts["actuator"]
 
     def _model_value_key(self, attribute: CustomAttribute) -> int:
@@ -5284,7 +5293,7 @@ class ModelBuilder:
                         - ``body_idx``
                         - ❌ Error: FREE joints require world frame
 
-            only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
+            only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded. With OpenUSD 26.11 or newer, disabled rigid bodies are never loaded, since OpenUSD assigns their colliders and joints to the nearest enabled ancestor body.
             only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
             verbose: If True, log additional information about the parsed USD file. Default is False.
@@ -5678,10 +5687,18 @@ class ModelBuilder:
                 See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
                 actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
                 from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
-                For position-only drives using ``dampratio``, constructing
+                A scalar ``gear`` on a one-DOF (hinge or slide) position/velocity actuator is folded into the
+                joint-target drive, so the targets stay in joint units: the actuator is imported with unit gear, ``kp``,
+                ``kv``, ``damping`` and ``armature`` are scaled by ``gear**2``, ``forcerange`` by ``gear`` and ``ctrlrange``
+                by ``1 / gear`` (bounds swapped for a negative ``gear``). Position/velocity actuators whose gear cannot be
+                folded (a gear on a multi-DOF joint, a vector gear or a zero gear) are imported as
+                :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` so that MuJoCo applies the gear.
+                For position-only joint-target drives using ``dampratio``, constructing
                 :class:`~newton.solvers.SolverMuJoCo` initializes zero entries in
                 :attr:`newton.Model.joint_target_kd` with the resolved damping coefficients.
                 Subsequent damping edits use ``joint_target_kd`` as usual.
+                This does not apply to ``CTRL_DIRECT`` actuators: their gains stay in the MuJoCo actuator (in actuator
+                units), and ``joint_target_kd`` is neither written nor read for them.
             path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. By default, assets are searched relative to the main model with the compiler asset directory, then relative to the included file without that directory prefix, and finally relative to the included file with it. Custom resolvers receive the authoring file's directory and the file path with that file's compiler asset directory prefix.
             legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
                 where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
@@ -5960,7 +5977,8 @@ class ModelBuilder:
                 reference = Model._normalize_attribute_reference(reference)
 
             freq_key = attr.frequency
-            if isinstance(freq_key, str):
+            is_custom_frequency = isinstance(freq_key, str)
+            if is_custom_frequency:
                 index_offset = custom_frequency_offsets.get(freq_key, 0)
             elif attr.frequency == Model.AttributeFrequency.ONCE:
                 index_offset = 0
@@ -6098,7 +6116,7 @@ class ModelBuilder:
                             source_counts = self._builder_merge_counts(builder)
                         count = (
                             builder._custom_frequency_counts.get(freq_key, 0)
-                            if isinstance(freq_key, str)
+                            if is_custom_frequency
                             else source_counts.get(self._builder_frequency_key(freq_key), 0)
                         )
                     source_values = attr._values_with_defaults(count)
@@ -6111,15 +6129,17 @@ class ModelBuilder:
                     source_key = -1 if -1 in source_values else min(attr.values or source_values)
                     value = source_values[source_key]
                     enum_values[index_offset] = transform_enum_value(source_key, value) if needs_remap else value
-            elif not isinstance(freq_key, str):
-                enum_values = {
-                    index_offset + idx: transform_enum_value(idx, value) if needs_remap else value
-                    for idx, value in source_values.items()
-                }
+            elif not is_custom_frequency:
+                if needs_remap:
+                    enum_values = {
+                        index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()
+                    }
+                else:
+                    enum_values = {index_offset + idx: value for idx, value in source_values.items()}
 
             merged = self.custom_attributes.get(full_key)
             if merged is None:
-                if isinstance(freq_key, str):
+                if is_custom_frequency:
                     mapped_values = [None] * index_offset
                     if needs_remap:
                         mapped_values.extend(
@@ -6142,9 +6162,9 @@ class ModelBuilder:
                 )
 
             if merged.values is None:
-                merged.values = [] if isinstance(freq_key, str) else {}
+                merged.values = [] if is_custom_frequency else {}
 
-            if isinstance(freq_key, str):
+            if is_custom_frequency:
                 if len(merged.values) < index_offset:
                     merged.values.extend([None] * (index_offset - len(merged.values)))
                 if needs_remap:
@@ -10756,6 +10776,7 @@ class ModelBuilder:
         rod: Rod,
         *,
         cfg: ShapeConfig | None,
+        total_mass: float | None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
         shear_stiffness: float | None,
@@ -10768,7 +10789,7 @@ class ModelBuilder:
         wrap_in_articulation: bool,
         junction_collision_filter: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"],
+        warn_deprecated_body_frame_origin: bool = False,
     ) -> tuple[list[int], list[int]]:
         """Add a Rod object through the established chain or graph path."""
         radius = rod._resolve_radius()
@@ -10782,7 +10803,6 @@ class ModelBuilder:
             bend_stiffness=bend_stiffness,
             twist_stiffness=twist_stiffness,
         )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
 
         rod_points, rod_edges, rod_frames = rod._normalize_and_validate_geometry()
         rest_positions, rest_quaternions = rod._normalize_and_validate_rest_geometry(rod_points, rod_edges)
@@ -10828,6 +10848,7 @@ class ModelBuilder:
                 quaternions=rod_quaternions,
                 radius=radius,
                 cfg=cfg,
+                total_mass=total_mass,
                 stretch_stiffness=stretch_stiffness,
                 stretch_damping=stretch_damping,
                 shear_stiffness=shear_stiffness,
@@ -10840,7 +10861,7 @@ class ModelBuilder:
                 label=label,
                 wrap_in_articulation=wrap_in_articulation,
                 color=color,
-                body_frame_origin=body_frame_origin,
+                warn_deprecated_body_frame_origin=warn_deprecated_body_frame_origin,
             )
         else:
             link_bodies, link_joints = self._add_rod_graph(
@@ -10850,6 +10871,7 @@ class ModelBuilder:
                 edges=[(int(edge[0]), int(edge[1])) for edge in rod_edges],
                 radius=radius,
                 cfg=cfg,
+                total_mass=total_mass,
                 stretch_stiffness=stretch_stiffness,
                 stretch_damping=stretch_damping,
                 shear_stiffness=shear_stiffness,
@@ -10863,7 +10885,7 @@ class ModelBuilder:
                 quaternions=rod_quaternions,
                 junction_collision_filter=junction_collision_filter,
                 color=color,
-                body_frame_origin=body_frame_origin,
+                warn_deprecated_body_frame_origin=warn_deprecated_body_frame_origin,
             )
 
         # Material rigidities are discretized using structural-rest lengths.
@@ -10894,6 +10916,7 @@ class ModelBuilder:
         rest_straight: bool = False,
         radius: float,
         cfg: ShapeConfig | None,
+        total_mass: float | None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
         shear_stiffness: float | None,
@@ -10906,7 +10929,7 @@ class ModelBuilder:
         label: str | None,
         wrap_in_articulation: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"],
+        warn_deprecated_body_frame_origin: bool = False,
     ) -> tuple[list[int], list[int]]:
         """Add an ordered point chain through the established graph path."""
         if cfg is None:
@@ -10940,6 +10963,7 @@ class ModelBuilder:
             rest_node_positions=rest_positions_wp if rest_positions is not None else None,
             radius=radius,
             cfg=cfg,
+            total_mass=total_mass,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
             shear_stiffness=shear_stiffness,
@@ -10954,7 +10978,7 @@ class ModelBuilder:
             rest_quaternions=rest_quaternions,
             junction_collision_filter=True,
             color=color,
-            body_frame_origin=body_frame_origin,
+            warn_deprecated_body_frame_origin=warn_deprecated_body_frame_origin,
         )
 
         # For closed loops, add one extra loop-closing rod joint that is intentionally
@@ -10983,12 +11007,8 @@ class ModelBuilder:
                 if L_first <= min_segment_length:
                     L_first = min_segment_length
 
-                if body_frame_origin == "com":
-                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * L_last), wp.quat_identity())
-                    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * L_first), wp.quat_identity())
-                else:
-                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
-                    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+                parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * L_last), wp.quat_identity())
+                child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * L_first), wp.quat_identity())
 
                 def _closed_rest_quaternion(segment: int) -> wp.quat:
                     rest_dir, _ = self._rod_segment_direction(
@@ -11055,6 +11075,7 @@ class ModelBuilder:
         *,
         rod: Rod,
         cfg: ShapeConfig | None = None,
+        total_mass: float | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
         shear_stiffness: float | None = None,
@@ -11066,7 +11087,7 @@ class ModelBuilder:
         label: str | None = None,
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] = "com",
+        body_frame_origin: Literal["com"] = _DEPRECATED_BODY_FRAME_ORIGIN_UNSET,
         junction_collision_filter: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
@@ -11086,6 +11107,11 @@ class ModelBuilder:
         Args:
             rod: Initial/rest geometry, frame, topology, and constitutive-data source.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
+            total_mass: Optional total rod mass [kg], distributed in proportion to each segment's
+                rest volume (equivalently, rest length for the uniform cross section).
+                Overrides ``cfg.density``. Must be finite and nonnegative; zero sets every
+                segment's mass and inertia to zero without setting the kinematic body flag.
+                If None, mass is derived from density.
             stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, it is derived locally from Rod material or section rigidity;
                 otherwise it defaults to 1.0e5.
@@ -11116,17 +11142,14 @@ class ModelBuilder:
                 See the Articulations section below.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
                 capsule shapes. If None, the rod uses the default rod color.
-            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` places
-                the origin at the local start of the rest-sized capsule, with the COM/shape
-                offset by half its rest length. The world-space origin equals the initial
-                segment start only when initial and rest lengths match. ``"com"`` places
-                the body origin at the initial segment midpoint so the
-                body origin and COM coincide. Defaults to ``"com"``.
+            body_frame_origin: Deprecated; omit it. Explicit ``"com"`` uses the default
+                body origin at the initial segment midpoint and emits a
+                :class:`~newton.NewtonDeprecationWarning`. The ``"start"``
+                origin, deprecated in 1.8, has been removed and raises
+                :class:`ValueError`; for manually authored body-local anchors, subtract
+                the old ``body_com`` offset.
 
-                .. deprecated:: 1.8
-                    ``"start"`` emits a :class:`~newton.NewtonDeprecationWarning`.
-                    Use ``"com"`` instead. For manually authored body-local anchors,
-                    subtract the old ``body_com`` offset.
+                .. deprecated:: 1.9
             junction_collision_filter: Whether to suppress self-collisions
                 between incident, non-jointed segments at graph junctions.
                 Has no effect for an ordered chain.
@@ -11157,7 +11180,11 @@ class ModelBuilder:
                 non-finite or too-short edges, or invalid frame alignment.
             ValueError: If the structural-rest centerline of a closed chain does not close.
             ValueError: If the Rod uses ``rest_straight`` with explicit rest inputs or a graph.
-            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
+            ValueError: If ``body_frame_origin`` is passed with a value other than ``"com"``.
+            ValueError: If ``total_mass`` is negative or non-finite.
+            ValueError: If a hollow rod with positive assigned mass has a negative or non-finite
+                wall thickness ``cfg.margin``, or one at least as large as the stored radius.
+                A positive ``total_mass`` also requires nonzero hollow wall thickness.
             ValueError: If automatic section-rigidity discretization is requested
                 for branching topology or for a wrapped explicit cycle.
 
@@ -11172,22 +11199,35 @@ class ModelBuilder:
               arguments override the derived value per mode.
             - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
               the cylindrical centerline, excluding the hemispherical caps.
-            - With ``body_frame_origin="start"``, the body origin is at the local start of the rest-sized
-              capsule centerline. The COM and shape are at local ``(0, 0, half_height)``, and the other
-              centerline endpoint is at ``(0, 0, 2 * half_height)``. These offsets use rest lengths; the
-              world-space body origin equals the initial segment start only when the initial and rest lengths match.
-            - With ``body_frame_origin="com"``, the body origin and COM coincide at the segment
-              midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
-              ``(0, 0, half_height)``.
+            - Density-based mass is ``cfg.density * area * rest_length`` per segment, excluding the
+              overlapping caps. ``area`` is the circular cross section ``pi * radius**2``, as in USD
+              cable import, or for hollow rods the tube wall of thickness ``cfg.margin``.
+            - Inertia uses the solid-cylinder or open-tube tensor at each segment's assigned mass
+              and rest length, as in USD cable import for solid sections. Collision geometry and
+              the caller's ``cfg`` are unchanged.
+            - The body origin and COM coincide at the segment midpoint, and centerline endpoints are at
+              local ``(0, 0, -half_height)`` and ``(0, 0, half_height)``.
         """
         if not isinstance(rod, Rod):
             raise TypeError(f"add_rod: rod must be a Rod, got {type(rod).__name__}")
+        if body_frame_origin is not _DEPRECATED_BODY_FRAME_ORIGIN_UNSET:
+            if body_frame_origin == "start":
+                raise ValueError(
+                    'add_rod: body_frame_origin="start" was deprecated in Newton 1.8 and has been removed. '
+                    'Omit the argument to use the "com" origin. For manually authored body-local anchors, '
+                    "subtract the old body_com offset."
+                )
+            if body_frame_origin != "com":
+                raise ValueError(
+                    f"add_rod: body_frame_origin={body_frame_origin!r} is not supported; omit the argument."
+                )
 
         start_body = self.body_count
         start_joint = self.joint_count
         result = self._add_rod_object(
             rod,
             cfg=cfg,
+            total_mass=total_mass,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
             shear_stiffness=shear_stiffness,
@@ -11200,10 +11240,31 @@ class ModelBuilder:
             wrap_in_articulation=wrap_in_articulation,
             junction_collision_filter=junction_collision_filter,
             color=color,
-            body_frame_origin=body_frame_origin,
+            warn_deprecated_body_frame_origin=body_frame_origin is not _DEPRECATED_BODY_FRAME_ORIGIN_UNSET,
         )
         self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
         return result
+
+    def _set_rod_segment_mass(self, body: int, mass: float) -> None:
+        """Assign mass and cylinder or open-tube inertia to a generated single-capsule rod segment."""
+        inertia = wp.mat33(0.0)
+        if mass > 0.0:
+            shape = self.body_shapes[body][0]
+            scale = self.shape_scale[shape]
+            radius, half_height = float(scale[0]), float(scale[1])
+            inner_radius = 0.0
+            if not self.shape_is_solid[shape]:
+                thickness = _validate_hollow_thickness("capsule", self.shape_margin[shape], (("radius", radius),))
+                inner_radius = radius - thickness
+            # Use assigned mass directly: subtracting shell tensors loses precision for thin walls.
+            radial_sum = radius * radius + inner_radius * inner_radius
+            transverse = mass * (radial_sum / 4.0 + half_height * half_height / 3.0)
+            axial = mass * radial_sum / 2.0
+            inertia = wp.mat33(transverse, 0.0, 0.0, 0.0, transverse, 0.0, 0.0, 0.0, axial)
+        self.body_mass[body] = mass
+        self.body_inv_mass[body] = 1.0 / mass if mass > 0.0 else 0.0
+        self.body_inertia[body] = inertia
+        self.body_inv_inertia[body] = _inverse_inertia(inertia) if mass > 0.0 else wp.mat33(0.0)
 
     def _add_rod_graph(
         self,
@@ -11214,6 +11275,7 @@ class ModelBuilder:
         rest_quaternions: list[Quat] | np.ndarray | None = None,
         radius: float,
         cfg: ShapeConfig | None,
+        total_mass: float | None = None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
         shear_stiffness: float | None,
@@ -11227,13 +11289,15 @@ class ModelBuilder:
         quaternions: list[Quat] | None,
         junction_collision_filter: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"],
         articulation_root_node: int | None = None,
         articulation_root_joint_factory: Callable[[int, Transform], int] | None = None,
+        warn_deprecated_body_frame_origin: bool = False,
     ) -> tuple[list[int], list[int]]:
         """Build a rod graph, optionally using an importer-provided articulation root joint."""
         if cfg is None:
             cfg = self.default_shape_cfg
+        if total_mass is not None and (not math.isfinite(total_mass) or total_mass < 0.0):
+            raise ValueError("add_rod: total_mass must be finite and >= 0")
 
         # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
         stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
@@ -11250,7 +11314,6 @@ class ModelBuilder:
             bend_stiffness=bend_stiffness,
             twist_stiffness=twist_stiffness,
         )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
         if len(node_positions) < 2:
             raise ValueError("add_rod: node_positions must contain at least 2 nodes")
         if len(edges) < 1:
@@ -11302,10 +11365,9 @@ class ModelBuilder:
         edge_v: list[int] = []
         edge_len: list[float] = []
         edge_rest_q: list[wp.quat] = []
-        edge_body_data: list[tuple[wp.transform, wp.vec3, wp.transform]] = []
+        edge_body_q: list[wp.transform] = []
         edge_bodies: list[int] = []
         rod_color = color if color is not None else ModelBuilder._DEFAULT_ROD_COLOR
-        use_com_origin = body_frame_origin == "com"
 
         # Validate all edge geometry and frames before adding bodies.
         for e_idx, (u, v) in enumerate(edges):
@@ -11366,24 +11428,13 @@ class ModelBuilder:
                 q_rest = q
             edge_rest_q.append(q_rest)
 
-            half_height = 0.5 * rest_seg_length
+            # Place the body origin at the initial segment center so origin and COM coincide.
             initial_center = wp.vec3(*(0.5 * (float(p0[i]) + float(p1[i])) for i in range(3)))
-
-            if use_com_origin:
-                # Place the body origin at the segment center so origin and COM coincide.
-                body_q = wp.transform(initial_center, q)
-                com_offset = wp.vec3(0.0)
-                capsule_xform = wp.transform()
-            else:
-                body_origin = wp.vec3(*(float(initial_center[i]) - float(seg_dir[i]) * half_height for i in range(3)))
-                body_q = wp.transform(body_origin, q)
-                com_offset = wp.vec3(0.0, 0.0, half_height)
-                capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
 
             edge_u.append(u)
             edge_v.append(v)
             edge_len.append(rest_seg_length)
-            edge_body_data.append((body_q, com_offset, capsule_xform))
+            edge_body_q.append(wp.transform(initial_center, q))
 
             node_incidence[u].append(e_idx)
             node_incidence[v].append(e_idx)
@@ -11393,32 +11444,47 @@ class ModelBuilder:
             shape_label = f"{label}_edge_capsule_0" if label else f"shape_{self.shape_count}"
             cfg._validate_site(shape_label)
 
+        # Assigned rod mass replaces the primitive contribution; leave the caller's config intact.
+        segment_cfg = replace(cfg, density=0.0)
+        # Resolve mass per rest length in Python precision, including NumPy scalar inputs.
+        linear_density = (
+            float(total_mass) / sum(edge_len) if total_mass is not None else float(cfg.density) * math.pi * radius**2
+        )
+        if linear_density > 0.0 and not cfg.is_solid:
+            if total_mass is not None and cfg.margin == 0.0:
+                raise ValueError("add_rod: positive total_mass requires positive hollow wall thickness")
+            # Validate the stored float32 radius before adding bodies; zero thickness warns and leaves zero mass.
+            _validate_hollow_thickness("capsule", cfg.margin, (("radius", np.float32(radius)),))
+            if total_mass is None:
+                # Hollow density mass covers the tube wall of thickness ``cfg.margin``.
+                thickness_ratio = float(cfg.margin) / radius
+                linear_density *= thickness_ratio * (2.0 - thickness_ratio)
+
         # Warn after validation but before mutating the builder.
-        if body_frame_origin == "start":
+        if warn_deprecated_body_frame_origin:
             warnings.warn(
-                'add_rod(body_frame_origin="start") is deprecated as of Newton 1.8. '
-                'Use the default "com" origin. For manually authored body-local anchors, '
-                "subtract the old body_com offset.",
+                'add_rod(body_frame_origin="com") is deprecated as of Newton 1.9 and has no effect; '
+                "omit the argument. Rod body frames are always centered at the segment midpoint.",
                 NewtonDeprecationWarning,
                 stacklevel=_external_warning_stacklevel(),
             )
 
         # Create all edge bodies first.
-        for e_idx, (body_q, com_offset, capsule_xform) in enumerate(edge_body_data):
+        for e_idx, body_q in enumerate(edge_body_q):
             body_label = f"{label}_edge_body_{e_idx}" if label else None
             shape_label = f"{label}_edge_capsule_{e_idx}" if label else None
 
-            body_id = self.add_link(xform=body_q, com=com_offset, label=body_label)
+            body_id = self.add_link(xform=body_q, label=body_label)
 
             self.add_shape_capsule(
                 body_id,
-                xform=capsule_xform,
                 radius=radius,
                 half_height=0.5 * edge_len[e_idx],
-                cfg=cfg,
+                cfg=segment_cfg,
                 label=shape_label,
                 color=rod_color,
             )
+            self._set_rod_segment_mass(body_id, linear_density * edge_len[e_idx])
 
             edge_bodies.append(body_id)
 
@@ -11427,9 +11493,9 @@ class ModelBuilder:
 
         def _edge_anchor_xform(e_idx: int, node_idx: int, reverse_tangent: bool = False) -> wp.transform:
             if node_idx == edge_u[e_idx]:
-                z = -0.5 * edge_len[e_idx] if use_com_origin else 0.0
+                z = -0.5 * edge_len[e_idx]
             elif node_idx == edge_v[e_idx]:
-                z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
+                z = 0.5 * edge_len[e_idx]
             else:
                 raise RuntimeError("add_rod: internal error (node not incident to edge)")
             rotation = _reverse_tangent_rotation if reverse_tangent else _identity_rotation
