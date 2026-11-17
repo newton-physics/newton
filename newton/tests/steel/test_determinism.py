@@ -27,7 +27,7 @@ from newton._src.solvers.steel.kernels import (
     crba_fill_par_dof,
 )
 from newton.solvers import SolverSteel
-from newton.tests.steel._fixtures import _build_four_bar
+from newton.tests.steel._fixtures import _build_four_bar, printf_capture_is_reliable
 from newton.tests.unittest_utils import (
     StdOutCapture,
     add_function_test,
@@ -649,8 +649,8 @@ def test_overflow_warning_names_deterministic_mode(test, device):
         "While its contacts and joint rows are unchanged it drops the same contacts every step; otherwise it drops "
         "the tail of the new contact order."
     )
-    # Warp CPU printf capture is unreliable on Windows; the overflow status and routing are still checked there.
-    check_output = not (wp.get_device(device).is_cpu and sys.platform == "win32")
+    # Captured kernel printf is unreliable on Windows; the overflow status and routing are still checked there.
+    check_output = printf_capture_is_reliable()
     for deterministic in (wp.DeterministicMode.NOT_GUARANTEED, RUN_TO_RUN):
         with test.subTest(deterministic=deterministic.name):
             solver = SolverSteel(
@@ -663,7 +663,7 @@ def test_overflow_warning_names_deterministic_mode(test, device):
                 paths = []
                 for _ in range(2):
                     solver.step(state, model.state(), model.control(), contacts, 0.005)
-                    paths.append(solver._contact_path.numpy())
+                    paths.append(solver._contact_path.numpy().copy())
                 wp.synchronize_device(device)
             finally:
                 output = capture.end() if check_output else ""

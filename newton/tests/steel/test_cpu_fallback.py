@@ -11,7 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.exceptions import NewtonWarning
+from newton import NewtonWarning
 from newton.solvers import SolverSteel
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
@@ -178,6 +178,7 @@ class TestSteelCpuFallback(unittest.TestCase):
     def test_cuda_only_features_raise_on_cpu(self):
         model = _build("cpu", "box_stack")
         for options in (
+            {"nesterov_momentum": True},
             {"friction_mode": "bisection", "friction_anchor_beta": 0.0},
             {"enable_joint_friction": True},
             {"contact_compliance": True, "friction_anchor_beta": 0.0},

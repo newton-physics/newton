@@ -292,6 +292,9 @@ class FastDeformableSelfCollision:
         with wp.ScopedCapture(device=device) as capture:
             self._detect()
         self.graph = capture.graph
+        # Keep one-time device work out of the samples.
+        wp.capture_launch(self.graph)
+        wp.synchronize_device()
 
     def _detect(self):
         self.detector.refit(self.model.particle_q)
@@ -473,6 +476,9 @@ class FastDeformableRigidCoarseClothVBD(DeformableRigidCollision):
         with wp.ScopedCapture(device=device) as capture:
             simulate()
         self.graph = capture.graph
+        # Keep one-time device work out of the samples.
+        wp.capture_launch(self.graph)
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self, case):
@@ -543,7 +549,11 @@ class FastExampleClothManipulation:
             args = newton.examples.default_args()
         else:
             args = None
-        self.example = ExampleClothManipulation(ViewerNull(num_frames=self.num_frames), args)
+        self.example = ExampleClothManipulation(ViewerNull(num_frames=self.num_frames + 1), args)
+        # Keep one-time device work out of the samples.
+        self.example.step()
+        self.example.render()
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
@@ -562,7 +572,11 @@ class FastExampleClothTwist:
             args = newton.examples.default_args()
         else:
             args = None
-        self.example = ExampleClothTwist(ViewerNull(num_frames=self.num_frames), args)
+        self.example = ExampleClothTwist(ViewerNull(num_frames=self.num_frames + 1), args)
+        # Keep one-time device work out of the samples.
+        self.example.step()
+        self.example.render()
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

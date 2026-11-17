@@ -477,17 +477,35 @@ def trim_all_in_place(
             other_start = loop[0]
             other_end = loop[1]
             other_direction = other_end - other_start
-            cross = direction[0] * other_direction[1] - direction[1] * other_direction[0]
-            if wp.abs(cross) > 1.0e-6 * wp.sqrt(length_sq * wp.length_sq(other_direction)):
-                # Two nonparallel line features have at most one contact;
-                # the caller uses the deepest GJK/MPR witness in this case.
-                return 0
             # The pair already has a GJK/MPR contact. Project parallel
             # supporting lines onto a shared tangent to tolerate normal error.
             t0 = wp.dot(other_start - start, direction) / length_sq
             t1 = wp.dot(other_end - start, direction) / length_sq
             lo = wp.max(lo, wp.min(t0, t1))
             hi = wp.min(hi, wp.max(t0, t1))
+            other_length_sq = wp.length_sq(other_direction)
+            cross = direction[0] * other_direction[1] - direction[1] * other_direction[0]
+            if other_length_sq > 0.0 and wp.abs(cross) > 1.0e-6 * wp.sqrt(length_sq * other_length_sq):
+                # Keep separation within EPS of its closest value so normal
+                # error does not drop nearly parallel contacts.
+                inv_other_length = 1.0 / wp.sqrt(other_length_sq)
+                offset = (
+                    other_direction[0] * (start[1] - other_start[1]) - other_direction[1] * (start[0] - other_start[0])
+                ) * inv_other_length
+                slope = -cross * inv_other_length
+                separation_lo = offset + slope * lo
+                separation_hi = offset + slope * hi
+                closest = float(0.0)
+                if separation_lo * separation_hi > 0.0:
+                    closest = wp.min(wp.abs(separation_lo), wp.abs(separation_hi))
+                band_lo = (-(closest + EPS) - offset) / slope
+                band_hi = (closest + EPS - offset) / slope
+                overlap = (hi - lo) * wp.sqrt(length_sq)
+                lo = wp.max(lo, wp.min(band_lo, band_hi))
+                hi = wp.min(hi, wp.max(band_lo, band_hi))
+                # A short band uses the caller's single deepest GJK/MPR witness.
+                if (hi - lo) * wp.sqrt(length_sq) < wp.min(0.5 * overlap, MAX_CLIP_VERTEX_MERGE_DISTANCE):
+                    return 0
         else:
             polygon = trim_poly
             polygon_count = trim_poly_count
