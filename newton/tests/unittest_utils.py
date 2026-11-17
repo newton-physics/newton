@@ -709,15 +709,23 @@ class NewtonTestCase(unittest.TestCase):
         self.addCleanup(self._finish_output_capture)
         super()._callSetUp()
 
-    def expectOutputRegex(self, regex: str, *, stream: str = "any"):
-        """Allow matching stdout/stderr output and fail if it does not appear."""
+    def expectOutputRegex(self, regex: str, *, stream: str = "any", report: bool = False):
+        """Allow matching stdout/stderr output and fail if it does not appear.
 
-        self._require_output_capture().add_pattern(regex, stream=stream, required=True)
+        Matching output is discarded unless ``report`` is true, in which case it is
+        printed once the test's output passes validation.
+        """
 
-    def allowOutputRegex(self, regex: str, *, stream: str = "any"):
-        """Allow matching stdout/stderr output without requiring it."""
+        self._require_output_capture().add_pattern(regex, stream=stream, required=True, report=report)
 
-        self._require_output_capture().add_pattern(regex, stream=stream, required=False)
+    def allowOutputRegex(self, regex: str, *, stream: str = "any", report: bool = False):
+        """Allow matching stdout/stderr output without requiring it.
+
+        Allowed output is discarded unless ``report`` is true, in which case it is
+        printed once the test's output passes validation.
+        """
+
+        self._require_output_capture().add_pattern(regex, stream=stream, required=False, report=report)
 
     def assertSubprocessSuccess(self, result, *, command):
         """Assert a subprocess succeeded and include its output in this test's output contract."""
