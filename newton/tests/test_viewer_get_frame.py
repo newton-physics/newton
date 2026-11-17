@@ -761,6 +761,8 @@ class TestViewerGLMinimumVersion(unittest.TestCase):
                 raise
             self.skipTest(f"pyglet window backend not available: {exc}")
         self.pyglet = pyglet
+        # RendererGL caches its GL module, which is not pyglet.gl after a failed pyglet import.
+        RendererGL.initialize_gl()
 
     @staticmethod
     def _gl_1_1_context():
@@ -774,7 +776,7 @@ class TestViewerGLMinimumVersion(unittest.TestCase):
         """Verify a driver below the minimum OpenGL version is rejected without opening a window."""
         pyglet = self.pyglet
         with (
-            mock.patch.object(pyglet.gl, "current_context", self._gl_1_1_context()),
+            mock.patch.object(RendererGL.gl, "current_context", self._gl_1_1_context()),
             mock.patch.object(pyglet.window, "Window") as window,
             self.assertRaisesRegex(pyglet.gl.ContextException, r"OpenGL 3\.3 .*OpenGL 1\.1\.0 \(GDI Generic\)"),
         ):
@@ -786,7 +788,7 @@ class TestViewerGLMinimumVersion(unittest.TestCase):
         pyglet = self.pyglet
         window = mock.Mock(context=self._gl_1_1_context())
         with (
-            mock.patch.object(pyglet.gl, "current_context", None),
+            mock.patch.object(RendererGL.gl, "current_context", None),
             mock.patch.object(pyglet.window, "Window", return_value=window),
             self.assertRaises(pyglet.gl.ContextException),
         ):

@@ -66,6 +66,8 @@ published citation when available and retain an accessible preprint link.
 
 - **RoboMMT: Learning Stable Tracking of Modulated Expressive and Interactive Robot Motion**. *T. Hielscher, K. O. Arras*. October 2026. [arXiv:2610.26414](https://arxiv.org/abs/2610.26414)
 
+- **HolidayFactory 1.0: Simulating, Generating, and Evaluating Industrial Robot Tasks**. *Holiday Robotics*. November 2026. [arXiv:2611.11789](https://arxiv.org/abs/2611.11789)
+
 - **Probabilistic Physics Digital Twin for Human-Robot Interaction**. *Y. Hu, H. Chandirasekar, A. Kushwaha, J. King, Z.-T. Chen*. October 2026. [arXiv:2610.19336](https://arxiv.org/abs/2610.19336)
 
 - **GM-Loco: Terrain-Adaptive Humanoid Locomotion on Granular Media**. *J. Kamohara, F. Wu, A. N. Zong, D. I. Goldman, Y. Nakka, S. Hutchinson, Y. Zhao*. September 2026. [arXiv:2609.10286](https://arxiv.org/abs/2609.10286)
@@ -110,6 +112,8 @@ published citation when available and retain an accessible preprint link.
 
 - **ContactBench 1.0: A Benchmark for Everyday Contact-Rich Robotic Manipulation**. *J. Xiang, Y. Wang, J. Bohg, W. Yuan*. October 2026. [arXiv:2610.24512](https://arxiv.org/abs/2610.24512)
 
+- **VABAR: A Variational Automation Benchmark for Agentic Robotics**. *S. Xie, K. Chen, U. Yoo, X. Zhu, M. Shen, J. Drake, E. Solowjow, L. Gulich, A. Millane, R. Cathomen, T. Stuyck, S. Subramanian, Y. Pan, B. McGowan, M. Benedict, L. Fan, Y. Zhu, S. Huang, K. Goldberg*. November 2026. [arXiv:2611.06881](https://arxiv.org/abs/2611.06881)
+
 - **PointCast: One World Model for Rigid, Articulated, and Deformable Object Manipulation**. *H. Ye, R. Worobel, Z. Xie, M. Li, H. Yu, Y. Hong, C. Choi*. September 2026. [arXiv:2609.28393](https://arxiv.org/abs/2609.28393)
 
 - **AlphaNIST: Emergent Assembly Skills from Binary Task Rewards**. *O. Zhang, I. Akinola, R. Scalise, M. Guaman Castro, P. Yin, T. Widmer, M. Macklin, C. Amevor, D. Turpin, D. Van Gelder, J. Carius, A. Handa, G. State, Y. Guo, Y. Narang*. October 2026. [arXiv:2610.13354](https://arxiv.org/abs/2610.13354)
@@ -123,8 +127,6 @@ published citation when available and retain an accessible preprint link.
 ### 2025
 
 - **Offset Geometric Contact**. *A. H. Chen, J. Hsu, Z. Liu, M. Macklin, Y. Yang, C. Yuksel*. ACM Transactions on Graphics 44(4), July 2025. [DOI:10.1145/3731205](https://doi.org/10.1145/3731205)
-
-- **Augmented Vertex Block Descent**. *C. Giles, E. Diaz, C. Yuksel*. ACM Transactions on Graphics 44(4), July 2025. [DOI:10.1145/3731195](https://doi.org/10.1145/3731195)
 
 ### 2024
 

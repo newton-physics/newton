@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
@@ -142,6 +142,7 @@ class SensorCamera:
         default_clear_data: ClearData | None = None,
         default_render_config: RenderConfig | None = None,
         load_textures: bool = True,
+        backend: Literal["warp", "optix"] = "warp",
         deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Construct a camera sensor for a model.
@@ -159,6 +160,13 @@ class SensorCamera:
                 be loaded raises ``ValueError`` here, so pass ``False`` for
                 depth-only use, for example when replaying a recording whose
                 texture files are elsewhere; it leaves all of them untextured.
+            backend: ``"warp"`` traverses :attr:`~newton.Model.bvh_shapes`; ``"optix"``
+                traverses :attr:`~newton.Model.optix_shapes` (experimental). OptiX requires the
+                ``newton[optix]`` extra (Python 3.12 on x86-64 Linux or Windows) and a CUDA device,
+                cannot be recorded in CUDA graphs, and does not support particles, deformable
+                surfaces, Gaussians or shape variants; unsupported models raise
+                :class:`RuntimeError`. OptiX does not render shapes that have left the region
+                set when the OptiX shapes were built (see :meth:`~newton.Model.bvh_build_shapes`).
             deformable_surface_mode: Which deformable surfaces the sensor uploads
                 and renders: :attr:`DeformableSurfaceMode.BOTH` renders the
                 simulation triangles and the visual meshes, as the viewers do;
@@ -187,6 +195,7 @@ class SensorCamera:
         self._render_context = RenderContext(
             model,
             load_textures=load_textures,
+            backend=backend,
             deformable_surface_mode=DeformableSurfaceMode(deformable_surface_mode),
         )
 
@@ -194,6 +203,11 @@ class SensorCamera:
     def device(self) -> wp.Device:
         """Device of the model this sensor renders."""
         return self._render_context.model.device
+
+    @property
+    def backend(self) -> Literal["warp", "optix"]:
+        """Shape traversal backend, ``"warp"`` or ``"optix"``."""
+        return self._render_context.backend
 
     def allocate_image(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array[Any]:
         """Allocate a zeroed output image array on the model device.
@@ -1013,7 +1027,9 @@ class SensorCamera:
         BVHs with :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles` (both are built initially by
         :meth:`~newton.ModelBuilder.finalize`) before calling this; otherwise the
-        render reads stale bounds. Deformable triangle-mesh points are synced from
+        render reads stale bounds. With the OptiX backend, build
+        :attr:`~newton.Model.optix_shapes` once and refit them by passing ``backend="optix"``
+        to the same methods instead. Deformable triangle-mesh points are synced from
         *state* automatically (see ``sync_deformables``).
 
         The camera looks along its local ``-Z`` axis with ``+Y`` up and ``+X``

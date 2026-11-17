@@ -428,5 +428,6 @@ class TestSolverKaminoJointEffortLimitDominantArmature(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     setup_tests()
     unittest.main(verbosity=2)
