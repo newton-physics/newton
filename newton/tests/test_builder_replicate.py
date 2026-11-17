@@ -9,7 +9,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton import Axis, Mesh, Model, ModelBuilder, NewtonDeprecationWarning, Rod
+from newton import Axis, Mesh, Model, ModelBuilder, NewtonDeprecationWarning, NewtonWarning, Rod
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
 from newton.actuators import BatteryConstantResistance, DriveOutputSpace, DrivePD, MotorDC
 from newton.tests.unittest_utils import HOST_TRANSFORMS_BIT_EXACT, add_function_test, get_test_devices
@@ -1223,6 +1223,17 @@ class TestModelBuilderReplicateLabelPrefixes(unittest.TestCase):
             )
             src.add_custom_attribute(
                 ModelBuilder.CustomAttribute(
+                    name="body_world",
+                    dtype=wp.int32,
+                    frequency=Model.AttributeFrequency.BODY,
+                    namespace="test",
+                    references="world",
+                    default=-1,
+                    values={b0: -1},
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
                     name="body_offset",
                     dtype=wp.vec3,
                     frequency=Model.AttributeFrequency.BODY,
@@ -1271,25 +1282,24 @@ class TestModelBuilderReplicateLabelPrefixes(unittest.TestCase):
             return src
 
         prefixes = ["env0", None, "env2", "env3"]
-        rep_scene = (
-            self._make_destination()
-            if hasattr(self, "_make_destination")
-            else TestModelBuilderReplicate._make_destination()
-        )
+        rep_scene = TestModelBuilderReplicate._make_destination()
         seq_scene = TestModelBuilderReplicate._make_destination()
         proto = make_source()
         rep_scene.replicate(proto, 4, label_prefixes=prefixes)
         for prefix in prefixes:
             seq_scene.add_world(proto, label_prefix=prefix)
 
-        rep_model = rep_scene.finalize(device="cpu")
-        seq_model = seq_scene.finalize(device="cpu")
+        with self.assertWarnsRegex(NewtonWarning, "test:wrap_prm.*7 values.*expects 8"):
+            rep_model = rep_scene.finalize(device="cpu")
+        with self.assertWarnsRegex(NewtonWarning, "test:wrap_prm.*7 values.*expects 8"):
+            seq_model = seq_scene.finalize(device="cpu")
 
         self.assertEqual(rep_model.test.wrap_label, seq_model.test.wrap_label)
         np.testing.assert_array_equal(rep_model.test.wrap_shape.numpy(), seq_model.test.wrap_shape.numpy())
         np.testing.assert_array_equal(rep_model.test.wrap_world.numpy(), seq_model.test.wrap_world.numpy())
         np.testing.assert_allclose(rep_model.test.wrap_prm.numpy(), seq_model.test.wrap_prm.numpy())
         np.testing.assert_allclose(rep_model.test.body_offset.numpy(), seq_model.test.body_offset.numpy())
+        np.testing.assert_array_equal(rep_model.test.body_world.numpy(), seq_model.test.body_world.numpy())
         np.testing.assert_array_equal(
             rep_model.test.body_parent_shape.numpy(), seq_model.test.body_parent_shape.numpy()
         )

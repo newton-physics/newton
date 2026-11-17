@@ -2003,6 +2003,32 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         np.testing.assert_array_equal(model.test.target_index.numpy(), [-1, body, shape1, -1, body + 1, shape1 + 2])
         self.assertEqual((body, shape0, shape1), (0, 0, 1))
 
+        def prefix_reference(values, context):
+            return [f"{context['label_prefix']}/{value}" for value in values]
+
+        sub_builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="target_label",
+                frequency="test:target",
+                dtype=str,
+                default="",
+                namespace="test",
+                values=["a", "b", "c"],
+                reference_value_transformer=prefix_reference,
+            )
+        )
+        sub_builder.custom_frequencies["test:target"].label_attribute = "test:target_label"
+        replicated = ModelBuilder()
+        sequential = ModelBuilder()
+        prefixes = ["left", "right"]
+        replicated.replicate(sub_builder, 2, label_prefixes=prefixes)
+        for prefix in prefixes:
+            sequential.add_world(sub_builder, label_prefix=prefix)
+        expected = sequential.finalize(device=self.device)
+        actual = replicated.finalize(device=self.device)
+        self.assertEqual(actual.test.target_label, expected.test.target_label)
+        self.assertEqual(actual.test.target_label[:3], ["left/left/a", "left/left/b", "left/left/c"])
+
     def test_custom_frequency_reference_value_transformer_length_mismatch(self):
         """Reject a reference transformer that drops rows."""
         sub_builder = ModelBuilder()

@@ -1857,16 +1857,19 @@ class ModelBuilder:
 
                         def _pack_items(items: Sequence[Any]) -> np.ndarray:
                             if not elem_shape:
-                                try:
-                                    return np.fromiter(items, dtype=scalar_np_dtype, count=len(items))
-                                except (TypeError, ValueError):
-                                    return np.asarray(items, dtype=scalar_np_dtype).reshape(len(items))
+                                packed = np.asarray(items, dtype=scalar_np_dtype)
+                                if packed.shape != (len(items),):
+                                    raise ValueError("Scalar attribute rows have trailing dimensions")
+                                return packed
                             return pack_warp_values(items, warp_dtype)
 
                         try:
                             default_np = np.asarray(self.default, dtype=scalar_np_dtype)
                             if elem_shape:
                                 default_np = default_np.reshape(elem_shape)
+                            elif default_np.ndim != 0:
+                                # Scalar dtypes also support array-valued rows through the general path.
+                                raise ValueError("Scalar attribute default has trailing dimensions")
 
                             if self.is_custom_frequency:
                                 src = self.values if len(self.values) <= count else self.values[:count]
@@ -6157,7 +6160,10 @@ class ModelBuilder:
 
             if use_current_world:
                 shifts_default = all(not self._custom_attribute_defaults_match(w, attr.default) for w in worlds_list)
-                if shifts_default and (is_custom_frequency or all(0 <= k < src_freq_count for k in source_values)):
+                if shifts_default and (
+                    is_custom_frequency
+                    or (len(source_values) == src_freq_count and all(0 <= k < src_freq_count for k in source_values))
+                ):
                     merged = ensure_merged_attr(full_key, attr, is_custom_frequency)
                     if is_custom_frequency:
                         if len(merged.values) < base_idx:
@@ -6215,9 +6221,10 @@ class ModelBuilder:
                     builder,
                     entity_offsets,
                     world,
-                    None,
+                    label_prefixes[copy_index],
                     fallback_attributes,
                     _resolved_cf_offsets=cf_offsets_copy,
+                    _defer_label_prefix=True,
                 )
 
         if any(label_prefixes):
@@ -6288,6 +6295,7 @@ class ModelBuilder:
         attributes: dict[str, ModelBuilder.CustomAttribute],
         *,
         _resolved_cf_offsets: dict[str, int] | None = None,
+        _defer_label_prefix: bool = False,
     ) -> None:
         # Resolve existing destination rows, since its topology may have
         # changed since the rows were first added.
@@ -6542,7 +6550,7 @@ class ModelBuilder:
             else:
                 merged.values.update(enum_values)
 
-        if label_prefix:
+        if label_prefix and not _defer_label_prefix:
             for frequency_key, frequency in builder.custom_frequencies.items():
                 label_key = frequency.label_attribute
                 if label_key is None:
