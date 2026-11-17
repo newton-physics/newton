@@ -1251,6 +1251,45 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
                     if not sparse:
                         self.assertFalse(bool(status["standard"]["converged"]))
 
+    def test_02_redundant_joint_shift(self):
+        """Dropping the redundant joint rows leaves no impulse on them and preserves the solution velocities."""
+        v_plus, lambdas = [], []
+        for tolerance in (0.0, 1e-5):
+            test = make_redundant_fourbar(self.default_device, sparse=False)
+            config = PADMMSolver.Config(redundant_joint_tolerance=tolerance, max_iterations=500)
+            solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
+
+            # Remove the null-space components of the free velocity
+            test.build()
+            bases = delassus_null_bases(test.problem)
+            v_f = test.problem.data.v_f.numpy()
+            vio = test.problem.data.vio.numpy()
+            for w, basis in enumerate(bases):
+                block = v_f[vio[w] : vio[w] + basis.shape[0]]
+                block -= basis @ (basis.T @ block)
+            test.problem.data.v_f.assign(v_f)
+
+            solver.coldstart()
+            solver.solve(problem=test.problem)
+            self.assertTrue(bool(solver.data.status.numpy()[0]["converged"]))
+            v_plus.append(solver.data.solution.v_plus.numpy())
+            lambdas.append(solver.data.solution.lambdas.numpy())
+
+        # Check that exactly the redundant rows are shifted and carry no impulse
+        shifted = solver._redundant_joints.shifted.numpy()
+        offset = test.model.info.joint_kinematic_cts_group_offset.numpy()
+        for w, basis in enumerate(bases):
+            rows = vio[w] + offset[w] + np.flatnonzero(shifted[w])
+            self.assertEqual(len(rows), basis.shape[1])
+            np.testing.assert_allclose(lambdas[1][rows], 0.0, atol=1e-4 * np.abs(lambdas[1]).max())
+        np.testing.assert_allclose(v_plus[1], v_plus[0], rtol=0.0, atol=1e-3 * np.abs(v_plus[0]).max())
+
+    def test_03_redundant_joint_shift_requires_dense_dynamics(self):
+        test = make_redundant_fourbar(self.default_device, sparse=True)
+        config = PADMMSolver.Config(redundant_joint_tolerance=1e-5)
+        with self.assertRaises(ValueError):
+            PADMMSolver(model=test.model, config=config, problem=test.problem)
+
 
 ###
 # Test execution

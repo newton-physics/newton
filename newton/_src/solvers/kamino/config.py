@@ -736,6 +736,21 @@ class PADMMSolverConfig:
     Defaults to `key_and_position`.
     """
 
+    redundant_joint_tolerance: float = 0.0
+    """
+    The relative pivot below which a kinematic joint constraint is dropped as redundant from the Delassus matrix.\n
+    Redundant joint constraints, e.g. in closed kinematic loops, make the Delassus matrix singular. Before each
+    factorization, the kinematic joint rows are eliminated as in a Cholesky factorization, picking the row with
+    the largest relative pivot first. The relative pivot of a row is the squared sine of the angle between the
+    row and the span of the rows eliminated before it. The diagonal of each row whose relative pivot is below
+    this tolerance is doubled, which makes the Delassus matrix positive definite on the joint constraints. The
+    dropped rows then carry no impulse, while the other rows still enforce their constraints. The dropped rows
+    are selected at every step, so they follow the changes of the redundancies across the configurations of
+    the system. The implicit joint dynamics rows are never dropped.\n
+    Only supported by dense dynamics. The setting of the first world applies to all worlds.
+    Must be in the range [0, 1). Defaults to `0.0`, which disables the detection.
+    """
+
     @override
     @staticmethod
     def register_custom_attributes(builder: ModelBuilder) -> None:
@@ -901,6 +916,10 @@ class PADMMSolverConfig:
             )
         if not 0.0 <= self.warmstart_scale <= 1.0:
             raise ValueError(f"Invalid warmstart scale: {self.warmstart_scale}. Must be in the range [0, 1].")
+        if not 0.0 <= self.redundant_joint_tolerance < 1.0:
+            raise ValueError(
+                f"Invalid redundant joint tolerance: {self.redundant_joint_tolerance}. Must be in the range [0, 1)."
+            )
         if self.dual_residual_mode not in ("standard", "delassus"):
             raise ValueError(
                 f"Invalid dual residual mode: {self.dual_residual_mode}. Must be either 'standard' or 'delassus'."

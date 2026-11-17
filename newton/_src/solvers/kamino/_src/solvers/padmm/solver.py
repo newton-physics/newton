@@ -21,6 +21,7 @@ from ...core.size import SizeKamino
 from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.limits import LimitsKamino
+from ...linalg import RedundantRowShift
 from ...utils.tile import get_block_dim, get_tile_size
 from .kernels import (
     _apply_dual_preconditioner_to_solution,
@@ -107,6 +108,7 @@ class PADMMSolver:
         use_acceleration: bool = True,
         use_graph_conditionals: bool = True,
         collect_info: bool = False,
+        problem: DualProblem | None = None,
     ):
         """
         Initializes a PADMM solver.
@@ -126,6 +128,8 @@ class PADMMSolver:
             collect_info: Set to `True` to enable collection of solver convergence info.
                 This setting is intended only for analysis and debugging purposes, as it
                 will increase memory consumption and reduce wall-clock time.
+            problem: The dual problem to be solved, if known at construction.
+                Allows checking at construction that the options support the problem.
         """
 
         # Declare the internal solver config cache
@@ -142,6 +146,14 @@ class PADMMSolver:
         # Declare the solver data container
         self._data: PADMMData | None = None
 
+        # Declare the reference to the dual problem
+        self._problem: DualProblem | None = None
+
+        # Declare the detection of redundant kinematic joint constraints
+        self._redundant_joints: RedundantRowShift | None = None
+        self._kinematic_cts_offset: wp.array[wp.int32] | None = None
+        self._num_kinematic_cts: wp.array[wp.int32] | None = None
+
         # Declare the device cache
         self._device: wp.DeviceLike = None
 
@@ -154,6 +166,7 @@ class PADMMSolver:
                 use_acceleration=use_acceleration,
                 use_graph_conditionals=use_graph_conditionals,
                 collect_info=collect_info,
+                problem=problem,
             )
 
     ###
@@ -203,6 +216,7 @@ class PADMMSolver:
         use_acceleration: bool = True,
         use_graph_conditionals: bool = True,
         collect_info: bool = False,
+        problem: DualProblem | None = None,
     ):
         """
         Allocates the solver data structures on the specified device.
@@ -219,6 +233,8 @@ class PADMMSolver:
             collect_info: Set to `True` to enable collection of solver convergence info.
                 This setting is intended only for analysis and debugging purposes, as it
                 will increase memory consumption and reduce wall-clock time.
+            problem: The dual problem to be solved, if known at allocation.
+                Subsequent solves must then be performed on the same problem.
         """
 
         # Ensure the model is valid
@@ -227,8 +243,9 @@ class PADMMSolver:
         elif not isinstance(model, ModelKamino):
             raise ValueError("Invalid model provided. Must be an instance of `ModelKamino`.")
 
-        # Cache a reference to the model size meta-data container
+        # Cache references to the model size meta-data container and the dual problem
         self._size = model.size
+        self._problem = problem
 
         # Use the model's device
         self._device = model.device
@@ -285,6 +302,21 @@ class PADMMSolver:
         self._project_dual_convergence_accel_kernel = _make_project_dual_convergence_accel_kernel(
             block_dim, delassus_dual_residual
         )
+
+        # Allocate the detection of redundant kinematic joint constraints if enabled
+        self._redundant_joints = None
+        tolerance = self._config[0].redundant_joint_tolerance
+        if tolerance > 0.0:
+            if problem is not None and problem.sparse:
+                raise ValueError("Dropping redundant joint constraints requires dense dynamics.")
+            self._kinematic_cts_offset = model.info.joint_kinematic_cts_group_offset
+            self._num_kinematic_cts = model.info.num_joint_kinematic_cts
+            self._redundant_joints = RedundantRowShift(
+                num_worlds=self._size.num_worlds,
+                max_rows=self._size.max_of_num_kinematic_joint_cts,
+                threshold=tolerance,
+                device=self._device,
+            )
 
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Accept model changes, which need no backend-specific handling."""
@@ -419,6 +451,11 @@ class PADMMSolver:
         Args:
             problem: The dual forward dynamics problem to be solved.
         """
+        if self._problem is not None and problem is not self._problem:
+            raise ValueError("The problem must be the one provided to `finalize()`.")
+        if self._redundant_joints is not None and problem.sparse:
+            raise ValueError("Dropping redundant joint constraints requires dense dynamics.")
+
         # Pass the PADMM-owned tolerance array to the iterative linear solver (if present), so the
         # inexact-ADMM tolerance schedule (set in the convergence kernel) drives the inner solve.
         inner = getattr(problem._delassus._solver, "solver", None)
@@ -576,6 +613,16 @@ class PADMMSolver:
             # so that one-off work stays out of the replayed graph. No-op for other solvers.
             problem._delassus._solver.prepare_solve()
         else:
+            # Drop the redundant kinematic joint constraints from the bare Delassus matrix
+            if self._redundant_joints is not None:
+                self._redundant_joints.apply(
+                    problem.data.dim,
+                    problem.data.mio,
+                    self._kinematic_cts_offset,
+                    self._num_kinematic_cts,
+                    problem.data.D,
+                )
+
             # Update the proximal regularization term in the Delassus matrix
             wp.launch(
                 kernel=_update_delassus_proximal_regularization,
