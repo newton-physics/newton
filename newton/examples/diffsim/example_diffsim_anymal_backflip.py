@@ -29,13 +29,17 @@ Three skills are optimized in sequence over single rollout windows
    end-state stance term.
 
 Gradients flow through SolverFeatherstone AND the differentiable contact
-pipeline (soft_contact_gap margin; the collide schedule is mirrored between
-the tape world and the flown world so both are bit-identical).
+pipeline (soft_contact_gap margin).
 
-This example is LONG: one full run optimizes all three skills end to end
-and takes roughly 45-60 minutes on a single GPU. That is the honest cost of
-the behavior; nothing about the method is abbreviated. ``--test`` skips the
-optimization entirely and runs only the gradient check (seconds).
+Each phase window is a ``Rollout``: its states, controls and contact buffers
+are allocated once, and on CUDA the forward pass and the forward + backward
+pass are each captured into a CUDA graph. The optimizer's gradients, its
+line-search loss evaluations and the replays all run the same kernels on the
+same buffers, so the loss being differentiated is exactly the loss being
+accepted. Together with the solver's tile-based mass-matrix assembly
+(``use_tile_gemm=True``) a full run of all three skills takes a few minutes
+on a single GPU. ``--test`` skips the optimization entirely and runs only the
+gradient check (seconds).
 
 Warp auto-adjoint pitfall: an in-kernel linear scan
 (``k = 0; for kk in range(n): if t >= knots[kk]: k = kk``) is correct in the
@@ -55,7 +59,7 @@ Success criteria:
   check tolerance.
 
 Runs:
-- `python -m newton.examples diffsim_anymal_backflip`           (full run, ~45-60 min)
+- `python -m newton.examples diffsim_anymal_backflip`           (full run, a few minutes)
 - `python -m newton.examples diffsim_anymal_backflip --test`    (gradient check only)
 """
 
@@ -516,7 +520,7 @@ def loss_land_end_kernel(
 
 
 # ------------------------------------------------------------------------------
-# numpy twins of the kernels (eager losses, metrics)
+# numpy helpers (replay metrics)
 # ------------------------------------------------------------------------------
 
 
@@ -570,6 +574,96 @@ def _up_z_of_np(b):
     return 1.0 - 2.0 * (float(b[3]) ** 2 + float(b[4]) ** 2)
 
 
+def _load_snapshot(st, snap):
+    """Copy a host-side (joint_q, joint_qd, body_q, body_qd) snapshot into a state."""
+    st.joint_q.assign(snap[0])
+    st.joint_qd.assign(snap[1])
+    st.body_q.assign(snap[2])
+    st.body_qd.assign(snap[3])
+
+
+# ------------------------------------------------------------------------------
+# Rollout: preallocated, CUDA-graph-captured optimization window
+# ------------------------------------------------------------------------------
+
+
+class Rollout:
+    """All buffers of one phase window, allocated once, plus two CUDA graphs
+    captured over them: the forward pass alone (loss evaluations for the line
+    search, and replays) and forward + backward (loss and gradient).
+
+    Every per-step buffer is written at most once inside the tape: one state
+    per step, one control per step, one contact buffer per collide. Sharing
+    one buffer across steps would leave it holding a LATER step's values by
+    the time an earlier step's adjoint re-derives its primal locals from it.
+    The same holds for the solver's mass-matrix scratch, which it attaches to
+    each gradient-recording output state.
+
+    Launching a captured graph replays the whole window with a single call,
+    which removes the Python launch overhead of the thousands of kernels a
+    1000+ step window issues. Without CUDA graph support (e.g. on CPU) the
+    same code runs uncaptured."""
+
+    def __init__(self, example, mode, n, n_params):
+        model = example.model
+        self.example = example
+        self.mode = mode
+        self.n = n
+        self.params = wp.zeros(n_params, dtype=wp.float32, requires_grad=True)
+        self.loss_arr = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+        self.states = [model.state(requires_grad=True) for _ in range(n + 1)]
+        self.ctrls = [model.control(requires_grad=True) for _ in range(n)]
+        self.contacts = [example.pipe.contacts() for _ in range((n + COLLIDE_EVERY - 1) // COLLIDE_EVERY)]
+        if mode == "jump":
+            # per-step samples the jump loss reads as prefix sums / maxima
+            self.wy_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
+            self.z_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
+            self.paw_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
+        self.tape = wp.Tape()
+        self.fwd_graph = None
+        self.grad_graph = None
+        device = model.device
+        if device.is_cuda and device.is_mempool_enabled:
+            # warm-up pass outside the capture: the solver allocates its
+            # per-state scratch on the first step into each state, and those
+            # buffers must exist before (not inside) the graphs that share them
+            example._simulate(self)
+            with wp.ScopedCapture(device) as cap:
+                example._simulate(self)
+            self.fwd_graph = cap.graph
+            with wp.ScopedCapture(device) as cap:
+                with self.tape:
+                    example._simulate(self)
+                self.tape.backward(self.loss_arr)
+            self.grad_graph = cap.graph
+
+    def _load(self, amps, snap):
+        self.params.assign(np.asarray(amps, dtype=np.float32))
+        _load_snapshot(self.states[0], snap)
+
+    def loss(self, amps, snap):
+        """Forward pass only: the window's loss for these parameters."""
+        self._load(amps, snap)
+        if self.fwd_graph is not None:
+            wp.capture_launch(self.fwd_graph)
+        else:
+            self.example._simulate(self)
+        return float(self.loss_arr.numpy()[0])
+
+    def loss_and_grad(self, amps, snap):
+        """Forward + backward pass: the loss and its gradient w.r.t. the parameters."""
+        self._load(amps, snap)
+        if self.grad_graph is not None:
+            self.tape.zero()  # gradients accumulate: clear the previous call's
+            wp.capture_launch(self.grad_graph)
+        else:
+            self.tape.reset()
+            with self.tape:
+                self.example._simulate(self)
+            self.tape.backward(self.loss_arr)
+        return float(self.loss_arr.numpy()[0]), self.params.grad.numpy().astype(np.float64)
+
+
 # ------------------------------------------------------------------------------
 # Example
 # ------------------------------------------------------------------------------
@@ -619,7 +713,11 @@ class Example:
         self.model.shape_material_ke.assign(np.full(n_shapes, ke0 * KE_SCALE, dtype=np.float32))
         self.model.shape_material_kd.assign(np.full(n_shapes, kd0 * np.sqrt(KE_SCALE) * KD_SCALE, dtype=np.float32))
 
-        self.solver = newton.solvers.SolverFeatherstone(self.model)
+        # use_tile_gemm: the joint-space mass matrix H = J^T M J is formed with
+        # Warp's tile API (one thread block per articulation) instead of a
+        # single-threaded dense GEMM - for one 18-DOF robot this is ~30x less
+        # GPU time per differentiable step
+        self.solver = newton.solvers.SolverFeatherstone(self.model, use_tile_gemm=True)
         self.pipe = newton.CollisionPipeline(self.model, soft_contact_gap=10.0, requires_grad=True)
         self.cts = self.pipe.contacts()
         # ---- classify collision shapes: paw spheres vs true knee shapes ----
@@ -729,13 +827,10 @@ class Example:
         """Copy a state's joint/body arrays to a host-side numpy snapshot tuple."""
         return tuple(arr.numpy().copy() for arr in (st.joint_q, st.joint_qd, st.body_q, st.body_qd))
 
-    def _fresh(self, snap, requires_grad=None):
-        """Materialize a fresh model state (optionally grad-enabled) from a snapshot tuple."""
-        st = self.model.state(requires_grad=requires_grad)
-        st.joint_q.assign(snap[0])
-        st.joint_qd.assign(snap[1])
-        st.body_q.assign(snap[2])
-        st.body_qd.assign(snap[3])
+    def _fresh(self, snap):
+        """Materialize a fresh model state from a snapshot tuple."""
+        st = self.model.state()
+        _load_snapshot(st, snap)
         return st
 
     def _settle_segment(self, st0, st1, n, mode, amp=0.0):
@@ -753,13 +848,13 @@ class Example:
             st0, st1 = st1, st0
         return st0
 
-    def _foot_row_count(self):
+    def _foot_row_count(self, contacts):
         """Number of live contacts involving a paw collision shape."""
-        n_c = int(self.cts.rigid_contact_count.numpy()[0])
+        n_c = int(contacts.rigid_contact_count.numpy()[0])
         if n_c == 0:
             return 0
-        s0 = self.cts.rigid_contact_shape0.numpy()[:n_c]
-        s1 = self.cts.rigid_contact_shape1.numpy()[:n_c]
+        s0 = contacts.rigid_contact_shape0.numpy()[:n_c]
+        s1 = contacts.rigid_contact_shape1.numpy()[:n_c]
         return int(sum(1 for k in range(n_c) if s0[k] in self.foot_shapes or s1[k] in self.foot_shapes))
 
     def _min_zs(self, body_q_np):
@@ -793,403 +888,196 @@ class Example:
             "w": float(np.linalg.norm(body_qd0[3:6])),
         }
 
-    def _unroll(self, mode, n, amps, sps, snap):
-        """Eager rollout (the eager twin of the tapes: same collide schedule).
-        Returns per-step (body_q, body_qd) lists and the final state."""
-        st0 = self._fresh(snap)
-        st1 = self.model.state()
-        amps_arr = wp.array(np.asarray(amps, dtype=np.float32), dtype=wp.float32)
-        bqs = [st0.body_q.numpy().copy()]
-        qds = [st0.body_qd.numpy().copy()]
+    def _launch_servo(self, ro, t):
+        """Write the phase's servo torques for step t into the rollout's control buffer."""
+        st, ctrl = ro.states[t], ro.ctrls[t]
+        if ro.mode == "crouch" and t < CR_N:
+            wp.launch(
+                servo_crouch_cos_kernel,
+                dim=12,
+                inputs=[
+                    ro.params,
+                    st.joint_q,
+                    st.joint_qd,
+                    ctrl.joint_f,
+                    self.stand_arr,
+                    self.dofs_arr,
+                    self.chan_arr,
+                    t,
+                    CR_T_REF,
+                    TAU_MAX,
+                ],
+            )
+        elif ro.mode in ("crouch", "jump"):
+            # jump: per-segment trajectory amplitudes; crouch preview
+            # (t >= CR_N): zero-amp rebound with jump torque caps - the order
+            # term prices the rebound over these states too
+            jump = ro.mode == "jump"
+            wp.launch(
+                servo_traj_group_caps_kernel,
+                dim=12,
+                inputs=[
+                    ro.params if jump else self.zero_amp_arr,
+                    st.joint_q,
+                    st.joint_qd,
+                    ctrl.joint_f,
+                    self.stand_arr,
+                    self.dofs_arr,
+                    self.group_arr,
+                    min(t // B_SPS, NSEG_B - 1) if jump else 0,
+                    self.caps_j_arr,
+                ],
+            )
+        else:
+            wp.launch(
+                servo_profile_kernel,
+                dim=12,
+                inputs=[
+                    ro.params,
+                    st.joint_q,
+                    st.joint_qd,
+                    ctrl.joint_f,
+                    self.stand_arr,
+                    self.dofs_arr,
+                    self.prof_knots_arr,
+                    PROF_N_KNOTS,
+                    SIM_DT * 1000.0,
+                    t,
+                    TAU_MAX,
+                    _bracket(t * SIM_DT * 1000.0),
+                ],
+            )
+
+    def _simulate(self, ro):
+        """Roll out one phase window and accumulate its loss into ro.loss.
+
+        This is the ONLY place the optimization windows are simulated: the
+        gradient (recorded on a tape), the line-search loss evaluations and
+        the replays all run these exact kernels on the same buffers, so the
+        loss the optimizer differentiates is the loss it accepts steps on."""
+        n = ro.n
+        ro.loss_arr.zero_()
+        contacts = None
         for t in range(n):
             if t % COLLIDE_EVERY == 0:
-                self.pipe.collide(st0, self.cts)
-            if mode == "crouch":
-                if t < CR_N:
-                    wp.launch(
-                        servo_crouch_cos_kernel,
-                        dim=12,
-                        inputs=[
-                            amps_arr,
-                            st0.joint_q,
-                            st0.joint_qd,
-                            self.ctrl.joint_f,
-                            self.stand_arr,
-                            self.dofs_arr,
-                            self.chan_arr,
-                            t,
-                            CR_T_REF,
-                            TAU_MAX,
-                        ],
-                    )
-                else:
-                    # push preview: zero-amp rebound with jump torque caps
-                    wp.launch(
-                        servo_traj_group_caps_kernel,
-                        dim=12,
-                        inputs=[
-                            self.zero_amp_arr,
-                            st0.joint_q,
-                            st0.joint_qd,
-                            self.ctrl.joint_f,
-                            self.stand_arr,
-                            self.dofs_arr,
-                            self.group_arr,
-                            0,
-                            self.caps_j_arr,
-                        ],
-                    )
-            elif mode == "jump":
-                nseg = len(amps) // 2
-                wp.launch(
-                    servo_traj_group_caps_kernel,
-                    dim=12,
-                    inputs=[
-                        amps_arr,
-                        st0.joint_q,
-                        st0.joint_qd,
-                        self.ctrl.joint_f,
-                        self.stand_arr,
-                        self.dofs_arr,
-                        self.group_arr,
-                        min(t // sps, nseg - 1),
-                        self.caps_j_arr,
-                    ],
-                )
-            else:
-                wp.launch(
-                    servo_profile_kernel,
-                    dim=12,
-                    inputs=[
-                        amps_arr,
-                        st0.joint_q,
-                        st0.joint_qd,
-                        self.ctrl.joint_f,
-                        self.stand_arr,
-                        self.dofs_arr,
-                        self.prof_knots_arr,
-                        PROF_N_KNOTS,
-                        SIM_DT * 1000.0,
-                        t,
-                        TAU_MAX,
-                        _bracket(t * SIM_DT * 1000.0),
-                    ],
-                )
-            st0.clear_forces()
-            self.solver.step(st0, st1, self.ctrl, self.cts, SIM_DT)
-            st0, st1 = st1, st0
-            bqs.append(st0.body_q.numpy().copy())
-            qds.append(st0.body_qd.numpy().copy())
-        return bqs, qds, st0
+                contacts = ro.contacts[t // COLLIDE_EVERY]
+                self.pipe.collide(ro.states[t], contacts)
+            self._launch_servo(ro, t)
+            ro.states[t].clear_forces()
+            self.solver.step(ro.states[t], ro.states[t + 1], ro.ctrls[t], contacts, SIM_DT)
 
-    def _eager_loss(self, mode):
-        """Eager (numpy) loss closure for a phase; the differentiable twin is _tape_loss."""
-        if mode == "crouch":
-
-            def fn(n, amps, sps, snap):
-                """Crouch loss: knee-order penalty plus end-of-phase depth, vertical speed, and levelness."""
-                bqs, _qds, _ = self._unroll(mode, n, amps, sps, snap)
-                total = 0.0
-                for bq in bqs:
-                    min_k, min_p = self._min_zs(bq)
-                    mask = max(1.0 - min_p / PAW_MASK_H, 0.0)
-                    viol = max(KNEE_MARGIN_G - min_k, 0.0)
-                    total += W_ORDER_A * mask * viol * viol
-                z_end = float(bqs[CR_N][0][2])
-                vz = (float(bqs[CR_N][0][2]) - float(bqs[CR_N - VZ_LAG_M][0][2])) * INV_MDT
-                tilt = _tilt_of(bqs[CR_N][0])
-                return total + A1 * (z_end - Z_TARGET) ** 2 + B1 * vz * vz + C1 * (1.0 - np.cos(tilt))
-
-            return fn
-        if mode == "jump":
-
-            def fn(n, amps, sps, snap):
-                """Jump loss: flip completion under touchdown/airborne windows, uprightness, knee order, and apex band."""
-                bqs, qds, _ = self._unroll(mode, n, amps, sps, snap)
-                total = 0.0
-                pitch = 0.0
-                zmax = -1.0e9
-                paw_hi = -1.0e9
-                for t in range(n + 1):
-                    pitch += float(qds[t][0][4]) * SIM_DT
-                    z = float(bqs[t][0][2])
-                    zmax = max(zmax, z)
-                    min_k, min_p = self._min_zs(bqs[t])
-                    paw_hi = max(paw_hi, min_p)
-                    a = min(max((FOOT_TD - min_p) / TD_SIG, -30.0), 30.0)
-                    w_att = 1.0 / (1.0 + np.exp(-a))
-                    ag = min(max((paw_hi - LIFT_H) / 0.01, -30.0), 30.0)
-                    air = 1.0 / (1.0 + np.exp(-ag))
-                    flip_err = pitch - FLIP_SIGN * TWO_PI
-                    upz = _up_z_of_np(bqs[t][0])
-                    mask_g = max(1.0 - min_p / PAW_MASK_H, 0.0)
-                    viol_g = max(KNEE_MARGIN_G - min_k, 0.0)
-                    total += (
-                        C_FLIP * w_att * air * flip_err * flip_err
-                        + 3.0 * C_ARR * w_att * air * (1.0 - upz)
-                        + W_ORDER_B * mask_g * viol_g * viol_g
-                    )
-                total += C_BAND * (max(zmax - Z_GOOD, 0.0) ** 2 + max(Z_LOW - zmax, 0.0) ** 2)
-                return total
-
-            return fn
-
-        def fn(n, amps, sps, snap):
-            """Landing loss: paw penetration, damping, uprightness, knee order, and settle-to-stance arrival."""
-            bqs, qds, _ = self._unroll(mode, n, amps, sps, snap)
-            total = 0.0
+        states = ro.states
+        if ro.mode == "crouch":
             for t in range(n + 1):
-                min_k, min_p = self._min_zs(bqs[t])
-                mask_g = max(1.0 - min_p / PAW_MASK_H, 0.0)
-                viol_g = max(KNEE_MARGIN_G - min_k, 0.0)
-                vz = float(qds[t][0][2])
-                paws_up = 0.0
-                for b, c, r in self.paw_pts_py:
-                    xf = bqs[t][b]
-                    pz = float(_quat_rot_np(xf[3:], c)[2]) + float(xf[2]) - r
-                    paws_up += max(pz, 0.0) ** 2
-                upz = _up_z_of_np(bqs[t][0])
-                total += (
-                    W_ORDER_C * mask_g * viol_g * viol_g
-                    + D3 * max(vz, 0.0) ** 2
-                    + W_PAWS * paws_up
-                    + W_UP * (1.0 - upz)
+                wp.launch(
+                    order_state_g_kernel,
+                    dim=1,
+                    inputs=[
+                        states[t].body_q,
+                        self.knee_pts_body_arr,
+                        self.knee_pts_local_arr,
+                        self.n_knee_pts,
+                        self.paw_body_arr,
+                        self.paw_center_arr,
+                        self.paw_r_arr,
+                        self.n_paw,
+                        W_ORDER_A,
+                        KNEE_MARGIN_G,
+                        PAW_MASK_H,
+                        ro.loss_arr,
+                    ],
                 )
-            bend = bqs[n][0]
-            vzend = float(qds[n][0][2])
-            upz = _up_z_of_np(bend)
-            wend = float(np.linalg.norm(qds[n][0][3:6]))
-            total += C_ARR * (
-                A2 * (float(bend[2]) - self.z_stand) ** 2 + B2 * wend**2 + C2 * (1.0 - upz) + D2 * vzend**2
+            wp.launch(
+                loss_crouch_end_kernel,
+                dim=1,
+                inputs=[
+                    states[CR_N].body_q,
+                    states[CR_N - VZ_LAG_M].body_q,
+                    ro.loss_arr,
+                    Z_TARGET,
+                    A1,
+                    B1,
+                    C1,
+                    INV_MDT,
+                ],
             )
-            return total
-
-        return fn
-
-    def _tape_loss(self, mode):
-        """Tape-differentiable loss closure for a phase; consumed by the optimizers."""
-
-        def fn(n, amps0, sps, snap):
-            """Tape phase loss: records an n-step rollout and accumulates the phase's loss kernels."""
-            loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
-            params = wp.array(np.asarray(amps0, dtype=np.float32), dtype=wp.float32, requires_grad=True)
-            states = [self.model.state(requires_grad=True) for _ in range(n + 1)]
-            states[0].joint_q.assign(snap[0])
-            states[0].joint_qd.assign(snap[1])
-            states[0].body_q.assign(snap[2])
-            states[0].body_qd.assign(snap[3])
-            if mode == "jump":
-                wy_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
-                z_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
-                paw_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
-            # per-step controls and per-collide contacts: every buffer is
-            # written at most once inside the tape. Sharing one buffer across
-            # steps leaves the array holding a LATER step's values by the time
-            # an earlier step's adjoint replay re-derives its primal locals
-            # from it — the same staleness class the solver's shared J/M/P/H/L
-            # scratch had (fixed in this PR, pinned by test_multistep_gradient);
-            # wp.config.verify_autograd_array_access also flags the pattern.
-            ctrls = [self.model.control(requires_grad=True) for _ in range(n)]
-            cts_list = [self.pipe.contacts() for _ in range((n + COLLIDE_EVERY - 1) // COLLIDE_EVERY)]
-            nseg = len(amps0) // (2 if mode == "jump" else 1)
-            tape = wp.Tape()
-            with tape:
-                for t in range(n):
-                    if t % COLLIDE_EVERY == 0:
-                        cur_cts = cts_list[t // COLLIDE_EVERY]
-                        self.pipe.collide(states[t], cur_cts)
-                    if mode == "crouch":
-                        if t < CR_N:
-                            wp.launch(
-                                servo_crouch_cos_kernel,
-                                dim=12,
-                                inputs=[
-                                    params,
-                                    states[t].joint_q,
-                                    states[t].joint_qd,
-                                    ctrls[t].joint_f,
-                                    self.stand_arr,
-                                    self.dofs_arr,
-                                    self.chan_arr,
-                                    t,
-                                    CR_T_REF,
-                                    TAU_MAX,
-                                ],
-                            )
-                        else:
-                            # push preview: zero-amp rebound with jump torque
-                            # caps - the order term prices the rebound over
-                            # these states too
-                            wp.launch(
-                                servo_traj_group_caps_kernel,
-                                dim=12,
-                                inputs=[
-                                    self.zero_amp_arr,
-                                    states[t].joint_q,
-                                    states[t].joint_qd,
-                                    ctrls[t].joint_f,
-                                    self.stand_arr,
-                                    self.dofs_arr,
-                                    self.group_arr,
-                                    0,
-                                    self.caps_j_arr,
-                                ],
-                            )
-                    elif mode == "jump":
-                        wp.launch(
-                            servo_traj_group_caps_kernel,
-                            dim=12,
-                            inputs=[
-                                params,
-                                states[t].joint_q,
-                                states[t].joint_qd,
-                                ctrls[t].joint_f,
-                                self.stand_arr,
-                                self.dofs_arr,
-                                self.group_arr,
-                                min(t // sps, nseg - 1),
-                                self.caps_j_arr,
-                            ],
-                        )
-                    else:
-                        wp.launch(
-                            servo_profile_kernel,
-                            dim=12,
-                            inputs=[
-                                params,
-                                states[t].joint_q,
-                                states[t].joint_qd,
-                                ctrls[t].joint_f,
-                                self.stand_arr,
-                                self.dofs_arr,
-                                self.prof_knots_arr,
-                                PROF_N_KNOTS,
-                                SIM_DT * 1000.0,
-                                t,
-                                TAU_MAX,
-                                _bracket(t * SIM_DT * 1000.0),
-                            ],
-                        )
-                    states[t].clear_forces()
-                    self.solver.step(states[t], states[t + 1], ctrls[t], cur_cts, SIM_DT)
-                if mode == "crouch":
-                    for t in range(n + 1):
-                        wp.launch(
-                            order_state_g_kernel,
-                            dim=1,
-                            inputs=[
-                                states[t].body_q,
-                                self.knee_pts_body_arr,
-                                self.knee_pts_local_arr,
-                                self.n_knee_pts,
-                                self.paw_body_arr,
-                                self.paw_center_arr,
-                                self.paw_r_arr,
-                                self.n_paw,
-                                W_ORDER_A,
-                                KNEE_MARGIN_G,
-                                PAW_MASK_H,
-                                loss,
-                            ],
-                        )
-                    wp.launch(
-                        loss_crouch_end_kernel,
-                        dim=1,
-                        inputs=[
-                            states[CR_N].body_q,
-                            states[CR_N - VZ_LAG_M].body_q,
-                            loss,
-                            Z_TARGET,
-                            A1,
-                            B1,
-                            C1,
-                            INV_MDT,
-                        ],
-                    )
-                elif mode == "jump":
-                    for t in range(n + 1):
-                        wp.launch(wy_state_kernel, dim=1, inputs=[states[t].body_qd, wy_arr, t, SIM_DT])
-                        wp.launch(zraw_state_kernel, dim=1, inputs=[states[t].body_q, z_arr, t])
-                        wp.launch(
-                            pawraw_state_kernel,
-                            dim=1,
-                            inputs=[
-                                states[t].body_q,
-                                self.paw_body_arr,
-                                self.paw_center_arr,
-                                self.paw_r_arr,
-                                self.n_paw,
-                                paw_arr,
-                                t,
-                            ],
-                        )
-                    for t in range(n + 1):
-                        wp.launch(
-                            loss_jump_state_kernel,
-                            dim=1,
-                            inputs=[
-                                states[t].body_q,
-                                z_arr,
-                                wy_arr,
-                                paw_arr,
-                                t,
-                                self.knee_pts_body_arr,
-                                self.knee_pts_local_arr,
-                                self.n_knee_pts,
-                                self.paw_body_arr,
-                                self.paw_center_arr,
-                                self.paw_r_arr,
-                                self.n_paw,
-                                loss,
-                                C_FLIP,
-                                3.0 * C_ARR,
-                                W_ORDER_B,
-                                FOOT_TD,
-                                TD_SIG,
-                                KNEE_MARGIN_G,
-                                PAW_MASK_H,
-                                FLIP_SIGN,
-                                TWO_PI,
-                                LIFT_H,
-                            ],
-                        )
-                    wp.launch(loss_jump_band_kernel, dim=1, inputs=[z_arr, n, loss, C_BAND, Z_GOOD, Z_LOW])
-                else:
-                    for t in range(n + 1):
-                        wp.launch(
-                            loss_land_state_kernel,
-                            dim=1,
-                            inputs=[
-                                states[t].body_q,
-                                states[t].body_qd,
-                                self.knee_pts_body_arr,
-                                self.knee_pts_local_arr,
-                                self.n_knee_pts,
-                                self.paw_body_arr,
-                                self.paw_center_arr,
-                                self.paw_r_arr,
-                                self.n_paw,
-                                loss,
-                                W_ORDER_C,
-                                KNEE_MARGIN_G,
-                                PAW_MASK_H,
-                                D3,
-                                W_PAWS,
-                                W_UP,
-                            ],
-                        )
-                    wp.launch(
-                        loss_land_end_kernel,
-                        dim=1,
-                        inputs=[states[n].body_q, states[n].body_qd, loss, self.z_stand, C_ARR, A2, B2, C2, D2],
-                    )
-            tape.backward(loss)
-            L = float(loss.numpy()[0])
-            g = params.grad.numpy().astype(np.float64).copy()
-            tape.zero()
-            return L, g
-
-        return fn
+        elif ro.mode == "jump":
+            for t in range(n + 1):
+                wp.launch(wy_state_kernel, dim=1, inputs=[states[t].body_qd, ro.wy_arr, t, SIM_DT])
+                wp.launch(zraw_state_kernel, dim=1, inputs=[states[t].body_q, ro.z_arr, t])
+                wp.launch(
+                    pawraw_state_kernel,
+                    dim=1,
+                    inputs=[
+                        states[t].body_q,
+                        self.paw_body_arr,
+                        self.paw_center_arr,
+                        self.paw_r_arr,
+                        self.n_paw,
+                        ro.paw_arr,
+                        t,
+                    ],
+                )
+            for t in range(n + 1):
+                wp.launch(
+                    loss_jump_state_kernel,
+                    dim=1,
+                    inputs=[
+                        states[t].body_q,
+                        ro.z_arr,
+                        ro.wy_arr,
+                        ro.paw_arr,
+                        t,
+                        self.knee_pts_body_arr,
+                        self.knee_pts_local_arr,
+                        self.n_knee_pts,
+                        self.paw_body_arr,
+                        self.paw_center_arr,
+                        self.paw_r_arr,
+                        self.n_paw,
+                        ro.loss_arr,
+                        C_FLIP,
+                        3.0 * C_ARR,
+                        W_ORDER_B,
+                        FOOT_TD,
+                        TD_SIG,
+                        KNEE_MARGIN_G,
+                        PAW_MASK_H,
+                        FLIP_SIGN,
+                        TWO_PI,
+                        LIFT_H,
+                    ],
+                )
+            wp.launch(loss_jump_band_kernel, dim=1, inputs=[ro.z_arr, n, ro.loss_arr, C_BAND, Z_GOOD, Z_LOW])
+        else:
+            for t in range(n + 1):
+                wp.launch(
+                    loss_land_state_kernel,
+                    dim=1,
+                    inputs=[
+                        states[t].body_q,
+                        states[t].body_qd,
+                        self.knee_pts_body_arr,
+                        self.knee_pts_local_arr,
+                        self.n_knee_pts,
+                        self.paw_body_arr,
+                        self.paw_center_arr,
+                        self.paw_r_arr,
+                        self.n_paw,
+                        ro.loss_arr,
+                        W_ORDER_C,
+                        KNEE_MARGIN_G,
+                        PAW_MASK_H,
+                        D3,
+                        W_PAWS,
+                        W_UP,
+                    ],
+                )
+            wp.launch(
+                loss_land_end_kernel,
+                dim=1,
+                inputs=[states[n].body_q, states[n].body_qd, ro.loss_arr, self.z_stand, C_ARR, A2, B2, C2, D2],
+            )
 
     # ---------------- optimizers ----------------
 
@@ -1205,40 +1093,20 @@ class Example:
             r *= 0.5
         return amps.copy(), r
 
-    def _tr_ascent(
-        self,
-        tag,
-        tape_fn,
-        eager_fn,
-        r0,
-        snap,
-        amp_hi,
-        iters,
-        amps_init=None,
-        nseg=4,
-        lo=None,
-        n_steps=100,
-        sps=1,
-        r_max=R_MAX,
-        strict_rho=False,
-    ):
+    def _tr_ascent(self, tag, ro, r0, snap, amp_hi, iters, amps_init, lo, r_max=R_MAX, strict_rho=False):
         """Backtracking trust-region ascent (crouch + jump phases): ONE
         projected step per iteration (radius halved once per rejection,
         FRESH gradient every iteration - a stale gradient with an inner
         shrink loop is a different, broken search). Accepts ANY improvement
         on the chaotic tapes (rho only steers the radius); replay-based
         round selection guards result quality."""
-        if lo is None:
-            lo = np.full(nseg, -0.9)
-        amps = np.array(amps_init, dtype=np.float64) if amps_init is not None else np.zeros(nseg, dtype=np.float64)
-        L_init = eager_fn(n_steps, amps, sps, snap)
+        amps = np.array(amps_init, dtype=np.float64) if amps_init is not None else np.zeros(len(lo), dtype=np.float64)
+        L_init = ro.loss(amps, snap)
         L_cur = L_init
         r = r0
         accepts = 0
         for it in range(iters):
-            L, g = tape_fn(n_steps, amps, sps, snap)
-            if it == 0 and abs(L - L_cur) > 1e-3 * max(abs(L_cur), 1e-9):
-                print(f"  [guard] {tag}: tape {L:.4f} vs eager {L_cur:.4f}", flush=True)
+            _, g = ro.loss_and_grad(amps, snap)
             ng = float(np.linalg.norm(g))
             if not np.isfinite(ng) or ng < 1e-14:
                 print(f"  {tag} it{it}: |g|={ng:.3g} - stop", flush=True)
@@ -1248,7 +1116,7 @@ class Example:
             if r_use < R_MIN:
                 break
             pred = r_use * ng
-            L_new = eager_fn(n_steps, trial, sps, snap)
+            L_new = ro.loss(trial, snap)
             if not np.isfinite(L_new):
                 imp, rho = -np.inf, None
             else:
@@ -1269,7 +1137,7 @@ class Example:
                     break
         return {"amps": amps, "L_init": L_init, "L_cur": L_cur, "accepts": accepts}
 
-    def _land_descent(self, tag, tape_fn, eager_fn, snap, iters, amps_init=None):
+    def _land_descent(self, tag, ro, snap, iters, amps_init=None):
         """Landing optimizer: steepest direction from the tape with a
         backtracking line search over a dimension-scaled radius grid. This is
         the phase-C optimizer BY DESIGN (a trust-region ascent variant
@@ -1277,14 +1145,12 @@ class Example:
         steps and never reached the demonstrated landing)."""
         lo_d, hi_d = LAND_LO, LAND_HI
         amps = LAND_INIT.copy() if amps_init is None else np.clip(np.asarray(amps_init, dtype=np.float64), lo_d, hi_d)
-        Le = eager_fn(N_C, amps, C_SPS, snap)
+        Le = ro.loss(amps, snap)
         L = Le
         radius_grid = (0.6, 0.4, 0.25, 0.15, 0.08, 0.04, 0.02, 0.01)
         accepts = 0
         for it in range(iters):
-            L, g = tape_fn(N_C, amps, C_SPS, snap)
-            if it == 0 and abs(L - Le) > 1e-3 * max(abs(Le), 1e-9):
-                print(f"  [guard] {tag}: tape {L:.4f} vs eager {Le:.4f}", flush=True)
+            _, g = ro.loss_and_grad(amps, snap)
             ng = float(np.linalg.norm(g))
             if not np.isfinite(ng) or ng < 1e-14:
                 break
@@ -1292,7 +1158,7 @@ class Example:
             moved = False
             for r in radius_grid:
                 trial = np.clip(amps + r * d, lo_d, hi_d)
-                L2 = eager_fn(N_C, trial, C_SPS, snap)
+                L2 = ro.loss(trial, snap)
                 if np.isfinite(L2) and L2 < L - 1e-4 * abs(L):
                     amps, L = trial, L2
                     accepts += 1
@@ -1305,59 +1171,20 @@ class Example:
         return amps, {"L0": Le, "L1": L, "accepts": accepts}
 
     # ---------------- replays + metrics ----------------
+    #
+    # A replay re-runs the window's forward pass and reads the resulting
+    # trajectory back from the rollout buffers. Contacts at step t are the
+    # ones collided at the start of that step: ro.contacts[t // COLLIDE_EVERY].
 
-    def _crouch_replay(self, amps):
+    def _crouch_replay(self, ro, amps):
         """Replay the crouch phase for the given amplitudes; returns the end snapshot and metrics."""
+        ro.loss(amps, self.snap)
         snap_end = None
         rep = {"min_foot_rows": 10**9, "knee_front_min": 1e9, "knee_hind_min": 1e9, "push_margin": 1e9}
-        st = self._fresh(self.snap)
-        st2 = self.model.state()
-        amps_arr = wp.array(amps.astype(np.float32), dtype=wp.float32)
-        m = None
         for t in range(CR_N_EXT):
-            if t % COLLIDE_EVERY == 0:
-                self.pipe.collide(st, self.cts)
-            # foot rows read BEFORE the servo launch/step: the contact
-            # state at the START of step t, not after it
-            rows = self._foot_row_count()
+            rows = self._foot_row_count(ro.contacts[t // COLLIDE_EVERY])
             rep["min_foot_rows"] = min(rep["min_foot_rows"], rows)
-            if t < CR_N:
-                wp.launch(
-                    servo_crouch_cos_kernel,
-                    dim=12,
-                    inputs=[
-                        amps_arr,
-                        st.joint_q,
-                        st.joint_qd,
-                        self.ctrl.joint_f,
-                        self.stand_arr,
-                        self.dofs_arr,
-                        self.chan_arr,
-                        t,
-                        CR_T_REF,
-                        TAU_MAX,
-                    ],
-                )
-            else:
-                # push preview: zero-amp rebound with jump torque caps
-                wp.launch(
-                    servo_traj_group_caps_kernel,
-                    dim=12,
-                    inputs=[
-                        self.zero_amp_arr,
-                        st.joint_q,
-                        st.joint_qd,
-                        self.ctrl.joint_f,
-                        self.stand_arr,
-                        self.dofs_arr,
-                        self.group_arr,
-                        0,
-                        self.caps_j_arr,
-                    ],
-                )
-            st.clear_forces()
-            self.solver.step(st, st2, self.ctrl, self.cts, SIM_DT)
-            st, st2 = st2, st
+            st = ro.states[t + 1]
             bqd = st.body_q.numpy()
             fz, hz = self._leg_knee_zs(bqd)
             _, mp = self._min_zs(bqd)
@@ -1372,7 +1199,7 @@ class Example:
                 rep["z_end"] = m["z"]
                 rep["tilt_end_deg"] = float(np.degrees(m["tilt"]))
                 rep["vz_end"] = m["vz"]
-                rep["foot_rows_end"] = self._foot_row_count()
+                rep["foot_rows_end"] = rows
         return snap_end, rep
 
     def _leg_knee_zs(self, body_q_np):
@@ -1393,14 +1220,12 @@ class Example:
             front[i] = int(b) in (1, 2, 7, 8)  # LF/RF thigh+shank
         return float(out[front].min()), float(out[~front].min())
 
-    def _jump_replay(self, amps, snap, record=False):
+    def _jump_replay(self, ro, amps, snap, record=False):
         """Fly the jump FROM THE CROUCH END (the ascent's anchor); graze-
         filtered touchdown detection (airborne = 5 foot-row-free steps; td =
         2 grounded steps AND descending near ground). Returns (td_snap or
         None, report)."""
-        amps_arr = wp.array(amps.astype(np.float32), dtype=wp.float32)
-        st = self._fresh(snap)
-        st2 = self.model.state()
+        ro.loss(amps, snap)
         q_prev = snap[2][0][3:].copy()
         pitch_cum = 0.0
         airborne_steps = 0
@@ -1409,32 +1234,11 @@ class Example:
         td_t = None
         rep = {"apex": -1e9, "paw_min": 1e9, "blew_up": False, "knee_margin_min": 1e9, "min_foot_rows": 10**9}
         airborne = False
-        t = -1
         for t in range(N_B):
-            if t % COLLIDE_EVERY == 0:
-                self.pipe.collide(st, self.cts)
-            rows = self._foot_row_count()
-            wp.launch(
-                servo_traj_group_caps_kernel,
-                dim=12,
-                inputs=[
-                    amps_arr,
-                    st.joint_q,
-                    st.joint_qd,
-                    self.ctrl.joint_f,
-                    self.stand_arr,
-                    self.dofs_arr,
-                    self.group_arr,
-                    min(t // B_SPS, NSEG_B - 1),
-                    self.caps_j_arr,
-                ],
-            )
-            st.clear_forces()
-            self.solver.step(st, st2, self.ctrl, self.cts, SIM_DT)
-            st, st2 = st2, st
+            rows = self._foot_row_count(ro.contacts[t // COLLIDE_EVERY])
+            st = ro.states[t + 1]
             bqd = st.body_q.numpy()
-            bqd_d = st.body_qd.numpy()
-            m = self._state_metrics(bqd[0], bqd_d[0])
+            m = self._state_metrics(bqd[0], st.body_qd.numpy()[0])
             # pitch from orientation deltas, NOT angular-velocity
             # integration (the two estimates differ slightly)
             drv = _rotvec_incr(q_prev, bqd[0][3:])
@@ -1490,91 +1294,37 @@ class Example:
                 max_p = z
         return max_p
 
-    def _land_replay(self, amps, snap, record=False, extra=0, frame_offset=0):
-        """Landing replay. extra > 0 = settle-check tail: keep simulating on
-        with the final spline values held so a delayed bounce-back cannot
-        hide past the window end. The settled gate is evaluated both at
-        window end (settled_win) and at the true end of the run (settled);
-        the chain itself runs extra=0. Recorded playback frames are sampled
-        every FRAME_EVERY steps counted from the jump phase's touchdown step
-        (``frame_offset`` = ``rep["td_step"]``) so the frames stay evenly
-        spaced across the touchdown boundary."""
-        rep = {
-            "knee_margin_min": 1e9,
-            "bounce": 0.0,
-            "blew_up": False,
-            "min_foot_rows": 10**9,
-            "bounce_win": 0.0,
-            "tail_max_vz": 0.0,
-            "settled_win": False,
-            "paw_lift_win": 0.0,
-            "paw_lift_max": 0.0,
-        }
-        amps_arr = wp.array(amps.astype(np.float32), dtype=wp.float32)
-        st = self._fresh(snap)
-        st2 = self.model.state()
+    def _land_replay(self, ro, amps, snap, record=False, frame_offset=0):
+        """Landing replay; the settled gate is evaluated at window end.
+        Recorded playback frames are sampled every FRAME_EVERY steps counted
+        from the jump phase's touchdown step (``frame_offset`` =
+        ``rep["td_step"]``) so the frames stay evenly spaced across the
+        touchdown boundary."""
+        ro.loss(amps, snap)
+        rep = {"knee_margin_min": 1e9, "bounce": 0.0, "blew_up": False, "min_foot_rows": 10**9, "paw_lift_max": 0.0}
         m = None
-        for t in range(N_C + extra):
-            if t % COLLIDE_EVERY == 0:
-                self.pipe.collide(st, self.cts)
-            rows = self._foot_row_count()
-            wp.launch(
-                servo_profile_kernel,
-                dim=12,
-                inputs=[
-                    amps_arr,
-                    st.joint_q,
-                    st.joint_qd,
-                    self.ctrl.joint_f,
-                    self.stand_arr,
-                    self.dofs_arr,
-                    self.prof_knots_arr,
-                    PROF_N_KNOTS,
-                    SIM_DT * 1000.0,
-                    t,
-                    TAU_MAX,
-                    _bracket(t * SIM_DT * 1000.0),
-                ],
-            )
-            st.clear_forces()
-            self.solver.step(st, st2, self.ctrl, self.cts, SIM_DT)
-            st, st2 = st2, st
+        bqd = None
+        for t in range(N_C):
+            rows = self._foot_row_count(ro.contacts[t // COLLIDE_EVERY])
+            st = ro.states[t + 1]
             bqd = st.body_q.numpy()
-            bqd_d = st.body_qd.numpy()
-            m = self._state_metrics(bqd[0], bqd_d[0])
+            m = self._state_metrics(bqd[0], st.body_qd.numpy()[0])
             min_k, min_p = self._min_zs(bqd)
             rep["min_foot_rows"] = min(rep["min_foot_rows"], rows)
             if min_p < PAW_MASK_H:
                 rep["knee_margin_min"] = min(rep["knee_margin_min"], min_k)
-            pmx = self._paw_max_z(bqd)
-            rep["paw_lift_max"] = max(rep["paw_lift_max"], pmx)
+            rep["paw_lift_max"] = max(rep["paw_lift_max"], self._paw_max_z(bqd))
             rep["bounce"] += max(m["vz"], 0.0) ** 2 * SIM_DT
-            if record and t < N_C and (t + frame_offset) % FRAME_EVERY == 0:
+            if record and (t + frame_offset) % FRAME_EVERY == 0:
                 self.playback.append(("land", self._snapshot(st)))
-            if t == N_C - 1:
-                rep["bounce_win"] = rep["bounce"]
-                rep["paw_lift_win"] = rep["paw_lift_max"]
-                rep["final_z"] = m["z"]
-                rep["final_tilt_deg"] = float(np.degrees(m["tilt"]))
-                rep["final_vz"] = m["vz"]
-                rep["final_w"] = m["w"]
-                rep["final_up_z"] = _up_z_of_np(bqd[0])
-                rep["settled_win"] = bool(
-                    rep["final_tilt_deg"] <= 15.0
-                    and abs(rep["final_vz"]) <= 0.15
-                    and abs(rep["final_z"] - self.z_stand) <= 0.10
-                    and m["w"] <= 0.6
-                )
             if not np.isfinite(m["z"]):
                 rep["blew_up"] = True
                 break
-            if t >= N_C:
-                rep["tail_max_vz"] = max(rep["tail_max_vz"], m["vz"])
-        rep["final_z"] = float(st.body_q.numpy()[0][2])
-        rep["final_tilt_deg"] = float(np.degrees(_tilt_of(st.body_q.numpy()[0])))
+        rep["final_z"] = m["z"]
+        rep["final_tilt_deg"] = float(np.degrees(m["tilt"]))
         rep["final_vz"] = m["vz"]
         rep["final_w"] = m["w"]
-        rep["final_up_z"] = _up_z_of_np(st.body_q.numpy()[0])
+        rep["final_up_z"] = _up_z_of_np(bqd[0])
         rep["settled"] = bool(
             rep["final_tilt_deg"] <= 15.0
             and abs(rep["final_vz"]) <= 0.15
@@ -1595,31 +1345,25 @@ class Example:
 
     def run_chain(self):
         """Phase A -> B -> C. Prints progress; stores the final result."""
-        tape_crouch = self._tape_loss("crouch")
-        eager_crouch = self._eager_loss("crouch")
-
         # ---- phase A: crouch (rounds differ only in warm-start amps) ----
         print("== phase A: crouch ==", flush=True)
+        ro_crouch = Rollout(self, "crouch", CR_N_EXT, CR_NP)
         rounds_a = []
         for rnd in range(CR_ROUNDS):
             warm = CR_WARM if rnd == 0 else rounds_a[-1]["res"]["amps"]
             res = self._tr_ascent(
                 f"crouch-r{rnd}",
-                tape_crouch,
-                eager_crouch,
+                ro_crouch,
                 3.0e-3,
                 self.snap,
                 CR_AMP_HI,
                 CR_ITERS,
                 amps_init=warm,
-                nseg=CR_NP,
                 lo=CR_AMP_LO,
-                n_steps=CR_N_EXT,
-                sps=1,
                 strict_rho=True,
             )
             self.loss_history["crouch"].append(res["L_cur"])
-            end_snap, rep = self._crouch_replay(res["amps"])
+            end_snap, rep = self._crouch_replay(ro_crouch, res["amps"])
             ok = (
                 rep["z_end"] <= 0.375
                 and rep["tilt_end_deg"] < 20.0
@@ -1655,32 +1399,28 @@ class Example:
         # ---- phase B: jump (from the chosen crouch end) ----
         print("== phase B: jump ==", flush=True)
         crouch_snap = best_a["end_snap"]
-        tape_jump = self._tape_loss("jump")
-        eager_jump = self._eager_loss("jump")
+        del ro_crouch  # release the phase-A buffers and graphs
+        ro_jump = Rollout(self, "jump", N_B, NSEG_B * 2)
         b_amp_lo_arr = np.full(NSEG_B * 2, B_AMP_LO)
         warm_b = None
         best_b = None
         for rnd in range(JB_ROUNDS):
             res = self._tr_ascent(
                 f"jump-r{rnd}",
-                tape_jump,
-                eager_jump,
+                ro_jump,
                 JB_R0,
                 crouch_snap,
                 B_AMP_HI,
                 JB_ITERS,
                 amps_init=warm_b,
-                nseg=NSEG_B * 2,
                 lo=b_amp_lo_arr,
-                n_steps=N_B,
-                sps=B_SPS,
                 r_max=JB_R_MAX,
             )
             self.loss_history["jump"].append(res["L_cur"])
             same = best_b is not None and np.array_equal(res["amps"], best_b["res"]["amps"])
             print(f"  r{rnd}: plan {res['L_init']:+.3f}->{res['L_cur']:+.3f} (acc {res['accepts']:2d})", flush=True)
             if not same:
-                td_r, rep_r = self._jump_replay(res["amps"], crouch_snap, record=False)
+                td_r, rep_r = self._jump_replay(ro_jump, res["amps"], crouch_snap, record=False)
                 # lexicographic tuple: a blown-up round loses to everything
                 if rep_r["blew_up"]:
                     sc = (-1e9, 0.0, 0.0)
@@ -1707,30 +1447,28 @@ class Example:
             self.chain_done = True
             return
         self.playback = []  # the final run's frames: chosen flight + landing
-        td_snap, rep_b = self._jump_replay(best_b["res"]["amps"], crouch_snap, record=True)
+        td_snap, rep_b = self._jump_replay(ro_jump, best_b["res"]["amps"], crouch_snap, record=True)
         print(
             f"  => phase B best: apex={rep_b['apex']:.3f}  td pitch={rep_b.get('td_pitch_deg', 0):.1f}deg", flush=True
         )
 
         # ---- phase C: landing (descent line search from the TD anchor) ----
         print("== phase C: landing ==", flush=True)
-        tape_land = self._tape_loss("land")
-        eager_land = self._eager_loss("land")
+        del ro_jump
+        ro_land = Rollout(self, "land", N_C, LAND_NPAR)
         warm_c = None
         best_c = None
         for rnd in range(LC_ROUNDS):
-            amps_r, res_r = self._land_descent(
-                f"land-r{rnd}", tape_land, eager_land, td_snap, LC_ITERS, amps_init=warm_c
-            )
+            amps_r, res_r = self._land_descent(f"land-r{rnd}", ro_land, td_snap, LC_ITERS, amps_init=warm_c)
             self.loss_history["land"].append(res_r["L1"])
             same = best_c is not None and np.array_equal(amps_r, best_c["amps"])
             print(f"  r{rnd}: plan {res_r['L0']:+.1f}->{res_r['L1']:+.1f} (acc {res_r['accepts']:2d})", flush=True)
             if not same:
-                rep_r = self._land_replay(amps_r, td_snap, record=False)
+                rep_r = self._land_replay(ro_land, amps_r, td_snap, record=False)
                 sc = self._land_round_score(rep_r)
                 print(
                     f"      replay: z={rep_r['final_z']:.3f} tilt={rep_r['final_tilt_deg']:.1f}deg "
-                    f"bounce(win)={rep_r['bounce_win']:.4f} pawlift={rep_r['paw_lift_max']:.3f} "
+                    f"bounce={rep_r['bounce']:.4f} pawlift={rep_r['paw_lift_max']:.3f} "
                     f"{'SETTLED' if rep_r['settled'] else 'NOT settled'}",
                     flush=True,
                 )
@@ -1742,6 +1480,7 @@ class Example:
         # final recorded replay of the chosen landing (bit-identical execution;
         # the playback frames come from THIS replay)
         rep_c = self._land_replay(
+            ro_land,
             best_c["amps"] if best_c is not None else warm_c,
             td_snap,
             record=True,
@@ -1750,7 +1489,7 @@ class Example:
         land_ok = rep_c.get("settled", False)
         print(
             f"  => phase C final: z={rep_c['final_z']:.3f} tilt={rep_c['final_tilt_deg']:.1f}deg "
-            f"bounce(win)={rep_c['bounce_win']:.4f} pawlift={rep_c['paw_lift_max']:.3f} "
+            f"bounce={rep_c['bounce']:.4f} pawlift={rep_c['paw_lift_max']:.3f} "
             f"{'SETTLED' if land_ok else 'NOT SETTLED'}",
             flush=True,
         )
@@ -1759,7 +1498,7 @@ class Example:
             "jump_ok": True,
             "td_pitch_deg": rep_b.get("td_pitch_deg"),
             "land_settled": bool(land_ok),
-            "land_bounce": float(rep_c["bounce_win"]),
+            "land_bounce": float(rep_c["bounce"]),
             "land_paw_lift": float(rep_c["paw_lift_max"]),
         }
         self.chain_done = True
@@ -1830,7 +1569,7 @@ class Example:
     def test_final(self):
         """Gradient check: a 2-step landing-servo rollout from the settled
         stance, linear probe loss; tape gradient vs central finite differences
-        on a spread of joint channels (skips the ~1 h optimization)."""
+        on a spread of joint channels (skips the optimization)."""
         model = self.model
         solver = self.solver
         cts = self.cts
@@ -1888,7 +1627,7 @@ class Example:
         states[0].joint_qd.assign(snap[1])
         states[0].body_q.assign(snap[2])
         states[0].body_qd.assign(snap[3])
-        # same freshness discipline as the phase tapes (see _tape_loss): the
+        # same freshness discipline as the phase tapes (see Rollout): the
         # servo writes per-step controls and collide writes its own buffer
         ctrls = [model.control(requires_grad=True) for _ in range(2)]
         cts_tape = self.pipe.contacts()
