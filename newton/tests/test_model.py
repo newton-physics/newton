@@ -4877,6 +4877,42 @@ class TestModelValidation(unittest.TestCase):
         except Exception as e:
             self.fail(f"control.clear() raised {type(e).__name__}: {e}")
 
+    def test_add_light_rejects_invalid_input_without_side_effects(self) -> None:
+        """Verify rejected lights leave the builder unchanged."""
+        builder = newton.ModelBuilder()
+        builder.add_body()
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="tag", namespace="test", frequency=newton.Model.AttributeFrequency.SHAPE, dtype=wp.float32
+            )
+        )
+        builder.add_light(-1, label="valid")
+        invalid = (
+            (TypeError, {"body": 0.9}),
+            (TypeError, {"body": "0"}),
+            (ValueError, {"body": 1}),
+            (ValueError, {"light_type": 7}),
+            (ValueError, {"color": (1.0, -0.1, 1.0)}),
+            (ValueError, {"color": (1.0, 1.0)}),
+            (ValueError, {"intensity": float("nan")}),
+            (ValueError, {"intensity": 1.0e39}),
+            (ValueError, {"attenuation": (0.0, 0.0, 0.0)}),
+            (ValueError, {"cone_angle": 0.0}),
+            (ValueError, {"cone_angle": 4.0}),
+            (ValueError, {"cone_softness": 1.5}),
+            (ValueError, {"focus": -1.0}),
+            (AttributeError, {"custom_attributes": {"test:missing": 1.0}}),
+            (ValueError, {"custom_attributes": {"test:tag": 1.0}}),
+            (Exception, {"xform": (1.0, 2.0)}),
+        )
+        for error, overrides in invalid:
+            kwargs = {"body": -1, **overrides}
+            with self.subTest(**{k: str(v) for k, v in kwargs.items()}), self.assertRaises(error):
+                builder.add_light(**kwargs)
+        self.assertEqual(builder.light_count, 1)
+        for name in ("light_label", "light_world", "light_body", "light_transform", "light_type", "light_enabled"):
+            self.assertEqual(len(getattr(builder, name)), 1, name)
+
 
 class TestRemovedJointTargetAliases(unittest.TestCase):
     """The 1.3-era ``joint_target_pos`` / ``joint_target_vel`` aliases are gone.

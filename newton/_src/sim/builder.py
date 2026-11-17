@@ -5348,7 +5348,7 @@ class ModelBuilder:
             load_lights: If True, ``UsdLux.DistantLight`` and ``UsdLux.SphereLight`` prims are added as model
                 lights (see :meth:`~newton.ModelBuilder.add_light`), attached to their nearest imported rigid-body
                 ancestor or fixed in the world. Distant lights become directional lights; sphere lights become
-                point lights, or spot lights when ``UsdLux.ShapingAPI`` limits their cone. The intensity is
+                point lights, or spot lights when ``UsdLux.ShapingAPI`` limits their cone or sets a focus. The intensity is
                 ``inputs:intensity * 2 ** inputs:exposure``, imported unchanged: physically scaled values, such as
                 the ``DistantLight`` fallback of 50000, saturate the color output of
                 :class:`~newton.sensors.SensorCamera` unless :attr:`~newton.Model.light_intensity` is rescaled.
@@ -5708,8 +5708,10 @@ class ModelBuilder:
                 :meth:`~newton.ModelBuilder.add_light`). ``diffuse`` becomes the light color at intensity 1,
                 ``cutoff`` and ``exponent`` become the spot cone angle and focus, and ``attenuation``,
                 ``castshadow`` and ``active`` are kept. Tracking lights (``mode`` other than ``fixed``) are
-                imported as fixed mounts on their body, which match MuJoCo only at the initial pose, and are
-                logged at debug level. Image-based lights are skipped and logged. Default is True.
+                imported as fixed mounts on their body, which match MuJoCo only at the initial pose (lights
+                that target a body are aimed at its initial position), and are logged at debug level. With
+                ``parent_body``, worldbody lights follow the parent body. Image-based lights are skipped and
+                logged. Default is True.
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -10445,6 +10447,10 @@ class ModelBuilder:
 
         Returns:
             The light index.
+
+        Note:
+            :class:`~newton.sensors.SensorCamera` renders model lights; the
+            viewers (e.g. :class:`~newton.viewer.ViewerGL`) do not use them yet.
         """
         if not self._is_integer_scalar(body):
             raise TypeError(f"Light body must be an integer index, got {type(body).__name__}")

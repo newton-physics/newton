@@ -157,7 +157,7 @@ def _import_usd_lights(
 
     A distant light becomes a directional light. A sphere light becomes a point light treated as a
     zero-radius emitter with inverse-square falloff, or a spot light when ``UsdLux.ShapingAPI`` limits its
-    cone to less than 180 degrees. The intensity is ``inputs:intensity * 2 ** inputs:exposure`` and the
+    cone to less than 180 degrees or sets a focus. The intensity is ``inputs:intensity * 2 ** inputs:exposure`` and the
     color is ``inputs:color``, tinted by ``inputs:colorTemperature`` when it is enabled. Other light types
     are skipped and reported once.
     """
@@ -224,12 +224,14 @@ def _import_usd_lights(
         if light_type == LightType.POINT and prim.HasAPI(UsdLux.ShapingAPI):
             shaping = UsdLux.ShapingAPI(prim)
             cone_angle = float(shaping.GetShapingConeAngleAttr().Get())
-            if cone_angle < 180.0:
+            focus = max(float(shaping.GetShapingFocusAttr().Get()), 0.0)
+            # A cone or a focus restricts the light; a 180-degree cone alone does not.
+            if cone_angle < 180.0 or focus > 0.0:
                 light_type = LightType.SPOT
                 spot = {
-                    "cone_angle": math.radians(max(cone_angle, 1.0e-6)),
+                    "cone_angle": math.radians(min(max(cone_angle, 1.0e-6), 180.0)),
                     "cone_softness": min(max(float(shaping.GetShapingConeSoftnessAttr().Get()), 0.0), 1.0),
-                    "focus": max(float(shaping.GetShapingFocusAttr().Get()), 0.0),
+                    "focus": focus,
                 }
 
         shadow_attr = prim.GetAttribute("inputs:shadow:enable")
@@ -403,7 +405,7 @@ def parse_usd(
         load_lights: If True, ``UsdLux.DistantLight`` and ``UsdLux.SphereLight`` prims are added as model
             lights (see :meth:`~newton.ModelBuilder.add_light`), attached to their nearest imported rigid-body
             ancestor or fixed in the world. Distant lights become directional lights; sphere lights become
-            point lights, or spot lights when ``UsdLux.ShapingAPI`` limits their cone. The intensity is
+            point lights, or spot lights when ``UsdLux.ShapingAPI`` limits their cone or sets a focus. The intensity is
             ``inputs:intensity * 2 ** inputs:exposure``, imported unchanged: physically scaled values, such as
             the ``DistantLight`` fallback of 50000, saturate the color output of
             :class:`~newton.sensors.SensorCamera` unless :attr:`~newton.Model.light_intensity` is rescaled.

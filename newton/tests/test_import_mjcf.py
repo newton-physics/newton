@@ -76,6 +76,8 @@ class TestImportMjcfBasic(unittest.TestCase):
         <light name="sun" directional="true" dir="1 0 -1"/>
         <light name="bulb" type="point" class="red" pos="1 1 1" attenuation="1 0.1 0.01" active="false"/>
         <light name="up" type="spot" pos="0 0 -1" dir="0 0 1"/>
+        <light name="aim" mode="targetbody" target="arm" pos="0 0 2"/>
+        <light name="aim_com" mode="targetbodycom" target="arm" pos="2 0 0"/>
         <frame pos="1 2 3" euler="0 0 1.5707963267948966">
             <light name="framed" type="directional" pos="0.2 0.3 0.4" dir="1 0 0"/>
             <body name="arm" pos="0.4 0.5 0.6" euler="0 0.7853981633974483 0">
@@ -128,6 +130,27 @@ class TestImportMjcfBasic(unittest.TestCase):
                     np.testing.assert_allclose(pose.p, data.light_xpos[light_id], atol=1e-5, err_msg=name)
                     direction = wp.transform_vector(pose, wp.vec3(0.0, 0.0, -1.0))
                     np.testing.assert_allclose(direction, data.light_xdir[light_id], atol=1e-5, err_msg=name)
+
+    def test_worldbody_lights_follow_parent_body(self):
+        """Mount direct and framed worldbody lights on the parent body when composing into one."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <light name="direct" pos="0 0 1"/>
+        <frame><light name="framed" pos="0 0 1"/></frame>
+        <body name="child"><geom type="sphere" size="0.1"/></body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        parent = builder.add_link(
+            mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity())
+        )
+        builder.add_articulation([builder.add_joint_free(parent)])
+        builder.add_mjcf(mjcf, parent_body=parent, xform=wp.transform((0.5, 0.0, 0.0), wp.quat_identity()))
+        self.assertEqual(builder.light_body, [parent, parent])
+        for light in range(2):
+            np.testing.assert_allclose(builder.light_transform[light][:3], (0.5, 0.0, 1.0), atol=1e-6)
 
     def test_light_import_options(self):
         """Skip lights when disabled or of an unsupported type, and keep tracking lights as fixed mounts."""

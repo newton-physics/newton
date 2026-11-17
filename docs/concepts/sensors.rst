@@ -183,6 +183,18 @@ The built-in ray helpers put the pixel-center ray first when ``sample_count`` is
 at least three, with the remaining rays evenly spaced around it. With two samples,
 they use an off-center pair so the sample pattern remains centered on the pixel.
 
+Lighting
+--------
+
+:class:`~newton.sensors.SensorCamera` lights the scene with the model's lights (declared with
+:meth:`~newton.ModelBuilder.add_light` or imported from MJCF ``<light>`` elements and ``UsdLux`` distant and
+sphere lights), the optional light from :meth:`~newton.sensors.SensorCamera.create_default_light`, and
+hemispheric ambient light (:meth:`~newton.sensors.SensorCamera.set_ambient_light`). Model lights are posed from
+the bodies in the state passed to :meth:`~newton.sensors.SensorCamera.update`, and their color, intensity and
+other properties are read from the model on every update. A light in a world lights only that world; global
+lights light every world. Shadows are traced for lights that cast them when
+``SensorCamera.RenderConfig.enable_shadows`` is set. The viewers do not use model lights yet.
+
 Solver Observables
 ------------------
 

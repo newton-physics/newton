@@ -644,8 +644,10 @@ def parse_mjcf(
             :meth:`~newton.ModelBuilder.add_light`). ``diffuse`` becomes the light color at intensity 1,
             ``cutoff`` and ``exponent`` become the spot cone angle and focus, and ``attenuation``,
             ``castshadow`` and ``active`` are kept. Tracking lights (``mode`` other than ``fixed``) are
-            imported as fixed mounts on their body, which match MuJoCo only at the initial pose, and are
-            logged at debug level. Image-based lights are skipped and logged. Default is True.
+            imported as fixed mounts on their body, which match MuJoCo only at the initial pose (lights
+            that target a body are aimed at its initial position), and are logged at debug level. With
+            ``parent_body``, worldbody lights follow the parent body. Image-based lights are skipped and
+            logged. Default is True.
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
         parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -2292,6 +2294,8 @@ def parse_mjcf(
         return site_shapes
 
     tracking_light_names: list[str] = []
+    # (light index, target body name, aim at the target's subtree center of mass) of lights that aim at a body.
+    targeting_lights: list[tuple[int, str, bool]] = []
     builder_custom_attr_light: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [Model.AttributeFrequency.LIGHT]
     )
@@ -2324,7 +2328,8 @@ def parse_mjcf(
                     "MJCF light '%s' has type '%s', which is not supported; skipping.", light_name, type_name
                 )
                 continue
-            if light_attrib.get("mode", "fixed") != "fixed":
+            light_mode = light_attrib.get("mode", "fixed")
+            if light_mode != "fixed":
                 tracking_light_names.append(light_name)
 
             light_pos = parse_vec(light_attrib, "pos", (0.0, 0.0, 0.0)) * scale
@@ -2347,7 +2352,7 @@ def parse_mjcf(
             # cutoff is in degrees regardless of the compiler angle setting.
             cutoff = float(np.radians(float(light_attrib.get("cutoff", 45.0))))
             try:
-                builder.add_light(
+                light_index = builder.add_light(
                     link,
                     xform=light_xform,
                     light_type=light_type,
@@ -2363,6 +2368,46 @@ def parse_mjcf(
                 )
             except ValueError as e:
                 logger.warning("MJCF light '%s' is invalid and is skipped: %s", light_name, e)
+                continue
+            if light_mode in ("targetbody", "targetbodycom") and "target" in light_attrib:
+                targeting_lights.append((light_index, light_attrib["target"], light_mode == "targetbodycom"))
+
+    def _aim_targeting_lights():
+        """Point lights that track a body at the target's initial position, as MuJoCo does at the initial pose."""
+        children: dict[int, list[int]] = {}
+        for parent, child in zip(builder.joint_parent, builder.joint_child, strict=True):
+            children.setdefault(parent, []).append(child)
+
+        def subtree_com(root: int) -> np.ndarray:
+            bodies, stack = [], [root]
+            while stack:
+                body = stack.pop()
+                bodies.append(body)
+                stack.extend(children.get(body, ()))
+            masses = np.array([builder.body_mass[b] for b in bodies], dtype=np.float64)
+            coms = np.array(
+                [wp.transform_point(builder.body_q[b], wp.vec3(builder.body_com[b])) for b in bodies], dtype=np.float64
+            )
+            if masses.sum() <= 0.0:
+                return np.asarray(builder.body_q[root].p, dtype=np.float64)
+            return masses @ coms / masses.sum()
+
+        for light, target_name, use_com in targeting_lights:
+            target = body_name_to_idx.get(sanitize_name(target_name))
+            if target is None:
+                logger.warning("MJCF light '%s' targets unknown body '%s'.", builder.light_label[light], target_name)
+                continue
+            body = builder.light_body[light]
+            mount = builder.body_q[body] if body >= 0 else wp.transform_identity()
+            light_world = mount * wp.transform(*builder.light_transform[light])
+            target_pos = subtree_com(target) if use_com else np.asarray(builder.body_q[target].p, dtype=np.float64)
+            direction = target_pos - np.asarray(light_world.p, dtype=np.float64)
+            length = float(np.linalg.norm(direction))
+            if length == 0.0:
+                continue
+            world_rot = quat_between_vectors_robust(wp.vec3(0.0, 0.0, -1.0), wp.vec3(*(direction / length)))
+            local_rot = wp.quat_inverse(mount.q) * world_rot
+            builder.light_transform[light] = wp.transform(builder.light_transform[light].p, local_rot)
 
     def get_frame_xform(frame_element, incoming_xform: wp.transform) -> wp.transform:
         """Compute composed transform for a frame element."""
@@ -3670,10 +3715,12 @@ def parse_mjcf(
             )
 
         if parse_lights:
+            # Like framed worldbody lights, lights follow the parent body when composing into one; xform is
+            # then relative to that body.
             _parse_lights_impl(
                 world_defaults,
-                "world",
-                -1,
+                "world" if root_parent == -1 else builder.body_label[root_parent],
+                root_parent,
                 world.findall("light"),
                 incoming_xform=xform,
                 label_prefix=root_label_path,
@@ -3692,6 +3739,8 @@ def parse_mjcf(
             label_prefix=root_label_path,
             track_root_boundaries=True,
         )
+
+    _aim_targeting_lights()
 
     # -----------------
     # Report once outside the recursive body parser so the warning points to the caller.

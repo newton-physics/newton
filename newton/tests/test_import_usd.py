@@ -3025,6 +3025,12 @@ def Xform "World"
         float inputs:shaping:cone:angle = 180
     }
 
+    def SphereLight "Focused" (prepend apiSchemas = ["ShapingAPI"])
+    {
+        float inputs:shaping:cone:angle = 180
+        float inputs:shaping:focus = 3
+    }
+
     def SphereLight "Hidden"
     {
         token visibility = "invisible"
@@ -3041,7 +3047,15 @@ def Xform "World"
         self.assertTrue(any("/World/Dome" in line for line in logs.output))
         lights = result["path_light_map"]
         self.assertEqual(
-            set(lights), {"/World/Body/Mount/Lamp", "/World/Sun", "/World/Hemisphere", "/World/Omni", "/World/Hidden"}
+            set(lights),
+            {
+                "/World/Body/Mount/Lamp",
+                "/World/Sun",
+                "/World/Hemisphere",
+                "/World/Omni",
+                "/World/Focused",
+                "/World/Hidden",
+            },
         )
         self.assertEqual(builder.light_label, list(lights))
 
@@ -3076,6 +3090,11 @@ def Xform "World"
         self.assertTrue(builder.light_enabled[hemisphere])
         # A 180-degree cone does not limit the light, so it stays a point light.
         self.assertEqual(builder.light_type[lights["/World/Omni"]], newton.LightType.POINT)
+        # A focus restricts the light even without a cone, so it becomes a spot light with a 180-degree cone.
+        focused = lights["/World/Focused"]
+        self.assertEqual(builder.light_type[focused], newton.LightType.SPOT)
+        self.assertAlmostEqual(builder.light_cone_angle[focused], math.pi, places=6)
+        self.assertAlmostEqual(builder.light_focus[focused], 3.0, places=6)
         self.assertEqual(builder.light_type[lights["/World/Hidden"]], newton.LightType.POINT)
         self.assertFalse(builder.light_enabled[lights["/World/Hidden"]])
 

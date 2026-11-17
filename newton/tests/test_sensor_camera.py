@@ -1780,10 +1780,11 @@ class TestSensorCameraModelLights(unittest.TestCase):
                 np.zeros(3),
             ),
         }
-        for device in get_test_devices() if device is None else [device]:
+        devices = get_test_devices() if device is None else [device]
+        for test_device in devices:
             for name, (light_kwargs, expected) in cases.items():
-                with self.subTest(device=str(device), light=name):
-                    color = self._render_with_light(device, backend, **light_kwargs)
+                with self.subTest(device=str(test_device), light=name):
+                    color = self._render_with_light(test_device, backend, **light_kwargs)
                     np.testing.assert_allclose(color, expected, rtol=1.0e-4, atol=1.0e-6)
 
     def test_model_lights_follow_state_and_model_arrays(self) -> None:
@@ -1855,100 +1856,6 @@ class TestSensorCameraModelLights(unittest.TestCase):
         np.testing.assert_allclose(
             self._center_hdr(model, camera=camera, render_config=shadows)[0], 1.3 * lit, rtol=1.0e-4
         )
-
-    def test_replicate_and_collapse_move_lights(self) -> None:
-        """Verify fixed lights follow replicated copies and lights on merged bodies follow the merge."""
-        source = newton.ModelBuilder()
-        root = source.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        child = source.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        joints = [
-            source.add_joint_free(root),
-            source.add_joint_fixed(root, child, parent_xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity())),
-        ]
-        source.add_articulation(joints)
-        mounted = source.add_light(child, xform=wp.transform((0.0, 0.5, 0.0), wp.quat_identity()))
-        fixed_xform = wp.transform((1.0, 0.0, 0.0), wp.quat_rpy(0.3, 0.0, 0.0))
-        fixed = source.add_light(-1, xform=fixed_xform, light_type=newton.LightType.SPOT)
-        source.collapse_fixed_joints()
-        self.assertEqual(source.light_body[mounted], root)
-        np.testing.assert_allclose(np.asarray(source.light_transform[mounted])[:3], [0.0, 0.5, 1.0], atol=1e-6)
-
-        xforms = [
-            wp.transform((2.0, 0.0, 0.0), wp.quat_rpy(0.0, 0.0, 0.5 * math.pi)),
-            wp.transform((0.0, 3.0, 0.0), wp.quat_identity()),
-        ]
-        scene = newton.ModelBuilder()
-        scene.replicate(source, len(xforms), xforms=xforms)
-        model = scene.finalize(device="cpu")
-        np.testing.assert_array_equal(model.light_world.numpy(), [0, 0, 1, 1])
-        np.testing.assert_array_equal(model.light_type.numpy(), [1, 0, 1, 0])
-        for copy, xform in enumerate(xforms):
-            with self.subTest(copy=copy):
-                offset = copy * source.light_count
-                self.assertEqual(scene.light_body[offset + mounted], copy * source.body_count + root)
-                np.testing.assert_allclose(
-                    np.asarray(scene.light_transform[offset + mounted]),
-                    np.asarray(source.light_transform[mounted]),
-                    atol=1e-6,
-                )
-                np.testing.assert_allclose(
-                    np.asarray(scene.light_transform[offset + fixed]), np.asarray(xform * fixed_xform), atol=1e-6
-                )
-
-    def test_add_light_rejects_invalid_input_without_side_effects(self) -> None:
-        """Verify rejected lights leave the builder unchanged."""
-        builder = newton.ModelBuilder()
-        builder.add_body()
-        builder.add_custom_attribute(
-            newton.ModelBuilder.CustomAttribute(
-                name="tag", namespace="test", frequency=newton.Model.AttributeFrequency.SHAPE, dtype=wp.float32
-            )
-        )
-        builder.add_light(-1, label="valid")
-        invalid = (
-            (TypeError, {"body": 0.9}),
-            (TypeError, {"body": "0"}),
-            (ValueError, {"body": 1}),
-            (ValueError, {"light_type": 7}),
-            (ValueError, {"color": (1.0, -0.1, 1.0)}),
-            (ValueError, {"color": (1.0, 1.0)}),
-            (ValueError, {"intensity": float("nan")}),
-            (ValueError, {"intensity": 1.0e39}),
-            (ValueError, {"attenuation": (0.0, 0.0, 0.0)}),
-            (ValueError, {"cone_angle": 0.0}),
-            (ValueError, {"cone_angle": 4.0}),
-            (ValueError, {"cone_softness": 1.5}),
-            (ValueError, {"focus": -1.0}),
-            (AttributeError, {"custom_attributes": {"test:missing": 1.0}}),
-            (ValueError, {"custom_attributes": {"test:tag": 1.0}}),
-            (Exception, {"xform": (1.0, 2.0)}),
-        )
-        for error, overrides in invalid:
-            kwargs = {"body": -1, **overrides}
-            with self.subTest(**{k: str(v) for k, v in kwargs.items()}), self.assertRaises(error):
-                builder.add_light(**kwargs)
-        self.assertEqual(builder.light_count, 1)
-        for name in ("light_label", "light_world", "light_body", "light_transform", "light_type", "light_enabled"):
-            self.assertEqual(len(getattr(builder, name)), 1, name)
-
-    def test_light_custom_attributes(self) -> None:
-        """Verify LIGHT-frequency custom attributes are stored per light and replicated."""
-        source = newton.ModelBuilder()
-        source.add_custom_attribute(
-            newton.ModelBuilder.CustomAttribute(
-                name="temperature",
-                namespace="test",
-                frequency=newton.Model.AttributeFrequency.LIGHT,
-                dtype=wp.float32,
-                default=0.0,
-            )
-        )
-        source.add_light(-1, custom_attributes={"test:temperature": 3000.0})
-        source.add_light(-1)
-        scene = newton.ModelBuilder()
-        scene.replicate(source, 2)
-        model = scene.finalize(device="cpu")
-        np.testing.assert_array_equal(model.test.temperature.numpy(), [3000.0, 0.0, 3000.0, 0.0])
 
 
 for _name in ("test_model_light_shading", "test_model_light_shadows"):
