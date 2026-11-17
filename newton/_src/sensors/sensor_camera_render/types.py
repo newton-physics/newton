@@ -161,7 +161,11 @@ class RenderConfig:
     """
 
     render_order: RenderOrder = RenderOrder.PIXEL_PRIORITY
-    """Render traversal order (see :class:`RenderOrder`)."""
+    """Render traversal order (see :class:`RenderOrder`).
+
+    The Warp backend is usually fastest with ``PIXEL_PRIORITY`` and the OptiX backend with
+    ``TILED``, the default of an OptiX :class:`~newton.sensors.SensorCamera`.
+    """
 
     anti_aliasing: AntiAliasing = AntiAliasing.NONE
     """Anti-aliasing mode applied to multisampled ray bundles (see :class:`AntiAliasing`).

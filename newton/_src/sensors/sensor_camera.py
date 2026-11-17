@@ -154,7 +154,7 @@ class SensorCamera:
                 ``clear_data`` argument is ``None``. Defaults to ``ClearData()``.
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
-                ``RenderConfig()``.
+                ``RenderConfig()``, with ``render_order=RenderOrder.TILED`` for the OptiX backend.
             load_textures: Load the textures of shape meshes and deformable visual
                 meshes from file paths or in-memory images. A texture that cannot
                 be loaded raises ``ValueError`` here, so pass ``False`` for
@@ -185,9 +185,11 @@ class SensorCamera:
         """
         self.default_clear_data: ClearData = default_clear_data if default_clear_data is not None else ClearData()
         """Clear values used by :meth:`update` when its ``clear_data`` argument is ``None``."""
-        self.default_render_config: RenderConfig = (
-            default_render_config if default_render_config is not None else RenderConfig()
-        )
+        if default_render_config is None:
+            # Pixel-major order suits the Warp BVH, whose worlds share a layout; OptiX is fastest in tiles.
+            order = RenderOrder.TILED if backend == "optix" else RenderOrder.PIXEL_PRIORITY
+            default_render_config = RenderConfig(render_order=order)
+        self.default_render_config: RenderConfig = default_render_config
         """Render settings used by :meth:`update` when its ``render_config`` argument is ``None``."""
 
         from .sensor_camera_render.render_context import RenderContext  # noqa: PLC0415
