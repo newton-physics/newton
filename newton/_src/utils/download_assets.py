@@ -161,24 +161,46 @@ def _ref_key(git_url: str, folder_path: str, ref: str) -> str:
 
 
 def _ref_path(cache_dir: Path, ref_key: str) -> Path:
-    return cache_dir / ".git" / "newton-refs" / ref_key
+    """Return the current-resolution record in the cache root."""
+    return cache_dir / ".newton-refs" / ref_key
+
+
+def _read_ref_record(path: Path) -> tuple[str, str] | None:
+    try:
+        directory, commit = path.read_text(encoding="ascii").splitlines()
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return (directory, commit) if _SHA_RE.fullmatch(commit) else None
 
 
 def _read_cached_ref(cache_dir: Path, ref_key: str) -> str | None:
-    try:
-        commit = _ref_path(cache_dir, ref_key).read_text(encoding="ascii").strip()
-    except (OSError, UnicodeError):
+    record = _read_ref_record(_ref_path(cache_dir.parent, ref_key))
+    return record[1] if record is not None and record[0] == cache_dir.name else None
+
+
+def _find_cached_version(cache_path: Path, base_prefix: str, ref_key: str) -> Path | None:
+    """Read the authoritative content directory for this exact request."""
+    record = _read_ref_record(_ref_path(cache_path, ref_key))
+    if record is None:
         return None
-    return commit if _SHA_RE.fullmatch(commit) else None
+    directory, _ = record
+    # Accept only an immediate content directory, never a temporary or external path.
+    if not directory.startswith(f"{base_prefix}_") or not _SHA_RE.fullmatch(directory[len(base_prefix) + 1 :]):
+        return None
+    cached = cache_path / directory
+    try:
+        return cached if cached.is_dir() else None
+    except OSError:
+        return None
 
 
 def _write_cached_ref(cache_dir: Path, ref_key: str, commit: str) -> None:
-    """Record a ref atomically, tolerating write failures for already-available assets."""
-    path = _ref_path(cache_dir, ref_key)
+    """Publish the current directory and commit atomically; use mtime only for check TTL."""
+    path = _ref_path(cache_dir.parent, ref_key)
     temporary = _temp_cache_path(path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary.write_text(commit, encoding="ascii")
+        temporary.write_text(f"{cache_dir.name}\n{commit}\n", encoding="ascii")
         for attempt in range(5):
             try:
                 os.replace(temporary, path)
@@ -196,30 +218,6 @@ def _write_cached_ref(cache_dir: Path, ref_key: str, commit: str) -> None:
             temporary.unlink(missing_ok=True)
         except OSError as e:
             logger.debug("Could not remove temporary cached ref %s: %s", temporary, e)
-
-
-def _find_cached_version(cache_path: Path, base_prefix: str, ref_key: str) -> Path | None:
-    """Find the content directory most recently resolved for this exact request."""
-    candidates = []
-    try:
-        for entry in cache_path.iterdir():
-            name = entry.name
-            if not name.startswith(f"{base_prefix}_") or not entry.is_dir():
-                continue
-            suffix = name[len(base_prefix) + 1 :]
-            if not _SHA_RE.fullmatch(suffix) or _read_cached_ref(entry, ref_key) is None:
-                continue
-            try:
-                mtime = _ref_path(entry, ref_key).stat().st_mtime
-            except OSError:
-                continue
-            candidates.append((mtime, entry))
-    except OSError:
-        return None
-    if not candidates:
-        return None
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    return candidates[0][1]
 
 
 def _get_latest_commit_via_git(git_url: str, ref: str) -> str | None:
@@ -308,7 +306,8 @@ def download_git_folder(
     folder path with the folder's full Git tree hash, which covers file names,
     contents, and modes. Unchanged contents of the same repository folder
     share a directory across refs and commits, including commits that only
-    change other assets. Ref resolutions are stored separately as metadata.
+    change other assets. One atomic metadata record per request selects the
+    current directory and commit; its modification time controls check TTL only.
     Different contents remain available until :func:`clear_git_cache` is called.
 
     Args:
@@ -369,7 +368,7 @@ def download_git_folder(
 
     if cached is not None and not force_refresh:
         try:
-            age = time.time() - _ref_path(cached, cached_key).stat().st_mtime
+            age = time.time() - _ref_path(cache_path, cached_key).stat().st_mtime
         except OSError:
             age = ttl_seconds + 1
         if age < ttl_seconds:
@@ -381,7 +380,7 @@ def download_git_folder(
         if cached is not None:
             # Throttle failed remote checks without changing the cached ref resolution.
             try:
-                os.utime(_ref_path(cached, cached_key), None)
+                os.utime(_ref_path(cache_path, cached_key), None)
             except OSError as e:
                 logger.debug("Could not update cached ref check time for %s: %s", cached, e)
             return cached_target
