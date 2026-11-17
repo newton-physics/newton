@@ -259,6 +259,7 @@ def find_mujoco_body_from_newton_body(
 def eval_mujoco_coupling_gravity_acceleration_kernel(
     gravity: wp.array[wp.vec3],
     body_world: wp.array[wp.int32],
+    body_gravity_scale: wp.array[wp.float32],
     mjc_body_to_newton: wp.array2d[wp.int32],
     body_gravcomp: wp.array2d[float],
     option_world: int,
@@ -281,7 +282,8 @@ def eval_mujoco_coupling_gravity_acceleration_kernel(
     if gravity_world >= -1 and gravity_world < gravity.shape[0]:
         g = gravity[gravity_world]
 
-    gravcomp = float(0.0)
+    # A body MuJoCo doesn't simulate gets the base hook's scaled gravity.
+    gravcomp = 1.0 - body_gravity_scale[body]
     mjc_body = find_mujoco_body_from_newton_body(mujoco_world, body, mjc_body_to_newton)
     if mjc_body >= 0 and mjc_body < body_gravcomp.shape[1]:
         gravcomp = body_gravcomp[mujoco_world, mjc_body]
@@ -1765,6 +1767,7 @@ def update_body_mass_ipos_kernel(
     body_com: wp.array[wp.vec3f],
     body_mass: wp.array[float],
     body_gravcomp: wp.array[float],
+    body_gravity_scale: wp.array[wp.float32],
     # outputs
     body_ipos: wp.array2d[wp.vec3f],
     body_mass_out: wp.array2d[float],
@@ -1773,7 +1776,8 @@ def update_body_mass_ipos_kernel(
     """Update MuJoCo body mass and inertial position from Newton body properties.
 
     Iterates over MuJoCo bodies [world, mjc_body], looks up Newton body index,
-    and copies mass, COM, and gravcomp.
+    and copies mass, COM, and gravcomp ``1 - s * (1 - gravcomp)`` for the
+    body's gravity scale ``s``.
     """
     world, mjc_body = wp.tid()
     newton_body = mjc_body_to_newton[world, mjc_body]
@@ -1786,9 +1790,11 @@ def update_body_mass_ipos_kernel(
     # update mass
     body_mass_out[world, mjc_body] = body_mass[newton_body]
 
-    # update gravcomp
+    # update gravcomp; equal to 1 - s * (1 - gravcomp) and exact at s = 1
+    gravcomp = float(0.0)
     if body_gravcomp:
-        body_gravcomp_out[world, mjc_body] = body_gravcomp[newton_body]
+        gravcomp = body_gravcomp[newton_body]
+    body_gravcomp_out[world, mjc_body] = gravcomp + (1.0 - body_gravity_scale[newton_body]) * (1.0 - gravcomp)
 
 
 @wp.func

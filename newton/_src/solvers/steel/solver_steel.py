@@ -2498,6 +2498,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._contact_compliance = bool(contact_compliance)
         self._compliance = None
         super().__init__(model)
+        self._validate_body_gravity_scale(applies_scale=True)
         self._solve_mode = solve_mode
         if model.requires_grad:
             raise NotImplementedError("SolverSteel does not support gradients (model.requires_grad=True).")
@@ -3265,7 +3266,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         raises :class:`ValueError` for invalid values, after applying every other update. With loop-closing
         REVOLUTE joints, an eager joint, joint DOF, DOF force or DOF inertial notification also reads their
         DOF inputs and axes on the host to warn about the ones a closure ignores. A captured notification
-        skips both checks.
+        skips both checks. An eager body inertial notification also reads
+        :attr:`~newton.Model.body_gravity_scale` on the host and raises :class:`ValueError` for non-finite
+        values; a captured one skips the check.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -3275,6 +3278,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 discards the warm-start impulses of every world.
         """
         world_mask = self._normalize_reset_world_mask(world_mask)
+        if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
+            self._validate_body_gravity_scale(applies_scale=True)
         if flags & ModelFlags.CONSTRAINT_PROPERTIES:
             _validate_equality_constraints(self.model)
         self._coupling_patch_history_snapshot_pending = False
@@ -8456,6 +8461,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             0,
             model.body_world,
             model.gravity,
+            model.body_gravity_scale,
         ]
         fk_outputs = [
             state_in.body_q,
@@ -8539,6 +8545,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     0,
                     model.body_world,
                     model.gravity,
+                    model.body_gravity_scale,
                     state_aug._body_v_s,
                     state_aug._body_a_s,
                     self._dynamics_body_active,
@@ -10803,6 +10810,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         0,
                         model.body_world,
                         model.gravity,
+                        model.body_gravity_scale,
                         self._body_v_s,
                         self._body_a_s,
                         self._dynamics_body_active,

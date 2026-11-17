@@ -208,7 +208,9 @@ A proxy pair is declared with
 source endpoints. ``proxy_bodies`` and ``proxy_particles`` name the
 corresponding destination endpoints. If a proxy list is ``None``, the source
 indices are reused in the destination view. ``mass_scale`` scales proxy body
-mass/inertia and proxy particle mass in that destination view.
+mass/inertia and proxy particle mass in that destination view. Proxy bodies
+have a :attr:`~newton.Model.body_gravity_scale` of ``1`` in that view, since
+the coupler removes the gravity the destination reports for them.
 ``proxy_relaxation`` blends harvested feedback with the previously lagged
 feedback buffer after each destination solve. Values below ``1`` underrelax the
 update, ``1`` keeps the harvested feedback unchanged, and values above ``1``

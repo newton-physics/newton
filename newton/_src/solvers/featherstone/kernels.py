@@ -923,6 +923,7 @@ def compute_link_velocity(
     joint_X_p: wp.array[wp.transform],
     body_world: wp.array[wp.int32],
     gravity: wp.array[wp.vec3],
+    body_gravity_scale: wp.array[wp.float32],
     # outputs
     body_qd: wp.array[wp.spatial_vector],
     joint_S_s: wp.array[wp.spatial_vector],
@@ -992,7 +993,7 @@ def compute_link_velocity(
     m = I_m[0, 0]
 
     world_idx = body_world[child]
-    world_g = gravity[world_idx]
+    world_g = body_gravity_scale[child] * gravity[world_idx]
     f_g = m * world_g
     f_g_s = wp.spatial_vector(f_g, wp.cross(x_com_s, f_g))
 
@@ -1358,6 +1359,7 @@ def eval_rigid_id(
     joint_X_p: wp.array[wp.transform],
     body_world: wp.array[wp.int32],
     gravity: wp.array[wp.vec3],
+    body_gravity_scale: wp.array[wp.float32],
     # outputs
     body_qd: wp.array[wp.spatial_vector],
     joint_S_s: wp.array[wp.spatial_vector],
@@ -1408,6 +1410,7 @@ def eval_rigid_id(
             joint_X_p,
             body_world,
             gravity,
+            body_gravity_scale,
             body_qd,
             joint_S_s,
             body_solve_origin,
@@ -1610,6 +1613,7 @@ def eval_rigid_id_body_force(
     body_solve_origin: wp.array[wp.vec3],
     body_world: wp.array[wp.int32],
     gravity: wp.array[wp.vec3],
+    body_gravity_scale: wp.array[wp.float32],
     # outputs
     body_f_s: wp.array2d[wp.spatial_vector],
 ):
@@ -1646,7 +1650,7 @@ def eval_rigid_id_body_force(
     X_sm = body_q_com[child]
     x_com_s = wp.transform_get_translation(X_sm) - body_solve_origin[child]
     m = body_mass[child]
-    f_g = m * gravity[body_world[child]]
+    f_g = m * (body_gravity_scale[child] * gravity[body_world[child]])
     I_s = transform_spatial_inertia(
         wp.transform(x_com_s, wp.transform_get_rotation(X_sm)), spatial_inertia(m, body_inertia[child])
     )
