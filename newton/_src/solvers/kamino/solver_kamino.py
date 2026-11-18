@@ -398,6 +398,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             config.SCCSolverConfig.register_custom_attributes(builder)
             config.LOXSolverConfig.register_custom_attributes(builder)
             config.MaterialManagerConfig.register_custom_attributes(builder)
+            config._register_dynamics_solver_settings(builder)
 
             # Register KaminoSceneAPI custom attributes for each individual solver-level configurations
             builder.add_custom_attribute(
@@ -419,23 +420,22 @@ class SolverKamino(SolverBase, CouplingInterface):
             Creates a configuration container by attempting to parse
             custom attributes from a :class:`Model` if available.
 
-            Note: If the model was imported from USD and contains custom attributes defined
-            by the KaminoSceneAPI, those attributes will be parsed and used to populate
-            the configuration container. Additionally, any sub-configurations that are
-            provided as keyword arguments will also be used to populate the corresponding
-            sections of the configuration, allowing for a combination of model-imported
-            and explicit user-provided configurations. If certain configurations are not
-            provided either via the model's custom attributes or as keyword arguments,
-            then default values will be used.
+            Scene settings from `NewtonKaminoSceneAPI` and `NewtonKaminoSccSceneAPI`
+            take precedence over the corresponding keyword values. For solver selection
+            and the SCC bilateral solver, a keyword value takes precedence over an
+            unauthored USD schema fallback. Other unspecified fields use runtime defaults.
 
             Args:
                 model: The Newton model from which to parse configurations.
+                **kwargs: Default configuration values for fields the model does not set.
             """
             # Import here to avoid module-level imports and circular dependencies
             from . import config  # noqa: PLC0415
 
-            # Create a base config with default values and
-            # user-provided provided kwarg overrides
+            # Select the solver before constructing Config so its solver-specific defaults apply.
+            solver = config._dynamics_solver_from_model(model, kwargs.get("dynamics_solver"))
+            if solver is not None:
+                kwargs["dynamics_solver"] = solver
             cfg = SolverKamino.Config(**kwargs)
 
             # Parse solver-specific attributes imported from USD
@@ -459,13 +459,18 @@ class SolverKamino(SolverBase, CouplingInterface):
                 nested_config = kwargs.get(attr_name, None)
                 if nested_config is not None:
                     nested_kwargs = nested_config.__dict__
-                elif cfg.dynamics_solver == "scc" and attr_name in {"dynamics", "scc"}:
+                elif cfg.dynamics_solver == "scc" and attr_name == "dynamics":
                     nested_kwargs = getattr(cfg, attr_name).__dict__
                 else:
                     nested_kwargs = {}
-                setattr(cfg, attr_name, config_cls.from_model(model, **nested_kwargs))
+                if attr_name == "scc":
+                    cfg.scc = config.SCCSolverConfig.from_model(
+                        model, use_scene_settings=cfg.dynamics_solver == "scc", **nested_kwargs
+                    )
+                else:
+                    setattr(cfg, attr_name, config_cls.from_model(model, **nested_kwargs))
 
-            if cfg.dynamics_solver == "scc" and "dynamics" not in kwargs:
+            if cfg.dynamics_solver == "scc":
                 cfg.dynamics.preconditioning = False
 
             cfg.validate()
