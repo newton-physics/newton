@@ -68,6 +68,7 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
         tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
         edge_aniso_ke=wp.vec3(2.0e-4, 1.0e-4, 5.0e-5),
     )
+    builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverStyle3D(model)
@@ -79,7 +80,7 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
     test.assertGreater(int(solver._pd_off_diag.num_nz.numpy().sum()), 0)
     _assert_pd_matrix(test, model, solver)
 
-    for legacy_name, internal_name in (
+    aliases = (
         ("style3d", "_style3d_attr"),
         ("linear_solver", "_linear_solver"),
         ("pd_non_diags", "_pd_off_diag"),
@@ -94,18 +95,46 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
         ("drag_pos", "_drag_pos"),
         ("drag_index", "_drag_index"),
         ("drag_bary_coord", "_drag_bary_coord"),
-    ):
-        with test.subTest(attribute=legacy_name):
-            with test.assertWarnsRegex(
-                NewtonDeprecationWarning, f"SolverStyle3D.{legacy_name} is deprecated"
-            ) as warning:
-                legacy_value = getattr(solver, legacy_name)
-            test.assertEqual(warning.filename, __file__)
-            test.assertNotIn("solver.config", str(warning.warning))
-            test.assertIs(legacy_value, getattr(solver, internal_name))
-            with test.assertRaises(AttributeError):
-                setattr(solver, legacy_name, None)
-            test.assertIs(legacy_value, getattr(solver, internal_name))
+    )
+    dynamics = newton.solvers.SolverStyle3D.Dynamics
+    # Include affine blocks and an empty particle range without running extra simulations.
+    solvers = [solver] + [
+        newton.solvers.SolverStyle3D(model, dynamics=mode) for mode in (dynamics.ALL, dynamics.AFFINE_BODY)
+    ]
+    for current_solver in solvers:
+        particle_count = model.particle_count if current_solver.dynamics & dynamics.DEFORMABLE else 0
+        for legacy_name, internal_name in aliases:
+            with test.subTest(dynamics=current_solver.dynamics, attribute=legacy_name):
+                with test.assertWarnsRegex(
+                    NewtonDeprecationWarning, f"SolverStyle3D.{legacy_name} is deprecated"
+                ) as warning:
+                    legacy_value = getattr(current_solver, legacy_name)
+                test.assertEqual(warning.filename, __file__)
+                test.assertNotIn("solver.config", str(warning.warning))
+                internal_value = getattr(current_solver, internal_name)
+                if legacy_name == "pd_non_diags":
+                    test.assertEqual(legacy_value.num_nz.shape, (particle_count,))
+                    test.assertEqual(legacy_value.nz_ell.shape, (internal_value.nz_ell.shape[0], particle_count))
+                    test.assertEqual(legacy_value.num_nz.ptr, internal_value.num_nz.ptr)
+                    test.assertEqual(legacy_value.nz_ell.ptr, internal_value.nz_ell.ptr)
+                    test.assertEqual(legacy_value.nz_ell.strides, internal_value.nz_ell.strides)
+                elif isinstance(legacy_value, wp.array) and not legacy_name.startswith("drag_"):
+                    test.assertEqual(legacy_value.shape, (particle_count,))
+                    test.assertEqual(legacy_value.dtype, internal_value.dtype)
+                    test.assertEqual(legacy_value.ptr, internal_value.ptr)
+                else:
+                    test.assertIs(legacy_value, internal_value)
+                with test.assertRaises(AttributeError):
+                    setattr(current_solver, legacy_name, None)
+                test.assertIs(internal_value, getattr(current_solver, internal_name))
+
+        # Writing through a legacy array must leave all affine blocks untouched.
+        current_solver._dx.fill_(wp.vec3(7.0))
+        with test.assertWarns(NewtonDeprecationWarning):
+            current_solver.dx.zero_()
+        actual = current_solver._dx.numpy()
+        np.testing.assert_array_equal(actual[:particle_count], 0.0)
+        np.testing.assert_array_equal(actual[particle_count:], 7.0)
 
 
 def test_config_constructor_options(test, device):

@@ -297,93 +297,96 @@ class SolverStyle3D(SolverBase):
 
     @property
     def pd_non_diags(self) -> SparseMatrixELL:
-        """Read-only legacy access to the PD off-diagonal matrix.
+        """Read-only legacy access to the particle PD off-diagonal matrix.
 
         .. deprecated:: 1.9
             Direct access to internal solver matrices is being retired.
         """
         _warn_legacy_internal_attribute("pd_non_diags")
-        return self._pd_off_diag
+        matrix = SparseMatrixELL()
+        matrix.num_nz = self._pd_off_diag.num_nz[: self._particle_count]
+        matrix.nz_ell = self._pd_off_diag.nz_ell[:, : self._particle_count]
+        return matrix
 
     @property
     def pd_diags(self) -> wp.array[float]:
-        """Read-only legacy access to the PD diagonal.
+        """Read-only legacy access to the particle PD diagonal.
 
         .. deprecated:: 1.9
             Direct access to internal solver matrices is being retired.
         """
         _warn_legacy_internal_attribute("pd_diags")
-        return self._pd_diag
+        return self._pd_diag[: self._particle_count]
 
     @property
     def dx(self) -> wp.array[wp.vec3]:
-        """Read-only legacy access to the solver increments.
+        """Read-only legacy access to the particle increments.
 
         .. deprecated:: 1.9
             Direct access to internal solver buffers is being retired.
         """
         _warn_legacy_internal_attribute("dx")
-        return self._dx
+        return self._dx[: self._particle_count]
 
     @property
     def rhs(self) -> wp.array[wp.vec3]:
-        """Read-only legacy access to the solver right-hand side.
+        """Read-only legacy access to the particle right-hand side.
 
         .. deprecated:: 1.9
             Direct access to internal solver buffers is being retired.
         """
         _warn_legacy_internal_attribute("rhs")
-        return self._rhs
+        return self._rhs[: self._particle_count]
 
     @property
     def x_prev(self) -> wp.array[wp.vec3]:
-        """Read-only legacy access to the previous solver coordinates.
+        """Read-only legacy access to the previous particle coordinates.
 
         .. deprecated:: 1.9
             Direct access to internal solver buffers is being retired.
         """
         _warn_legacy_internal_attribute("x_prev")
-        return self._x_prev
+        return self._x_prev[: self._particle_count]
 
     @property
     def x_inertia(self) -> wp.array[wp.vec3]:
-        """Read-only legacy access to the inertial target coordinates.
+        """Read-only legacy access to the particle inertial target coordinates.
 
         .. deprecated:: 1.9
             Direct access to internal solver buffers is being retired.
         """
         _warn_legacy_internal_attribute("x_inertia")
-        return self._x_inertia
+        return self._x_inertia[: self._particle_count]
 
     @property
     def static_A_diags(self) -> wp.array[float]:
-        """Read-only legacy access to the base system diagonal.
+        """Read-only legacy access to the particle base system diagonal.
 
         .. deprecated:: 1.9
             Direct access to internal solver matrices is being retired.
         """
         _warn_legacy_internal_attribute("static_A_diags")
-        return self._A_diag_base
+        return self._A_diag_base[: self._particle_count]
 
     @property
     def inv_A_diags(self) -> wp.array[wp.mat33]:
-        """Read-only legacy access to the inverse diagonal blocks.
+        """Read-only legacy access to the particle inverse diagonal blocks.
 
         .. deprecated:: 1.9
             Direct access to internal solver matrices is being retired.
         """
         _warn_legacy_internal_attribute("inv_A_diags")
-        return self._inv_A_diag
+        return self._inv_A_diag[: self._particle_count]
 
     @property
     def A_diags(self) -> wp.array[wp.mat33]:
-        """Read-only legacy access to the system diagonal blocks.
+        """Read-only legacy access to the particle system diagonal blocks.
 
         .. deprecated:: 1.9
             Direct access to internal solver matrices is being retired.
         """
         _warn_legacy_internal_attribute("A_diags")
-        return self._A_diag
+        return self._A_diag[: self._particle_count]
 
     @property
     def drag_pos(self) -> wp.array[wp.vec3]:
