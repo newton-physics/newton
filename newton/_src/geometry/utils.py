@@ -456,7 +456,7 @@ def load_mesh(filename: str, method: str | None = None):
 
 _PLY_TYPES = {"char": "i1", "uchar": "u1", "short": "i2", "ushort": "u2", "int": "i4", "uint": "u4", "float": "f4"}
 _PLY_TYPES |= {"int8": "i1", "uint8": "u1", "int16": "i2", "uint16": "u2", "int32": "i4", "uint32": "u4"}
-_PLY_TYPES |= {"float32": "f4", "double": "f8", "float64": "f8"}
+_PLY_TYPES |= {"int64": "i8", "uint64": "u8", "float32": "f4", "double": "f8", "float64": "f8"}
 _PLY_BYTE_ORDERS = {"ascii": "", "binary_little_endian": "<", "binary_big_endian": ">"}
 
 
@@ -484,10 +484,11 @@ def _read_ply_vertices(filename: str) -> dict[str, np.ndarray]:
                 raise IndexError("end_header")
             if order == "":
                 with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")  # NumPy warns about missing data; the reshape reports it
+                    warnings.simplefilter("ignore")  # NumPy warns about missing data; the shape check reports it
                     table = np.loadtxt(file, dtype=np.float32, max_rows=count, ndmin=2)
-                table = table.reshape(count, len(fields)).T
-                return {name: table[i] for i, (name, _) in enumerate(fields)}
+                if table.shape != (count, len(fields)):
+                    raise IndexError("data")
+                return {name: table[:, i] for i, (name, _) in enumerate(fields)}
             table = np.fromfile(file, dtype=fields, count=count)
             if len(table) != count:
                 raise IndexError("data")

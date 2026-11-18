@@ -345,9 +345,11 @@ class TestGaussian(unittest.TestCase):
                         gaussian.rotations, xyzw / np.linalg.norm(xyzw, axis=1, keepdims=True), rtol=1e-6
                     )
             complete = ply(4, "binary_little_endian")
-            for truncated in (complete[: complete.index(b"property")], complete[:-8]):
+            header, body = ply(4, "ascii").split(b"end_header\n")
+            one_line = header + b"end_header\n" + body.replace(b"\n", b" ")
+            for malformed in (complete[: complete.index(b"property")], complete[:-8], one_line):
                 with open(path, "wb") as file:
-                    file.write(truncated)
+                    file.write(malformed)
                 with self.assertRaises(ValueError):
                     newton.Gaussian.create_from_ply(path)
 
