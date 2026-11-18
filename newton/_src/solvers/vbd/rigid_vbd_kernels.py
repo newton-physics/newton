@@ -30,7 +30,7 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL
 from newton._src.geometry.kernels import triangle_closest_point
-from newton._src.geometry.sdf_planar_recovery import MeshRecoveryData, active_recovery_contact
+from newton._src.geometry.sdf_planar_recovery import MeshRecoveryData, active_recovery_contact, recovery_step_depth
 from newton._src.geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from newton._src.math import orthonormal_basis, quat_velocity
 from newton._src.sim import JointType
@@ -3284,6 +3284,7 @@ def forward_step_rigid_bodies(
     body_qd: wp.array[wp.spatial_vector],
     body_q_prev: wp.array[wp.transform],
     body_inertia_q: wp.array[wp.transform],
+    recovery_step_start_q: wp.array[wp.transform],
 ):
     """
     Forward integration step for rigid bodies in SolverVBD.
@@ -3304,11 +3305,14 @@ def forward_step_rigid_bodies(
             pre-step pose for worlds selected by ``pose_rebaseline_mask`` (first step
             after construction or reset); left unchanged otherwise.
         body_inertia_q: Inertial target body transforms for the rigid solve (output).
+        recovery_step_start_q: Optional step-start poses for contact refreshes (output).
     """
     tid = wp.tid()
 
     world_idx = body_world[tid]
     q_current = body_q[tid]
+    if recovery_step_start_q:
+        recovery_step_start_q[tid] = q_current
     if _world_selected(world_idx, pose_rebaseline_mask):
         # The constructor or reset() may precede state pose preparation.
         body_q_prev[tid] = q_current
@@ -4150,7 +4154,7 @@ def step_body_body_contact_C0_lambda(
             start0 = wp.transform_point(step_start_q[b0], p0) if b0 >= 0 else p0
             start1 = wp.transform_point(step_start_q[b1], p1) if b1 >= 0 else p1
             initial = -contact_surface_separation(start0, start1, n, rigid_contact_margin0[i], rigid_contact_margin1[i])
-            target = wp.min(recovery.contacts[slot].thickness / 32.0, wp.max(initial, 0.0) / 8.0)
+            target = recovery_step_depth(recovery.contacts[slot].thickness, wp.max(initial, 0.0))
             normal_bias = initial - target
     # Store the normal stabilization once. Primal, dual, and readback must
     # all use the same residual throughout this projection.
@@ -4443,6 +4447,24 @@ def compute_rod_dahl_parameters(
 # -----------------------------
 # Iteration kernels (per color per iteration)
 # -----------------------------
+@wp.func
+def _stale_recovery(
+    recovery: MeshRecoveryData,
+    generation: wp.array[int],
+    s0: int,
+    s1: int,
+    b0: int,
+    b1: int,
+    body_q: wp.array[wp.transform],
+    normal: wp.vec3,
+) -> bool:
+    if recovery.keys.shape[0] == 0:
+        return False
+    pose0 = body_q[b0] if b0 >= 0 else wp.transform_identity()
+    pose1 = body_q[b1] if b1 >= 0 else wp.transform_identity()
+    return active_recovery_contact(recovery, generation[0], s0, s1, pose0, pose1, normal) < -1
+
+
 @functools.cache
 def create_accumulate_body_body_contacts_per_body():
     """Create the rigid contact accumulation kernel."""
@@ -4464,6 +4486,8 @@ def create_accumulate_body_body_contacts_per_body():
         contact_tangent_rho: wp.array[float],
         contact_lambda: wp.array[wp.vec3],
         contact_C0: wp.array[wp.vec3],
+        recovery: MeshRecoveryData,
+        contact_generation: wp.array[int],
         stab_alpha: float,
         rigid_contact_count: wp.array[int],
         rigid_contact_shape0: wp.array[int],
@@ -4527,7 +4551,9 @@ def create_accumulate_body_body_contacts_per_body():
             b0 = shape_body[s0] if s0 >= 0 else -1
             b1 = shape_body[s1] if s1 >= 0 else -1
 
-            if b0 != body_id and b1 != body_id:
+            if (b0 != body_id and b1 != body_id) or _stale_recovery(
+                recovery, contact_generation, s0, s1, b0, b1, body_q, rigid_contact_normal[contact_idx]
+            ):
                 i += _NUM_CONTACT_THREADS_PER_BODY
                 continue
 
@@ -4665,6 +4691,8 @@ def _evaluate_body_body_contact_slot(
     contact_tangent_rho: wp.array[float],
     contact_lambda: wp.array[wp.vec3],
     contact_C0: wp.array[wp.vec3],
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
     stab_alpha: float,
     friction_epsilon: float,
     contact_damping_bidirectional: bool,
@@ -4687,6 +4715,8 @@ def _evaluate_body_body_contact_slot(
 
     b0 = shape_body[s0]
     b1 = shape_body[s1]
+    if _stale_recovery(recovery, contact_generation, s0, s1, b0, b1, body_q, rigid_contact_normal[contact_idx]):
+        return b0, b1, zero, zero, zero, zero, zero
 
     cp0_local = rigid_contact_point0[contact_idx]
     cp1_local = rigid_contact_point1[contact_idx]
@@ -4802,6 +4832,8 @@ def create_compute_rigid_contact_forces():
         contact_tangent_rho: wp.array[float],
         contact_lambda: wp.array[wp.vec3],
         contact_C0: wp.array[wp.vec3],
+        recovery: MeshRecoveryData,
+        contact_generation: wp.array[int],
         stab_alpha: float,
         friction_epsilon: float,
         contact_damping_bidirectional: bool,
@@ -4849,6 +4881,8 @@ def create_compute_rigid_contact_forces():
             contact_tangent_rho,
             contact_lambda,
             contact_C0,
+            recovery,
+            contact_generation,
             stab_alpha,
             friction_epsilon,
             contact_damping_bidirectional,
@@ -4895,6 +4929,8 @@ def compute_body_body_contact_forces(
     contact_tangent_rho: wp.array[float],
     contact_lambda: wp.array[wp.vec3],
     contact_C0: wp.array[wp.vec3],
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
     stab_alpha: float,
     friction_epsilon: float,
     contact_damping_bidirectional: bool,
@@ -4939,6 +4975,8 @@ def compute_body_body_contact_forces(
         contact_tangent_rho,
         contact_lambda,
         contact_C0,
+        recovery,
+        contact_generation,
         stab_alpha,
         friction_epsilon,
         contact_damping_bidirectional,
@@ -6252,6 +6290,8 @@ def create_update_duals_body_body_contacts():
         dt: float,
         contact_material_mu: wp.array[float],
         contact_C0: wp.array[wp.vec3],
+        recovery: MeshRecoveryData,
+        contact_generation: wp.array[int],
         stab_alpha: float,
         contact_material_ke: wp.array[float],
         contact_tangent_rho: wp.array[float],
@@ -6271,6 +6311,19 @@ def create_update_duals_body_body_contacts():
         body_id_1 = shape_body[shape_id_1]
 
         if body_id_0 < 0 and body_id_1 < 0:
+            return
+
+        if _stale_recovery(
+            recovery,
+            contact_generation,
+            shape_id_0,
+            shape_id_1,
+            body_id_0,
+            body_id_1,
+            body_q,
+            rigid_contact_normal[idx],
+        ):
+            contact_lambda[idx] = wp.vec3()
             return
 
         cp0_local = rigid_contact_point0[idx]

@@ -4,7 +4,7 @@
 import warp as wp
 
 from ...geometry import ParticleFlags
-from ...geometry.sdf_planar_recovery import MeshRecoveryData, active_recovery_contact
+from ...geometry.sdf_planar_recovery import MeshRecoveryData, active_recovery_contact, recovery_step_depth
 from ...math import (
     vec_abs,
     vec_leaky_max,
@@ -2667,12 +2667,6 @@ def _solve_body_contact_positions(
     angular_a = -wp.cross(r_a, n)
     angular_b = wp.cross(r_b, n)
 
-    if contact_inv_weight:
-        if body_a >= 0:
-            wp.atomic_add(contact_inv_weight, body_a, 1.0)
-        if body_b >= 0:
-            wp.atomic_add(contact_inv_weight, body_b, 1.0)
-
     correction = d
     if recovery_slot >= 0:
         va = wp.vec3(0.0)
@@ -2681,8 +2675,17 @@ def _solve_body_contact_positions(
             va = velocity_at_point(body_qd[body_a], r_a)
         if body_b >= 0:
             vb = velocity_at_point(body_qd[body_b], r_b)
-        target = wp.min(recovery.contacts[recovery_slot].thickness / 32.0, -d / 8.0)
+        target = recovery_step_depth(recovery.contacts[recovery_slot].thickness, -d)
         correction = wp.max(d, wp.min(0.0, wp.dot(n, vb - va) * dt - target))
+        if correction == 0.0:
+            return
+
+    if contact_inv_weight:
+        if body_a >= 0:
+            wp.atomic_add(contact_inv_weight, body_a, 1.0)
+        if body_b >= 0:
+            wp.atomic_add(contact_inv_weight, body_b, 1.0)
+
     lambda_n = compute_contact_constraint_delta(
         correction, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, -n, n, angular_a, angular_b, relaxation, dt
     )

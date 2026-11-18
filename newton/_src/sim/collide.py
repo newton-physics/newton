@@ -23,6 +23,7 @@ from ..geometry.contact_data import (
     contact_separation,
     contact_sort_shape_index_bits,
     make_contact_sort_key_with_bits,
+    mesh_search_envelope,
 )
 from ..geometry.contact_match import ContactMatcher
 from ..geometry.contact_reduction import MAX_CONTACTS_PER_PAIR, NUM_NORMAL_BINS
@@ -41,6 +42,7 @@ from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.sdf_planar_recovery import (
     MeshRecoveryContacts,
     MeshRecoveryData,
+    empty_mesh_recovery,
     reset_mesh_recovery,
 )
 from ..geometry.soft_contacts_heightfield import _HEIGHTFIELD_CELLS_PER_TASK, launch_soft_heightfield_contacts
@@ -315,7 +317,7 @@ def write_contact(
     contact_data: ContactData,
     writer_data: ContactWriterData,
     output_index: int,
-):
+) -> bool:
     """
     Write a contact to the output arrays using ContactData and ContactWriterData.
 
@@ -328,10 +330,11 @@ def write_contact(
     if index < 0:
         contact_gap = writer_data.shape_gap[contact_data.shape_a] + writer_data.shape_gap[contact_data.shape_b]
         if contact_separation(contact_data) > contact_gap:
-            return
+            return False
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
     normal = wp.normalize(contact_data.contact_normal_a_to_b)
     _write_contact_at_index(contact_data, writer_data, index, normal)
+    return index < writer_data.contact_max
 
 
 @wp.func
@@ -339,7 +342,7 @@ def write_contact_speculative(
     contact_data: ContactData,
     writer_data: ContactWriterData,
     output_index: int,
-):
+) -> bool:
     """Write a present or exactly predicted contact to the output arrays."""
     contact_data.gap_sum = writer_data.shape_gap[contact_data.shape_a] + writer_data.shape_gap[contact_data.shape_b]
     index = output_index
@@ -352,11 +355,12 @@ def write_contact_speculative(
             writer_data.collision_update_dt,
             writer_data.max_speculative_extension,
         ):
-            return
+            return False
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
 
     normal = wp.normalize(contact_data.contact_normal_a_to_b)
     _write_contact_at_index(contact_data, writer_data, index, normal)
+    return index < writer_data.contact_max
 
 
 @wp.func
@@ -479,7 +483,8 @@ def compute_shape_aabbs(
     if shape_id == 0:
         for c in range(num_contact_counters):
             contact_counters[c] = 0
-        g = contact_generation[0]
+        contact_generation_before = contact_generation[0]
+        g = contact_generation_before
         if g == 2147483647:
             g = 0
         else:
@@ -487,7 +492,7 @@ def compute_shape_aabbs(
         contact_generation[0] = g
         broad_phase_pair_count[0] = 0
         if recovery.keys.shape[0] > 0:
-            reset_mesh_recovery(recovery)
+            reset_mesh_recovery(recovery, recovery.generation[0] == contact_generation_before)
             recovery.generation[0] = g
 
     # Empty variant rows have their collision flags cleared; give them an empty AABB because broad
@@ -598,6 +603,7 @@ def compute_shape_aabbs(
         # so we only need to handle the rotation here.
         local_lo = shape_collision_aabb_lower[shape_id]
         local_hi = shape_collision_aabb_upper[shape_id]
+        margin_vec = wp.vec3(mesh_search_envelope(shape_gap[shape_id], margin))
 
         center = (local_lo + local_hi) * 0.5
         half = (local_hi - local_lo) * 0.5
@@ -2080,9 +2086,8 @@ class CollisionPipeline:
             shape_aabb_upper = wp.zeros(shape_count, dtype=wp.vec3, device=device)
 
         self.model = model
-        self._empty_mesh_recovery = MeshRecoveryData()
+        self._empty_mesh_recovery = empty_mesh_recovery(model.device.alias)
         self._mesh_recovery_pair_max = None
-        self._mesh_recovery_skipped = None
         self.shape_count = shape_count
         self.device = device
         self.reduce_contacts = reduce_contacts
@@ -2717,16 +2722,15 @@ class CollisionPipeline:
             texture_data is not None
             and texture_data.shape[0] > 0
             and pair_capacity > 0
+            and model.body_count > 0
             and self.narrow_phase.shape_pairs_mesh_mesh is not None
             and type(self.narrow_phase).launch_custom_write is NarrowPhase.launch_custom_write
+            and self.narrow_phase._contact_writer is contact_writer
             and not self._reduces_body_pairs
             and not self.requires_grad
             and self.rigid_contact_max > 0
         ):
             self._mesh_recovery_pair_max = pair_capacity
-            self._mesh_recovery_skipped = wp.empty(
-                self.narrow_phase.max_mesh_mesh_pairs, dtype=wp.bool, device=self.device
-            )
 
         # Soft (cloth) self-contact: disabled until init_soft_self_contact() creates
         # the shared detector (re-pointed per Contacts buffer; see
@@ -3390,10 +3394,9 @@ class CollisionPipeline:
         # Run narrow phase with custom contact writer (writes directly to Contacts format)
         narrow_phase_extension_kwargs = {}
         if type(self.narrow_phase).launch_custom_write is NarrowPhase.launch_custom_write:
-            if recovery_contacts is not None and self._mesh_recovery_skipped is not None:
+            if recovery_contacts is not None:
                 narrow_phase_extension_kwargs.update(
-                    mesh_recovery=recovery,
-                    recovered_pairs=self._mesh_recovery_skipped,
+                    _mesh_recovery=recovery_contacts,
                     shape_body=model.shape_body,
                     body_q=state.body_q,
                 )
@@ -3529,6 +3532,7 @@ class CollisionPipeline:
                 margin1=contacts.rigid_contact_margin1,
                 body_q=state.body_q,
                 shape_body=writer_data.shape_body,
+                recovery=recovery,
                 device=self.device,
             )
 

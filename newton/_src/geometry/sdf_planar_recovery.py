@@ -10,7 +10,7 @@ import warp as wp
 
 from .contact_data import SHAPE_PAIR_HFIELD_BIT, ContactData
 from .flags import MeshProperties
-from .hashtable import HASHTABLE_EMPTY_KEY, HashTable, hashtable_find, hashtable_find_or_insert
+from .hashtable import HASHTABLE_EMPTY_KEY, HashTable, hashtable_find, hashtable_insert
 from .sdf_texture import TextureSDFData, texture_sample_sdf_hw
 
 
@@ -53,17 +53,27 @@ class _Support:
 
 
 @wp.func
-def _add_support(support: _Support, point: wp.vec3, scale: wp.vec3, projection: float, tolerance: float) -> _Support:
-    offset_sq = wp.length_sq(wp.cw_mul(point - support.point, scale))
-    separated = offset_sq > tolerance * tolerance
-    if not support.valid or projection > support.projection:
-        support.wide = support.valid and projection - support.projection <= tolerance and (support.wide or separated)
+def _add_support(support: _Support, point: wp.vec3, projection: float) -> _Support:
+    replace = not support.valid or projection > support.projection
+    if projection == support.projection and support.valid:
+        # Use the same anchor when multiple vertices attain the extreme.
+        for i in range(3):
+            if point[i] != support.point[i]:
+                replace = point[i] < support.point[i]
+                break
+    if replace:
         support.point = point
         support.projection = projection
         support.valid = True
-    elif support.projection - projection <= tolerance and separated:
-        support.wide = True
     return support
+
+
+@wp.func
+def _widens_support(support: _Support, point: wp.vec3, scale: wp.vec3, projection: float, tolerance: float) -> bool:
+    return (
+        support.projection - projection <= tolerance
+        and wp.length_sq(wp.cw_mul(point - support.point, scale)) > tolerance * tolerance
+    )
 
 
 @wp.func
@@ -102,9 +112,16 @@ def _aligned_support(
             return _Support()
         for i in range(3):
             point = wp.mesh_eval_position(mesh_id, face, float(i == 0), float(i == 1))
-            result = _add_support(result, point, scale, wp.dot(point, direction), tolerance)
+            result = _add_support(result, point, wp.dot(point, direction))
     if result.valid and wp.dot(corner, direction) - result.projection > tolerance:
         return _Support()
+    query = wp.mesh_query_aabb(mesh_id, bounds_min, bounds_max)
+    while wp.mesh_query_aabb_next(query, face):
+        for i in range(3):
+            point = wp.mesh_eval_position(mesh_id, face, float(i == 0), float(i == 1))
+            if _widens_support(result, point, scale, wp.dot(point, direction), tolerance):
+                result.wide = True
+                return result
     return result
 
 
@@ -222,8 +239,13 @@ def planar_exit(
         for index in range(mesh.points.shape[0]):
             point = mesh.points[index]
             proj = wp.dot(point, axis_unscaled)
-            min_support = _add_support(min_support, point, probe_scale, -proj, tolerance)
-            max_support = _add_support(max_support, point, probe_scale, proj, tolerance)
+            min_support = _add_support(min_support, point, -proj)
+            max_support = _add_support(max_support, point, proj)
+        for index in range(mesh.points.shape[0]):
+            point = mesh.points[index]
+            proj = wp.dot(point, axis_unscaled)
+            min_support.wide = min_support.wide or _widens_support(min_support, point, probe_scale, -proj, tolerance)
+            max_support.wide = max_support.wide or _widens_support(max_support, point, probe_scale, proj, tolerance)
     if not min_support.valid or not max_support.valid:
         return result
     tolerance_sq = tolerance * tolerance
@@ -269,7 +291,7 @@ def planar_exit(
     # Include the translation allowed by active_recovery_contact and room
     # for roundoff in both body orientations across the swept probe.
     inward = wp.cw_mul(-normal * (thickness * 0.25), wall_inverse)
-    padding = (4.0 * tolerance) * wall_inverse
+    padding = (thickness / 8.0 + 4.0 * tolerance) * wall_inverse
     query = wp.mesh_query_aabb(
         wall_id,
         lower + wp.min(sweep, inward) - padding,
@@ -334,6 +356,16 @@ class MeshRecoveryData:
     generation: wp.array[int]
 
 
+@cache
+def empty_mesh_recovery(device_alias: str) -> MeshRecoveryData:
+    """Return empty descriptors for ordinary contacts, including during Warp tape replay."""
+    data = MeshRecoveryData()
+    data.keys = data.previous_keys = wp.empty(0, dtype=wp.uint64, device=device_alias)
+    data.active_slots = data.previous_slots = data.generation = wp.empty(0, dtype=int, device=device_alias)
+    data.contacts = wp.empty(0, dtype=MeshRecoveryContact, device=device_alias)
+    return data
+
+
 class MeshRecoveryContacts:
     """Store solver stabilization data for verified deep contacts."""
 
@@ -350,16 +382,17 @@ class MeshRecoveryContacts:
 
 
 @wp.func
-def reset_mesh_recovery(data: MeshRecoveryData):
+def reset_mesh_recovery(data: MeshRecoveryData, retain_previous: bool = True):
     """Clear the sparse list from the previous refresh with one work item."""
     capacity = data.keys.shape[0]
     for i in range(data.previous_slots[capacity]):
         data.previous_keys[data.previous_slots[i]] = HASHTABLE_EMPTY_KEY
-    data.previous_slots[capacity] = data.active_slots[capacity]
+    data.previous_slots[capacity] = data.active_slots[capacity] if retain_previous else 0
     for i in range(data.active_slots[capacity]):
         slot = data.active_slots[i]
-        data.previous_slots[i] = slot
-        data.previous_keys[slot] = data.keys[slot]
+        if retain_previous:
+            data.previous_slots[i] = slot
+            data.previous_keys[slot] = data.keys[slot]
         data.keys[slot] = HASHTABLE_EMPTY_KEY
     data.active_slots[capacity] = 0
 
@@ -375,6 +408,15 @@ def _pair_key(a: int, b: int) -> wp.uint64:
     lo = wp.min(a, b)
     hi = wp.max(a, b)
     return (wp.uint64(lo) << wp.uint64(32)) | wp.uint64(hi)
+
+
+@wp.func
+def pair_was_recovered(data: MeshRecoveryData, pair: wp.vec2i) -> bool:
+    return (
+        data.keys.shape[0] > 0
+        and data.active_slots[data.keys.shape[0]] > 0
+        and hashtable_find(_pair_key(pair[0], pair[1]), data.keys) >= 0
+    )
 
 
 @wp.func
@@ -403,6 +445,12 @@ def get_recovery_contact(data: MeshRecoveryData, slot: int, a: int, b: int) -> M
 @wp.func
 def _orientation_changed(current: wp.quat, original: wp.quat) -> bool:
     return wp.min(wp.length_sq(current - original), wp.length_sq(current + original)) > 1.0e-12
+
+
+@wp.func
+def recovery_step_depth(thickness: float, depth: float) -> float:
+    """Bound a solver's positional target for a verified thin-wall contact."""
+    return wp.min(thickness / 32.0, depth / 8.0)
 
 
 @wp.func
@@ -436,9 +484,8 @@ def active_recovery_contact(
     side_motion = motion - axial_motion * normal
     if separation >= 0.0 or -separation > contact.initial_depth + contact.thickness * 0.25:
         return -2
-    # Thickness is at most half the probe radius. This lateral allowance
-    # fits inside the roundoff padding used by the swept mesh query.
-    if wp.length_sq(side_motion) > (contact.thickness * 1.0e-5) ** 2.0:
+    # The swept AABB includes this lateral clearance around the entire probe.
+    if wp.length_sq(side_motion) > (contact.thickness / 8.0) ** 2.0:
         return -2
     return slot
 
@@ -468,12 +515,10 @@ def get_compute_planar_recovery_contacts(writer_func):
         body_q: wp.array[wp.transform],
         recovery: MeshRecoveryData,
         writer_data: Any,
-        skipped_pairs: wp.array[wp.bool],
         threads: int,
     ):
         pair_limit = wp.min(pairs.shape[0], count[0])
         for row in range(wp.tid(), pair_limit, threads):
-            skipped_pairs[row] = False
             pair = pairs[row]
             a = pair[0]
             b = pair[1]
@@ -564,8 +609,8 @@ def get_compute_planar_recovery_contacts(writer_func):
             )
             if not hit.valid:
                 continue
-            slot = hashtable_find_or_insert(key, recovery.keys, recovery.active_slots)
-            if slot < 0:
+            slot, inserted = hashtable_insert(key, recovery.keys, recovery.active_slots)
+            if not inserted:
                 continue
 
             point_wall = wp.transform_point(X_ww, hit.wall_point)
@@ -586,7 +631,6 @@ def get_compute_planar_recovery_contacts(writer_func):
                 contact.rotation1 = wp.transform_get_rotation(body_q[body_b])
             contact.thickness = hit.thickness
             contact.initial_depth = hit.depth
-            recovery.contacts[slot] = contact
             canonical = ContactData()
             canonical.shape_a = a
             canonical.shape_b = b
@@ -595,7 +639,11 @@ def get_compute_planar_recovery_contacts(writer_func):
             canonical.contact_distance = -hit.depth
             canonical.margin_a = shape_data[a][3]
             canonical.margin_b = shape_data[b][3]
-            writer_func(canonical, writer_data, -1)
-            skipped_pairs[row] = True
+            if writer_func(canonical, writer_data, -1):
+                recovery.contacts[slot] = contact
+            else:
+                # A tombstone preserves probe chains while excluding an unstored
+                # row from both the ordinary-mesh skip and the next generation.
+                recovery.keys[slot] = key | (wp.uint64(1) << wp.uint64(63))
 
     return compute_planar_recovery_contacts

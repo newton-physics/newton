@@ -13,7 +13,7 @@ from ...sim.joint_mimic import eval_joint_mimic, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
 from ..semi_implicit.kernels_contact import (
-    eval_body_contact,
+    eval_body_contact_forces,
     eval_particle_body_contact_forces,
     eval_particle_contact_forces,
 )
@@ -749,37 +749,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     body_qd=state_aug.body_qd_fk,
                 )
 
-                if contacts is not None and contacts.rigid_contact_max:
-                    wp.launch(
-                        kernel=eval_body_contact,
-                        dim=contacts.rigid_contact_max,
-                        inputs=[
-                            state_in.body_q,
-                            state_aug.body_qd_fk,
-                            model.body_com,
-                            model.shape_material_ke,
-                            model.shape_material_kd,
-                            model.shape_material_kf,
-                            model.shape_material_ka,
-                            model.shape_material_mu,
-                            model.shape_body,
-                            contacts.rigid_contact_count,
-                            contacts.rigid_contact_point0,
-                            contacts.rigid_contact_point1,
-                            contacts.rigid_contact_surface_velocity,
-                            contacts.rigid_contact_normal,
-                            contacts.rigid_contact_shape0,
-                            contacts.rigid_contact_shape1,
-                            contacts.rigid_contact_margin0,
-                            contacts.rigid_contact_margin1,
-                            contacts.rigid_contact_stiffness,
-                            contacts.rigid_contact_damping,
-                            contacts.rigid_contact_friction,
-                            False,
-                        ],
-                        outputs=[body_f],
-                        device=model.device,
-                    )
+                eval_body_contact_forces(model, state_in, contacts, body_f_out=body_f, body_qd=state_aug.body_qd_fk)
 
                 if self.has_kinematic_bodies and body_f is not None:
                     wp.launch(

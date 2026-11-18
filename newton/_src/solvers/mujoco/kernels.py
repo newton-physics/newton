@@ -14,8 +14,8 @@ from ...geometry.inertia import _eig_inertia
 from ...geometry.sdf_planar_recovery import (
     MeshRecoveryData,
     active_recovery_contact,
-    find_recovery_contact,
     has_recovery_contacts,
+    recovery_step_depth,
 )
 from ...sim import BodyFlags, JointTargetMode, JointType
 from ...sim.articulation import eval_joint_motion
@@ -31,6 +31,12 @@ from .constants import (
     SOLREF_MODE_RAW,
 )
 from .enums import EqType
+
+
+def _constraint_contact_type():
+    from mujoco_warp._src.types import ContactType
+
+    return int(ContactType.CONSTRAINT)
 
 
 def _import_contact_force_fn():
@@ -415,7 +421,7 @@ def eval_mujoco_coupling_effective_mass_block_kernel(
 def _recovery_solref(thickness: float, depth: float, dt: float, solimp: vec5) -> wp.vec2:
     """Limit the positional recovery target independently of the contact distance."""
     imp_max = wp.clamp(solimp[1], 0.0001, 0.9999)
-    target_speed = wp.min(thickness / 32.0, depth / 8.0) / dt
+    target_speed = recovery_step_depth(thickness, depth) / dt
     damping = 1.0 / dt
     stiffness = damping * target_speed / depth * imp_max
     return wp.vec2(-stiffness, -damping * imp_max)
@@ -480,12 +486,14 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
+    contact_type_out: wp.array[int],
     # Fast-path generation tracking
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
     tid_to_cid: wp.array[wp.int32],
     recovery: MeshRecoveryData,
     world_timestep: wp.array[float],
+    compact_stale: bool,
 ):
     # nacon_out is scratch storage, initialized to zero by the solver and
     # reset by _sync_nacon_count after each pass.
@@ -503,9 +511,10 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
     gen = contact_generation[0]
     last_gen = last_contact_generation[0]
-    needs_full = gen != last_gen or has_recovery_contacts(recovery, gen)
-
-    if needs_full:
+    # Adhesion and body-transmission actuators consume the packed contact
+    # table independently of the constraint type. Remove stale rows from
+    # that table when either feature is enabled.
+    if gen != last_gen or (compact_stale and has_recovery_contacts(recovery, gen)):
         # ── FULL PATH ────────────────────────────────────────────────────
         # Runs on the first substep after collision detection.  Identical to
         # the original kernel plus recording the tid→cid mapping.
@@ -569,7 +578,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
             X_wb_b,
             rigid_contact_normal[tid],
         )
-        if recovery_slot < -1:
+
+        if compact_stale and recovery_slot < -1:
             tid_to_cid[tid] = -1
             return
 
@@ -728,6 +738,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
             return
 
         tid_to_cid[tid] = cid
+        # Keep a stable compacted slot for a held certificate. Its validity
+        # can change at each predictor pose without moving ordinary rows.
+        contact_type_out[cid] = 0 if recovery_slot < -1 else wp.static(_constraint_contact_type())
 
         write_contact(
             dist_in=dist,
@@ -798,14 +811,26 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         n = rigid_contact_normal[tid]
         # rigid_contact_margin includes shape_margin; MuJoCo handles it explicitly, subtract to recover radius_eff.
-        contact_dist_out[cid] = contact_surface_separation(
+        dist = contact_surface_separation(
             bx_a,
             bx_b,
             n,
             rigid_contact_margin0[tid] - shape_margin[shape_a],
             rigid_contact_margin1[tid] - shape_margin[shape_b],
         )
+        contact_dist_out[cid] = dist
         contact_pos_out[cid] = 0.5 * (point_a + point_b)
+        if recovery.keys.shape[0]:
+            slot = active_recovery_contact(recovery, gen, shape_a, shape_b, X_wb_a, X_wb_b, n)
+            if slot != -1:
+                contact_type_out[cid] = wp.static(_constraint_contact_type()) if slot >= 0 else 0
+                depth = contact_includemargin_out[cid] - dist
+                if slot >= 0 and depth > 0.0:
+                    world = contact_worldid_out[cid]
+                    dt = world_timestep[world % world_timestep.shape[0]]
+                    contact_solref_out[cid] = _recovery_solref(
+                        recovery.contacts[slot].thickness, depth, dt, contact_solimp_out[cid]
+                    )
 
         for i in range(contact_efc_address_out.shape[1]):
             contact_efc_address_out[cid, i] = -1
@@ -820,10 +845,11 @@ def _sync_nacon_count(
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
     recovery: MeshRecoveryData,
+    compact_stale: bool,
 ):
     """Publish the compacted count and reset scratch storage for the next pass."""
     gen = contact_generation[0]
-    if gen == last_contact_generation[0] and not has_recovery_contacts(recovery, gen):
+    if gen == last_contact_generation[0] and not (compact_stale and has_recovery_contacts(recovery, gen)):
         nacon[0] = last_nacon_count[0]
     else:
         nacon[0] = contact_count[0]
@@ -1440,11 +1466,7 @@ def create_convert_mjw_contacts_to_newton_kernel():
         mj_xquat: wp.array2d[wp.quatf],
         njmax: int,
         newton_to_mjw: wp.array[wp.int32],
-        newton_body_q: wp.array[wp.transform],
-        newton_shape_body: wp.array[int],
-        newton_body_com: wp.array[wp.vec3],
-        newton_contact_generation: wp.array[int],
-        recovery: MeshRecoveryData,
+        mj_xipos: wp.array2d[wp.vec3],
         # outputs
         rigid_contact_count: wp.array[wp.int32],
         rigid_contact_shape0: wp.array[wp.int32],
@@ -1528,20 +1550,15 @@ def create_convert_mjw_contacts_to_newton_kernel():
                 contact_idx,
                 True,
             )
-            if newton_to_mjw and newton_body_q:
-                a = rigid_contact_shape0[output_idx]
-                b = rigid_contact_shape1[output_idx]
-                if find_recovery_contact(recovery, newton_contact_generation[0], a, b) >= 0:
-                    # Newton reports the wrench about body0's COM, or the
-                    # world origin for a shape attached to the world.
-                    body_a = newton_shape_body[a]
-                    reference = wp.vec3()
-                    if body_a >= 0:
-                        reference = wp.transform_point(newton_body_q[body_a], newton_body_com[body_a])
-                    shift = mj_contact_pos[contact_idx] - reference
-                    force = wp.spatial_top(wrench)
-                    torque = wp.spatial_bottom(wrench) + wp.cross(shift, force)
-                    wrench = wp.spatial_vector(force, torque)
+            if newton_to_mjw:
+                # Shift from the contact point to shape 0's COM at the force
+                # evaluation stage (which can be an intermediate RK4 pose).
+                geom = mj_contact_geom[contact_idx][0]
+                body = mj_geom_bodyid[geom]
+                reference = mj_xipos[world, body] if body > 0 else wp.vec3()
+                force = wp.spatial_top(wrench)
+                torque = wp.spatial_bottom(wrench) + wp.cross(mj_contact_pos[contact_idx] - reference, force)
+                wrench = wp.spatial_vector(force, torque)
             contact_force[output_idx] = wrench
 
     return convert_mjw_contacts_to_newton_kernel

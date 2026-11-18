@@ -6183,7 +6183,8 @@ class TestMuJoCoContactForce(unittest.TestCase):
     def test_external_contact_observables_preserve_input_geometry(self):
         """Keep collision rows stable across substeps and map forces past culled rows."""
         model, _ = self._build_box_on_ground()
-        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        with self.assertWarnsRegex(NewtonWarning, "RK4 and Newton contacts"):
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, integrator="rk4")
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=16)
         self.assertLess(model.rigid_contact_max, solver.get_max_contact_count())
         contacts = pipeline.contacts()
@@ -6191,6 +6192,9 @@ class TestMuJoCoContactForce(unittest.TestCase):
         joint_q = state_in.joint_q.numpy()
         joint_q[2] = 0.09  # Start in contact, rather than waiting for gravity to close the gap.
         state_in.joint_q.assign(joint_q)
+        velocity = state_in.joint_qd.numpy()
+        velocity[0] = 0.5  # The last RK4 force evaluation uses a displaced box COM.
+        state_in.joint_qd.assign(velocity)
         newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
         pipeline.collide(state_in, contacts)
         count = int(contacts.rigid_contact_count.numpy()[0])
@@ -6200,6 +6204,21 @@ class TestMuJoCoContactForce(unittest.TestCase):
         shapes = contacts.rigid_contact_shape0.numpy()
         shapes[0] = -1
         contacts.rigid_contact_shape0.assign(shapes)
+        # Exercise both wrench references even when the collider emits every
+        # pair in the same shape order.
+        for first, second in (
+            (contacts.rigid_contact_shape0, contacts.rigid_contact_shape1),
+            (contacts.rigid_contact_point0, contacts.rigid_contact_point1),
+            (contacts.rigid_contact_offset0, contacts.rigid_contact_offset1),
+            (contacts.rigid_contact_margin0, contacts.rigid_contact_margin1),
+        ):
+            left, right = first.numpy(), second.numpy()
+            left[1], right[1] = right[1].copy(), left[1].copy()
+            first.assign(left)
+            second.assign(right)
+        normals = contacts.rigid_contact_normal.numpy()
+        normals[1] *= -1.0
+        contacts.rigid_contact_normal.assign(normals)
         fields = (
             "rigid_contact_count",
             "rigid_contact_shape0",
@@ -6225,6 +6244,13 @@ class TestMuJoCoContactForce(unittest.TestCase):
             np.testing.assert_array_equal(forces[count:], 0.0)
             self.assertTrue(np.isfinite(forces).all())
             self.assertGreater(np.linalg.norm(forces[1:count, :3]), 0.0)
+            indices = solver._contact_tid_to_cid.numpy()[1:count]
+            pos = solver.mjw_data.contact.pos.numpy()[indices]
+            geoms = solver.mjw_data.contact.geom.numpy()[indices, 0]
+            bodies = solver.mjw_model.geom_bodyid.numpy()[geoms]
+            reference = solver.mjw_data.xipos.numpy()[0, bodies]
+            expected_torque = np.cross(pos - reference, forces[1:count, :3])
+            np.testing.assert_allclose(forces[1:count, 3:], expected_torque, rtol=1e-5, atol=1e-5)
             state_in, state_out = state_out, state_in
 
     def _build_box_on_ground(self, *, friction: float = 1.0, height: float = 0.1):

@@ -77,7 +77,11 @@ from ..geometry.sdf_contact import (
     create_narrow_phase_process_mesh_mesh_contacts_kernel,
 )
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
-from ..geometry.sdf_planar_recovery import MeshRecoveryData, get_compute_planar_recovery_contacts
+from ..geometry.sdf_planar_recovery import (
+    MeshRecoveryContacts,
+    empty_mesh_recovery,
+    get_compute_planar_recovery_contacts,
+)
 from ..geometry.sdf_texture import TextureSDFData
 from ..geometry.simplex_solver import create_solve_closest_distance
 from ..geometry.support_function import (
@@ -2747,7 +2751,8 @@ class NarrowPhase:
             writer_func = contact_writer_warp_func
         # With group reduction, primitive and convex contacts are staged; its export calls the writer.
         contact_func = writer_func if _group_reduction is None else stage_contact_in_reducer
-        self._mesh_recovery_kernel = get_compute_planar_recovery_contacts(writer_func)
+        self._contact_writer = writer_func
+        self._empty_mesh_recovery = empty_mesh_recovery(device_obj.alias)
 
         # CPU kernels currently observe ``wp.block_dim() == 1`` regardless
         # of the plain ``wp.launch(..., block_dim=N)`` parameter (Warp
@@ -2858,46 +2863,31 @@ class NarrowPhase:
                 self.mesh_plane_contacts_kernel = create_narrow_phase_process_mesh_plane_contacts_kernel(
                     writer_func,
                 )
-            if self.reduce_contacts:
-                self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                    write_contact_to_reducer,
+            # Keep the BVH witness traversal out of the ordinary texture kernel.
+            # Replay only blocks that encountered a flat interior sample.
+            split_flat = self.reduce_contacts and self.mesh_sdf_texture_only and device_obj.is_cuda
+
+            def mesh_kernel(precomputed, flat_pass):
+                return create_narrow_phase_process_mesh_mesh_contacts_kernel(
+                    write_contact_to_reducer if self.reduce_contacts else writer_func,
                     enable_heightfields=has_heightfields,
-                    reduce_contacts=True,
+                    reduce_contacts=self.reduce_contacts,
+                    use_precomputed_edge_data=precomputed,
                     speculative=speculative,
                     use_texture_sdf_only=self.mesh_sdf_texture_only,
                     use_identity_sdf_scale=self.mesh_sdf_identity_scale_only,
                     deterministic_reduction=deterministic,
+                    flat_pass=flat_pass,
                 )
-                self.mesh_mesh_contacts_kernel_precomputed = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                    write_contact_to_reducer,
-                    enable_heightfields=has_heightfields,
-                    reduce_contacts=True,
-                    use_precomputed_edge_data=True,
-                    use_texture_sdf_only=self.mesh_sdf_texture_only,
-                    use_identity_sdf_scale=self.mesh_sdf_identity_scale_only,
-                    speculative=speculative,
-                    deterministic_reduction=deterministic,
-                )
-            else:
-                self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                    writer_func,
-                    enable_heightfields=has_heightfields,
-                    speculative=speculative,
-                    use_texture_sdf_only=self.mesh_sdf_texture_only,
-                    use_identity_sdf_scale=self.mesh_sdf_identity_scale_only,
-                )
-                self.mesh_mesh_contacts_kernel_precomputed = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                    writer_func,
-                    enable_heightfields=has_heightfields,
-                    use_precomputed_edge_data=True,
-                    use_texture_sdf_only=self.mesh_sdf_texture_only,
-                    use_identity_sdf_scale=self.mesh_sdf_identity_scale_only,
-                    speculative=speculative,
-                )
+
+            self.mesh_mesh_contacts_kernel = mesh_kernel(False, False if split_flat else None)
+            self.mesh_mesh_contacts_kernel_precomputed = mesh_kernel(True, False if split_flat else None)
+            self._flat_mesh_kernels = (mesh_kernel(False, True), mesh_kernel(True, True)) if split_flat else ()
         else:
             self.mesh_plane_contacts_kernel = None
             self.mesh_mesh_contacts_kernel = None
             self.mesh_mesh_contacts_kernel_precomputed = None
+            self._flat_mesh_kernels = ()
 
         # Create global contact reduction kernels for mesh/heightfield-triangle
         # contacts (mirror the predicate used to gate ``self.reduce_contacts``
@@ -3118,6 +3108,9 @@ class NarrowPhase:
             target_blocks = device_obj.sm_count * 4 if device_obj.is_cuda else 64
             # Mesh-mesh
             self.num_mesh_mesh_blocks = target_blocks * 4 if device_obj.is_cuda else target_blocks
+            self._flat_mesh_blocks = wp.empty(
+                self.num_mesh_mesh_blocks if self._flat_mesh_kernels else 0, dtype=int, device=device
+            )
             self.mesh_mesh_target_blocks = target_blocks
             mesh_mesh_scan_size = self.max_mesh_mesh_pairs + 1
             self.mesh_mesh_block_offsets = wp.zeros(mesh_mesh_scan_size, dtype=wp.int32, device=device)
@@ -3313,8 +3306,7 @@ class NarrowPhase:
         max_speculative_extension: float = 0.0,
         body_q: wp.array[wp.transform] | None = None,
         shape_body: wp.array[wp.int32] | None = None,
-        mesh_recovery: MeshRecoveryData | None = None,
-        recovered_pairs: wp.array[wp.bool] | None = None,
+        _mesh_recovery: MeshRecoveryContacts | None = None,
         writer_data: Any,
         device: Devicelike | None = None,  # Device to launch on
     ) -> None:
@@ -3384,13 +3376,31 @@ class NarrowPhase:
             max_speculative_extension: Maximum speculative clearance [m].
             body_q: Body poses, required with group reduction (cells are measured from a body).
             shape_body: Per-shape body index, required with group reduction.
-            mesh_recovery: Optional solver metadata for verified thin-wall exits.
-            recovered_pairs: Scratch mask of mesh pairs already written by recovery.
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
         """
         if device is None:
             device = self.device if self.device is not None else candidate_pair.device
+        mesh_recovery = self._empty_mesh_recovery if _mesh_recovery is None else _mesh_recovery.data
+        if _mesh_recovery is not None:
+            shape_count = shape_types.shape[0]
+            if body_q is None or any(
+                array is None or array.shape[0] < shape_count
+                for array in (
+                    shape_body,
+                    shape_mesh_properties,
+                    shape_mesh_boundary_start,
+                    shape_collision_aabb_lower,
+                    shape_collision_aabb_upper,
+                    self.shape_aabb_lower,
+                    self.shape_aabb_upper,
+                )
+            ):
+                raise ValueError(
+                    "Mesh recovery requires body poses, shape bodies, mesh properties and per-shape bounds"
+                )
+            if mesh_boundary_flags is None:
+                raise ValueError("Mesh recovery requires mesh boundary flags")
         if shape_mesh_properties is None:
             shape_mesh_properties = self._empty_mesh_properties
         if mesh_boundary_flags is None or shape_mesh_boundary_start is None:
@@ -3784,12 +3794,12 @@ class NarrowPhase:
                 shape_edge_range = self._empty_edge_range
 
             if self.mesh_mesh_contacts_kernel is not None and self.max_mesh_mesh_pairs > 0:
-                if mesh_recovery is not None:
+                if _mesh_recovery is not None:
                     work_device = wp.get_device(device)
                     budget = 32 * work_device.sm_count if work_device.is_cuda else self.total_num_threads
                     threads = min(self.max_mesh_mesh_pairs, budget)
                     wp.launch(
-                        self._mesh_recovery_kernel,
+                        get_compute_planar_recovery_contacts(self._contact_writer),
                         dim=threads,
                         inputs=[
                             self.shape_pairs_mesh_mesh,
@@ -3810,7 +3820,6 @@ class NarrowPhase:
                             body_q,
                             mesh_recovery,
                             writer_data,
-                            recovered_pairs,
                             threads,
                         ],
                         device=device,
@@ -3839,45 +3848,51 @@ class NarrowPhase:
                         record_tape=False,
                     )
 
-                    wp.launch_tiled(
-                        kernel=mesh_mesh_contacts_kernel,
-                        dim=(self.num_mesh_mesh_blocks,),
-                        inputs=[
-                            shape_data,
-                            shape_transform,
-                            shape_source,
-                            texture_sdf_data,
-                            shape_sdf_index,
-                            shape_mesh_properties,
-                            mesh_boundary_flags,
-                            shape_mesh_boundary_start,
-                            shape_gap,
-                            shape_base_gap,
-                            shape_linear_velocity,
-                            shape_angular_velocity,
-                            collision_update_dt,
-                            max_speculative_extension,
-                            shape_collision_aabb_lower,
-                            shape_collision_aabb_upper,
-                            shape_voxel_resolution,
-                            self.shape_pairs_mesh_mesh,
-                            self.shape_pairs_mesh_mesh_count,
-                            recovered_pairs,
-                            shape_heightfield_index,
-                            heightfield_data,
-                            heightfield_elevations,
-                            mesh_edge_indices,
-                            mesh_edge_centers,
-                            mesh_edge_halves,
-                            shape_edge_range,
-                            self.mesh_mesh_block_offsets,
-                            reducer_data,
-                            self.num_mesh_mesh_blocks,
-                        ],
-                        device=device,
-                        block_dim=self.tile_size_mesh_mesh,
-                        record_tape=False,
-                    )
+                    inputs = [
+                        shape_data,
+                        shape_transform,
+                        shape_source,
+                        texture_sdf_data,
+                        shape_sdf_index,
+                        shape_mesh_properties,
+                        mesh_boundary_flags,
+                        shape_mesh_boundary_start,
+                        shape_gap,
+                        shape_base_gap,
+                        shape_linear_velocity,
+                        shape_angular_velocity,
+                        collision_update_dt,
+                        max_speculative_extension,
+                        shape_collision_aabb_lower,
+                        shape_collision_aabb_upper,
+                        shape_voxel_resolution,
+                        self.shape_pairs_mesh_mesh,
+                        self.shape_pairs_mesh_mesh_count,
+                        mesh_recovery,
+                        shape_heightfield_index,
+                        heightfield_data,
+                        heightfield_elevations,
+                        mesh_edge_indices,
+                        mesh_edge_centers,
+                        mesh_edge_halves,
+                        shape_edge_range,
+                        self.mesh_mesh_block_offsets,
+                        self._flat_mesh_blocks,
+                        reducer_data,
+                        self.num_mesh_mesh_blocks,
+                    ]
+                    kernels = (mesh_mesh_contacts_kernel,)
+                    if self._flat_mesh_kernels:
+                        kernels += (self._flat_mesh_kernels[has_precomputed_edge_data],)
+                    for kernel in kernels:
+                        wp.launch_tiled(
+                            kernel=kernel,
+                            dim=(self.num_mesh_mesh_blocks,),
+                            inputs=inputs,
+                            device=device,
+                            block_dim=self.tile_size_mesh_mesh,
+                            record_tape=False,
+                        )
                 else:
                     # Non-reduce fallback: direct contact write, no dynamic allocation
                     wp.launch_tiled(
@@ -3903,7 +3918,7 @@ class NarrowPhase:
                             shape_voxel_resolution,
                             self.shape_pairs_mesh_mesh,
                             self.shape_pairs_mesh_mesh_count,
-                            recovered_pairs,
+                            mesh_recovery,
                             shape_heightfield_index,
                             heightfield_data,
                             heightfield_elevations,

@@ -104,11 +104,11 @@ def hashtable_find(
 
 
 @wp.func
-def hashtable_find_or_insert(
+def hashtable_insert(
     key: wp.uint64,
     keys: wp.array[wp.uint64],
     active_slots: wp.array[wp.int32],
-) -> int:
+) -> tuple[int, bool]:
     """Find or insert a key and return the entry index.
 
     This function locates an existing entry or creates a new one for the key.
@@ -121,7 +121,7 @@ def hashtable_find_or_insert(
                       active_slots[capacity] is the count of active entries.
 
     Returns:
-        Entry index (>= 0) if successful, -1 if the table is full
+        Entry index (or -1 when full) and whether this worker inserted it
     """
     capacity = keys.shape[0]
     capacity_mask = capacity - 1
@@ -134,7 +134,7 @@ def hashtable_find_or_insert(
 
         if stored_key == key:
             # Key already exists - return its index
-            return idx
+            return idx, False
 
         if stored_key == HASHTABLE_EMPTY_KEY:
             # Try to claim this slot
@@ -146,17 +146,24 @@ def hashtable_find_or_insert(
                 active_idx = wp.atomic_add(active_slots, capacity, 1)
                 if active_idx < capacity:
                     active_slots[active_idx] = idx
-                return idx
+                return idx, True
             elif old_key == key:
                 # Another thread just inserted the same key - use it
-                return idx
+                return idx, False
             # else: Another thread claimed with different key - continue probing
 
         # Collision with different key - linear probe to next slot
         idx = (idx + 1) & capacity_mask
 
     # Table is full
-    return -1
+    return -1, False
+
+
+@wp.func
+def hashtable_find_or_insert(key: wp.uint64, keys: wp.array[wp.uint64], active_slots: wp.array[wp.int32]) -> int:
+    """Return the index of an existing or newly inserted key, or -1 when full."""
+    index, _inserted = hashtable_insert(key, keys, active_slots)
+    return index
 
 
 @wp.kernel(enable_backward=False)

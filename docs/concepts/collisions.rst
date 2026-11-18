@@ -1106,7 +1106,9 @@ separated, so no discrete overlap remains to recover.
 
 Solvers and :class:`~sensors.SensorContact` read the same two surface witnesses
 and separation normal from the contact buffer. XPBD and VBD bound positional
-correction while the probe is deeply embedded. MuJoCo Warp with Newton contacts temporarily
+correction while the probe is deeply embedded. The semi-implicit and Featherstone
+solvers use a bounded penetration depth for the elastic contact force.
+MuJoCo Warp with Newton contacts temporarily
 uses recovery stiffness and damping to limit its separation speed, then resumes
 the ordinary contact material response. Hydroelastic pairs follow the
 pressure-based contact model.

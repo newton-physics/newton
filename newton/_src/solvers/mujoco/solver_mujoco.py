@@ -24,7 +24,7 @@ from ...core._warnings import _external_warning_stacklevel
 from ...core.types import MAXVAL, Axis, override, vec5, vec10
 from ...exceptions import NewtonDeprecationWarning, NewtonWarning
 from ...geometry import GeoType, Mesh, ParticleFlags, ShapeFlags
-from ...geometry.sdf_planar_recovery import MeshRecoveryData
+from ...geometry.sdf_planar_recovery import empty_mesh_recovery
 from ...sim import (
     BodyFlags,
     Contacts,
@@ -5153,7 +5153,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ):
                 raise ValueError("use_speculative_contacts=True requires Euler or implicitfast integration.")
             self._allocate_speculative_contact_buffers()
-        self._empty_mesh_recovery = MeshRecoveryData()
+        self._empty_mesh_recovery = empty_mesh_recovery(model.device.alias)
         if (
             not use_mujoco_contacts
             and self.mj_model.opt.integrator == mujoco.mjtIntegrator.mjINT_RK4
@@ -5404,7 +5404,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         observable_contacts,
                         observables.contact_f,
                         preserve_geometry=not self.mjw_model.opt.run_collision_detection,
-                        source_body_q=state_in.body_q,
                     )
                 self._update_newton_state(
                     self.model, state_out, self.mjw_data, state_prev=state_in, observables=observables
@@ -5901,11 +5900,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         bodies_per_world = self.model.body_count // self.model.world_count
         mujoco_attrs = getattr(model, "mujoco", None)
         shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
-        recovery = (
-            contacts._mesh_recovery_contacts.data
-            if contacts._mesh_recovery_contacts is not None
-            else self._empty_mesh_recovery
-        )
+        compact_stale = bool(self.mjw_model.nacttrnbody or self.mjw_model.flg_adhesion)
+        recovery_contacts = getattr(contacts, "_mesh_recovery_contacts", None)
+        recovery = recovery_contacts.data if recovery_contacts is not None else self._empty_mesh_recovery
         wp.launch(
             convert_newton_contacts_to_mjwarp_kernel,
             dim=(launch_dim,),
@@ -5964,12 +5961,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_data.contact.geom,
                 self.mjw_data.contact.efc_address,
                 self.mjw_data.contact.worldid,
+                self.mjw_data.contact.type,
                 # Fast-path generation tracking
                 contacts.contact_generation,
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
                 recovery,
                 self.mjw_model.opt.timestep,
+                compact_stale,
             ],
             device=model.device,
             block_dim=block_dim,
@@ -5991,6 +5990,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 contacts.contact_generation,
                 self._last_contact_generation,
                 recovery,
+                compact_stale,
             ],
             device=model.device,
         )
@@ -7060,7 +7060,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         contact_f: wp.array[wp.spatial_vector] | None,
         *,
         preserve_geometry: bool = False,
-        source_body_q: wp.array[wp.transform] | None = None,
         warning_stacklevel: int = 4,
     ) -> None:
         """Export MuJoCo geometry, or map forces to unchanged Newton collision rows."""
@@ -7104,15 +7103,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     mj_data.xquat,
                     mj_data.njmax,
                     self._contact_tid_to_cid if preserve_geometry else None,
-                    source_body_q if preserve_geometry else None,
-                    self.model.shape_body,
-                    self.model.body_com,
-                    contacts.contact_generation,
-                    (
-                        contacts._mesh_recovery_contacts.data
-                        if preserve_geometry and contacts._mesh_recovery_contacts is not None
-                        else self._empty_mesh_recovery
-                    ),
+                    mj_data.xipos,
                 ],
                 outputs=[
                     contacts.rigid_contact_count,

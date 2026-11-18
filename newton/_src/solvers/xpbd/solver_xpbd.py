@@ -9,7 +9,7 @@ import warp as wp
 
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
-from ...geometry.sdf_planar_recovery import MeshRecoveryData
+from ...geometry.sdf_planar_recovery import empty_mesh_recovery
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
@@ -254,7 +254,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             # reserve space for the particle hash grid
             with wp.ScopedDevice(model.device):
                 model.particle_grid.reserve(model.particle_count)
-        self._empty_mesh_recovery = MeshRecoveryData()
+        self._empty_mesh_recovery = empty_mesh_recovery(model.device.alias)
 
     @property
     def compute_body_velocity_from_position_delta(self) -> bool:

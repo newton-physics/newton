@@ -1911,6 +1911,8 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
                 0.01,
                 contact_mu,
                 zeros3,
+                MeshRecoveryData(),
+                wp.zeros(1, dtype=int, device=device),
                 0.0,
                 contact_ke,
                 contact_rho,

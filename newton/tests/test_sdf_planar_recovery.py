@@ -42,6 +42,7 @@ def _find_exit(
 
 
 def test_thin_wall_exit(test, device):
+    """Accept a unique exit only when its swept and lateral corridor is clear."""
     wall = newton.Mesh.create_box(0.0005, 0.015, 0.015, duplicate_vertices=False)
     probe = newton.Mesh.create_capsule(0.004, 0.0, segments=16)
     obstacle = newton.Mesh.create_box(0.0002, 0.0002, 0.0002, duplicate_vertices=False)
@@ -50,9 +51,20 @@ def test_thin_wall_exit(test, device):
         np.vstack((wall.vertices, obstacle.vertices + np.array([-0.005, 0.0005, 0.0]))),
         np.concatenate((wall.indices, obstacle.indices + len(wall.vertices))),
     )
+    # A held row may travel tangentially by one eighth of the wall thickness.
+    side = newton.Mesh.create_box(0.00002, 0.00002, 0.00002, duplicate_vertices=False)
+    obstructed_side = newton.Mesh(
+        np.vstack((wall.vertices, side.vertices + np.array([-0.002, 0.00408, 0.0]))),
+        np.concatenate((wall.indices, side.indices + len(wall.vertices))),
+    )
     exits = wp.empty(1, dtype=PlanarExit, device=device)
     flags = wp.empty(0, dtype=wp.uint8, device=device)
-    for mesh, offset, expected in ((wall, -0.0005, True), (wall, 0.0, False), (obstructed, -0.0005, False)):
+    for mesh, offset, expected in (
+        (wall, -0.0005, True),
+        (wall, 0.0, False),
+        (obstructed, -0.0005, False),
+        (obstructed_side, -0.0005, False),
+    ):
         with test.subTest(offset=offset, obstructed=mesh is obstructed):
             wp.launch(
                 _find_exit,
@@ -77,7 +89,7 @@ def _check_held_contact(recovery: MeshRecoveryData, result: wp.array[int]):
     contact.rotation0 = wp.quat_identity()
     contact.rotation1 = wp.quat_identity()
     recovery.contacts[slot] = contact
-    for i in range(4):
+    for i in range(5):
         pose = wp.transform_identity()
         if i == 1:
             pose.p = wp.vec3(-0.001, 0.0, 0.0)
@@ -85,6 +97,8 @@ def _check_held_contact(recovery: MeshRecoveryData, result: wp.array[int]):
             pose.p = wp.vec3(0.0, 0.0001, 0.0)
         elif i == 3:
             pose.q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1)
+        elif i == 4:
+            pose.p = wp.vec3(0.0, 0.0002, 0.0)
         result[i] = active_recovery_contact(recovery, 0, 0, 1, wp.transform_identity(), pose, normal)
     # A fresh rotated contact must survive the precision of world-space
     # transforms when its coordinates are large relative to its thickness.
@@ -92,21 +106,22 @@ def _check_held_contact(recovery: MeshRecoveryData, result: wp.array[int]):
     contact.relative_translation = rotated.p
     contact.rotation1 = rotated.q
     recovery.contacts[slot] = contact
-    result[4] = active_recovery_contact(
+    result[5] = active_recovery_contact(
         recovery, 0, 0, 1, wp.transform_identity(), rotated, wp.quat_rotate(rotated.q, normal)
     )
     reset_mesh_recovery(recovery)
-    result[5] = active_recovery_contact(recovery, 0, 0, 1, wp.transform_identity(), wp.transform_identity(), normal)
+    result[6] = active_recovery_contact(recovery, 0, 0, 1, wp.transform_identity(), wp.transform_identity(), normal)
 
 
 def test_held_contact_corridor(test, device):
+    """Use a held row only while the current poses remain inside its proven corridor."""
     recovery = MeshRecoveryContacts(8, device)
-    result = wp.empty(6, dtype=int, device=device)
+    result = wp.empty(7, dtype=int, device=device)
     wp.launch(_check_held_contact, 1, inputs=[recovery.data, result], device=device)
     slots = result.numpy()
     test.assertGreaterEqual(slots[0], 0)
     test.assertEqual(slots[1], slots[0])
-    np.testing.assert_array_equal(slots[2:], [-2, -2, slots[0], -1])
+    np.testing.assert_array_equal(slots[2:], [slots[0], -2, -2, slots[0], -1])
     test.assertTrue(np.all(recovery.table.keys.numpy() == np.iinfo(np.uint64).max))
 
 
