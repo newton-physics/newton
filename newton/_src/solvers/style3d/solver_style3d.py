@@ -170,7 +170,11 @@ class SolverStyle3D(SolverBase):
         """Advance rigid bodies using affine body dynamics."""
 
         ALL = DEFORMABLE | AFFINE_BODY
-        """Enable all supported dynamics."""
+        """Enable all supported dynamics.
+
+        Increase :attr:`Config.linear_iterations` as needed for coupled
+        particle-rigid contacts to converge.
+        """
 
     @dataclass(kw_only=True)
     class Config:
@@ -193,7 +197,12 @@ class SolverStyle3D(SolverBase):
         """Number of non-linear iterations per step. Must be at least 1."""
 
         linear_iterations: int = 10
-        """Number of PCG iterations per non-linear iteration, capped by PCG capacity (999 by default)."""
+        """Number of PCG iterations per non-linear iteration, capped by PCG capacity (999 by default).
+
+        With :attr:`Dynamics.ALL`, coupled particle-rigid contacts may need more than
+        the default 10 iterations. Increase this count until the contact response converges;
+        insufficient PCG convergence can cause artificial momentum gain during impacts.
+        """
 
         affine_rigidity_ratio: float = 1e2
         """Dimensionless SO(3) stiffness ratio relative to mean directional inertia.

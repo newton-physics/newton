@@ -70,6 +70,12 @@ For a model containing both Style3D cloth and rigid bodies, select
 ``dynamics=SolverStyle3D.Dynamics.ALL``. Generate contacts before each substep
 and swap the input and output states after stepping.
 
+For ``Dynamics.ALL``, increase ``Config.linear_iterations`` as needed for
+coupled particle-rigid contacts. The default 10 PCG iterations may be
+insufficient during impacts and can cause artificial momentum gain. Check
+convergence for the scene by increasing this count until the contact response
+stabilizes.
+
 Bodies with positive mass and :attr:`~newton.BodyFlags.DYNAMIC` are advanced.
 Kinematic and zero-mass bodies remain prescribed; their output poses and
 velocities are owned by the caller. Changes to model particle and body flags
