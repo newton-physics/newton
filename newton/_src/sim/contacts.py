@@ -10,6 +10,7 @@ import warp as wp
 from warp import DeviceLike as Devicelike
 
 from ..exceptions import NewtonDeprecationWarning
+from ..geometry.soft_contact_match import SoftContactHistory
 from ..geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
 
 GENERATION_SENTINEL = -1
@@ -245,6 +246,8 @@ class Contacts:
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
         self._contact_matching_mode: Literal["disabled", "latest", "sticky"] = "disabled"
+        # Rigid-soft contact anchors, attached by a pipeline with soft contact matching.
+        self._soft_contact_history: SoftContactHistory | None = None
         with wp.ScopedDevice(device):
             # Two contact counts, [0] rigid and [1] soft, plus overflow flags:
             # [2] global contact reduction and [3] a coupled source's soft-contact buffer.
@@ -525,6 +528,18 @@ class Contacts:
         self.rigid_contact_max = rigid_contact_max
         self.soft_contact_max = soft_contact_max
         self._rigid_contact_body_pair_reduced = False
+
+    def _allocate_soft_contact_history(self) -> SoftContactHistory:
+        """Allocate soft contact anchors on first use, before capture for external buffers."""
+        if self._soft_contact_history is None:
+            if wp.get_device(self.device).is_capturing:
+                raise RuntimeError(
+                    "Soft contact anchors must be allocated before CUDA graph capture. "
+                    "Call pipeline.collide() once outside capture with this buffer, "
+                    "or create it with pipeline.contacts()."
+                )
+            self._soft_contact_history = SoftContactHistory(self.soft_contact_max, device=self.device)
+        return self._soft_contact_history
 
     def clear(self, bump_generation: bool = True):
         """

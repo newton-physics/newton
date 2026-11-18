@@ -379,7 +379,11 @@ class SolverBase:
         contact_f: wp.array[wp.spatial_vector] | None = field(  # noqa: RUF009
             dtype=wp.spatial_vector, frequency=Model.AttributeFrequency.CONTACT
         )
-        """Contact forces [N, N·m], shape ``(rigid_contact_max + soft_contact_max,)`` of the allocation contacts."""
+        """Contact forces [N, N·m], shape ``(rigid_contact_max + soft_contact_max,)`` of the allocation contacts.
+
+        See :ref:`vbd_contact_forces` for VBD's wrench convention and the restriction on reconstructing
+        particle forces when soft contact matching is enabled.
+        """
 
         solver_residual: wp.array[wp.float32] | None = field(  # noqa: RUF009
             dtype=wp.float32, frequency=Model.AttributeFrequency.WORLD
