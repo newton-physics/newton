@@ -79,7 +79,7 @@ Set ``sparse_jacobian=False`` for fully dense SCC, or set
 ``sparse_dynamics=True`` to use sparse dynamics with the Conjugate Residual
 solver.
 
-SCC defaults to ``"LLTB"`` for its bilateral joint solve. Select ``"LDL"``
+SCC defaults to ``"LLTBRCM"`` for its bilateral joint solve. Select ``"LDL"``
 explicitly to use the block-sparse backend, which factors the reordered matrix
 as :math:`L D L^T`, storing unit-lower :math:`L` separately from the scalar
 diagonal :math:`D`. It stores only joint
@@ -113,7 +113,6 @@ parallel factorization:
 
 .. code-block:: python
 
-   config.scc.bilateral_solver_type = "LLTBRCM"
    config.scc.bilateral_solver_kwargs = {
        "block_size": 32,
        "reuse_permutation": True,
@@ -122,7 +121,8 @@ parallel factorization:
 
 The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
-changes. Keep ``"LLTB"`` for small systems.
+changes. To factor dense tiles without reordering, set
+``config.scc.bilateral_solver_type = "LLTB"``.
 
 The level-scheduled sparse backend can incur more launch overhead on small
 systems or long chains, so benchmark representative workloads when choosing
@@ -372,6 +372,37 @@ Enable these features through ``config.lox`` after selecting
   share one elliptic friction budget. Contacts with zero angular coefficients
   retain the classical 3D contact solve. Kamino's primitive collision pipeline
   provides no angular coefficients.
+
+Heterogeneous worlds
+--------------------
+
+Kamino supports solving, in a single batch, worlds in a model that differ in
+bodies, joints, and contact capacity. While arbitrarily different worlds
+are supported, Kamino targets worlds that are small variations of the same
+problem, for example the same robot with different payloads, terrain, or
+optional parts. As world dimensions diverge, memory and throughput resources
+are increasingly wasted.
+
+More specifically, dense quantities (constraint Jacobians, Delassus matrices,
+and their factorizations) are stored with one row per world, sized for the
+largest world, and per-world kernels are launched over grids sized by the
+largest world. This design has the following consequences:
+
+* **Memory:** every world reserves dense storage for the largest world.
+  Delassus matrices and their factors grow quadratically with the number of
+  constraints, so a few large worlds among many small ones can multiply the
+  dense memory footprint.
+* **Throughput:** threads assigned to the unused part of a smaller world
+  stay idle, so a single large world slows down the whole batch.
+
+If worlds differ substantially, for example a few large mechanisms among many
+small ones, consider simulating each group with its own model and solver.
+
+The dense storage row of each world is limited to 2\ :sup:`31` bytes by the
+32-bit array strides of Warp, which bounds a single world's dense Delassus
+matrix to about 23,000 constraints. Larger worlds raise an error during
+solver construction; for these, consider sparse Jacobians and dynamics
+(``sparse_jacobian=True`` and ``sparse_dynamics=True``).
 
 Inspecting terminal status
 --------------------------

@@ -2,7 +2,9 @@ version = 1
 revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and platform_machine == 'aarch64'",
+    "python_full_version >= '3.15' or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform == 'win32')",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
@@ -1048,7 +1050,9 @@ name = "cuda-bindings"
 version = "12.9.9"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and platform_machine == 'aarch64'",
+    "python_full_version >= '3.15' or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform == 'win32')",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
@@ -1079,13 +1083,14 @@ name = "cuda-bindings"
 version = "13.4.3"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and platform_machine == 'aarch64'",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
 ]
 dependencies = [
-    { name = "cuda-pathfinder" },
+    { name = "cuda-pathfinder", marker = "python_full_version < '3.14' or (python_full_version == '3.14.*' and platform_machine != 'ARM64') or (python_full_version == '3.14.*' and sys_platform != 'win32')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/3a/06569edfd5db020c1ff7c0361268a3eaa60ead0c0ccca460fef69d68022f/cuda_bindings-13.4.3-cp311-cp311-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:df8b3767facca8acde216460df684dfc3826d519096c13adfd3030a55870dc79", size = 6494098, upload-time = "2026-09-23T02:21:50.472Z" },
@@ -1123,7 +1128,9 @@ name = "cuda-toolkit"
 version = "12.8.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and platform_machine == 'aarch64'",
+    "python_full_version >= '3.15' or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform == 'win32')",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
@@ -1172,7 +1179,9 @@ name = "cuda-toolkit"
 version = "13.0.3.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and platform_machine == 'aarch64'",
+    "python_full_version >= '3.15' or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform == 'win32')",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
@@ -2919,7 +2928,7 @@ dev = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-core", marker = "(python_full_version == '3.14.*' and platform_machine == 'aarch64') or (python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.14' and platform_machine == 'ARM64' and sys_platform != 'win32') or (python_full_version == '3.14.*' and sys_platform != 'win32')" },
     { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "viser" },
     { name = "warp-nn", extra = ["onnx"] },
@@ -2947,7 +2956,7 @@ docs = [
     { name = "sphinx-design" },
     { name = "sphinxcontrib-mermaid" },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-core", marker = "(python_full_version == '3.14.*' and platform_machine == 'aarch64') or (python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.14' and platform_machine == 'ARM64' and sys_platform != 'win32') or (python_full_version == '3.14.*' and sys_platform != 'win32')" },
     { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "viser" },
 ]
@@ -2973,7 +2982,7 @@ examples = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-core", marker = "(python_full_version == '3.14.*' and platform_machine == 'aarch64') or (python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.14' and platform_machine == 'ARM64' and sys_platform != 'win32') or (python_full_version == '3.14.*' and sys_platform != 'win32')" },
     { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "warp-nn", extra = ["onnx"] },
 ]
@@ -2990,7 +2999,7 @@ importers = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-core", marker = "(python_full_version == '3.14.*' and platform_machine == 'aarch64') or (python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.14' and platform_machine == 'ARM64' and sys_platform != 'win32') or (python_full_version == '3.14.*' and sys_platform != 'win32')" },
     { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
 ]
 notebook = [
@@ -3018,7 +3027,7 @@ notebook = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-core", marker = "(python_full_version == '3.14.*' and platform_machine == 'aarch64') or (python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.14' and platform_machine == 'ARM64' and sys_platform != 'win32') or (python_full_version == '3.14.*' and sys_platform != 'win32')" },
     { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "viser" },
     { name = "warp-nn", extra = ["onnx"] },
@@ -3049,7 +3058,7 @@ rtx = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-core", marker = "(python_full_version == '3.14.*' and platform_machine == 'aarch64') or (python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.14' and platform_machine == 'ARM64' and sys_platform != 'win32') or (python_full_version == '3.14.*' and sys_platform != 'win32')" },
     { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
 ]
 sim = [
@@ -3079,7 +3088,7 @@ torch-cu12 = [
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-6-newton-torch-cu12') or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" } },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-core", marker = "(python_full_version == '3.14.*' and platform_machine == 'aarch64') or (python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.14' and platform_machine == 'ARM64' and sys_platform != 'win32') or (python_full_version == '3.14.*' and sys_platform != 'win32')" },
     { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "warp-nn", extra = ["onnx"], marker = "extra == 'extra-6-newton-torch-cu12'" },
 ]
@@ -3106,7 +3115,7 @@ torch-cu13 = [
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-6-newton-torch-cu13') or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "torch", version = "2.14.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
     { name = "trimesh" },
-    { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32')" },
+    { name = "usd-core", marker = "(python_full_version == '3.14.*' and platform_machine == 'aarch64') or (python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version < '3.14' and platform_machine == 'ARM64' and sys_platform != 'win32') or (python_full_version == '3.14.*' and sys_platform != 'win32')" },
     { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "warp-nn", extra = ["onnx"], marker = "extra == 'extra-6-newton-torch-cu13'" },
 ]
@@ -3146,7 +3155,7 @@ requires-dist = [
     { name = "newton", extras = ["onnx"], marker = "extra == 'examples'" },
     { name = "newton", extras = ["remesh"], marker = "extra == 'dev'" },
     { name = "newton", extras = ["sim"], marker = "extra == 'examples'" },
-    { name = "newton-usd-schemas", marker = "extra == 'importers'", specifier = ">=0.6.0" },
+    { name = "newton-usd-schemas", marker = "extra == 'importers'", specifier = ">=0.7.0" },
     { name = "open3d", marker = "(platform_machine != 'ARM64' and platform_machine != 'arm64' and sys_platform == 'win32' and extra == 'remesh') or (platform_machine == 'arm64' and extra == 'remesh') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'remesh')", specifier = ">=0.20.0" },
     { name = "ovrtx", marker = "extra == 'rtx'", specifier = ">=0.5.1.385782" },
     { name = "ovstage", marker = "extra == 'rtx'", specifier = ">=0.2.1.385922" },
@@ -3170,6 +3179,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'torch-cu13'", specifier = ">=2.10.0", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "newton", extra = "torch-cu13" } },
     { name = "trimesh", marker = "extra == 'importers'", specifier = ">=4.6.8" },
     { name = "usd-core", marker = "(python_full_version < '3.15' and platform_machine != 'ARM64' and platform_machine != 'aarch64' and extra == 'importers') or (python_full_version < '3.15' and platform_machine == 'ARM64' and sys_platform != 'win32' and extra == 'importers')", specifier = ">=25.5,<26.12" },
+    { name = "usd-core", marker = "python_full_version == '3.14.*' and platform_machine == 'aarch64' and extra == 'importers'", specifier = ">=26.11,<26.12" },
     { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64' and extra == 'importers'", specifier = ">=2.3.0,<4" },
     { name = "viser", marker = "extra == 'dev'", specifier = ">=1.1.1" },
     { name = "viser", marker = "extra == 'docs'", specifier = ">=1.1.1" },
@@ -3185,11 +3195,11 @@ dev = [{ name = "asv", marker = "platform_machine != 'ARM64' or sys_platform != 
 
 [[package]]
 name = "newton-usd-schemas"
-version = "0.6.0"
+version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d7/cd/bf5b510998ab765ae907901e88b2fec20ffbd5b82689e651eb1aa36d5fb5/newton_usd_schemas-0.6.0.tar.gz", hash = "sha256:024aac16c00be5857e0cc332b6b1ee454500154225c4094d61db74760e17ae45", size = 77182, upload-time = "2026-10-15T19:12:58.536Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8b/ad/24e537f2df82a2bdabf09f3f7c51e1e0b472cca1217c1a1b0e62ea232d30/newton_usd_schemas-0.7.0.tar.gz", hash = "sha256:65722fd89f554be6fa61d4e493c34a54461fd26b2b9dc0e85f19aa6d8ac2978e", size = 104618, upload-time = "2026-11-10T17:42:53.835Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/8d/e1b41c9cac77a3b8fa945a4f29311516e8b433f0e9d902b4ca872951bc3d/newton_usd_schemas-0.6.0-py3-none-any.whl", hash = "sha256:05e027d2bd1f1b1ed07909a1efb865a24cbba3fd94716a77cc637ea93859217b", size = 22688, upload-time = "2026-10-15T19:12:57.069Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/7c/3cc9cd3d4e04d9d39a5ad0501119a390bd87f285db74e00be50da0cd7d6f/newton_usd_schemas-0.7.0-py3-none-any.whl", hash = "sha256:194c7ef6a2bdfe3b2b119090141c5c87ea5180f0d0a64433805eed39b55938d8", size = 29678, upload-time = "2026-11-10T17:42:52.511Z" },
 ]
 
 [[package]]
@@ -3291,7 +3301,9 @@ name = "numpy"
 version = "2.5.3"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and platform_machine == 'aarch64'",
+    "python_full_version >= '3.15' or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform == 'win32')",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
 ]
@@ -4978,7 +4990,9 @@ name = "scipy"
 version = "1.18.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and platform_machine == 'aarch64'",
+    "python_full_version >= '3.15' or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform == 'win32')",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
 ]
@@ -5063,7 +5077,9 @@ name = "setuptools"
 version = "81.0.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and platform_machine == 'aarch64'",
+    "python_full_version >= '3.15' or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform == 'win32')",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
@@ -5078,7 +5094,9 @@ name = "setuptools"
 version = "84.2.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and platform_machine == 'aarch64'",
+    "python_full_version >= '3.15' or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform == 'win32')",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
@@ -5394,7 +5412,9 @@ name = "torch"
 version = "2.11.0+cu128"
 source = { registry = "https://download.pytorch.org/whl/cu128" }
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and platform_machine == 'aarch64'",
+    "python_full_version >= '3.15' or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform == 'win32')",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
@@ -5441,7 +5461,9 @@ name = "torch"
 version = "2.14.0+cu130"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and platform_machine == 'aarch64'",
+    "python_full_version >= '3.15' or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform == 'win32')",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
@@ -5575,7 +5597,9 @@ name = "triton"
 version = "3.6.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and platform_machine == 'aarch64'",
+    "python_full_version >= '3.15' or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform == 'win32')",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
@@ -5600,7 +5624,8 @@ name = "triton"
 version = "3.8.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14'",
+    "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine == 'ARM64' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and platform_machine == 'aarch64'",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
