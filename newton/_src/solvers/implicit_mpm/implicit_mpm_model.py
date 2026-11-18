@@ -202,9 +202,11 @@ def _refresh_particle_masks(
     model_flags: wp.array[wp.int32],
     is_collider_particle: wp.array[wp.int32],
     particle_volume: wp.array[float],
+    young_modulus: wp.array[float],
     transfer_flags: wp.array[wp.int32],
     material_flags: wp.array[wp.int32],
     material_particle_volume: wp.array[float],
+    has_compliant_particles: wp.array[wp.int32],
 ):
     """Derive the transfer and material masks from ``model.particle_flags``.
 
@@ -221,6 +223,8 @@ def _refresh_particle_masks(
     material_flags[i] = f
     if f & newton.ParticleFlags.ACTIVE:
         material_particle_volume[i] = particle_volume[i]
+        if young_modulus[i] < _INFINITY:
+            has_compliant_particles[0] = 1
     else:
         material_particle_volume[i] = 0.0
 
@@ -421,16 +425,27 @@ class ImplicitMPMModel:
         """Refresh the transfer and material particle masks from ``model.particle_flags``.
 
         Runs a single kernel that writes the existing ``particle_flags``,
-        ``material_particle_flags`` and ``material_particle_volume`` arrays in
-        place: no host synchronization or allocation, so it may be called every
-        step and recorded in a CUDA graph.
+        ``material_particle_flags``, ``material_particle_volume`` and
+        ``has_compliant_particles`` arrays in place: no host synchronization or
+        allocation, so it may be called every step and recorded in a CUDA graph.
         """
         model = self.model
+        self.has_compliant_particles.zero_()
         wp.launch(
             _refresh_particle_masks,
             dim=model.particle_count,
-            inputs=[model.particle_flags, self._is_collider_particle, self.particle_volume],
-            outputs=[self.particle_flags, self.material_particle_flags, self.material_particle_volume],
+            inputs=[
+                model.particle_flags,
+                self._is_collider_particle,
+                self.particle_volume,
+                self.material_parameters.young_modulus,
+            ],
+            outputs=[
+                self.particle_flags,
+                self.material_particle_flags,
+                self.material_particle_volume,
+                self.has_compliant_particles,
+            ],
             device=model.device,
         )
 
@@ -449,6 +464,10 @@ class ImplicitMPMModel:
             self.material_particle_volume = _reuse_or_allocate(
                 getattr(self, "material_particle_volume", None), num_particles
             )
+            if getattr(self, "has_compliant_particles", None) is None:
+                # Device flag, nonzero when an active material particle is compliant;
+                # selects the elasticity assembly in a conditional graph node.
+                self.has_compliant_particles = wp.zeros(1, dtype=wp.int32)
             if getattr(self, "_is_collider_particle", None) is None:
                 # Filled by setup_collider(); no particle is a collider before that.
                 self._is_collider_particle = wp.zeros(num_particles, dtype=wp.int32)

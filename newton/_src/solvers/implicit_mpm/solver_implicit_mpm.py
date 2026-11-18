@@ -319,6 +319,8 @@ class ImplicitMPMScratchpad:
         self.transposed_strain_matrix = wps.bsr_zeros(0, 0, mat31)
 
         self.compliance_matrix = wps.bsr_zeros(0, 0, mat66)
+        self.velocity_node_particle_volume = None
+        self.velocity_node_elastic_parameters = None
 
         self.color_offsets = None
         self.color_indices = None
@@ -672,6 +674,7 @@ class ImplicitMPMScratchpad:
         self,
         collider_count: int,
         has_compliant_bodies: bool,
+        has_compliance: bool,
         has_critical_fraction: bool,
         max_colors: int,
         temporary_store: fem.TemporaryStore,
@@ -692,7 +695,29 @@ class ImplicitMPMScratchpad:
         self.unilateral_strain_offset = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=float)
 
         wps.bsr_set_zero(self.strain_matrix, rows_of_blocks=strain_node_count, cols_of_blocks=vel_node_count)
-        wps.bsr_set_zero(self.compliance_matrix, rows_of_blocks=strain_node_count, cols_of_blocks=strain_node_count)
+
+        if has_compliance:
+            # The elasticity system may be skipped by a conditional graph node, whose body
+            # cannot allocate: reserve its outputs and the compliance matrix storage here.
+            self.velocity_node_particle_volume = fem.borrow_temporary(
+                temporary_store, shape=vel_node_count, dtype=float
+            )
+            self.velocity_node_elastic_parameters = fem.borrow_temporary(
+                temporary_store, shape=vel_node_count, dtype=wp.vec3
+            )
+            compliance_capacity = (
+                self._strain_space_restriction.total_node_element_count() * self.strain_nodes_per_element
+            )
+            wps.bsr_set_zero(
+                self.compliance_matrix,
+                rows_of_blocks=strain_node_count,
+                cols_of_blocks=strain_node_count,
+                topology="padded",
+                row_capacity=0,
+                nnz_capacity=compliance_capacity,
+            )
+        else:
+            wps.bsr_set_zero(self.compliance_matrix, rows_of_blocks=strain_node_count, cols_of_blocks=strain_node_count)
 
         if has_critical_fraction:
             self.strain_node_volume = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=float)
@@ -732,6 +757,12 @@ class ImplicitMPMScratchpad:
 
         if self.collider_total_volumes is not None:
             self.collider_total_volumes.release()
+
+        if self.velocity_node_particle_volume is not None:
+            self.velocity_node_particle_volume.release()
+            self.velocity_node_elastic_parameters.release()
+            self.velocity_node_particle_volume = None
+            self.velocity_node_elastic_parameters = None
 
         if self.color_indices is not None:
             self.color_indices.release()
@@ -1032,10 +1063,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         enable_compliance: bool = True
         """Build the elasticity system for compliant particles (``mpm:young_modulus`` below 1e12 Pa).
 
-        Set to ``False`` to treat every particle as rigid and skip the
-        elasticity system, which saves time and memory when no particle is
-        compliant. With ``False``, ``mpm:young_modulus`` and
-        ``mpm:poisson_ratio`` are ignored, even if they change at runtime.
+        The system is assembled only in steps where an active particle is
+        compliant, also within a captured CUDA graph. Set to ``False`` to treat
+        every particle as rigid and not reserve the elasticity system's memory.
+        With ``False``, ``mpm:young_modulus`` and ``mpm:poisson_ratio`` are
+        ignored, even if they change at runtime.
         """
 
         # experimental
@@ -1645,6 +1677,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self.carry_residual_strain = config.carry_residual_strain
 
         self.temporary_store = temporary_store
+        # Pool for the elasticity assembly, which runs in a conditional graph node that
+        # cannot allocate: the buffers are reserved when the solver is constructed.
+        self._elasticity_temporary_store = fem.TemporaryStore()
+        # Whether the current step's compliance matrix is active: a host value, or the device flag in graphs.
+        self._has_compliance: bool | wp.array = False
         self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
         self.enable_timers = enable_timers
 
@@ -1728,6 +1765,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             if self._sparse_rebuildable and self.collider_basis[:3] != "pic":
                 # Allocated before any capture, so graphs do not record the initialization.
                 self._last_step_data.require_keyed_impulses(self._scratchpad.collider_node_count, model.device)
+            if self._mpm_model.enable_compliance:
+                self._warm_elasticity_temporaries(pic)
 
         self._velocity_nodes_per_strain_sample = (
             self._scratchpad.velocity_nodes_per_element
@@ -3034,6 +3073,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             scratch.allocate_temporaries(
                 collider_count=self._mpm_model.collider.collider_mesh.shape[0],
                 has_compliant_bodies=self._mpm_model.has_compliant_colliders,
+                has_compliance=self._mpm_model.enable_compliance,
                 has_critical_fraction=self._mpm_model.critical_fraction > 0.0,
                 max_colors=self._max_colors(),
                 temporary_store=self.temporary_store,
@@ -3648,78 +3688,125 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         if not mpm_model.enable_compliance:
             scratch.elastic_strain_delta_field.dof_values.zero_()
+            self._has_compliance = False
             return
 
+        def assemble():
+            self._assemble_elasticity_system(state_in.mpm.particle_elastic_strain, dt, pic, scratch, inv_cell_volume)
+
         with self._timer("Elasticity"):
-            node_particle_volume = fem.integrate(
-                integrate_active_fraction,
-                quadrature=pic,
-                fields={"phi": scratch.fraction_test},
-                values={
-                    "inv_cell_volume": inv_cell_volume,
-                    "particle_flags": mpm_model.material_particle_flags,
-                },
-                output_dtype=float,
-                temporary_store=self.temporary_store,
-            )
+            if self.model.device.is_capturing:
+                # The rheology solve reuses the device flag to select its kernel variant.
+                wp.capture_if(
+                    mpm_model.has_compliant_particles,
+                    on_true=assemble,
+                    on_false=lambda: self._clear_elasticity_system(scratch),
+                )
+                self._has_compliance = mpm_model.has_compliant_particles
+            else:
+                # Single host read of the flag per step, shared with the rheology solve.
+                self._has_compliance = bool(mpm_model.has_compliant_particles.numpy()[0])
+                if self._has_compliance:
+                    assemble()
+                else:
+                    self._clear_elasticity_system(scratch)
 
-            elastic_parameters_int = fem.integrate(
-                integrate_elastic_parameters,
-                quadrature=pic,
-                fields={"u": scratch.velocity_test},
-                values={
-                    "material_parameters": mpm_model.material_parameters,
-                    "particle_flags": mpm_model.material_particle_flags,
-                    "inv_cell_volume": inv_cell_volume,
-                },
-                output_dtype=wp.vec3,
-                temporary_store=self.temporary_store,
-            )
+    def _warm_elasticity_temporaries(self, pic: fem.PicQuadrature):
+        """Fill the elasticity temporary store by assembling the system once outside any graph capture."""
+        particle_elastic_strain = wp.zeros(self.model.particle_count, dtype=wp.mat33)
+        self._assemble_elasticity_system(particle_elastic_strain, 1.0, pic, self._scratchpad, 1.0)
 
-            wp.launch(
-                average_elastic_parameters,
-                dim=scratch.elastic_parameters_field.space_partition.node_count(),
-                inputs=[
-                    elastic_parameters_int,
-                    node_particle_volume,
-                    scratch.elastic_parameters_field.dof_values,
-                ],
-            )
+    def _clear_elasticity_system(self, scratch: ImplicitMPMScratchpad):
+        """Empty the compliance matrix and elastic strain, as for rigid particles."""
+        scratch.elastic_strain_delta_field.dof_values.zero_()
+        scratch.compliance_matrix.row_counts.zero_()
 
-            fem.integrate(
-                strain_rhs,
-                quadrature=pic,
-                fields={
-                    "tau": scratch.sym_strain_test,
-                    "elastic_parameters": scratch.elastic_parameters_field,
-                },
-                values={
-                    "elastic_strains": state_in.mpm.particle_elastic_strain,
-                    "particle_flags": mpm_model.material_particle_flags,
-                    "inv_cell_volume": inv_cell_volume,
-                    "dt": dt,
-                },
-                temporary_store=self.temporary_store,
-                output=scratch.elastic_strain_delta_field.dof_values,
-            )
+    def _assemble_elasticity_system(
+        self,
+        particle_elastic_strain: wp.array[wp.mat33],
+        dt: float,
+        pic: fem.PicQuadrature,
+        scratch: ImplicitMPMScratchpad,
+        inv_cell_volume: float,
+    ):
+        """Assemble the compliance matrix and elastic strain right-hand side.
 
-            fem.integrate(
-                compliance_form,
-                quadrature=pic,
-                fields={
-                    "tau": scratch.sym_strain_test,
-                    "sig": scratch.sym_strain_trial,
-                    "elastic_parameters": scratch.elastic_parameters_field,
-                },
-                values={
-                    "elastic_strains": state_in.mpm.particle_elastic_strain,
-                    "particle_flags": mpm_model.material_particle_flags,
-                    "inv_cell_volume": inv_cell_volume,
-                    "dt": dt,
-                },
-                output=scratch.compliance_matrix,
-                temporary_store=self.temporary_store,
-            )
+        Runs in a conditional graph node, which cannot allocate: it writes the arrays reserved
+        by :meth:`ImplicitMPMScratchpad.allocate_temporaries`, borrows its scratch buffers from
+        the pool filled by :meth:`_warm_elasticity_temporaries`, and assembles the compliance
+        matrix into its reserved padded storage.
+        """
+        mpm_model = self._mpm_model
+        node_particle_volume = fem.integrate(
+            integrate_active_fraction,
+            quadrature=pic,
+            fields={"phi": scratch.fraction_test},
+            values={
+                "inv_cell_volume": inv_cell_volume,
+                "particle_flags": mpm_model.material_particle_flags,
+            },
+            output=scratch.velocity_node_particle_volume,
+            temporary_store=self._elasticity_temporary_store,
+        )
+
+        elastic_parameters_int = fem.integrate(
+            integrate_elastic_parameters,
+            quadrature=pic,
+            fields={"u": scratch.velocity_test},
+            values={
+                "material_parameters": mpm_model.material_parameters,
+                "particle_flags": mpm_model.material_particle_flags,
+                "inv_cell_volume": inv_cell_volume,
+            },
+            output=scratch.velocity_node_elastic_parameters,
+            temporary_store=self._elasticity_temporary_store,
+        )
+
+        wp.launch(
+            average_elastic_parameters,
+            dim=scratch.elastic_parameters_field.space_partition.node_count(),
+            inputs=[
+                elastic_parameters_int,
+                node_particle_volume,
+                scratch.elastic_parameters_field.dof_values,
+            ],
+        )
+
+        fem.integrate(
+            strain_rhs,
+            quadrature=pic,
+            fields={
+                "tau": scratch.sym_strain_test,
+                "elastic_parameters": scratch.elastic_parameters_field,
+            },
+            values={
+                "elastic_strains": particle_elastic_strain,
+                "particle_flags": mpm_model.material_particle_flags,
+                "inv_cell_volume": inv_cell_volume,
+                "dt": dt,
+            },
+            temporary_store=self._elasticity_temporary_store,
+            output=scratch.elastic_strain_delta_field.dof_values,
+        )
+
+        fem.integrate(
+            compliance_form,
+            quadrature=pic,
+            fields={
+                "tau": scratch.sym_strain_test,
+                "sig": scratch.sym_strain_trial,
+                "elastic_parameters": scratch.elastic_parameters_field,
+            },
+            values={
+                "elastic_strains": particle_elastic_strain,
+                "particle_flags": mpm_model.material_particle_flags,
+                "inv_cell_volume": inv_cell_volume,
+                "dt": dt,
+            },
+            output=scratch.compliance_matrix,
+            temporary_store=self._elasticity_temporary_store,
+            bsr_options={"construction": "row_compress", "capacity": "reuse", "topology": "padded"},
+        )
 
     def _build_plasticity_system(
         self,
@@ -3908,7 +3995,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             B = scratch.strain_matrix
             strain_mat_tmp = wp.empty_like(B.values)
             wp.launch(
-                rotate_matrix_rows, dim=B.nnz, inputs=[basis_transform, B.offsets, B.columns, B.values, strain_mat_tmp]
+                rotate_matrix_rows,
+                dim=B.nnz,
+                inputs=[basis_transform, B.offsets, B.columns, B.row_counts, B.values, strain_mat_tmp],
             )
             B.values = strain_mat_tmp
 
@@ -3917,12 +4006,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             wp.launch(
                 rotate_matrix_rows,
                 dim=C.nnz,
-                inputs=[basis_transform, C.offsets, C.columns, C.values, compliance_mat_tmp],
+                inputs=[basis_transform, C.offsets, C.columns, C.row_counts, C.values, compliance_mat_tmp],
             )
             wp.launch(
                 rotate_matrix_columns,
                 dim=C.nnz,
-                inputs=[basis_transform, C.offsets, C.columns, compliance_mat_tmp, C.values],
+                inputs=[basis_transform, C.offsets, C.columns, C.row_counts, compliance_mat_tmp, C.values],
             )
 
             rotate_vectors = make_rotate_vectors(nodes_per_elt)
@@ -4025,6 +4114,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     else 0
                 ),
                 include_unconverged_strain=self.carry_residual_strain == "unconverged",
+                has_compliance=self._has_compliance,
             )
             contact_temporaries = []
             contact_cell_offsets = None

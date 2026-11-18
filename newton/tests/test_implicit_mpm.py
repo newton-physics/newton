@@ -412,6 +412,7 @@ def test_delassus_majorizer(test, device):
             wp.empty(0, dtype=float),
             wp.array(np.arange(count + 1), dtype=int),
             wp.array(np.arange(count), dtype=int),
+            None,
             wp.array(values, dtype=mat66),
             wp.empty(0, dtype=int),
             wp.empty((0, 0), dtype=float),
@@ -503,6 +504,7 @@ def _postprocessed_plastic_strain(diagonal_scale, device):
         inputs=[
             wp.array([0, 0], dtype=int, device=device),
             wp.empty(0, dtype=int, device=device),
+            None,
             wp.empty(0, dtype=mat66, device=device),
             wp.array([0, 1], dtype=int, device=device),
             wp.array([0], dtype=int, device=device),
