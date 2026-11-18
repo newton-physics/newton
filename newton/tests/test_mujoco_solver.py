@@ -2276,6 +2276,61 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
                 "Value did not change from initial!",
             )
 
+    def test_joint_frame_and_axis_updates_reach_native_mujoco_model(self):
+        """Joint axis and frame edits move the joint in the stepped MuJoCo model on both backends."""
+
+        def build_model():
+            builder = newton.ModelBuilder()
+            link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
+            builder.add_shape_sphere(link, radius=0.05)
+            joint = builder.add_joint_revolute(
+                parent=-1,
+                child=link,
+                axis=(1.0, 0.0, 0.0),
+                parent_xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
+                child_xform=wp.transform((0.5, 0.0, 0.0), wp.quat_identity()),
+            )
+            builder.add_articulation([joint])
+            return builder.finalize()
+
+        def edit(model):
+            model.joint_axis.assign([[0.0, 1.0, 0.0]])
+            model.joint_X_p.assign(
+                [wp.transform((0.0, 0.0, 2.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5))]
+            )
+            model.joint_X_c.assign([wp.transform((0.3, 0.0, 0.0), wp.quat_identity())])
+
+        def swing(model, solver):
+            state_in, state_out = model.state(), model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+            control = model.control()
+            for _ in range(20):
+                state_in.clear_forces()
+                solver.step(state_in, state_out, control, None, 0.002)
+                state_in, state_out = state_out, state_in
+            return state_in.joint_q.numpy().copy()
+
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                model = build_model()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                edit(model)
+                solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+
+                reference_model = build_model()
+                edit(reference_model)
+                reference = SolverMuJoCo(reference_model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+
+                if use_mujoco_cpu:
+                    for name in ("jnt_pos", "jnt_axis", "body_pos", "body_quat"):
+                        np.testing.assert_allclose(
+                            getattr(solver.mj_model, name), getattr(reference.mj_model, name), atol=1.0e-6, err_msg=name
+                        )
+                joint_q = swing(model, solver)
+                reference_q = swing(reference_model, reference)
+                self.assertGreater(abs(float(reference_q[0])), 1.0e-3)
+                np.testing.assert_allclose(joint_q, reference_q, atol=1.0e-5)
+
 
 @requires(*MUJOCO_MODULES)
 class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
@@ -9726,6 +9781,45 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 tau_newton = observables.qfrc_actuator.numpy()[qd_start : qd_start + 3]
                 err = float(np.max(np.abs(tau_newton - expected)))
                 self.assertLess(err, 1e-5, f"got={tau_newton}, expected={expected}, err={err:.2e}")
+
+    @requires(*MUJOCO_MODULES)
+    def test_ball_joint_zero_effort_limit_raises(self):
+        """A zero effort limit on an actuated ball joint cannot be a MuJoCo force range."""
+
+        def make_model(world_count, mode):
+            template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joint = template.add_joint_ball(-1, body, actuator_mode=mode, label="shoulder")
+            template.add_articulation([joint])
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            builder.replicate(template, world_count)
+            return builder.finalize()
+
+        for mode in (
+            newton.JointTargetMode.POSITION,
+            newton.JointTargetMode.VELOCITY,
+            newton.JointTargetMode.POSITION_VELOCITY,
+        ):
+            for use_mujoco_cpu in (False, True):
+                with self.subTest(mode=mode, use_mujoco_cpu=use_mujoco_cpu):
+                    model = make_model(1, mode)
+                    model.joint_effort_limit.assign(np.array([1.0, 0.0, 1.0], dtype=np.float32))
+                    with self.assertRaisesRegex(ValueError, r"Joint '.*shoulder' axis 1 has joint_effort_limit=0"):
+                        SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+
+        with self.subTest("zero in one of two worlds"):
+            model = make_model(2, newton.JointTargetMode.VELOCITY)
+            model.joint_effort_limit.assign(np.array([1.0, 1.0, 1.0, 1.0, 1.0, 0.0], dtype=np.float32))
+            with self.assertRaisesRegex(ValueError, "axis 2 has joint_effort_limit=0"):
+                SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+
+        # NONE and EFFORT create no MuJoCo actuator, so a zero effort limit is allowed.
+        for mode in (newton.JointTargetMode.NONE, newton.JointTargetMode.EFFORT):
+            for use_mujoco_cpu in (False, True):
+                with self.subTest("no actuator", mode=mode, use_mujoco_cpu=use_mujoco_cpu):
+                    model = make_model(1, mode)
+                    model.joint_effort_limit.zero_()
+                    SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
 
     @requires(*MUJOCO_MODULES)
     def test_ball_joint_effort_limit_runtime_update(self):
