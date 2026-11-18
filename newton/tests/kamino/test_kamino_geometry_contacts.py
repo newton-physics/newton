@@ -1674,7 +1674,8 @@ class TestGeometryContactConversions(NewtonTestCase):
         """Genuine box-plane contacts (gapfunc.w <= 0) survive culling.
 
         Covers the full ``(gap, margin)`` matrix with the box placed at or below
-        the rest offset so no contact is speculative.
+        the rest offset so no contact is speculative, and a box that rounding
+        could leave just above it.
         """
         half_extent = 0.25
 
@@ -1683,8 +1684,9 @@ class TestGeometryContactConversions(NewtonTestCase):
             (0.0, 0.1, half_extent - 0.01),
             (0.02, 0.0, half_extent + 0.02),
             (0.02, 0.1, half_extent + 0.02),
+            (0.0, 0.1, half_extent + 5.0e-7),
         ):
-            with self.subTest(margin=margin, gap=gap):
+            with self.subTest(margin=margin, gap=gap, box_z=box_z):
                 scene = build_box_on_plane_scene(box_z, margin=margin, gap=gap, half_extent=half_extent)
                 model = scene.finalize(self.default_device)
                 state = model.state()
@@ -1857,6 +1859,7 @@ class TestGeometryContactConversions(NewtonTestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

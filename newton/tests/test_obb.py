@@ -7,7 +7,7 @@ import numpy as np
 import warp as wp
 
 from newton._src.geometry.utils import compute_inertia_obb, compute_pca_obb
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.unittest_utils import assert_np_equal, requires
 
 
 class TestOBB(unittest.TestCase):
@@ -39,6 +39,7 @@ class TestOBB(unittest.TestCase):
         assert_np_equal(np.array(tf_inertia[0:3]), vertices[0], tol=1e-6)
         assert_np_equal(np.array(extents_inertia), np.zeros(3), tol=1e-6)
 
+    @requires("scipy")
     def test_axis_aligned_box(self):
         """Test OBB computation on an axis-aligned box."""
         # Create vertices of a 2x3x4 box centered at origin
@@ -69,6 +70,7 @@ class TestOBB(unittest.TestCase):
         assert_np_equal(np.array(tf_inertia[0:3]), np.zeros(3), tol=1e-4)
         assert_np_equal(np.sort(np.array(extents_inertia)), np.sort(expected_extents), tol=1e-4)
 
+    @requires("scipy")
     def test_rotated_box(self):
         """Test OBB computation on a rotated box."""
         # Create a box and rotate it 45 degrees around Z axis
@@ -157,6 +159,7 @@ class TestOBB(unittest.TestCase):
         self.assertEqual(num_z_aligned, 1, "Exactly one OBB axis should align with global Z")
         self.assertEqual(num_xy_at_45deg, 2, "Exactly two OBB axes should be in XY plane at 45° angle")
 
+    @requires("scipy")
     def test_comparable_volumes(self):
         """Test that both methods produce reasonable OBB volumes."""
         # Create a slightly skewed point cloud
@@ -195,6 +198,7 @@ class TestOBB(unittest.TestCase):
         ratio = max(volume_pca, volume_inertia) / min(volume_pca, volume_inertia)
         self.assertLess(ratio, 2.0)
 
+    @requires("scipy")
     def test_concave_mesh(self):
         """Test OBB computation on a concave shape (L-shaped)."""
         # Create an L-shaped point cloud
@@ -231,6 +235,7 @@ class TestOBB(unittest.TestCase):
         self.assertGreaterEqual(max_extents_pca, 3.9)
         self.assertGreaterEqual(max_extents_inertia, 3.9)
 
+    @requires("scipy")
     def test_symmetric_shape(self):
         """Test OBB computation on highly symmetric shapes where PCA might be unstable."""
         # Create vertices of a regular octahedron (all axes have equal variance)
@@ -268,6 +273,7 @@ class TestOBB(unittest.TestCase):
         self.assertTrue(np.all(extents_pca_np > 0))
         self.assertTrue(np.all(extents_inertia_np > 0))
 
+    @requires("scipy")
     def test_deterministic_results(self):
         """Test that OBB computation gives consistent results across multiple runs."""
         # Create a simple test shape

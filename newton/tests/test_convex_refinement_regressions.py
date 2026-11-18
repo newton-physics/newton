@@ -17,7 +17,7 @@ from newton.tests.test_convex_contact_witness import (
     _failed_distance_query,
     _unconverged_distance_query,
 )
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices, requires
 
 
 def _contacts(
@@ -82,6 +82,7 @@ def _contacts(
     return np.asarray(box_points), np.asarray(mesh_points), np.asarray(directions)
 
 
+@requires("scipy")
 def test_refinement_signed_separation(test, device):
     """Preserve physical gaps and normal direction inside the inflated contact envelope."""
     from scipy.spatial import ConvexHull
@@ -150,6 +151,7 @@ def test_refinement_signed_separation(test, device):
             np.testing.assert_allclose(np.sum((pa - pb) * normals, axis=1), -expected_gap, atol=1.0e-6)
 
 
+@requires("scipy")
 def test_refinement_source_topology(test, device):
     """Keep correct contacts when the same support vertices have concave or incomplete triangles."""
     from scipy.spatial import ConvexHull
@@ -216,6 +218,7 @@ def test_refinement_source_topology(test, device):
             test.assertAlmostEqual(float(np.max(np.sum((pa - pb) * normals, axis=1))), -plane[3], delta=1.0e-5)
 
 
+@requires("scipy")
 def test_refinement_failed_query_separation(test, device, *, unconverged=False):
     """Leave a separated pair unresolved when every refinement distance query fails."""
     from scipy.spatial import ConvexHull
@@ -256,6 +259,7 @@ def test_refinement_failed_query_separation(test, device, *, unconverged=False):
             test.assertEqual(int(hit.numpy()[0]), 0)
 
 
+@requires("scipy")
 def test_refinement_unconverged_query_separation(test, device):
     """Reject uncertified distance witnesses for physically separated inflated shapes."""
     test_refinement_failed_query_separation(test, device, unconverged=True)
@@ -515,6 +519,7 @@ def _sphere_points(count, seed):
     return (points / np.linalg.norm(points, axis=1, keepdims=True)).astype(np.float32)
 
 
+@requires("scipy")
 def test_refinement_box_hull_depth(test, device):
     """Match box-hull depths to a brute-force Minkowski-difference minimum.
 

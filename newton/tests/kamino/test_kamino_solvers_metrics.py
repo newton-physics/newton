@@ -9,6 +9,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.integrators.euler import integrate_euler_semi_implicit
 from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJacobians
@@ -1162,6 +1163,7 @@ class TestSolverMetrics(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

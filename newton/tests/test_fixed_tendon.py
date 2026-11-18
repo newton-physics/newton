@@ -9,8 +9,10 @@ import warp as wp
 import newton
 from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
+@requires(*MUJOCO_MODULES)
 class TestMujocoFixedTendon(unittest.TestCase):
     class LimitBreachType(IntEnum):
         UPPER_LIMIT_FROM_ABOVE = 0

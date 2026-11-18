@@ -16,7 +16,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverSteel
-from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, has_module
 
 AXIS_Y = wp.vec3(0.0, 1.0, 0.0)
 
@@ -592,7 +592,7 @@ class TestSteelLinkBreak(unittest.TestCase):
             warnings.simplefilter("always")
             newton.ModelBuilder().add_mjcf(mjcf, collapse_fixed_joints=True)
         self.assertFalse([w for w in caught if "loop-closing" in str(w.message)])
-        if USD_AVAILABLE:
+        if has_module("pxr.Usd"):
             builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
             with self.assertWarnsRegex(newton.NewtonWarning, r"does not preserve FIXED loop-closing joints"):
                 builder.add_usd(_four_bar_link_break_stage(), collapse_fixed_joints=True)
@@ -608,13 +608,13 @@ for _name in (
     "test_weld_to_world_returns_the_short_way",
 ):
     add_function_test(TestSteelLinkBreak, _name, globals()[_name], devices=get_cuda_test_devices())
-if USD_AVAILABLE:
-    add_function_test(
-        TestSteelLinkBreak,
-        "test_link_break_four_bar_from_usd",
-        test_link_break_four_bar_from_usd,
-        devices=get_cuda_test_devices(),
-    )
+add_function_test(
+    TestSteelLinkBreak,
+    "test_link_break_four_bar_from_usd",
+    test_link_break_four_bar_from_usd,
+    devices=get_cuda_test_devices(),
+    requires=("pxr.Usd",),
+)
 
 
 if __name__ == "__main__":
