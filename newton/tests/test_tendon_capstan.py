@@ -2207,7 +2207,7 @@ def test_dynamic_pulley_uses_angular_jacobian(test, device):
 
 
 def test_high_inertia_pulley_follows_atwood_law(test, device):
-    """A heavy no-slip pulley follows the Atwood law instead of locking the cable.
+    """Check that a heavy no-slip pulley follows the Atwood law instead of locking the cable.
 
     A no-slip Atwood machine with pulley inertia ``I = M R^2 / 2`` accelerates the cable at
     ``a = (m_r - m_l) g / (m_l + m_r + M / 2)``, so the rim travels ``a t^2 / 2`` from rest.
