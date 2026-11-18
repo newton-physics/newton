@@ -887,17 +887,23 @@ dimension:
        with unit ``thickness`` and membrane (stretch) elasticity only.
    * - Springs
      - 1D
-     - ``edgestiffness`` and ``edgedamping`` from ``spring_stiffness`` and
+     - With the ``"discrete"`` integrator, a constraint on the edge lengths of
+       springs with ``spring_stiffness``. With the other integrators,
+       ``edgestiffness`` and ``edgedamping`` from ``spring_stiffness`` and
        ``spring_damping``. Stretch only: 1D flexes resist bending only when
        ``young`` is set through ``add_flex``.
 
-MuJoCo applies 1D edge stiffness as an explicit passive force, while the
-``"discrete"`` integrator solves 2D and 3D elasticity implicitly. A spring
-chain with stiffness ``k`` and particle mass ``m`` is stable only for time
-steps below about ``sqrt(m / k)``; stiffer cables than solvers such as
-:class:`~newton.solvers.SolverVBD` handle at the same step size need smaller
-steps in MuJoCo, or ``edgeequality=True`` in ``add_flex``, which replaces edge
-stiffness with a constraint on edge lengths.
+MuJoCo's ``"discrete"`` integrator, the default for models with flexes, does
+not support 1D edge stiffness and damping, and MuJoCo recommends edge
+constraints in their place. Springs with a positive stiffness therefore keep
+their rest lengths there, as with ``edgeequality=True`` in ``add_flex``, and
+their stiffness and damping values are not used. To simulate the springs
+themselves, pass ``integrator="euler"`` or ``"rk4"``, or ``"implicitfast"``
+for models without elastic flexes. MuJoCo then applies edge stiffness and
+damping as explicit passive forces, so a spring chain with stiffness ``k`` and
+particle mass ``m`` is stable only for time steps below about
+``sqrt(m / k)``. Edge stiffness and damping passed to ``add_flex`` always
+reach MuJoCo, which rejects them with the ``"discrete"`` integrator.
 
 A triangle whose particles all belong to a tetrahedral flex is skipped, so the
 surface triangles of a tetrahedral mesh do not form a second flex. Springs are
@@ -942,8 +948,8 @@ derived as in the table above.
 
 When flexes are created, an ``"implicit"`` or ``"implicitfast"``
 integrator taken from the model's custom attributes or Newton's default is
-replaced by ``"discrete"``, because MuJoCo integrates flex elasticity only with
-that integrator. Newton's
+replaced by ``"discrete"``, because MuJoCo rejects flex elasticity with those
+integrators. Newton's
 triangle damping, drag, and lift, tetrahedron damping, and dihedral bending
 edges are not converted.
 

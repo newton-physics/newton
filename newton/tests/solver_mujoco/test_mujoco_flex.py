@@ -77,10 +77,18 @@ class TestMuJoCoFlex(unittest.TestCase):
         # The soft grid's surface triangles are covered by its 3D flex, so the 2D flex holds only the cloth.
         np.testing.assert_array_equal(mj_model.flex_vertnum, [8, 9, 3])
         np.testing.assert_array_equal(mj_model.flex_elemnum, [5, 8, 2])
-        np.testing.assert_allclose(mj_model.flex_edgestiffness, [0.0, 0.0, 50.0])
-        np.testing.assert_allclose(mj_model.flex_edgedamping, [0.0, 0.0, 0.5])
+        # The default discrete integrator has no edge stiffness or damping, so the rope's edges are constrained.
+        np.testing.assert_array_equal(mj_model.flex_edgeequality, [0, 0, 1])
+        np.testing.assert_array_equal(mj_model.flex_edgestiffness, 0.0)
+        np.testing.assert_array_equal(mj_model.flex_edgedamping, 0.0)
         # Every particle except the pinned rope end has three slide DOFs.
         self.assertEqual(mj_model.nv, 3 * (model.particle_count - 1))
+
+        # Other integrators keep the spring stiffness and damping.
+        mj_model = SolverMuJoCo(model, integrator="euler").mj_model
+        self.assertEqual(mj_model.neq, 0)
+        np.testing.assert_allclose(mj_model.flex_edgestiffness, [0.0, 0.0, 50.0])
+        np.testing.assert_allclose(mj_model.flex_edgedamping, [0.0, 0.0, 0.5])
 
     def test_cloth_falls_onto_ground_in_each_world(self):
         """Replicated cloths rest on the ground while a massless particle stays pinned."""
@@ -192,7 +200,10 @@ class TestMuJoCoFlex(unittest.TestCase):
         np.testing.assert_array_equal(model.mujoco.tri_flex.numpy().reshape(2, -1)[:, 0], [0, 2])
         np.testing.assert_array_equal(model.mujoco.spring_flex.numpy(), [1, 1, 3, 3])
 
-        solver = SolverMuJoCo(model)
+        # MuJoCo's default discrete integrator rejects authored edge stiffness.
+        with self.assertRaisesRegex(ValueError, "edge stiffness"):
+            SolverMuJoCo(model)
+        solver = SolverMuJoCo(model, integrator="euler")
         mj_model = solver.mj_model
         np.testing.assert_array_equal(mj_model.flex_dim, [2, 2, 1])
         self.assertEqual(solver._mujoco.mj_id2name(mj_model, solver._mujoco.mjtObj.mjOBJ_FLEX, 0), "sheet")
@@ -236,7 +247,7 @@ class TestMuJoCoFlex(unittest.TestCase):
         builder = _builder()
         below = [builder.add_particle((0.1 * i - 0.2, 0.0, 0.1), (0.0, 0.0, 0.0), 0.0, radius=0.01) for i in range(5)]
         for a, b in itertools.pairwise(below):
-            builder.add_spring(a, b, 1.0e3, 0.0, 0.0)
+            builder.add_spring(a, b, 0.0, 0.0, 0.0)
         above = [builder.add_particle((0.0, 0.1 * i - 0.2, 0.2), (0.0, 0.0, 0.0), 0.01, radius=0.01) for i in range(5)]
         start = builder.spring_count
         for a, b in itertools.pairwise(above):
@@ -292,7 +303,7 @@ class TestMuJoCoFlex(unittest.TestCase):
         mj_model = solver.mj_model
         np.testing.assert_array_equal(mj_model.flex_dim, [2, 1])
         self.assertEqual(mj_model.flex_elemnum[1], model.spring_count)
-        np.testing.assert_allclose(mj_model.flex_edgestiffness[1], 10.0)
+        self.assertEqual(mj_model.flex_edgeequality[1], 1)
         self.assertEqual(mj_model.flex_contype[1], 0)
         self.assertEqual(mj_model.flex_conaffinity[1], 0)
 

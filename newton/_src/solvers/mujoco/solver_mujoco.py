@@ -3491,9 +3491,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         remaining elements of each dimension form one flex with the default settings, skipping
         triangles whose particles all belong to a tetrahedral flex. Negative ``young``,
         ``edgestiffness``, ``edgedamping``, ``radius``, and sliding ``friction`` values are derived
-        from the Newton model. Flexes collide with each other and with shapes flagged
-        :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`, and with themselves when ``selfcollide`` is
-        set. Springs whose particles all belong to a 2D or 3D flex form a separate flex that does
+        from the Newton model; with the discrete integrator, springs with stiffness get
+        ``edgeequality`` instead of edge stiffness and damping. Flexes collide with each other
+        and with shapes flagged :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`, and with themselves
+        when ``selfcollide`` is set. Springs whose particles all belong to a 2D or 3D flex form a separate flex that does
         not collide. Flexes with ``edgeequality`` get a MuJoCo flex equality constraint on their edge lengths.
 
         Args:
@@ -3573,7 +3574,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Surface triangles of a tetrahedral mesh would duplicate its 3D flex.
                 unowned &= ~covered
             if dim == 1:
-                # Cloth springs keep their stiffness in a separate flex that does not collide, since
+                # Cloth springs form a separate flex that does not collide, since
                 # colliding with the cloth flex over the same particles would push the cloth apart.
                 groups.append((-1, unowned & covered))
                 unowned &= ~covered
@@ -3603,14 +3604,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 if dim == 2:
                     mj_flex.thickness = params["thickness"]
                     mj_flex.elastic2d = int(params["elastic2d"])
+                edgeequality = bool(params["edgeequality"])
                 if dim == 1:
+                    # MuJoCo's discrete integrator rejects edge stiffness and damping and recommends
+                    # edge constraints instead, so springs with stiffness become constraints there.
+                    discrete = spec.option.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
                     for name, values in (
                         ("edgestiffness", model.spring_stiffness),
                         ("edgedamping", model.spring_damping),
                     ):
                         value = params[name]
-                        setattr(mj_flex, name, value if value >= 0.0 else flex._uniform(values.numpy()[keep], name))
-                if params["edgeequality"]:
+                        if value < 0.0 and discrete:
+                            edgeequality |= name == "edgestiffness" and bool(values.numpy()[keep].any())
+                            value = 0.0
+                        elif value < 0.0:
+                            value = flex._uniform(values.numpy()[keep], name)
+                        setattr(mj_flex, name, value)
+                if edgeequality:
                     # MuJoCo rejects edge stiffness together with edge constraints.
                     mj_flex.edgestiffness = 0.0
                     equality = spec.add_equality(type=mujoco.mjtEq.mjEQ_FLEX)
