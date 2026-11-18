@@ -1417,7 +1417,7 @@ add_diffsim_example_test(
     # deliberate multi-minute interactive run and is never executed by CI).
     # Measured --test runtimes: ~12 s CUDA, ~9 s CPU - the default 600 s
     # timeout is plenty.
-    test_options={"num-frames": 2, "usd_required": True},
+    test_options={"requires": ("pxr.Usd",), "num-frames": 2},
     test_options_cpu={"num-frames": 1},
     use_viewer=True,
     expect_output_regexes=[(_DIFFSIM_BACKFLIP_GRADIENT_OUTPUT_RE, "stdout")],
