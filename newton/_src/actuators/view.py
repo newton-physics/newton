@@ -54,8 +54,8 @@ _SCATTER_KERNELS = {
 
 
 def _actuator_components(actuator: Actuator) -> tuple[Any, ...]:
-    delay = (actuator.delay,) if actuator.delay is not None else ()
-    return (actuator.drive, *delay, *actuator.clamping)
+    motor = (actuator.motor,) if actuator.motor is not None else ()
+    return (actuator.drive, *actuator.input_processors, *actuator.clamping, *motor)
 
 
 def _component_owner(component: Any, actuators: Iterable[Actuator], scope: str) -> Actuator:

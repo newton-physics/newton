@@ -14,8 +14,8 @@ from newton.actuators import (
     Actuator,
     ClampingMaxEffort,
     ClampingPositionBased,
-    Delay,
     DrivePD,
+    InputProcessorDelay,
 )
 from newton.selection import ActuatorView
 
@@ -40,8 +40,8 @@ class TestActuatorView(unittest.TestCase):
                 kp=wp.array(kp, dtype=wp.float32, device=device),
                 kd=wp.zeros(count, dtype=wp.float32, device=device),
             ),
-            delay=(
-                Delay(wp.array(delay_steps, dtype=wp.int32, device=device), max(delay_steps))
+            input_processors=(
+                [InputProcessorDelay(wp.array(delay_steps, dtype=wp.int32, device=device), max(delay_steps))]
                 if delay_steps is not None
                 else None
             ),
@@ -92,12 +92,12 @@ class TestActuatorView(unittest.TestCase):
             max_effort=[100.0, 200.0, 300.0, 400.0],
         )
         view = self.make_view(actuator)
-        delays = view.get_actuator_parameter("delay_steps", actuator.delay)
+        delays = view.get_actuator_parameter("delay_steps", actuator.input_processors[0])
         efforts = view.get_actuator_parameter("max_effort", actuator.clamping[0])
         np.testing.assert_array_equal(delays.numpy(), [[1, 0, 2], [1, 0, 2]])
         np.testing.assert_array_equal(efforts.numpy(), [[100.0, 0.0, 200.0], [300.0, 0.0, 400.0]])
-        view.set_actuator_parameter("delay_steps", actuator.delay, [[2, 0, 1], [2, 0, 1]])
-        np.testing.assert_array_equal(actuator.delay.delay_steps.numpy(), [2, 1, 2, 1])
+        view.set_actuator_parameter("delay_steps", actuator.input_processors[0], [[2, 0, 1], [2, 0, 1]])
+        np.testing.assert_array_equal(actuator.input_processors[0].delay_steps.numpy(), [2, 1, 2, 1])
 
     def test_parameter_access_follows_current_components(self):
         """Resolve component ownership after replacement and reject foreign components."""
@@ -134,13 +134,13 @@ class TestActuatorView(unittest.TestCase):
         actuator = self.make_actuator([10, 20], delay_steps=[1, 2])
         view = ActuatorView([actuator], dof_indices=wp.empty((2, 1, 0), dtype=int, device=wp.get_device()))
 
-        values = view.get_actuator_parameter("delay_steps", actuator.delay)
+        values = view.get_actuator_parameter("delay_steps", actuator.input_processors[0])
 
         self.assertEqual(values.shape, (2, 1, 0))
         self.assertEqual(values.dtype, wp.int32)
 
         with self.assertRaisesRegex(ValueError, "per-entry parameter"):
-            view.set_actuator_parameter("missing", actuator.delay, [])
+            view.set_actuator_parameter("missing", actuator.input_processors[0], [])
 
         empty_actuator = self.make_actuator([], indices=[])
         empty_view = ActuatorView(

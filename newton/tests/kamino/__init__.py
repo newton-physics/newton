@@ -12,9 +12,14 @@ import warp as wp
 # Module interface
 ###
 
-__all__ = ["expect_contact_capacity_warning", "setup_tests", "test_context"]
+__all__ = ["allow_verbose_output", "expect_contact_capacity_warning", "setup_tests", "test_context"]
 
 _CONTACT_CAPACITY_WARNING_RE = r"^Warning: Kamino per-world contact capacity exceeded\..*\n?"
+
+
+def allow_verbose_output(test):
+    """Allow any stdout output in ``test``, which verbose logging prints to."""
+    test.allowOutputRegex(r"[\s\S]+", stream="stdout")
 
 
 def expect_contact_capacity_warning(test):

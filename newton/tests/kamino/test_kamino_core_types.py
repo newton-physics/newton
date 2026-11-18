@@ -13,17 +13,21 @@ dtype=wp.int32)`` and ``wp_int32_array.assign(np_int64_arr)`` silently
 truncate; the helpers raise :class:`OverflowError` instead.
 """
 
+import logging
 import unittest
 
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.types import (
     assign_to_warp_int32_array,
     to_warp_int32_array,
 )
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
+
+logger = logging.getLogger(__name__)
 
 ###
 # Constants
@@ -46,15 +50,15 @@ class TestToWarpInt32Array(unittest.TestCase):
         self.verbose = test_context.verbose
 
         if self.verbose:
-            print("\n")
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     # --- Happy paths ------------------------------------------------------
 
@@ -163,15 +167,15 @@ class TestAssignToWarpInt32Array(unittest.TestCase):
         self.verbose = test_context.verbose
 
         if self.verbose:
-            print("\n")
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def _make_dst(self, size: int, dtype=wp.int32) -> wp.array:
         return wp.zeros(size, dtype=dtype, device=self.default_device)
@@ -286,5 +290,6 @@ class TestAssignToWarpInt32Array(unittest.TestCase):
 ###
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     setup_tests()
     unittest.main(verbosity=2)

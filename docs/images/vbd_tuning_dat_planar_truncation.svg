@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="800" viewBox="0 0 1100 800" font-family="DejaVu Sans, Arial, sans-serif" font-size="15">
+<rect x="0" y="0" width="1100" height="800" fill="#ffffff"/>
+<defs>
+<marker id="red" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L10,5 L0,10 z" fill="#b3471e"/></marker>
+<marker id="red_light" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L10,5 L0,10 z" fill="#b3471e" fill-opacity="0.55"/></marker>
+<marker id="tri" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L10,5 L0,10 z" fill="#2b6ca3"/></marker>
+<marker id="tri_light" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L10,5 L0,10 z" fill="#2b6ca3" fill-opacity="0.55"/></marker>
+<marker id="blue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L10,5 L0,10 z" fill="#444"/></marker>
+<marker id="blue_light" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L10,5 L0,10 z" fill="#444" fill-opacity="0.55"/></marker>
+</defs>
+<rect x="8" y="8" width="534" height="344" fill="none" stroke="#e4e4e4" stroke-width="1"/>
+<rect x="558" y="8" width="534" height="344" fill="none" stroke="#e4e4e4" stroke-width="1"/>
+<rect x="8" y="368" width="534" height="344" fill="none" stroke="#e4e4e4" stroke-width="1"/>
+<rect x="558" y="368" width="534" height="344" fill="none" stroke="#e4e4e4" stroke-width="1"/>
+<text x="24.0" y="30.0" font-size="15" fill="#555" text-anchor="start">The pair: vertex, triangle, closest point and normal</text>
+<polygon points="300.0,80.0 190.0,300.0 450.0,300.0" fill="#dbe9f6" fill-opacity="0.55" stroke="#2b6ca3" stroke-width="2.5" stroke-linejoin="round"/>
+<text x="300.0" y="66.0" font-size="16" fill="#2b6ca3" text-anchor="middle">v<tspan baseline-shift="sub" font-size="11">a</tspan></text>
+<text x="174.0" y="320.4" font-size="16" fill="#2b6ca3" text-anchor="middle">v<tspan baseline-shift="sub" font-size="11">b</tspan></text>
+<text x="466.0" y="320.4" font-size="16" fill="#2b6ca3" text-anchor="middle">v<tspan baseline-shift="sub" font-size="11">c</tspan></text>
+<circle cx="250.5" cy="179.0" r="6" fill="#222"/>
+<line x1="241.6" y1="174.5" x2="134.2" y2="120.9" stroke="#444" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="4 4"/>
+<line x1="250.5" y1="179.0" x2="195.0" y2="151.3" stroke="#444" stroke-width="3" stroke-linecap="round" marker-end="url(#blue)"/>
+<text x="208.5" y="182.6" font-size="17" fill="#444" text-anchor="start">n</text>
+<text x="237.1" y="219.8" font-size="13" fill="#222" text-anchor="start">closest point</text>
+<circle cx="134.2" cy="120.9" r="7" fill="#b3471e"/>
+<text x="120.2" y="126.9" font-size="17" fill="#b3471e" text-anchor="end">v</text>
+<text x="574.0" y="30.0" font-size="15" fill="#555" text-anchor="start">Both approach, v faster: the plane sits near the triangle</text>
+<polygon points="850.0,80.0 740.0,300.0 1000.0,300.0" fill="#dbe9f6" fill-opacity="0.55" stroke="#2b6ca3" stroke-width="2.5" stroke-linejoin="round"/>
+<line x1="828.7" y1="50.0" x2="686.7" y2="334.0" stroke="#777" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="8 6"/>
+<circle cx="684.2" cy="120.9" r="7" fill="#b3471e"/>
+<text x="670.2" y="126.9" font-size="17" fill="#b3471e" text-anchor="end">v</text>
+<line x1="684.2" y1="120.9" x2="780.7" y2="145.9" stroke="#b3471e" stroke-width="3" stroke-linecap="round" marker-end="url(#red)"/>
+<line x1="780.7" y1="145.9" x2="807.5" y2="152.9" stroke="#b3471e" stroke-width="3" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#red_light)" stroke-opacity="0.55"/>
+<text x="825.5" y="170.9" font-size="16" fill="#b3471e" text-anchor="middle">Δx<tspan baseline-shift="sub" font-size="11">v</tspan></text>
+<line x1="740.0" y1="300.0" x2="710.9" y2="285.5" stroke="#2b6ca3" stroke-width="3" stroke-linecap="round" marker-end="url(#tri)"/>
+<line x1="710.9" y1="285.5" x2="675.6" y2="267.8" stroke="#2b6ca3" stroke-width="3" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#tri_light)" stroke-opacity="0.55"/>
+<text x="651.6" y="263.8" font-size="16" fill="#2b6ca3" text-anchor="middle">Δx<tspan baseline-shift="sub" font-size="11">a</tspan></text>
+<line x1="850.0" y1="80.0" x2="875.2" y2="41.5" stroke="#2b6ca3" stroke-width="3" stroke-linecap="round" marker-end="url(#tri)"/>
+<text x="901.2" y="43.5" font-size="16" fill="#2b6ca3" text-anchor="middle">Δx<tspan baseline-shift="sub" font-size="11">b</tspan></text>
+<line x1="1000.0" y1="300.0" x2="1036.0" y2="252.0" stroke="#2b6ca3" stroke-width="3" stroke-linecap="round" marker-end="url(#tri)"/>
+<text x="1062.0" y="250.0" font-size="16" fill="#2b6ca3" text-anchor="middle">Δx<tspan baseline-shift="sub" font-size="11">c</tspan></text>
+<text x="24.0" y="390.0" font-size="15" fill="#555" text-anchor="start">v moves away, the triangle approaches: the plane sits near v</text>
+<polygon points="300.0,440.0 190.0,660.0 450.0,660.0" fill="#dbe9f6" fill-opacity="0.55" stroke="#2b6ca3" stroke-width="2.5" stroke-linejoin="round"/>
+<line x1="179.8" y1="410.0" x2="37.8" y2="694.0" stroke="#777" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="8 6"/>
+<circle cx="134.2" cy="480.9" r="7" fill="#b3471e"/>
+<text x="134.2" y="466.9" font-size="17" fill="#b3471e" text-anchor="middle">v</text>
+<line x1="134.2" y1="480.9" x2="91.6" y2="435.8" stroke="#b3471e" stroke-width="3" stroke-linecap="round" marker-end="url(#red)"/>
+<text x="65.6" y="439.8" font-size="16" fill="#b3471e" text-anchor="middle">Δx<tspan baseline-shift="sub" font-size="11">v</tspan></text>
+<line x1="190.0" y1="660.0" x2="81.9" y2="605.9" stroke="#2b6ca3" stroke-width="3" stroke-linecap="round" marker-end="url(#tri)"/>
+<line x1="81.9" y1="605.9" x2="55.8" y2="592.9" stroke="#2b6ca3" stroke-width="3" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#tri_light)" stroke-opacity="0.55"/>
+<text x="53.8" y="616.9" font-size="16" fill="#2b6ca3" text-anchor="middle">Δx<tspan baseline-shift="sub" font-size="11">a</tspan></text>
+<line x1="300.0" y1="440.0" x2="214.4" y2="412.1" stroke="#2b6ca3" stroke-width="3" stroke-linecap="round" marker-end="url(#tri)"/>
+<text x="184.4" y="416.1" font-size="16" fill="#2b6ca3" text-anchor="middle">Δx<tspan baseline-shift="sub" font-size="11">b</tspan></text>
+<line x1="450.0" y1="660.0" x2="373.3" y2="637.2" stroke="#2b6ca3" stroke-width="3" stroke-linecap="round" marker-end="url(#tri)"/>
+<text x="399.3" y="633.2" font-size="16" fill="#2b6ca3" text-anchor="middle">Δx<tspan baseline-shift="sub" font-size="11">c</tspan></text>
+<text x="574.0" y="390.0" font-size="15" fill="#555" text-anchor="start">Motion along the plane or away from it passes untouched</text>
+<polygon points="850.0,440.0 740.0,660.0 1000.0,660.0" fill="#dbe9f6" fill-opacity="0.55" stroke="#2b6ca3" stroke-width="2.5" stroke-linejoin="round"/>
+<line x1="792.3" y1="410.0" x2="650.3" y2="694.0" stroke="#777" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="8 6"/>
+<circle cx="684.2" cy="480.9" r="7" fill="#b3471e"/>
+<text x="670.2" y="486.9" font-size="17" fill="#b3471e" text-anchor="end">v</text>
+<line x1="684.2" y1="480.9" x2="636.0" y2="550.9" stroke="#b3471e" stroke-width="3" stroke-linecap="round" marker-end="url(#red)"/>
+<text x="642.0" y="572.9" font-size="16" fill="#b3471e" text-anchor="middle">Δx<tspan baseline-shift="sub" font-size="11">v</tspan></text>
+<line x1="740.0" y1="660.0" x2="768.6" y2="602.8" stroke="#2b6ca3" stroke-width="3" stroke-linecap="round" marker-end="url(#tri)"/>
+<text x="740.6" y="604.8" font-size="16" fill="#2b6ca3" text-anchor="middle">Δx<tspan baseline-shift="sub" font-size="11">a</tspan></text>
+<line x1="850.0" y1="440.0" x2="930.0" y2="440.0" stroke="#2b6ca3" stroke-width="3" stroke-linecap="round" marker-end="url(#tri)"/>
+<text x="956.0" y="446.0" font-size="16" fill="#2b6ca3" text-anchor="middle">Δx<tspan baseline-shift="sub" font-size="11">b</tspan></text>
+<line x1="1000.0" y1="660.0" x2="1045.3" y2="614.7" stroke="#2b6ca3" stroke-width="3" stroke-linecap="round" marker-end="url(#tri)"/>
+<text x="1071.3" y="612.7" font-size="16" fill="#2b6ca3" text-anchor="middle">Δx<tspan baseline-shift="sub" font-size="11">c</tspan></text>
+<text x="24" y="758" font-size="14" fill="#222">Dashed grey line: the division plane. Solid arrow: the displacement that is applied.</text>
+<text x="24" y="780" font-size="14" fill="#222">Faded dashed part: the part beyond the plane, which planar truncation removes.</text>
+</svg>

@@ -1230,7 +1230,7 @@ def launch_soft_mesh_contacts(*, model: Model, state: State, contacts: Contacts,
     contacts._soft_contact_mesh_data = data
     # A previous mesh row may now contain an analytic contact. Explicit tags also
     # survive the row reordering performed by coupled contact buffers.
-    contacts._soft_contact_mesh_features.fill_(wp.vec3i(-1, -1, -1))
+    contacts._soft_contact_mesh_features.view(wp.int32).fill_(-1)
     wp.launch(
         _begin_mesh_contacts,
         dim=1,

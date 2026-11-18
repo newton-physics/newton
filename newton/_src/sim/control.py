@@ -68,9 +68,30 @@ class Control:
         """
         Array of muscle activations [dimensionless, 0 to 1] with shape ``(muscle_count,)`` and type ``float``.
 
-        .. note::
-            Support for muscle dynamics is not yet implemented.
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`newton.ModelBuilder.add_muscle`.
         """
+
+        self._attribute_frequency: dict[str, Model.AttributeFrequency | str] = {}
+
+    def get_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str:
+        """
+        Get the frequency of an attribute.
+
+        Args:
+            name: Name of the attribute.
+
+        Returns:
+            The frequency of the attribute.
+                Either a Model.AttributeFrequency enum value or a string for custom frequencies.
+
+        Raises:
+            KeyError: If the attribute frequency is not known, e.g. on a
+                Control that was not created by :meth:`Model.control() <newton.Model.control>`.
+        """
+        if name not in self._attribute_frequency:
+            raise KeyError(f"Attribute frequency of '{name}' is not known")
+        return self._attribute_frequency[name]
 
     def clear(self, model: Model | None = None) -> None:
         """Reset all control inputs to zero.

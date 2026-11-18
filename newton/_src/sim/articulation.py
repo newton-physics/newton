@@ -560,6 +560,17 @@ def eval_articulation_fk(
     )
 
 
+def _fk_prefers_tiled(model: Model) -> bool:
+    """Whether CUDA FK uses the level-parallel kernel for the model's articulations."""
+    from .articulation_cuda import FK_TILE_MIN_LEVEL_WIDTH  # noqa: PLC0415
+
+    return (
+        model.device.is_cuda
+        and model._fk_articulation_level_start is not None
+        and model._fk_level_capacity >= FK_TILE_MIN_LEVEL_WIDTH
+    )
+
+
 def eval_fk(
     model: Model,
     joint_q: wp.array[float],
@@ -630,13 +641,7 @@ def eval_fk(
     if num_articulations == 0:
         return
 
-    # Masked chains have no intra-level parallelism. Serial FK skips unselected
-    # joints without the tiled kernel's inter-level barriers.
-    if (
-        model.device.is_cuda
-        and model._fk_articulation_level_start is not None
-        and (joint_mask is None or model._fk_level_capacity > 1)
-    ):
+    if _fk_prefers_tiled(model):
         requires_grad = (
             model.requires_grad
             or joint_q.requires_grad
@@ -1654,7 +1659,7 @@ def eval_articulation_body_inertia_about_root(
 
 
 @wp.kernel(enable_backward=False)
-def eval_articulation_composite_inertia(
+def eval_articulation_subtree_sum(
     articulation_level_start: wp.array[wp.int32],
     level_joint_start: wp.array[wp.int32],
     level_joints: wp.array[wp.int32],
@@ -1662,22 +1667,20 @@ def eval_articulation_composite_inertia(
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
     # outputs
-    body_I_c: wp.array3d[float],
+    body_x: wp.array2d[float],
 ):
-    """Add each body's inertia into its parent's, deepest tree level first, one thread per (articulation, element).
+    """Add each body's row into its parent's, deepest tree level first, one thread per (articulation, element).
 
-    On return ``body_I_c[b]`` is the composite inertia of the subtree rooted at
-    ``b``. One thread sums one of the 36 matrix elements over the whole tree in a
-    fixed order, so the result is deterministic. ``body_I_c`` is a float view of
-    the spatial matrices, so each thread loads only its own element.
+    On return ``body_x[b]`` is the sum over the subtree rooted at ``b``. One
+    thread sums one element over the whole tree in a fixed order, so the result
+    is deterministic. ``body_x`` is a flat float view of per-body quantities,
+    such as spatial inertias or wrenches.
     """
     art_idx, element = wp.tid()
     if articulation_mask:
         if not articulation_mask[art_idx]:
             return
 
-    row = element // 6
-    col = element % 6
     level_begin = articulation_level_start[art_idx]
     level_end = articulation_level_start[art_idx + 1]
     # Level 0 holds the roots, whose parents are outside the articulation.
@@ -1686,7 +1689,7 @@ def eval_articulation_composite_inertia(
         for i in range(level_joint_start[level], level_joint_start[level + 1]):
             j = level_joints[i]
             parent = joint_parent[j]
-            body_I_c[parent, row, col] = body_I_c[parent, row, col] + body_I_c[joint_child[j], row, col]
+            body_x[parent, element] = body_x[parent, element] + body_x[joint_child[j], element]
 
 
 @wp.kernel(enable_backward=False)
@@ -2135,7 +2138,7 @@ def _eval_mass_matrix(
             device=model.device,
         )
         wp.launch(
-            kernel=eval_articulation_composite_inertia,
+            kernel=eval_articulation_subtree_sum,
             dim=(model.articulation_count, 36),
             inputs=[
                 model._fk_articulation_level_start,
@@ -2145,7 +2148,7 @@ def _eval_mass_matrix(
                 model.joint_parent,
                 model.joint_child,
             ],
-            outputs=[body_I_s.view(float)],
+            outputs=[body_I_s.view(float).reshape((model.body_count, 36))],
             device=model.device,
         )
         wp.launch(
