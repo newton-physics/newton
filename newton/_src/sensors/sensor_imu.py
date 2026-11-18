@@ -110,7 +110,7 @@ class SensorIMU:
             builder.add_site(body, label="imu_0")
             model = builder.finalize()
 
-            imu = SensorIMU(model, sites="imu_*", request_state_attributes=False)
+            imu = SensorIMU(model, sites="imu_*")
             solver = newton.solvers.SolverMuJoCo(model)
             observables = solver.observables(kinds=imu.solver_observable_kinds)
             state = model.state()
@@ -137,13 +137,9 @@ class SensorIMU:
         sites: str | list[str] | re.Pattern[str] | list[int],
         *,
         verbose: bool | None = None,
-        request_state_attributes: bool = True,
+        request_state_attributes: bool = False,
     ):
         """Initialize SensorIMU.
-
-        The legacy ``State.body_qdd`` allocation path remains the default during
-        the deprecation period. Set ``request_state_attributes=False`` and
-        allocate :attr:`solver_observable_kinds` through the solver instead.
 
         Args:
             model: The model to use.
@@ -153,15 +149,15 @@ class SensorIMU:
             verbose: If True, log details. If False, suppress details. If None, log details when
                 ``wp.config.log_level`` is configured for debug logging.
             request_state_attributes: If True, request the deprecated extended
-                state attribute ``body_qdd`` from the model. Defaults to True for
-                backward compatibility. If False, :meth:`update` must receive
-                solver observables containing ``body_qdd`` or a state allocated
-                through a separate legacy request.
+                state attribute ``body_qdd`` from the model. If False (default),
+                :meth:`update` must receive solver observables containing
+                ``body_qdd`` or a state allocated through a separate legacy request.
 
                 .. deprecated:: 1.7
-                    Passing True (including the default) is deprecated. Pass False,
-                    allocate :attr:`solver_observable_kinds` through the solver and
-                    pass :class:`~newton.solvers.SolverBase.Observables` to :meth:`update` instead.
+                    Passing True is deprecated. Omit this argument, which will be
+                    removed together with the legacy path, allocate
+                    :attr:`solver_observable_kinds` through the solver and pass
+                    :class:`~newton.solvers.SolverBase.Observables` to :meth:`update` instead.
         Raises:
             ValueError: If no labels match or invalid sites are passed.
         """
@@ -182,7 +178,7 @@ class SensorIMU:
         if request_state_attributes:
             warnings.warn(
                 "SensorIMU(request_state_attributes=True) is deprecated in Newton 1.7; "
-                "pass request_state_attributes=False, allocate SolverBase.Observables with "
+                "omit request_state_attributes, allocate SolverBase.Observables with "
                 "solver.observables(kinds=sensor.solver_observable_kinds), pass them to solver.step(observables=...), "
                 "and pass them to update(..., observables=...).",
                 NewtonDeprecationWarning,

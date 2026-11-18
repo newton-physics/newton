@@ -248,9 +248,7 @@ class Example:
         # wrench feedback and shown in the GUI alongside the commanded
         # force. One sensor covers both robots; total_force's rows are
         # ordered to match sensing_bodies below (Franka's ball, then UR10's).
-        self.force_sensor = SensorContact(
-            self.model, request_contact_attributes=False, sensing_bodies=[franka_tool_body, ur10_tool_body]
-        )
+        self.force_sensor = SensorContact(self.model, sensing_bodies=[franka_tool_body, ur10_tool_body])
         self.collision_pipeline = newton.CollisionPipeline(
             self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
         )
