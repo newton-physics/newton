@@ -9977,7 +9977,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             model = make_model(2, newton.JointTargetMode.VELOCITY)
             model.joint_effort_limit.assign(np.array([1.0, 1.0, 1.0, 1.0, 1.0, 0.0], dtype=np.float32))
             with self.assertRaisesRegex(ValueError, "axis 2 has joint_effort_limit=0"):
-                SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+                SolverMuJoCo(model, disable_contacts=True)
 
         # NONE and EFFORT create no MuJoCo actuator, so a zero effort limit is allowed.
         for mode in (newton.JointTargetMode.NONE, newton.JointTargetMode.EFFORT):
