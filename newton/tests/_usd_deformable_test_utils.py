@@ -197,6 +197,18 @@ def _author_unit_tet(stage, path, *, sim_api=False, collision=None, y=0.0):
     return tet
 
 
+def _add_rigid_cube(stage, path, pos, *, size=0.1):
+    """Author a colliding rigid-body cube at ``pos``."""
+    from pxr import Gf, UsdGeom, UsdPhysics
+
+    cube = UsdGeom.Cube.Define(stage, path)
+    cube.CreateSizeAttr(size)
+    cube.AddTranslateOp().Set(Gf.Vec3d(*pos))
+    UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+    UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+    return cube
+
+
 def _apply_deformable_body_api(prim, *, mass=None, density=None):
     """Apply PhysicsDeformableBodyAPI with optional mass / density overrides."""
     from pxr import Sdf

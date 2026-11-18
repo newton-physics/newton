@@ -32,9 +32,11 @@ Example
     pp.plot(names=["S1", "S2"])
 """
 
+import logging
+
 import numpy as np
 
-from . import logger as msg
+logger = logging.getLogger(__name__)
 
 ###
 # Internals
@@ -221,22 +223,22 @@ class PerformanceProfile:
         # Validate input
         valid = True
         if data is None or data.size == 0:
-            msg.error("`data` argument is empty!")
+            logger.error("`data` argument is empty!")
             valid = False
         if data.ndim != 2:
-            msg.error("`data` must be 2D (num_solvers x np)!")
+            logger.error("`data` must be 2D (num_solvers x np)!")
             valid = False
         else:
             num_solvers, num_problems = data.shape
             if num_solvers < 2:
-                msg.error("`data` must contain at least two solver-wise entries (rows >= 2)!")
+                logger.error("`data` must contain at least two solver-wise entries (rows >= 2)!")
                 valid = False
             if num_problems < 1:
-                msg.error("`data` must contain at least one problem-wise entry (cols >= 1)!")
+                logger.error("`data` must contain at least one problem-wise entry (cols >= 1)!")
                 valid = False
         if success is not None and success.size > 0:
             if success.shape != data.shape:
-                msg.error("`success` flags do not match the `data` dimensions!")
+                logger.error("`success` flags do not match the `data` dimensions!")
                 valid = False
         if not valid:
             self._valid = False
@@ -407,7 +409,7 @@ class PerformanceProfile:
         """
         # Ensure a valid profile has been computed before plotting
         if not self._valid:
-            msg.error("Data is invalid: aborting plot operation")
+            logger.error("Data is invalid: aborting plot operation")
             return
 
         # Attempt to import matplotlib
@@ -415,7 +417,7 @@ class PerformanceProfile:
             import matplotlib.pyplot as plt
             from cycler import cycler  # noqa: PLC0415
         except Exception as exc:  # pragma: no cover - optional dependency
-            msg.error(f"`matplotlib` is required to plot profiles: {exc}")
+            logger.error("`matplotlib` is required to plot profiles: %s", exc)
             return
 
         # Names default to indices
@@ -499,7 +501,7 @@ class PerformanceProfile:
 
             if path is not None:
                 plt.savefig(path, bbox_inches="tight", dpi=300)
-                msg.debug(f"Profile plot saved to: {path}")
+                logger.info("Profile plot saved to: %s", path)
 
             if show:
                 plt.show()

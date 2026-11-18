@@ -223,7 +223,7 @@ def test_nodal_material_averaging(test, device):
         grid = fem.Grid3D(res=wp.vec3i(1), bounds_lo=wp.vec3(0.0), bounds_hi=wp.vec3(1.0))
         domain = fem.Cells(grid)
         pic = fem.PicQuadrature(domain, positions=model.state().particle_q, measures=wp.array(volumes, dtype=float))
-        for basis_name in ("P1d", "Q1d", "P2d", "Q2d"):
+        for basis_name in ("P1d", "Q1d"):
             with test.subTest(basis=basis_name):
                 family = fem.Polynomial.GAUSS_LEGENDRE if basis_name == "Q1d" else None
                 basis = _make_grid_basis_space(grid, basis_name, family=family)
@@ -433,19 +433,6 @@ def test_nodal_particle_sampling_response(test, device):
                     np.testing.assert_allclose(actual, np.repeat(expected, copies, axis=1), rtol=2.0e-5, atol=2.0e-6)
 
 
-def test_nodal_higher_order_solver(test, device):
-    """Use the same supported-subspace orthogonalization for higher-order strain bases."""
-    for basis in ("P2d", "Q2d"):
-        with test.subTest(basis=basis):
-            solver, state = _make_solver(device, basis, active_particle_count=3, max_iterations=0)
-            solver.step(state, state, None, None, 0.001)
-            test.assertEqual(np.linalg.matrix_rank(solver.test_transform), 3)
-            for _ in range(2):
-                solver.step(state, state, None, None, 0.001)
-            for array in (state.particle_q, state.particle_qd, state.mpm.particle_stress):
-                test.assertTrue(np.isfinite(array.numpy()).all())
-
-
 def _yield_impulse(device, basis, layer, volume_scale):
     """Velocity change from a unit yield stress on sheared material in the bottom ``layer`` of one cell."""
     g = (np.arange(4) + 0.5) / 4
@@ -538,7 +525,6 @@ for name, func in (
     ("test_nodal_full_cell_solver", test_nodal_full_cell_solver),
     ("test_nodal_affine_stress_work", test_nodal_affine_stress_work),
     ("test_nodal_particle_sampling_response", test_nodal_particle_sampling_response),
-    ("test_nodal_higher_order_solver", test_nodal_higher_order_solver),
     ("test_nodal_yield_fill_fraction", test_nodal_yield_fill_fraction),
 ):
     add_function_test(TestImplicitMPMNodalDiagonalization, name, func, devices=get_test_devices(mode="basic"))

@@ -22,7 +22,7 @@ import warp as wp
 from ......sim import BodyFlags, JointType
 from ...core.bodies import update_body_inertias
 from ...core.data import DataKamino
-from ...core.joints import DofActuationPath, JointActuationType, JointCorrectionMode
+from ...core.joints import DofActuationPath, JointActuationType, JointCorrectionMode, JointDoFType
 from ...core.model import ModelKamino
 from ...core.types import to_warp_int32_array, vec6f
 from ...geometry.contacts import ContactsKamino
@@ -30,6 +30,7 @@ from ...kinematics.constraints import update_constraints_info
 from ...kinematics.jacobians import SparseSystemJacobians
 from ...kinematics.joints import compute_joints_data
 from ...kinematics.limits import LimitsKamino
+from ...linalg import prefix_offsets, segment_local_indices
 from .problem_kernels import (
     _accumulate_aligned_joint_wrenches,
     _accumulate_block_structural_effective_mass,
@@ -72,8 +73,6 @@ from .types import (
     LOXProblemData,
     SpatialContactRows,
     StructuralRows,
-    capacity_offsets,
-    segment_local_indices,
 )
 
 ###
@@ -196,7 +195,7 @@ def _body_row_incidence(
     )
     order = np.lexsort((incidence_side, incidence_row, incidence_body))
     body_counts = np.bincount(incidence_body, minlength=body_count).astype(np.int32, copy=False)
-    return capacity_offsets(body_counts), incidence_row[order], incidence_side[order]
+    return prefix_offsets(body_counts), incidence_row[order], incidence_side[order]
 
 
 ###
@@ -240,6 +239,7 @@ class LOXProblem:
         self.contact_compliance = contact_compliance
         self.contact_implicit_restitution = contact_implicit_restitution
         self.contact_spatial_friction = contact_spatial_friction
+        self._has_rod_joints = bool(np.any(model.joints.dof_type.numpy() == JointDoFType.ROD))
 
         if jacobians._J_cts is None or jacobians._J_dofs is None:
             raise RuntimeError("Sparse Jacobians must be finalized before constructing the LOX problem.")
@@ -486,7 +486,7 @@ class LOXProblem:
             self.body_velocity_begin,
             data.bodies.w_e_i.view(dtype=vec6f),
             data.bodies.w_a_i.view(dtype=vec6f),
-            self.model.gravity.vector,
+            self.model.gravity,
             time_step,
         )
         if self._data.dynamic_rows.count > 0:
@@ -569,6 +569,23 @@ class LOXProblem:
             joint_translation_dead_zone=self._joint_translation_dead_zone,
             joint_rotation_dead_zone=self._joint_rotation_dead_zone,
         )
+        # The tension of stretched rods stiffens the rotation of their bodies
+        if self._has_rod_joints and self._data.dynamic_rows.count > 0:
+            self.system.add_rod_geometric_stiffness(
+                self.model.joints.wid,
+                self.model.joints.dof_type,
+                self.model.joints.dofs_offset,
+                self.model.joints.coords_offset,
+                self.model.joints.bid_B,
+                self.model.joints.bid_F,
+                data.joints.q_j,
+                self.model.joints.q_j_rest,
+                data.joints.p_j,
+                data.bodies.q_i,
+                self._data.dynamic_rows,
+                time_step,
+                prescribed_twist=self.body_velocity_begin,
+            )
 
     def prepare_patch_schur(self) -> None:
         """Build the joint neighbors and joint rows of each body for the patch Schur weights.
@@ -681,7 +698,6 @@ class LOXProblem:
                 data.body_block,
                 data.body_local,
                 data.info.dim,
-                data.info.mio,
                 data.info.vio,
                 system.inverse_permutation,
                 system.matrix,
@@ -701,7 +717,6 @@ class LOXProblem:
                 data.body_block,
                 data.body_local,
                 data.info.dim,
-                data.info.mio,
                 data.info.vio,
                 system.inverse_permutation,
                 system.matrix,
@@ -728,7 +743,6 @@ class LOXProblem:
                 data.body_block,
                 data.body_local,
                 data.info.dim,
-                data.info.mio,
                 data.info.vio,
                 system.inverse_permutation,
                 self._data.body_weight_enabled,
@@ -1189,13 +1203,13 @@ class LOXProblem:
         sparse_dof_joint_offsets = self.jacobians._J_dofs_joint_nzb_offsets.numpy().astype(np.int32, copy=False)
 
         native_joint = np.repeat(joint_indices, joint_dynamic_count)
-        native_offsets = capacity_offsets(joint_dynamic_count)
+        native_offsets = prefix_offsets(joint_dynamic_count)
         native_local = segment_local_indices(joint_dynamic_count, native_offsets)
         native_axis = joint_dynamic_axis[joint_dynamic_offset[native_joint] + native_local]
         native_dof = joint_dof_offset[native_joint] + native_axis
 
         dof_joint = np.repeat(joint_indices, joint_dof_count)
-        dof_offsets = capacity_offsets(joint_dof_count)
+        dof_offsets = prefix_offsets(joint_dof_count)
         dof_axis = segment_local_indices(joint_dof_count, dof_offsets)
         dof_index = joint_dof_offset[dof_joint] + dof_axis
         native_dof_mask = np.zeros(model.size.sum_of_num_joint_dofs, dtype=bool)
@@ -1212,7 +1226,7 @@ class LOXProblem:
         extra_count = np.bincount(extra_joint, minlength=joint_count).astype(np.int32, copy=False)
 
         joint_dynamic_row_count = joint_dynamic_count + extra_count
-        joint_dynamic_row_offset = capacity_offsets(joint_dynamic_row_count)
+        joint_dynamic_row_offset = prefix_offsets(joint_dynamic_row_count)
         dynamic_count = int(joint_dynamic_row_offset[-1])
         dynamic_world = np.empty(dynamic_count, dtype=np.int32)
         dynamic_joint = np.empty(dynamic_count, dtype=np.int32)
@@ -1226,7 +1240,7 @@ class LOXProblem:
         dynamic_uses_dof_jacobian = np.ones(dynamic_count, dtype=bool)
 
         native_target = joint_dynamic_row_offset[native_joint] + native_local
-        extra_offsets = capacity_offsets(extra_count)
+        extra_offsets = prefix_offsets(extra_count)
         extra_local = segment_local_indices(extra_count, extra_offsets)
         extra_target = joint_dynamic_row_offset[extra_joint] + joint_dynamic_count[extra_joint] + extra_local
         for target, source_joint in ((native_target, native_joint), (extra_target, extra_joint)):
@@ -1264,7 +1278,7 @@ class LOXProblem:
         )
 
         structural_joint = np.repeat(joint_indices, joint_structural_count)
-        structural_offsets = capacity_offsets(joint_structural_count)
+        structural_offsets = prefix_offsets(joint_structural_count)
         structural_local = segment_local_indices(joint_structural_count, structural_offsets)
         structural_value_index = joint_kinematic_offset[structural_joint] + structural_local
         structural_count = int(structural_offsets[-1])

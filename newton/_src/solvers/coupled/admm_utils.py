@@ -1564,7 +1564,7 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     mb = body_mass_b[bb]
     weight = _interface_weight(ma, mb)
     W[dst] = weight
-    # Geometric-mean combining of shape material friction (matches AVBD).
+    # Geometric-mean combining of shape material friction (matches SolverVBD).
     friction[dst] = wp.sqrt(shape_material_mu[sa] * shape_material_mu[sb])
     if contact_friction_mode(shape_material_friction_mode, sa, sb) == int(ShapeFrictionMode.NONE):
         friction[dst] = 0.0

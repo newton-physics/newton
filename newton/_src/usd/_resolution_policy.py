@@ -368,6 +368,15 @@ def _resolve_physics_material(
             NewtonWarning,
             stacklevel=3,
         )
+    if 0.0 < desc.staticFriction < desc.dynamicFriction:
+        # An unauthored staticFriction is 0 in UsdPhysics and stays silent. The message carries no
+        # per-prim values so that the default warning filter collapses it to one per import.
+        warnings.warn(
+            "A physics material authors a positive physics:staticFriction below its physics:dynamicFriction; "
+            "shapes bound to it keep a single friction coefficient (mu = dynamicFriction).",
+            NewtonWarning,
+            stacklevel=3,
+        )
 
     torsional, torsional_resolver = resolver.get_value_with_resolver(
         prim, prim_type=PrimType.MATERIAL, key="mu_torsional", default=defaults.mu_torsional, verbose=verbose
@@ -489,7 +498,7 @@ def _resolve_shape_contact(
     defaults: ModelBuilder.ShapeConfig,
     *,
     verbose: bool,
-) -> dict[str, float]:
+) -> dict[str, float | None]:
     """Select contact response values from shape, material, and builder settings."""
     # Contact response precedence:
     #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
@@ -503,6 +512,11 @@ def _resolve_shape_contact(
     has_solref = mjc_has_priority and usd.get_attribute(prim, "mjc:solref") is not None
     shape_contact = {
         "mu": material.dynamicFriction,
+        # Both coefficients come from one source: the bound material (UsdPhysics defaults an
+        # unauthored staticFriction to 0) or, for an unbound collider, the builder defaults. A
+        # static coefficient not above the dynamic one keeps a single coefficient;
+        # _resolve_physics_material warns when an authored one is dropped this way.
+        "mu_static": (material.staticFriction if material.staticFriction > material.dynamicFriction else None),
         "restitution": material.restitution,
         "mu_torsional": material.torsionalFriction,
         "mu_rolling": material.rollingFriction,

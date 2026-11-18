@@ -68,8 +68,8 @@ How can I control Newton's console output?
 ------------------------------------------
 
 Newton logs diagnostics through the standard :mod:`logging` module under the
-``newton`` logger and emits warnings with the categories in
-:mod:`newton.exceptions`. Without logging configuration, Newton prints
+``newton`` logger and emits warnings with the categories
+:class:`~newton.NewtonWarning` and :class:`~newton.NewtonDeprecationWarning`. Without logging configuration, Newton prints
 ``INFO`` records to stdout and warnings and errors to stderr. To hide, route,
 or filter this output, see :doc:`Logging and Warnings <guide/diagnostics>`.
 
