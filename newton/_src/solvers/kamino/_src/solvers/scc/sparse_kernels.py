@@ -60,15 +60,15 @@ def make_sparse_bilateral_solve_kernel(block_size: int):
         solution_lambdas: wp.array[float32],
         compact_layout: bool,
         bilateral_dim: wp.array[int32],
-        bilateral_mio: wp.array[int32],
         bilateral_vio: wp.array[int32],
         bilateral_P: wp.array[float32],
-        L: wp.array[float32],
+        L_storage: wp.array2d[float32],
         y: wp.array[float32],
         bilateral_rhs: wp.array[float32],
         bilateral_solution: wp.array[float32],
     ):
         wid, tid = wp.tid()
+        L = L_storage[wid]
         njc = problem_njc[wid]
         pvio = problem_vio[wid]
         bvio = bilateral_vio[wid]
@@ -89,7 +89,7 @@ def make_sparse_bilateral_solve_kernel(block_size: int):
             if row < njc and lane == 0:
                 bilateral_rhs[bvio + row] = -bilateral_P[bvio + row] * (value + problem_v_f[pvio + row])
         _sync_threads()
-        solve(wid, tid, bilateral_dim, bilateral_mio, bilateral_vio, L, bilateral_rhs, y, bilateral_solution)
+        solve(wid, tid, bilateral_dim, bilateral_vio, L, bilateral_rhs, y, bilateral_solution)
         _sync_threads()
         for row in range(tid, njc, wp.block_dim()):
             solution_lambdas[pvio + row] = bilateral_P[bvio + row] * bilateral_solution[bvio + row]
@@ -3301,21 +3301,22 @@ _INVERSE_TILE = 32
 @wp.kernel(module="unique", enable_backward=False)
 def _invert_small_bilateral_block(
     dim: wp.array[int32],
-    mio: wp.array[int32],
-    L: wp.array[float32],
-    lower_inverse: wp.array[float32],
-    inverse: wp.array[float32],
+    L_storage: wp.array2d[float32],
+    lower_inverse_storage: wp.array2d[float32],
+    inverse_storage: wp.array2d[float32],
 ):
     """Form ``(L L^T)^-1 = X^T X`` with ``X = L^-1`` using 32x32 tiles, one block per world."""
     wid, lane = wp.tid()
+    L = L_storage[wid]
+    lower_inverse = lower_inverse_storage[wid]
+    inverse = inverse_storage[wid]
     threads = wp.block_dim()
     size = wp.static(_INVERSE_TILE)
     n = dim[wid]
-    offset = mio[wid]
     tiles = (n + size - 1) // size
-    L_i = wp.array(ptr=get_float32_array_offset_ptr(L, offset), shape=(n, n), dtype=float32)
-    X_i = wp.array(ptr=get_float32_array_offset_ptr(lower_inverse, offset), shape=(n, n), dtype=float32)
-    D_i = wp.array(ptr=get_float32_array_offset_ptr(inverse, offset), shape=(n, n), dtype=float32)
+    L_i = wp.array(ptr=get_float32_array_offset_ptr(L, 0), shape=(n, n), dtype=float32)
+    X_i = wp.array(ptr=get_float32_array_offset_ptr(lower_inverse, 0), shape=(n, n), dtype=float32)
+    D_i = wp.array(ptr=get_float32_array_offset_ptr(inverse, 0), shape=(n, n), dtype=float32)
     for tile_j in range(tiles):
         for tile_i in range(tile_j, tiles):
             i = tile_i * size
@@ -3346,12 +3347,11 @@ def _invert_small_bilateral_block(
             wp.tile_store(D_i, block, offset=(tile_i * size, tile_j * size))
 
 
-@wp.kernel
+@wp.kernel(module="unique", enable_backward=False)
 def _apply_small_bilateral_inverse(
     dim: wp.array[int32],
-    mio: wp.array[int32],
     vio: wp.array[int32],
-    inverse: wp.array[float32],
+    inverse_storage: wp.array2d[float32],
     bilateral_rhs: wp.array[float32],
     problem_vio: wp.array[int32],
     problem_njc: wp.array[int32],
@@ -3364,13 +3364,13 @@ def _apply_small_bilateral_inverse(
     A zero active dimension keeps the previous solution.
     """
     wid, row = wp.tid()
+    inverse = inverse_storage[wid]
     n = dim[wid]
     v = vio[wid]
     if row < n:
-        m = mio[wid]
         value = float32(0.0)
         for col in range(n):
-            value += inverse[m + col * n + row] * bilateral_rhs[v + col]
+            value += inverse[col * n + row] * bilateral_rhs[v + col]
         bilateral_solution[v + row] = value
     if row < problem_njc[wid]:
         solution_lambdas[problem_vio[wid] + row] = bilateral_P[v + row] * bilateral_solution[v + row]
@@ -3390,10 +3390,9 @@ def make_sparse_bilateral_inverse_kernel(body_capacity: int):
         problem_njc: wp.array[int32],
         problem_v_f: wp.array[float32],
         active_dim: wp.array[int32],
-        bilateral_mio: wp.array[int32],
         bilateral_vio: wp.array[int32],
         bilateral_P: wp.array[float32],
-        inverse: wp.array[float32],
+        inverse_storage: wp.array2d[float32],
         bilateral_rhs: wp.array[float32],
         bilateral_solution: wp.array[float32],
         solution_lambdas: wp.array[float32],
@@ -3413,6 +3412,7 @@ def make_sparse_bilateral_inverse_kernel(body_capacity: int):
     ):
         wid, lane = wp.tid()
         wid += world_start
+        inverse = inverse_storage[wid]
         n = active_dim[wid]
         njc = problem_njc[wid]
         pvio = problem_vio[wid]
@@ -3458,7 +3458,7 @@ def make_sparse_bilateral_inverse_kernel(body_capacity: int):
             for row in range(lane, n, wp.block_dim()):
                 value = float32(0.0)
                 for col in range(n):
-                    value += inverse[bilateral_mio[wid] + col * n + row] * workspace[body_capacity + col]
+                    value += inverse[col * n + row] * workspace[body_capacity + col]
                 bilateral_solution[bvio + row] = value
         for row in range(lane, njc, wp.block_dim()):
             solution_lambdas[pvio + row] = bilateral_P[bvio + row] * bilateral_solution[bvio + row]
@@ -3466,7 +3466,7 @@ def make_sparse_bilateral_inverse_kernel(body_capacity: int):
     return sparse_bilateral_inverse
 
 
-@wp.kernel
+@wp.kernel(module="unique", enable_backward=False)
 def _build_sparse_bilateral_block(
     # Inputs:
     model_bodies_inv_m_i: wp.array[float32],
@@ -3479,12 +3479,11 @@ def _build_sparse_bilateral_block(
     pair_i: wp.array[int32],
     pair_j: wp.array[int32],
     jacobian_cts_nzb_values: wp.array[vec6f],
-    bilateral_mio: wp.array[int32],
     bilateral_ld: wp.array[int32],
     bilateral_vio: wp.array[int32],
     bilateral_P: wp.array[float32],
     # Output:
-    bilateral_D: wp.array[float32],
+    bilateral_D_storage: wp.array2d[float32],
     inverse_permutation: wp.array[int32],
     use_permutation: bool,
 ):
@@ -3503,44 +3502,44 @@ def _build_sparse_bilateral_block(
         D_ij += model_bodies_inv_m_i[bid_k] * wp.dot(Jv_i, Jv_j) + wp.dot(Jw_i, data_bodies_inv_I_i[bid_k] @ Jw_j)
 
     wid = pair_wid[first]
+    bilateral_D = bilateral_D_storage[wid]
     row = pair_row[first]
     col = pair_col[first]
     bvio = bilateral_vio[wid]
     val = bilateral_P[bvio + row] * D_ij * bilateral_P[bvio + col]
 
-    bmio = bilateral_mio[wid]
     ld = bilateral_ld[wid]
     if use_permutation:
         # The permuted matrix feeds the factorization directly, which reads only its lower triangle.
         permuted_row = inverse_permutation[bvio + row]
         permuted_col = inverse_permutation[bvio + col]
-        bilateral_D[bmio + ld * wp.max(permuted_row, permuted_col) + wp.min(permuted_row, permuted_col)] = val
+        bilateral_D[ld * wp.max(permuted_row, permuted_col) + wp.min(permuted_row, permuted_col)] = val
     else:
-        bilateral_D[bmio + ld * row + col] = val
-        bilateral_D[bmio + ld * col + row] = val
+        bilateral_D[ld * row + col] = val
+        bilateral_D[ld * col + row] = val
 
 
-@wp.kernel
+@wp.kernel(module="unique", enable_backward=False)
 def _set_sparse_bilateral_diagonal(
     # Inputs:
     problem_njc: wp.array[int32],
     problem_vio: wp.array[int32],
-    bilateral_mio: wp.array[int32],
     bilateral_ld: wp.array[int32],
     bilateral_vio: wp.array[int32],
     problem_diag: wp.array[float32],
     # Outputs:
-    bilateral_D: wp.array[float32],
+    bilateral_D_storage: wp.array2d[float32],
     bilateral_P: wp.array[float32],
     inverse_permutation: wp.array[int32],
     use_permutation: bool,
 ):
     wid, row = wp.tid()
+    bilateral_D = bilateral_D_storage[wid]
 
     njc = problem_njc[wid]
     if njc == 0:
         if row == 0:
-            bilateral_D[bilateral_mio[wid]] = float32(1.0)
+            bilateral_D[0] = float32(1.0)
             bilateral_P[bilateral_vio[wid]] = float32(1.0)
         return
     if row >= njc:
@@ -3548,13 +3547,12 @@ def _set_sparse_bilateral_diagonal(
 
     pvio = problem_vio[wid]
     bvio = bilateral_vio[wid]
-    bmio = bilateral_mio[wid]
     diag = wp.abs(problem_diag[pvio + row])
     p = wp.sqrt(1.0 / (diag + FLOAT32_EPS))
     bilateral_P[bvio + row] = p
     if use_permutation:
         row = inverse_permutation[bvio + row]
-    diagonal_index = bmio + bilateral_ld[wid] * row + row
+    diagonal_index = bilateral_ld[wid] * row + row
     bilateral_D[diagonal_index] = p * diag * p + float32(BILATERAL_DIAGONAL_FLOOR)
 
 
