@@ -4,17 +4,17 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Literal
 
 import numpy as np
 import warp as wp
 
-from ...core import Axis
-from ...geometry import GeoType, Mesh
-from ...geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals, _DeformableVisualSkinBatches
-from ...sim import Model, State
-from ...utils import load_texture, normalize_texture
+from ..core import Axis
+from ..geometry import GeoType, Mesh
+from ..geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals, _DeformableVisualSkinBatches
+from ..sim import Model, State
+from ..utils import load_texture, normalize_texture
 from .render import create_kernel
 from .types import (
     AntiAliasing,
@@ -24,6 +24,7 @@ from .types import (
     MeshData,
     RenderConfig,
     RenderOrder,
+    RenderState,
     TextureData,
 )
 
@@ -63,22 +64,6 @@ def _render_types(shape_types: np.ndarray) -> np.ndarray:
 
 
 class RenderContext:
-    @dataclass(unsafe_hash=True)
-    class RenderState:
-        """Mutable flags tracking which render outputs are active."""
-
-        num_gaussians: int = 0
-        has_particles: bool = False
-        has_world_indices: bool = False
-        has_triangle_mesh_textures: bool = False
-        render_color: bool = False
-        render_depth: bool = False
-        render_forward_depth: bool = False
-        render_shape_index: bool = False
-        render_normal: bool = False
-        render_albedo: bool = False
-        render_hdr_color: bool = False
-
     DEFAULT_CLEAR_DATA = ClearData()
     DEFAULT_RENDER_CONFIG = RenderConfig()
 
@@ -109,7 +94,7 @@ class RenderContext:
         """
         self._model = model
         self._deformable_surface_mode = deformable_surface_mode
-        self._render_state = RenderContext.RenderState()
+        self._render_state = RenderState()
 
         self._kernel_cache: dict[tuple, wp.Kernel] = {}
 
@@ -221,7 +206,7 @@ class RenderContext:
             if self._has_particles or self._has_triangle_mesh:
                 raise RuntimeError("The OptiX camera backend does not support particles or deformable surfaces")
             try:
-                from ...geometry import optix  # noqa: PLC0415
+                from ..geometry import optix  # noqa: PLC0415
             except ImportError as exc:
                 raise RuntimeError("The OptiX camera backend requires the newton[optix] extra") from exc
             optix.check_supported(model)
@@ -492,8 +477,9 @@ class RenderContext:
         geometry, refit them via
         :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles` before calling this
-        method. The OptiX backend instead traces :attr:`~newton.Model.optix_shapes`, built and
-        refit by the same methods with ``backend="optix"``.
+        method. The OptiX backend instead traces :attr:`~newton.Model.optix_shapes`, built with
+        ``bvh_build_shapes(state, backend="optix")`` and refit with
+        ``bvh_refit_shapes(state, backend="optix")``.
 
         Args:
             state: Current simulation state (for particle positions).
@@ -652,7 +638,7 @@ class RenderContext:
                 # Copies: the factories capture them in wp.static, and shared modules may recompile.
                 render_kernel = create_kernel(replace(config), replace(self._render_state), replace(clear_data), optix)
                 if optix is not None:
-                    from ...geometry.optix import create_pipeline  # noqa: PLC0415
+                    from ..geometry.optix import create_pipeline  # noqa: PLC0415
 
                     render_kernel = create_pipeline(
                         optix, render_kernel, enable_backface_culling=config.enable_backface_culling
@@ -671,7 +657,7 @@ class RenderContext:
             if optix is None:
                 launch, launch_options = wp.launch, {"device": self.device, "block_dim": config.block_dim}
             else:
-                from ...geometry.optix import wo  # noqa: PLC0415
+                from ..geometry.optix import wo  # noqa: PLC0415
 
                 launch, launch_options = wo.launch, {}
             launch(
@@ -819,14 +805,18 @@ class RenderContext:
         self._texture_data_source = []
         texture_hashes = {}
         mesh_hashes = {}
+        # Holding the last image stops glibc from returning the decode buffers to the OS after every texture.
+        last_pixels = None
 
         def texture_id(texture, texture_hash):
+            nonlocal last_pixels
             if texture is None or not load_textures:
                 return -1
             if texture_hash not in texture_hashes:
                 pixels = load_texture(texture)
                 if pixels is None:
                     raise ValueError(f"Failed to load texture: {texture}")
+                last_pixels = pixels
                 pixels = normalize_texture(pixels, require_channels=True)
                 if pixels.shape[2] == 3:
                     # RGB and grayscale sources need an opaque alpha channel.

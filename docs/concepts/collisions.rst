@@ -710,9 +710,22 @@ in the explicit filter-pair list.
 Filter pairs are automatically populated in several cases:
 
 - **Adjacent bodies**: Parent-child body pairs connected by joints (when
-  ``collision_filter_parent=True``). For USD joints with two explicit bodies,
-  ``physics:collisionEnabled`` controls this filter with inverse polarity; joints to world do not
-  create a body-pair filter. Also applies to max-coordinate jointed bodies.
+  ``collision_filter_parent=True``). The filter works on weld groups, like MuJoCo's: the
+  bodies joined by filtering fixed and zero-DOF tree joints count as one, so a joint filters its
+  child's weld group against its parent's weld group, and a filtering weld joint filters its
+  whole group against itself. A weld with ``collision_filter_parent=False`` keeps its parent and
+  child in separate groups: they collide, and a joint below one of them filters that side
+  alone. Loop-closure joints keep their direct pair only, and bodies welded to the world form no
+  group. The pairs are completed in
+  :meth:`~ModelBuilder.finalize`, so the order in which joints and shapes are added does not
+  matter, and shapes with ``ShapeConfig(collision_filter_parent=False)`` take no part. The pairs
+  of two bodies a joint connects directly stay as
+  :attr:`~ModelBuilder.shape_collision_filter_pairs` holds them, so removing them before
+  ``finalize()`` keeps those bodies colliding, and :meth:`~ModelBuilder.collapse_fixed_joints`
+  adds them for the bodies it merges. For USD
+  joints with two explicit bodies, ``physics:collisionEnabled`` controls this filter with
+  inverse polarity; joints to world do not create a body-pair filter. Also applies to
+  max-coordinate jointed bodies.
 - **Disabled self-collision**: All shape pairs within an articulation when ``enable_self_collisions=False``
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
 - **USD collision disabled**: Shapes with ``physics:collisionEnabled=false`` (filtered against all other shapes)
@@ -1284,6 +1297,13 @@ Contact reduction is enabled by default. For scenes with many mesh-mesh interact
 
 To disable reduction, set ``reduce_contacts=False`` when creating the pipeline.
 
+Mesh/SDF depth coverage uses aspect-ratio-based voxel grids and normalized
+indexing, independent of the scene's length units. This also applies when
+body-pair reduction is disabled. Removing absolute length cutoffs and
+stabilizing normalized cell boundaries can change the retained contacts and
+simulation trajectories, especially for very small or degenerate geometry.
+No API or scene migration is required.
+
 **Body-pair contact reduction (opt-in):**
 
 Bodies built from many colliders (a foot made of several spheres or capsules, a
@@ -1303,11 +1323,18 @@ of the global contact reducer, before they are written. Enable it with
 
     pipeline = newton.CollisionPipeline(
         model,
-        body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(cell_size=0.25),
+        body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
     )
     contacts = pipeline.contacts()
 
 Contacts are grouped by body pair, material class, normal bin and spatial cell.
+By default, spatial coverage uses the same normalized voxel mapping and
+aspect-ratio-based grid sizing as SDF reduction, applied to fixed body-local
+collider-group bounds. Uniformly scaling the geometry does not require changing
+a cell size. The smaller finite dynamic group supplies the reference grid;
+an infinite ground plane never sets its scale. This is a runtime collision
+pipeline setting and does not add an authorable USD attribute.
+
 Each group keeps one depth representative, up to six sampled footprint extremes
 over all its contacts and up to six more over its touching contacts only, so
 speculative contacts cannot displace the support polygon. Mesh and
@@ -1318,21 +1345,37 @@ approximation: support is sampled, not exact, and keeping
 rim points can strengthen torsional friction. Selection is memoryless, so on
 curved or mesh supports the kept set can change between steps.
 
+Near-contact and speculative layers have independent coverage cells, so a distant
+speculative layer does not prevent reduction of a flat touching patch.
+The automatic mode conservatively keeps all contacts in cells whose
+separations vary by more than ``1e-5`` of the reference group's largest extent.
+This protects shallow touching regions from competing with deeper regions in
+the same cell. Contacts without a finite reference grid, or outside its fixed
+bounds, also pass through. These safeguards can reduce the savings on curved
+or tilted patches; they do not guarantee exact pressure or friction-torque
+distribution. An explicit ``cell_size`` selects the previous projected grid
+without the automatic depth-variation safeguard.
+
 Shapes on one body share a group only when their ``shape_material_*`` values
 and their per-shape custom attributes match;
 ``BodyPairReductionConfig.material_attributes`` narrows
 the attributes that count. Call
 :meth:`~CollisionPipeline.refresh_body_pair_reduction_groups` after changing
-them at runtime.
+them or the local collider transforms or margins at runtime; this also refreshes
+the fixed coverage bounds, including shape margins.
 
 Buffers from the pipeline's :meth:`~CollisionPipeline.contacts` are stamped
 :attr:`~Contacts.rigid_contact_body_pair_reduced` when the scene has primitive
 or convex contact pairs; a scene of only meshes and heightfields reduces nothing
-by body pair and keeps unstamped buffers. Only a pipeline that stamps its buffers
-collides into a stamped buffer, and a solver accepts one only
-if it declares :attr:`~solvers.SolverBase.supports_body_pair_reduced_contacts`;
-the others raise in ``step()``, also during CUDA graph capture.
-:class:`~solvers.SolverSteel` supports it, except with ``contact_compliance``.
+by body pair and keeps unstamped buffers. A stamped buffer must be filled by
+its reducing pipeline. The rows use the ordinary Newton contact contract.
+Built-in consumers accept
+these rows just as they accept mesh/SDF-reduced contacts, including through
+solver-owned pipelines and coupled contact streams. Backends using their own
+collision detection must be configured to consume Newton contacts to use this
+reduction. As with mesh/SDF reduction, fewer points can change aggregate
+stiffness, load distribution, and friction torque; reduction does not rescale
+material stiffness or promise identical compliance to the unreduced point set.
 Body-pair reduction doesn't support ``contact_matching="sticky"`` or
 hydroelastic contacts. Keep it off when it doesn't reduce the end-to-end step time.
 To check, compare the step time and :attr:`~Contacts.rigid_contact_count` with it
@@ -1407,7 +1450,7 @@ Shape collision behavior is controlled via :class:`~ModelBuilder.ShapeConfig`:
    * - ``collision_group``
      - Collision group ID. 0 disables collisions. Default: 1.
    * - ``collision_filter_parent``
-     - Filter collisions with adjacent body (parent in articulation or connected via joint). Default: True.
+     - Whether the shape takes part in parent-child filtering: a filtering joint of its body filters it against the shapes of the body on the joint's other side and of that body's weld group, in whichever order shape and joint are added. ``False`` keeps it colliding with them. Default: True.
    * - ``has_shape_collision``
      - Whether shape collides with other shapes. Default: True.
    * - ``has_particle_collision``

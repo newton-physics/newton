@@ -997,7 +997,7 @@ def make_convert_contacts_newton_to_kamino(
         friction_mix_mode: The mixing mode to use for friction.
         restitution_mix_mode: The mixing mode to use for restitution.
         cull_speculative: If ``True``, skip speculative contacts, i.e., contacts
-            with positive margin-shifted distance.
+            whose margin-shifted distance exceeds the kernel's ``contact_dead_zone``.
         kinematic_only_immovable: Whether only KINEMATIC bodies are immovable,
             see :func:`is_immovable_for_kamino`.
 
@@ -1036,6 +1036,7 @@ def make_convert_contacts_newton_to_kamino(
         body_inv_mass: wp.array[wp.float32],
         body_inv_inertia: wp.array[wp.mat33f],
         body_flags: wp.array[wp.int32],
+        contact_dead_zone: wp.float32,
         # Outputs:
         kamino_model_active: wp.array[wp.int32],
         kamino_world_active: wp.array[wp.int32],
@@ -1137,10 +1138,10 @@ def make_convert_contacts_newton_to_kamino(
         # and the per-shape surface thicknesses stored in rigid_contact_margin*.
         distance = contact_surface_separation(p0_world, p1_world, normal, margin_0, margin_1)
 
-        # Cull speculative contacts whose margin-shifted surfaces have not yet
-        # made contact (positive gap distance).
+        # Cull speculative contacts. The dynamics treat separations within the dead-zone
+        # as touching, so rounding must not drop a resting contact.
         if wp.static(cull_speculative):
-            if distance > 0.0:
+            if distance > contact_dead_zone:
                 return
 
         # Ensure static body is always Kamino A, dynamic body is Kamino B
@@ -1476,6 +1477,7 @@ def convert_contacts_newton_to_kamino(
     restitution_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "min",
     cull_speculative_contacts: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
     kinematic_only_immovable: bool = False,
+    contact_dead_zone: float = 1.0e-6,
 ):
     """
     Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
@@ -1518,11 +1520,14 @@ def convert_contacts_newton_to_kamino(
         restitution_mix_mode:
             The mixing mode to use for contact restitution. Defaults to `"min"`.
         cull_speculative_contacts:
-            If ``True`` (the default), drop speculative contacts (contacts with
-            positive margin-shifted distance).
+            If ``True`` (the default), drop speculative contacts (contacts whose
+            margin-shifted distance exceeds ``contact_dead_zone``).
         kinematic_only_immovable:
             Whether only KINEMATIC bodies are immovable, see
             :func:`is_immovable_for_kamino`. Defaults to ``False``.
+        contact_dead_zone:
+            Margin-shifted distance [m] up to which a contact counts as touching and is
+            not culled; should match ``ConstraintStabilizationConfig.delta``.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_out.model_max_contacts_host == 0 or contacts_in.rigid_contact_max == 0:
@@ -1605,6 +1610,7 @@ def convert_contacts_newton_to_kamino(
             model.body_inv_mass,
             model.body_inv_inertia,
             model.body_flags,
+            contact_dead_zone,
         ],
         outputs=[
             contacts_out.model_active_contacts,

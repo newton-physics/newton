@@ -211,13 +211,30 @@ USD_MJC_DCMOTOR_ACTUATOR = """        def MjcActuator "HingeDCMotor"
 """
 
 
-def make_usd_mjc_actuator_stage(*actuator_defs: str) -> str:
-    return USD_MJC_ACTUATOR_TEMPLATE.replace("__ACTUATORS__", "\n\n".join(actuator_defs))
+USD_IMPORT_LOGGER = "newton._src.utils.import_usd"
 
 
-def load_usd_mjc_actuator_builder(*actuator_defs: str) -> ModelBuilder:
+def make_usd_mjc_actuator_stage(*actuator_defs: str, hinge_drive: tuple[float, float, float] | None = None) -> str:
+    stage = USD_MJC_ACTUATOR_TEMPLATE.replace("__ACTUATORS__", "\n\n".join(actuator_defs))
+    if hinge_drive is not None:
+        # UsdPhysics angular drive on the hinge: (stiffness, damping) per degree, and maxForce.
+        stiffness, damping, max_force = hinge_drive
+        stage = stage.replace(
+            'apiSchemas = ["MjcJointAPI"]\n    )\n    {\n',
+            'apiSchemas = ["MjcJointAPI", "PhysicsDriveAPI:angular"]\n    )\n    {\n'
+            f"        float drive:angular:physics:stiffness = {stiffness}\n"
+            f"        float drive:angular:physics:damping = {damping}\n"
+            f"        float drive:angular:physics:maxForce = {max_force}\n"
+            '        uniform token drive:angular:physics:type = "force"\n',
+        )
+    return stage
+
+
+def load_usd_mjc_actuator_builder(
+    *actuator_defs: str, hinge_drive: tuple[float, float, float] | None = None
+) -> ModelBuilder:
     with tempfile.NamedTemporaryFile("w", suffix=".usda", delete=False) as f:
-        f.write(make_usd_mjc_actuator_stage(*actuator_defs))
+        f.write(make_usd_mjc_actuator_stage(*actuator_defs, hinge_drive=hinge_drive))
         usd_path = f.name
 
     try:
@@ -329,6 +346,62 @@ class TestMuJoCoActuators(unittest.TestCase):
         model.mujoco.actuator_forcerange.assign([[-2.0, 3.0], [-9.0, 9.0]])
         solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
         np.testing.assert_allclose(solver.mjw_model.actuator_forcerange.numpy(), expected_ranges)
+
+    @requires("pxr.Usd", *MUJOCO_MODULES)
+    def test_usd_mjc_actuator_with_zero_gain_drive_is_kept(self):
+        """A zero-gain UsdPhysics drive on the same joint does not drop the MjcActuator.
+
+        The drive's gains are replaced, but its maxForce still sets the joint effort limit.
+        """
+        with self.assertLogs(USD_IMPORT_LOGGER, level="WARNING") as logs:
+            builder = load_usd_mjc_actuator_builder(USD_MJC_DAMPED_POSITION_ACTUATOR, hinge_drive=(0.0, 0.0, 2.0))
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("zero stiffness and damping", logs.output[0])
+        self.assertIn("maxForce still apply", logs.output[0])
+
+        dof = get_qd_start(builder, "Hinge")
+        self.assertEqual(builder.joint_target_mode[dof], int(JointTargetMode.POSITION))
+        self.assertEqual(builder.joint_target_ke[dof], 12.0)
+        self.assertEqual(builder.joint_target_kd[dof], 3.0)
+        self.assertEqual(builder.joint_effort_limit[dof], 2.0)
+
+        model = builder.finalize()
+        np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.JOINT_TARGET])
+        solver = assert_solver_actuator_mapping(self, model, [dof])
+        np.testing.assert_allclose(solver.mj_model.actuator_gainprm[0, 0], 12.0)
+        np.testing.assert_allclose(solver.mj_model.actuator_biasprm[0, :3], [0.0, -12.0, -3.0])
+        # The actuator keeps its own forceRange; the drive's maxForce limits the joint.
+        np.testing.assert_allclose(solver.mj_model.actuator_forcerange[0], [-5.0, 5.0], atol=1e-5)
+        mjc_dof = list(solver.mjc_dof_to_newton_dof.numpy()[0]).index(dof)
+        hinge_jnt = solver.mj_model.dof_jntid[mjc_dof]
+        np.testing.assert_allclose(solver.mj_model.jnt_actfrcrange[hinge_jnt], [-2.0, 2.0], atol=1e-5)
+
+    @requires("pxr.Usd", *MUJOCO_MODULES)
+    def test_usd_mjc_actuator_merged_with_drive_logs_final_gains(self):
+        """Merging MjcActuators into a non-zero UsdPhysics drive logs the final mode and gains once."""
+        with self.assertLogs(USD_IMPORT_LOGGER, level="WARNING") as logs:
+            builder = load_usd_mjc_actuator_builder(
+                USD_MJC_DAMPED_POSITION_ACTUATOR, USD_MJC_VELOCITY_ACTUATOR, hinge_drive=(1.0, 0.1, 5.0)
+            )
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("both a UsdPhysics drive and an MjcActuator", logs.output[0])
+
+        dof = get_qd_start(builder, "Hinge")
+        self.assertEqual(builder.joint_target_mode[dof], int(JointTargetMode.POSITION_VELOCITY))
+        self.assertEqual(builder.joint_target_ke[dof], 12.0)
+        self.assertEqual(builder.joint_target_kd[dof], 4.0)
+        # The message reports the configuration after both rows were merged.
+        self.assertIn("using mode POSITION_VELOCITY, ke=12, kd=4", logs.output[0])
+
+    @requires("pxr.Usd", *MUJOCO_MODULES)
+    def test_usd_mjc_actuator_without_drive_does_not_log(self):
+        """MjcActuators on a joint without a UsdPhysics drive import silently, including a position + velocity pair."""
+        with self.assertNoLogs(USD_IMPORT_LOGGER, level="WARNING"):
+            builder = load_usd_mjc_actuator_builder(USD_MJC_DAMPED_POSITION_ACTUATOR)
+            pair_builder = load_usd_mjc_actuator_builder(USD_MJC_DAMPED_POSITION_ACTUATOR, USD_MJC_VELOCITY_ACTUATOR)
+        dof = get_qd_start(builder, "Hinge")
+        self.assertEqual(builder.joint_target_mode[dof], int(JointTargetMode.POSITION))
+        self.assertEqual(pair_builder.joint_target_mode[dof], int(JointTargetMode.POSITION_VELOCITY))
 
     @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_usd_mjc_direct_actuator_stays_ctrl_direct(self):
@@ -545,7 +618,8 @@ class TestMuJoCoActuators(unittest.TestCase):
     def test_actuator_damping_survives_property_updates(self):
         """Keep folded joint/tendon damping without double-counting it on the CPU."""
         mjcf = (
-            MJCF_DCMOTOR_SIMPLE.replace(
+            MJCF_DCMOTOR_SIMPLE.replace('<joint name="hinge"/>', '<joint name="hinge" springdamper="0.2 1.5"/>')
+            .replace(
                 "<actuator>", '<tendon><fixed name="drive"><joint joint="hinge" coef="1"/></fixed></tendon><actuator>'
             )
             .replace('resistance="2"', 'resistance="2" damping="0.7 0.2 0.1" gear="3"')
@@ -571,6 +645,9 @@ class TestMuJoCoActuators(unittest.TestCase):
                             SolverMuJoCo(model, disable_contacts=True)
                     model.mujoco.actuator_gear.assign(gears)
                 solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                np.testing.assert_allclose(
+                    solver.mj_model.dof_damping, model.joint_damping.numpy()[: solver.mj_model.nv]
+                )
                 model.joint_damping.fill_(0.4)
                 model.mujoco.tendon_damping.fill_(0.3)
                 for _ in range(2):
