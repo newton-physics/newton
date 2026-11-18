@@ -6903,13 +6903,15 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # An explicit True still steps only the first world on the native CPU backend.
         with self.assertWarnsRegex(NewtonDeprecationWarning, "separate_worlds is deprecated"):
-            solver = SolverMuJoCo(model, separate_worlds=True, use_mujoco_cpu=True)
+            solver = SolverMuJoCo(model, separate_worlds=True, use_mujoco_cpu=True, nconmax=64)
+        self.assertEqual(solver.get_max_contact_count(), 64)
         state_in, state_out = model.state(), model.state()
         state_in.joint_qd.fill_(1.0)
+        state_out.joint_q.assign(np.array([0.0, 0.25], dtype=np.float32))
         solver.step(state_in, state_out, model.control(), None, 0.01)
         joint_q = state_out.joint_q.numpy()
         self.assertGreater(joint_q[0], 0.0)
-        self.assertEqual(joint_q[1], 0.0)
+        self.assertEqual(joint_q[1], 0.25)
 
     def test_joint_transform_composition(self):
         """

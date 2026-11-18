@@ -7287,8 +7287,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Validate that separate_worlds=False is only used with single world
         if not separate_worlds and model.world_count > 1:
             raise ValueError(
-                f"separate_worlds=False is only supported for single-world models. "
-                f"Got world_count={model.world_count}. Remove the deprecated separate_worlds argument."
+                f"separate_worlds=False is only supported for single-world models; got world_count={model.world_count}."
             )
 
         self._option_world = self._resolve_option_world(model, separate_worlds)
