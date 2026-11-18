@@ -3607,8 +3607,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     mj_flex.elastic2d = int(params["elastic2d"])
                 edgeequality = bool(params["edgeequality"])
                 if dim == 1:
-                    # MuJoCo's discrete integrator rejects edge stiffness and damping and recommends
-                    # edge constraints instead, so springs with stiffness become constraints there.
+                    # MuJoCo's discrete integrator rejects edge stiffness and damping in favor of edge constraints.
                     discrete = spec.option.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
                     for name, values in (
                         ("edgestiffness", model.spring_stiffness),
