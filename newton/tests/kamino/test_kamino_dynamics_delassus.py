@@ -989,11 +989,14 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         data: DataKamino,
         delassus: BlockSparseMatrixFreeDelassusOperator,
         jacobians: SparseSystemJacobians,
+        *,
+        capture_first_product: bool = False,
     ):
         """Checks the different matrix-vector products provided by the sparse Delassus operator."""
         rng = np.random.default_rng(seed=self.seed)
 
         def run_check(use_regularization: bool, use_preconditioner: bool, mask_worlds: bool):
+            nonlocal capture_first_product
             delassus_sizes = data.info.num_total_cts.numpy()
             jac_row_start = jacobians._J_cts.bsm.row_start.numpy()
 
@@ -1049,7 +1052,16 @@ class TestDelassusOperatorSparse(unittest.TestCase):
             world_mask = wp.from_numpy(mask_np, dtype=wp.bool, device=self.default_device)
 
             # Compute different products (simple matvec, gemv, and gemv with beta = 0.0)
-            delassus.matvec(input_vec, output_vec_matmul, world_mask)
+            if capture_first_product and self.default_device.is_cuda and wp.is_conditional_graph_supported():
+                # The first regularized application must work inside a conditional
+                # body without a warmup that could hide lazy placeholder allocations.
+                condition = wp.ones(1, dtype=wp.int32, device=self.default_device)
+                with wp.ScopedCapture(device=self.default_device) as capture:
+                    wp.capture_if(condition, lambda: delassus.matvec(input_vec, output_vec_matmul, world_mask))
+                wp.capture_launch(capture.graph)
+            else:
+                delassus.matvec(input_vec, output_vec_matmul, world_mask)
+            capture_first_product = False
             delassus.gemv(input_vec, output_vec_gemv, world_mask, alpha, beta)
             delassus.gemv(input_vec, output_vec_gemv_zero, world_mask, alpha, 0.0)
 
@@ -1473,6 +1485,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         self._check_delassus_diagonal(model, data, delassus, jacobians)
 
     def test_10_delassus_operator_vector_product(self):
+        """Compare sparse products to dense references, including first use in a conditional graph."""
         # Model constants
         max_world_contacts = 12
 
@@ -1500,7 +1513,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         )
 
         # Check that the Delassus operator represents the actual Delassus matrix
-        self._check_delassus_matrix_vector_product(model, data, delassus, jacobians)
+        self._check_delassus_matrix_vector_product(model, data, delassus, jacobians, capture_first_product=True)
 
     def test_11_homogeneous_delassus_operator_vector_product(self):
         # Model constants
@@ -1582,6 +1595,33 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         values.zero_()
         delassus._set_raw_transpose_enabled(False)
         self._check_delassus_matrix_vector_product(model, data, delassus, jacobians)
+
+    def test_14_matvec_inside_conditional_graph_body(self):
+        """Apply the operator first inside a conditional graph body, where allocation is not allowed."""
+        if not self.default_device.is_cuda or not wp.is_conditional_graph_supported():
+            self.skipTest("Conditional CUDA graphs are required")
+        builder = make_basics_heterogeneous_builder(dynamic_joints=self.dynamic_joints, implicit_pd=self.dynamic_joints)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        model, data, state, limits, detector, jacobians = make_containers(
+            model=model, max_world_contacts=12, sparse=True
+        )
+        update_containers(model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians)
+        delassus = BlockSparseMatrixFreeDelassusOperator(
+            model=model, data=data, limits=limits, contacts=detector.contacts, jacobians=jacobians
+        )
+        delassus.update()
+        size = model.size.sum_of_max_total_cts
+        x = wp.ones(size, dtype=wp.float32, device=self.default_device)
+        y = wp.zeros(size, dtype=wp.float32, device=self.default_device)
+        mask = wp.ones(model.size.num_worlds, dtype=wp.bool, device=self.default_device)
+        condition = wp.ones(1, dtype=wp.int32, device=self.default_device)
+        with wp.ScopedCapture(device=self.default_device) as capture:
+            wp.capture_if(condition, on_true=lambda: delassus.matvec(x, y, mask))
+        wp.capture_launch(capture.graph)
+        expected = wp.zeros_like(y)
+        delassus.matvec(x, expected, mask)
+        # Graph and direct launches may accumulate float32 atomics in different orders.
+        np.testing.assert_allclose(y.numpy(), expected.numpy(), rtol=1e-4, atol=1e-3)
 
 
 ###

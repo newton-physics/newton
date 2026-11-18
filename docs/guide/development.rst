@@ -231,8 +231,9 @@ Optional dependencies in tests
 
 The test suite must pass when optional dependencies are not installed, for
 example on platforms without wheels for them; tests that need one skip
-instead. CI runs the suite with only the required dependencies installed. To
-run it the same way locally:
+instead. CI runs the suite with only the required dependencies installed, and
+with the ``dev`` extra on Windows ARM64, where several optional dependencies
+have no wheels. To run it without optional dependencies locally:
 
 .. code-block:: console
 

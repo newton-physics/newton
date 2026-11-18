@@ -35,6 +35,7 @@ import random
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
@@ -257,6 +258,8 @@ class _SensorCameraSceneRig:
         resolution: int,
         render_order: SensorCamera.RenderOrder,
         camera_fov_deg: float = 45.0,
+        *,
+        backend: Literal["warp", "optix"] = "warp",
     ):
         world = preset.build()
         _disable_collision_handling(world)
@@ -273,7 +276,7 @@ class _SensorCameraSceneRig:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
 
         light_direction = wp.vec3f(*preset.light_direction) if preset.light_direction is not None else None
-        self.sensor = SensorCamera(self.model)
+        self.sensor = SensorCamera(self.model, backend=backend)
         self.sensor.create_default_light(enable_shadows=True, direction=light_direction)
         self.sensor.assign_checkerboard_material(shape_indices=np.arange(self.model.shape_count, dtype=np.int32))
         self.sensor.default_render_config.render_order = render_order
@@ -297,6 +300,8 @@ class _SensorCameraSceneRig:
         self.depth_image = self.sensor.allocate_image_depth(world_count, resolution, resolution)
 
         self.model.bvh_build_shapes(self.state, bvh_constructor=BVH_CONSTRUCTOR)
+        if backend == "optix":
+            self.model.bvh_build_shapes(self.state, backend="optix")
         self.model.bvh_build_particles(self.state, bvh_constructor=BVH_CONSTRUCTOR)
         # Static benchmark scene: synchronize render-only state once up front and
         # let render() skip the per-frame sync so it measures rendering only.
@@ -323,10 +328,13 @@ class _SceneBenchmark:
     param_names = ["resolution", "world_count", "iterations"]
     scene: str
     render_order = RENDER_ORDER
+    backend = "warp"
     pr_gate_output_modes: tuple[tuple[bool, bool], ...] | None = None
 
     def setup(self, resolution: int, world_count: int, iterations: int):
-        self.rig = _SensorCameraSceneRig(SCENES[self.scene], world_count, resolution, self.render_order)
+        self.rig = _SensorCameraSceneRig(
+            SCENES[self.scene], world_count, resolution, self.render_order, backend=self.backend
+        )
         output_modes = ((True, True), (True, False), (False, True))
         if os.environ.get("NEWTON_ASV_PR_GATE") and self.pr_gate_output_modes is not None:
             output_modes = self.pr_gate_output_modes
@@ -398,7 +406,9 @@ class SensorCameraShapes256(_SceneBenchmark):
 PREVIEW_WORLD_COUNTS = (1, 16)
 
 
-def write_preview_images(scene_names: list[str], output_dir: Path, image_size: int = 1024) -> list[Path]:
+def write_preview_images(
+    scene_names: list[str], output_dir: Path, image_size: int = 1024, backend: Literal["warp", "optix"] = "warp"
+) -> list[Path]:
     """Write a PNG preview of each scene for every entry in :data:`PREVIEW_WORLD_COUNTS`.
 
     Single-world previews render at ``image_size``; multi-world previews tile a
@@ -413,7 +423,9 @@ def write_preview_images(scene_names: list[str], output_dir: Path, image_size: i
     for name in scene_names:
         for world_count in PREVIEW_WORLD_COUNTS:
             views_per_row = math.isqrt(world_count)
-            rig = _SensorCameraSceneRig(SCENES[name], world_count, image_size // views_per_row, RENDER_ORDER)
+            rig = _SensorCameraSceneRig(
+                SCENES[name], world_count, image_size // views_per_row, RENDER_ORDER, backend=backend
+            )
             rig.render(color=True, depth=False)
             rgba = SensorCamera.Utils.flatten_color_image_to_rgba(rig.color_image, views_per_row=views_per_row)
             path = output_dir / f"{name}_{world_count}_world{'s' if world_count > 1 else ''}.png"
@@ -480,12 +492,21 @@ if __name__ == "__main__":
         default=1024,
         help="Preview image width and height [px].",
     )
+    parser.add_argument(
+        "--backend",
+        choices=["warp", "optix"],
+        default="warp",
+        help="Camera shape-traversal backend.",
+    )
     args = parser.parse_known_args()[0]
 
     if args.preview:
-        for path in write_preview_images(sorted(SCENES), args.preview_dir, image_size=args.preview_size):
+        for path in write_preview_images(
+            sorted(SCENES), args.preview_dir, image_size=args.preview_size, backend=args.backend
+        ):
             print(f"Wrote {path}")
     else:
         for key in args.bench or benchmark_list.keys():
+            benchmark_list[key].backend = args.backend
             result = run_benchmark(benchmark_list[key])
             print_fps_results(result)

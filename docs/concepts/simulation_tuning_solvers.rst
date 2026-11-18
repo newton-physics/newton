@@ -70,8 +70,8 @@ Contact reduction
    ``CollisionPipeline(reduce_contacts=...)`` controls the mesh/heightfield
    reduction every solver consumes. The opt-in
    ``CollisionPipeline(body_pair_reduction=...)`` reduction changes which contacts
-   the solver sees and is supported by :class:`newton.solvers.SolverSteel`
-   only. Keep it off unless it lowers the
+   the solver sees and applies to built-in solvers consuming Newton contacts,
+   like mesh/SDF reduction. Keep it off unless it lowers the
    measured step time, and check tipping and yaw behavior when it is on.
 
 Contact material
@@ -160,18 +160,14 @@ repository examples spend tuning effort, not a shared solver API.
        use armature, joint friction, effort limits, or velocity limits.
        Examples mostly tune ``iterations`` and ``rigid_contact_relaxation``.
    * - :class:`~newton.solvers.SolverVBD`
-     - ``iterations``, ``rigid_compliant_alm``, ``friction_epsilon``,
+     - ``iterations``, ``friction_epsilon``,
        ``dat_conservative_bound_relaxation``,
        ``rigid_avbd_alpha``,
        ``rigid_avbd_joint_alpha``, ``rigid_avbd_contact_alpha``,
-       ``rigid_avbd_beta``, ``rigid_avbd_linear_beta``,
-       ``rigid_avbd_angular_beta``, ``rigid_avbd_gamma``,
-       ``rigid_contact_hard``, ``rigid_contact_history``,
-       ``rigid_contact_k_start``,
+       ``rigid_avbd_gamma``, ``rigid_contact_history``,
        ``rigid_body_contact_buffer_size``,
        ``rigid_body_particle_contact_buffer_size``,
        ``rigid_joint_linear_ke``, ``rigid_joint_angular_ke``,
-       ``rigid_joint_linear_k_start``, ``rigid_joint_angular_k_start``,
        ``rigid_joint_linear_kd``, ``rigid_joint_angular_kd``,
        ``integrate_with_external_rigid_solver``,
        ``particle_enable_self_contact``, ``particle_self_contact_margin``,
@@ -185,17 +181,13 @@ repository examples spend tuning effort, not a shared solver API.
        ``particle_edge_parallel_epsilon``, ``particle_enable_tile_solve``,
        ``particle_topological_contact_filter_threshold``,
        ``particle_rest_shape_contact_exclusion_radius``.
-     - ``rigid_compliant_alm`` (default ``True``) selects the recommended unified
-       finite-material compliant ALM formulation for rigid contacts, structural
-       joints, drives, and limits. Authored stiffness determines physical
-       compliance; :class:`~newton.solvers.SolverVBD` selects the numerical ALM
-       conditioning parameters internally. Pass ``False`` to retain the
-       deprecated legacy AVBD path during its migration window.
-       ``rigid_contact_hard`` selects contact behavior only on that legacy path.
-
-       Deprecated penalty-ramping controls do not affect compliant-ALM rigid constraints.
-       Rigid simulations relying on those controls or on legacy hard constraints may
-       require stiffness retuning when enabling compliant ALM. Alpha remains an
+     - Rigid contacts, structural joints, drives, and limits use the unified
+       finite-material compliant ALM formulation. Authored stiffness determines
+       physical compliance; :class:`~newton.solvers.SolverVBD` selects the
+       numerical ALM conditioning parameters internally. The legacy AVBD path
+       (``rigid_compliant_alm=False``) and its penalty-ramping and hard/soft
+       controls were removed after their 1.6 deprecation; rigid simulations
+       that relied on them may require stiffness retuning. Alpha remains an
        advanced stabilization override.
 
        Optional numeric contact warm-starting with
@@ -217,8 +209,7 @@ repository examples spend tuning effort, not a shared solver API.
        contact buffers and filters, ``collision_frequency`` / ``collision_frequency_type``,
        ``particle_enable_tile_solve``, ``rigid_body_contact_buffer_size``,
        ``rigid_body_particle_contact_buffer_size``, and
-       ``rigid_contact_history``. ``rigid_avbd_contact_alpha`` remains available
-       under compliant ALM as an advanced stabilization override.
+       ``rigid_contact_history``.
 
        ``rigid_soft_enable_dat=True`` requires a solver-owned
        :class:`~newton.CollisionPipeline` with a positive minimum rigid-soft
@@ -537,8 +528,9 @@ A similar force-space spring-damper check is useful for contact stiffness when
 the active solver interprets :attr:`~Model.shape_material_ke` and
 :attr:`~Model.shape_material_kd` as contact stiffness and damping. This check is
 most direct for penalty-style contacts. Solver-specific mappings, such as
-MuJoCo contact parameters and VBD AVBD ramping or contact history, can change
-the practical meaning of stiffness and damping. Define:
+MuJoCo contact parameters, can change the interpretation of stiffness and
+damping. In VBD, finite ALM iterations and contact-history warm-starting
+affect the observed response. Define:
 
 .. list-table::
    :header-rows: 1
