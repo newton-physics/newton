@@ -2966,6 +2966,8 @@ def _body_body_contact_damping_ignores_rho(test, device):
                 contact_tangent_rho,
                 contact_lambda,
                 contact_c0,
+                MeshRecoveryData(),
+                wp.zeros(1, dtype=int, device=device),
                 0.95,
                 0.01,
                 False,
