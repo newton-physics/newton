@@ -3537,6 +3537,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         pair_margin = get_numpy("pair_margin")
         pair_gap = get_numpy("pair_gap")
         pair_friction = get_numpy("pair_friction")
+        pair_adhesion = get_numpy("native_pair_adhesion")
 
         for i in range(pair_count):
             # Only include pairs from the template world or global pairs (world < 0)
@@ -3604,6 +3605,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     pair_kwargs["gap"] = authored_gap
             if pair_friction is not None:
                 pair_kwargs["friction"] = pair_friction[i].tolist()
+            if pair_adhesion is not None:
+                pair_kwargs["adhesion"] = float(pair_adhesion[i])
 
             spec.add_pair(**pair_kwargs)
 
@@ -11928,6 +11931,36 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"Equality constraint {key.removeprefix('equality_constraint_')} mismatch at position {c}: "
                         f"world 0 references {local_refs[0, c]}, but other worlds reference "
                         f"{local_refs[1:, c].tolist()}."
+                    )
+
+            # Site equalities also use world 0's endpoints in the shared template.
+            for key in ("native_equality_site1", "native_equality_site2"):
+                refs = getattr(model.mujoco, key, None)
+                if refs is None:
+                    continue
+                refs = refs.numpy().reshape(world_count, constraints_per_world)
+                valid = refs >= 0
+                if not np.any(valid):
+                    continue
+                shape_world = model.shape_world.numpy()
+                shape_start = model.shape_world_start.numpy()
+                owners = shape_world[np.maximum(refs, 0)]
+                foreign = valid & (owners >= 0) & (owners != np.arange(world_count)[:, None])
+                if np.any(foreign):
+                    world, c = np.argwhere(foreign)[0]
+                    raise ValueError(
+                        f"Equality constraint {key.removeprefix('native_equality_')} at position {c} of world "
+                        f"{world} references shape {refs[world, c]} of another world."
+                    )
+                local_refs = np.where(owners >= 0, refs - shape_start[np.maximum(owners, 0)], -2 - refs)
+                local_refs = np.where(valid, local_refs, -1)
+                mismatches = local_refs != local_refs[0]
+                if np.any(mismatches):
+                    world, c = np.argwhere(mismatches)[0]
+                    raise ValueError(
+                        "SolverMuJoCo requires homogeneous worlds. "
+                        f"Equality constraint {key.removeprefix('native_equality_')} mismatch at position {c} "
+                        f"between world 0 and world {world}."
                     )
 
             # Tendon equalities export world 0's tendon names, so later worlds must target the same tendons.

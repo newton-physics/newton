@@ -6,6 +6,7 @@
 import tempfile
 import unittest
 from contextlib import nullcontext
+from itertools import product
 from pathlib import Path
 
 import numpy as np
@@ -1377,6 +1378,32 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 np.testing.assert_allclose(solver.mj_model.eq_data, reference.eq_data)
                 solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
                 np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0], reference.eq_data)
+
+    def test_explicit_world_weld_placement(self):
+        """Place authored world-side weld frames consistently in both representations."""
+        import mujoco
+
+        placement = wp.transform((2, 3, 4), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.5))
+        for convert, endpoints in product(
+            (False, True),
+            ('body1="b" relpose="-1 0 0 1 0 0 0"', 'body1="world" body2="b" relpose="1 0 0 1 0 0 0"'),
+        ):
+            with self.subTest(convert=convert, endpoints=endpoints):
+                xml = f"""<mujoco><worldbody><body name="b" pos="1 0 0"><freejoint/>
+                    <geom size=".1"/></body></worldbody><equality><weld {endpoints}/></equality></mujoco>"""
+                builder = newton.ModelBuilder()
+                warning = self.assertWarnsRegex(NewtonWarning, "FREE joint parallel") if convert else nullcontext()
+                with warning:
+                    builder.add_mjcf_native(xml, xform=placement, convert_mjc_equality_constraints=convert)
+                if convert:
+                    np.testing.assert_allclose(
+                        builder.joint_X_p[-1], builder.body_q[0] * builder.joint_X_c[-1], atol=5e-7
+                    )
+                solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
+                data = mujoco.MjData(solver.mj_model)
+                mujoco.mj_forward(solver.mj_model, data)
+                self.assertEqual(len(data.efc_pos), 6)
+                np.testing.assert_allclose(data.efc_pos, 0, atol=1e-6)
 
     def test_weld_pose_finalization(self):
         """Resolve anchored body/world welds and their loop frames from the composed reference pose."""

@@ -741,7 +741,7 @@ def _tendons(builder, spec, model, joints, dofs, geoms, sites, custom_values):
     return mapping
 
 
-def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, convert, custom_values):
+def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, convert, custom_values, *, placement):
     import mujoco
 
     mujoco_only = []
@@ -834,6 +834,13 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, conv
             body1, body2 = bodies[first], bodies[second] if second >= 0 else -1
             anchor = wp.vec3(data[:3])
             relpose = _transform(data[3:6], data[6:10]) if kind == EqType.WELD else None
+            if kind == EqType.WELD and np.any(spec.equalities[i].data[6:10]):
+                if first == 0:
+                    relpose = placement * relpose
+                elif second == 0:
+                    anchor = wp.transform_point(placement, anchor)
+                    # The held point remains in body1's frame; only the relative orientation changes.
+                    relpose = wp.transform(relpose.p, relpose.q * wp.quat_inverse(placement.q))
         if body1 == -2 or body2 == -2:
             continue
         if (
@@ -886,7 +893,11 @@ def _contacts(builder, spec, model, bodies, geoms, start_shape, self_collisions,
         if first not in geoms or second not in geoms:
             continue
         values = _attributes(
-            builder, pair_world=builder.current_world, pair_geom1=geoms[first], pair_geom2=geoms[second]
+            builder,
+            pair_world=builder.current_world,
+            pair_geom1=geoms[first],
+            pair_geom2=geoms[second],
+            native_pair_adhesion=model.pair_adhesion[i],
         )
         for name in ("dim", "solref", "solreffriction", "solimp", "margin", "gap", "friction"):
             key = "condim" if name == "dim" else name
@@ -1403,7 +1414,11 @@ def parse_mjcf(
     if parse_sites:
         for i in range(model.nsite):
             native_body = int(model.site_bodyid[i])
-            if bodies[native_body] == -2 or matches(model.site(i).name, ignore_names):
+            if (
+                bodies[native_body] == -2
+                or matches(model.site(i).name, ignore_names)
+                or matches(spec.sites[i].classname.name, ignore_classes)
+            ):
                 continue
             pose = _transform(model.site_pos[i], model.site_quat[i])
             if native_body == 0:
@@ -1457,6 +1472,7 @@ def parse_mjcf(
             tendons,
             convert_mjc_equality_constraints,
             custom_values,
+            placement=placement,
         )
     add_mjcf_body_collision_filters(builder, imported_joints, start_shape)
     _contacts(builder, spec, model, bodies, geoms, start_shape, enable_self_collisions, custom_values)

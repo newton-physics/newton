@@ -12,6 +12,7 @@ import numpy as np
 
 from ...geometry.flags import ShapeFlags
 from ...sim.enums import BodyFlags, JointType
+from ...utils.topology import topological_sort
 
 MUJOCO_COLLISION_MASK_UNSET = np.iinfo(np.int64).min
 """Sentinel for Newton shapes without preserved MuJoCo collision masks."""
@@ -44,10 +45,20 @@ def set_mjcf_joint_collision_filter(builder, joint: int, filter_parent: bool) ->
 def add_mjcf_body_collision_filters(builder, joint_indices: Sequence[int], start_shape: int) -> None:
     """Apply MuJoCo's same-weld and parent-weld filtering to imported shapes."""
     imported_joints = set(joint_indices)
+    joints = [
+        joint
+        for joint in range(builder.joint_count)
+        if joint in imported_joints or builder.joint_articulation[joint] >= 0
+    ]
+    if joints:
+        joints = topological_sort(
+            [(builder.joint_parent[joint], builder.joint_child[joint]) for joint in joints],
+            custom_indices=joints,
+            use_dfs=False,
+        )
     weld_roots = {-1: -1}
-    for joint, child in enumerate(builder.joint_child):
-        if joint not in imported_joints and builder.joint_articulation[joint] < 0:
-            continue
+    for joint in joints:
+        child = builder.joint_child[joint]
         parent = builder.joint_parent[joint]
         welded = builder.joint_type[joint] == JointType.FIXED and not builder.body_flags[child] & BodyFlags.KINEMATIC
         weld_roots[child] = weld_roots.get(parent, parent) if welded else child
@@ -70,9 +81,8 @@ def add_mjcf_body_collision_filters(builder, joint_indices: Sequence[int], start
                     builder.add_shape_collision_filter_pair(first, second)
 
     # Attached shapes can extend the welded child of an existing joint.
-    for joint, child in enumerate(builder.joint_child):
-        if joint not in imported_joints and builder.joint_articulation[joint] < 0:
-            continue
+    for joint in joints:
+        child = builder.joint_child[joint]
         if not builder.joint_collision_filter_parent[joint]:
             continue
         parent = builder.joint_parent[joint]

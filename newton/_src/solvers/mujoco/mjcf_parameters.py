@@ -37,6 +37,8 @@ _NATIVE_ACTUATOR_FIELDS = {
     "interp": wp.int32,
 }
 
+_NATIVE_PAIR_FIELDS = {"adhesion": wp.float32}
+
 
 _NATIVE_OPTION_FIELDS = {
     "timestep": wp.float32,
@@ -68,6 +70,7 @@ _NATIVE_FIELDS = {
     "joint": (Model.AttributeFrequency.JOINT_DOF, _NATIVE_JOINT_FIELDS),
     "geom": (Model.AttributeFrequency.SHAPE, _NATIVE_GEOM_FIELDS),
     "actuator": ("mujoco:actuator", _NATIVE_ACTUATOR_FIELDS),
+    "pair": ("mujoco:pair", _NATIVE_PAIR_FIELDS),
     "option": (Model.AttributeFrequency.ONCE, _NATIVE_OPTION_FIELDS),
     "lengthrange": (Model.AttributeFrequency.ONCE, _NATIVE_LENGTHRANGE_FIELDS),
 }
@@ -85,6 +88,7 @@ def _register_native_attributes(builder: ModelBuilder) -> None:
         "joint": spec.worldbody.add_body().add_joint(),
         "geom": spec.worldbody.add_geom(),
         "actuator": spec.add_actuator(),
+        "pair": spec.add_pair(),
         "option": spec.option,
         "lengthrange": spec.compiler.LRopt,
     }

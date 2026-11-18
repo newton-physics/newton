@@ -657,9 +657,24 @@ class TestImportMjcfNative(unittest.TestCase):
         """Preserve asymmetric masks, explicit pair parameters and exclusions."""
         xml = """<mujoco><worldbody><body name="a"><freejoint/><geom name="a" size=".1" contype="1" conaffinity="2"/></body>
             <body name="b" pos="1 0 0"><freejoint/><geom name="b" size=".1" contype="2" conaffinity="1"/></body>
-            </worldbody><contact><pair geom1="a" geom2="b" friction=".2 .3 .01 .02 .03" solref=".01 1"/>
+            <body name="c" pos="2 0 0"><freejoint/><geom name="c" size=".1"/></body>
+            </worldbody><contact><pair geom1="a" geom2="b" friction=".2 .3 .01 .02 .03" solref=".01 1" adhesion=".3"/>
+            <pair geom1="a" geom2="c" adhesion=".6"/>
             <exclude body1="a" body2="b"/></contact></mujoco>"""
-        self.assert_roundtrip(xml, ("pair_friction", "pair_solref", "pair_solimp", "geom_contype", "geom_conaffinity"))
+        asset, _, _ = self.assert_roundtrip(
+            xml, ("pair_friction", "pair_solref", "pair_solimp", "pair_adhesion", "geom_contype", "geom_conaffinity")
+        )
+        for attribute in asset.custom_attributes.values():
+            if attribute.frequency == "mujoco:pair":
+                attribute.values[0], attribute.values[1] = attribute.values[1], attribute.values[0]
+        builder = newton.ModelBuilder()
+        for adhesion in (0.0, 0.7):
+            asset.custom_attributes["mujoco:native_pair_adhesion"].values[0] = adhesion
+            asset.custom_attributes["mujoco:native_pair_adhesion"].values[1] = 2 * adhesion
+            builder.add_world(asset)
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        np.testing.assert_allclose(solver.mjw_model.pair_adhesion.numpy(), [[0.0, 0.0], [1.4, 0.7]])
+        self.assertTrue(solver.mjw_model.flg_adhesion)
 
     def test_equalities(self):
         """Preserve body and joint equalities with and without Newton conversion."""
@@ -676,9 +691,11 @@ class TestImportMjcfNative(unittest.TestCase):
 
     def test_filter_scale_options_and_attachment(self):
         """Apply builder filtering, scale, placement, and option settings."""
-        xml = """<mujoco><option iterations="17" tolerance=".0002"/><default><default class="visual"/></default>
+        xml = """<mujoco><option iterations="17" tolerance=".0002"/>
+            <default><default class="visual"/><default class="omit"/></default>
             <worldbody><body name="root"><freejoint/><geom type="box" size=".1 .2 .3" mass="2"/>
             <geom class="visual" size=".1" mass="1"/><site name="s" pos=".1 0 0"/>
+            <site name="omit_by_class" class="omit"/><site name="ignored_site"/>
             <body name="ignored"><geom size=".1"/></body></body></worldbody></mujoco>"""
         builder = newton.ModelBuilder()
         builder.add_mjcf_native(
@@ -686,6 +703,7 @@ class TestImportMjcfNative(unittest.TestCase):
             scale=2,
             parse_visuals=False,
             ignore_names=("ignored",),
+            ignore_classes=("omit",),
             floating=False,
             xform=wp.transform((1, 2, 3), wp.quat_identity()),
         )
@@ -1423,6 +1441,49 @@ class TestImportMjcfNative(unittest.TestCase):
                 getattr(reference, field),
                 rtol=3e-5,
             )
+
+    def test_attached_weld_collision_filters_with_unordered_joints(self):
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_link() for _ in range(4)]
+        for body in bodies:
+            builder.add_shape_sphere(body, radius=0.1)
+        joints = [builder.add_joint_fixed(bodies[i - 1], bodies[i]) for i in (3, 2, 1)]
+        joints.append(builder.add_joint_free(bodies[0]))
+        builder.add_articulation(joints)
+        builder.add_mjcf_native(
+            '<mujoco><worldbody><body><geom size=".1"/></body></worldbody></mujoco>',
+            parent_body=bodies[-1],
+        )
+        for shape in range(4):
+            self.assertIn((shape, 4), builder.shape_collision_filter_pairs)
+
+    def test_site_equality_world_endpoints(self):
+        asset = newton.ModelBuilder()
+        asset.add_mjcf_native(
+            """<mujoco><worldbody><body><freejoint/><geom size=".1"/>
+                <site name="a"/><site name="b"/><site name="c"/></body></worldbody>
+                <equality><connect site1="a" site2="b"/></equality></mujoco>""",
+            convert_mjc_equality_constraints=False,
+        )
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.replicate(asset, 2)
+        model = builder.finalize()
+        SolverMuJoCo(model, disable_contacts=True)
+        for endpoint in ("site1", "site2"):
+            with self.subTest(endpoint=endpoint):
+                refs = getattr(model.mujoco, f"native_equality_{endpoint}")
+                original = refs.numpy()
+                changed = original.copy()
+                changed[1] = model.shape_count - 1
+                refs.assign(changed)
+                with self.assertRaisesRegex(ValueError, f"{endpoint} mismatch"):
+                    SolverMuJoCo(model, disable_contacts=True)
+                changed[1] = original[0]
+                refs.assign(changed)
+                with self.assertRaisesRegex(ValueError, f"{endpoint}.*another world"):
+                    SolverMuJoCo(model, disable_contacts=True)
+                refs.assign(original)
 
     def test_site_equalities(self):
         """Preserve both site references and frames through copying and conversion."""

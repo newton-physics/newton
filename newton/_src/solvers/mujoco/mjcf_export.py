@@ -27,6 +27,7 @@ _NATIVE_WORLD_FIELDS = {
     "joint": {"native_joint_stiffnesspoly": "jnt_stiffnesspoly"},
     "dof": {"native_joint_dampingpoly": "dof_dampingpoly"},
     "geom": {"native_geom_surfacevel": "geom_surfacevel", "native_geom_adhesion": "geom_adhesion"},
+    "pair": {"native_pair_adhesion": "pair_adhesion"},
     "tendon": {
         "native_tendon_stiffnesspoly": "tendon_stiffnesspoly",
         "native_tendon_dampingpoly": "tendon_dampingpoly",
@@ -43,10 +44,30 @@ def _publish_native_world_parameters(model, native, mjw_model, joint_dofs, geom_
     if actuator_rows is not None:
         count = len(model.mujoco.actuator_world) // nworld
         actuator_rows = np.where(actuator_rows >= 0, actuator_rows + np.arange(nworld)[:, None] * count, -1)
+    pair_rows = np.full((nworld, native.npair), -1, dtype=np.int32)
+    if native.npair:
+        pairs = {
+            (world, min(first, second), max(first, second)): row
+            for row, (world, first, second) in enumerate(
+                zip(
+                    model.mujoco.pair_world.numpy(),
+                    model.mujoco.pair_geom1.numpy(),
+                    model.mujoco.pair_geom2.numpy(),
+                    strict=True,
+                )
+            )
+        }
+        # Compilation sorts pairs; match their endpoints rather than their input order.
+        for world, shapes in enumerate(geom_shapes):
+            for pair, (first, second) in enumerate(zip(native.pair_geom1, native.pair_geom2, strict=True)):
+                endpoints = sorted((shapes[first], shapes[second]))
+                if endpoints[0] >= 0:
+                    pair_rows[world, pair] = pairs.get((world, *endpoints), pairs.get((-1, *endpoints), -1))
     mappings = {
         "joint": joint_dofs,
         "dof": joint_dofs[:, native.dof_jntid],
         "geom": geom_shapes,
+        "pair": pair_rows,
         "tendon": tendon_rows,
         "actuator": actuator_rows,
     }
@@ -83,7 +104,7 @@ def _publish_native_world_parameters(model, native, mjw_model, joint_dofs, geom_
                 values = values + compiled - getattr(native, field)[None]
             target[valid] = values[valid]
             output.assign(compiled)
-            if field == "geom_adhesion":
+            if field in ("geom_adhesion", "pair_adhesion"):
                 mjw_model.flg_adhesion |= bool(np.any(compiled))
             elif kind == "tendon":
                 flag = "has_tendon_stiffness" if field == "tendon_stiffnesspoly" else "has_tendon_damping"
