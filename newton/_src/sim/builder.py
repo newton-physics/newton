@@ -1847,7 +1847,9 @@ class ModelBuilder:
                     try:
                         elem_shape = tuple(getattr(warp_dtype, "_shape_", ()) or ())
                         scalar_type = getattr(warp_dtype, "_wp_scalar_type_", None) or warp_dtype
-                        scalar_np_dtype = wp.dtype_to_numpy(scalar_type)
+                        # wp.dtype_to_numpy(wp.bfloat16) returns np.uint16 (raw bits), so
+                        # NumPy would cast floats to integers instead of bfloat16 values.
+                        scalar_np_dtype = None if scalar_type is wp.bfloat16 else wp.dtype_to_numpy(scalar_type)
                     except TypeError:
                         scalar_np_dtype = None
                         elem_shape = ()
@@ -1861,15 +1863,19 @@ class ModelBuilder:
                                 if packed.shape != (len(items),):
                                     raise ValueError("Scalar attribute rows have trailing dimensions")
                                 return packed
-                            return pack_warp_values(items, warp_dtype)
+                            packed = pack_warp_values(items, warp_dtype)
+                            if packed.shape != (len(items), *elem_shape):
+                                raise ValueError("Compound attribute rows have mismatched shape")
+                            return packed
 
                         try:
-                            default_np = np.asarray(self.default, dtype=scalar_np_dtype)
                             if elem_shape:
-                                default_np = default_np.reshape(elem_shape)
-                            elif default_np.ndim != 0:
-                                # Scalar dtypes also support array-valued rows through the general path.
-                                raise ValueError("Scalar attribute default has trailing dimensions")
+                                default_np = _pack_items([self.default])[0]
+                            else:
+                                default_np = np.asarray(self.default, dtype=scalar_np_dtype)
+                                if default_np.ndim != 0:
+                                    # Scalar dtypes also support array-valued rows through the general path.
+                                    raise ValueError("Scalar attribute default has trailing dimensions")
 
                             if self.is_custom_frequency:
                                 src = self.values if len(self.values) <= count else self.values[:count]
@@ -1895,9 +1901,12 @@ class ModelBuilder:
                                 global_np = None
                                 upper = count
                                 if has_world_global:
-                                    global_np = np.asarray(self.values[-1], dtype=scalar_np_dtype)
                                     if elem_shape:
-                                        global_np = global_np.reshape(elem_shape)
+                                        global_np = _pack_items([self.values[-1]])[0]
+                                    else:
+                                        global_np = np.asarray(self.values[-1], dtype=scalar_np_dtype)
+                                        if global_np.ndim != 0:
+                                            raise ValueError("Scalar attribute global value has trailing dimensions")
                                     if self.references is None and self.reference_value_transformer is None:
                                         fill_default = global_np
                                         upper = count - 1
@@ -6160,9 +6169,10 @@ class ModelBuilder:
 
             if use_current_world:
                 shifts_default = all(not self._custom_attribute_defaults_match(w, attr.default) for w in worlds_list)
-                if shifts_default and (
-                    is_custom_frequency
-                    or (len(source_values) == src_freq_count and all(0 <= k < src_freq_count for k in source_values))
+                if (
+                    shifts_default
+                    and len(source_values) == src_freq_count
+                    and (is_custom_frequency or all(0 <= k < src_freq_count for k in source_values))
                 ):
                     merged = ensure_merged_attr(full_key, attr, is_custom_frequency)
                     if is_custom_frequency:

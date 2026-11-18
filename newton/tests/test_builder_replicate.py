@@ -1394,3 +1394,106 @@ class TestModelBuilderReplicateLabelPrefixes(unittest.TestCase):
         np.testing.assert_array_equal(
             rep_model.mujoco.collision_mask_domain.numpy(), seq_model.mujoco.collision_mask_domain.numpy()
         )
+
+    def test_short_custom_frequency_world_reference_matches_sequential_add_world(self):
+        """Short custom-frequency WORLD-reference lists preserve defaults on unpopulated rows."""
+        sub_a = ModelBuilder()
+        sub_a.add_link(xform=wp.transform())
+        sub_a.add_custom_frequency(ModelBuilder.CustomFrequency(name="my_freq", namespace="test"))
+        sub_a.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="freq_world",
+                dtype=wp.int32,
+                frequency="test:my_freq",
+                namespace="test",
+                references="world",
+                default=-7,
+            )
+        )
+        sub_a.add_custom_values(**{"test:freq_world": 5})
+
+        sub_b = ModelBuilder()
+        sub_b.add_custom_frequency(ModelBuilder.CustomFrequency(name="my_freq", namespace="test"))
+        sub_b.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="other",
+                dtype=wp.int32,
+                frequency="test:my_freq",
+                namespace="test",
+                default=0,
+            )
+        )
+        sub_b.add_custom_values(**{"test:other": 10})
+        sub_b.add_custom_values(**{"test:other": 20})
+
+        src = sub_a
+        src.add_builder(sub_b)
+        self.assertEqual(src.custom_attributes["test:freq_world"].values, [5])
+        self.assertEqual(src._custom_frequency_counts["test:my_freq"], 3)
+
+        rep_scene = ModelBuilder()
+        seq_scene = ModelBuilder()
+        rep_scene.replicate(src, 3)
+        for _ in range(3):
+            seq_scene.add_world(src)
+
+        with self.assertWarnsRegex(NewtonWarning, "test:freq_world.*7 values.*expects 9"):
+            rep_model = rep_scene.finalize(device="cpu")
+        with self.assertWarnsRegex(NewtonWarning, "test:freq_world.*7 values.*expects 9"):
+            seq_model = seq_scene.finalize(device="cpu")
+
+        expected = [0, -7, -7, 1, -7, -7, 2, -7, -7]
+        np.testing.assert_array_equal(rep_model.test.freq_world.numpy(), expected)
+        np.testing.assert_array_equal(rep_model.test.freq_world.numpy(), seq_model.test.freq_world.numpy())
+
+        # Also verify full-length lists containing None entries still map to world indices.
+        sub_mid = ModelBuilder()
+        sub_mid.add_custom_frequency(ModelBuilder.CustomFrequency(name="my_freq", namespace="test"))
+        sub_mid.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="other",
+                dtype=wp.int32,
+                frequency="test:my_freq",
+                namespace="test",
+                default=0,
+            )
+        )
+        sub_mid.add_custom_values(**{"test:other": 2})
+
+        src_with_none = ModelBuilder()
+        src_with_none.add_link(xform=wp.transform())
+        src_with_none.add_custom_frequency(ModelBuilder.CustomFrequency(name="my_freq", namespace="test"))
+        src_with_none.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="freq_world",
+                dtype=wp.int32,
+                frequency="test:my_freq",
+                namespace="test",
+                references="world",
+                default=-7,
+                values=[5, None, 5],
+            )
+        )
+        src_with_none.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="other",
+                dtype=wp.int32,
+                frequency="test:my_freq",
+                namespace="test",
+                default=0,
+            )
+        )
+        for _ in range(3):
+            src_with_none.add_builder(sub_mid)
+        self.assertEqual(src_with_none.custom_attributes["test:freq_world"].values, [5, None, 5])
+
+        rep_none = ModelBuilder()
+        seq_none = ModelBuilder()
+        rep_none.replicate(src_with_none, 3)
+        for _ in range(3):
+            seq_none.add_world(src_with_none)
+
+        rep_none_model = rep_none.finalize(device="cpu")
+        seq_none_model = seq_none.finalize(device="cpu")
+        np.testing.assert_array_equal(rep_none_model.test.freq_world.numpy(), [0, 0, 0, 1, 1, 1, 2, 2, 2])
+        np.testing.assert_array_equal(rep_none_model.test.freq_world.numpy(), seq_none_model.test.freq_world.numpy())
