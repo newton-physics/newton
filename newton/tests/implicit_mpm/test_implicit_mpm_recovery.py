@@ -10,7 +10,7 @@ import newton
 from newton._src.solvers.implicit_mpm.implicit_mpm_solver_kernels import add_critical_strain_offset
 from newton._src.solvers.implicit_mpm.rasterized_collisions import stabilize_collider_velocity
 from newton.solvers import SolverImplicitMPM
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 wp.set_module_options({"enable_backward": False})
 
@@ -439,7 +439,6 @@ for function in (
     test_project_outside_keeps_particle_radius,
     test_sdf_gradient_normals_particle_contacts,
     test_sdf_gradient_blocks_nearest_face_at_corner,
-    test_sdf_gradient_normals_separate_worlds,
     test_contact_shielding_keeps_binding_contacts,
     test_volume_recovery_truncated,
     test_volume_recovery_offsets,
@@ -449,6 +448,14 @@ for function in (
     test_recovery_config_validation,
 ):
     add_function_test(TestImplicitMPMRecovery, function.__name__, function, devices=get_test_devices(mode="basic"))
+
+# Sparse grids with separate worlds build their per-world volumes on CUDA devices
+add_function_test(
+    TestImplicitMPMRecovery,
+    test_sdf_gradient_normals_separate_worlds.__name__,
+    test_sdf_gradient_normals_separate_worlds,
+    devices=get_cuda_test_devices(mode="basic"),
+)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
