@@ -1561,26 +1561,6 @@ def _texture_sample_sdf_hw_pair(
 
 
 @wp.func
-def _texture_sample_sdf_hw_pair_paired(
-    sdf: TextureSDFData,
-    local_pos0: wp.vec3,
-    local_pos1: wp.vec3,
-) -> wp.vec2f:
-    """Sample two positions from an X-paired SDF texture."""
-    return _texture_sample_sdf_hw_pair_variant(sdf, local_pos0, local_pos1, True)
-
-
-@wp.func
-def _texture_sample_sdf_hw_pair_scalar(
-    sdf: TextureSDFData,
-    local_pos0: wp.vec3,
-    local_pos1: wp.vec3,
-) -> wp.vec2f:
-    """Sample two positions from a scalar SDF texture."""
-    return _texture_sample_sdf_hw_pair_variant(sdf, local_pos0, local_pos1, False)
-
-
-@wp.func
 def _texture_sample_sdf_hw_clamped_variant(
     sdf: TextureSDFData,
     clamped: wp.vec3,
@@ -1641,26 +1621,6 @@ def _texture_sample_sdf_hw_clamped(
 
 
 @wp.func
-def _texture_sample_sdf_hw_clamped_paired(
-    sdf: TextureSDFData,
-    clamped: wp.vec3,
-    diff_mag: float,
-) -> float:
-    """Sample a clamped position from an X-paired SDF texture."""
-    return _texture_sample_sdf_hw_clamped_variant(sdf, clamped, diff_mag, True)
-
-
-@wp.func
-def _texture_sample_sdf_hw_clamped_scalar(
-    sdf: TextureSDFData,
-    clamped: wp.vec3,
-    diff_mag: float,
-) -> float:
-    """Sample a clamped position from a scalar SDF texture."""
-    return _texture_sample_sdf_hw_clamped_variant(sdf, clamped, diff_mag, False)
-
-
-@wp.func
 def _texture_sample_sdf_hw_variant(
     sdf: TextureSDFData,
     local_pos: wp.vec3,
@@ -1705,24 +1665,6 @@ def texture_sample_sdf_hw(
 ) -> float:
     """Sample an SDF using its stored texture layout."""
     return _texture_sample_sdf_hw_variant(sdf, local_pos, sdf.paired_samples)
-
-
-@wp.func
-def _texture_sample_sdf_hw_paired(
-    sdf: TextureSDFData,
-    local_pos: wp.vec3,
-) -> float:
-    """Sample an X-paired SDF with hardware interpolation."""
-    return _texture_sample_sdf_hw_variant(sdf, local_pos, True)
-
-
-@wp.func
-def _texture_sample_sdf_hw_scalar(
-    sdf: TextureSDFData,
-    local_pos: wp.vec3,
-) -> float:
-    """Sample a scalar SDF with hardware interpolation."""
-    return _texture_sample_sdf_hw_variant(sdf, local_pos, False)
 
 
 @wp.func
@@ -1934,24 +1876,6 @@ def texture_sample_sdf_grad_only_hw(
         Gradient [unitless].
     """
     return _texture_sample_sdf_grad_hw_impl(sdf, local_pos)
-
-
-@wp.func
-def _texture_sample_sdf_grad_only_hw_paired(
-    sdf: TextureSDFData,
-    local_pos: wp.vec3,
-) -> wp.vec3:
-    """Sample an X-paired SDF hardware gradient."""
-    return _texture_sample_sdf_grad_hw_impl_variant(sdf, local_pos, True)
-
-
-@wp.func
-def _texture_sample_sdf_grad_only_hw_scalar(
-    sdf: TextureSDFData,
-    local_pos: wp.vec3,
-) -> wp.vec3:
-    """Sample a scalar SDF hardware gradient."""
-    return _texture_sample_sdf_grad_hw_impl_variant(sdf, local_pos, False)
 
 
 # ============================================================================

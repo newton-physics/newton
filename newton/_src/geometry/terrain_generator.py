@@ -573,21 +573,6 @@ def _combine_meshes(meshes: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.nda
     return combined_vertices, combined_faces.flatten()
 
 
-def _to_newton_mesh(vertices: np.ndarray, indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Convert terrain geometry to Newton mesh format.
-
-    This is a convenience function that ensures proper dtypes.
-
-    Args:
-        vertices: (N, 3) array of vertex positions
-        indices: (M,) array of triangle indices (flattened)
-
-    Returns:
-        tuple of (vertices, indices) with proper dtypes for Newton (float32 and int32)
-    """
-    return vertices.astype(np.float32), indices.astype(np.int32)
-
-
 def create_mesh_heightfield(
     heightfield: np.ndarray,
     extent_x: float,
