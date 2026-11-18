@@ -213,8 +213,7 @@ per-DOF values or positive pairs on joints without MuJoCo DOFs, such as loop
 joints mapped to CONNECT constraints, raise ``ValueError``.
 Resolution uses each world's initial physical inertia and authored armature,
 excluding kinematic-lock regularization, and leaves ``joint_rest_q`` unchanged.
-Both backends initialize these passive gains in every model world. With
-``use_mujoco_cpu=True, separate_worlds=True``, only the template world is simulated.
+Both backends initialize these passive gains in every model world.
 Positive pairs override explicit gains; nonpositive pairs retain them. After resolution,
 core edits remain authoritative through inertia updates and solver reconstruction;
 gains are not automatically retuned. Other solvers can use the resolved core
