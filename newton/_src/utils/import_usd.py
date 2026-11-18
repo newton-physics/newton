@@ -13,7 +13,7 @@ import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -802,26 +802,19 @@ def parse_usd(
         """Load and cache TetMesh data to avoid repeated USD extraction."""
         prim_path = str(prim.GetPath())
         if prim_path not in tetmesh_cache:
-            # Pass the resolver-declared namespaces explicitly (never None), so the importer keeps the
-            # canonical physics: default and does not trip get_tetmesh()'s legacy-default deprecation.
-            compat_ns = deformable_compat_ns
-            if not compat_ns and usd._material_authors_legacy_deformable_attrs(prim):
-                # Without this deprecation window, a vendor-only material would silently
-                # import with default stiffness/density instead of its authored values.
+            if not deformable_compat_ns and usd._material_authors_legacy_deformable_attrs(prim):
                 warnings.warn(
-                    f"{prim_path}: the bound material authors legacy vendor-namespaced deformable "
-                    f"material attributes (omniphysics: / physxDeformableBody:) without "
-                    f"PhysicsVolumeDeformableMaterialAPI. add_usd() still reads them, but this is "
-                    f"deprecated: author the canonical physics: attributes with the material API, or "
-                    f"pass schema_resolvers=[..., SchemaResolverPhysx()] to keep vendor namespaces "
-                    f"explicitly.",
-                    NewtonDeprecationWarning,
-                    stacklevel=2,
+                    f"{prim_path}: ignoring legacy vendor-namespaced deformable material attributes "
+                    "(omniphysics: / physxDeformableBody:) on a bound material without "
+                    "PhysicsVolumeDeformableMaterialAPI. Author canonical physics: attributes with "
+                    "the material API, or pass schema_resolvers=[..., SchemaResolverPhysx()] to "
+                    "read them.",
+                    NewtonWarning,
+                    stacklevel=_external_warning_stacklevel(),
                 )
-                compat_ns = usd.DEFORMABLE_LEGACY_NAMESPACES
             tetmesh_cache[prim_path] = usd._get_tetmesh(
                 prim,
-                compat_namespaces=compat_ns,
+                compat_namespaces=deformable_compat_ns,
                 load_custom_attributes=False,
                 # The marked-volume pass owns current proposal material lowering. Avoid
                 # reading it here too, which would duplicate validation warnings. Keep

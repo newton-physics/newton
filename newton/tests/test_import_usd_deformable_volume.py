@@ -559,14 +559,21 @@ class TestUSDDeformableVolume(unittest.TestCase):
         self.assertGreater(sum(builder.particle_mass), 0.0)
         self.assertNotAlmostEqual(sum(builder.particle_mass), 12.0, places=4)
 
-    def test_legacy_vendor_material_keeps_deprecation_window(self):
-        """A TetMesh material authoring only vendor-namespaced (omniphysics:) moduli still
-        imports its stiffness/density through add_usd() during the deprecation window, with a
-        DeprecationWarning naming the recovery, instead of silently falling back to defaults."""
+    def test_legacy_vendor_material_needs_resolver(self):
+        """A TetMesh material authoring only vendor-namespaced (omniphysics:) moduli imports
+        with builder defaults and a warning naming the recovery; the PhysX resolver reads it."""
         asset = os.path.join(os.path.dirname(__file__), "assets", "tetmesh_with_legacy_material.usda")
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(DeprecationWarning, "vendor-namespaced deformable material"):
+        with self.assertWarnsRegex(newton.NewtonWarning, "ignoring legacy vendor-namespaced deformable material"):
             builder.add_usd(asset)
+        k_mu, k_lambda, _k_damp = builder.tet_materials[0]
+        self.assertEqual(k_mu, builder.default_tet_k_mu)
+        self.assertEqual(k_lambda, builder.default_tet_k_lambda)
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            builder.add_usd(asset, schema_resolvers=[SchemaResolverPhysx()])
 
         # E = 3e5, nu = 0.3 -> k_mu = E / (2 (1 + nu)), k_lambda = E nu / ((1 + nu)(1 - 2 nu)).
         k_mu, k_lambda, _k_damp = builder.tet_materials[0]

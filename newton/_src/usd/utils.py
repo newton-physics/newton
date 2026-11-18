@@ -14,9 +14,10 @@ from typing import TYPE_CHECKING, Any, overload
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
 from ..core.host_transform import _builtin
 from ..core.types import Axis, AxisType
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 from ..geometry import Gaussian
 from ..sim.model import Model
 from ..utils.color import ColorSpace, color_linear_to_srgb
@@ -772,9 +773,8 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
 )
 
 
-# Vendor attribute namespaces that get_tetmesh() read by default before the canonical
-# ``physics:`` deformable schema existed. Pass as ``compat_namespaces`` to read them
-# off a bound material.
+# Vendor attribute namespaces that predate the canonical ``physics:`` deformable schema.
+# Pass as ``compat_namespaces`` to read them off a bound material.
 DEFORMABLE_LEGACY_NAMESPACES: tuple[str, ...] = ("omniphysics", "physxDeformableBody")
 
 
@@ -782,10 +782,9 @@ def _material_authors_legacy_deformable_attrs(prim: Usd.Prim) -> bool:
     """Return whether ``prim``'s bound physics material authors deformable moduli only under
     the legacy vendor namespaces (see :data:`DEFORMABLE_LEGACY_NAMESPACES`).
 
-    True means a canonical-only read would silently drop the authored stiffness/density:
-    the material lacks ``PhysicsVolumeDeformableMaterialAPI`` but carries vendor-namespaced
-    ``youngsModulus`` / ``poissonsRatio`` / ``density``. Callers use this to keep a
-    deprecation window for such assets.
+    True means a canonical-only read drops the authored stiffness/density: the material
+    lacks ``PhysicsVolumeDeformableMaterialAPI`` but carries vendor-namespaced
+    ``youngsModulus`` / ``poissonsRatio`` / ``density``. Callers use this to warn.
     """
     material_prim = _find_physics_material_prim(prim)
     if material_prim is None or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI"):
@@ -801,10 +800,8 @@ def _material_authors_unscoped_canonical_attrs(prim: Usd.Prim) -> bool:
     """Return whether ``prim``'s bound physics material authors canonical ``physics:``
     deformable moduli without ``PhysicsVolumeDeformableMaterialAPI``.
 
-    The deprecated ``get_tetmesh()`` default reads these off any bound material, while
-    canonical-only behavior (``compat_namespaces=()``) scopes moduli to materials with the
-    applied API and would silently drop them -- the second case where the legacy default
-    is load-bearing and deserves the deprecation warning.
+    Canonical-only behavior scopes moduli to materials with the applied API and drops
+    these -- the second case where :func:`get_tetmesh` warns.
     """
     material_prim = _find_physics_material_prim(prim)
     if material_prim is None or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI"):
@@ -888,18 +885,12 @@ def get_tetmesh(
     frequency is ambiguous or cannot be inferred emit a warning and are
     omitted without preventing the TetMesh from loading.
 
-    Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
-    (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
-    are read off any bound material, matching the pre-canonical behavior. That default is
-    deprecated and emits a ``DeprecationWarning`` when it is load-bearing: the bound material
-    authors vendor-namespaced deformable attributes, or canonical ``physics:`` attributes
-    without ``PhysicsVolumeDeformableMaterialAPI`` (API-applied canonical or render-only
-    materials do not warn); a future
-    release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
-    the canonical-only behavior now -- moduli are then read only from a material that applies
-    ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
-    ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
-    warning.
+    Material-attribute namespaces: by default, moduli are read only from a material that
+    applies ``PhysicsVolumeDeformableMaterialAPI``. Omitting ``compat_namespaces`` warns when
+    this ignores attributes authored on the bound material: vendor-namespaced
+    (``omniphysics:`` / ``physxDeformableBody:``) ones, or canonical ``physics:`` ones without
+    the API. Pass an explicit list (e.g. ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to read
+    the canonical and the listed vendor namespaces off any bound material.
 
     Example:
 
@@ -919,24 +910,36 @@ def get_tetmesh(
         prim: The USD prim to load the tetrahedral mesh from.
         compat_namespaces: Vendor attribute namespaces accepted as a fallback to the canonical
             ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
-            gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
-            canonical-only.
+            gate. ``None`` (the default) and ``()`` are canonical-only; only ``None`` warns
+            about ignored attributes.
 
     Returns:
         A :class:`newton.TetMesh` with vertex positions and tet connectivity.
     """
-    return _get_tetmesh(
+    tetmesh = _get_tetmesh(
         prim,
-        compat_namespaces=compat_namespaces,
+        compat_namespaces=() if compat_namespaces is None else compat_namespaces,
         load_custom_attributes=_load_custom_attributes,
         load_material=True,
     )
+    if compat_namespaces is None and (
+        _material_authors_legacy_deformable_attrs(prim) or _material_authors_unscoped_canonical_attrs(prim)
+    ):
+        warnings.warn(
+            f"{prim.GetPath()}: ignoring deformable material attributes authored on a bound "
+            "material without PhysicsVolumeDeformableMaterialAPI. Author canonical physics: "
+            "attributes with the material API, or pass compat_namespaces="
+            "newton.usd.DEFORMABLE_LEGACY_NAMESPACES to read them.",
+            NewtonWarning,
+            stacklevel=_external_warning_stacklevel(),
+        )
+    return tetmesh
 
 
 def _get_tetmesh(
     prim: Usd.Prim,
     *,
-    compat_namespaces: Sequence[str] | None,
+    compat_namespaces: Sequence[str],
     load_custom_attributes: bool,
     load_material: bool,
 ) -> TetMesh:
@@ -979,27 +982,6 @@ def _get_tetmesh(
         )
 
     material_prim = _find_physics_material_prim(prim) if load_material else None
-    if compat_namespaces is None:
-        # Deprecated legacy default: read vendor namespaces off any bound material, and
-        # canonical moduli off materials without the deformable material API. Warn only when
-        # that default is load-bearing -- vendor attrs authored, or canonical attrs on an
-        # API-less material -- so materials whose reads the default change does not alter
-        # (API-applied canonical, render-only) never warn.
-        if load_material and (
-            _material_authors_legacy_deformable_attrs(prim) or _material_authors_unscoped_canonical_attrs(prim)
-        ):
-            warnings.warn(
-                "get_tetmesh(): the default reads deformable material attributes off any bound "
-                "material (canonical physics: and legacy omniphysics: / physxDeformableBody: "
-                "namespaces); this is deprecated, and a future release will read canonical "
-                "physics: attributes only off a material applying "
-                "PhysicsVolumeDeformableMaterialAPI. Pass compat_namespaces=() to adopt the "
-                "canonical-only behavior now, or compat_namespaces="
-                "newton.usd.DEFORMABLE_LEGACY_NAMESPACES to keep the current behavior explicitly.",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-        compat_namespaces = DEFORMABLE_LEGACY_NAMESPACES
     # Canonical behavior (compat_namespaces=()) scopes the moduli to the volume deformable material
     # API, so they are not read off an unrelated physics material. A non-empty compat_namespaces reads
     # the listed vendor namespaces off any bound material.
