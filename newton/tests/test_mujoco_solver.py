@@ -9997,7 +9997,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
     """Test contact pair property conversion and runtime updates across multiple worlds."""
 
     @staticmethod
-    def _make_explicit_pair_contact_model(*, box_height=0.095, geom_margin=0.0):
+    def _make_explicit_pair_contact_builder(*, box_height=0.095, geom_margin=0.0):
         """Build a floor and box with one explicit MJCF contact pair."""
         mjcf = f"""<mujoco model="explicit_pair_probe">
             <option cone="elliptic"/>
@@ -10024,7 +10024,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
-        return builder.finalize()
+        return builder
 
     @staticmethod
     def _make_newton_contact_case(model, *, per_contact_properties=False):
@@ -10059,7 +10059,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
     @requires(*MUJOCO_MODULES)
     def test_explicit_pair_parameters_used_for_newton_contacts(self):
         """Use the explicit pair instead of the shapes' contact material."""
-        model = self._make_explicit_pair_contact_model()
+        model = self._make_explicit_pair_contact_builder().finalize()
         model.mujoco.solref_mode.fill_(SOLREF_MODE_FORCE_SPACE)
         model.shape_material_ke.fill_(1.0e6)
         model.shape_material_kd.fill_(1.0e4)
@@ -10100,9 +10100,25 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         )
 
     @requires(*MUJOCO_MODULES)
+    def test_newton_contacts_use_world_pair_parameters(self):
+        """Use each world's pair solref on its Newton-generated contacts."""
+        builder = newton.ModelBuilder()
+        builder.replicate(self._make_explicit_pair_contact_builder(), 2)
+        model = builder.finalize()
+        solref = np.array([[0.01, 2.0], [0.03, 4.0]], dtype=np.float32)
+        model.mujoco.pair_solref.assign(solref)
+
+        solver = self._step_with_newton_contacts(model)
+        count = int(solver.mjw_data.nacon.numpy()[0])
+        contact = solver.mjw_data.contact
+        worlds = contact.worldid.numpy()[:count]
+        np.testing.assert_array_equal(np.unique(worlds), [0, 1])
+        np.testing.assert_allclose(contact.solref.numpy()[:count], solref[worlds])
+
+    @requires(*MUJOCO_MODULES)
     def test_pair_margin_and_gap_filter_newton_contacts(self):
         """Keep inactive pair contacts and drop contacts beyond the pair gap."""
-        inactive_model = self._make_explicit_pair_contact_model(box_height=0.1035, geom_margin=0.01)
+        inactive_model = self._make_explicit_pair_contact_builder(box_height=0.1035, geom_margin=0.01).finalize()
         inactive_solver = self._step_with_newton_contacts(inactive_model)
         inactive_count = int(inactive_solver.mjw_data.nacon.numpy()[0])
 
@@ -10117,7 +10133,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             np.full(inactive_count, -1, dtype=np.int32),
         )
 
-        absent_model = self._make_explicit_pair_contact_model(box_height=0.1045, geom_margin=0.01)
+        absent_model = self._make_explicit_pair_contact_builder(box_height=0.1045, geom_margin=0.01).finalize()
         absent_solver = self._step_with_newton_contacts(absent_model)
         self.assertEqual(int(absent_solver.mjw_data.nacon.numpy()[0]), 0)
 
@@ -10155,7 +10171,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
     @requires(*MUJOCO_MODULES)
     def test_pair_update_refreshes_newton_contact(self):
         """Refresh injected contacts after pair material updates."""
-        model = self._make_explicit_pair_contact_model()
+        model = self._make_explicit_pair_contact_builder().finalize()
         solver, state_in, state_out, control, contacts = self._make_newton_contact_case(model)
         solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
 
@@ -10196,7 +10212,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
     @requires(*MUJOCO_MODULES)
     def test_per_contact_properties_override_pair(self):
         """Apply Newton per-contact overrides after the explicit pair."""
-        model = self._make_explicit_pair_contact_model()
+        model = self._make_explicit_pair_contact_builder().finalize()
         solver, state_in, state_out, control, contacts = self._make_newton_contact_case(
             model,
             per_contact_properties=True,
@@ -10282,8 +10298,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         total_pairs = world_count * pairs_per_world
         shapes_per_world = template_builder.shape_count
 
-        world_order = (2, 0, 1)
-        for w in world_order:
+        for w in range(world_count):
             world_shape_offset = w * shapes_per_world + 1  # +1 for ground plane
 
             # Pair 1: shape1 <-> shape2
@@ -10330,8 +10345,6 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         # Verify MuJoCo has the pairs (only from template world, which is world 0)
         npair = solver.mj_model.npair
         self.assertEqual(npair, pairs_per_world)
-        expected_mapping = np.array([[2, 3], [4, 5], [0, 1]], dtype=np.int32)
-        np.testing.assert_array_equal(solver.mjc_pair_to_newton_pair.numpy(), expected_mapping)
 
         # --- Step 1: Verify initial conversion ---
         # Use .copy() to ensure we capture the values, not a view (important for CPU mode)
@@ -10352,8 +10365,9 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
 
         # Check values for each world and pair
         for w in range(world_count):
+            newton_pair_base = w * pairs_per_world
             for p in range(pairs_per_world):
-                newton_pair = expected_mapping[w, p]
+                newton_pair = newton_pair_base + p
 
                 np.testing.assert_allclose(
                     mjw_pair_solref[w, p],
@@ -10430,7 +10444,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
 
         for w in range(world_count):
             for p in range(pairs_per_world):
-                newton_pair = expected_mapping[w, p]
+                newton_pair = w * pairs_per_world + p
 
                 np.testing.assert_allclose(
                     mjw_pair_solref_updated[w, p],
@@ -10484,7 +10498,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             )
         np.testing.assert_allclose(
             mujoco_contacts_solver.mjw_model.pair_gap.numpy(),
-            new_gap[expected_mapping],
+            new_gap.reshape(world_count, pairs_per_world),
         )
         np.testing.assert_array_equal(
             mujoco_contacts_solver.mjw_model.pair_margin.numpy(),
@@ -10496,18 +10510,12 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         mujoco_contacts_solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
         np.testing.assert_allclose(
             mujoco_contacts_solver.mjw_model.pair_gap.numpy(),
-            final_gap[expected_mapping],
+            final_gap.reshape(world_count, pairs_per_world),
         )
         np.testing.assert_array_equal(
             mujoco_contacts_solver.mjw_model.pair_margin.numpy(),
             np.zeros_like(mujoco_contacts_solver.mjw_model.pair_margin.numpy()),
         )
-
-        bad_condim = model.mujoco.pair_condim.numpy()
-        bad_condim[0] = 4
-        model.mujoco.pair_condim.assign(wp.array(bad_condim, dtype=wp.int32, device=model.device))
-        with self.assertRaisesRegex(ValueError, "condim"):
-            SolverMuJoCo(model, separate_worlds=True, iterations=1, use_mujoco_contacts=False)
 
     @requires(*MUJOCO_MODULES)
     def test_global_pair_exported_to_spec(self):
