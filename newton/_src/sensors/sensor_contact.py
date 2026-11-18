@@ -453,8 +453,8 @@ class SensorContact:
             warnings.warn(
                 "SensorContact(request_contact_attributes=True) is deprecated in Newton 1.7; "
                 "omit request_contact_attributes, allocate SolverBase.Observables with "
-                "solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts) "
-                "and pass them to update(..., observables=...).",
+                "solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts), "
+                "pass them to solver.step(observables=...), and pass them to update(..., observables=...).",
                 NewtonDeprecationWarning,
                 stacklevel=2,
             )
