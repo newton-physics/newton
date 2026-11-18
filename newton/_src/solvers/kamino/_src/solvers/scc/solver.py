@@ -16,7 +16,13 @@ from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.jacobians import SparseSystemJacobians
 from ...kinematics.limits import LimitsKamino
-from ...linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo, LLTBlockedRCMSolver, LLTBlockedSolver
+from ...linalg import (
+    DenseLinearOperatorData,
+    DenseSquareMultiLinearInfo,
+    LDLBlockSparseSolver,
+    LLTBlockedRCMSolver,
+    LLTBlockedSolver,
+)
 from ..common import (
     WarmStartMode,
     apply_dual_preconditioner_to_solution,
@@ -24,6 +30,7 @@ from ..common import (
     warmstart_joint_constraints,
     warmstart_limit_constraints,
 )
+from . import sparse_factor
 from .apgd import UnilateralAPGD
 from .apgd_kernels import guard_convergence
 from .kernels import (
@@ -47,6 +54,7 @@ from .kernels import (
     _solve_bilateral_contact_response,
     _solve_scc_inequalities_colored_pgs,
     _unprecondition_scc_solution,
+    _write_scc_world_residual,
 )
 from .sparse import (
     SparseSCCPath,
@@ -118,7 +126,7 @@ class SCCSolver:
         self._collect_info: bool = False
         self._size: SizeKamino | None = None
         self._data: SCCData | None = None
-        self._bilateral_solver: LLTBlockedSolver | LLTBlockedRCMSolver | None = None
+        self._bilateral_solver: LLTBlockedSolver | LLTBlockedRCMSolver | LDLBlockSparseSolver | None = None
         self._use_schur_complement: bool = False
         self._max_alternating_iterations: int = 1
         self._bilateral_solve_after_block: tuple[bool, ...] = ()
@@ -324,7 +332,7 @@ class SCCSolver:
         )
 
     def _allocate_bilateral_solver(self, model: ModelKamino):
-        """Allocate the reduced dense operator used for bilateral SCC solves."""
+        """Allocate the bilateral vector layout and the selected factor storage."""
         self._bilateral_solver = None
         self._data.bilateral_operator = None
         if model.size.sum_of_num_bilateral_joint_cts == 0:
@@ -347,11 +355,13 @@ class SCCSolver:
             kwargs.setdefault("factorize_block_size", 64)
             kwargs.setdefault("solve_block_dim", 256)
             solver_class = LLTBlockedSolver
-        else:
+        elif solver_type == "LLTBRCM":
             kwargs.setdefault("capacity_stride", True)
             if self._device.is_cuda and model.size.num_worlds >= 2048:
                 kwargs.setdefault("solve_block_dim", 128)
             solver_class = LLTBlockedRCMSolver
+        else:
+            solver_class = LDLBlockSparseSolver
 
         bilateral_joint_cts_per_world = model.info.num_joint_bilateral_cts.numpy().astype(int).tolist()
         # LLT metadata requires positive blocks; assembly makes zero-row worlds disconnected identities.
@@ -367,7 +377,11 @@ class SCCSolver:
         operator.info.finalize(capacities, dtype=float32, device=self._device)
         self._data.bilateral_dim = wp.array(factor_dims, dtype=wp.int32, device=self._device)
         operator.info.dim = self._data.bilateral_dim
-        operator.mat = wp.zeros(shape=(operator.info.total_mat_size,), dtype=float32, device=self._device)
+        if solver_type == "LDL":
+            rows, edges = sparse_factor.joint_block_pattern(model, capacities)
+            kwargs.update(block_rows=rows, block_edges=edges)
+        else:
+            operator.mat = wp.zeros(shape=(operator.info.total_mat_size,), dtype=float32, device=self._device)
         self._data.state.bilateral_rhs = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
         self._data.state.bilateral_solution = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
         self._data.state.bilateral_preconditioner = wp.zeros(
@@ -375,6 +389,8 @@ class SCCSolver:
         )
         self._data.bilateral_operator = operator
         self._bilateral_solver = solver_class(operator=operator, device=self._device, **kwargs)
+        if solver_type == "LDL":
+            sparse_factor.allocate_response(self._data.state, model.size.num_worlds, self._device)
 
     @staticmethod
     def _check_config(
@@ -502,6 +518,74 @@ class SCCSolver:
                 )
             elif self._use_schur_complement:
                 self._data.state.allocate_dense_projection(self._size)
+
+    def _launch_colored_pgs(
+        self,
+        problem: DualProblem,
+        block_iteration: int,
+        *,
+        enable_adaptive: bool,
+        mio: wp.array | None = None,
+        D: wp.array | None = None,
+    ) -> None:
+        """Launch dense colored PGS on ``D`` (default: the problem's Delassus matrix)."""
+        state = self._data.state
+        threads_per_world = 64 if self.device.is_cuda else 1
+        wp.launch(
+            kernel=_solve_scc_inequalities_colored_pgs,
+            dim=self._size.num_worlds * threads_per_world,
+            inputs=[
+                problem.data.dim,
+                problem.data.mio if mio is None else mio,
+                problem.data.vio,
+                problem.data.nbc,
+                problem.data.nl,
+                problem.data.nc,
+                problem.data.bcgo,
+                problem.data.lcgo,
+                problem.data.ccgo,
+                problem.data.bcio,
+                problem.data.cio,
+                problem.data.iio,
+                problem.data.mu,
+                problem.data.bound_lower,
+                problem.data.bound_upper,
+                problem.data.D if D is None else D,
+                problem.data.P,
+                problem.data.v_b_friction,
+                block_iteration,
+                state.inequality_num_colors,
+                state.inequality_ids_by_color,
+                state.inequality_color_starts,
+                self._data.config,
+                wp.bool(enable_adaptive),
+                self._data.status,
+                state.scratch,
+                state.v_aug,
+                self._data.solution.lambdas,
+            ],
+            device=self.device,
+            block_dim=threads_per_world,
+        )
+
+    def write_world_residual(self, world_residual: wp.array[wp.float32]) -> None:
+        """Write the terminal residual of each world relative to its stopping tolerance.
+
+        The value is ``max(r_p, r_d, r_c) / tolerance`` of the latest solve, where
+        ``r_d`` includes the bilateral residual, so values at most one satisfy the
+        full-system convergence check. With a zero tolerance, zero residuals report
+        zero and others infinity. A failed APGD line search reports infinity.
+
+        Args:
+            world_residual: Output array with at least ``num_worlds`` entries.
+        """
+        wp.launch(
+            _write_scc_world_residual,
+            dim=self._size.num_worlds,
+            inputs=[self.data.config, self.data.status],
+            outputs=[world_residual],
+            device=self._device,
+        )
 
     def solve(self, problem: DualProblem):
         """Solve the cone-complementarity problem defined by ``problem``.
@@ -819,45 +903,9 @@ class SCCSolver:
             ],
             device=self.device,
         )
-        threads_per_world = 64 if self.device.is_cuda else 1
         # Inequality-only solves need no host work between PGS blocks.
         for block_iteration in (_FUSED_INEQUALITY_BLOCK,):
-            wp.launch(
-                kernel=_solve_scc_inequalities_colored_pgs,
-                dim=self._size.num_worlds * threads_per_world,
-                inputs=[
-                    problem.data.dim,
-                    problem.data.mio,
-                    problem.data.vio,
-                    problem.data.nbc,
-                    problem.data.nl,
-                    problem.data.nc,
-                    problem.data.bcgo,
-                    problem.data.lcgo,
-                    problem.data.ccgo,
-                    problem.data.bcio,
-                    problem.data.cio,
-                    problem.data.iio,
-                    problem.data.mu,
-                    problem.data.bound_lower,
-                    problem.data.bound_upper,
-                    problem.data.D,
-                    problem.data.P,
-                    problem.data.v_b_friction,
-                    block_iteration,
-                    state.inequality_num_colors,
-                    state.inequality_ids_by_color,
-                    state.inequality_color_starts,
-                    self._data.config,
-                    False,
-                    self._data.status,
-                    state.scratch,
-                    state.v_aug,
-                    self._data.solution.lambdas,
-                ],
-                device=self.device,
-                block_dim=threads_per_world,
-            )
+            self._launch_colored_pgs(problem, block_iteration, enable_adaptive=False)
         wp.launch(
             kernel=_set_scc_direct_status_iterations,
             dim=self._size.num_worlds,
@@ -911,6 +959,9 @@ class SCCSolver:
         """Extract, symmetrically scale, and factor the bilateral block ``D_bb``."""
         operator = self._data.bilateral_operator
         operator.info.dim = self._data.bilateral_dim
+        if isinstance(self._bilateral_solver, LDLBlockSparseSolver):
+            sparse_factor.factor_dense(self._bilateral_solver, problem, self._data.state.bilateral_preconditioner)
+            return
         wp.launch(
             kernel=_copy_bilateral_block,
             dim=(
@@ -954,7 +1005,6 @@ class SCCSolver:
             device=self.device,
         )
         self._prepare_inequality_coloring(problem)
-        threads_per_world = 64 if self.device.is_cuda else 1
         for block_iteration in range(self._max_alternating_iterations):
             wp.launch(
                 kernel=_compute_scc_unilateral_velocities,
@@ -974,42 +1024,7 @@ class SCCSolver:
                 ],
                 device=self.device,
             )
-            wp.launch(
-                kernel=_solve_scc_inequalities_colored_pgs,
-                dim=self._size.num_worlds * threads_per_world,
-                inputs=[
-                    problem.data.dim,
-                    problem.data.mio,
-                    problem.data.vio,
-                    problem.data.nbc,
-                    problem.data.nl,
-                    problem.data.nc,
-                    problem.data.bcgo,
-                    problem.data.lcgo,
-                    problem.data.ccgo,
-                    problem.data.bcio,
-                    problem.data.cio,
-                    problem.data.iio,
-                    problem.data.mu,
-                    problem.data.bound_lower,
-                    problem.data.bound_upper,
-                    problem.data.D,
-                    problem.data.P,
-                    problem.data.v_b_friction,
-                    block_iteration,
-                    self._data.state.inequality_num_colors,
-                    self._data.state.inequality_ids_by_color,
-                    self._data.state.inequality_color_starts,
-                    self._data.config,
-                    False,
-                    self._data.status,
-                    self._data.state.scratch,
-                    self._data.state.v_aug,
-                    self._data.solution.lambdas,
-                ],
-                device=self.device,
-                block_dim=threads_per_world,
-            )
+            self._launch_colored_pgs(problem, block_iteration, enable_adaptive=False)
             if self._should_solve_bilateral_after_block(block_iteration):
                 self._set_bilateral_active_dim(problem, block_iteration)
                 self._solve_bilateral_block(problem, active_dim=self._data.state.bilateral_active_dim)
@@ -1043,27 +1058,30 @@ class SCCSolver:
         permutation = self._bilateral_solver.P if use_permutation else self._data.state.projected_mio
         unilateral_begin = 0
         unilateral_count = self._max_unilateral_rows
-        wp.launch(
-            kernel=_solve_bilateral_contact_response,
-            dim=(self._size.num_worlds, unilateral_count),
-            inputs=[
-                problem.data.dim,
-                problem.data.mio,
-                problem.data.njc,
-                operator.info.mio,
-                operator.info.maxdim,
-                operator.info.vio,
-                self._data.state.bilateral_preconditioner,
-                self._data.state.projected_mio,
-                problem.data.D,
-                self._bilateral_solver.L,
-                permutation,
-                use_permutation,
-                unilateral_begin,
-                self._data.state.projected_D,
-            ],
-            device=self.device,
-        )
+        if isinstance(self._bilateral_solver, LDLBlockSparseSolver):
+            sparse_factor.response_dense(self, problem)
+        else:
+            wp.launch(
+                kernel=_solve_bilateral_contact_response,
+                dim=(self._size.num_worlds, unilateral_count),
+                inputs=[
+                    problem.data.dim,
+                    problem.data.mio,
+                    problem.data.njc,
+                    operator.info.mio,
+                    operator.info.maxdim,
+                    operator.info.vio,
+                    self._data.state.bilateral_preconditioner,
+                    self._data.state.projected_mio,
+                    problem.data.D,
+                    self._bilateral_solver.L,
+                    permutation,
+                    use_permutation,
+                    unilateral_begin,
+                    self._data.state.projected_D,
+                ],
+                device=self.device,
+            )
         wp.launch(
             kernel=_assemble_bilateral_contact_response,
             dim=(
@@ -1097,7 +1115,6 @@ class SCCSolver:
         )
 
         self._prepare_inequality_coloring(problem)
-        threads_per_world = 64 if self.device.is_cuda else 1
         wp.launch(
             kernel=_compute_scc_unilateral_velocities,
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
@@ -1116,41 +1133,12 @@ class SCCSolver:
             ],
             device=self.device,
         )
-        wp.launch(
-            kernel=_solve_scc_inequalities_colored_pgs,
-            dim=self._size.num_worlds * threads_per_world,
-            inputs=[
-                problem.data.dim,
-                self._data.state.projected_mio,
-                problem.data.vio,
-                problem.data.nbc,
-                problem.data.nl,
-                problem.data.nc,
-                problem.data.bcgo,
-                problem.data.lcgo,
-                problem.data.ccgo,
-                problem.data.bcio,
-                problem.data.cio,
-                problem.data.iio,
-                problem.data.mu,
-                problem.data.bound_lower,
-                problem.data.bound_upper,
-                self._data.state.projected_D,
-                problem.data.P,
-                problem.data.v_b_friction,
-                _FUSED_BILATERAL_BLOCK,
-                self._data.state.inequality_num_colors,
-                self._data.state.inequality_ids_by_color,
-                self._data.state.inequality_color_starts,
-                self._data.config,
-                wp.bool(self.device.is_cuda),
-                self._data.status,
-                self._data.state.scratch,
-                self._data.state.v_aug,
-                self._data.solution.lambdas,
-            ],
-            device=self.device,
-            block_dim=threads_per_world,
+        self._launch_colored_pgs(
+            problem,
+            _FUSED_BILATERAL_BLOCK,
+            enable_adaptive=self.device.is_cuda,
+            mio=self._data.state.projected_mio,
+            D=self._data.state.projected_D,
         )
 
         self._set_bilateral_active_dim(problem, -1)

@@ -367,7 +367,7 @@ def compute_contact_lines(
         return
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
-    if shape_a == shape_b:
+    if shape_a == shape_b or shape_a < 0 or shape_b < 0:
         line_start[tid] = nan_line
         line_end[tid] = nan_line
         return
@@ -492,7 +492,7 @@ def compute_contact_disk_transforms(
 
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
-    if shape_a == shape_b:
+    if shape_a == shape_b or shape_a < 0 or shape_b < 0:
         transforms[tid] = zero_xform
         scales[tid] = zero_vec
         colors[tid] = zero_vec
@@ -603,7 +603,7 @@ def compute_contact_force_arrows(
 
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
-    if shape_a == shape_b:
+    if shape_a == shape_b or shape_a < 0 or shape_b < 0:
         line_start[tid] = nan_line
         line_end[tid] = nan_line
         return

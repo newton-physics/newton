@@ -529,7 +529,8 @@ class TestMuJoCoActuators(unittest.TestCase):
         """Keep actuator damping out of joint/tendon damping and its gear editable per world."""
         mujoco = SolverMuJoCo.import_mujoco()[0]
         mjcf = (
-            MJCF_DCMOTOR_SIMPLE.replace(
+            MJCF_DCMOTOR_SIMPLE.replace('<joint name="hinge"/>', '<joint name="hinge" springdamper="0.2 1.5"/>')
+            .replace(
                 "<actuator>", '<tendon><fixed name="drive"><joint joint="hinge" coef="1"/></fixed></tendon><actuator>'
             )
             .replace('resistance="2"', 'resistance="2" damping="0.7 0.2 0.1" gear="3"')
@@ -551,6 +552,9 @@ class TestMuJoCoActuators(unittest.TestCase):
                 gears[-2:, 0] *= 2.0
                 model.mujoco.actuator_gear.assign(gears)
                 solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, integrator="euler", disable_contacts=True)
+                np.testing.assert_allclose(
+                    solver.mj_model.dof_damping, model.joint_damping.numpy()[: solver.mj_model.nv]
+                )
                 model.joint_damping.fill_(0.4)
                 model.mujoco.tendon_damping.fill_(0.3)
                 gears[-2:, 0] *= 1.5

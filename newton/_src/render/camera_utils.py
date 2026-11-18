@@ -119,8 +119,8 @@ def compute_camera_transforms_usd(
     except ImportError as e:
         raise ImportError("USD camera ray helpers require the pxr USD Python modules.") from e
 
-    from ...core import Axis, quat_between_axes  # noqa: PLC0415
-    from ...usd.utils import get_transform  # noqa: PLC0415
+    from ..core import Axis, quat_between_axes  # noqa: PLC0415
+    from ..usd.utils import get_transform  # noqa: PLC0415
 
     camera_items = list(cameras) if _is_camera_sequence(cameras) else [cameras]
     if not camera_items:

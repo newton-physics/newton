@@ -16,7 +16,6 @@ def _add_curve(builder, label=None, topology="chain"):
     return builder.add_rod(
         rod=newton.Rod(points, edges=edges, closed=topology == "closed", radius=0.02),
         label=label,
-        body_frame_origin="com",
     )
 
 
@@ -62,7 +61,6 @@ def _add_test_anchored_cable(builder, label="anchored_curve"):
         rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
         label=label,
         wrap_in_articulation=False,
-        body_frame_origin="com",
     )
     anchor = builder.add_joint_fixed(-1, bodies[0], label="anchor")
     builder.add_articulation([*joints, anchor])

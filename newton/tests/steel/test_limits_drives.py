@@ -1497,11 +1497,11 @@ def _build_slider_augmented_drives(device, *, effort_limit=1.0e6, damping=0.0):
 
 
 def _reference_trajectory(steps, *, effort_limit=1.0e6, damping=0.0):
-    """Backward-Euler PD drive: ``(m + a + dt kd + dt^2 ke) qdd = clamp(u0) - c qd``."""
+    """Backward-Euler drive and damping: ``(m + a + dt (kd + c) + dt^2 ke) qdd = clamp(u0) - c qd``."""
     q = 0.0
     qd = 0.0
     history = []
-    effective_mass = MASS + ARMATURE + DT * KD + DT * DT * KE
+    effective_mass = MASS + ARMATURE + DT * (KD + damping) + DT * DT * KE
     for _ in range(steps):
         u0 = -(KE * (q - TARGET_POS + DT * qd) + KD * (qd - TARGET_VEL))
         u0 = float(np.clip(u0, -effort_limit, effort_limit))
@@ -1556,6 +1556,149 @@ def test_passive_joint_damping_is_applied(test, device):
     )
 
 
+def test_passive_damping_with_changing_timestep(test, device, solve_mode="serial"):
+    """Match backward Euler for scalar and BALL damping with cached mass factors."""
+    for joint_type in ("prismatic", "revolute", "ball"):
+        with test.subTest(joint_type=joint_type):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+            joint = getattr(builder, f"add_joint_{joint_type}")(-1, body, armature=0.0)
+            builder.add_articulation([joint])
+            builder.joint_damping[:] = [100.0] * len(builder.joint_damping)
+            model = builder.finalize(device=device)
+            solver = SolverSteel(model, solve_mode=solve_mode, update_mass_matrix_interval=100)
+            state, output = model.state(), model.state()
+            velocity = np.zeros(model.joint_dof_count, dtype=np.float32)
+            velocity[0] = 1.0
+            state.joint_qd.assign(velocity)
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+            control = model.control()
+            model.joint_target_kd.fill_(-100.0)
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+            for dt in (0.01, 0.01, 0.02, 0.005):
+                solver.step(state, output, control, None, dt)
+                state, output = output, state
+                velocity /= 1.0 + dt * 100.0
+                np.testing.assert_allclose(state.joint_qd.numpy(), velocity, atol=1.0e-6)
+
+            # A one-ULP jitter must reuse the factor, including with a long refresh interval.
+            factor_dt = solver._mass_factor_dt.numpy().copy()
+            jitter_dt = float(np.nextafter(np.float32(0.005), np.float32(1.0)))
+            for dt in (jitter_dt, 0.005, jitter_dt):
+                solver.step(state, output, control, None, dt)
+                state, output = output, state
+                velocity /= 1.0 + dt * 100.0
+                np.testing.assert_allclose(state.joint_qd.numpy(), velocity, atol=1.0e-6)
+                np.testing.assert_array_equal(solver._mass_update_mask.numpy(), [0])
+                np.testing.assert_array_equal(solver._mass_factor_dt.numpy(), factor_dt)
+
+            model.joint_damping.fill_(1.0e8)
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+            for dt in (1.0e-8, 1.5e-8, 1.5e-8):
+                solver.step(state, output, control, None, dt)
+                state, output = output, state
+                velocity /= 1.0 + dt * 1.0e8
+                np.testing.assert_allclose(state.joint_qd.numpy(), velocity, atol=1.0e-6)
+
+
+def test_passive_damping_after_velocity_prescaling(test, device):
+    """Damp the prescaled velocity without reversing an over-limit joint."""
+    for joint_type in ("prismatic", "revolute", "d6"):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+        if joint_type == "d6":
+            joint = builder.add_joint_d6(
+                -1, body, linear_axes=[newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, armature=0.0)]
+            )
+        else:
+            joint = getattr(builder, f"add_joint_{joint_type}")(-1, body, armature=0.0)
+        builder.add_articulation([joint])
+        builder.joint_damping[:] = [10000.0] * len(builder.joint_damping)
+        builder.joint_velocity_limit[:] = [1.0] * len(builder.joint_velocity_limit)
+        model = builder.finalize(device=device)
+        for drive_mode in ("augmented", "rows"):
+            with test.subTest(joint_type=joint_type, drive_mode=drive_mode):
+                solver = SolverSteel(model, drive_mode=drive_mode, enable_joint_velocity_limits=True)
+                state, output = model.state(), model.state()
+                control = model.control()
+                for sign in (-1.0, 1.0):
+                    velocity = np.zeros(model.joint_dof_count, dtype=np.float32)
+                    velocity[0] = sign * 10.0
+                    state.joint_qd.assign(velocity)
+                    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                    solver.step(state, output, control, None, 0.01)
+                    velocity[0] = sign / 101.0
+                    np.testing.assert_allclose(output.joint_qd.numpy(), velocity, atol=1.0e-6)
+
+
+def test_near_singular_passive_damping(test, device, solve_mode="serial"):
+    """Dissipate velocity in a near-singular D6 without an actuator or contacts."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+    axes = [
+        newton.ModelBuilder.JointDofConfig(axis=axis, damping=0.5, armature=0.001, effort_limit=0.01)
+        for axis in (newton.Axis.X, newton.Axis.Z, newton.Axis.Y)
+    ]
+    joint = builder.add_joint_d6(-1, body, angular_axes=axes)
+    builder.add_articulation([joint])
+    builder.joint_q[:] = [0.0, np.deg2rad(89.9), 0.0]
+    builder.joint_qd[:] = [1.0, 0.0, 1.0]
+    model = builder.finalize(device=device)
+    for drive_mode in ("augmented", "rows"):
+        with test.subTest(drive_mode=drive_mode):
+            solver = SolverSteel(model, solve_mode=solve_mode, drive_mode=drive_mode)
+            state, output = model.state(), model.state()
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+            control = model.control()
+            previous = np.linalg.norm(state.joint_qd.numpy())
+            for _ in range(10):
+                state.clear_forces()
+                solver.step(state, output, control, None, 0.005)
+                state, output = output, state
+                speed = np.linalg.norm(state.joint_qd.numpy())
+                test.assertLess(speed, previous)
+                previous = speed
+            test.assertLess(previous, 1.0e-4)
+
+
+def test_passive_damping_replay_after_timestep_change(test, device):
+    """Refresh cached damping factors when eager steps and graphs use different dt."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    joint = builder.add_joint_prismatic(-1, body, armature=0.0, damping=100.0)
+    builder.add_articulation([joint])
+    model = builder.finalize(device=device)
+    for drive_mode in ("augmented", "rows"):
+        with test.subTest(drive_mode=drive_mode):
+            solver = SolverSteel(model, drive_mode=drive_mode, update_mass_matrix_interval=100)
+            state, output = model.state(), model.state()
+            state.joint_qd.fill_(1.0)
+            control = model.control()
+            graphs = []
+            for dt in (0.01, 0.02):
+                solver.step(state, output, control, None, dt)
+                with wp.ScopedCapture(device=device) as capture:
+                    solver.step(state, output, control, None, dt)
+                graphs.append(capture.graph)
+            for _ in range(2):
+                for graph, dt in zip(graphs, (0.01, 0.02), strict=True):
+                    wp.capture_launch(graph)
+                    np.testing.assert_allclose(output.joint_qd.numpy(), [1.0 / (1.0 + dt * 100.0)], atol=1.0e-6)
+                solver.step(state, output, control, None, 0.005)
+                np.testing.assert_allclose(output.joint_qd.numpy(), [2.0 / 3.0], atol=1.0e-6)
+
+            # Replay a near-identical timestep without rebuilding the cached factor.
+            factor_dt = solver._mass_factor_dt.numpy().copy()
+            jitter_dt = float(np.nextafter(np.float32(0.005), np.float32(1.0)))
+            with wp.ScopedCapture(device=device) as capture:
+                solver.step(state, output, control, None, jitter_dt)
+            for _ in range(2):
+                wp.capture_launch(capture.graph)
+                np.testing.assert_allclose(output.joint_qd.numpy(), [2.0 / 3.0], atol=1.0e-6)
+                np.testing.assert_array_equal(solver._mass_update_mask.numpy(), [0])
+                np.testing.assert_array_equal(solver._mass_factor_dt.numpy(), factor_dt)
+
+
 class TestSteelAugmentedDrives(unittest.TestCase):
     pass
 
@@ -1564,8 +1707,26 @@ for _name, _func in (
     ("test_implicit_drive_matches_backward_euler_reference", test_implicit_drive_matches_backward_euler_reference),
     ("test_drive_force_is_clamped_to_the_effort_limit", test_drive_force_is_clamped_to_the_effort_limit),
     ("test_passive_joint_damping_is_applied", test_passive_joint_damping_is_applied),
+    ("test_near_singular_passive_damping", test_near_singular_passive_damping),
+    ("test_passive_damping_with_changing_timestep", test_passive_damping_with_changing_timestep),
 ):
     add_function_test(TestSteelAugmentedDrives, _name, _func, devices=all_devices)
+
+
+add_function_test(
+    TestSteelAugmentedDrives,
+    "test_passive_damping_after_velocity_prescaling",
+    test_passive_damping_after_velocity_prescaling,
+    devices=devices,
+)
+
+
+add_function_test(
+    TestSteelAugmentedDrives,
+    "test_passive_damping_replay_after_timestep_change",
+    test_passive_damping_replay_after_timestep_change,
+    devices=devices,
+)
 
 
 DT_JOINT_FRICTION = 0.01
