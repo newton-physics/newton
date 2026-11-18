@@ -14,7 +14,7 @@ from newton._src.solvers.kamino._src.geometry import ContactAggregation
 from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.sensors import SensorContact
 from newton.solvers import SolverKamino, SolverMuJoCo, SolverSteel
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.unittest_utils import MUJOCO_MODULES, assert_np_equal, requires
 from newton.tests.utils import basics
 
 
@@ -782,6 +782,7 @@ class TestSensorContact(unittest.TestCase):
         self.assertAlmostEqual(np.dot(friction[0], n), 0.0, places=5)
 
 
+@requires(*MUJOCO_MODULES)
 class TestSensorContactMuJoCo(unittest.TestCase):
     """End-to-end tests for contact sensors using MuJoCo solver."""
 
@@ -801,10 +802,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         model = builder.finalize()
         mass_a, mass_b = 45.0, 4.0  # kg (from density * volume)
 
-        try:
-            solver = SolverMuJoCo(model, njmax=200)
-        except ImportError as e:
-            self.skipTest(f"MuJoCo not available: {e}")
+        solver = SolverMuJoCo(model, njmax=200)
 
         sensor = SensorContact(
             model, request_contact_attributes=False, sensing_bodies=["a", "b"], counterpart_shapes="*"
@@ -887,10 +885,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         model = builder.finalize()
         mass_a = 4.5
 
-        try:
-            solver = SolverMuJoCo(model, njmax=200)
-        except ImportError as e:
-            self.skipTest(f"MuJoCo not available: {e}")
+        solver = SolverMuJoCo(model, njmax=200)
 
         sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies=["a"])
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
@@ -940,10 +935,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         model = builder.finalize()
         mass_a, mass_b, mass_c = 4.5, 0.4, 2.0  # kg
 
-        try:
-            solver = SolverMuJoCo(model, njmax=200)
-        except ImportError as e:
-            self.skipTest(f"MuJoCo not available: {e}")
+        solver = SolverMuJoCo(model, njmax=200)
 
         sensor_abc = SensorContact(model, request_contact_attributes=False, sensing_bodies=["a", "b", "c"])
         sensor_base = SensorContact(model, request_contact_attributes=False, sensing_shapes=["base"])
