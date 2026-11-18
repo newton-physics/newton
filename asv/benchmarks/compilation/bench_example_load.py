@@ -29,7 +29,11 @@ class _ExampleLoad:
         self.cache_dir = tempfile.mkdtemp(prefix="newton-asv-warp-cache-")
 
     def teardown(self):
-        shutil.rmtree(self.cache_dir, ignore_errors=True)
+        path = self.cache_dir
+        if os.name == "nt" and not path.startswith("\\\\"):
+            # Warp writes the cache through the long-path prefix, so files can exceed MAX_PATH.
+            path = "\\\\?\\" + path
+        shutil.rmtree(path, ignore_errors=True)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_load(self):
