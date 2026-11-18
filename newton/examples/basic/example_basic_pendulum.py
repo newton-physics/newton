@@ -91,7 +91,6 @@ class Example:
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
-            solver_config.scc.bilateral_solver_type = "LLTBRCM"
             configure_ldl(solver_config, args)
             solver_config.scc.max_alternating_iterations = 8
             solver_config.scc.bilateral_solve_interval = 8

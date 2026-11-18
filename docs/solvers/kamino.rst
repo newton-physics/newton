@@ -79,7 +79,7 @@ Set ``sparse_jacobian=False`` for fully dense SCC, or set
 ``sparse_dynamics=True`` to use sparse dynamics with the Conjugate Residual
 solver.
 
-SCC defaults to ``"LLTB"`` for its bilateral joint solve. Select ``"LDL"``
+SCC defaults to ``"LLTBRCM"`` for its bilateral joint solve. Select ``"LDL"``
 explicitly to use the block-sparse backend, which factors the reordered matrix
 as :math:`L D L^T`, storing unit-lower :math:`L` separately from the scalar
 diagonal :math:`D`. It stores only joint
@@ -113,7 +113,6 @@ parallel factorization:
 
 .. code-block:: python
 
-   config.scc.bilateral_solver_type = "LLTBRCM"
    config.scc.bilateral_solver_kwargs = {
        "block_size": 32,
        "reuse_permutation": True,
@@ -122,7 +121,8 @@ parallel factorization:
 
 The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
-changes. Keep ``"LLTB"`` for small systems.
+changes. To factor dense tiles without reordering, set
+``config.scc.bilateral_solver_type = "LLTB"``.
 
 The level-scheduled sparse backend can incur more launch overhead on small
 systems or long chains, so benchmark representative workloads when choosing
