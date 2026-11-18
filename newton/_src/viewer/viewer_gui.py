@@ -494,6 +494,8 @@ class ViewerGui:
         elif symbol == pyglet.window.key.F:
             self.frame_camera_on_model()
         elif symbol == pyglet.window.key.ESCAPE and close_fn is not None:
+            # Release the GUI renderer before close_fn destroys the window's GL context.
+            self.ui.shutdown()
             close_fn()
 
     def _update_fps(self):

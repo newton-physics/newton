@@ -279,6 +279,9 @@ class SolverBase:
         CONTACT_F = "contact_f"
         """Spatial contact forces aligned with a :class:`~newton.Contacts` container."""
 
+        SOLVER_RESIDUAL = "solver_residual"
+        """Per-world convergence residual of the most recent step; see :ref:`solver_residual_observable`."""
+
         def __init_subclass__(cls, **kwargs: Any) -> None:
             """Reject invalid or conflicting kind declarations when a subclass is defined."""
             super().__init_subclass__(**kwargs)
@@ -377,6 +380,18 @@ class SolverBase:
             dtype=wp.spatial_vector, frequency=Model.AttributeFrequency.CONTACT
         )
         """Contact forces [N, N·m], shape ``(rigid_contact_max + soft_contact_max,)`` of the allocation contacts."""
+
+        solver_residual: wp.array[wp.float32] | None = field(  # noqa: RUF009
+            dtype=wp.float32, frequency=Model.AttributeFrequency.WORLD
+        )
+        """Per-world convergence residual of the latest step, shape ``(world_count + 1,)``.
+
+        The final entry is global world ``-1``, as in per-world reset masks.
+        A nonnegative, solver-defined measure where smaller is closer to
+        convergence. Each solver documents its definition and units; values are
+        comparable only within one solver configuration. See
+        :ref:`solver_residual_observable`.
+        """
 
         _kinds: frozenset[str] = dataclass_field(default_factory=frozenset, init=False, repr=False)
         _solver: SolverBase | None = dataclass_field(default=None, init=False, repr=False)
@@ -872,7 +887,12 @@ class SolverBase:
             setattr(
                 observables,
                 name,
-                wp.zeros(count, dtype=spec.dtype, device=self.model.device, requires_grad=requires_grad),
+                wp.zeros(
+                    self._observable_shape(kind, count),
+                    dtype=spec.dtype,
+                    device=self.model.device,
+                    requires_grad=requires_grad,
+                ),
             )
         yield observables
 
@@ -936,6 +956,16 @@ class SolverBase:
                 )
         self._validate_native_contact_export(observables, contacts)
         observables._contact_layouts.update(dict.fromkeys(contact_fields, contacts))
+
+    def _observable_shape(self, kind: str, rows: int) -> tuple[int, ...]:
+        """Return the array shape allocated for observable ``kind``.
+
+        ``rows`` follows the field's declared frequency. Solvers override this
+        hook to add trailing or leading dimensions that depend on their
+        configuration, such as an iteration axis; the default is ``(rows,)``.
+        """
+        del kind
+        return (rows,)
 
     def _validate_native_contact_export(self, observables: SolverBase.Observables, contacts: Contacts) -> None:
         """Check that ``contacts`` can hold the contacts a native backend exports.
@@ -1111,19 +1141,16 @@ class SolverBase:
         """
         self._normalize_reset_world_mask(world_mask)
 
-    supports_body_pair_reduced_contacts: bool = False
-    """Whether this solver's default configuration accepts body-pair-reduced contacts.
+    supports_body_pair_reduced_contacts: bool = True
+    """Whether this solver accepts the collision pipeline's body-pair-reduced contacts.
 
-    A :class:`newton.CollisionPipeline` built with ``body_pair_reduction``
-    compacts rigid contacts to each patch's depth and sampled footprint
-    representatives and, when the scene has primitive or convex contact pairs,
-    stamps the buffers it allocates (:attr:`Contacts.rigid_contact_body_pair_reduced`).  A solver may only
-    declare support after a conformance test demonstrates that it consumes
-    contact depth with the reducer's signed-separation convention.  The built-in
-    solvers that do not declare support raise in :meth:`step` when given a
-    stamped buffer, and :class:`SolverBase` rejects an owned pipeline that
-    stamps its buffers at construction.  A custom solver that does not declare
-    support should check the stamp itself.
+    Reduction selects ordinary :class:`newton.Contacts` rows, retaining their
+    shape ids, materials, normal convention, and body-local witnesses. Built-in
+    consumers accept these rows just as they accept mesh/SDF-reduced contacts;
+    the solver does not need a separate reduction implementation. Contact
+    placement and count can affect compliance and friction, as with mesh/SDF
+    reduction. A custom solver with a more restrictive contact contract may
+    explicitly set this capability to ``False``.
 
     .. experimental::
     """
@@ -1135,7 +1162,7 @@ class SolverBase:
         supports_body_pair_reduced_contacts: bool | None = None,
         configuration: str | None = None,
     ) -> None:
-        """Raise if ``contacts`` was allocated by a pipeline with body-pair reduction.
+        """Enforce an explicit opt-out from the pipeline's reduced contact rows.
 
         Args:
             contacts: Contact buffer the solver will consume.

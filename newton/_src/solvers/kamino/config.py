@@ -278,6 +278,8 @@ class ConstraintStabilizationConfig(ConfigBase):
     delta: float = 1.0e-6
     """
     Contact penetration margin used for unilateral contact constraints.\n
+    Contacts within this distance [m] of touching get no stabilization bias, and external
+    contacts separated by no more than it are never culled as speculative.\n
     Must be non-negative.\n
     Defaults to `1.0e-6`.
     """
@@ -469,7 +471,7 @@ class ConstrainedDynamicsConfig(ConfigBase):
     Defaults to `True`.
     """
 
-    linear_solver_type: Literal["LLTB", "LLTBRCM", "CR", "CRF"] = "LLTB"
+    linear_solver_type: Literal["LLTB", "LLTBRCM", "LDL", "CR", "CRF"] = "LLTB"
     """
     The type of linear solver to use for the dynamics problem.\n
     See :class:`LinearSolverType` for available options.\n
@@ -477,6 +479,10 @@ class ConstrainedDynamicsConfig(ConfigBase):
     RCM-reordered semi-sparse variant is available as 'LLTBRCM'
     (:class:`LLTBlockedRCMSolver`) and is currently opt-in pending further
     performance optimization.
+    ``LDL`` selects block-sparse LDL transpose with an explicit diagonal D.
+    Its default ordering is MECA; set ``linear_solver_kwargs={"ordering": "rcm"}``
+    for Reverse Cuthill-McKee. Dense PADMM uses a full block pattern to
+    accommodate changing contacts; sparse PADMM does not support it.
     """
 
     linear_solver_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -487,7 +493,8 @@ class ConstrainedDynamicsConfig(ConfigBase):
 
     cull_speculative_contacts: bool = True
     """
-    Whether to cull speculative (= separated) contacts in the dynamics solve.
+    Whether to cull speculative contacts, i.e. external contacts separated by more than
+    :attr:`ConstraintStabilizationConfig.delta`, in the dynamics solve.
     These contacts have occasionally led to numerical instabilities, and
     can yield inaccurate restitutive impacts.
 
@@ -1079,12 +1086,23 @@ class SCCSolverConfig:
     Defaults to `0.97`.
     """
 
-    bilateral_solver_type: Literal["LLTB", "LLTBRCM"] = "LLTB"
+    bilateral_solver_type: Literal["LLTB", "LLTBRCM", "LDL"] = "LLTBRCM"
     """
     Direct linear solver used for the bilateral constraint block.
-    ``LLTBRCM`` can accelerate large sparse articulated systems, while
-    ``LLTB`` remains preferable for small or dense systems. Defaults to
-    ``LLTB``.
+    Defaults to ``LLTBRCM``, the RCM-reordered semi-sparse Cholesky solver. Opt in to
+    ``LDL`` for a block-sparse LDL transpose factorization with unit-lower L,
+    explicit diagonal D, and one padded block per joint.
+    MECA (minimum edge creation) is the default LDL block ordering. Set
+    ``bilateral_solver_kwargs={"ordering": "rcm"}`` for Reverse Cuthill-McKee,
+    or ``{"ordering": "meca"}`` to select the default explicitly.
+    It requires a positive-definite matrix and uses no numerical pivoting.
+    ``LLTB`` selects dense blocked Cholesky and
+    ``LLTBRCM`` selects the RCM-reordered semi-sparse implementation.
+
+    ``LLTBRCM`` pads each world's factor to a multiple of its 32-row tile, so
+    worlds with very few bilateral rows store a larger factor than with
+    ``LLTB``. Only ``LLTB`` enables the fused small-matrix inverse that sparse
+    CUDA solves use without a Schur complement for at most 128 bilateral rows.
     """
 
     bilateral_solver_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -1174,9 +1192,9 @@ class SCCSolverConfig:
             raise ValueError(
                 f"Invalid tangential warmstart scale: {self.tangential_warmstart_scale}. Must be in the range [0, 1]."
             )
-        if self.bilateral_solver_type not in {"LLTB", "LLTBRCM"}:
+        if self.bilateral_solver_type not in {"LLTB", "LLTBRCM", "LDL"}:
             raise ValueError(
-                f"Invalid bilateral solver type: {self.bilateral_solver_type}. Must be one of ['LLTB', 'LLTBRCM']."
+                f"Invalid bilateral solver type: {self.bilateral_solver_type}. Must be one of ['LLTB', 'LLTBRCM', 'LDL']."
             )
         WarmStartMode.from_string(self.warmstart_mode)
         WarmstarterContacts.Method.from_string(self.contact_warmstart_method)

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from ...utils.color import ColorSpace
+from ..utils.color import ColorSpace
 
 
 class LightType(enum.IntEnum):
@@ -181,7 +181,7 @@ class RenderConfig:
 
     Launch-time tuning only: it does not affect kernel codegen, so the renderer
     excludes it from the kernel cache key and changing it never triggers a
-    recompilation.
+    recompilation. The OptiX backend ignores it.
     """
 
     max_distance: float = 1000.0
@@ -195,6 +195,23 @@ class RenderConfig:
 
     gaussians_max_num_hits: int = 20
     """Maximum Gaussian hits accumulated per ray."""
+
+
+@dataclass(unsafe_hash=True)
+class RenderState:
+    """Mutable flags tracking which render outputs are active."""
+
+    num_gaussians: int = 0
+    has_particles: bool = False
+    has_world_indices: bool = False
+    has_triangle_mesh_textures: bool = False
+    render_color: bool = False
+    render_depth: bool = False
+    render_forward_depth: bool = False
+    render_shape_index: bool = False
+    render_normal: bool = False
+    render_albedo: bool = False
+    render_hdr_color: bool = False
 
 
 @dataclass(unsafe_hash=True)
