@@ -2888,16 +2888,17 @@ class Gaussian:
         Returns:
             A new :class:`Gaussian` instance.
         """
-        import meshio
+        from .utils import _read_ply_vertices  # noqa: PLC0415
 
-        ply = meshio.ply.read(filename)
-        attrs = ply.point_data
+        attrs = _read_ply_vertices(filename)
 
         def columns(prefix: str) -> np.ndarray | None:
             names = sorted((n for n in attrs if n.startswith(prefix)), key=lambda n: int(n[len(prefix) :]))
             return np.stack([attrs[n] for n in names], axis=1).astype(np.float32) if names else None
 
-        positions = np.ascontiguousarray(ply.points, dtype=np.float32)
+        if not all(axis in attrs for axis in "xyz"):
+            raise ValueError(f"PLY file '{filename}' has no vertex positions.")
+        positions = np.stack([attrs[axis] for axis in "xyz"], axis=1).astype(np.float32)
 
         rotations = columns("rot_")
         if rotations is not None:

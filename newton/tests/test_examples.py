@@ -730,10 +730,34 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
+    name="cable.example_cable_twist",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20, "solver": "kamino"},
+    test_suffix="kamino",
+)
+add_example_test(
+    TestCableExamples,
     name="cable.example_cable_y_junction",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_y_junction",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20, "solver": "kamino"},
+    test_suffix="kamino",
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_y_junction",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20, "solver": "kamino", "kamino-backend": "scc"},
+    test_suffix="kamino_scc",
 )
 add_example_batch(
     TestCableExamples,
@@ -765,6 +789,22 @@ add_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 120},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_initial_rest_pose",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120, "solver": "kamino"},
+    test_suffix="kamino",
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_initial_rest_pose",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120, "solver": "kamino", "kamino-backend": "padmm"},
+    test_suffix="kamino_padmm",
 )
 add_example_test(
     TestCableExamples,

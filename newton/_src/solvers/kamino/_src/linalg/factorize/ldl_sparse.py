@@ -10,8 +10,6 @@ happen at finalize time; numeric operations are capturable on CUDA and also
 run on CPU. No physics-specific types are used here.
 """
 
-from __future__ import annotations
-
 from collections.abc import Sequence
 from functools import cache
 from typing import Literal
@@ -21,7 +19,7 @@ import warp as wp
 
 from ..core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from ..linear import DirectSolver
-from .ldl_dense import DenseLDLStorage
+from .ldl_dense import DenseLDLStorage, rhs_array_type
 
 ###
 # Module interface
@@ -44,6 +42,7 @@ wp.set_module_options({"enable_backward": False})
 _Vector = wp.types.vector(length=6, dtype=wp.float32)
 _BlockRows = Sequence[Sequence[Sequence[int]]]
 _BlockEdges = Sequence[Sequence[tuple[int, int]]]
+_Rhs = wp.array[wp.float32] | wp.array2d[wp.float32]
 
 
 ###
@@ -140,22 +139,21 @@ def _factor_entry(
 @wp.kernel
 def _gather_matrix(
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     worlds: wp.array[wp.int32],
     rows: wp.array2d[wp.int32],
     block_i: wp.array[wp.int32],
     block_j: wp.array[wp.int32],
-    source: wp.array[wp.float32],
+    source: wp.array2d[wp.float32],
     values: wp.array3d[wp.float32],
 ):
-    """Gather reordered sparse blocks from packed dense matrices and add identity padding."""
+    """Gather reordered sparse blocks from per-world dense matrix rows and add identity padding."""
     block, r, c = wp.tid()
     i, j = block_i[block], block_j[block]
     world = worlds[i]
     row, col = rows[i, r], rows[j, c]
     value = wp.float32(0.0)
     if row >= 0 and col >= 0 and row < dim[world] and col < dim[world]:
-        value = source[mio[world] + row * dim[world] + col]
+        value = source[world, row * dim[world] + col]
     elif i == j and r == c:
         value = wp.float32(1.0)
     values[block, r, c] = value
@@ -242,8 +240,9 @@ def _check_factors(worlds: wp.array[wp.int32], diagonal: wp.array2d[wp.float32],
 
 
 @cache
-def _make_solve_kernel(forward: bool, serial: bool):
-    """Specialize triangular substitution for forward/backward and serial/level scheduling."""
+def _make_solve_kernel(forward: bool, serial: bool, per_world_rows: bool):
+    """Specialize triangular substitution for direction, scheduling, and RHS storage."""
+    rhs = rhs_array_type(per_world_rows)
 
     @wp.kernel(module="unique")
     def solve_kernel(
@@ -260,8 +259,8 @@ def _make_solve_kernel(forward: bool, serial: bool):
         offsets: wp.array[wp.int32],
         strides: wp.array[wp.int32],
         columns: wp.array[wp.int32],
-        source: wp.array[wp.float32],
-        result: wp.array[wp.float32],
+        source: rhs,
+        result: rhs,
     ):
         """Solve each scheduled block against previously solved neighbors in original RHS row order."""
         local, column = wp.tid()
@@ -282,18 +281,24 @@ def _make_solve_kernel(forward: bool, serial: bool):
             n = dim[world]
             if n == 0 or column >= columns[world]:
                 return
+            if wp.static(per_world_rows):
+                source_row = source[world]
+                result_row = result[world]
+            else:
+                source_row = source
+                result_row = result
             start, stride = offsets[world], strides[world]
             v = _Vector(0.0)
             for r in range(6):
                 row = rows[i, r]
                 if row >= 0 and row < n:
-                    v[r] = source[start + row * stride + column]
+                    v[r] = source_row[start + row * stride + column]
             for entry in range(starts[i], starts[i + 1]):
                 j, slot = neighbors[entry], slots[entry]
                 for c in range(6):
                     col = rows[j, c]
                     if col >= 0 and col < n:
-                        x = result[start + col * stride + column]
+                        x = result_row[start + col * stride + column]
                         for r in range(6):
                             if wp.static(forward):
                                 v[r] -= factors[slot, r, c] * x
@@ -311,40 +316,49 @@ def _make_solve_kernel(forward: bool, serial: bool):
             for r in range(6):
                 row = rows[i, r]
                 if row >= 0 and row < n:
-                    result[start + row * stride + column] = v[r]
+                    result_row[start + row * stride + column] = v[r]
 
     return solve_kernel
 
 
-@wp.kernel
-def _solve_diagonal(
-    worlds: wp.array[wp.int32],
-    rows: wp.array2d[wp.int32],
-    diagonal: wp.array2d[wp.float32],
-    dim: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
-    strides: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    inverse_sqrt: bool,
-    source: wp.array[wp.float32],
-    result: wp.array[wp.float32],
-):
-    """Scale valid RHS entries by inverse D or inverse square-root D, skipping padded rows."""
-    pivot, r, column = wp.tid()
-    world, row = worlds[pivot], rows[pivot, r]
-    if row < 0 or row >= dim[world] or column >= columns[world]:
-        return
-    index = offsets[world] + row * strides[world] + column
-    d = diagonal[pivot, r]
-    if inverse_sqrt:
-        d = wp.sqrt(d)
-    result[index] = source[index] / d
+@cache
+def _make_diagonal_kernel(per_world_rows: bool):
+    """Specialize diagonal scaling for flat or per-world-row RHS storage."""
+    rhs = rhs_array_type(per_world_rows)
+
+    @wp.kernel(module="unique")
+    def solve_diagonal(
+        worlds: wp.array[wp.int32],
+        rows: wp.array2d[wp.int32],
+        diagonal: wp.array2d[wp.float32],
+        dim: wp.array[wp.int32],
+        offsets: wp.array[wp.int32],
+        strides: wp.array[wp.int32],
+        columns: wp.array[wp.int32],
+        inverse_sqrt: bool,
+        source: rhs,
+        result: rhs,
+    ):
+        """Scale valid RHS entries by inverse D or inverse square-root D, skipping padded rows."""
+        pivot, r, column = wp.tid()
+        world, row = worlds[pivot], rows[pivot, r]
+        if row < 0 or row >= dim[world] or column >= columns[world]:
+            return
+        index = offsets[world] + row * strides[world] + column
+        d = diagonal[pivot, r]
+        if inverse_sqrt:
+            d = wp.sqrt(d)
+        if wp.static(per_world_rows):
+            result[world, index] = source[world, index] / d
+        else:
+            result[index] = source[index] / d
+
+    return solve_diagonal
 
 
 @wp.kernel
 def _reconstruct(
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     inverse: wp.array[wp.int32],
     row_ptr: wp.array[wp.int32],
@@ -352,9 +366,9 @@ def _reconstruct(
     slots: wp.array[wp.int32],
     factors: wp.array3d[wp.float32],
     diagonal: wp.array2d[wp.float32],
-    result: wp.array[wp.float32],
+    result: wp.array2d[wp.float32],
 ):
-    """Reconstruct packed dense matrices from sparse L and D in original row order."""
+    """Reconstruct per-world dense matrix rows from sparse L and D in original row order."""
     world, row, col = wp.tid()
     n = dim[world]
     if row >= n or col >= n:
@@ -368,7 +382,7 @@ def _reconstruct(
             * diagonal[kc // 6, kc % 6]
             * _factor_entry(jc // 6, jc % 6, kc // 6, kc % 6, row_ptr, col_idx, slots, factors)
         )
-    result[mio[world] + row * n + col] = value
+    result[world, row * n + col] = value
 
 
 ###
@@ -388,9 +402,12 @@ class LDLBlockSparseSolver(DirectSolver):
     ``factors`` stores the unit-lower L blocks, including unit-diagonal blocks.
     ``diagonal`` stores the scalar entries of D in block order, with ones for
     active padded rows. The sparse permutation is described by ``rows``.
-    With an implicit complete pattern, ``factors`` and ``diagonal`` are flat
-    packed arrays; RCM reverses the active six-row groups. No numerical
+    With an implicit complete pattern, ``factors`` and ``diagonal`` hold one
+    padded row per world; RCM reverses the active six-row groups. No numerical
     pivoting is performed; this backend targets positive-definite systems.
+
+    Multiple-RHS solves accept either a flat buffer or one row per world, with
+    ``offsets`` taken relative to the buffer or to each world's row.
 
     ``ordering="meca"`` (default) minimizes edge creation at each elimination
     step. ``ordering="rcm"`` uses block Reverse Cuthill-McKee. Both preserve
@@ -464,8 +481,8 @@ class LDLBlockSparseSolver(DirectSolver):
 
     def solve_matrix(
         self,
-        b: wp.array[wp.float32],
-        x: wp.array[wp.float32],
+        b: _Rhs,
+        x: _Rhs,
         *,
         offsets: wp.array[wp.int32],
         strides: wp.array[wp.int32],
@@ -500,8 +517,8 @@ class LDLBlockSparseSolver(DirectSolver):
 
     def solve_triangular(
         self,
-        b: wp.array[wp.float32],
-        x: wp.array[wp.float32],
+        b: _Rhs,
+        x: _Rhs,
         *,
         forward: bool,
         offsets: wp.array[wp.int32],
@@ -537,7 +554,7 @@ class LDLBlockSparseSolver(DirectSolver):
         schedule = [(0, self._world_count)] if serial else (self._levels if forward else reversed(self._levels))
         for offset, count in schedule:
             wp.launch(
-                _make_solve_kernel(forward, serial),
+                _make_solve_kernel(forward, serial, b.ndim == 2),
                 dim=(int(count), max_columns),
                 inputs=[
                     self._pivots,
@@ -561,8 +578,8 @@ class LDLBlockSparseSolver(DirectSolver):
 
     def solve_diagonal(
         self,
-        b: wp.array[wp.float32],
-        x: wp.array[wp.float32],
+        b: _Rhs,
+        x: _Rhs,
         *,
         offsets: wp.array[wp.int32],
         strides: wp.array[wp.int32],
@@ -586,7 +603,7 @@ class LDLBlockSparseSolver(DirectSolver):
             )
             return
         wp.launch(
-            _solve_diagonal,
+            _make_diagonal_kernel(b.ndim == 2),
             dim=(self.pivot_count, 6, max_columns),
             inputs=[
                 self.worlds,
@@ -719,8 +736,8 @@ class LDLBlockSparseSolver(DirectSolver):
         """Invalidate the cached numeric factorization while retaining symbolic storage."""
         self._has_factors = False
 
-    def _factorize_impl(self, A: wp.array[wp.float32]) -> None:
-        """Factor packed dense input through the explicit sparse pattern or complete-pattern storage."""
+    def _factorize_impl(self, A: wp.array2d[wp.float32]) -> None:
+        """Factor per-world dense matrix rows through the explicit sparse pattern or complete-pattern storage."""
         if self._dense is not None:
             self._dense.factorize(A, self._failed_pivot_shift)
             return
@@ -729,7 +746,6 @@ class LDLBlockSparseSolver(DirectSolver):
             dim=self.values.shape,
             inputs=[
                 self.operator.info.dim,
-                self.operator.info.mio,
                 self.worlds,
                 self.rows,
                 self.block_i,
@@ -773,8 +789,8 @@ class LDLBlockSparseSolver(DirectSolver):
                 device=self.device,
             )
 
-    def _reconstruct_impl(self, A: wp.array[wp.float32]) -> None:
-        """Reconstruct the factored operator in its original packed dense layout."""
+    def _reconstruct_impl(self, A: wp.array2d[wp.float32]) -> None:
+        """Reconstruct the factored operator into per-world dense matrix rows."""
         if self._dense is not None:
             self._dense.reconstruct(A)
             return
@@ -784,7 +800,6 @@ class LDLBlockSparseSolver(DirectSolver):
             dim=(self._world_count, self._maxdim, self._maxdim),
             inputs=[
                 info.dim,
-                info.mio,
                 info.vio,
                 self._inverse,
                 self._row_ptr,

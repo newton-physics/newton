@@ -373,6 +373,56 @@ Enable these features through ``config.lox`` after selecting
   retain the classical 3D contact solve. Kamino's primitive collision pipeline
   provides no angular coefficients.
 
+Heterogeneous worlds
+--------------------
+
+Kamino supports solving, in a single batch, worlds in a model that differ in
+bodies, joints, and contact capacity. While arbitrarily different worlds
+are supported, Kamino targets worlds that are small variations of the same
+problem, for example the same robot with different payloads, terrain, or
+optional parts. As world dimensions diverge, memory and throughput resources
+are increasingly wasted.
+
+More specifically, dense quantities (constraint Jacobians, Delassus matrices,
+and their factorizations) are stored with one row per world, sized for the
+largest world, and per-world kernels are launched over grids sized by the
+largest world. This design has the following consequences:
+
+* **Memory:** every world reserves dense storage for the largest world.
+  Delassus matrices and their factors grow quadratically with the number of
+  constraints, so a few large worlds among many small ones can multiply the
+  dense memory footprint.
+* **Throughput:** threads assigned to the unused part of a smaller world
+  stay idle, so a single large world slows down the whole batch.
+
+If worlds differ substantially, for example a few large mechanisms among many
+small ones, consider simulating each group with its own model and solver.
+
+The dense storage row of each world is limited to 2\ :sup:`31` bytes by the
+32-bit array strides of Warp, which bounds a single world's dense Delassus
+matrix to about 23,000 constraints. Larger worlds raise an error during
+solver construction; for these, consider sparse Jacobians and dynamics
+(``sparse_jacobian=True`` and ``sparse_dynamics=True``).
+
+.. _kamino-rod-joints:
+
+Rod joints
+----------
+
+All dynamics backends support ``JointType.ROD`` joints between rigid bodies,
+as built by :meth:`newton.ModelBuilder.add_joint_rod`. Each
+rod DOF with nonzero stiffness or damping adds an implicit dynamic constraint on
+one rod strain: shear and stretch along the axes of the joint frame on the
+parent body, then bend and twist. The rest pose
+of each rod is its structural rest, :attr:`newton.Model.joint_rest_q`: its
+translation sets the rest shear and stretch, and its rotation sets the rest bend
+and twist. Builders store zero translation, so the anchors coincide at rest
+unless ``joint_rest_q`` is edited. The constraints are linearized at the beginning
+of each time step. LOX additionally adds the rotational stiffness of the rod tension
+acting at each segment's lever arm, which keeps light segments under high tension
+stable at large time steps. Rod joints require zero armature, joint damping, and joint
+friction, unbounded joint limits, no target mode, and ``use_fk_solver=False``.
+
 Inspecting terminal status
 --------------------------
 
