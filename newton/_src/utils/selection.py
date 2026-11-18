@@ -927,13 +927,6 @@ def _validate_layouts(
     return results
 
 
-def get_world_offset(world_ids):
-    for i in range(len(world_ids)):
-        if world_ids[i] > -1:
-            return i
-    return None
-
-
 def is_contiguous_slice(indices):
     n = len(indices)
     if n > 1:
