@@ -28,11 +28,11 @@ from newton.tests.unittest_utils import NewtonTestCase
 
 @wp.kernel
 def _assemble(
-    source: wp.array[wp.float32],
+    source: wp.array2d[wp.float32],
     inverse: wp.array[wp.int32],
     permuted: bool,
     n: int,
-    target: wp.array[wp.float32],
+    target: wp.array2d[wp.float32],
 ):
     row, col = wp.tid()
     target_row = row
@@ -40,7 +40,7 @@ def _assemble(
     if permuted:
         target_row = inverse[row]
         target_col = inverse[col]
-    target[target_row * n + target_col] = source[row * n + col]
+    target[0, target_row * n + target_col] = source[0, row * n + col]
 
 
 class TestKaminoSparseTopology(NewtonTestCase):
@@ -109,8 +109,8 @@ class TestKaminoSparseAssemblyLifecycle(NewtonTestCase):
             with self.subTest(parallel=parallel):
                 info = DenseSquareMultiLinearInfo()
                 info.finalize(dimensions=[n], dtype=wp.float32, device=device)
-                matrix = wp.zeros(n * n, dtype=wp.float32, device=device)
-                source = wp.array(first.ravel(), dtype=wp.float32, device=device)
+                matrix = wp.zeros((1, n * n), dtype=wp.float32, device=device)
+                source = wp.array(first.reshape(1, -1), dtype=wp.float32, device=device)
                 solver = LLTBlockedRCMSolver(
                     operator=DenseLinearOperatorData(info=info, mat=matrix),
                     parallel_factorization=parallel,
@@ -157,17 +157,17 @@ class TestKaminoSparseAssemblyLifecycle(NewtonTestCase):
                 graph = capture()
                 self.assertEqual(int(solver._structural_ready.numpy()[0]), 0)
                 # Values may change after capture but before its first replay.
-                source.assign(second.ravel())
+                source.assign(second.reshape(1, -1))
                 wp.capture_launch(graph)
                 check(second, fresh_order=True)
-                source.assign(first.ravel())
+                source.assign(first.reshape(1, -1))
                 wp.capture_launch(graph)
                 check(first)
                 solver.reset()
                 self.assertEqual(int(solver._structural_ready.numpy()[0]), 0)
                 wp.capture_launch(graph)
                 check(first, fresh_order=True)
-                source.assign(second.ravel())
+                source.assign(second.reshape(1, -1))
                 solver.compute_sparse(assemble)
                 self.assertEqual(int(solver._structural_ready.numpy()[0]), 0)
                 wp.capture_launch(graph)
@@ -247,7 +247,7 @@ class TestKaminoSparseAssemblyQuality(NewtonTestCase):
         entry_starts = wp.array(entry_starts, dtype=wp.int32, device=device)
         info = DenseSquareMultiLinearInfo()
         info.finalize(dimensions=[n], dtype=wp.float32, device=device)
-        control_matrix = wp.zeros(n * n, dtype=wp.float32, device=device)
+        control_matrix = wp.zeros((1, n * n), dtype=wp.float32, device=device)
         candidate_matrix = wp.zeros_like(control_matrix)
         control = LLTBlockedRCMSolver(
             operator=DenseLinearOperatorData(info=info, mat=control_matrix),
@@ -281,7 +281,6 @@ class TestKaminoSparseAssemblyQuality(NewtonTestCase):
                 inputs=[
                     info.dim,
                     info.vio,
-                    info.mio,
                     info.maxdim,
                     info.vio,
                     diagonal,
@@ -301,7 +300,6 @@ class TestKaminoSparseAssemblyQuality(NewtonTestCase):
                     entry_starts,
                     *pair_arrays,
                     values,
-                    info.mio,
                     info.maxdim,
                     info.vio,
                     scale,

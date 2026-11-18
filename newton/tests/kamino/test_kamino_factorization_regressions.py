@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.kamino._src.linalg.blas import zero_dense_blocks
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import (
     get_float32_array_offset_ptr,
@@ -16,13 +17,96 @@ from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import (
     make_llt_blocked_rcm_symbolic_fill_in_kernel,
 )
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
-from newton._src.solvers.kamino._src.linalg.linear import LLTBlockedSolver
+from newton._src.solvers.kamino._src.linalg.linear import LLTBlockedSolver, LLTSequentialSolver
 from newton._src.solvers.kamino._src.solvers.scc.kernels import (
     _find_bilateral_factor_row_start,
     _find_bilateral_factor_row_start_rcm,
 )
 from newton.tests.kamino import setup_test_output, setup_tests
+from newton.tests.kamino.utils.extract import get_matrix_block
+from newton.tests.kamino.utils.make import make_dense_matrix_storage, make_row_storage
 from newton.tests.unittest_utils import NewtonTestCase
+
+
+class TestKaminoFactorReset(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
+    def test_reset_active_entries_for_each_dtype(self):
+        """Clear active factor entries without changing unused storage."""
+        for device in wp.get_devices():
+            for dtype in (wp.float16, wp.float32, wp.float64):
+                for itype in (wp.int16, wp.int32, wp.int64):
+                    for solver_type in (LLTSequentialSolver, LLTBlockedSolver):
+                        with self.subTest(device=device, dtype=dtype, itype=itype, solver=solver_type.__name__):
+                            info = DenseSquareMultiLinearInfo()
+                            info.finalize(dimensions=[2, 3], dtype=dtype, itype=itype, device=device)
+                            info.dim = wp.array([1, 2], dtype=itype, device=device)
+                            matrix = wp.zeros(info.matrix_shape, dtype=dtype, device=device)
+                            solver = solver_type(operator=DenseLinearOperatorData(info=info, mat=matrix), device=device)
+                            solver.L.fill_(7)
+                            solver.reset()
+                            expected = np.full(info.matrix_shape, 7)
+                            expected[0, :1] = 0
+                            expected[1, :4] = 0
+                            np.testing.assert_array_equal(solver.L.numpy(), expected)
+
+    def test_reset_with_mixed_index_types(self):
+        """Clear active blocks with independently typed dimensions."""
+        for device in wp.get_devices():
+            matrix = wp.full((1, 12), 7, dtype=wp.float32, device=device)
+            rows = wp.array([2], dtype=wp.int16, device=device)
+            cols = wp.array([3], dtype=wp.int32, device=device)
+            zero_dense_blocks(matrix, rows, cols, 6)
+            np.testing.assert_array_equal(matrix.numpy(), [[0, 0, 0, 0, 0, 0, 7, 7, 7, 7, 7, 7]])
+
+            matrix = wp.full((1, 40002), 7, dtype=wp.float32, device=device)
+            dims = wp.array([200], dtype=wp.int16, device=device)
+            zero_dense_blocks(matrix, dims, dims, 40000)
+            expected = np.zeros((1, 40002))
+            expected[0, 40000:] = 7
+            np.testing.assert_array_equal(matrix.numpy(), expected)
+
+
+class TestKaminoFactorAllocation(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
+    def test_preserve_extra_rows_and_columns(self):
+        """Retain extra rows and columns needed for assembly."""
+        for device in wp.get_devices():
+            info = DenseSquareMultiLinearInfo()
+            info.finalize(dimensions=[2], dtype=wp.float32, device=device)
+            for shape in ((4, 64), (1, 4)):
+                matrix = wp.zeros(shape, dtype=wp.float32, device=device)
+                for solver_type in (LLTSequentialSolver, LLTBlockedSolver, LLTBlockedRCMSolver):
+                    with self.subTest(device=device, shape=shape, solver=solver_type.__name__):
+                        solver = solver_type(operator=DenseLinearOperatorData(info=info, mat=matrix), device=device)
+                        if isinstance(solver, LLTBlockedRCMSolver):
+                            self.assertEqual(solver.L.shape, (1, shape[1]))
+                            self.assertEqual(solver._A_hat.shape, shape)
+                        else:
+                            self.assertEqual(solver.L.shape, shape)
+
+    def test_factor_storage_uses_operator_metadata(self):
+        """Allocate factors for the declared matrix when the initial buffer is too small."""
+        for device in wp.get_devices():
+            info = DenseSquareMultiLinearInfo()
+            info.finalize(dimensions=[2], dtype=wp.float32, device=device)
+            initial = wp.zeros((1, 1), dtype=wp.float64, device=device)
+            matrix = wp.array([[4.0, 1.0, 1.0, 3.0]], dtype=wp.float32, device=device)
+            for solver_type in (LLTSequentialSolver, LLTBlockedSolver, LLTBlockedRCMSolver):
+                with self.subTest(device=device, solver=solver_type.__name__):
+                    solver = solver_type(operator=DenseLinearOperatorData(info=info, mat=initial), device=device)
+                    self.assertGreaterEqual(solver.L.shape[1], 4)
+                    self.assertEqual(solver.L.dtype, wp.float32)
+                    if isinstance(solver, LLTBlockedRCMSolver):
+                        self.assertGreaterEqual(solver._A_hat.shape[1], 4)
+                        self.assertEqual(solver._A_hat.dtype, wp.float32)
+                    solver.compute(matrix)
+                    solution = wp.zeros(2, dtype=wp.float32, device=device)
+                    solver.solve(wp.array([1.0, 2.0], dtype=wp.float32, device=device), solution)
+                    np.testing.assert_allclose(solution.numpy(), [1.0 / 11.0, 7.0 / 11.0], atol=1.0e-6)
 
 
 class TestKaminoSymbolicFill(NewtonTestCase):
@@ -99,14 +183,15 @@ class TestKaminoFactorRowStart(NewtonTestCase):
                 expected.append(-77)
             for device in wp.get_devices():
                 dims = wp.array(dimensions, dtype=wp.int32, device=device)
-                matrices_wp = wp.array(matrices, dtype=wp.float32, device=device)
-                matrix_offsets = wp.array(mio, dtype=wp.int32, device=device)
+                matrices_wp = wp.array(
+                    make_row_storage(np.asarray(matrices, dtype=np.float32), mio, np.square(dimensions)), device=device
+                )
                 vector_offsets = wp.array(vio, dtype=wp.int32, device=device)
                 pattern_offsets = wp.array(tpo, dtype=wp.int32, device=device)
                 pattern = wp.array(patterns, dtype=wp.int32, device=device)
                 reference = wp.full(len(expected), -77, dtype=wp.int32, device=device)
                 candidate = wp.full(len(expected), -77, dtype=wp.int32, device=device)
-                inputs = [dims, matrix_offsets, dims, vector_offsets, matrices_wp]
+                inputs = [dims, dims, vector_offsets, matrices_wp]
                 wp.launch(
                     _find_bilateral_factor_row_start,
                     dim=(len(dimensions), max(dimensions)),
@@ -141,7 +226,7 @@ class TestKaminoFactorTileReuse(NewtonTestCase):
                     second = np.eye(n, dtype=np.float32) * 4.0
                     info = DenseSquareMultiLinearInfo()
                     info.finalize(dimensions=[n], dtype=wp.float32, device=device)
-                    matrix = wp.array(first.ravel(), dtype=wp.float32, device=device)
+                    matrix = wp.array(make_dense_matrix_storage(info, [first]), dtype=wp.float32, device=device)
                     operator = DenseLinearOperatorData(info=info, mat=matrix)
                     solver = LLTBlockedRCMSolver(
                         operator=operator,
@@ -151,16 +236,16 @@ class TestKaminoFactorTileReuse(NewtonTestCase):
                         device=device,
                     )
                     solver.compute(matrix)
-                    initial = np.tril(solver.L.numpy().reshape(n, n))
+                    initial = np.tril(get_matrix_block(0, solver.L.numpy(), [n]))
                     self.assertGreater(np.count_nonzero(initial[32:, :32]), 0)
-                    matrix.assign(second.ravel())
+                    matrix.assign(make_dense_matrix_storage(info, [second]))
                     if n == 65:
                         with wp.ScopedCapture(device=device) as capture:
                             solver.compute(matrix)
                         wp.capture_launch(capture.graph)
                     else:
                         solver.compute(matrix)
-                    factor = np.tril(solver.L.numpy().reshape(n, n))
+                    factor = np.tril(get_matrix_block(0, solver.L.numpy(), [n]))
                     np.testing.assert_array_equal(factor, np.eye(n, dtype=np.float32) * 2.0)
 
 
@@ -188,7 +273,7 @@ class TestKaminoFailedPivotRetry(NewtonTestCase):
                 with self.subTest(parallel=parallel, captured=captured):
                     info = DenseSquareMultiLinearInfo()
                     info.finalize(dimensions=[n, n], dtype=wp.float32, device=device)
-                    matrix = wp.array(np.concatenate([healthy.ravel(), failing.ravel()]), device=device)
+                    matrix = wp.array(make_dense_matrix_storage(info, [healthy, failing]), device=device)
                     solver = LLTBlockedRCMSolver(
                         operator=DenseLinearOperatorData(info=info, mat=matrix),
                         parallel_factorization=parallel,
@@ -202,13 +287,14 @@ class TestKaminoFailedPivotRetry(NewtonTestCase):
                         wp.capture_launch(capture.graph)
                     else:
                         solver.compute(matrix)
-                    factors = solver.L.numpy().reshape(2, n, n)
+                    factors = solver.L.numpy()
                     permutation = solver.P.numpy().reshape(2, n)
                     for block, (source, expected_shift) in enumerate(((healthy, 0.0), (failing, shift))):
                         order = permutation[block]
                         permuted = source[np.ix_(order, order)].astype(np.float64) + expected_shift * np.eye(n)
                         expected = np.linalg.cholesky(permuted)
-                        np.testing.assert_allclose(np.tril(factors[block]), expected, rtol=0.0, atol=2.0e-3)
+                        factor = get_matrix_block(block, factors, [n, n])
+                        np.testing.assert_allclose(np.tril(factor), expected, rtol=0.0, atol=2.0e-3)
 
     def test_blocked_llt_only_failed_blocks_are_shifted(self):
         """Refactor an indefinite LLTB block with a diagonal shift, leave healthy blocks untouched, and restore A."""
@@ -225,13 +311,13 @@ class TestKaminoFailedPivotRetry(NewtonTestCase):
             blocks.append((eigenvectors * eigenvalues @ eigenvectors.T).astype(np.float32))
         failing = (False, True, False, True)
         dims = [b.shape[0] for b in blocks]
-        source = np.concatenate([b.ravel() for b in blocks])
         device = wp.get_device()
         for block_size in (32, 64):
             for captured in (False, True) if device.is_cuda else (False,):
                 with self.subTest(block_size=block_size, captured=captured):
                     info = DenseSquareMultiLinearInfo()
                     info.finalize(dimensions=dims, dtype=wp.float32, device=device)
+                    source = make_dense_matrix_storage(info, blocks)
                     matrix = wp.array(source, dtype=wp.float32, device=device)
                     operator = DenseLinearOperatorData(info=info, mat=matrix)
                     plain = LLTBlockedSolver(operator=operator, factorize_block_size=block_size, device=device)
@@ -252,12 +338,10 @@ class TestKaminoFailedPivotRetry(NewtonTestCase):
 
                     # The shift is removed from the caller's matrix again.
                     np.testing.assert_allclose(matrix.numpy(), source, rtol=0.0, atol=1.0e-6)
-                    mio = info.mio.numpy()
                     for index, (A, fails) in enumerate(zip(blocks, failing, strict=True)):
                         n = A.shape[0]
-                        entries = slice(mio[index], mio[index] + n * n)
-                        L_plain = plain.L.numpy()[entries].reshape(n, n)
-                        L = solver.L.numpy()[entries].reshape(n, n)
+                        L_plain = get_matrix_block(index, plain.L.numpy(), dims)
+                        L = get_matrix_block(index, solver.L.numpy(), dims)
                         self.assertEqual(np.isfinite(np.diag(L_plain)).all(), not fails)
                         if not fails:
                             np.testing.assert_array_equal(L, L_plain)

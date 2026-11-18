@@ -11,6 +11,8 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino._src.solvers.scc.kernels import _compute_scc_status_residuals
 from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
+    COMPACT_SCHUR_PGS_BLOCK_DIM,
+    COMPACT_SCHUR_PGS_TIERS,
     _apply_small_bilateral_inverse,
     _assemble_compact_unilateral_schur_blocked,
     _invert_small_bilateral_block,
@@ -22,6 +24,7 @@ from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
 )
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCStatus
 from newton.tests.kamino import setup_test_output, setup_tests
+from newton.tests.kamino.utils.make import make_row_storage
 from newton.tests.unittest_utils import NewtonTestCase
 
 
@@ -163,7 +166,7 @@ class TestKaminoCompactSchur(NewtonTestCase):
                 results = []
                 for kernels in (
                     (_solve_scc_sparse_inequalities_pgs_cooperative,),
-                    (make_compact_schur_pgs_kernel(64), make_compact_schur_pgs_kernel(128)),
+                    tuple(make_compact_schur_pgs_kernel(rows) for rows in COMPACT_SCHUR_PGS_TIERS),
                 ):
                     data["compact_q"] = self.floats(np.concatenate([np.zeros(n), q0]))
                     data["solution_lambdas"] = self.floats(initial)
@@ -178,12 +181,16 @@ class TestKaminoCompactSchur(NewtonTestCase):
                                 # Full compact sweeps never read sparse body-space inputs.
                                 shape = (1, 2) if arg.type.ndim == 2 else 1
                                 inputs.append(wp.zeros(shape, dtype=arg.type.dtype, device=self.device))
-                        wp.launch(kernel, dim=32, inputs=inputs, device=self.device, block_dim=32)
-                        # Each world must be updated by exactly one specialization,
-                        # including the partially filled vectors at 63/64/65 rows.
-                        if len(kernels) == 2 and (nu > 64 if index == 0 else nu <= 64):
-                            np.testing.assert_array_equal(data["solution_lambdas"].numpy(), before[0])
-                            np.testing.assert_array_equal(data["compact_q"].numpy(), before[1])
+                        wp.launch(
+                            kernel, dim=32, inputs=inputs, device=self.device, block_dim=COMPACT_SCHUR_PGS_BLOCK_DIM
+                        )
+                        # Each world must be updated by exactly one tier, including the
+                        # partially filled vectors at 63/64/65 and 95/96/97 rows.
+                        if kernels[0] is not _solve_scc_sparse_inequalities_pgs_cooperative:
+                            lower = COMPACT_SCHUR_PGS_TIERS[index - 1] if index > 0 else 0
+                            if not lower < nu <= COMPACT_SCHUR_PGS_TIERS[index]:
+                                np.testing.assert_array_equal(data["solution_lambdas"].numpy(), before[0])
+                                np.testing.assert_array_equal(data["compact_q"].numpy(), before[1])
                     results.append((data["solution_lambdas"].numpy(), data["compact_q"].numpy()))
                 np.testing.assert_array_equal(results[1][0][:n], initial[:n])
                 np.testing.assert_allclose(results[0][0], results[1][0], atol=3e-6, rtol=3e-6)
@@ -213,31 +220,34 @@ class TestKaminoSmallBilateralInverse(NewtonTestCase):
             matrices.append(matrix)
             # Garbage above the diagonal must not leak into the inverse.
             factors.append(np.linalg.cholesky(matrix) + np.triu(rng.normal(size=(n, n)), 1))
-        L = wp.array(np.concatenate([f.ravel() for f in factors]), dtype=wp.float32, device=device)
+        flat_factors = np.concatenate([f.ravel() for f in factors])
         dim = wp.array(dims, dtype=wp.int32, device=device)
-        mio_wp = wp.array(mio, dtype=wp.int32, device=device)
         vio_wp = wp.array(vio, dtype=wp.int32, device=device)
-        lower_inverse = wp.zeros(L.size, dtype=wp.float32, device=device)
-        inverse = wp.zeros(L.size, dtype=wp.float32, device=device)
-        wp.launch_tiled(
-            _invert_small_bilateral_block,
-            dim=len(dims),
-            inputs=[dim, mio_wp, L, lower_inverse, inverse],
-            block_dim=128,
-            device=device,
-        )
         rhs = rng.normal(size=sum(dims))
         previous = rng.normal(size=sum(dims))
         scale = rng.uniform(0.5, 2.0, size=sum(dims))
+        active = [1, 33, 0, 128]
+        expected = previous.copy()
+        for n, matrix, start, used in zip(dims, matrices, vio, active, strict=True):
+            if used:
+                expected[start : start + n] = np.linalg.solve(matrix, rhs[start : start + n])
+        L = wp.array(make_row_storage(flat_factors, mio, np.square(dims)), dtype=wp.float32, device=device)
+        lower_inverse = wp.zeros_like(L)
+        inverse = wp.zeros_like(L)
+        wp.launch_tiled(
+            _invert_small_bilateral_block,
+            dim=len(dims),
+            inputs=[dim, L, lower_inverse, inverse],
+            block_dim=128,
+            device=device,
+        )
         solution = wp.array(previous, dtype=wp.float32, device=device)
         lambdas = wp.zeros(sum(dims), dtype=wp.float32, device=device)
-        active = [1, 33, 0, 128]
         wp.launch(
             _apply_small_bilateral_inverse,
             dim=(len(dims), max(dims)),
             inputs=[
                 wp.array(active, dtype=wp.int32, device=device),
-                mio_wp,
                 vio_wp,
                 inverse,
                 wp.array(rhs, dtype=wp.float32, device=device),
@@ -249,10 +259,6 @@ class TestKaminoSmallBilateralInverse(NewtonTestCase):
             ],
             device=device,
         )
-        expected = previous.copy()
-        for n, matrix, start, used in zip(dims, matrices, vio, active, strict=True):
-            if used:
-                expected[start : start + n] = np.linalg.solve(matrix, rhs[start : start + n])
         np.testing.assert_allclose(solution.numpy(), expected, rtol=1e-4, atol=1e-4)
         np.testing.assert_allclose(lambdas.numpy(), scale * expected, rtol=1e-4, atol=1e-4)
 

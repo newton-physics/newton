@@ -108,7 +108,6 @@ class Example:
             # Eliminate bilateral rows once before the projected inequality sweeps.
             solver_config.scc.max_alternating_iterations = 32
             solver_config.scc.use_schur_complement = True
-            solver_config.scc.bilateral_solver_type = "LLTBRCM"
             configure_ldl(solver_config, args)
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:

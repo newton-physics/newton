@@ -69,7 +69,6 @@ class TestDualProblem(NewtonTestCase):
             logger.debug("problem.data.config: %s", problem.data.config)
             logger.debug("problem.data.maxdim: %s", problem.data.maxdim)
             logger.debug("problem.data.dim: %s", problem.data.dim)
-            logger.debug("problem.data.mio: %s", problem.data.mio)
             logger.debug("problem.data.vio: %s", problem.data.vio)
             logger.debug("problem.data.u_f (shape): %s", problem.data.u_f.shape)
             logger.debug("problem.data.v_b (shape): %s", problem.data.v_b.shape)
@@ -93,8 +92,6 @@ class TestDualProblem(NewtonTestCase):
         self.assertEqual(problem.data.config.size, nw)
         self.assertEqual(problem.data.maxdim.size, nw)
         self.assertEqual(problem.data.dim.size, nw)
-        if not problem.sparse:
-            self.assertEqual(problem.data.mio.size, nw)
         self.assertEqual(problem.data.vio.size, nw)
         self.assertEqual(problem.data.u_f.size, nb)
         self.assertEqual(problem.data.v_b.size, maxdims)
@@ -157,7 +154,6 @@ class TestDualProblem(NewtonTestCase):
             logger.debug("")  # Print a blank line for better readability
             logger.debug("problem.data.maxdim: %s", problem.data.maxdim)
             logger.debug("problem.data.dim: %s", problem.data.dim)
-            logger.debug("problem.data.mio: %s", problem.data.mio)
             logger.debug("problem.data.vio: %s", problem.data.vio)
             logger.debug("problem.data.D: %s", problem.data.D)
             logger.debug("problem.data.u_f:\n%s", problem.data.u_f)

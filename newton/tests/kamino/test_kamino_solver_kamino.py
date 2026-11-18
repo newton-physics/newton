@@ -392,7 +392,7 @@ class TestSolverKaminoConfig(NewtonTestCase):
         assert_solver_config(self, config)
         self.assertEqual(config.rotation_correction, "twopi")
         self.assertEqual(config.dynamics.linear_solver_type, "LLTB")
-        self.assertEqual(config.scc.bilateral_solver_type, "LLTB")
+        self.assertEqual(config.scc.bilateral_solver_type, "LLTBRCM")
         self.assertEqual(config.padmm.warmstart_mode, "containers")
         self.assertEqual(config.padmm.warmstart_scale, 0.9)
 

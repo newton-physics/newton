@@ -73,7 +73,7 @@ class TestKaminoPackedCoupling(NewtonTestCase):
         if not wp.get_cuda_device_count():
             self.skipTest("Packed response requires CUDA tile kernels")
         device = wp.get_cuda_devices()[0]
-        path, problem, matrices, matrix, mio, bvio, rio, _, scale, storage = _fixture(device)
+        path, problem, matrices, matrix, bvio, rio, _, scale, storage = _fixture(device)
         n, nu = 16, 6
         rng = np.random.default_rng(61293)
 
@@ -138,7 +138,7 @@ class TestKaminoPackedCoupling(NewtonTestCase):
         path.data.solution = SimpleNamespace(lambdas=floats(impulses))
         sparse._build_sparse_bilateral_row_nzb_topology(path, problem)
         blocks = JointBlockSolver.create(path)
-        blocks._matrix.assign(_packed_matrix(blocks, matrix, mio, 20))
+        blocks._matrix.assign(_packed_matrix(blocks, matrix, 20))
         blocks.prepare(path, problem)
         packed = PackedCoupling(path, blocks)
         order = blocks._schedule["order"].numpy()
