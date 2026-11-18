@@ -32,12 +32,6 @@ from .state import State
 
 logger = logging.getLogger(__name__)
 
-_JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
-    "Model.joint_twist_lower and Model.joint_twist_upper are deprecated in Newton 1.7 and will be removed "
-    "in a future release. They were never populated or used by any solver; limit joint rotations with the "
-    "per-DOF Model.joint_limit_lower and Model.joint_limit_upper instead."
-)
-
 _COLLISION_EDGE_DEPRECATION_MSG = (
     "Model.{name} is deprecated in Newton 1.8 and will be removed in Newton 1.9. "
     "Packed collision edges are internal acceleration data; use CollisionPipeline for collision detection. "
@@ -49,7 +43,6 @@ if TYPE_CHECKING:
     from ..actuators.batteries import BatteryBase
     from ..geometry.optix import OptixShapes
     from ..utils.heightfield import HeightfieldData
-    from .collide import CollisionPipeline
 
 
 _SHAPE_VARIANT_ATTRIBUTES = (
@@ -712,8 +705,6 @@ class Model:
         "joint_X_c": AttributeSpec(AttributeFrequency.JOINT),
         "joint_dof_dim": AttributeSpec(AttributeFrequency.JOINT),
         "joint_enabled": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_twist_lower": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
-        "joint_twist_upper": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
         "joint_label": AttributeSpec(AttributeFrequency.JOINT),
         "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD),
         "joint_q_start": AttributeSpec(
@@ -1601,8 +1592,6 @@ class Model:
         """Joint position limit stiffness [N/m or N·m/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_limit_kd: wp.array[wp.float32] | None = None
         """Joint position limit damping [N·s/m or N·m·s/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
-        self._deprecated_joint_twist_lower: wp.array[wp.float32] | None = None
-        self._deprecated_joint_twist_upper: wp.array[wp.float32] | None = None
         self.joint_q_start: wp.array[wp.int32] | None = None
         """Start index of the first position coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_qd_start: wp.array[wp.int32] | None = None
@@ -1913,8 +1902,6 @@ class Model:
         """Attribute keys containing labels for custom-frequency rows."""
 
         self._requested_state_attributes: set[str] = set()
-        self._collision_pipeline: CollisionPipeline | None = None
-        # cached collision pipeline
         self._requested_contact_attributes: set[str] = set()
 
         self.attribute_specs: dict[str, Model.AttributeSpec] = dict(Model._CORE_ATTRIBUTE_SPECS)
@@ -2212,36 +2199,6 @@ class Model:
         """Replace shape edge ranges through the deprecated public alias."""
         warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="shape_edge_range"))
         self._shape_edge_range = value
-
-    @property
-    def joint_twist_lower(self) -> wp.array[wp.float32] | None:
-        """Joint lower twist limit [rad], shape [joint_count], float. Never populated.
-
-        .. deprecated:: 1.7
-            Limit joint rotations with the per-DOF :attr:`joint_limit_lower` instead.
-        """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._deprecated_joint_twist_lower
-
-    @joint_twist_lower.setter
-    def joint_twist_lower(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._deprecated_joint_twist_lower = value
-
-    @property
-    def joint_twist_upper(self) -> wp.array[wp.float32] | None:
-        """Joint upper twist limit [rad], shape [joint_count], float. Never populated.
-
-        .. deprecated:: 1.7
-            Limit joint rotations with the per-DOF :attr:`joint_limit_upper` instead.
-        """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._deprecated_joint_twist_upper
-
-    @joint_twist_upper.setter
-    def joint_twist_upper(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._deprecated_joint_twist_upper = value
 
     @property
     def joint_target_q_start(self) -> wp.array | None:
@@ -3209,121 +3166,6 @@ class Model:
                 "Create CollisionPipeline(model) to publish contact capacities before resolving contact frequencies."
             )
         return self.rigid_contact_max, self.soft_contact_max
-
-    def _init_collision_pipeline(self, enable_rigid_soft_full_surface_contact: bool = False):
-        """
-        Initialize a :class:`CollisionPipeline` for this model.
-
-        This method creates a default collision pipeline for the model. The pipeline is cached on
-        the model for subsequent use by :meth:`collide`.
-
-        Args:
-            enable_rigid_soft_full_surface_contact: Size the soft-contact buffer for the full-surface
-                EDGE/FACE passes (see :meth:`collide`).
-        """
-        from .collide import CollisionPipeline  # noqa: PLC0415
-
-        self._collision_pipeline = CollisionPipeline(
-            self,
-            broad_phase="explicit",
-            enable_rigid_soft_full_surface_contact=enable_rigid_soft_full_surface_contact,
-        )
-
-    def contacts(
-        self: Model,
-        collision_pipeline: CollisionPipeline | None = None,
-    ) -> Contacts:
-        """
-        Create and return a :class:`Contacts` object for this model.
-
-        .. deprecated:: 1.5
-
-            Create a :class:`CollisionPipeline` and call
-            :meth:`CollisionPipeline.contacts` instead.
-
-        This method initializes a collision pipeline with default arguments (when not already
-        cached) and allocates a contacts buffer suitable for storing collision detection results.
-        Call :meth:`collide` to run the collision detection and populate the contacts object.
-
-        Note:
-            Rigid contact gaps are controlled per-shape via :attr:`Model.shape_gap`, which is populated
-            from ``ModelBuilder.ShapeConfig.gap`` [m] during model building. If a shape doesn't specify a gap [m],
-            it defaults to ``builder.rigid_gap`` [m]. To adjust contact gaps [m], set them before calling
-            :meth:`ModelBuilder.finalize`.
-        Returns:
-            The contact object containing collision information.
-        """
-        warnings.warn(
-            "Model.contacts() is deprecated; create a CollisionPipeline and call pipeline.contacts() instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        if collision_pipeline is not None:
-            self._collision_pipeline = collision_pipeline
-        if self._collision_pipeline is None:
-            self._init_collision_pipeline()
-
-        return self._collision_pipeline.contacts()
-
-    def collide(
-        self,
-        state: State,
-        contacts: Contacts | None = None,
-        *,
-        collision_pipeline: CollisionPipeline | None = None,
-        enable_rigid_soft_full_surface_contact: bool = False,
-    ) -> Contacts:
-        """
-        Generate contact points for the particles and rigid bodies in the model using the default collision
-        pipeline.
-
-        .. deprecated:: 1.5
-
-            Create a :class:`CollisionPipeline` and call
-            :meth:`CollisionPipeline.collide` instead.
-
-        Args:
-            state: The current simulation state.
-            contacts: The contacts buffer to populate (will be cleared first). If None, a new
-                contacts buffer is allocated via :meth:`contacts`.
-            collision_pipeline: Optional collision pipeline override.
-            enable_rigid_soft_full_surface_contact: When ``True``, additionally run the triangle-driven
-                soft EDGE/FACE passes that detect soft edge / face vs rigid contacts the per-particle
-                SDF path misses, written into the E/F ranges of ``Contacts.soft_contact_*``. Default
-                ``False`` reproduces the per-particle behaviour bit-for-bit. This flag is applied when
-                the collision pipeline is allocated (its soft-contact buffer must be sized for the extra
-                records), so it takes effect only on the first ``collide()``/``contacts()`` call that
-                creates the pipeline. Passing ``True`` once a pipeline sized without it is cached raises
-                ``ValueError``. Participating mesh/convex shapes must also have volume SDFs provisioned via
-                :meth:`ModelBuilder.ShapeConfig.configure_sdf` (e.g. ``configure_sdf(force_sdf=True)`` on
-                ``default_shape_cfg``) before finalize, or pipeline construction raises.
-        """
-        warnings.warn(
-            "Model.collide() is deprecated; create a CollisionPipeline and call "
-            "pipeline.collide(state, contacts) instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        if collision_pipeline is not None:
-            self._collision_pipeline = collision_pipeline
-        if self._collision_pipeline is None:
-            self._init_collision_pipeline(enable_rigid_soft_full_surface_contact=enable_rigid_soft_full_surface_contact)
-        elif (
-            enable_rigid_soft_full_surface_contact
-            and not self._collision_pipeline.enable_rigid_soft_full_surface_contact
-        ):
-            raise ValueError(
-                "enable_rigid_soft_full_surface_contact=True requires a collision pipeline initialized with "
-                "the flag so its soft-contact buffer is sized for the edge/face passes, but the cached "
-                "pipeline was built with it disabled. Pass a fresh collision_pipeline=, or enable the flag "
-                "on the first collide()/contacts() call that allocates the pipeline."
-            )
-
-        if contacts is None:
-            contacts = self._collision_pipeline.contacts()
-
-        self._collision_pipeline.collide(state, contacts)
-        return contacts
 
     def request_state_attributes(self, *attributes: str) -> None:
         """Request optional solver-produced state attributes.

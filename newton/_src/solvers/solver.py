@@ -633,7 +633,7 @@ class SolverBase:
         if collision_pipeline is not None and not self.supports_collision_pipeline:
             raise ValueError(
                 f"{type(self).__name__} cannot own a collision pipeline; "
-                "drive detection externally via model.collide()."
+                "drive detection externally via CollisionPipeline.collide()."
             )
         if collision_pipeline is not None and collision_pipeline.model is not model:
             raise ValueError("collision_pipeline and solver must use the same model")
@@ -664,8 +664,8 @@ class SolverBase:
     def contacts(self) -> Contacts | None:
         """The solver-owned contacts buffer, or ``None`` when no pipeline is owned.
 
-        Unlike :meth:`Model.contacts`, this property does not allocate; it
-        returns the buffer created from the owned pipeline at construction.
+        This property does not allocate; it returns the buffer created from
+        the owned pipeline at construction.
         With a slot set to ``CollisionFrequencyType.NONE`` the user may fill
         this buffer externally, e.g. ``pipeline.collide(state, solver.contacts)``.
         """
@@ -728,7 +728,7 @@ class SolverBase:
             ):
                 raise ValueError(
                     "an active rigid collision_frequency_type requires a solver-owned pipeline; "
-                    "pass collision_pipeline=... at construction or drive model.collide() externally."
+                    "pass collision_pipeline=... at construction or drive CollisionPipeline.collide() externally."
                 )
             if ftype[Slot.RIGID] == Frequency.ITERATIONS and self.collision_pipeline.contact_matching == "disabled":
                 raise ValueError(
