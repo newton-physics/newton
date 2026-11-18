@@ -313,27 +313,43 @@ class TestGaussian(unittest.TestCase):
         self.assertNotEqual(srgb, linear)
         self.assertNotEqual(hash(srgb), hash(linear))
 
-    @requires("meshio")
     def test_gaussian_create_from_ply(self):
         """Read a 3DGS PLY: reorder wxyz rotations, exponentiate scales, squash opacities, keep the SH order."""
         names = ["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", *(f"f_rest_{i}" for i in range(9))]
         names += ["opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
-        data = np.random.default_rng(0).standard_normal((4, len(names))).astype("<f4")
-        header = "ply\nformat binary_little_endian 1.0\nelement vertex 4\n"
-        header += "".join(f"property float {name}\n" for name in names) + "end_header\n"
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "splats.ply")
-            with open(path, "wb") as file:
-                file.write(header.encode() + data.tobytes())
-            with patch_sys_module("open3d", None):  # importers no longer installs Open3D
-                gaussian = newton.Gaussian.create_from_ply(path)
+        data = np.random.default_rng(0).standard_normal((4, len(names))).astype(np.float32)
 
-        xyzw = data[:, [20, 21, 22, 19]]
-        assert_np_equal(gaussian.positions, data[:, :3])
-        assert_np_equal(gaussian.sh_coeffs, data[:, 3:15])
-        np.testing.assert_allclose(gaussian.opacities, 1.0 / (1.0 + np.exp(-data[:, 15])), rtol=1e-6)
-        np.testing.assert_allclose(gaussian.scales, np.exp(data[:, 16:19]), rtol=1e-6)
-        np.testing.assert_allclose(gaussian.rotations, xyzw / np.linalg.norm(xyzw, axis=1, keepdims=True), rtol=1e-6)
+        def ply(count: int, fmt: str) -> bytes:
+            header = f"ply\nformat {fmt} 1.0\nelement vertex {count}\n"
+            header += "".join(f"property float {name}\n" for name in names) + "end_header\n"
+            if fmt == "ascii":
+                return (
+                    header.encode() + "".join(" ".join(map(repr, row)) + "\n" for row in data[:count].tolist()).encode()
+                )
+            return header.encode() + data[:count].astype(">f4" if fmt == "binary_big_endian" else "<f4").tobytes()
+
+        with tempfile.TemporaryDirectory() as directory, patch_sys_module("open3d", None):
+            path = os.path.join(directory, "splats.ply")
+            for count, fmt in ((4, "binary_little_endian"), (4, "binary_big_endian"), (4, "ascii"), (1, "ascii")):
+                with self.subTest(count=count, fmt=fmt):
+                    with open(path, "wb") as file:
+                        file.write(ply(count, fmt))
+                    gaussian = newton.Gaussian.create_from_ply(path)
+                    rows = data[:count]
+                    xyzw = rows[:, [20, 21, 22, 19]]
+                    assert_np_equal(gaussian.positions, rows[:, :3])
+                    assert_np_equal(gaussian.sh_coeffs, rows[:, 3:15])
+                    np.testing.assert_allclose(gaussian.opacities, 1.0 / (1.0 + np.exp(-rows[:, 15])), rtol=1e-6)
+                    np.testing.assert_allclose(gaussian.scales, np.exp(rows[:, 16:19]), rtol=1e-6)
+                    np.testing.assert_allclose(
+                        gaussian.rotations, xyzw / np.linalg.norm(xyzw, axis=1, keepdims=True), rtol=1e-6
+                    )
+            complete = ply(4, "binary_little_endian")
+            for truncated in (complete[: complete.index(b"property")], complete[:-8]):
+                with open(path, "wb") as file:
+                    file.write(truncated)
+                with self.assertRaises(ValueError):
+                    newton.Gaussian.create_from_ply(path)
 
 
 class TestModelMesh(unittest.TestCase):
