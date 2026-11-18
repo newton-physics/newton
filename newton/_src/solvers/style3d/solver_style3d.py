@@ -53,6 +53,18 @@ def _warn_legacy_attribute(name: str, config_name: str) -> None:
     )
 
 
+def _warn_legacy_internal_attribute(
+    name: str, guidance: str = "Internal solver data has no public replacement."
+) -> None:
+    """Warn at the caller without advertising internal data as a Config option."""
+    warnings.warn(
+        f"SolverStyle3D.{name} is deprecated as of Newton 1.9. {guidance} "
+        "This read-only compatibility alias will be removed in a future minor release.",
+        NewtonDeprecationWarning,
+        stacklevel=3,
+    )
+
+
 ########################################################################################################################
 #################################################    Style3D Solver    #################################################
 ########################################################################################################################
@@ -262,6 +274,146 @@ class SolverStyle3D(SolverBase):
     def enable_mouse_dragging(self, value: bool) -> None:
         _warn_legacy_attribute("enable_mouse_dragging", "enable_mouse_dragging")
         self.config.enable_mouse_dragging = value
+
+    @property
+    def style3d(self) -> Any:
+        """Read-only legacy access to Style3D model attributes.
+
+        .. deprecated:: 1.9
+            Access material attributes through ``solver.model.style3d`` instead.
+        """
+        _warn_legacy_internal_attribute("style3d", "Use solver.model.style3d for material attributes instead.")
+        return self._style3d_attr
+
+    @property
+    def linear_solver(self) -> PcgSolver:
+        """Read-only legacy access to the internal PCG solver.
+
+        .. deprecated:: 1.9
+            Direct access to the internal linear solver is being retired.
+        """
+        _warn_legacy_internal_attribute("linear_solver")
+        return self._linear_solver
+
+    @property
+    def pd_non_diags(self) -> SparseMatrixELL:
+        """Read-only legacy access to the PD off-diagonal matrix.
+
+        .. deprecated:: 1.9
+            Direct access to internal solver matrices is being retired.
+        """
+        _warn_legacy_internal_attribute("pd_non_diags")
+        return self._pd_off_diag
+
+    @property
+    def pd_diags(self) -> wp.array[float]:
+        """Read-only legacy access to the PD diagonal.
+
+        .. deprecated:: 1.9
+            Direct access to internal solver matrices is being retired.
+        """
+        _warn_legacy_internal_attribute("pd_diags")
+        return self._pd_diag
+
+    @property
+    def dx(self) -> wp.array[wp.vec3]:
+        """Read-only legacy access to the solver increments.
+
+        .. deprecated:: 1.9
+            Direct access to internal solver buffers is being retired.
+        """
+        _warn_legacy_internal_attribute("dx")
+        return self._dx
+
+    @property
+    def rhs(self) -> wp.array[wp.vec3]:
+        """Read-only legacy access to the solver right-hand side.
+
+        .. deprecated:: 1.9
+            Direct access to internal solver buffers is being retired.
+        """
+        _warn_legacy_internal_attribute("rhs")
+        return self._rhs
+
+    @property
+    def x_prev(self) -> wp.array[wp.vec3]:
+        """Read-only legacy access to the previous solver coordinates.
+
+        .. deprecated:: 1.9
+            Direct access to internal solver buffers is being retired.
+        """
+        _warn_legacy_internal_attribute("x_prev")
+        return self._x_prev
+
+    @property
+    def x_inertia(self) -> wp.array[wp.vec3]:
+        """Read-only legacy access to the inertial target coordinates.
+
+        .. deprecated:: 1.9
+            Direct access to internal solver buffers is being retired.
+        """
+        _warn_legacy_internal_attribute("x_inertia")
+        return self._x_inertia
+
+    @property
+    def static_A_diags(self) -> wp.array[float]:
+        """Read-only legacy access to the base system diagonal.
+
+        .. deprecated:: 1.9
+            Direct access to internal solver matrices is being retired.
+        """
+        _warn_legacy_internal_attribute("static_A_diags")
+        return self._A_diag_base
+
+    @property
+    def inv_A_diags(self) -> wp.array[wp.mat33]:
+        """Read-only legacy access to the inverse diagonal blocks.
+
+        .. deprecated:: 1.9
+            Direct access to internal solver matrices is being retired.
+        """
+        _warn_legacy_internal_attribute("inv_A_diags")
+        return self._inv_A_diag
+
+    @property
+    def A_diags(self) -> wp.array[wp.mat33]:
+        """Read-only legacy access to the system diagonal blocks.
+
+        .. deprecated:: 1.9
+            Direct access to internal solver matrices is being retired.
+        """
+        _warn_legacy_internal_attribute("A_diags")
+        return self._A_diag
+
+    @property
+    def drag_pos(self) -> wp.array[wp.vec3]:
+        """Read-only legacy access to the drag target position.
+
+        .. deprecated:: 1.9
+            Direct access to internal dragging buffers is being retired.
+        """
+        _warn_legacy_internal_attribute("drag_pos")
+        return self._drag_pos
+
+    @property
+    def drag_index(self) -> wp.array[int]:
+        """Read-only legacy access to the dragged triangle index.
+
+        .. deprecated:: 1.9
+            Direct access to internal dragging buffers is being retired.
+        """
+        _warn_legacy_internal_attribute("drag_index")
+        return self._drag_index
+
+    @property
+    def drag_bary_coord(self) -> wp.array[wp.vec3]:
+        """Read-only legacy access to the drag barycentric coordinates.
+
+        .. deprecated:: 1.9
+            Direct access to internal dragging buffers is being retired.
+        """
+        _warn_legacy_internal_attribute("drag_bary_coord")
+        return self._drag_bary_coord
 
     def __init__(
         self,

@@ -52,7 +52,7 @@ def _assert_pd_matrix(test, model, solver):
 
 
 def test_constructor_precomputes_fixed_pd_matrix(test, device):
-    """Preserve the ordinary grid's assembled PD stiffness matrix."""
+    """Preserve the grid's PD matrix and deprecated read access to solver data."""
     builder = newton.ModelBuilder()
     newton.solvers.SolverStyle3D.register_custom_attributes(builder)
     newton.solvers.style3d.add_cloth_grid(
@@ -78,6 +78,34 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
     test.assertGreater(float(solver._pd_diag.numpy().sum()), 0.0)
     test.assertGreater(int(solver._pd_off_diag.num_nz.numpy().sum()), 0)
     _assert_pd_matrix(test, model, solver)
+
+    for legacy_name, internal_name in (
+        ("style3d", "_style3d_attr"),
+        ("linear_solver", "_linear_solver"),
+        ("pd_non_diags", "_pd_off_diag"),
+        ("pd_diags", "_pd_diag"),
+        ("dx", "_dx"),
+        ("rhs", "_rhs"),
+        ("x_prev", "_x_prev"),
+        ("x_inertia", "_x_inertia"),
+        ("static_A_diags", "_A_diag_base"),
+        ("inv_A_diags", "_inv_A_diag"),
+        ("A_diags", "_A_diag"),
+        ("drag_pos", "_drag_pos"),
+        ("drag_index", "_drag_index"),
+        ("drag_bary_coord", "_drag_bary_coord"),
+    ):
+        with test.subTest(attribute=legacy_name):
+            with test.assertWarnsRegex(
+                NewtonDeprecationWarning, f"SolverStyle3D.{legacy_name} is deprecated"
+            ) as warning:
+                legacy_value = getattr(solver, legacy_name)
+            test.assertEqual(warning.filename, __file__)
+            test.assertNotIn("solver.config", str(warning.warning))
+            test.assertIs(legacy_value, getattr(solver, internal_name))
+            with test.assertRaises(AttributeError):
+                setattr(solver, legacy_name, None)
+            test.assertIs(legacy_value, getattr(solver, internal_name))
 
 
 def test_config_constructor_options(test, device):
