@@ -208,7 +208,8 @@ OmniPhysics/PhysX applied schemas (such as ``PhysxDeformableSurfaceAPI``), renam
 concrete attachment prims, pose purposes, or hierarchy conventions. A native Omni/PhysX
 deformable asset that does not apply the AOUSD simulation APIs is not recognized as a
 deformable and imports as ordinary (static) geometry. A TetMesh material that authors its
-values only under the vendor namespaces is ignored without a resolver, with a warning.
+values only under the vendor namespaces is not read without a resolver; ``add_usd()`` warns
+about it when the material does not apply ``PhysicsVolumeDeformableMaterialAPI``.
 
 Supported subset
 ~~~~~~~~~~~~~~~~
