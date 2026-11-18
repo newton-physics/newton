@@ -404,7 +404,6 @@ class TestSDFContact(unittest.TestCase):
 
                 wp.launch(
                     compute_block_counts_from_weights,
-                    compute_mesh_boundary_flags,
                     dim=2,
                     inputs=[total_weight, weights, pair_count, len(weights), 4, block_counts, 2],
                     device=device,
@@ -416,7 +415,6 @@ class TestSDFContact(unittest.TestCase):
                 total_weight.assign([1024])
                 wp.launch(
                     compute_block_counts_from_weights,
-                    compute_mesh_boundary_flags,
                     dim=2,
                     inputs=[total_weight, weights, pair_count, len(weights), 4, block_counts, 2],
                     device=device,
