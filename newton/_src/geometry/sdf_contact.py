@@ -23,7 +23,7 @@ from .contact_reduction_global import (
     export_and_reduce_predictive_contact,
 )
 from .flags import MeshSignMethod
-from .kernels import mesh_query_point_sign, resolve_mesh_sign_method
+from .kernels import mesh_query_point_sign, resolve_mesh_sign_method, triangle_closest_point
 
 # Upper bound (mesh-local units) on the closest-point search for the mesh sign
 # queries below. It is not a physical contact range: culling uses the tight
@@ -497,6 +497,49 @@ def sample_sdf_grad_using_mesh(
 
 
 @wp.func
+def _scaled_texture_witness(
+    mesh_id: wp.uint64,
+    point_local: wp.vec3,
+    scale: wp.vec3,
+    inv_scale: wp.vec3,
+    radius: float,
+    sign_method: int,
+    signed_witness: wp.vec3,
+    source_inside: bool,
+) -> wp.vec3:
+    """Find the nearest triangle in the metric of a nonuniformly scaled baked texture."""
+    extent = radius * wp.abs(inv_scale)
+    query = wp.mesh_query_aabb(mesh_id, point_local - extent, point_local + extent)
+    mesh = wp.mesh_get(mesh_id)
+    best_sq = radius * radius
+    best_face = int(-1)
+    offset = wp.vec3()
+    face = int(0)
+    while wp.mesh_query_aabb_next(query, face):
+        a = wp.cw_mul(mesh.points[mesh.indices[3 * face]] - point_local, scale)
+        b = wp.cw_mul(mesh.points[mesh.indices[3 * face + 1]] - point_local, scale)
+        c = wp.cw_mul(mesh.points[mesh.indices[3 * face + 2]] - point_local, scale)
+        normal = wp.cross(b - a, c - a)
+        if wp.length_sq(normal) == 0.0:
+            continue
+        candidate, bary, _ = triangle_closest_point(a, b, c, wp.vec3())
+        candidate_sq = wp.length_sq(candidate)
+        if candidate_sq < best_sq or (candidate_sq == best_sq and (best_face < 0 or face < best_face)):
+            best_sq = candidate_sq
+            best_face = face
+            offset = candidate
+            if sign_method == MeshSignMethod.NORMAL:
+                # An open mesh's nearest face can change after scaling.
+                # Require its inner side. At an edge the signed BVH query
+                # validates a coincident witness, including triangulation seams.
+                orientation = wp.sign(scale[0]) * wp.sign(scale[1]) * wp.sign(scale[2])
+                same_witness = source_inside and wp.length_sq(candidate - signed_witness) <= 1.0e-12 * candidate_sq
+                if (wp.min(bary) <= 1.0e-6 and not same_witness) or wp.dot(candidate, normal) * orientation <= 0.0:
+                    offset = wp.vec3()
+    return offset
+
+
+@wp.func
 def _recover_flat_texture_contact(
     mesh_id: wp.uint64,
     texture: TextureSDFData,
@@ -525,11 +568,20 @@ def _recover_flat_texture_contact(
         wp.max(wp.abs(texture_to_mesh_scale[0]), wp.abs(texture_to_mesh_scale[1])),
         wp.abs(texture_to_mesh_scale[2]),
     )
-    query_radius = (tolerance - texture_distance) * max_scale
+    # Warp excludes witnesses exactly at max_dist. Widen only the search,
+    # keeping the texture agreement test below inclusive at its original bound.
+    search_radius = (tolerance - texture_distance) * _SDF_QUERY_RADIUS_SLACK
+    query_radius = search_radius * max_scale
     hit = _query_mesh_sdf(mesh_id, point_local, query_radius, sign_method, boundary_flags, boundary_start)
-    if hit.result and hit.sign < 0.0:
+    scale_abs = wp.abs(mesh_scale)
+    scaled_metric = texture.scale_baked and wp.min(scale_abs) != wp.max(scale_abs)
+    if hit.result and (hit.sign < 0.0 or (scaled_metric and sign_method == MeshSignMethod.NORMAL)):
         surface = wp.mesh_eval_position(mesh_id, hit.face, hit.u, hit.v)
         offset = wp.cw_mul(surface - point_local, mesh_scale)
+        if scaled_metric:
+            offset = _scaled_texture_witness(
+                mesh_id, point_local, mesh_scale, inv_scale, search_radius, sign_method, offset, hit.sign < 0.0
+            )
         texture_length = wp.length(wp.cw_mul(offset, inv_sdf_scale))
         # A texture can approximate the mesh, so keep its result when the
         # exact witness disagrees with its distance in the texture's metric.
@@ -1555,7 +1607,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 edge_radius_scale *= wp.max(
                     wp.max(wp.abs(mesh_scale_tri[0]), wp.abs(mesh_scale_tri[1])), wp.abs(mesh_scale_tri[2])
                 )
-                contact_threshold = gap_sum + triangle_mesh_margin + sdf_mesh_margin
+                margin_sum = triangle_mesh_margin + sdf_mesh_margin
+                contact_threshold = gap_sum + margin_sum
                 contact_threshold_unscaled = contact_threshold / min_sdf_scale
                 use_texture_sdf_for_search = False
                 texture_voxel_radius = float(0.0)
@@ -1567,7 +1620,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     use_texture_sdf_for_search = True
                     texture_voxel_radius = texture_sdf.voxel_radius
                 search_precision_unscaled = mesh_sdf_contact_search_precision(
-                    triangle_mesh_margin + sdf_mesh_margin,
+                    margin_sum,
                     min_sdf_scale,
                     texture_voxel_radius,
                     use_texture_sdf_for_search,
@@ -1762,7 +1815,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                             bsphere_center_inner, bsphere_radius_inner = get_edge_bounding_sphere(v0, v1)
                             inner_cull_consistent = mesh_sdf_contact_passes_inner_cull_consistency(
                                 dist_approx,
-                                triangle_mesh_margin + sdf_mesh_margin,
+                                margin_sum,
                                 cached_sdf_val,
                                 bsphere_center_inner,
                                 bsphere_radius_inner,
@@ -2058,7 +2111,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 edge_radius_scale *= wp.max(
                     wp.max(wp.abs(mesh_scale_tri[0]), wp.abs(mesh_scale_tri[1])), wp.abs(mesh_scale_tri[2])
                 )
-                contact_threshold = gap_sum + triangle_mesh_margin + sdf_mesh_margin
+                margin_sum = triangle_mesh_margin + sdf_mesh_margin
+                contact_threshold = gap_sum + margin_sum
                 contact_threshold_unscaled = contact_threshold / min_sdf_scale
                 use_texture_sdf_for_search = False
                 texture_voxel_radius = float(0.0)
@@ -2070,7 +2124,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     use_texture_sdf_for_search = True
                     texture_voxel_radius = texture_sdf.voxel_radius
                 search_precision_unscaled = mesh_sdf_contact_search_precision(
-                    triangle_mesh_margin + sdf_mesh_margin,
+                    margin_sum,
                     min_sdf_scale,
                     texture_voxel_radius,
                     use_texture_sdf_for_search,
@@ -2246,7 +2300,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                             bsphere_center_inner, bsphere_radius_inner = get_edge_bounding_sphere(v0, v1)
                             inner_cull_consistent = mesh_sdf_contact_passes_inner_cull_consistency(
                                 dist_approx,
-                                triangle_mesh_margin + sdf_mesh_margin,
+                                margin_sum,
                                 cached_sdf_val,
                                 bsphere_center_inner,
                                 bsphere_radius_inner,
@@ -2349,14 +2403,13 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 aabb_lower_tri = shape_collision_aabb_lower[tri_shape]
                                 aabb_upper_tri = shape_collision_aabb_upper[tri_shape]
                                 voxel_res_tri = shape_voxel_resolution[tri_shape]
-                                margin_sum = triangle_mesh_margin + sdf_mesh_margin
                                 midpoint = (
                                     wp.transform_get_translation(X_tri_ws) + wp.transform_get_translation(X_sdf_ws)
                                 ) * 0.5
                                 inner_spatial_depth = margin_sum
                                 if use_texture_sdf_for_search:
                                     inner_spatial_depth += wp.min(texture_voxel_radius * min_sdf_scale, base_gap_sum)
-                                outer_spatial_depth = margin_sum + gap_sum
+                                outer_spatial_depth = contact_threshold
                                 if wp.static(speculative):
                                     # Keep velocity-expanded search candidates out of the regular
                                     # normal bins so the predictive pair manifold remains bounded.

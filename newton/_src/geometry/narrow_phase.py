@@ -408,13 +408,14 @@ def write_contact_simple(
     Args:
         contact_data: ContactData struct containing contact information
         writer_data: ContactWriterData struct containing output arrays
-        output_index: If -1, use atomic_add to get the next available index if contact distance is less than gap_sum. If >= 0, use this index directly and skip gap check.
+        output_index: If -1, allocate the next index for contacts within the inclusive pair gap.
+            If >= 0, use this index directly and skip the gap check.
     """
     contact_normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
     d = contact_separation(contact_data)
 
     if output_index < 0:
-        if d >= contact_data.gap_sum:
+        if not contact_passes_gap_check(contact_data):
             return
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
     else:

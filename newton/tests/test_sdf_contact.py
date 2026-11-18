@@ -9,10 +9,13 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.flags import MeshSignMethod
 from newton._src.geometry.sdf_contact import (
     _create_sdf_contact_funcs,
+    _recover_flat_texture_contact,
     _sdf_rsqrt_rn,
     compute_block_counts_from_weights,
+    compute_mesh_boundary_flags,
     mesh_sdf_contact_search_precision,
 )
 from newton._src.geometry.sdf_texture import TextureSDFData
@@ -216,14 +219,24 @@ def test_mesh_mesh_contact_at_pair_gap(test, device):
 
         # Dyadic distances keep the face separation and threshold exact in float32.
         for reduce_contacts in (False, True):
-            pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=reduce_contacts)
-            contacts = pipeline.contacts()
-            for separation in (0.0625, 0.125, 0.1875):
-                with test.subTest(reduce_contacts=reduce_contacts, separation=separation):
-                    state.body_q.assign([wp.transform(wp.vec3(0.0, 0.0, 0.625 + separation))])
-                    pipeline.collide(state, contacts)
-                    count = int(contacts.rigid_contact_count.numpy()[0])
-                    test.assertEqual(count > 0, separation <= 0.125)
+            for speculative in (False, True):
+                pipeline = newton.CollisionPipeline(
+                    model,
+                    broad_phase="nxn",
+                    reduce_contacts=reduce_contacts,
+                    speculative_contact_gap_max=0.25 if speculative else None,
+                )
+                contacts = pipeline.contacts()
+                # A closing speed of 1.5 m/s reaches 0.1875 m in one update,
+                # beyond the authored 0.125 m pair gap.
+                dt = 0.125 if speculative else 0.0
+                state.body_qd.assign([[0.0, 0.0, -1.5, 0.0, 0.0, 0.0]])
+                for separation in (0.0625, 0.125, 0.1875, 0.25):
+                    with test.subTest(reduce_contacts=reduce_contacts, speculative=speculative, separation=separation):
+                        state.body_q.assign([wp.transform(wp.vec3(0.0, 0.0, 0.625 + separation))])
+                        pipeline.collide(state, contacts, dt=dt)
+                        count = int(contacts.rigid_contact_count.numpy()[0])
+                        test.assertEqual(count > 0, separation <= (0.1875 if speculative else 0.125))
 
 
 def test_mesh_sdf_normal_at_slab_midplane(test, device, *, reverse_winding=False, probe_sdf=False, coarse=False):
@@ -253,7 +266,9 @@ def test_mesh_sdf_normal_at_slab_midplane(test, device, *, reverse_winding=False
             np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.int32), compute_inertia=False
         )
         if probe_sdf:
-            probe.build_sdf(target_voxel_size=0.000244140625)
+            probe.build_sdf(
+                target_voxel_size=0.000244140625, narrow_band_range=(-0.001953125, 0.001953125), margin=0.001953125
+            )
         scales = ((1.0, 1.0, 1.0),) if reverse_winding or probe_sdf or coarse else ((1.0, 1.0, 1.0), (2.0, 0.75, 1.25))
         for scale in scales:
             builder = newton.ModelBuilder()
@@ -273,6 +288,9 @@ def test_mesh_sdf_normal_at_slab_midplane(test, device, *, reverse_winding=False
                     if probe_sdf:
                         with wp.ScopedCapture(device=device) as capture:
                             pipeline.collide(state, contacts)
+                        contacts.rigid_contact_count.zero_()
+                        contacts.rigid_contact_normal.fill_(wp.vec3(float("nan")))
+                        contacts.rigid_contact_point0.fill_(wp.vec3(float("nan")))
                         wp.capture_launch(capture.graph)
                     count = int(contacts.rigid_contact_count.numpy()[0])
                     test.assertGreater(count, 0)
@@ -287,6 +305,67 @@ def test_mesh_sdf_normal_at_slab_midplane(test, device, *, reverse_winding=False
                         np.testing.assert_allclose(face_error, 0.0, atol=2.0e-6)
                     else:
                         test.assertLess(float(face_error.min()), 2.0e-6)
+
+
+@wp.kernel(enable_backward=False)
+def _flat_witness(
+    mesh: wp.uint64,
+    sdf: TextureSDFData,
+    scale: wp.vec3,
+    depth: float,
+    sign_method: int,
+    boundary: wp.array[wp.uint8],
+    offset: wp.array[wp.vec3],
+):
+    _, witness = _recover_flat_texture_contact(
+        mesh, sdf, wp.vec3(), wp.vec3(), -depth, wp.vec3(), scale, wp.vec3(1.0), -depth, sign_method, boundary, 0
+    )
+    offset[0] = witness
+
+
+def test_flat_witness_metric(test, device):
+    sdf = TextureSDFData()
+    sdf.coarse_texture = wp.Texture3D(np.zeros((2, 2, 2), dtype=np.float32), device=device)
+    sdf.subgrid_start_slots = wp.zeros((1, 1, 1), dtype=wp.uint32, device=device)
+    sdf.subgrid_size_f = 1.0
+    sdf.fine_to_coarse = 1.0
+    sdf.voxel_radius = 0.03125
+    sdf.scale_baked = True
+    mesh = newton.Mesh.create_box(0.125, 0.25, 0.5, duplicate_vertices=False)
+    # The nearest local face considers the origin inside, while the nearer
+    # face after applying scale considers it outside.
+    sheets = newton.Mesh(
+        np.array([[0.125, -1, -1], [0.125, 1, -1], [0.125, 0, 1], [-1, 0.25, -1], [1, 0.25, -1], [0, 0.25, 1]]),
+        np.arange(6, dtype=np.int32),
+        compute_inertia=False,
+    )
+    inward_sheets = newton.Mesh(sheets.vertices, np.array([0, 1, 2, 3, 5, 4], dtype=np.int32), compute_inertia=False)
+    reversed_sheets = newton.Mesh(sheets.vertices, np.array([0, 2, 1, 3, 5, 4], dtype=np.int32), compute_inertia=False)
+    seam = newton.Mesh(
+        np.array([[0.125, -1, -1], [0.125, 1, -1], [0.125, 1, 1], [0.125, -1, 1]]),
+        np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
+        compute_inertia=False,
+    )
+    output = wp.empty(1, dtype=wp.vec3, device=device)
+    for source, scale, depth, sign, expected in (
+        (mesh, (4, 1, 1), 0.25, MeshSignMethod.PARITY, (0, 0.25, 0)),
+        (mesh, (1, 1, 1), 0.09375, MeshSignMethod.PARITY, (0.125, 0, 0)),
+        (mesh, (1, 1, 1), 0.093, MeshSignMethod.PARITY, (0, 0, 0)),
+        (sheets, (4, 1, 1), 0.25, MeshSignMethod.NORMAL, (0, 0, 0)),
+        (inward_sheets, (-4, 1, 1), 0.25, MeshSignMethod.NORMAL, (0, 0.25, 0)),
+        (reversed_sheets, (4, 1, 1), 0.25, MeshSignMethod.NORMAL, (0, 0.25, 0)),
+        (seam, (1, 2, 1), 0.125, MeshSignMethod.NORMAL, (0.125, 0, 0)),
+    ):
+        with test.subTest(scale=scale, depth=depth, sign=sign):
+            mesh_id = source.finalize(device)
+            boundary = wp.array(compute_mesh_boundary_flags(source.mesh), dtype=wp.uint8, device=device)
+            wp.launch(
+                _flat_witness,
+                1,
+                inputs=[mesh_id, sdf, wp.vec3(*scale), depth, int(sign), boundary, output],
+                device=device,
+            )
+            np.testing.assert_allclose(np.abs(output.numpy()[0]), expected, atol=1.0e-6)
 
 
 class TestSDFContact(unittest.TestCase):
@@ -325,6 +404,7 @@ class TestSDFContact(unittest.TestCase):
 
                 wp.launch(
                     compute_block_counts_from_weights,
+                    compute_mesh_boundary_flags,
                     dim=2,
                     inputs=[total_weight, weights, pair_count, len(weights), 4, block_counts, 2],
                     device=device,
@@ -336,6 +416,7 @@ class TestSDFContact(unittest.TestCase):
                 total_weight.assign([1024])
                 wp.launch(
                     compute_block_counts_from_weights,
+                    compute_mesh_boundary_flags,
                     dim=2,
                     inputs=[total_weight, weights, pair_count, len(weights), 4, block_counts, 2],
                     device=device,
@@ -427,6 +508,9 @@ add_function_test(
     box_sdf=True,
     probe_sdf=True,
 )
+
+
+add_function_test(TestSDFContact, "test_flat_witness_metric", test_flat_witness_metric, devices=get_cuda_test_devices())
 
 
 if __name__ == "__main__":
