@@ -1377,7 +1377,7 @@ class TestSensorCamera(unittest.TestCase):
         self.assertGreater(float(depth_a.numpy()[0, height // 2, width // 2]), 0.0)
         self.assertGreater(float(depth_b.numpy()[0, height // 2, width // 2]), 0.0)
 
-    # --- Rendering output channels (ported from SensorTiledCamera coverage) ---
+    # --- Rendering output channels ---
 
     @staticmethod
     def _shaded_sphere_model(color: tuple[float, float, float] = (0.5, 0.5, 0.5)) -> newton.Model:
