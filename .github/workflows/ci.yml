@@ -71,6 +71,9 @@ jobs:
             macos-latest,
           ]
     runs-on: ${{ matrix.os }}
+    env:
+      # Rerun does not publish Windows ARM64 wheels.
+      NOTEBOOK_EXTRA: ${{ matrix.os != 'windows-11-arm' && '--extra notebook' || '' }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
@@ -85,13 +88,13 @@ jobs:
           version: "0.13.5"
           prune-cache: true
       - name: Test dependency resolution (Python 3.11)
-        run: uv sync --locked --dry-run --python 3.11 --extra dev --extra notebook
+        run: uv sync --locked --dry-run --python 3.11 --extra dev ${{ env.NOTEBOOK_EXTRA }}
       - name: Test dependency resolution (Python 3.12)
-        run: uv sync --locked --dry-run --python 3.12 --extra dev --extra notebook
+        run: uv sync --locked --dry-run --python 3.12 --extra dev ${{ env.NOTEBOOK_EXTRA }}
       - name: Test dependency resolution (Python 3.13)
-        run: uv sync --locked --dry-run --python 3.13 --extra dev --extra notebook
+        run: uv sync --locked --dry-run --python 3.13 --extra dev ${{ env.NOTEBOOK_EXTRA }}
       - name: Test dependency resolution (Python 3.14)
-        run: uv sync --locked --dry-run --python 3.14 --extra dev --extra notebook
+        run: uv sync --locked --dry-run --python 3.14 --extra dev ${{ env.NOTEBOOK_EXTRA }}
 
   # Unsharded legs report their required check names directly.
   newton-unittests:
