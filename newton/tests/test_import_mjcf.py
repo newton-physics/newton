@@ -11615,6 +11615,48 @@ class TestJointFrictionloss(unittest.TestCase):
         model = builder.finalize()
         np.testing.assert_allclose(model.joint_friction.numpy()[-1], 3.3, atol=1e-5)
 
+    @requires(*MUJOCO_MODULES)
+    def test_free_joint_parameters_match_mujoco(self):
+        """Verify <joint type="free"> takes its per-DOF attributes like native MuJoCo."""
+        import mujoco
+
+        mjcf = """<mujoco>
+            <default>
+                <joint damping="0.4" armature="0.3" frictionloss="0.2" stiffness="2" actuatorgravcomp="true"
+                    solreffriction="0.03 1" solimpfriction="0.8 0.9 0.002 0.4 3"/>
+            </default>
+            <worldbody>
+                <body name="inherits"><joint type="free"/><geom type="sphere" size="0.1"/></body>
+                <body name="overrides" pos="1 0 0">
+                    <joint type="free" damping="0" armature="0.05" actuatorgravcomp="false"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+                <body name="ignores" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1"/></body>
+            </worldbody>
+        </mujoco>"""
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        fields = (
+            "dof_damping",
+            "dof_armature",
+            "dof_frictionloss",
+            "dof_solref",
+            "dof_solimp",
+            "jnt_stiffness",
+            "jnt_actgravcomp",
+        )
+        # floating=True keeps the parameters of a root that is already a free joint.
+        for floating in (None, True):
+            with self.subTest(floating=floating):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_mjcf(mjcf, floating=floating)
+                solver = SolverMuJoCo(builder.finalize())
+                for name in fields:
+                    expected = getattr(native, name)
+                    simulated = getattr(solver.mjw_model, name).numpy().reshape(expected.shape)
+                    np.testing.assert_allclose(simulated, expected, atol=1e-6, err_msg=name)
+                    np.testing.assert_allclose(getattr(solver.mj_model, name), expected, atol=1e-6, err_msg=name)
+
 
 class TestZeroMassBodies(unittest.TestCase):
     """Verify that zero-mass bodies are preserved as-is during import.

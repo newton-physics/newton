@@ -5577,7 +5577,8 @@ class ModelBuilder:
                 - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
                   otherwise creates a FIXED joint).
                 - ``True``: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
-                  ``parent_body == -1`` since FREE joints must connect to world frame.
+                  ``parent_body == -1`` since FREE joints must connect to world frame. A root that already
+                  has an MJCF free joint keeps that joint's parameters.
                 - ``False``: Creates a FIXED joint (0 DOF).
 
                 Cannot be specified together with ``base_joint``.
