@@ -424,9 +424,8 @@ def _resolve_shape_friction_mode(
     to ``mu * r`` unless the material authors Newton angular coefficients.
     """
     mode = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="friction_mode", verbose=verbose)
-    # Registered MuJoCo attributes read mjc:condim without the mjc resolver; consume the
-    # deprecated mujoco:condim so only the friction mode carries it.
-    condim = shape_custom_attrs.pop("mujoco:condim", None)
+    # Registered MuJoCo attributes read mjc:condim without the mjc resolver.
+    condim = shape_custom_attrs.get("mujoco:condim")
     if mode is None and condim is not None:
         mode = friction_mode_from_condim(int(condim))
     mode = int(defaults.friction_mode) if mode is None else int(mode)

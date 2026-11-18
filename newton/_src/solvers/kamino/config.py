@@ -1426,7 +1426,7 @@ class LOXSolverConfig:
     contact_spatial_friction: bool = False
     """Enable coupled sliding, torsional, and rolling friction for every contact.
 
-    .. deprecated:: 1.8
+    .. deprecated:: 1.9
         Set :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` to
         :attr:`~newton.ShapeFrictionMode.TORSIONAL` or :attr:`~newton.ShapeFrictionMode.ROLLING`
         on the shapes that need spatial friction instead; the solver then enables it

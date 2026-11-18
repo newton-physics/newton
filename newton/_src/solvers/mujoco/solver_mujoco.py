@@ -497,7 +497,7 @@ _MJW_BATCHED_MODEL_FIELDS = (
 
 
 _CONDIM_DEPRECATION_MSG = (
-    "The mujoco:condim custom attribute is deprecated in Newton 1.8; set ModelBuilder.ShapeConfig.friction_mode "
+    "The mujoco:condim custom attribute is deprecated in Newton 1.9; set ModelBuilder.ShapeConfig.friction_mode "
     "and read Model.shape_material_friction_mode instead. Model.mujoco.condim returns a copy derived from the "
     "friction mode, so changes to it have no effect."
 )
@@ -517,14 +517,15 @@ def _reject_condim_assignment(_value: Any) -> None:
 def _finalize_deprecated_condim(builder: ModelBuilder, model: Model, custom_attr: ModelBuilder.CustomAttribute) -> None:
     """Fold builder-authored ``mujoco:condim`` values into the friction mode and expose the read alias."""
     values = custom_attr.values or {}
+    modes = model.shape_material_friction_mode.numpy()
+    # Body variants fill in the default for their shapes, which they store past the model's shapes.
     authored = [
         (int(shape), int(value))
         for shape, value in (values.items() if isinstance(values, dict) else enumerate(values))
-        if value is not None
+        if value is not None and value != custom_attr.default and shape < len(modes)
     ]
     if authored:
         warn_deprecation(_CONDIM_DEPRECATION_MSG)
-        modes = list(builder.shape_material_friction_mode)
         for shape, condim in authored:
             mode = int(friction_mode_from_condim(condim))
             if modes[shape] != mode and modes[shape] != int(ShapeFrictionMode.SLIDING):
@@ -533,7 +534,7 @@ def _finalize_deprecated_condim(builder: ModelBuilder, model: Model, custom_attr
                     f"{ShapeFrictionMode(modes[shape]).name}."
                 )
             modes[shape] = mode
-        model.shape_material_friction_mode.assign(np.asarray(modes, dtype=np.int32))
+        model.shape_material_friction_mode.assign(modes)
 
     def condim() -> wp.array:
         modes = model.shape_material_friction_mode.numpy()
@@ -543,6 +544,7 @@ def _finalize_deprecated_condim(builder: ModelBuilder, model: Model, custom_attr
         model.mujoco = Model.AttributeNamespace("mujoco")
     # A read-only copy derived from the friction mode, since condim and the mode encode differently.
     model.mujoco._add_deprecated_alias("condim", condim, _CONDIM_DEPRECATION_MSG, _reject_condim_assignment)
+    model._set_attribute_spec(custom_attr.key, Model.AttributeSpec(Model.AttributeFrequency.SHAPE, deprecated=True))
 
 
 _UPDATE_DATA_INTERVAL_DEPRECATION_MSG = (

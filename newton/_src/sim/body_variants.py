@@ -347,7 +347,8 @@ class _VariantShapeRows:
             ):
                 continue
             owner = getattr(m, attribute.namespace, None) if attribute.namespace else m
-            values = getattr(owner, attribute.name, None)
+            # Stored arrays only: a deprecated alias has none to copy.
+            values = vars(owner).get(attribute.name) if owner is not None else None
             if not isinstance(values, wp.array) or values.ndim != 1:
                 continue
             variant_values = {

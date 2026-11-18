@@ -7919,7 +7919,10 @@ class TestMuJoCoAttributes(unittest.TestCase):
         # The deprecated model attribute reads the modes and rejects writes
         with self.assertWarnsRegex(NewtonDeprecationWarning, "mujoco:condim custom attribute is deprecated"):
             np.testing.assert_array_equal(model.mujoco.condim.numpy(), [1, 6, 4, 6])
-        with self.assertRaisesRegex(AttributeError, "shape_material_friction_mode"):
+        with (
+            self.assertWarns(NewtonDeprecationWarning),
+            self.assertRaisesRegex(AttributeError, "shape_material_friction_mode"),
+        ):
             model.mujoco.condim = wp.zeros(4, dtype=wp.int32)
 
     @requires(*MUJOCO_MODULES)

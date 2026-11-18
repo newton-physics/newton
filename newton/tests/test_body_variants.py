@@ -17,7 +17,13 @@ from newton.tests.unittest_utils import (
 )
 
 
-def _variant(kind: str, mu: float = 1.0, mu_static: float | None = None, tag: int = 0) -> newton.ModelBuilder:
+def _variant(
+    kind: str,
+    mu: float = 1.0,
+    mu_static: float | None = None,
+    tag: int = 0,
+    friction_mode: newton.ShapeFrictionMode = newton.ShapeFrictionMode.SLIDING,
+) -> newton.ModelBuilder:
     """Build a single-body variant: a 125 kg cube, the same cube as a mesh, or two small offset spheres."""
     builder = newton.ModelBuilder()
     builder.rigid_gap = 0.01
@@ -27,7 +33,7 @@ def _variant(kind: str, mu: float = 1.0, mu_static: float | None = None, tag: in
         )
     )
     body = builder.add_body(label=kind)
-    cfg = newton.ModelBuilder.ShapeConfig(mu=mu, mu_static=mu_static)
+    cfg = newton.ModelBuilder.ShapeConfig(mu=mu, mu_static=mu_static, friction_mode=friction_mode)
     attributes = {"test:tag": tag}
     if kind == "cube":
         builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, cfg=cfg, custom_attributes=attributes)
@@ -91,9 +97,14 @@ class TestBodyVariants(unittest.TestCase):
     def test_select_body_variants(self):
         env = newton.ModelBuilder()
         body = env.add_body(xform=wp.transform((0.0, 0.0, 0.2), wp.quat_identity()), label="object")
-        spheres = _variant("spheres", mu=0.2, mu_static=0.6, tag=2)
+        mode = newton.ShapeFrictionMode
+        cube = _variant("cube", mu=0.9, tag=1, friction_mode=mode.NONE)
+        spheres = _variant("spheres", mu=0.2, mu_static=0.6, tag=2, friction_mode=mode.ROLLING)
         spheres.shape_opacity[:] = [0.5, 0.5]
-        env.add_body_variants(body, [_variant("cube", mu=0.9, tag=1), spheres])
+        # Variant rows hold the default of the deprecated mujoco:condim, which must not override their modes.
+        for builder in (env, cube, spheres):
+            newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        env.add_body_variants(body, [cube, spheres])
         scene = newton.ModelBuilder()
         scene.replicate(env, 3)
         model = scene.finalize(device="cpu")
@@ -116,6 +127,9 @@ class TestBodyVariants(unittest.TestCase):
         # mu_static resolved to its mu.
         np.testing.assert_allclose(model.shape_material_mu.numpy()[:3], [0.2, 0.2, 0.9])
         np.testing.assert_allclose(model.shape_material_mu_static.numpy()[:3], [0.6, 0.6, 0.9])
+        np.testing.assert_array_equal(
+            model.shape_material_friction_mode.numpy()[:3], [mode.ROLLING, mode.ROLLING, mode.NONE]
+        )
         np.testing.assert_allclose(model.shape_opacity.numpy()[:3], [0.5, 0.5, 1.0])
         np.testing.assert_array_equal(model.test.tag.numpy()[:3], [2, 2, 1])
         self.assertLess(model.body_mass.numpy()[0], initial_mass[0])
@@ -473,25 +487,32 @@ def test_steel_torsion_covers_variants(test, device):
     """SolverSteel checks the torsion radius of every variant shape and follows the selected shape types."""
     steel = newton.solvers.SolverSteel
 
-    def variant(kind, radius):
+    def variant(kind, radius, torsional=None):
         builder = newton.ModelBuilder()
         steel.register_custom_attributes(builder)
         body = builder.add_body(label=kind)
+        torsional = radius > 0.0 if torsional is None else torsional
+        mode = newton.ShapeFrictionMode.TORSIONAL if torsional else newton.ShapeFrictionMode.SLIDING
+        cfg = newton.ModelBuilder.ShapeConfig(friction_mode=mode)
         attributes = {"steel:min_torsional_patch_radius": radius}
         if kind == "mesh":
-            builder.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.25), custom_attributes=attributes)
+            builder.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.25), cfg=cfg, custom_attributes=attributes)
         else:
-            builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, custom_attributes=attributes)
+            builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, cfg=cfg, custom_attributes=attributes)
         return builder
 
-    def model(mesh_radius, cube_radius, initial):
+    def model(mesh_radius, cube_radius, initial, **cube_kwargs):
         env = newton.ModelBuilder()
         steel.register_custom_attributes(env)
         body = env.add_body(label="object")
-        env.add_body_variants(body, [variant("mesh", mesh_radius), variant("cube", cube_radius)], initial=initial)
+        variants = [variant("mesh", mesh_radius), variant("cube", cube_radius, **cube_kwargs)]
+        env.add_body_variants(body, variants, initial=initial)
         return env.finalize(device=device)
 
     options = {"contact_warmstart": False, "contact_torsion_device": True}
+    # A torsion radius needs a torsional friction mode, even on a variant that is not selected at construction.
+    with test.assertRaisesRegex(ValueError, r"friction_mode of shapes \[0\]"):
+        steel(model(0.0, 0.01, initial=0, torsional=False), **options)
     # Torsion does not support meshes, even ones that are not selected at construction.
     with test.assertRaisesRegex(ValueError, r"geometry of shapes \[0\]"):
         steel(model(0.01, 0.0, initial=1), **options)

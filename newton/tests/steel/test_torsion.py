@@ -434,7 +434,7 @@ def test_invalid_input_and_unsupported_modes(test, device):
     set_torsion_radius(model, 0.01)
     model.shape_material_friction_mode.fill_(int(newton.ShapeFrictionMode.SLIDING))
     with test.assertRaisesRegex(ValueError, "TORSIONAL"):
-        SolverSteel(model, solve_mode="matrix_free")
+        SolverSteel(model)
 
 
 def test_capture_is_explicitly_rejected(test, device):

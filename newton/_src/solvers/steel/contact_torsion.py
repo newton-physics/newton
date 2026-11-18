@@ -60,30 +60,31 @@ _SUPPORTED_TYPES = (
 def configure_contact_torsion(solver):
     """Enable contact torsion when any shape has a positive torsion radius, and validate the radii.
 
-    A body variant row takes the radius and type of the variant shape it holds, so each row is
-    checked with every variant shape it can hold.
+    A body variant row takes the radius, type, and friction mode of the variant shape it holds, so
+    each row is checked with every variant shape it can hold.
     """
     model = solver.model
     radius_array = solver._contact_torsion_shape_radius
     radii = radius_array.numpy() if radius_array is not None else np.zeros(0, dtype=np.float32)
     types = model.shape_type.numpy()
+    modes = model.shape_material_friction_mode.numpy()[: len(radii)]
     shapes = np.arange(len(radii))
     variant_radius = model._variant_shape_custom.get("steel:min_torsional_patch_radius")
     if radius_array is not None and variant_radius is not None:
         rows, options = model._variant_row_options()
         radii = np.concatenate((radii, variant_radius[0].numpy()[options]))
         types = np.concatenate((types, model._variant_shape_geometry["shape_type"].numpy()[options]))
+        variant_modes = model._variant_shape_geometry["shape_material_friction_mode"].numpy()[options]
+        modes = np.concatenate((modes, variant_modes))
         shapes = np.concatenate((shapes, rows))
     if not np.all(np.isfinite(radii)) or np.any(radii < 0.0):
         raise ValueError("steel:min_torsional_patch_radius must be finite and non-negative [m]")
-    modes = solver.model.shape_material_friction_mode
-    if radii.size and modes is not None:
-        without_torsion = np.flatnonzero((radii > 0.0) & (modes.numpy() < int(ShapeFrictionMode.TORSIONAL))).tolist()
-        if without_torsion:
-            raise ValueError(
-                "steel:min_torsional_patch_radius needs ShapeFrictionMode.TORSIONAL or ROLLING; "
-                f"set ShapeConfig.friction_mode of shapes {without_torsion}"
-            )
+    without_torsion = np.unique(shapes[(radii > 0.0) & (modes < int(ShapeFrictionMode.TORSIONAL))]).tolist()
+    if without_torsion:
+        raise ValueError(
+            "steel:min_torsional_patch_radius needs ShapeFrictionMode.TORSIONAL or ROLLING; "
+            f"set ShapeConfig.friction_mode of shapes {without_torsion}"
+        )
     enabled = bool(np.any(radii > 0.0))
     if enabled:
         unsupported = np.unique(shapes[(radii > 0.0) & ~np.isin(types, _SUPPORTED_TYPES)]).tolist()

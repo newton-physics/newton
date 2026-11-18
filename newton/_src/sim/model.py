@@ -83,6 +83,7 @@ _SHAPE_VARIANT_ATTRIBUTES = (
     "shape_material_restitution",
     "shape_material_mu_torsional",
     "shape_material_mu_rolling",
+    "shape_material_friction_mode",
     "shape_material_kh",
 )
 """Per-shape model arrays a variant row takes from the variant shape it holds: geometry, the collision

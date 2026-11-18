@@ -838,7 +838,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             return config, False
         if config.lox.contact_spatial_friction:
             warn_deprecation(
-                "SolverKamino.Config.lox.contact_spatial_friction is deprecated in Newton 1.8; set "
+                "SolverKamino.Config.lox.contact_spatial_friction is deprecated in Newton 1.9; set "
                 "ModelBuilder.ShapeConfig.friction_mode to ShapeFrictionMode.TORSIONAL or "
                 "ShapeFrictionMode.ROLLING on the shapes that need spatial friction instead."
             )
