@@ -322,9 +322,10 @@ constraints, using a compliant augmented-Lagrangian (ALM) formulation.
      - |no|
      - |no|
      - |yes|
-     - |no|
+     - |yes| :sup:`2`
 
 | :sup:`1` DISTANCE joints are treated as FREE (no distance constraint enforcement).
+| :sup:`2` See :ref:`kamino-rod-joints` for the supported rod joint properties.
 
 **Joint properties**
 
