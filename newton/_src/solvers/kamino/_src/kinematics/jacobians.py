@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ....rod_kernels import measure_rod_bend_twist_z, rod_bend_twist_jacobian_z_from_measure
 from ..core.data import DataKamino
 from ..core.joints import JointDoFType
 from ..core.math import (
@@ -163,6 +164,32 @@ def build_full_joint_jacobian(
         # Compute the extended jacobians, i.e. without the selection-matrix multiplication
         JT_B_j = -W_j_B @ R_X_bar_j  # Reaction is on the Base body body ; (6 x 6)
         JT_F_j = W_j_F @ R_X_bar_j  # Action is on the Follower body    ; (6 x 6)
+
+        # Rod joint: measure the shear and stretch at the follower anchor, which the anchor separation in
+        # the joint coordinates places away from the joint frame, and replace the angular axes with the
+        # bend and twist strain rates of the discrete rod measure
+        if dof_type == JointDoFType.ROD:
+            coords_offset = model_joints_coords_offset[joint_id]
+            j_r_j = wp.vec3f(
+                state_joints_q[coords_offset], state_joints_q[coords_offset + 1], state_joints_q[coords_offset + 2]
+            )
+            r_Fj = r_j + R_X_j @ j_r_j
+            JT_B_shear_stretch = -screw_transform_matrix_from_points(r_Fj, r_B_j) @ R_X_bar_j
+            JT_F_shear_stretch = screw_transform_matrix_from_points(r_Fj, r_F_j) @ R_X_bar_j
+            q_B_j = wp.transform_get_rotation(T_B_j) * wp.quat_from_matrix(model_joints_X_Bj[joint_id])
+            q_F_j = wp.transform_get_rotation(T_F_j) * wp.quat_from_matrix(model_joints_X_Fj[joint_id])
+            measure = measure_rod_bend_twist_z(q_B_j, q_F_j)
+            J_B_bend_twist = rod_bend_twist_jacobian_z_from_measure(measure, True)
+            J_F_bend_twist = rod_bend_twist_jacobian_z_from_measure(measure, False)
+            for k in range(3):
+                for i in range(6):
+                    JT_B_j[i, k] = JT_B_shear_stretch[i, k]
+                    JT_F_j[i, k] = JT_F_shear_stretch[i, k]
+                for i in range(3):
+                    JT_B_j[i, 3 + k] = 0.0
+                    JT_F_j[i, 3 + k] = 0.0
+                    JT_B_j[3 + i, 3 + k] = J_B_bend_twist[k, i]
+                    JT_F_j[3 + i, 3 + k] = J_F_bend_twist[k, i]
 
     return JT_B_j, JT_F_j
 
@@ -389,7 +416,7 @@ def store_joint_dofs_jacobian_dense(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
         )
 
-    elif dof_type == JointDoFType.FREE:
+    elif dof_type == JointDoFType.FREE or dof_type == JointDoFType.ROD:
         wp.static(make_store_joint_jacobian_dense_func(JointDoFType.FREE.dofs_axes))(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
         )
@@ -527,7 +554,7 @@ def store_joint_dofs_jacobian_sparse(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
         )
 
-    elif dof_type == JointDoFType.FREE:
+    elif dof_type == JointDoFType.FREE or dof_type == JointDoFType.ROD:
         wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.FREE.dofs_axes))(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
         )
