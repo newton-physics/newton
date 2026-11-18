@@ -303,6 +303,8 @@ def test_mesh_sdf_normal_at_slab_midplane(test, device, *, reverse_winding=False
                         contacts.rigid_contact_count.zero_()
                         contacts.rigid_contact_normal.fill_(wp.vec3(float("nan")))
                         contacts.rigid_contact_point0.fill_(wp.vec3(float("nan")))
+                        if reduce_contacts:
+                            pipeline.narrow_phase._flat_mesh_blocks.zero_()
                         wp.capture_launch(capture.graph)
                     count = int(contacts.rigid_contact_count.numpy()[0])
                     test.assertGreater(count, 0)
@@ -366,6 +368,18 @@ def test_flat_witness_metric(test, device):
     shifted_vertices = scaled_seam.vertices.copy()
     shifted_vertices[3:, 0] += 1.01
     open_edge = newton.Mesh(shifted_vertices, scaled_seam.indices, compute_inertia=False)
+    # Both triangles meet along Z. Their baked-space normals disagree
+    # individually, but the shared-edge pseudo-normal faces the witness.
+    crease_vertices = np.array([[1, -0.25, -1], [1, -0.25, 1], [2, -0.25, 0], [2, 0.75, 0]]) / [2, 1, 1]
+    crease = newton.Mesh(crease_vertices, np.array([0, 1, 2, 1, 0, 3]), compute_inertia=False)
+    crease_reordered = newton.Mesh(crease_vertices, np.array([1, 0, 3, 0, 1, 2]), compute_inertia=False)
+    # At this vertex, weighting by each corner angle reverses the sign of
+    # the unweighted sum of the three incident normals.
+    vertex_fan = newton.Mesh(
+        np.array([[1, 0, 0], [2, 0, 1], [2, 1, 0], [2, 3, -1]]) / [2, 1, 1],
+        np.array([0, 1, 2, 0, 2, 3, 0, 3, 1]),
+        compute_inertia=False,
+    )
     output = wp.empty(1, dtype=wp.vec3, device=device)
     for source, scale, depth, sign, expected in (
         (mesh, (4, 1, 1), 0.25, MeshSignMethod.PARITY, (0, 0.25, 0)),
@@ -377,6 +391,9 @@ def test_flat_witness_metric(test, device):
         (seam, (1, 2, 1), 0.125, MeshSignMethod.NORMAL, (0.125, 0, 0)),
         (scaled_seam, (4, 1, 1), 0.25, MeshSignMethod.NORMAL, (0, 0.25, 0)),
         (open_edge, (4, 1, 1), 0.25, MeshSignMethod.NORMAL, (0, 0, 0)),
+        (crease, (2, 1, 1), np.sqrt(1.0625), MeshSignMethod.NORMAL, (1, -0.25, 0)),
+        (crease_reordered, (2, 1, 1), np.sqrt(1.0625), MeshSignMethod.NORMAL, (1, -0.25, 0)),
+        (vertex_fan, (2, 1, 1), 1.0, MeshSignMethod.NORMAL, (1, 0, 0)),
     ):
         with test.subTest(scale=scale, depth=depth, sign=sign):
             mesh_id = source.finalize(device)
@@ -397,6 +414,8 @@ def test_planar_mesh_recovery_under_load(test, device, *, reduce_contacts=True, 
         wall, probe = test.loaded_wall_and_probe(device)
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         cfg = builder.ShapeConfig(gap=0.0002, margin=0.0, density=0.0, ke=1.0e6, kd=150.0)
+        if not reduce_contacts:
+            cfg.restitution = 1.0
         builder.add_shape_mesh(-1, mesh=wall, xform=wp.transform(wp.vec3(0.0005, 0.0, 0.0)), cfg=cfg)
         body = builder.add_body(mass=0.05, inertia=wp.mat33(np.eye(3) * 1.0e-6))
         builder.add_shape_mesh(body, mesh=probe, cfg=cfg)
@@ -429,10 +448,11 @@ def test_planar_mesh_recovery_under_load(test, device, *, reduce_contacts=True, 
                 model,
                 iterations=4,
                 rigid_avbd_contact_alpha=1.0,
-                collision_pipeline=pipeline,
-                collision_frequency_type={slot: frequency.PRE_POST_INIT},
             )
-            contacts = solver.contacts
+            # Late-bound pipeline storage must also support mid-step refresh.
+            solver.collision_pipeline = pipeline
+            solver.contacts = contacts
+            solver.set_collision_frequency(collision_frequency_type={slot: frequency.PRE_POST_INIT})
         else:
             solver = newton.solvers.SolverXPBD(model, iterations=4)
         control = model.control()
@@ -486,6 +506,18 @@ def test_planar_mesh_recovery_under_load(test, device, *, reduce_contacts=True, 
             wall_rows = np.where((shape0[:count] == 0) | (shape1[:count] == 0))[0]
             test.assertEqual(len(wall_rows), 1)
             floor_solver = newton.solvers.SolverXPBD(model, iterations=1)
+            # Hit the floor and the embedded wall simultaneously. Only the
+            # ordinary floor contact should receive a restitution impulse.
+            impact = model.state()
+            impact.body_qd.fill_(wp.spatial_vector(0.1, 0.0, -0.1, 0.0, 0.0, 0.0))
+            floor_solver.step(impact, next_state, control, floor_contacts, dt)
+            inelastic = next_state.body_qd.numpy()[body]
+            elastic_solver = newton.solvers.SolverXPBD(model, iterations=1, enable_restitution=True)
+            elastic_solver.step(impact, next_state, control, floor_contacts, dt)
+            elastic = next_state.body_qd.numpy()[body]
+            test.assertGreater(elastic[2], 0.0)
+            test.assertGreater(elastic[2] - inelastic[2], 0.01)
+            test.assertGreater(elastic[0], 0.0)  # Still approaching the wall.
             floor_solver.step(separating, next_state, control, floor_contacts, dt)
             with_recovery = float(next_state.body_qd.numpy()[body, 2])
             test.assertGreater(with_recovery, 0.0)
@@ -504,6 +536,7 @@ def test_planar_mesh_recovery_under_load(test, device, *, reduce_contacts=True, 
             solver.step(state, next_state, control, None, dt, observables=observables)
             first_speed = float(next_state.body_qd.numpy()[body, 0])
             test.assertLess(first_speed, -0.01)
+            test.assertLessEqual(-first_speed * dt, 0.001 / 32.0 + 1.0e-6)
             test.assertGreater(float(solver.body_body_contact_normal_rho.numpy()[0]), 0.0)
             test.assertGreater(np.linalg.norm(solver.body_body_contact_lambda.numpy()[0]), 0.0)
             # The new detection is valid at step start. The predictor moves
@@ -511,10 +544,47 @@ def test_planar_mesh_recovery_under_load(test, device, *, reduce_contacts=True, 
             solver.set_collision_frequency(collision_frequency_type={slot: frequency.NONE})
             pipeline.collide(next_state, contacts)
             next_state.body_qd.fill_(wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0))
+            previous_q = wp.clone(solver.body_q_prev)
             solver.step(next_state, state, control, None, dt, observables=observables)
             test.assertAlmostEqual(float(state.body_qd.numpy()[body, 0]), 0.0, delta=1.0e-5)
             np.testing.assert_array_equal(solver.body_body_contact_lambda.numpy()[0], 0.0)
             np.testing.assert_array_equal(observables.contact_f.numpy()[0], 0.0)
+            _, _, point0, point1, force, _ = solver.collect_rigid_contact_forces(state.body_q, previous_q, contacts, dt)
+            pose = state.body_q.numpy()[body]
+            for points, local, offsets, shape in (
+                (point0, contacts.rigid_contact_point0, contacts.rigid_contact_offset0, contacts.rigid_contact_shape0),
+                (point1, contacts.rigid_contact_point1, contacts.rigid_contact_offset1, contacts.rigid_contact_shape1),
+            ):
+                expected = local.numpy()[0] + offsets.numpy()[0]
+                if shape.numpy()[0] == 1:
+                    expected = wp.transform_point(wp.transform(pose[:3], pose[3:]), wp.vec3(expected))
+                np.testing.assert_allclose(points.numpy()[0], expected, atol=1.0e-7)
+            np.testing.assert_array_equal(force.numpy()[0], 0.0)
+
+            # Moving beyond the entry face also releases the held row.
+            state.body_q.fill_(wp.transform(wp.vec3(-0.005, previous_q.numpy()[body, 1], 0.0), wp.quat_identity()))
+            state.body_qd.zero_()
+            solver.step(state, next_state, control, None, dt, observables=observables)
+            np.testing.assert_array_equal(solver.body_body_contact_lambda.numpy()[0], 0.0)
+            np.testing.assert_array_equal(observables.contact_f.numpy()[0], 0.0)
+
+            solver.set_collision_frequency(collision_frequency_type={slot: frequency.PRE_INIT})
+            model.shape_material_ke.fill_(1.0e5)
+            model.shape_material_kd.zero_()
+            # At 20 N these unconstrained predictors travel 0.193 and 0.434 mm,
+            # respectively inside and outside the 0.25 mm inward interval.
+            for dt in (1.0 / 1440.0, 1.0 / 960.0):
+                with test.subTest(dt=dt):
+                    state, next_state = model.state(), model.state()
+                    solver.reset(state)
+                    for _ in range(4):
+                        state.body_f.fill_(wp.spatial_vector(20.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+                        previous_x = float(state.body_q.numpy()[body, 0])
+                        solver.step(state, next_state, control, None, dt, observables=observables)
+                        displacement = float(next_state.body_q.numpy()[body, 0]) - previous_x
+                        test.assertLess(displacement, 0.0)
+                        test.assertGreater(displacement, -0.001 / 32.0 - 1.0e-6)
+                        state, next_state = next_state, state
             return
 
         if mujoco:
@@ -544,6 +614,44 @@ def test_planar_mesh_recovery_under_load(test, device, *, reduce_contacts=True, 
                 np.testing.assert_allclose(sensor.total_force_friction.numpy(), 0.0, atol=1.0e-4)
         depth = float(state.body_q.numpy()[body, 0]) + 0.004
         test.assertLess(abs(depth), 0.0005)
+
+
+def test_mujoco_stale_contact_at_capacity(test, device):
+    """A stale wall row must leave the one solver slot available to the sphere."""
+    with wp.ScopedDevice(device):
+        wall, probe = test.loaded_wall_and_probe(device)
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig(gap=0.0002, margin=0.0)
+        builder.add_shape_mesh(-1, mesh=wall, xform=wp.transform(wp.vec3(0.0005, 0.0, 0.0)), cfg=cfg)
+        probe_body = builder.add_body(mass=0.05)
+        builder.add_shape_mesh(probe_body, mesh=probe, cfg=cfg)
+        newton.solvers.mujoco.add_actuator_motor(builder, newton.solvers.mujoco.ActuatorTarget.body(probe_body))
+        plane = builder.add_ground_plane()
+        ball = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.049)))
+        sphere = builder.add_shape_sphere(ball, radius=0.05)
+        model = builder.finalize()
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            shape_pairs_filtered=wp.array([(0, 1), (plane, sphere)], dtype=wp.vec2i),
+            deterministic=True,
+            rigid_contact_max=8,
+        )
+        solver = newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=1)
+        obs = solver.observables({solver.ObservableKind.OVERFLOW})
+        contacts, state, next_state = pipeline.contacts(), model.state(), model.state()
+        pipeline.collide(state, contacts)
+        test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 2)
+        test.assertIn(0, (contacts.rigid_contact_shape0.numpy()[0], contacts.rigid_contact_shape1.numpy()[0]))
+        poses = state.body_q.numpy()
+        for lateral in (0.02, 0.0):
+            poses[probe_body, 1] = lateral
+            state.body_q.assign(poses)
+            solver.step(state, next_state, None, contacts, 1.0 / 1440.0, observables=obs)
+            test.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), 1)
+            test.assertEqual(bool(int(obs.overflow.numpy()[-1]) & solver.OverflowBits.SOLVER_NCONMAX), lateral == 0.0)
+            if lateral:
+                np.testing.assert_array_equal(solver._contact_tid_to_cid.numpy()[:2], [-1, 0])
 
 
 def test_planar_recovery_overflow(test, device):
@@ -584,6 +692,38 @@ def test_planar_recovery_overflow(test, device):
         pipeline.collide(state, contacts)
         test.assertEqual(int(recovery.active_slots.numpy()[-1]), 0)
         test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+def test_planar_recovery_eligibility(test, device):
+    """Keep disconnected probes and meshes without textures on the ordinary contact path."""
+    with wp.ScopedDevice(device):
+        wall, probe = test.loaded_wall_and_probe(device)
+        small = newton.Mesh.create_capsule(0.0005, 0.0, segments=12)
+        split = newton.Mesh(
+            np.vstack((probe.vertices, small.vertices + np.array([0.0057, 0, 0]))),
+            np.concatenate((probe.indices, small.indices + len(probe.vertices))),
+        )
+        split.build_sdf(target_voxel_size=0.000125, narrow_band_range=(-0.002, 0.002), margin=0.002)
+        legacy_wall, legacy_probe = wall.copy(), probe.copy()
+        volume = wp.Volume.load_from_numpy(np.ones((8, 8, 8), dtype=np.float32), voxel_size=0.001, device=device)
+        legacy_wall.sdf = legacy_probe.sdf = newton.SDF.create_from_data(sparse_volume=volume)
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=wall)
+        body = builder.add_body()
+        for mesh, x in ((probe, -0.0005), (split, -0.004), (legacy_probe, -0.0005)):
+            builder.add_shape_mesh(body, mesh=mesh, xform=wp.transform(wp.vec3(x, 0.0, 0.0)))
+        builder.add_shape_mesh(-1, mesh=legacy_wall)
+        model = builder.finalize()
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            shape_pairs_filtered=wp.array([(0, 1), (0, 2), (0, 3), (4, 1)], dtype=wp.vec2i),
+        )
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+        recovery = contacts._mesh_recovery_contacts
+        slots = recovery.active_slots.numpy()
+        np.testing.assert_array_equal(recovery.keys.numpy()[slots[: slots[-1]]], [1])
 
 
 class TestSDFContact(unittest.TestCase):
@@ -725,6 +865,12 @@ add_function_test(
 )
 add_function_test(
     TestSDFContact,
+    "test_planar_recovery_eligibility",
+    test_planar_recovery_eligibility,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSDFContact,
     "test_planar_mesh_recovery_with_xpbd_unreduced",
     test_planar_mesh_recovery_under_load,
     devices=get_cuda_test_devices(),
@@ -736,6 +882,13 @@ add_function_test(
     test_planar_mesh_recovery_under_load,
     devices=get_cuda_test_devices(),
     vbd_stale=True,
+)
+add_function_test(
+    TestSDFContact,
+    "test_mujoco_stale_contact_at_capacity",
+    requires(*MUJOCO_MODULES)(test_mujoco_stale_contact_at_capacity),
+    devices=get_cuda_test_devices(),
+    check_output=False,  # The second step intentionally reports a solver-capacity overflow.
 )
 add_function_test(
     TestSDFContact,

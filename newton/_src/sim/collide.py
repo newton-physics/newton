@@ -23,7 +23,6 @@ from ..geometry.contact_data import (
     contact_separation,
     contact_sort_shape_index_bits,
     make_contact_sort_key_with_bits,
-    mesh_search_envelope,
 )
 from ..geometry.contact_match import ContactMatcher
 from ..geometry.contact_reduction import MAX_CONTACTS_PER_PAIR, NUM_NORMAL_BINS
@@ -602,7 +601,11 @@ def compute_shape_aabbs(
         # so we only need to handle the rotation here.
         local_lo = shape_collision_aabb_lower[shape_id]
         local_hi = shape_collision_aabb_upper[shape_id]
-        margin_vec = wp.vec3(mesh_search_envelope(shape_gap[shape_id], margin))
+        # Gap and margin are added per pair in the writer, but per shape here.
+        # Pad before adding to the bounds so cancellation at a face near zero
+        # cannot hide a contact on the rounded pair threshold.
+        rounding = (wp.abs(shape_gap[shape_id]) + wp.abs(margin)) * (2.0 * 1.1920928955078125e-7)
+        margin_vec = wp.vec3(effective_gap + rounding)
 
         center = (local_lo + local_hi) * 0.5
         half = (local_hi - local_lo) * 0.5
@@ -2830,6 +2833,10 @@ class CollisionPipeline:
 
         The returned buffer uses this pipeline's ``requires_grad`` flag (resolved at
         construction from the argument or ``model.requires_grad``).
+
+        For solver-only CUDA graphs, use this method or collide once with a
+        directly constructed buffer before capture to bind its recovery storage.
+        Recapture the graph if that storage is replaced.
 
         Returns:
             A newly allocated contacts buffer sized for this pipeline.

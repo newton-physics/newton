@@ -5138,11 +5138,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 include_sites=include_sites,
                 skip_visual_only_geoms=skip_visual_only_geoms,
             )
+        self._compact_stale_contacts = bool(self.mjw_model.nacttrnbody or self.mjw_model.flg_adhesion)
         if not use_mujoco_contacts:
             # Persistent mappings must be initialized outside step(), which may
             # first run inside a CUDA graph that is discarded without replay.
             self._create_inverse_shape_mapping()
-            self._contact_tid_to_cid = wp.full(self.mjw_data.naconmax, -1, dtype=wp.int32, device=self.device)
+            map_size = self.mjw_data.naconmax
+            if self._compact_stale_contacts:
+                source_size = model.rigid_contact_max
+                map_size = max(map_size, _estimate_rigid_contact_max(model) if source_size is None else source_size)
+            self._contact_tid_to_cid = wp.full(map_size, -1, dtype=wp.int32, device=self.device)
         self._initial_model_sync = False
         self._update_data_interval = 1 if update_data_interval is None else update_data_interval
         self._step = 0
@@ -5392,6 +5397,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         inputs=[
                             rigid_contact_count,
                             rigid_contact_max,
+                            self._last_nacon_count if self._compact_stale_contacts else rigid_contact_count,
                             self.mjw_data.naconmax,
                             newton_contacts,
                             self.mjw_data.overflow,
@@ -5863,9 +5869,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
             if self._speculative_clearance.shape[0] != self.mjw_data.naconmax:
                 self._allocate_speculative_contact_buffers()
-        # The kernel only produces valid output for tid < naconmax (the full
-        # path clamps count and rejects cid >= naconmax).  Launching more
-        # threads than naconmax wastes GPU resources, so cap the grid size.
         naconmax = self.mjw_data.naconmax
         # rigid_contact_max and naconmax are independent buffer capacities and
         # routinely disagree without any contacts being dropped, so only
@@ -5877,7 +5880,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"than {naconmax} contacts are actually generated. "
                 f"Pass nconmax>={contacts.rigid_contact_max} to SolverMuJoCo to size for the worst case."
             )
-        launch_dim = min(contacts.rigid_contact_max, naconmax)
+        compact_stale = self._compact_stale_contacts
+        # A stale row can precede an eligible row beyond the solver's capacity.
+        launch_dim = contacts.rigid_contact_max if compact_stale else min(contacts.rigid_contact_max, naconmax)
+        if launch_dim > self._contact_tid_to_cid.shape[0]:
+            if model.device.is_capturing:
+                raise RuntimeError("Run an eager solver step with the larger contact buffer before CUDA graph capture.")
+            self._contact_tid_to_cid = wp.empty(launch_dim, dtype=wp.int32, device=model.device)
         # Small blocks distribute short contact lists across more SMs. For
         # large capacities, retain the default block size to avoid excessive
         # scheduling work when most reserved contact slots are empty. Limit
@@ -5885,9 +5894,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         block_dim = 32 if model.device.is_cuda and launch_dim <= model.device.sm_count * 256 else 256
 
         # Invalidate the cached tid_to_cid mapping whenever any of the
-        # invariants it depends on change.  _contact_tid_to_cid is allocated
-        # in __init__ at naconmax, which is fixed after construction, so it
-        # never needs to grow here.
+        # invariants it depends on change.
         #
         #  - Contacts identity: keyed on id(contacts.contact_generation), the
         #    inner per-Contacts device array.  Empirically, keying on the outer
@@ -5903,7 +5910,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         bodies_per_world = self.model.body_count // self.model.world_count
         mujoco_attrs = getattr(model, "mujoco", None)
         shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
-        compact_stale = bool(self.mjw_model.nacttrnbody or self.mjw_model.flg_adhesion)
         recovery_contacts = getattr(contacts, "_mesh_recovery_contacts", None)
         recovery = recovery_contacts or self._empty_mesh_recovery
         wp.launch(
@@ -5995,6 +6001,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._last_contact_generation,
                 recovery,
                 compact_stale,
+                naconmax,
             ],
             device=model.device,
         )
@@ -7156,10 +7163,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             geoms = mj_contact.geom[:count]
             # MuJoCo CPU simulates only the template world when worlds are separate.
             # A flex side of the contact has geom -1; it has no Newton shape and stays in world frame.
-            shapes = np.where(geoms >= 0, self.mjc_geom_to_newton_shape.numpy()[0][geoms], -1)
+            rigid = geoms >= 0
+            shapes = np.full_like(geoms, -1)
+            shapes[rigid] = self.mjc_geom_to_newton_shape.numpy()[0][geoms[rigid]]
             frames = mj_contact.frame[:count].reshape(count, 3, 3)
             normals = frames[:, 0]
-            bodies = np.where(geoms >= 0, self.mj_model.geom_bodyid[geoms], 0)
+            bodies = np.zeros_like(geoms)
+            bodies[rigid] = self.mj_model.geom_bodyid[geoms[rigid]]
             points_world = mj_contact.pos[:count, None, :] + (
                 mj_contact.dist[:count, None, None] * normals[:, None, :] * np.array([-0.5, 0.5])[None, :, None]
             )
@@ -7182,6 +7192,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Rotate force and torque from the contact frame to the world frame,
                 # then negate the wrench on MuJoCo's second geom to get it on shape0.
                 forces_world = -np.einsum("nbi,nij->nbj", forces.reshape(count, 2, 3), frames).reshape(count, 6)
+                reference = np.where((bodies[:, 0] > 0)[:, None], data.xipos[bodies[:, 0]], 0.0)
+                forces_world[:, 3:] += np.cross(mj_contact.pos[:count] - reference, forces_world[:, :3])
                 wp.copy(
                     contact_f, wp.array(forces_world, dtype=wp.spatial_vector, device=contact_f.device), count=count
                 )

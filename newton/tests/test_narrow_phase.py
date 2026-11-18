@@ -1952,6 +1952,25 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                     )
                     self.assertEqual(count > 0, expected)
 
+        # The rounded pair gap can exceed the two independently expanded
+        # AABBs, even when one shape has zero margin.
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(
+            -1,
+            mesh=mesh,
+            xform=wp.transform(wp.vec3(-gap - half_size, 0, 0)),
+            cfg=builder.ShapeConfig(gap=gap, margin=0.0),
+        )
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_mesh(body, mesh=mesh, cfg=builder.ShapeConfig(density=0.0, gap=3 * 2.0**-28, margin=2.0**-30))
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        state, contacts = model.state(), pipeline.contacts()
+        for separation, expected in ((2.0**-26, True), (2.0**-25, False)):
+            state.body_q.assign([wp.transform(wp.vec3(half_size + separation, 0, 0))])
+            pipeline.collide(state, contacts)
+            self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]) > 0, expected)
+
     def test_mesh_mesh_scaled_separated_positive_penetration_no_reduction(self):
         """Scaled mesh-mesh separation should stay positive when reduction is disabled."""
         device = self.narrow_phase.device if self.narrow_phase.device is not None else wp.get_device()

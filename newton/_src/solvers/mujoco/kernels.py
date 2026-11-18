@@ -503,6 +503,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
     tid = wp.tid()
 
     count = rigid_contact_count[0]
+    if tid >= count:
+        return
 
     gen = contact_generation[0]
     last_gen = last_contact_generation[0]
@@ -514,20 +516,12 @@ def convert_newton_contacts_to_mjwarp_kernel(
         # Runs on the first substep after collision detection.  Identical to
         # the original kernel plus recording the tid→cid mapping.
 
-        if tid == 0:
-            if count > naconmax:
-                wp.printf(
-                    "Number of Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
-                    count,
-                    naconmax,
-                )
-
-        if count > naconmax:
-            count = naconmax
-
-        if tid >= count:
-            tid_to_cid[tid] = -1
-            return
+        if tid == 0 and not compact_stale and count > naconmax:
+            wp.printf(
+                "Number of Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
+                count,
+                naconmax,
+            )
 
         shape_a = rigid_contact_shape0[tid]
         shape_b = rigid_contact_shape1[tid]
@@ -841,15 +835,20 @@ def _sync_nacon_count(
     last_contact_generation: wp.array[wp.int32],
     recovery: MeshRecoveryData,
     compact_stale: bool,
+    naconmax: int,
 ):
     """Publish the compacted count and reset scratch storage for the next pass."""
     gen = contact_generation[0]
-    if gen == last_contact_generation[0] and not (compact_stale and has_recovery_contacts(recovery, gen)):
-        nacon[0] = last_nacon_count[0]
-    else:
-        nacon[0] = contact_count[0]
+    if gen != last_contact_generation[0] or (compact_stale and has_recovery_contacts(recovery, gen)):
         last_nacon_count[0] = contact_count[0]
         last_contact_generation[0] = gen
+        if compact_stale and contact_count[0] > naconmax:
+            wp.printf(
+                "Number of eligible Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
+                contact_count[0],
+                naconmax,
+            )
+    nacon[0] = wp.min(last_nacon_count[0], naconmax)
     contact_count[0] = 0
     ncollision[0] = 0
 
@@ -1545,16 +1544,14 @@ def create_convert_mjw_contacts_to_newton_kernel():
                 contact_idx,
                 True,
             )
-            if newton_to_mjw:
-                # Shift from the contact point to shape 0's COM at the force
-                # evaluation stage (which can be an intermediate RK4 pose).
-                geom = mj_contact_geom[contact_idx][0]
-                body = mj_geom_bodyid[geom]
-                reference = mj_xipos[world, body] if body > 0 else wp.vec3()
-                force = wp.spatial_top(wrench)
-                torque = wp.spatial_bottom(wrench) + wp.cross(mj_contact_pos[contact_idx] - reference, force)
-                wrench = wp.spatial_vector(force, torque)
-            contact_force[output_idx] = wrench
+            # Shift from the contact point to shape 0's COM at the force
+            # evaluation stage (which can be an intermediate RK4 pose).
+            geom = mj_contact_geom[contact_idx][0]
+            body = mj_geom_bodyid[geom] if geom >= 0 else 0
+            reference = mj_xipos[world, body] if body > 0 else wp.vec3()
+            force = wp.spatial_top(wrench)
+            torque = wp.spatial_bottom(wrench) + wp.cross(mj_contact_pos[contact_idx] - reference, force)
+            contact_force[output_idx] = wp.spatial_vector(force, torque)
 
     return convert_mjw_contacts_to_newton_kernel
 
@@ -3766,7 +3763,7 @@ OVERFLOW_CONTACT_PIPELINE = wp.constant(wp.int32(1 << 16))
 """Collision pipeline overflowed: rigid_contact_count exceeded rigid_contact_max."""
 
 OVERFLOW_SOLVER_NCONMAX = wp.constant(wp.int32(1 << 17))
-"""Solver nconmax overflow: rigid_contact_count exceeded naconmax."""
+"""Solver nconmax overflow: the inputs to the solver exceeded naconmax."""
 
 
 @wp.kernel
@@ -3774,6 +3771,7 @@ def collect_overflow_kernel(
     # Newton collision pipeline diagnostics
     rigid_contact_count: wp.array[wp.int32],  # [1] — total contacts generated
     rigid_contact_max: int,  # collision pipeline buffer capacity
+    solver_contact_count: wp.array[wp.int32],  # [1] — before truncation to solver capacity
     naconmax: int,  # solver contact buffer capacity
     # 1 when Newton fed contacts to the solver (use_mujoco_contacts=False);
     # 0 when MuJoCo Warp ran its own collision detection — bits 16-17 are
@@ -3786,9 +3784,7 @@ def collect_overflow_kernel(
 ):
     """Collect overflow signals from the collision pipeline and solver into a per-world bitmask.
 
-    Runs with ``dim=nworld``. Thread 0 checks the global contact count against
-    both capacity limits and ORs the result into every world slot; all threads
-    independently OR in their world's mujoco-warp overflow bits.
+    Each world receives the shared contact overflow bits and its own MuJoCo Warp bits.
 
     Newton-defined bits (16-17) are only set when ``newton_contacts=1``.  When
     MuJoCo Warp performs its own collision detection the ``contacts`` argument
@@ -3803,7 +3799,7 @@ def collect_overflow_kernel(
         count = rigid_contact_count[0]
         if count > rigid_contact_max:
             newton_bits = newton_bits | OVERFLOW_CONTACT_PIPELINE
-        if count > naconmax:
+        if solver_contact_count[0] > naconmax:
             newton_bits = newton_bits | OVERFLOW_SOLVER_NCONMAX
 
     # Merge Newton bits and this world's mujoco-warp bits into the output.

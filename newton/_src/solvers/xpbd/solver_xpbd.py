@@ -182,7 +182,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 active contacts. Defaults to ``True``.
             angular_damping: Rigid-body angular velocity damping coefficient [1/s]. Defaults to 0.0.
             enable_restitution: Whether to apply restitution to rigid and particle-shape contacts after the
-                positional solve. Defaults to ``False``.
+                positional solve. Deep thin-wall recovery contacts suppress restitution while they
+                guide the shapes apart. Defaults to ``False``.
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per solver iteration.
             tendon_settle_tol: Relative final capstan-force residual tolerance [dimensionless].
                 Zero disables early-out; must be finite and nonnegative.

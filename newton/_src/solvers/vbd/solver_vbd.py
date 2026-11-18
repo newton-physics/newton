@@ -1011,8 +1011,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.integrate_with_external_rigid_solver = integrate_with_external_rigid_solver
         self._integrates_rigid_bodies = integrates_rigid_bodies
         self._recovery_step_start_q = None
-        if integrates_rigid_bodies and self.contacts is not None and self.contacts._mesh_recovery_contacts is not None:
+        self._recovery_body = None
+        if integrates_rigid_bodies and model._texture_sdf_data is not None and model._texture_sdf_data.shape[0] > 0:
             self._recovery_step_start_q = wp.empty_like(model.body_q)
+            self._recovery_body = wp.zeros(model.body_count, dtype=int, device=model.device)
 
         # Initialize particle system
         self._init_particle_system(
@@ -3677,6 +3679,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         lambda_retention: float,
         *,
         mid_step: bool = False,
+        recovery_body: wp.array | None = None,
     ) -> None:
         """Update rigid-contact C0, conditioning, and lambda state."""
         if not self._integrates_rigid_bodies or contacts.rigid_contact_max == 0:
@@ -3711,6 +3714,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self._mesh_recovery_data(contacts),
                 contacts.contact_generation,
                 self._recovery_step_start_q if mid_step else body_q,
+                recovery_body,
             ],
             outputs=[
                 self.body_body_contact_normal_rho,
@@ -3775,12 +3779,24 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
             # Per-step lambda retention, C0, and ALM auto-rho
             # (body_q is still collide frame here).
+            recovery_body = None
+            refresh_recovery = False
+            if contacts is not None and contacts._mesh_recovery_contacts is not None:
+                mode = self._rigid_mode_this_step
+                frequency = self.CollisionFrequencyType
+                refresh_recovery = mode in (frequency.PRE_POST_INIT, frequency.ITERATIONS)
+                redetect_before_solve = mode == frequency.PRE_POST_INIT or (
+                    mode == frequency.ITERATIONS and self._rigid_freq_this_step == 1
+                )
+                if self.iterations > 0 and not redetect_before_solve:
+                    recovery_body = self._recovery_body
             if contacts is not None and contacts.rigid_contact_max > 0:
                 self._step_body_body_contact_frame(
                     contacts,
                     state_in.body_q,
                     dt,
                     self.rigid_avbd_gamma,
+                    recovery_body=recovery_body,
                 )
 
             # Accumulate joint_f into body wrenches (scratch buffer avoids mutating user state).
@@ -3832,10 +3848,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 outputs=[
                     self.body_q_prev,  # rebaselined for flagged worlds (first step / reset)
                     self.body_inertia_q,
-                    self._recovery_step_start_q
-                    if self._rigid_mode_this_step
-                    in (self.CollisionFrequencyType.PRE_POST_INIT, self.CollisionFrequencyType.ITERATIONS)
-                    else None,
+                    self._recovery_step_start_q if refresh_recovery else None,
+                    recovery_body,
                 ],
                 dim=model.body_count,
                 block_dim=self._rigid_body_block_dim,

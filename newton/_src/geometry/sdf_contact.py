@@ -500,6 +500,40 @@ def sample_sdf_grad_using_mesh(
 
 
 @wp.func
+def _scaled_feature_normal(
+    mesh_id: wp.uint64, witness: wp.vec3, scale: wp.vec3, extent: wp.vec3, tolerance: float
+) -> wp.vec3:
+    """Sum angle-weighted incident normals at an edge or vertex in the baked metric."""
+    mesh = wp.mesh_get(mesh_id)
+    query = wp.mesh_query_aabb(mesh_id, witness - extent, witness + extent)
+    total = wp.vec3()
+    face = int(0)
+    while wp.mesh_query_aabb_next(query, face):
+        a = wp.cw_mul(mesh.points[mesh.indices[3 * face]] - witness, scale)
+        b = wp.cw_mul(mesh.points[mesh.indices[3 * face + 1]] - witness, scale)
+        c = wp.cw_mul(mesh.points[mesh.indices[3 * face + 2]] - witness, scale)
+        normal = wp.cross(b - a, c - a)
+        area = wp.length(normal)
+        if area == 0.0:
+            continue
+        closest, bary, _ = triangle_closest_point(a, b, c, wp.vec3())
+        if wp.length_sq(closest) > tolerance * tolerance:
+            continue
+        feature = _boundary_feature_bit(bary[0], bary[1], bary[2])
+        angle = float(wp.pi)
+        if feature == 8:
+            angle = wp.atan2(area, wp.dot(b - a, c - a))
+        elif feature == 16:
+            angle = wp.atan2(area, wp.dot(c - b, a - b))
+        elif feature == 32:
+            angle = wp.atan2(area, wp.dot(a - c, b - c))
+        elif feature == 0:
+            angle = 2.0 * wp.pi
+        total += angle * (normal / area)
+    return total
+
+
+@wp.func
 def _scaled_texture_witness(
     mesh_id: wp.uint64,
     point_local: wp.vec3,
@@ -516,6 +550,8 @@ def _scaled_texture_witness(
     mesh = wp.mesh_get(mesh_id)
     best_sq = radius * radius
     best_face = int(-1)
+    best_feature = int(0)
+    best_normal = wp.vec3()
     offset = wp.vec3()
     face = int(0)
     while wp.mesh_query_aabb_next(query, face):
@@ -531,18 +567,21 @@ def _scaled_texture_witness(
             best_sq = candidate_sq
             best_face = face
             offset = candidate
-            if sign_method == MeshSignMethod.NORMAL:
-                # Validate the inner side and open boundary in the same metric as the witness.
-                orientation = wp.sign(scale[0]) * wp.sign(scale[1]) * wp.sign(scale[2])
-                if wp.dot(candidate, normal) * orientation <= 0.0:
-                    offset = wp.vec3()
-                elif boundary_start >= 0:
-                    feature = _boundary_feature_bit(bary[0], bary[1], bary[2])
-                    if (int(boundary_flags[boundary_start + face]) & feature) != 0:
-                        unit_normal = wp.normalize(normal)
-                        tangent = candidate - wp.dot(candidate, unit_normal) * unit_normal
-                        if wp.length_sq(tangent) > 1.0e-12 * candidate_sq:
-                            offset = wp.vec3()
+            best_normal = normal
+            best_feature = _boundary_feature_bit(bary[0], bary[1], bary[2])
+    if best_face >= 0 and sign_method == MeshSignMethod.NORMAL:
+        if best_feature != 0:
+            if boundary_start >= 0 and (int(boundary_flags[boundary_start + best_face]) & best_feature) != 0:
+                unit_normal = wp.normalize(best_normal)
+                tangent = offset - wp.dot(offset, unit_normal) * unit_normal
+                if wp.length_sq(tangent) > 1.0e-12 * best_sq:
+                    return wp.vec3()
+            tolerance = 1.0e-6 * wp.sqrt(best_sq)
+            witness = point_local + wp.cw_mul(offset, inv_scale)
+            best_normal = _scaled_feature_normal(mesh_id, witness, scale, tolerance * wp.abs(inv_scale), tolerance)
+        orientation = wp.sign(scale[0]) * wp.sign(scale[1]) * wp.sign(scale[2])
+        if wp.dot(offset, best_normal) * orientation <= 0.0:
+            return wp.vec3()
     return offset
 
 

@@ -51,6 +51,7 @@ def test_thin_wall_exit(test, device):
     flat_vertices = dense.vertices.copy()
     flat_vertices[:, 0] = np.minimum(flat_vertices[:, 0], 0.0039)
     broad = newton.Mesh(flat_vertices, dense.indices)
+    unused = newton.Mesh(np.vstack((probe.vertices, [0.0062, 0.0, 0.0])), probe.indices)
     obstacle = newton.Mesh.create_box(0.0002, 0.0002, 0.0002, duplicate_vertices=False)
     # The obstacle is outside the initial probe bounds but inside its swept footprint.
     obstructed = newton.Mesh(
@@ -68,6 +69,7 @@ def test_thin_wall_exit(test, device):
     for mesh, tip, offset, expected in (
         (wall, probe, -0.0005, True),
         (wall, dense, -0.0005, True),
+        (wall, unused, -0.0005, False),
         (wall, broad, -0.0005, False),
         (wall, probe, 0.0, False),
         (obstructed, probe, -0.0005, False),
@@ -113,6 +115,7 @@ def _check_held_contact(recovery: MeshRecoveryData, result: wp.array[int]):
     rotated = wp.transform(wp.vec3(100.125, 3.5, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.8))
     contact.relative_translation = rotated.p
     contact.rotation1 = rotated.q
+    contact.sweep_radii = wp.vec2(0.01, 100.0)
     recovery.contacts[slot] = contact
     result[5] = active_recovery_contact(
         recovery, 0, 0, 1, wp.transform_identity(), rotated, wp.quat_rotate(rotated.q, normal)
@@ -120,6 +123,19 @@ def _check_held_contact(recovery: MeshRecoveryData, result: wp.array[int]):
     result[6] = active_recovery_contact(
         recovery, 0, 1, 0, rotated, wp.transform_identity(), -wp.quat_rotate(rotated.q, normal)
     )
+    almost_rotated = rotated
+    almost_rotated.q = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 1.9e-6) * rotated.q
+    result[8] = active_recovery_contact(recovery, 0, 0, 1, wp.transform_identity(), almost_rotated, normal)
+    contact.sweep_radii = wp.vec2(0.01, 0.01)
+    recovery.contacts[slot] = contact
+    result[11] = active_recovery_contact(recovery, 0, 0, 1, wp.transform_identity(), almost_rotated, normal)
+    contact.rotation1 = wp.quat_identity()
+    contact.relative_translation = wp.vec3()
+    recovery.contacts[slot] = contact
+    for i in range(2):
+        displacement = contact.initial_depth if i == 0 else -0.26 * contact.thickness
+        pose = wp.transform(displacement * normal, wp.quat_identity())
+        result[9 + i] = active_recovery_contact(recovery, 0, 0, 1, wp.transform_identity(), pose, normal)
     reset_mesh_recovery(recovery)
     result[7] = active_recovery_contact(recovery, 0, 0, 1, wp.transform_identity(), wp.transform_identity(), normal)
 
@@ -127,12 +143,12 @@ def _check_held_contact(recovery: MeshRecoveryData, result: wp.array[int]):
 def test_held_contact_corridor(test, device):
     """Use a held row only while the current poses remain inside its proven corridor."""
     recovery = allocate_mesh_recovery(8, device)
-    result = wp.empty(8, dtype=int, device=device)
+    result = wp.empty(12, dtype=int, device=device)
     wp.launch(_check_held_contact, 1, inputs=[recovery, result], device=device)
     slots = result.numpy()
     test.assertGreaterEqual(slots[0], 0)
     test.assertEqual(slots[1], slots[0])
-    np.testing.assert_array_equal(slots[2:], [slots[0], -2, -2, slots[0], slots[0], -1])
+    np.testing.assert_array_equal(slots[2:], [slots[0], -2, -2, slots[0], slots[0], -1, -2, -2, -2, slots[0]])
     test.assertTrue(np.all(recovery.keys.numpy() == np.iinfo(np.uint64).max))
 
 

@@ -129,8 +129,6 @@ def planar_exit(
 ) -> PlanarExit:
     result = PlanarExit()
     mesh = wp.mesh_get(probe_id)
-    if mesh.points.shape[0] > 4096:
-        return result
     probe_center = wp.transform_point(probe_pose, 0.5 * (probe_minimum + probe_maximum))
     probe_extent = probe_maximum - probe_minimum
     radius = 0.5 * wp.length(probe_extent)
@@ -229,6 +227,13 @@ def planar_exit(
             max_support = _add_support(max_support, point, projection)
     if not min_support.valid:
         return result
+    # Unreferenced vertices are included by the fallback vertex scan. Either
+    # extreme can change the exit choice, even when the selected one is real.
+    if not isolated and (
+        not _on_mesh_surface(probe_id, min_support.point, probe_scale, probe_inverse, tolerance)
+        or not _on_mesh_surface(probe_id, max_support.point, probe_scale, probe_inverse, tolerance)
+    ):
+        return result
     retreat = max_support.projection + plane_offset
     forward = thickness + min_support.projection - plane_offset
     if wp.min(retreat, forward) <= minimum_depth or wp.abs(retreat - forward) <= thickness * 0.125:
@@ -251,12 +256,7 @@ def planar_exit(
                 and wp.length_sq(wp.cw_mul(point - support.point, probe_scale)) > tolerance * tolerance
             ):
                 return result
-    extreme = support.point
-    # Require a triangle witness because the vertex buffer may contain
-    # points that are not referenced by the mesh.
-    if not _on_mesh_surface(probe_id, extreme, probe_scale, probe_inverse, tolerance):
-        return result
-    extreme = wp.transform_point(probe_pose, wp.cw_mul(extreme, probe_scale))
+    extreme = wp.transform_point(probe_pose, wp.cw_mul(support.point, probe_scale))
 
     # Prove that no other wall face intersects the swept probe footprint.
     # A watertight wall cannot end or have a hole inside the footprint
@@ -311,6 +311,7 @@ class MeshRecoveryContact:
     initial_depth: float
     rotation0: wp.quat
     rotation1: wp.quat
+    sweep_radii: wp.vec2
 
 
 @wp.struct
@@ -380,8 +381,8 @@ def find_recovery_contact(data: MeshRecoveryData, generation: int, a: int, b: in
 
 
 @wp.func
-def _orientation_changed(current: wp.quat, original: wp.quat) -> bool:
-    return wp.min(wp.length_sq(current - original), wp.length_sq(current + original)) > 1.0e-12
+def _rotation_chord(current: wp.quat, original: wp.quat) -> float:
+    return wp.sqrt(wp.min(wp.length_sq(current - original), wp.length_sq(current + original)))
 
 
 @wp.func
@@ -409,8 +410,13 @@ def active_recovery_contact(
     second = pose_b if a < b else pose_a
     # Two anchors alone cannot detect rotation around either witness.
     # Keep the certified direction only while the original orientations hold.
-    if _orientation_changed(first.q, contact.rotation0) or _orientation_changed(second.q, contact.rotation1):
+    chord0 = _rotation_chord(first.q, contact.rotation0)
+    chord1 = _rotation_chord(second.q, contact.rotation1)
+    if wp.max(chord0, chord1) > 1.0e-6:
         return -2
+    # A quaternion chord of length c moves any point at radius r by at
+    # most 2*c*r. Charge this motion against both corridor clearances.
+    angular_motion = 2.0 * (chord0 * contact.sweep_radii[0] + chord1 * contact.sweep_radii[1])
     # Invertible transforms of two contact anchors can round differently at
     # large world offsets. Compare body displacement from the detection pose,
     # which gives zero displacement for a freshly generated contact.
@@ -420,10 +426,13 @@ def active_recovery_contact(
     axial_motion = wp.dot(motion, normal)
     separation = axial_motion - contact.initial_depth
     side_motion = motion - axial_motion * normal
-    if separation >= 0.0 or -separation > contact.initial_depth + contact.thickness * 0.25:
+    if (
+        separation + angular_motion >= 0.0
+        or -separation + angular_motion > contact.initial_depth + contact.thickness * 0.25
+    ):
         return -2
     # The swept AABB includes this lateral clearance around the entire probe.
-    if wp.length_sq(side_motion) > (contact.thickness / 8.0) ** 2.0:
+    if wp.length(side_motion) + angular_motion > contact.thickness / 8.0:
         return -2
     return slot
 
@@ -479,9 +488,12 @@ def get_compute_planar_recovery_contacts(writer_func):
             if wp.length_sq(extent_a) < wp.length_sq(extent_b):
                 wall = b
                 probe = a
-            if (mesh_properties[probe] & MeshProperties.WATERTIGHT) == 0:
+            if (mesh_properties[probe] & MeshProperties.RECOVERY_PROBE) == 0:
                 continue
             wall_sdf = texture_sdfs[shape_sdf_index[wall]]
+            probe_sdf = texture_sdfs[shape_sdf_index[probe]]
+            if wall_sdf.coarse_texture.width == 0 or probe_sdf.coarse_texture.width == 0:
+                continue
             wall_boundary_start = shape_boundary_start[wall]
             if (mesh_properties[wall] & MeshProperties.WATERTIGHT) == 0 and wall_boundary_start < 0:
                 continue
@@ -502,7 +514,6 @@ def get_compute_planar_recovery_contacts(writer_func):
             relative_translation = wp.quat_rotate_inv(
                 wall_rotation, wp.transform_get_translation(X_wp) - wp.transform_get_translation(X_ww)
             )
-            probe_sdf = texture_sdfs[shape_sdf_index[probe]]
             relative_rotation = wp.quat_inverse(wall_rotation) * wp.transform_get_rotation(X_wp)
             probe_lower = local_lower[probe]
             probe_upper = local_upper[probe]
@@ -553,6 +564,13 @@ def get_compute_planar_recovery_contacts(writer_func):
             contact.rotation1 = pose_b.q
             contact.thickness = hit.thickness
             contact.initial_depth = hit.depth
+            # Bound the entire swept probe about each body's rotation origin.
+            center_offset = wp.quat_rotate(X_wp.q, 0.5 * (probe_lower + probe_upper))
+            sweep_radius = wp.length(half) + hit.depth + hit.thickness
+            contact.sweep_radii = wp.vec2(
+                wp.length((X_wp.p - pose_a.p) + center_offset) + sweep_radius,
+                wp.length((X_wp.p - pose_b.p) + center_offset) + sweep_radius,
+            )
             canonical = ContactData()
             canonical.shape_a = a
             canonical.shape_b = b

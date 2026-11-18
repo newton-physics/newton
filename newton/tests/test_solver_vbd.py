@@ -1611,6 +1611,7 @@ def _rigid_contact_structural_support_conditions_tangent_rho(test, device):
                 MeshRecoveryData(),
                 wp.zeros(1, dtype=int, device=device),
                 wp.array([wp.transform_identity()], dtype=wp.transform, device=device),
+                None,
             ],
             outputs=[
                 normal_rho,

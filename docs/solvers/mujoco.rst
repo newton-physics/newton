@@ -1168,6 +1168,11 @@ the container to ``solver.step(..., observables=observables)``. Forces are writt
 to ``observables.contact_f``; with ``use_mujoco_contacts=True``, the step also
 fills the supplied ``contacts`` with contact geometry. See :ref:`solver_observables`.
 
+For adhesion or body-transmission actuators with Newton contacts, construct
+the collision pipeline before the solver if using a custom contact capacity.
+When switching to a larger buffer, step once with it before capturing a CUDA
+graph so the solver can grow its contact mapping.
+
 Separated speculative contacts
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

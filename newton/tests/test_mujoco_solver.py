@@ -6405,7 +6405,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
         )
         snapshots = {field: getattr(contacts, field).numpy().copy() for field in fields}
         observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
-        for _ in range(3):
+        for step in range(3):
             observables.contact_f.fill_(float("nan"))
             solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
             for field, expected in snapshots.items():
@@ -6417,8 +6417,16 @@ class TestMuJoCoContactForce(unittest.TestCase):
             self.assertGreater(np.linalg.norm(forces[1:count, :3]), 0.0)
             indices = solver._contact_tid_to_cid.numpy()[1:count]
             pos = solver.mjw_data.contact.pos.numpy()[indices]
-            geoms = solver.mjw_data.contact.geom.numpy()[indices, 0]
-            bodies = solver.mjw_model.geom_bodyid.numpy()[geoms]
+            geoms = solver.mjw_data.contact.geom.numpy()[indices]
+            mapped_shapes = solver.mjc_geom_to_newton_shape.numpy()[0][geoms]
+            for side in (0, 1):
+                np.testing.assert_array_equal(mapped_shapes[:, side], snapshots[f"rigid_contact_shape{side}"][1:count])
+            normal_force = np.sum(forces[1:count, :3] * normals[1:count], axis=1)
+            self.assertLessEqual(normal_force.max(), 1e-5)
+            if step == 0:
+                self.assertLess(normal_force[0], 0.0)
+                self.assertLess(normal_force[1:].min(), 0.0)
+            bodies = solver.mjw_model.geom_bodyid.numpy()[geoms[:, 0]]
             reference = solver.mjw_data.xipos.numpy()[0, bodies]
             expected_torque = np.cross(pos - reference, forces[1:count, :3])
             np.testing.assert_allclose(forces[1:count, 3:], expected_torque, rtol=1e-5, atol=1e-5)
@@ -6495,6 +6503,18 @@ class TestMuJoCoContactForce(unittest.TestCase):
                 f = observables.contact_f.numpy()[:nacon, :3]
                 force_acc += np.sum(f, axis=0)
 
+        # These condim=3 contacts exert a force at the contact point, so the
+        # torque about shape0's COM is entirely due to the moment arm.
+        if use_mujoco_cpu:
+            positions = solver.mj_data.contact.pos[:nacon]
+            bodies = solver.mj_model.geom_bodyid[solver.mj_data.contact.geom[:nacon, 0]]
+            reference = solver.mj_data.xipos[bodies]
+        else:
+            positions = solver.mjw_data.contact.pos.numpy()[:nacon]
+            bodies = solver.mjw_model.geom_bodyid.numpy()[solver.mjw_data.contact.geom.numpy()[:nacon, 0]]
+            reference = solver.mjw_data.xipos.numpy()[0, bodies]
+        wrenches = observables.contact_f.numpy()[:nacon]
+        np.testing.assert_allclose(wrenches[:, 3:], np.cross(positions - reference, wrenches[:, :3]), atol=1e-5)
         total_force = force_acc / avg
         shape0 = int(contacts.rigid_contact_shape0.numpy()[0])
         if use_mujoco_cpu:

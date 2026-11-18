@@ -1109,8 +1109,9 @@ Two approaches available:
    For mesh shapes, call ``mesh.build_sdf(...)`` once and reuse the mesh.
 
 When a rounded, closed mesh probe straddles a thin wall, Newton can publish a
-single contact on the shorter exit path. Both shapes need an SDF. A mesh
-query verifies the two locally planar wall faces and the swept probe footprint.
+single contact on the shorter exit path. Both shapes need texture SDFs and
+the probe surface must be connected. A mesh query verifies the two locally
+planar wall faces and the swept probe footprint.
 Each collision update uses the current geometry. Once the overlap is shallow,
 the ordinary SDF contacts take over.
 Broad contact patches, ambiguous exits, and nearby features that intrude on the
@@ -1121,12 +1122,19 @@ separated, so no discrete overlap remains to recover.
 
 Solvers and :class:`~sensors.SensorContact` read the same two surface witnesses
 and separation normal from the contact buffer. XPBD and VBD bound positional
-correction while the probe is deeply embedded. The semi-implicit and Featherstone
-solvers use a bounded penetration depth for the elastic contact force.
+correction while the probe is deeply embedded. XPBD skips restitution on the
+recovery contact. VBD can support an external load while limiting the outward
+correction per step. The semi-implicit and Featherstone solvers use a bounded
+penetration depth for the elastic contact force.
 MuJoCo Warp with Newton contacts temporarily
 uses recovery stiffness and damping to limit its separation speed, then resumes
 the ordinary contact material response. Hydroelastic pairs follow the
 pressure-based contact model.
+
+When capturing a solver-only CUDA graph, allocate the contact buffer with
+:meth:`~CollisionPipeline.contacts` or run the pipeline once on a manually
+allocated buffer before capture. Recapture the graph if switching pipelines
+replaces the buffer's recovery storage.
 
 .. warning::
    If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries

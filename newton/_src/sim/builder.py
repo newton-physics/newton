@@ -15806,7 +15806,6 @@ class ModelBuilder:
 
             m.shape_type = wp.array(shape_type_arr, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
-            m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
             m._mesh_keep_alive = mesh_keep_alive
 
@@ -16394,6 +16393,22 @@ class ModelBuilder:
                         wt_tex_data.subgrid_start_slots if wt_c_tex is not None else None
                     )
 
+            # A separate shell beyond the far wall face must not determine the
+            # support of the penetrating shell. Check only potential probes.
+            recovery_probe_by_source = {}
+            closed_sdf_shapes = (shape_sdf_index >= 0) & ((shape_mesh_properties & int(MeshProperties.WATERTIGHT)) != 0)
+            for i in np.flatnonzero(closed_sdf_shapes):
+                if compact_texture_sdf_coarse_textures[shape_sdf_index[i]] is None:
+                    continue
+                source = int(geo_sources[i])
+                if source not in recovery_probe_by_source:
+                    mesh = generated_shape_sources[i]
+                    recovery_probe_by_source[source] = (
+                        len(mesh.vertices) <= 4096 and len(split_mesh_components(mesh)) == 1
+                    )
+                if recovery_probe_by_source[source]:
+                    shape_mesh_properties[i] |= int(MeshProperties.RECOVERY_PROBE)
+            m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m._shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
             m._texture_sdf_data = (
                 wp.array(compact_texture_sdf_data, dtype=TextureSDFData, device=device)
