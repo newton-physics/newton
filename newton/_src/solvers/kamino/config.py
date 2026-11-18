@@ -1086,10 +1086,10 @@ class SCCSolverConfig:
     Defaults to `0.97`.
     """
 
-    bilateral_solver_type: Literal["LLTB", "LLTBRCM", "LDL"] = "LLTB"
+    bilateral_solver_type: Literal["LLTB", "LLTBRCM", "LDL"] = "LLTBRCM"
     """
     Direct linear solver used for the bilateral constraint block.
-    Defaults to ``LLTB``, the dense blocked Cholesky solver. Opt in to
+    Defaults to ``LLTBRCM``, the RCM-reordered semi-sparse Cholesky solver. Opt in to
     ``LDL`` for a block-sparse LDL transpose factorization with unit-lower L,
     explicit diagonal D, and one padded block per joint.
     MECA (minimum edge creation) is the default LDL block ordering. Set
@@ -1098,6 +1098,11 @@ class SCCSolverConfig:
     It requires a positive-definite matrix and uses no numerical pivoting.
     ``LLTB`` selects dense blocked Cholesky and
     ``LLTBRCM`` selects the RCM-reordered semi-sparse implementation.
+
+    ``LLTBRCM`` pads each world's factor to a multiple of its 32-row tile, so
+    worlds with very few bilateral rows store a larger factor than with
+    ``LLTB``. Only ``LLTB`` enables the fused small-matrix inverse that sparse
+    CUDA solves use without a Schur complement for at most 128 bilateral rows.
     """
 
     bilateral_solver_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -1220,7 +1225,7 @@ class LOXSolverConfig:
 
         The LOX backend, including all of its options, may change without
         following the normal deprecation policy. It supports rigid bodies
-        only; cable and deformable extensions are not supported.
+        and rod joints; deformable extensions are not supported.
 
     Unlike the PADMM and SCC backends, LOX advances kinematic bodies, and massless bodies
     whose only joints are free joints to the world, with their velocity in ``state_in.body_qd``.

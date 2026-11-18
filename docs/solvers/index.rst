@@ -113,9 +113,9 @@ Supported Features
      - Explicit, Semi-implicit, Implicit-in-velocity
      - ✅ :sup:`1`
      - ✅ generalized coordinates
-     - ❌
-     - ❌
-     - ❌
+     - 🟨 element vertices only :sup:`4`
+     - ✅ :sup:`4`
+     - ✅ :sup:`4`
      - ❌
      - 🟨 CPU only
    * - :class:`~newton.solvers.SolverSemiImplicit`
@@ -171,6 +171,8 @@ Supported Features
 | :sup:`3` Run-to-run determinism with ``deterministic=wp.DeterministicMode.RUN_TO_RUN``
   (MuJoCo's CPU backend is deterministic regardless of that argument);
   see :doc:`/concepts/determinism` for limitations and performance trade-offs.
+| :sup:`4` Simulated as MuJoCo flexes; particles that belong to no spring,
+  triangle, or tetrahedron are not simulated. See :ref:`mujoco-flexes`.
 
 .. experimental::
     :class:`~newton.solvers.SolverSteel`'s public API and behavior may change without prior notice.
@@ -322,9 +324,10 @@ constraints, using a compliant augmented-Lagrangian (ALM) formulation.
      - |no|
      - |no|
      - |yes|
-     - |no|
+     - |yes| :sup:`2`
 
 | :sup:`1` DISTANCE joints are treated as FREE (no distance constraint enforcement).
+| :sup:`2` See :ref:`kamino-rod-joints` for the supported rod joint properties.
 
 **Joint properties**
 
