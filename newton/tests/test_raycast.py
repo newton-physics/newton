@@ -115,6 +115,15 @@ def test_ray_intersect_box_edge_normal(test: TestRaycast, device: str):
     test.assertGreaterEqual(t, 0.0)
     test.assertAlmostEqual(float(np.linalg.norm(n)), 1.0, delta=1e-5)
 
+    # The thin X slab rounds to zero width at this distance in float32.
+    # Its entry face still points along +X.
+    size = wp.vec3(5e-7, 1.0, 100.0)
+    origin = wp.vec3(20.0, 0.5, 0.0)
+    direction = wp.vec3(-0.75, 0.0, 0.6614378)
+    wp.launch(kernel_test_box_normal, dim=1, inputs=[out_t, out_n, origin, direction, size], device=device)
+    test.assertAlmostEqual(out_t.numpy()[0], 20.0 / 0.75, delta=1e-5)
+    np.testing.assert_array_equal(out_n.numpy()[0], [1.0, 0.0, 0.0])
+
 
 def test_ray_intersect_box(test: TestRaycast, device: str):
     out_t = wp.zeros(1, dtype=float, device=device)
