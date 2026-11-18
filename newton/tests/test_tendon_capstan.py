@@ -2219,7 +2219,7 @@ def test_high_inertia_pulley_follows_atwood_law(test, device):
         pulley_mass = 5000.0
         num_frames = 80
         fps = 60
-        model, _, _, pulley_idx = build_dynamic_pulley_atwood(
+        model, left_idx, right_idx, pulley_idx = build_dynamic_pulley_atwood(
             mu=10.0,
             mass_left=mass_left,
             mass_right=mass_right,
@@ -2228,6 +2228,10 @@ def test_high_inertia_pulley_follows_atwood_law(test, device):
             compliance=3.0e-8,
         )
         g = float(np.linalg.norm(model.gravity.numpy()[0]))
+        body_mass = model.body_mass.numpy()
+        # The box shapes add their own mass, so read the finalized hanging masses from the model.
+        m_left = float(body_mass[left_idx])
+        m_right = float(body_mass[right_idx])
         state = run_model(model, num_frames=num_frames, fps=fps)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite high-inertia pulley state")
@@ -2237,7 +2241,7 @@ def test_high_inertia_pulley_follows_atwood_law(test, device):
         rim_travel = theta * radius
 
         duration = num_frames / fps
-        accel = (mass_right - mass_left) * g / (mass_left + mass_right + 0.5 * pulley_mass)
+        accel = (m_right - m_left) * g / (m_left + m_right + 0.5 * pulley_mass)
         expected_travel = 0.5 * accel * duration * duration
         test.assertAlmostEqual(
             rim_travel,
