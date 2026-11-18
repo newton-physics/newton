@@ -20,7 +20,7 @@ def add_contact_pair(
     *,
     condim: int = 3,
     solref: Sequence[float] = (0.02, 1.0),
-    solreffriction: Sequence[float] = (0.02, 1.0),
+    solreffriction: Sequence[float] = (0.0, 0.0),
     solimp: Sequence[float] = (0.9, 0.95, 0.001, 0.5, 2.0),
     margin: float = 0.0,
     gap: float = 0.0,
@@ -38,7 +38,7 @@ def add_contact_pair(
         geom2: Second Newton shape index.
         condim: MuJoCo contact dimensionality.
         solref: Normal constraint reference parameters.
-        solreffriction: Friction constraint reference parameters.
+        solreffriction: Friction constraint reference parameters; ``(0, 0)`` uses ``solref``.
         solimp: Constraint impedance parameters.
         margin: Contact inclusion margin [m].
         gap: Inactive contact gap [m].

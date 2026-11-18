@@ -11342,6 +11342,36 @@ class TestContypeConaffinityZero(unittest.TestCase):
             ],
         )
 
+    @requires(*MUJOCO_MODULES)
+    def test_explicit_pair_solreffriction_default_matches_mujoco(self):
+        """Compile omitted pair solreffriction like native MuJoCo."""
+        import mujoco
+
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <geom name="a" type="sphere" size="0.1"/>
+        <body pos="0 0 1">
+            <freejoint/>
+            <geom name="b" type="sphere" size="0.1"/>
+            <geom name="c" type="sphere" size="0.1" pos="0 0 1"/>
+        </body>
+    </worldbody>
+    <contact>
+        <pair geom1="a" geom2="b"/>
+        <pair geom1="a" geom2="c" solreffriction="0.05 1.2"/>
+    </contact>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        native = mujoco.MjModel.from_xml_string(mjcf)
+
+        np.testing.assert_allclose(model.mujoco.pair_solreffriction.numpy(), [[0.0, 0.0], [0.05, 1.2]])
+        np.testing.assert_allclose(solver.mj_model.pair_solreffriction, native.pair_solreffriction)
+
     def test_explicit_pair_scales_inherited_distances(self):
         """Scale contact pair distances inherited from a named default."""
         mjcf = """

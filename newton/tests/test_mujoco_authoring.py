@@ -436,6 +436,7 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         np.testing.assert_array_equal(model.mujoco.pair_geom2.numpy(), [shape1])
         np.testing.assert_array_equal(model.mujoco.pair_condim.numpy(), [4])
         np.testing.assert_allclose(model.mujoco.pair_friction.numpy(), [[0.8, 0.7, 0.01, 0.02, 0.03]])
+        np.testing.assert_array_equal(model.mujoco.pair_solreffriction.numpy(), [[0.0, 0.0]])
 
     def test_reject_contact_pair_across_worlds(self):
         """Reject contact pairs whose shapes belong to another world."""
