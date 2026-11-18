@@ -55,8 +55,6 @@ Newton uses ``mujoco_warp.DeterminismType`` to map
 ``None`` inherits the Warp global mode at construction. Stronger modes such
 as ``GPU_TO_GPU`` are rejected on this native path. This option controls
 MuJoCo Warp execution, not the ``use_mujoco_cpu=True`` backend.
-The native API is available in the supported MuJoCo Warp 3.17.0 release;
-the same integration is also tested with 4.0.0.
 
 The native backend selects its supported deterministic reductions and record
 bounds. Newton does not force Warp's global deterministic compilation onto
@@ -1511,7 +1509,8 @@ MuJoCo viewer
 -------------
 
 MuJoCo's own viewer shows the model as ``SolverMuJoCo`` converted it, which helps
-when debugging the conversion. It needs ``pip install "mujoco-core[rendering]"``.
+when debugging the conversion. It needs ``pip install "mujoco-core[rendering]"``,
+and on macOS the script must be run with ``mjpython`` instead of ``python``.
 Stepping on the Warp backend only updates ``solver.mjw_data``, so copy one world
 into ``solver.mj_data`` before each ``viewer.sync()``:
 
