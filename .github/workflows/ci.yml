@@ -67,9 +67,13 @@ jobs:
             ubuntu-latest,
             ubuntu-24.04-arm,
             windows-latest,
+            windows-11-arm,
             macos-latest,
           ]
     runs-on: ${{ matrix.os }}
+    env:
+      # Rerun does not publish Windows ARM64 wheels.
+      NOTEBOOK_EXTRA: ${{ matrix.os != 'windows-11-arm' && '--extra notebook' || '' }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
@@ -84,11 +88,13 @@ jobs:
           version: "0.13.5"
           prune-cache: true
       - name: Test dependency resolution (Python 3.11)
-        run: uv sync --dry-run --python 3.11 --extra dev
+        run: uv sync --locked --dry-run --python 3.11 --extra dev ${{ env.NOTEBOOK_EXTRA }}
       - name: Test dependency resolution (Python 3.12)
-        run: uv sync --dry-run --python 3.12 --extra dev
+        run: uv sync --locked --dry-run --python 3.12 --extra dev ${{ env.NOTEBOOK_EXTRA }}
       - name: Test dependency resolution (Python 3.13)
-        run: uv sync --dry-run --python 3.13 --extra dev
+        run: uv sync --locked --dry-run --python 3.13 --extra dev ${{ env.NOTEBOOK_EXTRA }}
+      - name: Test dependency resolution (Python 3.14)
+        run: uv sync --locked --dry-run --python 3.14 --extra dev ${{ env.NOTEBOOK_EXTRA }}
 
   # Unsharded legs report their required check names directly.
   newton-unittests:
@@ -99,6 +105,9 @@ jobs:
       matrix:
         include:
           - &unittest-arm { os: ubuntu-24.04-arm, shard-index: 0, shard-count: 1 }
+          # pyproject.toml markers drop dependencies without wheels here, which
+          # catches tests that declare only some of their optional dependencies.
+          - &unittest-windows-arm { os: windows-11-arm, shard-index: 0, shard-count: 1 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -168,7 +177,9 @@ jobs:
           --shard-index ${{ matrix.shard-index }}
           --junit-report-xml rspec.xml
           ${{ env.UPLOAD_TO_CODECOV == 'true' && '--coverage --coverage-xml coverage.xml' || '' }}
+      # Benchmarks do not run on Windows ARM64, which lacks asv and MuJoCo.
       - name: Run ASV harness unit tests
+        if: matrix.os != 'windows-11-arm'
         run: >
           uv run --no-sync -m newton.tests
           --strict-warnings
@@ -406,6 +417,7 @@ jobs:
           - *unittest-ubuntu-0
           - *unittest-ubuntu-1
           - *unittest-arm
+          - *unittest-windows-arm
           - *unittest-windows-0
           - *unittest-windows-1
           - *unittest-macos-0
