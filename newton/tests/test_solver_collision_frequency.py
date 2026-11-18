@@ -338,9 +338,9 @@ def test_vbd_rigid_iterations_refreshes_contact_frame(test, device):
             self.contact_frame_steps = []
             super().__init__(*args, **kwargs)
 
-        def _step_body_body_contact_frame(self, contacts, body_q, dt, lambda_retention, *, mid_step=False):
+        def _step_body_body_contact_frame(self, contacts, body_q, dt, lambda_retention, **kwargs):
             self.contact_frame_steps.append(lambda_retention)
-            super()._step_body_body_contact_frame(contacts, body_q, dt, lambda_retention, mid_step=mid_step)
+            super()._step_body_body_contact_frame(contacts, body_q, dt, lambda_retention, **kwargs)
 
     model = _build_model(device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
