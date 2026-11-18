@@ -13,9 +13,9 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 from ..utils.color import ColorSpace
-from ..utils.deprecation import deprecate_nonkeyword_arguments
+from ..utils.deprecation import RemovedAttribute, UnavailableAttribute
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
@@ -175,7 +175,6 @@ class Mesh:
     MAX_HULL_VERTICES = 64
     """Default maximum vertex count for convex hull approximation."""
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
@@ -1854,7 +1853,6 @@ class TetMesh:
         }
     )
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
@@ -2598,12 +2596,6 @@ class Gaussian:
         min_response: wp.float32
         sorting_mode: wp.int32
 
-    _WARP_DATA_DEPRECATION_MSG = (
-        "Gaussian.warp_data is deprecated in Newton 1.6; use the Gaussian.Data object returned by "
-        "Gaussian.finalize() instead."
-    )
-    _WARP_BVH_DEPRECATION_MSG = "Gaussian.warp_bvh is deprecated in Newton 1.6; use Gaussian.bvh instead."
-
     def __init__(
         self,
         positions: np.ndarray,
@@ -2757,35 +2749,12 @@ class Gaussian:
         """
         return self._warp_bvh
 
-    @property
-    def warp_data(self) -> "Gaussian.Data | None":
-        """Deprecated alias for the finalized Warp Gaussian data.
-
-        .. deprecated:: 1.6
-            Use the :class:`Data` object returned by :meth:`finalize` instead.
-        """
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._warp_data
-
-    @warp_data.setter
-    def warp_data(self, value: "Gaussian.Data | None") -> None:
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._warp_data = value
-
-    @property
-    def warp_bvh(self) -> wp.Bvh | None:
-        """Deprecated alias for :attr:`bvh`.
-
-        .. deprecated:: 1.6
-            Use :attr:`bvh` instead.
-        """
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._warp_bvh
-
-    @warp_bvh.setter
-    def warp_bvh(self, value: wp.Bvh | None) -> None:
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._warp_bvh = value
+    # Tombstones so that assigning the old names fails instead of being ignored.
+    warp_data = UnavailableAttribute(
+        "Gaussian.warp_data was removed in Newton 1.9; "
+        "use the Gaussian.Data object returned by Gaussian.finalize() instead."
+    )
+    warp_bvh = RemovedAttribute("bvh", removed_in="1.9")
 
     def _find_sh_degree(self) -> int:
         """Spherical harmonics degree (0-3), inferred from *sh_coeffs* shape."""

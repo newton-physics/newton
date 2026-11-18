@@ -1,0 +1,1 @@
+Remove `Gaussian.warp_data` and `Gaussian.warp_bvh`, deprecated in Newton 1.6; use the `Gaussian.Data` object returned by `Gaussian.finalize()` and `Gaussian.bvh` instead. Reading or assigning the removed names raises `AttributeError`.
