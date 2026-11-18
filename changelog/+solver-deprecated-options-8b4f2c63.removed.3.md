@@ -1,0 +1,1 @@
+Remove `newton.actuators.ClampingDCMotor.corner_velocity`, deprecated in Newton 1.6; compute it as `velocity_limit * (1 + max_motor_effort / saturation_effort)` if you need the value.

@@ -8338,25 +8338,6 @@ def test_rigid_dat_validates_conservative_bound_relaxation(test, device):
             test.assertEqual(solver.dat_conservative_bound_relaxation, relaxation)
 
 
-def test_dat_conservative_bound_relaxation_deprecated_alias(test, device):
-    """The deprecated particle-only name still sets the shared relaxation, with a warning."""
-    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
-    model = builder.finalize(device=device)
-
-    with test.assertWarnsRegex(DeprecationWarning, "particle_conservative_bound_relaxation is deprecated") as caught:
-        solver = newton.solvers.SolverVBD(model, particle_conservative_bound_relaxation=0.5)
-    test.assertEqual(caught.filename, __file__)
-    test.assertEqual(solver.dat_conservative_bound_relaxation, 0.5)
-
-    with test.assertWarnsRegex(DeprecationWarning, "overrides dat_conservative_bound_relaxation"):
-        solver = newton.solvers.SolverVBD(
-            model,
-            dat_conservative_bound_relaxation=0.7,
-            particle_conservative_bound_relaxation=0.5,
-        )
-    test.assertEqual(solver.dat_conservative_bound_relaxation, 0.5)
-
-
 def test_rigid_dat_rejects_missing_body_pose(test, device):
     """A null body pose is valid only for static-world geometry, never for a model with bodies."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
@@ -8991,12 +8972,6 @@ add_function_test(
     TestVBDRigidDAT,
     "test_rigid_dat_validates_conservative_bound_relaxation",
     test_rigid_dat_validates_conservative_bound_relaxation,
-    devices=devices,
-)
-add_function_test(
-    TestVBDRigidDAT,
-    "test_dat_conservative_bound_relaxation_deprecated_alias",
-    test_dat_conservative_bound_relaxation_deprecated_alias,
     devices=devices,
 )
 add_function_test(

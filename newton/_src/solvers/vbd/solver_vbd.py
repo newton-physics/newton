@@ -437,7 +437,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_self_contact_radius: float | None = None,
         particle_self_contact_margin: float | None = None,
         particle_self_contact_gap: float | None = None,
-        particle_conservative_bound_relaxation: float | None = None,
         particle_vertex_contact_buffer_size: int = 32,
         particle_edge_contact_buffer_size: int = 64,
         particle_collision_detection_interval: int | None = None,
@@ -521,10 +520,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             particle_self_contact_gap: Additional detection-only distance [m]; self-contact detection
                 queries use ``margin + gap``, mirroring the ``ShapeConfig.margin`` / ``gap`` convention.
                 Defaults to 0. Give it ~0.5-1x the margin of slack to avoid missing contacts.
-            particle_conservative_bound_relaxation: Deprecated; use ``dat_conservative_bound_relaxation``
-                instead. When set, it overrides ``dat_conservative_bound_relaxation``.
-
-                .. deprecated:: 1.7
             particle_vertex_contact_buffer_size: Preallocation size for each vertex's vertex-triangle collision
                 buffer. Pairs beyond this capacity are silently dropped during detection.
             particle_edge_contact_buffer_size: Preallocation size for each edge's edge-edge collision buffer. Pairs
@@ -858,20 +853,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             )
         self._deprecated_particle_interval = particle_collision_detection_interval
 
-        # Shared DAT relaxation; the deprecated particle-only name overrides it with a warning.
-        if particle_conservative_bound_relaxation is not None:
-            dat_conservative_bound_relaxation = particle_conservative_bound_relaxation
-        # Validate before warning so warnings-as-errors cannot mask the ValueError.
         if not (0.0 < dat_conservative_bound_relaxation < 1.0):
             raise ValueError(
                 f"dat_conservative_bound_relaxation must be in (0, 1), got {dat_conservative_bound_relaxation}"
-            )
-        if particle_conservative_bound_relaxation is not None:
-            warnings.warn(
-                "particle_conservative_bound_relaxation is deprecated and overrides "
-                "dat_conservative_bound_relaxation; pass only dat_conservative_bound_relaxation.",
-                NewtonDeprecationWarning,
-                stacklevel=_external_warning_stacklevel(),
             )
         self.dat_conservative_bound_relaxation = dat_conservative_bound_relaxation
         # Set before super().__init__: _default_collision_frequency_type (AUTO
