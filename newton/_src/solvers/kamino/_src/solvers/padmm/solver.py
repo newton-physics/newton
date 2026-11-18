@@ -580,7 +580,6 @@ class PADMMSolver:
                 inputs=[
                     # Inputs:
                     problem.data.dim,
-                    problem.data.mio,
                     self._data.status,
                     self._data.state.sigma,
                     # Outputs:
@@ -1393,7 +1392,6 @@ class PADMMSolver:
                     problem.data.ccgo,
                     problem.data.dim,
                     problem.data.vio,
-                    problem.data.mio,
                     problem.data.mu,
                     problem.data.v_f,
                     problem.data.D,
