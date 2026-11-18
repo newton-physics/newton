@@ -13896,6 +13896,36 @@ def Xform "World" ()
         custom float physics:youngsModulus = 300000
         custom float physics:poissonsRatio = 0.3
     }
+    def TetMesh "VendorApiBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/VendorApiMaterial>
+    }
+    def Material "VendorApiMaterial" (
+        prepend apiSchemas = ["PhysicsVolumeDeformableMaterialAPI"]
+    )
+    {
+        float omniphysics:density = 40
+        float omniphysics:youngsModulus = 300000
+        float omniphysics:poissonsRatio = 0.3
+    }
+    def TetMesh "BaseDensityBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/BaseDensityMaterial>
+    }
+    def Material "BaseDensityMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI"]
+    )
+    {
+        float physics:density = 40
+    }
 }
 """
         stage = Usd.Stage.CreateInMemory()
@@ -13909,7 +13939,7 @@ def Xform "World" ()
                 with warnings.catch_warnings():
                     warnings.simplefilter("error")
                     tm_canonical = usd.get_tetmesh(ignored, compat_namespaces=())
-                with self.assertWarnsRegex(newton.NewtonWarning, f"{path}: ignoring deformable material"):
+                with self.assertWarnsRegex(newton.NewtonWarning, f"{path}: ignoring .*:youngsModulus"):
                     tm_default = usd.get_tetmesh(ignored)
                 for tm in (tm_canonical, tm_default):
                     self.assertIsNone(tm.k_mu)
@@ -13922,12 +13952,19 @@ def Xform "World" ()
                 self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
                 self.assertAlmostEqual(tm_legacy.density, 40.0)
 
-        # A canonical material is read by default and must NOT warn.
+        # Vendor values on a material WITH the API are ignored too, in favor of the proposal fallbacks.
+        with self.assertWarnsRegex(newton.NewtonWarning, "ignoring omniphysics:youngsModulus"):
+            tm_vendor_api = usd.get_tetmesh(stage.GetPrimAtPath("/World/VendorApiBody"))
+        self.assertIsNone(tm_vendor_api.density)
+
+        # A canonical material, and base-material density, are read by default and must NOT warn.
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             tm_canonical_default = usd.get_tetmesh(stage.GetPrimAtPath("/World/CanonicalBody"))
+            tm_base_density = usd.get_tetmesh(stage.GetPrimAtPath("/World/BaseDensityBody"))
         self.assertAlmostEqual(tm_canonical_default.density, 40.0)
         self.assertIsNotNone(tm_canonical_default.k_mu)
+        self.assertAlmostEqual(tm_base_density.density, 40.0)
 
     @requires("pxr.Usd")
     def test_get_tetmesh_no_material(self):

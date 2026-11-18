@@ -2109,12 +2109,12 @@ class TetMesh:
         frequency is ambiguous or cannot be inferred emit a warning and are
         omitted without preventing the TetMesh from loading.
 
-        Material-attribute namespaces: by default, moduli are read only from a material that
-        applies ``PhysicsVolumeDeformableMaterialAPI``. Omitting ``compat_namespaces`` warns when
-        this ignores attributes authored on the bound material: vendor-namespaced
-        (``omniphysics:`` / ``physxDeformableBody:``) ones, or canonical ``physics:`` ones without
-        the API. Pass an explicit list (e.g. ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to read
-        the canonical and the listed vendor namespaces off any bound material.
+        Material-attribute namespaces: by default, only canonical ``physics:`` attributes are
+        read, moduli from a material that applies ``PhysicsVolumeDeformableMaterialAPI`` and
+        density also from one that applies ``UsdPhysicsMaterialAPI``. Omitting
+        ``compat_namespaces`` warns when this ignores attributes authored on the bound material.
+        Pass an explicit list (e.g. ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to read the
+        canonical and the listed vendor namespaces off any bound material.
 
         Example:
 

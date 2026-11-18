@@ -800,8 +800,7 @@ def _material_authors_unscoped_canonical_attrs(prim: Usd.Prim) -> bool:
     """Return whether ``prim``'s bound physics material authors canonical ``physics:``
     deformable moduli without ``PhysicsVolumeDeformableMaterialAPI``.
 
-    Canonical-only behavior scopes moduli to materials with the applied API and drops
-    these -- the second case where :func:`get_tetmesh` warns.
+    Canonical-only behavior scopes moduli to materials with the applied API and drops these.
     """
     material_prim = _find_physics_material_prim(prim)
     if material_prim is None or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI"):
@@ -810,6 +809,27 @@ def _material_authors_unscoped_canonical_attrs(prim: Usd.Prim) -> bool:
         material_prim.GetAttribute(f"physics:{name}").HasAuthoredValue()
         for name in ("youngsModulus", "poissonsRatio", "density")
     )
+
+
+def _ignored_tetmesh_material_attrs(prim: Usd.Prim) -> list[str]:
+    """List bound-material attributes that only a ``compat_namespaces`` read of ``prim`` uses."""
+    from pxr import UsdPhysics
+
+    material_prim = _find_physics_material_prim(prim)
+    if material_prim is None:
+        return []
+    volume_api = has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI")
+    base_api = material_prim.HasAPI(UsdPhysics.MaterialAPI) or has_applied_api_schema(
+        material_prim, "PhysicsMaterialAPI"
+    )
+    ignored = []
+    for name in ("youngsModulus", "poissonsRatio", "density"):
+        for namespace in ("physics", *DEFORMABLE_LEGACY_NAMESPACES):
+            if material_prim.GetAttribute(f"{namespace}:{name}").HasAuthoredValue():
+                if namespace != "physics" or not (volume_api or (name == "density" and base_api)):
+                    ignored.append(f"{namespace}:{name}")
+                break
+    return ignored
 
 
 def _should_load_tetmesh_material_for_import(prim: Usd.Prim) -> bool:
@@ -885,12 +905,12 @@ def get_tetmesh(
     frequency is ambiguous or cannot be inferred emit a warning and are
     omitted without preventing the TetMesh from loading.
 
-    Material-attribute namespaces: by default, moduli are read only from a material that
-    applies ``PhysicsVolumeDeformableMaterialAPI``. Omitting ``compat_namespaces`` warns when
-    this ignores attributes authored on the bound material: vendor-namespaced
-    (``omniphysics:`` / ``physxDeformableBody:``) ones, or canonical ``physics:`` ones without
-    the API. Pass an explicit list (e.g. ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to read
-    the canonical and the listed vendor namespaces off any bound material.
+    Material-attribute namespaces: by default, only canonical ``physics:`` attributes are
+    read, moduli from a material that applies ``PhysicsVolumeDeformableMaterialAPI`` and
+    density also from one that applies ``UsdPhysicsMaterialAPI``. Omitting
+    ``compat_namespaces`` warns when this ignores attributes authored on the bound material.
+    Pass an explicit list (e.g. ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to read the
+    canonical and the listed vendor namespaces off any bound material.
 
     Example:
 
@@ -922,14 +942,12 @@ def get_tetmesh(
         load_custom_attributes=_load_custom_attributes,
         load_material=True,
     )
-    if compat_namespaces is None and (
-        _material_authors_legacy_deformable_attrs(prim) or _material_authors_unscoped_canonical_attrs(prim)
-    ):
+    ignored = _ignored_tetmesh_material_attrs(prim) if compat_namespaces is None else None
+    if ignored:
         warnings.warn(
-            f"{prim.GetPath()}: ignoring deformable material attributes authored on a bound "
-            "material without PhysicsVolumeDeformableMaterialAPI. Author canonical physics: "
-            "attributes with the material API, or pass compat_namespaces="
-            "newton.usd.DEFORMABLE_LEGACY_NAMESPACES to read them.",
+            f"{prim.GetPath()}: ignoring {', '.join(ignored)} on the bound material. Author "
+            "canonical physics: attributes with PhysicsVolumeDeformableMaterialAPI, or pass "
+            "compat_namespaces=newton.usd.DEFORMABLE_LEGACY_NAMESPACES to read them.",
             NewtonWarning,
             stacklevel=_external_warning_stacklevel(),
         )
