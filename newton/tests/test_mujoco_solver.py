@@ -5430,6 +5430,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
             "rigid_contact_stiffness",
             "rigid_contact_damping",
             "rigid_contact_friction",
+            "rigid_contact_surface_velocity",
         ):
             setattr(contacts_alias, attr, getattr(contacts_a, attr))
 

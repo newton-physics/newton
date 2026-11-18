@@ -5669,6 +5669,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         bodies_per_world = self.model.body_count // self.model.world_count
         mujoco_attrs = getattr(model, "mujoco", None)
         shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
+        if contacts.rigid_contact_surface_velocity is not None:
+            # MuJoCo Warp applies contact.surfacevel only with this flag.
+            self.mjw_model.flg_surfacevel = True
         wp.launch(
             convert_newton_contacts_to_mjwarp_kernel,
             dim=(launch_dim,),
@@ -5706,6 +5709,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 contacts.rigid_contact_stiffness,
                 contacts.rigid_contact_damping,
                 contacts.rigid_contact_friction,
+                contacts.rigid_contact_surface_velocity,
                 model.shape_margin,
                 model.shape_material_kf,
                 self.mjw_model.opt.impratio_invsqrt,
@@ -5727,6 +5731,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_data.contact.geom,
                 self.mjw_data.contact.efc_address,
                 self.mjw_data.contact.worldid,
+                self.mjw_data.contact.surfacevel,
                 # Fast-path generation tracking
                 contacts.contact_generation,
                 self._last_contact_generation,

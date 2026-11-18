@@ -843,6 +843,12 @@ accuracy as bodies move, and the solver warns at construction. Use
 ``integrator="implicitfast"`` or ``use_mujoco_contacts=True`` to avoid this
 limitation.
 
+Newton contacts also carry the surface velocity of meshes created with
+``enable_surface_velocity=True`` (see :class:`~newton.Mesh`), which the solver
+forwards to MuJoCo's per-contact ``surfacevel`` to drive the friction rows.
+MuJoCo's collision detection has no per-vertex surface velocity, so these
+meshes act as still surfaces with ``use_mujoco_contacts=True``.
+
 Collision filtering
 ~~~~~~~~~~~~~~~~~~~
 

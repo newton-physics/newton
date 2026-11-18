@@ -443,6 +443,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_stiffness: wp.array[wp.float32],
     rigid_contact_damping: wp.array[wp.float32],
     rigid_contact_friction: wp.array[wp.float32],
+    rigid_contact_surface_velocity: wp.array[wp.vec3],
     shape_margin: wp.array[float],
     shape_material_kf: wp.array[float],
     opt_impratio_invsqrt: wp.array[float],
@@ -464,6 +465,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
+    contact_surfacevel_out: wp.array[wp.vec3],
     # Fast-path generation tracking
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
@@ -720,6 +722,11 @@ def convert_newton_contacts_to_mjwarp_kernel(
             contact_efc_address_out=contact_efc_address_out,
             contact_worldid_out=contact_worldid_out,
         )
+
+        if rigid_contact_surface_velocity:
+            # Newton contacts carry a linear surface velocity only, so the spin stays zero.
+            velocity = rigid_contact_surface_velocity[tid]
+            contact_surfacevel_out[cid] = wp.vec3(wp.dot(frame[1], velocity), wp.dot(frame[2], velocity), 0.0)
     else:
         # ── FAST PATH ────────────────────────────────────────────────────
         # Subsequent substeps with the same contact set.  Only dist, pos,
