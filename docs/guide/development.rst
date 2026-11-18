@@ -56,6 +56,11 @@ Then create a local project environment with the ``dev`` dependency extras:
 
     uv sync --extra dev
 
+.. note::
+
+    ``uv.lock`` currently pins a Warp nightly build, which has no Windows ARM64
+    wheel, so ``uv sync`` fails on that platform. Use Method 2 there.
+
 After syncing, the ``dev`` extras are available to all ``uv run`` commands
 without needing to pass ``--extra dev`` each time. For example, to list all
 available examples:
@@ -231,9 +236,8 @@ Optional dependencies in tests
 
 The test suite must pass when optional dependencies are not installed, for
 example on platforms without wheels for them; tests that need one skip
-instead. CI runs the suite with only the required dependencies installed, and
-with the ``dev`` extra on Windows ARM64, where several optional dependencies
-have no wheels. To run it without optional dependencies locally:
+instead. CI runs the suite with only the required dependencies installed. To
+run it without optional dependencies locally:
 
 .. code-block:: console
 
