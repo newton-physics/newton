@@ -9727,6 +9727,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 err = float(np.max(np.abs(tau_newton - expected)))
                 self.assertLess(err, 1e-5, f"got={tau_newton}, expected={expected}, err={err:.2e}")
 
+    @requires(*MUJOCO_MODULES)
     def test_ball_joint_effort_limit_runtime_update(self):
         """Ball-joint actuator force ranges follow joint_effort_limit after notify_model_changed()."""
         dt = 0.002
