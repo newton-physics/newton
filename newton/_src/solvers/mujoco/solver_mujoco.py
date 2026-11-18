@@ -10082,6 +10082,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     world_quat = qpos0_data.xquat[body] * (1.0, -1.0, -1.0, -1.0)
                     eq.data[0:11] = [0.0, 0.0, 0.0, *world_pos, *world_quat, 1.0]
                     eq.solref = spec.default.equality.solref
+                # MuJoCo 4.0 writes an infinite force range as "0 0", which does not load while limited.
+                for joint in spec.joints:
+                    if np.isinf(joint.actfrcrange).any():
+                        joint.actfrclimited = mujoco.mjtLimited.mjLIMITED_FALSE
                 with open(target_filename, "w") as f:
                     f.write(spec.to_xml())
                     logger.info("Saved mujoco model to %s", os.path.abspath(target_filename))
@@ -11719,7 +11723,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if refresh_inertia:
             # Native CPU constants cover only world 0. Evaluate physical inertia in the existing batched model.
             self._update_dof_armature()
-            self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
+            groups = self._mujoco_warp.SetConstGroup
+            self._mujoco_warp.set_const(self.mjw_model, self.mjw_data, groups=groups.KIN0 | groups.INERT0)
         if self.use_mujoco_cpu and mapping.shape[0] == 1 and not locked:
             invweight = self.mj_model.dof_invweight0[None, :]
         else:
