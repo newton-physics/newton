@@ -145,11 +145,10 @@ def _mass_weighted_product(J_a: vec6f, J_b: vec6f, inv_m: wp.float32, inv_I: wp.
 @wp.kernel
 def _store_block_diagonal(
     # Inputs:
-    mio: wp.array[wp.int32],
     ld: wp.array[wp.int32],
     row_offset: wp.array[wp.int32],
     num_rows: wp.array[wp.int32],
-    A: wp.array[wp.float32],
+    A: wp.array2d[wp.float32],
     # Outputs:
     diagonal: wp.array2d[wp.float32],
 ):
@@ -158,7 +157,7 @@ def _store_block_diagonal(
     if i >= num_rows[wid]:
         return
     row = row_offset[wid] + i
-    diagonal[wid, i] = A[mio[wid] + row * ld[wid] + row]
+    diagonal[wid, i] = A[wid, row * ld[wid] + row]
 
 
 @wp.kernel
@@ -200,10 +199,9 @@ def _assemble_block(
     preconditioner: wp.array[wp.float32],
     num_entries: wp.array2d[wp.int32],
     entries: wp.array3d[wp.int32],
-    block_mio: wp.array[wp.int32],
     block_ld: wp.int32,
     # Outputs:
-    block: wp.array[wp.float32],
+    block: wp.array2d[wp.float32],
     diagonal: wp.array2d[wp.float32],
 ):
     """Assemble the lower triangle of the block ``P J M^-1 J^T P`` of the rows of each world."""
@@ -225,7 +223,7 @@ def _assemble_block(
         start = row_start[wid] + row_offset[wid]
         value *= preconditioner[start + i] * preconditioner[start + j]
 
-    block[block_mio[wid] + i * block_ld + j] = value
+    block[wid, i * block_ld + j] = value
     if i == j:
         diagonal[wid, i] = value
 
@@ -254,7 +252,6 @@ def _reset_shifted_rows(
 @wp.kernel
 def _update_shifts(
     # Inputs:
-    mio: wp.array[wp.int32],
     ld: wp.array[wp.int32],
     row_offset: wp.array[wp.int32],
     num_rows: wp.array[wp.int32],
@@ -263,7 +260,7 @@ def _update_shifts(
     shift_matrix: wp.bool,
     # Outputs:
     shifts: wp.array2d[wp.float32],
-    A: wp.array[wp.float32],
+    A: wp.array2d[wp.float32],
 ):
     """Store the shift of each block row, and add it to the diagonal of the matrices if ``shift_matrix``."""
     wid, i = wp.tid()
@@ -273,13 +270,12 @@ def _update_shifts(
     shifts[wid, i] = value
     if shift_matrix and value != 0.0:
         row = row_offset[wid] + i
-        A[mio[wid] + row * ld[wid] + row] += value
+        A[wid, row * ld[wid] + row] += value
 
 
 @wp.kernel
 def _update_changed_shifts(
     # Inputs:
-    mio: wp.array[wp.int32],
     ld: wp.array[wp.int32],
     row_offset: wp.array[wp.int32],
     num_rows: wp.array[wp.int32],
@@ -290,7 +286,7 @@ def _update_changed_shifts(
     # Outputs:
     shifts: wp.array2d[wp.float32],
     reference: wp.array[wp.float32],
-    A: wp.array[wp.float32],
+    A: wp.array2d[wp.float32],
 ):
     """
     Update the shifts of the eliminated worlds by their change in the diagonal of the matrices, and keep the
@@ -305,7 +301,7 @@ def _update_changed_shifts(
         change = value - shifts[wid, i]
         if change != 0.0:
             row = row_offset[wid] + i
-            A[mio[wid] + row * ld[wid] + row] += change
+            A[wid, row * ld[wid] + row] += change
             changed = 1
         shifts[wid, i] = value
     reference[wid] = wp.where(changed == 0, eigenvalue[wid], wp.float32(0.0))
@@ -314,18 +310,16 @@ def _update_changed_shifts(
 @wp.kernel
 def _copy_shifted_block(
     # Inputs:
-    mio: wp.array[wp.int32],
     ld: wp.array[wp.int32],
     row_offset: wp.array[wp.int32],
     num_rows: wp.array[wp.int32],
-    A: wp.array[wp.float32],
+    A: wp.array2d[wp.float32],
     diagonal: wp.array2d[wp.float32],
     shifted: wp.array2d[wp.int32],
     initialized: wp.array[wp.int32],
-    factor_mio: wp.array[wp.int32],
     # Outputs:
     factor_dim: wp.array[wp.int32],
-    factor: wp.array[wp.float32],
+    factor: wp.array2d[wp.float32],
 ):
     """Copy the shifted block of the initialized worlds, with a row stride of its dimension, for its factorization."""
     wid, i, j = wp.tid()
@@ -336,9 +330,9 @@ def _copy_shifted_block(
         return
     value = diagonal[wid, i] + _row_shift(diagonal[wid, i], shifted[wid, i])
     if i != j:
-        start = mio[wid] + row_offset[wid] * (ld[wid] + 1)
-        value = A[start + wp.max(i, j) * ld[wid] + wp.min(i, j)]
-    factor[factor_mio[wid] + i * n + j] = value
+        start = row_offset[wid] * (ld[wid] + 1)
+        value = A[wid, start + wp.max(i, j) * ld[wid] + wp.min(i, j)]
+    factor[wid, i * n + j] = value
 
 
 @cache
@@ -364,13 +358,12 @@ def _make_shift_redundant_rows_kernel(block_dim: int, max_rows: int, shared: boo
     @wp.kernel(module="unique", enable_backward=False)
     def _shift_redundant_rows(
         # Inputs:
-        mio: wp.array[wp.int32],
         ld: wp.array[wp.int32],
         row_offset: wp.array[wp.int32],
         num_rows: wp.array[wp.int32],
         threshold: wp.float32,
         diagonal: wp.array2d[wp.float32],
-        A: wp.array[wp.float32],
+        A: wp.array2d[wp.float32],
         # Scratch:
         global_triangle: wp.array2d[wp.float32],
         global_floats: wp.array2d[wp.float32],
@@ -389,7 +382,8 @@ def _make_shift_redundant_rows_kernel(block_dim: int, max_rows: int, shared: boo
         if n == 0:
             return
         stride = ld[wid]
-        start = mio[wid] + row_offset[wid] * (stride + 1)
+        start = row_offset[wid] * (stride + 1)
+        A_i = A[wid]
 
         # Select the elimination scratch of the world
         if wp.static(shared):
@@ -408,7 +402,7 @@ def _make_shift_redundant_rows_kernel(block_dim: int, max_rows: int, shared: boo
         # Copy the lower triangle of the block
         for i in range(warp, n, warps):
             for j in range(lane, i, lanes):
-                triangle[_packed(i, j)] = A[start + i * stride + j]
+                triangle[_packed(i, j)] = A_i[start + i * stride + j]
         for i in range(tid, n, threads):
             value = diagonal[wid, i]
             triangle[_packed(i, i)] = value
@@ -555,8 +549,7 @@ def _make_check_kernel():
         # Inputs:
         num_rows: wp.array[wp.int32],
         factor_dim: wp.array[wp.int32],
-        factor_mio: wp.array[wp.int32],
-        L: wp.array[wp.float32],
+        L: wp.array2d[wp.float32],
         diagonal: wp.array2d[wp.float32],
         shifted: wp.array2d[wp.int32],
         threshold: wp.float32,
@@ -578,7 +571,7 @@ def _make_check_kernel():
                 eigenvalue_out[wid] = 0.0
             return
         padded = ((n + tile - 1) // tile) * tile
-        L_i = wp.array(ptr=get_float32_array_offset_ptr(L, factor_mio[wid]), shape=(n, n), dtype=wp.float32)
+        L_i = wp.array(ptr=get_float32_array_offset_ptr(L[wid], 0), shape=(n, n), dtype=wp.float32)
         X_i = X[wid]
         V_i = V[wid]
 
@@ -692,15 +685,14 @@ def _make_factor_check_kernel(permuted: bool):
     def _check_shifted_rows_on_factor(
         # Inputs:
         dim: wp.array[wp.int32],
-        mio: wp.array[wp.int32],
         vio: wp.array[wp.int32],
         row_offset: wp.array[wp.int32],
         num_rows: wp.array[wp.int32],
         ld: wp.array[wp.int32],
         perm: wp.array[wp.int32],
         inverse_perm: wp.array[wp.int32],
-        D: wp.array[wp.float32],
-        L: wp.array[wp.float32],
+        D_storage: wp.array2d[wp.float32],
+        L: wp.array2d[wp.float32],
         diagonal: wp.array2d[wp.float32],
         shifted: wp.array2d[wp.int32],
         initialized: wp.array[wp.int32],
@@ -726,11 +718,11 @@ def _make_factor_check_kernel(permuted: bool):
                 eigenvalue_out[wid] = 0.0
             return
         offset = row_offset[wid]
-        start = mio[wid]
         vstart = vio[wid]
         padded = ((n + tile - 1) // tile) * tile
         stride = ld[wid]
-        L_i = wp.array(ptr=get_float32_array_offset_ptr(L, start), shape=(stride, stride), dtype=wp.float32)
+        D = D_storage[wid]
+        L_i = wp.array(ptr=get_float32_array_offset_ptr(L[wid], 0), shape=(stride, stride), dtype=wp.float32)
         X_i = X[wid]
         V_i = V[wid]
 
@@ -760,7 +752,7 @@ def _make_factor_check_kernel(permuted: bool):
                 value = wp.float32(0.0)
                 if iterate and k - h * columns == 0 and h < n:
                     o = original_row(perm, vstart, h)
-                    value = wp.sqrt(wp.max(D[start + o * (n + 1)], FLOAT32_EPS)) * V_i[h] * inv_norm
+                    value = wp.sqrt(wp.max(D[o * (n + 1)], FLOAT32_EPS)) * V_i[h] * inv_norm
                 X_i[h, k - h * columns] = value
             if tid < columns:
                 column_rows[wid, tid] = -1
@@ -786,7 +778,7 @@ def _make_factor_check_kernel(permuted: bool):
                 regularization = wp.float32(0.0)
                 for h in range(tid, n, threads):
                     o = original_row(perm, vstart, h)
-                    K = wp.max(D[start + o * (n + 1)], FLOAT32_EPS)
+                    K = wp.max(D[o * (n + 1)], FLOAT32_EPS)
                     x = V_i[h] * inv_norm
                     z = wp.sqrt(K) * X_i[h, 0]
                     quotient += x * z
@@ -815,13 +807,11 @@ def _make_factor_check_kernel(permuted: bool):
                         if j >= 0 and j < rows and j != i:
                             d = diagonal[wid, j]
                             u_o = X_i[h, tid]
-                            penalty += (
-                                u_o * u_o * (D[start + (offset + j) * (n + 1)] - d - _row_shift(d, shifted[wid, j]))
-                            )
+                            penalty += u_o * u_o * (D[(offset + j) * (n + 1)] - d - _row_shift(d, shifted[wid, j]))
                     o = offset + i
                     d = diagonal[wid, i]
                     schur = 1.0 / u_s - penalty / (u_s * u_s)
-                    residual = (schur - (D[start + o * (n + 1)] - d)) / wp.max(d, FLOAT32_EPS)
+                    residual = (schur - (D[o * (n + 1)] - d)) / wp.max(d, FLOAT32_EPS)
                     if not (residual <= _SHIFTED_ROW_MARGIN * threshold):
                         independent = 1
             failed += wp.tile_sum(wp.tile(independent))[0]
@@ -947,10 +937,9 @@ class RedundantRowShift:
         """The dimension of each matrix to refactorize after the last :meth:`check_factor`, zero if it passed."""
 
         # Allocate the dense blocks of each world, with a row stride of ``max_rows``
-        self._block_mio = wp.array([w * rows * rows for w in range(num_worlds)], dtype=wp.int32, device=device)
         self._block = None
         if sparse:
-            self._block = wp.zeros(num_worlds * rows * rows, dtype=wp.float32, device=device)
+            self._block = wp.zeros((num_worlds, rows * rows), dtype=wp.float32, device=device)
             self._block_ld = wp.full(num_worlds, rows, dtype=wp.int32, device=device)
             self._block_offset = wp.zeros(num_worlds, dtype=wp.int32, device=device)
             self._num_entries = wp.zeros((num_worlds, rows), dtype=wp.int32, device=device)
@@ -959,7 +948,7 @@ class RedundantRowShift:
         # Allocate the scratch of the checks
         self._factor = None
         if check:
-            self._factor = wp.zeros(num_worlds * rows * rows, dtype=wp.float32, device=device)
+            self._factor = wp.zeros((num_worlds, rows * rows), dtype=wp.float32, device=device)
             self._factor_dim = wp.zeros(num_worlds, dtype=wp.int32, device=device)
             self._factor_kernel = make_llt_blocked_factorize_kernel(_FACTOR_BLOCK_SIZE)
         self._max_dim = max_dim
@@ -1000,10 +989,9 @@ class RedundantRowShift:
     def load(
         self,
         dim: wp.array[wp.int32],
-        mio: wp.array[wp.int32],
         row_offset: wp.array[wp.int32],
         num_rows: wp.array[wp.int32],
-        D: wp.array[wp.float32],
+        D: wp.array2d[wp.float32],
     ):
         """
         Selects a diagonal block of row-major dense matrices, which :meth:`detect` shifts in-place, and stores
@@ -1011,18 +999,17 @@ class RedundantRowShift:
 
         Args:
             dim: The dimension of each matrix, of shape ``(num_worlds,)``.
-            mio: The index offset of each matrix in ``D``, of shape ``(num_worlds,)``.
             row_offset: The first row of the block in each matrix, of shape ``(num_worlds,)``.
             num_rows: The number of rows of the block in each matrix, of shape ``(num_worlds,)``.
-            D: The flat array of the matrices.
+            D: The matrices, one per row.
         """
-        self._source = (mio, dim, row_offset, D)
+        self._source = (dim, row_offset, D)
         self._num_rows = num_rows
         self._shift_matrix = True
         wp.launch(
             _store_block_diagonal,
             dim=self.shifted.shape,
-            inputs=[*self._source[:3], num_rows, D],
+            inputs=[*self._source[:2], num_rows, D],
             outputs=[self._diagonal],
             device=D.device,
         )
@@ -1054,7 +1041,7 @@ class RedundantRowShift:
         if self._block is None:
             raise ValueError("Assembling the blocks requires `sparse`.")
         rows = max(self.max_rows, 1)
-        self._source = (self._block_mio, self._block_ld, self._block_offset, self._block)
+        self._source = (self._block_ld, self._block_offset, self._block)
         self._num_rows = num_rows
         self._shift_matrix = False
         device = self._block.device
@@ -1081,7 +1068,6 @@ class RedundantRowShift:
                 preconditioner,
                 self._num_entries,
                 self._entries,
-                self._block_mio,
                 rows,
             ],
             outputs=[self._block, self._diagonal],
@@ -1107,11 +1093,11 @@ class RedundantRowShift:
             self._kernel,
             dim=self.num_worlds,
             inputs=[
-                *self._source[:3],
+                *self._source[:2],
                 num_rows,
                 wp.float32(self.threshold),
                 self._diagonal,
-                self._source[3],
+                self._source[2],
                 self._triangle,
                 self._floats,
                 self._ints,
@@ -1123,8 +1109,8 @@ class RedundantRowShift:
         wp.launch(
             _update_shifts,
             dim=self.shifted.shape,
-            inputs=[*self._source[:3], self._num_rows, self.shifted, self._diagonal, self._shift_matrix],
-            outputs=[self.shifts, self._source[3]],
+            inputs=[*self._source[:2], self._num_rows, self.shifted, self._diagonal, self._shift_matrix],
+            outputs=[self.shifts, self._source[2]],
             device=self.shifted.device,
         )
 
@@ -1146,13 +1132,12 @@ class RedundantRowShift:
             _copy_shifted_block,
             dim=(self.num_worlds, rows, rows),
             inputs=[
-                *self._source[:3],
+                *self._source[:2],
                 self._num_rows,
-                self._source[3],
+                self._source[2],
                 self._diagonal,
                 self.shifted,
                 self._initialized,
-                self._block_mio,
             ],
             outputs=[self._factor_dim, self._factor],
             device=device,
@@ -1160,7 +1145,6 @@ class RedundantRowShift:
         llt_blocked_factorize(
             kernel=self._factor_kernel,
             dim=self._factor_dim,
-            mio=self._block_mio,
             A=self._factor,
             L=self._factor,
             num_blocks=self.num_worlds,
@@ -1174,7 +1158,6 @@ class RedundantRowShift:
             inputs=[
                 self._num_rows,
                 self._factor_dim,
-                self._block_mio,
                 self._factor,
                 self._diagonal,
                 self.shifted,
@@ -1198,15 +1181,15 @@ class RedundantRowShift:
         wp.launch(
             _update_shifts,
             dim=self.shifted.shape,
-            inputs=[*self._source[:3], self._num_rows, self.shifted, self._diagonal, True],
-            outputs=[self.shifts, self._source[3]],
+            inputs=[*self._source[:2], self._num_rows, self.shifted, self._diagonal, True],
+            outputs=[self.shifts, self._source[2]],
             device=self.shifted.device,
         )
 
     def check_factor(
         self,
         vio: wp.array[wp.int32],
-        L: wp.array[wp.float32],
+        L: wp.array2d[wp.float32],
         ld: wp.array[wp.int32],
         perm: wp.array[wp.int32] | None = None,
         inverse_perm: wp.array[wp.int32] | None = None,
@@ -1218,7 +1201,7 @@ class RedundantRowShift:
 
         Args:
             vio: The index offset of the rows of each matrix in ``perm``, of shape ``(num_worlds,)``.
-            L: The flat array of the lower Cholesky factors of the matrices, with the index offsets of the matrices.
+            L: The lower Cholesky factors of the matrices, one per row.
             ld: The row stride of each factor in ``L``, of shape ``(num_worlds,)``.
             perm: The original row of each row of the factors, if they factorize ``P D P^T``.
             inverse_perm: The row of the factors of each original row, if ``perm`` is given.
@@ -1227,7 +1210,7 @@ class RedundantRowShift:
             raise ValueError("Checking the shifted rows on the factor requires `max_dim`.")
         if self._source is None or not self._shift_matrix:
             raise ValueError("The matrices must be loaded first.")
-        mio, dim, row_offset, D = self._source
+        dim, row_offset, D = self._source
         permuted = perm is not None
 
         # The permutations are not read by the unpermuted kernel
@@ -1236,7 +1219,6 @@ class RedundantRowShift:
             dim=self.num_worlds,
             inputs=[
                 dim,
-                mio,
                 vio,
                 row_offset,
                 self._num_rows,
@@ -1272,11 +1254,11 @@ class RedundantRowShift:
             self._kernel,
             dim=self.num_worlds,
             inputs=[
-                *self._source[:3],
+                *self._source[:2],
                 self.pivot_rows,
                 wp.float32(self.threshold),
                 self._diagonal,
-                self._source[3],
+                self._source[2],
                 self._triangle,
                 self._floats,
                 self._ints,
@@ -1289,13 +1271,13 @@ class RedundantRowShift:
             _update_changed_shifts,
             dim=self.num_worlds,
             inputs=[
-                *self._source[:3],
+                *self._source[:2],
                 self._num_rows,
                 self.pivot_rows,
                 self.shifted,
                 self._diagonal,
                 self._eigenvalue,
             ],
-            outputs=[self.shifts, self._reference, self._source[3]],
+            outputs=[self.shifts, self._reference, self._source[2]],
             device=device,
         )

@@ -1312,7 +1312,7 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
             for w in range(len(D)):
                 kinematic = slice(offset[w], offset[w] + num_rows[w])
                 if sparse:
-                    block = detection._block.numpy()[w * rows * rows : (w + 1) * rows * rows].reshape(rows, rows)
+                    block = detection._block.numpy()[w].reshape(rows, rows)
                     blocks.append(np.tril(block[: num_rows[w], : num_rows[w]]))
                 else:
                     blocks.append(np.tril(D[w][kinematic, kinematic]))

@@ -684,7 +684,7 @@ class PADMMSolver:
             # Drop the redundant kinematic joint constraints from the bare Delassus matrix
             data = problem.data
             if detection is not None:
-                detection.load(data.dim, data.mio, self._kinematic_cts_offset, self._num_kinematic_cts, data.D)
+                detection.load(data.dim, self._kinematic_cts_offset, self._num_kinematic_cts, data.D)
                 if self._check_factor:
                     detection.shift()
                 else:

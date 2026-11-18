@@ -40,7 +40,7 @@ class RedundantProblem:
         self.dims, self.offsets, self.num_rows = dims, offsets, num_rows
         self.matrices = []
         maxdim = max(dims)
-        flat = np.zeros(len(dims) * maxdim * maxdim, dtype=np.float32)
+        flat = np.zeros((len(dims), maxdim * maxdim), dtype=np.float32)
         for w, (n, offset, rows, redundant) in enumerate(zip(dims, offsets, num_rows, num_redundant, strict=True)):
             G = rng.standard_normal((n, n + 4))
             block = G[offset : offset + rows]
@@ -53,10 +53,9 @@ class RedundantProblem:
             G *= np.exp(rng.uniform(-2.0, 2.0, size=(n, 1)))
             D = (G @ G.T).astype(np.float32)
             self.matrices.append(D)
-            flat[w * maxdim * maxdim : w * maxdim * maxdim + n * n] = D.ravel()
+            flat[w, : n * n] = D.ravel()
         self.max_rows = max(num_rows)
         self.dim = wp.array(dims, dtype=wp.int32, device=device)
-        self.mio = wp.array([w * maxdim * maxdim for w in range(len(dims))], dtype=wp.int32, device=device)
         self.row_offset = wp.array(offsets, dtype=wp.int32, device=device)
         self.rows = wp.array(num_rows, dtype=wp.int32, device=device)
         self.D = wp.array(flat, dtype=wp.float32, device=device)
@@ -64,13 +63,13 @@ class RedundantProblem:
         self.maxdim = maxdim
 
     def shifted_matrix(self, w: int) -> np.ndarray:
-        n, start = self.dims[w], w * self.maxdim * self.maxdim
-        return self.D.numpy()[start : start + n * n].reshape(n, n)
+        n = self.dims[w]
+        return self.D.numpy()[w, : n * n].reshape(n, n)
 
     def detect(self, shift: RedundantRowShift, reuse: bool = False):
         """Restores the original matrices, and shifts their redundant rows."""
         self.D.assign(self.D_in)
-        shift.load(self.dim, self.mio, self.row_offset, self.rows, self.D)
+        shift.load(self.dim, self.row_offset, self.rows, self.D)
         shift.detect(reuse)
 
     def regularize_and_factorize(self, eta: float, perms: list[np.ndarray] | None = None):
@@ -83,12 +82,12 @@ class RedundantProblem:
         perm = np.zeros(len(self.dims) * self.maxdim, dtype=np.int32)
         inverse = np.zeros_like(perm)
         for w, n in enumerate(self.dims):
-            start, vstart = w * self.maxdim * self.maxdim, w * self.maxdim
-            K = D[start : start + n * n].reshape(n, n).astype(np.float64)
+            vstart = w * self.maxdim
+            K = D[w, : n * n].reshape(n, n).astype(np.float64)
             K += eta * np.diag(np.diag(K))
-            D[start : start + n * n] = K.ravel()
+            D[w, : n * n] = K.ravel()
             p = np.arange(n) if perms is None else perms[w]
-            L[start : start + n * n] = np.linalg.cholesky(K[np.ix_(p, p)]).ravel()
+            L[w, : n * n] = np.linalg.cholesky(K[np.ix_(p, p)]).ravel()
             perm[vstart : vstart + n] = p
             inverse[vstart + p] = np.arange(n)
         self.D.assign(D)
@@ -189,7 +188,7 @@ class TestRedundantRowShift(unittest.TestCase):
                 shift.reset()
                 problem.D.assign(problem.D_in)
                 with wp.ScopedCapture(device=self.device) as capture:
-                    shift.load(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
+                    shift.load(problem.dim, problem.row_offset, problem.rows, problem.D)
                     shift.detect(reuse)
                 problem.D.assign(problem.D_in)
                 wp.capture_launch(capture.graph)
@@ -213,7 +212,7 @@ class TestRedundantRowCheck(unittest.TestCase):
         problem = self.problem
         problem.D.assign(problem.D_in)
         self.shift.shifted.assign(flags)
-        self.shift.load(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
+        self.shift.load(problem.dim, problem.row_offset, problem.rows, problem.D)
         self.shift.check()
         pivot_rows = self.shift.pivot_rows.numpy()
         np.testing.assert_array_equal(pivot_rows, np.where(pivot_rows > 0, problem.num_rows, 0))
@@ -313,7 +312,7 @@ class TestRedundantRowFactorCheck(unittest.TestCase):
         problem = self.problem
         problem.D.assign(problem.D_in)
         self.shift.shifted.assign(flags)
-        self.shift.load(problem.dim, problem.mio, problem.row_offset, problem.rows, problem.D)
+        self.shift.load(problem.dim, problem.row_offset, problem.rows, problem.D)
         self.shift.shift()
         L, perm, inverse = problem.regularize_and_factorize(eta, self.perms if permuted else None)
         self.shift.check_factor(self.vio, L, problem.dim, perm if permuted else None, inverse if permuted else None)
@@ -362,9 +361,8 @@ class TestRedundantRowFactorCheck(unittest.TestCase):
         # Only the diagonal of the restored row changes, by its original value
         difference = problem.D.numpy().astype(np.float64) - D_checked
         row = problem.offsets[1] + np.flatnonzero(flags[1] != self.reference[1])[0]
-        start = problem.maxdim * problem.maxdim
         expected = np.zeros_like(difference)
-        expected[start + row * (problem.dims[1] + 1)] = problem.D_in[start + row * (problem.dims[1] + 1)]
+        expected[1, row * (problem.dims[1] + 1)] = problem.D_in[1, row * (problem.dims[1] + 1)]
         np.testing.assert_allclose(difference, expected, rtol=1e-6, atol=0.0)
 
     def test_04_reference_of_unchanged_rows(self):
