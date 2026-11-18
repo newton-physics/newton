@@ -1662,7 +1662,7 @@ def _export_and_reduce_contact_centered_two_spatial_depths(
     """
     ht_capacity = reducer_data.ht_capacity
     use_inner = depth < inner_spatial_depth
-    use_outer = depth < outer_spatial_depth
+    use_outer = depth <= outer_spatial_depth
 
     if not use_outer:
         return -1

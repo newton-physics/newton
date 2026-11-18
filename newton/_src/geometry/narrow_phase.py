@@ -2620,7 +2620,7 @@ class NarrowPhase:
             candidate_pair_work_estimate: Static upper bound on pairs that the
                 broad phase can emit. Defaults to ``max_candidate_pairs``.
             mesh_sdf_texture_only: Whether every participating mesh SDF has a texture representation,
-                allowing BVH fallback branches to be removed from mesh/SDF kernels.
+                allowing BVH branches to be removed from the mesh/SDF edge search.
             mesh_sdf_identity_scale_only: Whether every participating texture SDF is queried with
                 identity scale, allowing scale conversion branches to be removed. Shapes whose SDF
                 has no baked scale must then keep unit ``shape_scale``.

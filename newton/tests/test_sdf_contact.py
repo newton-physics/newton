@@ -203,6 +203,87 @@ def test_mesh_mesh_sdf_surface_witnesses(test, device, box_sdf, *, probe_sdf=Fal
                     np.testing.assert_allclose(box_points[:, 2], 0.5, atol=sdf_tolerance)
 
 
+def test_mesh_mesh_contact_at_pair_gap(test, device):
+    """Retain mesh contacts at the inclusive authored pair gap."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig(gap=0.0625, margin=0.0, density=0.0)
+        builder.add_shape_mesh(-1, mesh=newton.Mesh.create_box(1.0, 1.0, 0.5), cfg=cfg)
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.125), cfg=cfg)
+        model = builder.finalize()
+        state = model.state()
+
+        # Dyadic distances keep the face separation and threshold exact in float32.
+        for reduce_contacts in (False, True):
+            pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=reduce_contacts)
+            contacts = pipeline.contacts()
+            for separation in (0.0625, 0.125, 0.1875):
+                with test.subTest(reduce_contacts=reduce_contacts, separation=separation):
+                    state.body_q.assign([wp.transform(wp.vec3(0.0, 0.0, 0.625 + separation))])
+                    pipeline.collide(state, contacts)
+                    count = int(contacts.rigid_contact_count.numpy()[0])
+                    test.assertEqual(count > 0, separation <= 0.125)
+
+
+def test_mesh_sdf_normal_at_slab_midplane(test, device, *, reverse_winding=False, probe_sdf=False):
+    """Recover toward a slab face when the stored distance has a flat gradient."""
+    with wp.ScopedDevice(device):
+        half_thickness = 0.0009765625
+        slab = newton.Mesh.create_box(half_thickness, 0.03125, 0.03125, duplicate_vertices=False)
+        if reverse_winding:
+            slab.indices = slab.indices.reshape(-1, 3)[:, [0, 2, 1]].flatten()
+        slab.build_sdf(
+            target_voxel_size=0.000244140625,
+            narrow_band_range=(-0.001953125, 0.001953125),
+            margin=0.001953125,
+        )
+        # A triangle on the medial plane lies well away from the slab edges.
+        # An origin-relative fallback points along the slab instead of out.
+        vertices = [[0.0, 0.0078125, 0.00390625], [0.0, 0.01171875, 0.00390625], [0.0, 0.0078125, 0.01171875]]
+        indices = [0, 1, 2]
+        if probe_sdf:
+            # Close the probe on the far side of the medial plane to
+            # exercise the texture-only specialization with the same edges.
+            vertices.append([0.00390625, 0.0078125, 0.00390625])
+            indices = [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3]
+        probe = newton.Mesh(
+            np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.int32), compute_inertia=False
+        )
+        if probe_sdf:
+            probe.build_sdf(target_voxel_size=0.000244140625)
+        scales = ((1.0, 1.0, 1.0),) if reverse_winding or probe_sdf else ((1.0, 1.0, 1.0), (2.0, 0.75, 1.25))
+        for scale in scales:
+            builder = newton.ModelBuilder()
+            cfg = builder.ShapeConfig(density=0.0, margin=0.0, gap=0.00025)
+            builder.add_shape_mesh(-1, mesh=slab, scale=scale, cfg=cfg)
+            body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            builder.add_shape_mesh(body, mesh=probe, cfg=cfg)
+            model = builder.finalize()
+            state = model.state()
+
+            for reduce_contacts in (False, True):
+                with test.subTest(scale=scale, reduce_contacts=reduce_contacts):
+                    pipeline = newton.CollisionPipeline(model, reduce_contacts=reduce_contacts)
+                    test.assertEqual(pipeline.narrow_phase.mesh_sdf_texture_only, probe_sdf)
+                    contacts = pipeline.contacts()
+                    pipeline.collide(state, contacts)
+                    if probe_sdf:
+                        with wp.ScopedCapture(device=device) as capture:
+                            pipeline.collide(state, contacts)
+                        wp.capture_launch(capture.graph)
+                    count = int(contacts.rigid_contact_count.numpy()[0])
+                    test.assertGreater(count, 0)
+                    normals = contacts.rigid_contact_normal.numpy()[:count]
+                    slab_points = contacts.rigid_contact_point0.numpy()[:count]
+                    np.testing.assert_allclose(np.abs(normals[:, 0]), 1.0, atol=2.0e-5)
+                    # Ordinary texture contacts can use a conservative
+                    # distance under nonuniform scale. A recovered witness
+                    # must reach the actual mesh face.
+                    face_error = np.abs(np.abs(slab_points[:, 0]) - scale[0] * half_thickness)
+                    test.assertLess(float(face_error.min()), 2.0e-6)
+
+
 class TestSDFContact(unittest.TestCase):
     def test_nonconvex_edge_keeps_endpoint_minima(self):
         """Keep deeper endpoint minima despite a shallower interior well."""
@@ -286,6 +367,32 @@ add_function_test(
     devices=get_test_devices(),
 )
 
+add_function_test(
+    TestSDFContact,
+    "test_mesh_mesh_contact_at_pair_gap",
+    test_mesh_mesh_contact_at_pair_gap,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestSDFContact,
+    "test_mesh_sdf_normal_at_slab_midplane",
+    test_mesh_sdf_normal_at_slab_midplane,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSDFContact,
+    "test_mesh_sdf_normal_at_slab_midplane_texture_only",
+    test_mesh_sdf_normal_at_slab_midplane,
+    devices=get_cuda_test_devices(),
+    probe_sdf=True,
+)
+add_function_test(
+    TestSDFContact,
+    "test_mesh_sdf_normal_at_slab_midplane_reversed_winding",
+    test_mesh_sdf_normal_at_slab_midplane,
+    devices=get_cuda_test_devices(),
+    reverse_winding=True,
+)
 add_function_test(
     TestSDFContact,
     "test_mesh_mesh_sdf_surface_witnesses_bvh_bvh",
