@@ -26,7 +26,7 @@ from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
-from .enums import ModelFlags, StateFlags
+from .enums import ModelFlags
 from .shape_contact_pairs import _ShapeContactPairs
 from .state import State
 
@@ -467,40 +467,16 @@ class Model:
         :attr:`ModelBuilder.CustomAttribute.default <newton.ModelBuilder.CustomAttribute.default>`.
         Coupled model views use it for the rows they synthesize.
         """
-        dtype: Any = field(default=None, compare=False)
-        """Warp dtype of a built-in attribute that :meth:`ModelBuilder.finalize()
-        <newton.ModelBuilder.finalize>` converts generically, or ``None`` for other attributes,
-        including custom attributes, whose dtype is given by
-        :attr:`ModelBuilder.CustomAttribute.dtype <newton.ModelBuilder.CustomAttribute.dtype>`.
 
-        :class:`ModelBuilder <newton.ModelBuilder>` keeps list attributes with a dtype as NumPy arrays
-        between replication and finalization.
-        """
         update_flags: int | None = field(default=None, compare=False)
-        """Flags announcing an edit of the attribute, or ``None`` when no flag covers it; see
-        :meth:`Model.get_attribute_update_flags`.
+        """:class:`~newton.ModelFlags` announcing an edit of the attribute, or ``None`` when no flag
+        covers it; see :meth:`Model.get_attribute_update_flags`.
 
-        These are :class:`~newton.ModelFlags` for model attributes and :class:`~newton.StateFlags` for
-        custom attributes assigned to the state. :meth:`ModelBuilder.finalize()
-        <newton.ModelBuilder.finalize>` sets it to :attr:`ModelBuilder.CustomAttribute.update_flags
-        <newton.ModelBuilder.CustomAttribute.update_flags>`.
-        """
-        state_update_flags: int | None = field(default=None, compare=False)
-        """:class:`~newton.StateFlags` announcing an edit of the built-in :class:`~newton.State` or
-        :class:`~newton.Control` attribute of this name, or ``None`` when solvers read it at every step.
-        """
-        differentiable: bool | None = field(default=None, compare=False)
-        """For attributes with a :attr:`dtype`, whether :meth:`ModelBuilder.finalize()
-        <newton.ModelBuilder.finalize>` allocates gradients for the attribute when called with
-        ``requires_grad=True``. Not meaningful for attributes without a :attr:`dtype`.
-
-        ``None`` resolves to whether :attr:`dtype` has a floating-point scalar type.
+        :meth:`ModelBuilder.finalize() <newton.ModelBuilder.finalize>` sets it to
+        :attr:`ModelBuilder.CustomAttribute.update_flags <newton.ModelBuilder.CustomAttribute.update_flags>`.
         """
 
         def __post_init__(self) -> None:
-            if self.differentiable is None:
-                scalar_dtype = getattr(self.dtype, "_wp_scalar_type_", self.dtype)
-                object.__setattr__(self, "differentiable", wp.types.type_is_float(scalar_dtype))
             if self.row_width < 1:
                 raise ValueError(f"Attribute row_width must be positive, got {self.row_width}")
             if self.compaction_policy not in {
@@ -547,27 +523,14 @@ class Model:
         "tendon_guide_active": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "_tendon_initialized": AttributeSpec(AttributeFrequency.TENDON),
         # particles
-        "particle_q": AttributeSpec(
-            AttributeFrequency.PARTICLE, dtype=wp.vec3, state_update_flags=StateFlags.PARTICLE_Q
-        ),
-        "particle_qd": AttributeSpec(
-            AttributeFrequency.PARTICLE, dtype=wp.vec3, state_update_flags=StateFlags.PARTICLE_QD
-        ),
-        "particle_f": AttributeSpec(AttributeFrequency.PARTICLE, state_update_flags=StateFlags.PARTICLE_F),
-        # SolverImplicitMPM refreshes its particle materials on MODEL_PROPERTIES.
-        "particle_mass": AttributeSpec(
-            AttributeFrequency.PARTICLE, dtype=wp.float32, update_flags=ModelFlags.MODEL_PROPERTIES
-        ),
+        "particle_q": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_qd": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_f": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_mass": AttributeSpec(AttributeFrequency.PARTICLE, update_flags=ModelFlags.MODEL_PROPERTIES),
         "particle_inv_mass": AttributeSpec(AttributeFrequency.PARTICLE),
-        "particle_radius": AttributeSpec(
-            AttributeFrequency.PARTICLE, dtype=wp.float32, update_flags=ModelFlags.MODEL_PROPERTIES
-        ),
-        "particle_flags": AttributeSpec(
-            AttributeFrequency.PARTICLE, dtype=wp.int32, update_flags=ModelFlags.MODEL_PROPERTIES
-        ),
-        "particle_world": AttributeSpec(
-            AttributeFrequency.PARTICLE, references=AttributeFrequency.WORLD, dtype=wp.int32
-        ),
+        "particle_radius": AttributeSpec(AttributeFrequency.PARTICLE, update_flags=ModelFlags.MODEL_PROPERTIES),
+        "particle_flags": AttributeSpec(AttributeFrequency.PARTICLE, update_flags=ModelFlags.MODEL_PROPERTIES),
+        "particle_world": AttributeSpec(AttributeFrequency.PARTICLE, references=AttributeFrequency.WORLD),
         "particle_colors": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_world_start": AttributeSpec(
             AttributeFrequency.PARTICLE,
@@ -580,36 +543,18 @@ class Model:
         # bodies
         "body_q": AttributeSpec(
             AttributeFrequency.BODY,
-            dtype=wp.transform,
-            # SolverMuJoCo derives the reference pose of free joints from the initial body pose.
             update_flags=ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES,
-            state_update_flags=StateFlags.BODY_Q,
         ),
-        "body_qd": AttributeSpec(
-            AttributeFrequency.BODY,
-            dtype=wp.spatial_vector,
-            update_flags=ModelFlags.BODY_PROPERTIES,
-            state_update_flags=StateFlags.BODY_QD,
-        ),
-        "body_com": AttributeSpec(
-            AttributeFrequency.BODY, dtype=wp.vec3, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES
-        ),
-        "body_inertia": AttributeSpec(
-            AttributeFrequency.BODY, dtype=wp.mat33, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES
-        ),
-        "body_inv_inertia": AttributeSpec(
-            AttributeFrequency.BODY, dtype=wp.mat33, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES
-        ),
-        "body_mass": AttributeSpec(
-            AttributeFrequency.BODY, dtype=wp.float32, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES
-        ),
-        "body_inv_mass": AttributeSpec(
-            AttributeFrequency.BODY, dtype=wp.float32, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES
-        ),
-        "body_flags": AttributeSpec(AttributeFrequency.BODY, dtype=wp.int32, update_flags=ModelFlags.BODY_PROPERTIES),
-        "body_f": AttributeSpec(AttributeFrequency.BODY, state_update_flags=StateFlags.BODY_F),
+        "body_qd": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_PROPERTIES),
+        "body_com": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_inertia": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_inv_inertia": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_mass": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_inv_mass": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_flags": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_PROPERTIES),
+        "body_f": AttributeSpec(AttributeFrequency.BODY),
         "body_label": AttributeSpec(AttributeFrequency.BODY),
-        "body_world": AttributeSpec(AttributeFrequency.BODY, references=AttributeFrequency.WORLD, dtype=wp.int32),
+        "body_world": AttributeSpec(AttributeFrequency.BODY, references=AttributeFrequency.WORLD),
         "body_colors": AttributeSpec(AttributeFrequency.BODY),
         "body_world_start": AttributeSpec(
             AttributeFrequency.BODY,
@@ -644,62 +589,37 @@ class Model:
         "_shape_variant_shape": AttributeSpec(AttributeFrequency.SHAPE),
         # shapes
         "shape_label": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_transform": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.transform, update_flags=ModelFlags.SHAPE_PROPERTIES
+        "shape_transform": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_body": AttributeSpec(
+            AttributeFrequency.SHAPE,
+            references=AttributeFrequency.BODY,
         ),
-        "shape_body": AttributeSpec(AttributeFrequency.SHAPE, references=AttributeFrequency.BODY, dtype=wp.int32),
         "shape_flags": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_ke": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.float32, update_flags=ModelFlags.SHAPE_PROPERTIES
-        ),
-        "shape_material_kd": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.float32, update_flags=ModelFlags.SHAPE_PROPERTIES
-        ),
-        "shape_material_kf": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.float32, update_flags=ModelFlags.SHAPE_PROPERTIES
-        ),
-        "shape_material_ka": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.float32, update_flags=ModelFlags.SHAPE_PROPERTIES
-        ),
-        "shape_material_mu": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.float32, update_flags=ModelFlags.SHAPE_PROPERTIES
-        ),
-        "shape_material_mu_static": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.float32, update_flags=ModelFlags.SHAPE_PROPERTIES
-        ),
-        "shape_material_restitution": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.float32, update_flags=ModelFlags.SHAPE_PROPERTIES
-        ),
+        "shape_material_ke": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_kd": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_kf": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_ka": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_mu": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_mu_static": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_restitution": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_material_mu_torsional": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.float32, update_flags=ModelFlags.SHAPE_PROPERTIES
+            AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES
         ),
-        "shape_material_mu_rolling": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.float32, update_flags=ModelFlags.SHAPE_PROPERTIES
-        ),
-        "shape_material_kh": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.float32, update_flags=ModelFlags.SHAPE_PROPERTIES
-        ),
-        "shape_gap": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.float32, update_flags=ModelFlags.SHAPE_PROPERTIES
-        ),
+        "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_kh": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_gap": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_type": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_is_solid": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.bool, update_flags=ModelFlags.SHAPE_PROPERTIES
-        ),
-        "shape_margin": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.float32, update_flags=ModelFlags.SHAPE_PROPERTIES
-        ),
+        "shape_is_solid": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_margin": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_source": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_source_ptr": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_scale": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.vec3, update_flags=ModelFlags.SHAPE_PROPERTIES),
-        "shape_color": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.vec3, differentiable=False),
-        "shape_opacity": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32, differentiable=False),
+        "shape_scale": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_color": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_opacity": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_filter": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_collision_group": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.int32),
-        "shape_collision_radius": AttributeSpec(
-            AttributeFrequency.SHAPE, dtype=wp.float32, update_flags=ModelFlags.SHAPE_PROPERTIES
-        ),
-        "shape_world": AttributeSpec(AttributeFrequency.SHAPE, references=AttributeFrequency.WORLD, dtype=wp.int32),
+        "shape_collision_group": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_collision_radius": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_world": AttributeSpec(AttributeFrequency.SHAPE, references=AttributeFrequency.WORLD),
         "shape_heightfield_index": AttributeSpec(
             AttributeFrequency.SHAPE,
             requires_empty_sentinel=True,
@@ -742,12 +662,14 @@ class Model:
         ),
         # springs and finite elements
         "spring_indices": AttributeSpec(
-            AttributeFrequency.SPRING, references=AttributeFrequency.PARTICLE, row_width=2, dtype=wp.int32
+            AttributeFrequency.SPRING,
+            references=AttributeFrequency.PARTICLE,
+            row_width=2,
         ),
-        "spring_rest_length": AttributeSpec(AttributeFrequency.SPRING, dtype=wp.float32),
-        "spring_stiffness": AttributeSpec(AttributeFrequency.SPRING, dtype=wp.float32),
-        "spring_damping": AttributeSpec(AttributeFrequency.SPRING, dtype=wp.float32),
-        "spring_control": AttributeSpec(AttributeFrequency.SPRING, dtype=wp.float32),
+        "spring_rest_length": AttributeSpec(AttributeFrequency.SPRING),
+        "spring_stiffness": AttributeSpec(AttributeFrequency.SPRING),
+        "spring_damping": AttributeSpec(AttributeFrequency.SPRING),
+        "spring_control": AttributeSpec(AttributeFrequency.SPRING),
         "spring_constraint_lambdas": AttributeSpec(AttributeFrequency.SPRING),
         # particle-body attachments
         "attachment_particle_body_body": AttributeSpec(
@@ -773,55 +695,55 @@ class Model:
             references=AttributeFrequency.WORLD,
         ),
         "tri_indices": AttributeSpec(
-            AttributeFrequency.TRIANGLE, references=AttributeFrequency.PARTICLE, dtype=wp.int32
+            AttributeFrequency.TRIANGLE,
+            references=AttributeFrequency.PARTICLE,
         ),
-        "tri_poses": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.mat22),
-        "tri_activations": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.float32),
-        "tri_materials": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.float32),
-        "tri_areas": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.float32),
-        "tri_color": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.vec3, differentiable=False),
-        "tri_opacity": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.float32, differentiable=False),
-        "edge_indices": AttributeSpec(AttributeFrequency.EDGE, references=AttributeFrequency.PARTICLE, dtype=wp.int32),
-        "edge_rest_angle": AttributeSpec(AttributeFrequency.EDGE, dtype=wp.float32),
-        "edge_rest_length": AttributeSpec(AttributeFrequency.EDGE, dtype=wp.float32),
-        "edge_bending_properties": AttributeSpec(AttributeFrequency.EDGE, dtype=wp.float32),
+        "tri_poses": AttributeSpec(AttributeFrequency.TRIANGLE),
+        "tri_activations": AttributeSpec(AttributeFrequency.TRIANGLE),
+        "tri_materials": AttributeSpec(AttributeFrequency.TRIANGLE),
+        "tri_areas": AttributeSpec(AttributeFrequency.TRIANGLE),
+        "tri_color": AttributeSpec(AttributeFrequency.TRIANGLE),
+        "tri_opacity": AttributeSpec(AttributeFrequency.TRIANGLE),
+        "edge_indices": AttributeSpec(
+            AttributeFrequency.EDGE,
+            references=AttributeFrequency.PARTICLE,
+        ),
+        "edge_rest_angle": AttributeSpec(AttributeFrequency.EDGE),
+        "edge_rest_length": AttributeSpec(AttributeFrequency.EDGE),
+        "edge_bending_properties": AttributeSpec(AttributeFrequency.EDGE),
         "edge_constraint_lambdas": AttributeSpec(AttributeFrequency.EDGE),
         "tet_indices": AttributeSpec(
-            AttributeFrequency.TETRAHEDRON, references=AttributeFrequency.PARTICLE, dtype=wp.int32
+            AttributeFrequency.TETRAHEDRON,
+            references=AttributeFrequency.PARTICLE,
         ),
-        "tet_poses": AttributeSpec(AttributeFrequency.TETRAHEDRON, dtype=wp.mat33),
-        "tet_activations": AttributeSpec(AttributeFrequency.TETRAHEDRON, dtype=wp.float32),
-        "tet_materials": AttributeSpec(AttributeFrequency.TETRAHEDRON, dtype=wp.float32),
+        "tet_poses": AttributeSpec(AttributeFrequency.TETRAHEDRON),
+        "tet_activations": AttributeSpec(AttributeFrequency.TETRAHEDRON),
+        "tet_materials": AttributeSpec(AttributeFrequency.TETRAHEDRON),
         # joints
         "joint_type": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_parent": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.BODY, dtype=wp.int32),
-        "joint_child": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.BODY, dtype=wp.int32),
+        "joint_parent": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.BODY),
+        "joint_child": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.BODY),
         "joint_ancestor": AttributeSpec(
             AttributeFrequency.JOINT,
             references=AttributeFrequency.JOINT,
         ),
         "joint_articulation": AttributeSpec(
-            AttributeFrequency.JOINT, references=AttributeFrequency.ARTICULATION, dtype=wp.int32
+            AttributeFrequency.JOINT,
+            references=AttributeFrequency.ARTICULATION,
         ),
         "joint_mimic_joint": AttributeSpec(
             AttributeFrequency.JOINT,
             references=AttributeFrequency.JOINT,
         ),
         "joint_mimic_coeffs": AttributeSpec(AttributeFrequency.JOINT, update_flags=ModelFlags.CONSTRAINT_PROPERTIES),
-        "joint_X_p": AttributeSpec(
-            AttributeFrequency.JOINT, dtype=wp.transform, update_flags=ModelFlags.JOINT_PROPERTIES
-        ),
-        "joint_X_c": AttributeSpec(
-            AttributeFrequency.JOINT, dtype=wp.transform, update_flags=ModelFlags.JOINT_PROPERTIES
-        ),
+        "joint_X_p": AttributeSpec(AttributeFrequency.JOINT, update_flags=ModelFlags.JOINT_PROPERTIES),
+        "joint_X_c": AttributeSpec(AttributeFrequency.JOINT, update_flags=ModelFlags.JOINT_PROPERTIES),
         "joint_dof_dim": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_enabled": AttributeSpec(
-            AttributeFrequency.JOINT, dtype=wp.bool, update_flags=ModelFlags.JOINT_PROPERTIES
-        ),
+        "joint_enabled": AttributeSpec(AttributeFrequency.JOINT, update_flags=ModelFlags.JOINT_PROPERTIES),
         "joint_twist_lower": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
         "joint_twist_upper": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
         "joint_label": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD, dtype=wp.int32),
+        "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD),
         "joint_q_start": AttributeSpec(
             AttributeFrequency.JOINT,
             references=AttributeFrequency.JOINT_COORD,
@@ -848,70 +770,54 @@ class Model:
             AttributeFrequency.JOINT_CONSTRAINT,
             compaction_policy="world_start",
         ),
-        "joint_q": AttributeSpec(
-            AttributeFrequency.JOINT_COORD,
-            dtype=wp.float32,
-            update_flags=ModelFlags.JOINT_PROPERTIES,
-            state_update_flags=StateFlags.JOINT_Q,
-        ),
-        "joint_qd": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.float32, state_update_flags=StateFlags.JOINT_QD
-        ),
-        "joint_f": AttributeSpec(
-            AttributeFrequency.JOINT_DOF,
-            dtype=wp.float32,
-            # The model default is copied by Model.control(); solvers read the Control.
-            update_flags=ModelFlags.NONE,
-            state_update_flags=StateFlags.JOINT_F,
-        ),
+        "joint_q": AttributeSpec(AttributeFrequency.JOINT_COORD, update_flags=ModelFlags.JOINT_PROPERTIES),
+        "joint_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
+        "joint_f": AttributeSpec(AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.NONE),
         "joint_armature": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
         ),
-        # Defaults copied by Model.control(); solvers read the Control.
-        "joint_target_q": AttributeSpec(AttributeFrequency.JOINT_COORD, dtype=wp.float32, update_flags=ModelFlags.NONE),
-        "joint_target_qd": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.NONE),
-        "joint_act": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.NONE),
-        "joint_axis": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.vec3, update_flags=ModelFlags.JOINT_PROPERTIES
-        ),
+        "joint_target_q": AttributeSpec(AttributeFrequency.JOINT_COORD, update_flags=ModelFlags.NONE),
+        "joint_target_qd": AttributeSpec(AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.NONE),
+        "joint_act": AttributeSpec(AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.NONE),
+        "joint_axis": AttributeSpec(AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_PROPERTIES),
         "joint_target_mode": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.int32, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
         "joint_target_ke": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
         "joint_target_kd": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
         "joint_damping": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
         "joint_stiffness": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
         "joint_rest_q": AttributeSpec(
-            AttributeFrequency.JOINT_COORD, dtype=wp.float32, update_flags=ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+            AttributeFrequency.JOINT_COORD, update_flags=ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
         ),
         "joint_limit_lower": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
         "joint_limit_upper": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
         "joint_limit_ke": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
         "joint_limit_kd": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
         "joint_effort_limit": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
         "joint_friction": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
         "joint_velocity_limit": AttributeSpec(
-            AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
         # articulations and deprecated mimic constraints
         "articulation_start": AttributeSpec(
@@ -926,7 +832,8 @@ class Model:
         ),
         "articulation_label": AttributeSpec(AttributeFrequency.ARTICULATION),
         "articulation_world": AttributeSpec(
-            AttributeFrequency.ARTICULATION, references=AttributeFrequency.WORLD, dtype=wp.int32
+            AttributeFrequency.ARTICULATION,
+            references=AttributeFrequency.WORLD,
         ),
         "articulation_world_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
@@ -982,29 +889,26 @@ class Model:
             AttributeFrequency.VOLUME, references=AttributeFrequency.TETRAHEDRON, compaction_policy="end"
         ),
         "constraint_mimic_joint0": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC, references=AttributeFrequency.JOINT, dtype=wp.int32
+            AttributeFrequency.CONSTRAINT_MIMIC,
+            references=AttributeFrequency.JOINT,
         ),
         "constraint_mimic_joint1": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC, references=AttributeFrequency.JOINT, dtype=wp.int32
+            AttributeFrequency.CONSTRAINT_MIMIC,
+            references=AttributeFrequency.JOINT,
         ),
         "constraint_mimic_coef0": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC,
-            dtype=wp.float32,
-            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
-            differentiable=False,
+            AttributeFrequency.CONSTRAINT_MIMIC, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
         ),
         "constraint_mimic_coef1": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC,
-            dtype=wp.float32,
-            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
-            differentiable=False,
+            AttributeFrequency.CONSTRAINT_MIMIC, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
         ),
         "constraint_mimic_enabled": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC, dtype=wp.bool, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+            AttributeFrequency.CONSTRAINT_MIMIC, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
         ),
         "constraint_mimic_label": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
         "constraint_mimic_world": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC, references=AttributeFrequency.WORLD, dtype=wp.int32
+            AttributeFrequency.CONSTRAINT_MIMIC,
+            references=AttributeFrequency.WORLD,
         ),
     }
 
@@ -3630,13 +3534,15 @@ class Model:
                 ``"body"`` and ``"world"`` are also supported. Use enums for
                 ``CURVE``, ``SURFACE``, and ``VOLUME``; their string names refer
                 to custom frequencies.
-            update_flags: Flags announcing an edit of the attribute, :class:`~newton.ModelFlags` for
-                model-assigned attributes and :class:`~newton.StateFlags` for state-assigned ones, or
-                ``None`` when no flag covers it. See :meth:`get_attribute_update_flags`.
+            update_flags: :class:`~newton.ModelFlags` announcing an edit of a model-assigned
+                attribute, or ``None`` when no flag covers it. See :meth:`get_attribute_update_flags`.
 
         Raises:
             AttributeError: If the attribute already exists or is on the wrong device.
+            ValueError: If ``update_flags`` is given for an attribute not assigned to the model.
         """
+        if update_flags is not None and assignment not in (None, Model.AttributeAssignment.MODEL):
+            raise ValueError(f"Attribute '{name}': only model-assigned attributes declare update flags")
         if isinstance(attrib, wp.array) and attrib.device != self.device:
             raise AttributeError(f"Attribute '{name}' device mismatch (model={self.device}, got={attrib.device})")
 
@@ -3706,21 +3612,16 @@ class Model:
             raise KeyError(f"Attribute frequency of '{name}' is not known")
         return spec.frequency
 
-    def get_attribute_update_flags(
-        self, name: str, *, assignment: Model.AttributeAssignment | None = None
-    ) -> ModelFlags | StateFlags | int | None:
-        """Get the flags that announce an edit of an attribute to solvers.
+    def get_attribute_update_flags(self, name: str) -> ModelFlags | int | None:
+        """Get the flags that announce an edit of a model attribute to solvers.
 
-        Solvers cache data derived from some attributes, such as MuJoCo's per-world geom properties
-        derived from :attr:`shape_material_mu`, or warm starts that depend on the state. After editing
-        a model attribute, pass the returned :class:`~newton.ModelFlags` to
-        :meth:`~newton.solvers.SolverBase.notify_model_changed`. After editing a state attribute, for
-        example to teleport bodies through ``State.body_q``, pass the returned
-        :class:`~newton.StateFlags` to :meth:`~newton.solvers.SolverBase.reset`. Solvers that read the
-        attribute directly ignore the flags. Custom attributes report the flags declared in
-        :attr:`ModelBuilder.CustomAttribute.update_flags
-        <newton.ModelBuilder.CustomAttribute.update_flags>`, for example by the solver that
-        registered them.
+        Solvers cache data derived from some model attributes, such as MuJoCo's per-world geom
+        properties derived from :attr:`shape_material_mu`. After editing a model attribute in place,
+        pass the returned flags to :meth:`~newton.solvers.SolverBase.notify_model_changed`. Solvers
+        that read the attribute directly ignore the flags. Custom attributes report the flags
+        declared in :attr:`ModelBuilder.CustomAttribute.update_flags
+        <newton.ModelBuilder.CustomAttribute.update_flags>`, for example by the solver that registered
+        them.
 
         Example:
 
@@ -3736,77 +3637,44 @@ class Model:
                 print(model.get_attribute_update_flags("shape_material_mu").name)
                 print(model.get_attribute_update_flags("mujoco:solref").name)
                 print(model.get_attribute_update_flags("mujoco:condim"))
-                print(repr(model.get_attribute_update_flags("body_q", assignment=newton.Model.AttributeAssignment.STATE)))
 
             .. testoutput::
 
                 SHAPE_PROPERTIES
                 SHAPE_PROPERTIES
                 None
-                <StateFlags.BODY_Q: 4>
 
         Args:
-            name: Name of the attribute: a built-in attribute such as ``"shape_material_mu"``, or a
+            name: Name of the model attribute: a built-in attribute such as ``"shape_material_mu"``, or a
                 custom attribute as ``"namespace:name"``, such as ``"mujoco:solref"``.
-            assignment: Object that holds the built-in attribute, for names that exist on several
-                objects, such as ``"body_q"`` on the :class:`Model` and the :class:`~newton.State`.
-                Defaults to the :class:`Model` when it has the attribute. Custom attributes always use
-                their declared assignment.
 
         Returns:
-            :class:`~newton.ModelFlags` for model attributes and :class:`~newton.StateFlags` for state,
-            control, and contacts attributes; an ``int`` when several flags are needed.
-            ``NONE`` when solvers read the attribute at every step or write it as an output, as for
-            most control and all contacts attributes. ``None`` when no flag covers the attribute:
-            solvers either read it at every step or only at construction, such as topology and
-            indices, so recreate solvers that cache it.
+            :class:`~newton.ModelFlags`, or an ``int`` when several flags are needed.
+            :attr:`ModelFlags.NONE <newton.ModelFlags.NONE>` when solvers read the attribute at every
+            step. ``None`` when no flag covers the attribute, for example because solvers read it only
+            at construction, as for topology and indices; recreate solvers that cache it.
 
         Raises:
-            KeyError: If no attribute ``name`` exists for the assignment.
+            KeyError: If the model has no attribute ``name``. :class:`~newton.State`,
+                :class:`~newton.Control`, and :class:`~newton.Contacts` attributes are not covered.
         """
-        Assignment = Model.AttributeAssignment
         spec = self._attribute_spec(name)
         if spec is not None and spec.assignment is not None:
             # Custom attribute with a declared assignment.
-            if assignment is not None and assignment != spec.assignment:
-                raise KeyError(f"Attribute '{name}' is assigned to {spec.assignment.name}, not {assignment.name}")
-            assignment = spec.assignment
-            flags = spec.update_flags
-            if flags is None and assignment in (Assignment.CONTROL, Assignment.CONTACT):
-                flags = StateFlags.NONE
+            if spec.assignment != Model.AttributeAssignment.MODEL:
+                raise KeyError(
+                    f"Attribute '{name}' is assigned to {spec.assignment.name}; only model attributes report update flags"
+                )
         else:
             namespace, _, attribute = name.rpartition(":")
             owner = getattr(self, namespace, None) if namespace else self
-            on_model = owner is not None and hasattr(owner, attribute)
-            if assignment is None:
-                if on_model:
-                    assignment = Assignment.MODEL
-                elif hasattr(State(), name):
-                    assignment = Assignment.STATE
-                elif hasattr(Control(), name):
-                    assignment = Assignment.CONTROL
-                else:
-                    raise KeyError(f"No attribute '{name}' exists")
-            if assignment == Assignment.MODEL:
-                if not on_model:
-                    raise KeyError(f"No model attribute '{name}' exists")
-                flags = None if spec is None else spec.update_flags
-            elif assignment in (Assignment.STATE, Assignment.CONTROL):
-                if not hasattr(State() if assignment == Assignment.STATE else Control(), name):
-                    raise KeyError(f"No {assignment.name.lower()} attribute '{name}' exists")
-                flags = None if spec is None else spec.state_update_flags
-                if flags is None:
-                    flags = StateFlags.NONE
-            else:
-                if not hasattr(Contacts(0, 0, device="cpu"), name):
-                    raise KeyError(f"No contacts attribute '{name}' exists")
-                # Collision detection rewrites contacts at every step.
-                flags = StateFlags.NONE
+            if owner is None or not hasattr(owner, attribute):
+                raise KeyError(f"No model attribute '{name}' exists")
+        flags = None if spec is None else spec.update_flags
         if flags is None:
             return None
-        enum = ModelFlags if assignment == Assignment.MODEL else StateFlags
         try:
-            return enum(flags)
+            return ModelFlags(flags)
         except ValueError:  # several flags
             return int(flags)
 

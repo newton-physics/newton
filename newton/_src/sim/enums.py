@@ -16,7 +16,7 @@ class ModelFlags(IntEnum):
     updates. Testing the broad bit alone does not detect a narrower notification.
 
     :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns the
-    flags to pass after editing a given attribute.
+    flags to pass after editing a given model attribute.
     """
 
     NONE = 0
@@ -91,8 +91,6 @@ class StateFlags(IntEnum):
     control which parts of the simulation state are reset, and with
     :meth:`~newton.solvers.experimental.coupled.CouplingInterface.coupling_notify_input_state_update`
     to describe which public state inputs a coupler updated.
-    :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns the
-    flags that cover an edited state attribute.
 
     .. experimental::
 

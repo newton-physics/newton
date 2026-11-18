@@ -1304,6 +1304,11 @@ class SolverBase:
                         solver.notify_model_changed(flags)
                     randomize_graph = capture.graph
 
+        .. experimental::
+
+            Notifications may become capturable whenever :meth:`step` is, which would make this
+            query unnecessary. It may change or be removed without a deprecation period.
+
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` or custom ``int`` bits to notify.
 

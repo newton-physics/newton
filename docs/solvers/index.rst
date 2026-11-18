@@ -556,16 +556,13 @@ Runtime Model Updates
 ---------------------
 
 Solvers cache data derived from the :class:`~newton.Model`, such as per-world copies of shape
-materials or factored mass matrices, and from the :class:`~newton.State`, such as warm starts.
-After editing model attributes, for example for domain randomization, call
-:meth:`~newton.solvers.SolverBase.notify_model_changed` with the :class:`~newton.ModelFlags` that
-cover them. After editing state attributes, for example to teleport bodies, call
-:meth:`~newton.solvers.SolverBase.reset` with the :class:`~newton.StateFlags` that cover them.
+materials or factored mass matrices. After editing model attributes in place, for example for
+domain randomization, call :meth:`~newton.solvers.SolverBase.notify_model_changed` with the
+:class:`~newton.ModelFlags` that cover them.
 :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns these
-flags for built-in attributes and for custom attributes such as ``"mujoco:solref"``. ``NONE`` means
-that solvers read the attribute at every step, as for most :class:`~newton.Control` and all
-:class:`~newton.Contacts` attributes, and ``None`` means that no flag covers the attribute, so
-solvers that cache it must be recreated. Some model attributes, such as
+flags for built-in model attributes and for custom model attributes such as ``"mujoco:solref"``.
+``NONE`` means that solvers read the attribute at every step, and ``None`` means that no flag
+covers the attribute, so solvers that cache it must be recreated. Some model attributes, such as
 :attr:`~newton.Model.joint_target_q`, only provide initial values for new :class:`~newton.State` or
 :class:`~newton.Control` objects, which copy them by default. Editing such a model attribute does not
 change existing objects; edit their copy directly, or create new ones.
@@ -574,8 +571,9 @@ attribute whose flags are ``NONE``, notify them with the flags of the attribute'
 :attr:`~newton.ModelFlags.BODY_PROPERTIES` for a per-body attribute.
 
 Whether a notification can be captured in a CUDA graph depends on the solver, its configuration,
-and the model. :meth:`~newton.solvers.SolverBase.is_notify_model_changed_graphable` answers it
-conservatively for given flags:
+and the model. The experimental
+:meth:`~newton.solvers.SolverBase.is_notify_model_changed_graphable` answers it conservatively for
+given flags:
 
 .. code-block:: python
 
