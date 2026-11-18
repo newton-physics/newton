@@ -933,8 +933,10 @@ def test_rigid_contact_linear_system(test, device):
     n = np.array([0.0, 0.0, 1.0])
     projector = np.eye(3) - np.outer(n, n)
 
-    for mode in ("normal", "stick", "slip", "prescribed"):
+    # Exercise both stationary and rotating kinematic boundaries under applied loads.
+    for mode in ("normal", "stick", "slip", "prescribed_rest", "prescribed"):
         with test.subTest(mode=mode):
+            prescribed = mode.startswith("prescribed")
             model.shape_material_mu.fill_(0.0 if mode == "normal" else 0.5)
             ke, kd, mu = 200.0, 4.0, 0.0 if mode == "normal" else 0.5
             if mode == "slip":
@@ -948,11 +950,15 @@ def test_rigid_contact_linear_system(test, device):
                 contacts.rigid_contact_friction.zero_()
             surface = np.array([5.0 if mode == "slip" else 0.01, 0.0, -0.2])
             contacts.rigid_contact_surface_velocity.fill_(wp.vec3(*surface))
-            if mode == "prescribed":
-                model.body_flags.assign(
-                    np.array([newton.BodyFlags.DYNAMIC, newton.BodyFlags.KINEMATIC], dtype=np.int32)
-                )
-                state_in.body_qd.assign(np.array([[0.0] * 6, [0.1, 0.0, -0.3, 0.0, 0.0, 0.0]], dtype=np.float32))
+            if prescribed:
+                flags = newton.BodyFlags.KINEMATIC
+                if mode == "prescribed":
+                    flags |= newton.BodyFlags.PROXY
+                model.body_flags.assign(np.array([newton.BodyFlags.DYNAMIC, flags], dtype=np.int32))
+                velocity = np.zeros(6) if mode == "prescribed_rest" else np.array([0.1, 0.0, -0.3, 0.4, -0.7, 1.2])
+                state_in.body_qd.assign(np.array([[0.0] * 6, velocity], dtype=np.float32))
+                model.gravity.fill_(wp.vec3(1.0, -2.0, -3.0))
+                state_in.body_f.fill_(wp.spatial_vector(0.7, -0.3, 0.5, -0.2, 0.4, 0.3))
                 state_out.body_q.assign(state_in.body_q)
                 state_out.body_qd.assign(state_in.body_qd)
             config.linear_iterations = 0
@@ -960,8 +966,14 @@ def test_rigid_contact_linear_system(test, device):
             initial = solver._x.numpy().astype(np.float64)
             target = solver._x_inertia.numpy().astype(np.float64)
             current = initial.copy()
-            if mode == "prescribed":
-                current[4:] = target[4:]
+            if prescribed:
+                # The contact target depends only on the input twist, even with nonzero COM.
+                next_rotation = wp.normalize(rotation + wp.quat(*velocity[3:], 0.0) * rotation * (0.5 * dt))
+                predicted = np.vstack(
+                    (initial[4] + dt * velocity[:3], np.array(wp.quat_to_matrix(next_rotation)).reshape(3, 3).T)
+                )
+                np.testing.assert_allclose(target[4:], predicted, atol=2e-6)
+                current[4:] = predicted
             expected_rhs = (mass @ (target - initial).reshape(-1)).reshape(8, 3)
             hessian = np.zeros((24, 24))
             for contact in range(2):
@@ -1001,13 +1013,13 @@ def test_rigid_contact_linear_system(test, device):
             # One Newton solve verifies that the same tangent reaches the actual PCG solve.
             config.linear_iterations = 32
             solver.step(state_in, state_out, None, contacts, dt)
-            active_size = 12 if mode == "prescribed" else 24
+            active_size = 12 if prescribed else 24
             expected = initial.reshape(-1).copy()
             expected[:active_size] += np.linalg.solve(
                 matrix[:active_size, :active_size], expected_rhs.reshape(-1)[:active_size]
             )
             np.testing.assert_allclose(solver._x.numpy().reshape(-1), expected, atol=3e-6)
-            if mode == "prescribed":
+            if prescribed:
                 np.testing.assert_array_equal(state_out.body_q.numpy()[1], state_in.body_q.numpy()[1])
                 np.testing.assert_array_equal(state_out.body_qd.numpy()[1], state_in.body_qd.numpy()[1])
                 np.testing.assert_array_equal(solver._inv_A_diag.numpy()[4:], 0.0)
@@ -1088,12 +1100,19 @@ def test_soft_contact_linear_system(test, device):
     mass = np.kron(np.diag(np.r_[model.particle_mass.numpy(), 2.0, 0.2, 0.2, 0.2]), np.eye(3)) / dt**2
     probe = np.random.default_rng(627).standard_normal((8, 3)).astype(np.float32)
     probe_wp = wp.array(probe, dtype=wp.vec3, device=device)
-    for mode in ("dynamic", "slip", "separating", "kinematic", "pinned", "static"):
+    # A zero-mass kinematic body must retain its velocity-based contact prediction.
+    for mode in ("dynamic", "slip", "separating", "kinematic", "kinematic_zero_mass", "pinned", "static"):
         with test.subTest(mode=mode):
+            kinematic = mode.startswith("kinematic")
             config.linear_iterations = 0
-            model.body_flags.fill_(int(newton.BodyFlags.KINEMATIC if mode == "kinematic" else newton.BodyFlags.DYNAMIC))
+            model.body_flags.fill_(int(newton.BodyFlags.KINEMATIC if kinematic else newton.BodyFlags.DYNAMIC))
+            model.body_mass.fill_(0.0 if mode == "kinematic_zero_mass" else 2.0)
+            model.body_inv_mass.fill_(0.0 if mode == "kinematic_zero_mass" else 0.5)
+            mass[12:, 12:] = (
+                0.0 if mode == "kinematic_zero_mass" else np.kron(np.diag([2.0, 0.2, 0.2, 0.2]), np.eye(3)) / dt**2
+            )
             model.particle_flags.fill_(0 if mode == "pinned" else int(newton.ParticleFlags.ACTIVE))
-            state_in.body_qd.fill_(wp.spatial_vector(0.0, 0.0, 0.2 if mode == "kinematic" else 0.0, 0.0, 0.0, 0.0))
+            state_in.body_qd.fill_(wp.spatial_vector(0.0, 0.0, 0.2 if kinematic else 0.0, 0.0, 0.0, 0.0))
             state_out.body_q.assign(state_in.body_q)
             state_out.body_qd.assign(state_in.body_qd)
             contacts.soft_contact_shape.fill_(1 if mode == "static" else 0)
@@ -1106,8 +1125,9 @@ def test_soft_contact_linear_system(test, device):
             current = initial.copy()
             weights = np.r_[1.0, local_point - com]
             w = np.r_[1.0, 0.0, 0.0, 0.0, -weights]
-            if mode == "kinematic":
-                current[4:] = target[4:]
+            if kinematic:
+                current[4, 2] += 0.2 * dt
+                np.testing.assert_allclose(target[4:], current[4:], atol=2e-6)
             if mode == "static":
                 w[1:] = 0.0
                 relative = current[0] - np.array(point_world)
@@ -1146,7 +1166,7 @@ def test_soft_contact_linear_system(test, device):
                 torque = sum(np.cross(current[5 + i], contact_rhs[5 + i]) for i in range(3))
                 np.testing.assert_allclose(torque, np.cross(lever, -contact_rhs[0]), atol=1e-7)
             active = np.ones(24, dtype=bool)
-            if mode == "kinematic":
+            if kinematic:
                 active[12:] = False
             if mode == "pinned":
                 active[:12] = False
@@ -1155,7 +1175,7 @@ def test_soft_contact_linear_system(test, device):
             config.linear_iterations = 32
             solver.step(state_in, state_out, None, contacts, dt)
             np.testing.assert_allclose(solver._x.numpy().reshape(-1), expected, atol=3e-6)
-            if mode == "kinematic":
+            if kinematic:
                 np.testing.assert_array_equal(state_out.body_q.numpy(), state_in.body_q.numpy())
                 np.testing.assert_array_equal(state_out.body_qd.numpy(), state_in.body_qd.numpy())
             if mode == "pinned":

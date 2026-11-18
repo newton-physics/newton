@@ -80,33 +80,42 @@ are read at the start of each step.
 Externally driven bodies
 ------------------------
 
-With ``Dynamics.AFFINE_BODY`` or ``Dynamics.ALL``, a positive-mass
+With ``Dynamics.AFFINE_BODY`` or ``Dynamics.ALL``, a
 :attr:`~newton.BodyFlags.KINEMATIC` body participates in contact prediction
-while its output pose and velocity remain owned by the external driver.
+regardless of mass, while its output pose and velocity remain owned by the
+external driver.
 The caller must supply ``state_in`` so that Style3D's rigid-body predictor
 reproduces the body's externally prescribed end-of-substep pose, within
 numerical precision. This requirement applies to both translation and
 rotation, using the same ``dt`` as :meth:`~newton.solvers.SolverStyle3D.step`.
 
-The predictor uses semi-implicit Euler integration with ``state_in.body_q``,
-``state_in.body_qd``, ``state_in.body_f``, and the model's mass, inertia, and
-gravity. For a positive-mass body, its predicted center of mass is
+The kinematic predictor uses only ``state_in.body_q`` and ``state_in.body_qd``.
+It ignores gravity, applied forces and torques, and gyroscopic acceleration.
+For input COM linear velocity :math:`v`, its predicted center of mass is
 
 .. math::
 
-   \hat c = c + v\,dt + (g + f/m)\,dt^2.
+   \hat c = c + v\,dt.
 
-Rotation uses the updated angular velocity, including applied torque and
-the gyroscopic term, followed by a normalized Euler quaternion update with
-zero angular damping. The input velocities must account for these integration
-rules and all supplied forces when representing a prescribed trajectory.
+Rotation uses the input world-space angular velocity :math:`\omega` in a
+normalized Euler quaternion update, without angular damping:
+
+.. math::
+
+   \hat q = \mathrm{normalize}\left(q + \frac{dt}{2}\,(\omega, 0)\,q\right).
+
+The input velocities must match these integration rules when representing a
+prescribed trajectory; they must not compensate for gravity or applied forces.
+Dynamic bodies retain semi-implicit rigid-body prediction with gravity, forces,
+torques, and the gyroscopic term.
 
 Contacts use this predicted pose to compute separation, damping, and friction
 against the externally driven body. The external driver must write consistent
 final poses and velocities to ``state_out`` before that state is consumed or
 swapped. A mismatch between the predicted and prescribed end pose makes the
 contact response inconsistent with the body's actual motion. Zero-mass bodies
-use their input pose as a fixed contact boundary for the substep.
+without :attr:`~newton.BodyFlags.KINEMATIC` use their input pose as a fixed
+contact boundary for the substep.
 
 Affine rigidity
 ---------------

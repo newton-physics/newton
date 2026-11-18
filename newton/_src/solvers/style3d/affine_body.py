@@ -152,6 +152,7 @@ def body_to_affine_kernel(
     body_inertia: wp.array[wp.mat33],
     body_inv_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
+    body_flags: wp.array[int],
     body_world: wp.array[int],
     gravity: wp.array[wp.vec3],
     dt: float,
@@ -163,23 +164,29 @@ def body_to_affine_kernel(
     start = 4 * body
     pose = body_q[body]
 
-    # Use semi-implicit rigid-body integration to define the inertial target pose.
-    next_pose, _ = integrate_rigid_body(
-        pose,
-        body_qd[body],
-        body_f[body],
-        body_com[body],
-        body_inertia[body],
-        body_inv_mass[body],
-        body_inv_inertia[body],
-        gravity[body_world[body]],
-        0.0,  # angular_damping
-        dt,
-    )
-
     # Anchor the affine map at the COM, accounting for the local body-frame offset.
     center = wp.transform_point(pose, body_com[body])
-    next_center = wp.transform_point(next_pose, body_com[body])
+    if (body_flags[body] & BodyFlags.KINEMATIC) != 0:
+        # Prescribed motion depends only on the input twist, regardless of mass or forces.
+        velocity = body_qd[body]
+        rotation = wp.transform_get_rotation(pose)
+        next_center = center + wp.spatial_top(velocity) * dt
+        next_rotation = wp.normalize(rotation + wp.quat(wp.spatial_bottom(velocity), 0.0) * rotation * (0.5 * dt))
+    else:
+        next_pose, _ = integrate_rigid_body(
+            pose,
+            body_qd[body],
+            body_f[body],
+            body_com[body],
+            body_inertia[body],
+            body_inv_mass[body],
+            body_inv_inertia[body],
+            gravity[body_world[body]],
+            0.0,  # angular_damping
+            dt,
+        )
+        next_center = wp.transform_point(next_pose, body_com[body])
+        next_rotation = wp.transform_get_rotation(next_pose)
 
     # Layout: [COM, A[:, 0], A[:, 1], A[:, 2]], all expressed in the world frame.
     # Store directions without translation to preserve precision far from the origin.
@@ -190,9 +197,9 @@ def body_to_affine_kernel(
 
     # Keep inertial targets in the same affine coordinates as the current state.
     x_inertia[start + 0] = next_center
-    x_inertia[start + 1] = wp.transform_vector(next_pose, wp.vec3(1.0, 0.0, 0.0))
-    x_inertia[start + 2] = wp.transform_vector(next_pose, wp.vec3(0.0, 1.0, 0.0))
-    x_inertia[start + 3] = wp.transform_vector(next_pose, wp.vec3(0.0, 0.0, 1.0))
+    x_inertia[start + 1] = wp.quat_rotate(next_rotation, wp.vec3(1.0, 0.0, 0.0))
+    x_inertia[start + 2] = wp.quat_rotate(next_rotation, wp.vec3(0.0, 1.0, 0.0))
+    x_inertia[start + 3] = wp.quat_rotate(next_rotation, wp.vec3(0.0, 0.0, 1.0))
 
 
 @wp.kernel
@@ -253,7 +260,8 @@ class AffineBody:
     Each body occupies four consecutive vectors: its world-space center of
     mass followed by the three columns of its affine matrix. The columns
     encode directions, independent of translation.
-    Inertial targets are predicted using rigid-body integration.
+    Inertial targets use rigid-body integration for dynamic bodies and
+    constant input velocities for kinematic bodies.
     Rigid poses are recovered by mass-weighted least squares, using an isotropic
     metric for bodies with zero inertia. Angular velocities invert the rigid
     integrator's normalized Euler quaternion update.
@@ -314,6 +322,7 @@ class AffineBody:
                 self.model.body_inertia,
                 self.model.body_inv_mass,
                 self.model.body_inv_inertia,
+                self.model.body_flags,
                 self.model.body_world,
                 self.model.gravity,
                 dt,

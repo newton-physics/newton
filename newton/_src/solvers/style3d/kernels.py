@@ -258,7 +258,7 @@ def init_step_kernel(
             row = start + i
             x_prev[row] = x_curr[row]
             dx[row] = wp.vec3(0.0)
-            if body_mass[body] <= 0.0:
+            if body_mass[body] <= 0.0 and not is_kinematic:
                 x_inertia[row] = x_curr[row]
             diagonal = mass
             if i > 0:

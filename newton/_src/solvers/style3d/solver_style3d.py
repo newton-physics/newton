@@ -564,12 +564,13 @@ class SolverStyle3D(SolverBase):
         for the selected dynamics are written to ``state_out``. Kinematic and
         zero-mass body outputs remain owned by the caller.
 
-        With affine body dynamics enabled, positive-mass kinematic bodies use
-        rigid-body integration of ``state_in`` to predict their contact poses.
-        The caller must supply velocities consistent with the supplied forces,
-        model gravity and inertia, and ``dt``, so the predictor reproduces the
-        externally prescribed end pose, including rotation. The external driver
-        owns the corresponding ``state_out`` body poses and velocities. See
+        With affine body dynamics enabled, kinematic bodies predict their contact
+        poses from ``state_in.body_q`` and ``state_in.body_qd`` alone, including
+        zero-mass kinematic bodies. Gravity, forces, and torques do not affect
+        this prediction. The caller must supply velocities that reproduce the
+        prescribed end pose over ``dt``, including the normalized Euler quaternion
+        update. The external driver owns the corresponding ``state_out`` body
+        poses and velocities. See
         :ref:`style3d-externally-driven-bodies` for the integration contract.
 
         Args:
