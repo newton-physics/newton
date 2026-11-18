@@ -808,6 +808,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         else:
             _sc_margin = particle_self_contact_margin if particle_self_contact_margin is not None else 0.2
             _sc_gap = particle_self_contact_gap if particle_self_contact_gap is not None else 0.0
+            if _sc_margin < 0.0:
+                raise ValueError(f"particle_self_contact_margin must be >= 0, got {_sc_margin}")
             if _sc_gap < 0.0:
                 raise ValueError(f"particle_self_contact_gap must be >= 0, got {_sc_gap}")
 

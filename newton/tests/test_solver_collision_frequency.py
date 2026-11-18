@@ -794,6 +794,8 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
         )
     test.assertEqual(margin_only.particle_self_contact_margin, 0.1)
     test.assertEqual(margin_only.particle_self_contact_gap, 0.0)
+    with test.assertRaises(ValueError):
+        SolverVBD(_build_cloth_model(device), iterations=1, particle_self_contact_margin=-0.1)
     # Deprecated interval warns; combining it with an explicit slot raises.
     with test.assertWarns(DeprecationWarning) as caught:
         SolverVBD(_build_cloth_model(device), iterations=1, particle_collision_detection_interval=2)
