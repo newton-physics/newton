@@ -1981,13 +1981,19 @@ def _assemble_compact_unilateral_schur_blocked(
     offset = response_mio[wid]
     y = wp.array(ptr=get_float32_array_offset_ptr(response, offset), shape=(njc, nu), dtype=float32)
     blocks = (nu + int32(3)) / int32(4)
+    triangle = blocks * (blocks + int32(1)) / int32(2)
     # Each pass assigns one upper-triangle 4x4 block per thread; larger
     # operators stream the responses again for the remaining blocks.
-    for first in range(int32(0), blocks * blocks, wp.block_dim()):
+    for first in range(int32(0), triangle, wp.block_dim()):
         block = first + lane
-        block_row = block / blocks
-        block_col = block - block_row * blocks
-        active = block < blocks * blocks and block_row <= block_col
+        active = block < triangle
+        # Walk the upper-triangle rows to map the linear index to (row, col).
+        block_row = int32(0)
+        block_col = block
+        while block_row < blocks - int32(1) and block_col >= blocks - block_row:
+            block_col -= blocks - block_row
+            block_row += int32(1)
+        block_col += block_row
         row0 = int32(4) * block_row
         col0 = int32(4) * block_col
         accum = wp.mat44f()
@@ -2981,14 +2987,27 @@ def _scheduled_compact_id(
     return float32(uid)
 
 
+COMPACT_SCHUR_PGS_BLOCK_DIM = 128
+"""Threads per block for compact Schur sweeps: four one-warp worlds per block."""
+
+COMPACT_SCHUR_PGS_TIERS = (64, 96, 128)
+"""Row capacities of the compact sweeps; each world uses the smallest that fits."""
+
+
 @cache
 def make_compact_schur_pgs_kernel(max_rows: int):
-    """Build a compact sweep with register storage matched to its row range."""
-    if max_rows not in (32, 64, 128):
-        raise ValueError("Compact Schur kernels support 32, 64, or 128 rows.")
+    """Build a compact sweep with register storage matched to its row range.
+
+    Each world is swept by one warp; launch with ``dim = num_worlds * 32`` and
+    :data:`COMPACT_SCHUR_PGS_BLOCK_DIM` threads per block.
+    """
+    if max_rows not in (32, *COMPACT_SCHUR_PGS_TIERS):
+        raise ValueError(f"Compact Schur kernels support 32 or {COMPACT_SCHUR_PGS_TIERS} rows.")
     chunks = max_rows // 32
-    min_rows = 0 if max_rows <= 64 else 64
+    # Each tier sweeps the worlds above the next smaller tier.
+    min_rows = max((tier for tier in COMPACT_SCHUR_PGS_TIERS if tier < max_rows), default=0)
     vector = wp.types.vector(length=chunks, dtype=float32)
+    index_vector = wp.types.vector(length=chunks, dtype=int32)
 
     @wp.func
     def get_component(values: vector, index: int32) -> float32:
@@ -3015,7 +3034,9 @@ def make_compact_schur_pgs_kernel(max_rows: int):
             values[i] = schur[base + target]
         return values
 
-    @wp.kernel(module="unique", enable_backward=False)
+    # Capping registers keeps 24 warps resident per SM with 128-thread blocks;
+    # the serial sweeps are latency bound, so occupancy outweighs minor spills.
+    @wp.kernel(module="unique", enable_backward=False, cuda_max_registers=80)
     def solve_compact_schur_pgs(
         limit_indices: wp.array[int32],
         contact_indices: wp.array[int32],
@@ -3091,9 +3112,9 @@ def make_compact_schur_pgs_kernel(max_rows: int):
 
         # Forward sweeps visit slots in storage order; odd tangent sweeps reverse
         # the colors and the slots within each group but keep groups in order.
-        # Tile element writes synchronize the block, so keep them uniform: lanes
-        # past the end of a group write to a scratch slot instead.
-        reverse = wp.tile_zeros(shape=(160,), dtype=int32, storage="shared")
+        # Each lane resolves the reversed slots it owns directly, so the sweep
+        # needs no shared memory or block barriers and blocks can hold several worlds.
+        reverse = index_vector()
         num_colors = inequality_num_colors[wid]
         position = int32(0)
         for color_index in range(num_colors):
@@ -3105,16 +3126,11 @@ def make_compact_schur_pgs_kernel(max_rows: int):
                 slot_start = inequality_group_starts[schedule_offset + group]
                 slot_end = inequality_group_starts[schedule_offset + group + int32(1)]
                 count = slot_end - slot_start
-                for base in range(int32(0), count, int32(32)):
-                    iteration = base + lane
-                    index = int32(128) + lane
-                    value = int32(0)
-                    if iteration < count:
-                        index = position + iteration
-                        value = inequality_ids_by_color[uio + slot_end - int32(1) - iteration]
-                    reverse[index] = value
+                for chunk in range(wp.static(chunks)):
+                    iteration = lane + int32(32) * chunk - position
+                    if iteration >= int32(0) and iteration < count:
+                        reverse[chunk] = inequality_ids_by_color[uio + slot_end - int32(1) - iteration]
                 position += count
-        _sync_warp_32()
 
         # Keep both schedules in registers, with skipped slots marked as -1, so
         # the serial chain shuffles them instead of issuing dependent loads.
@@ -3127,8 +3143,31 @@ def make_compact_schur_pgs_kernel(max_rows: int):
                     inequality_ids_by_color[uio + step], nbc, scalar_count, lio, cio, limit_indices, contact_indices
                 )
                 reverse_ids[chunk] = _scheduled_compact_id(
-                    reverse[step], nbc, scalar_count, lio, cio, limit_indices, contact_indices
+                    reverse[chunk], nbc, scalar_count, lio, cio, limit_indices, contact_indices
                 )
+
+        # Tangent phases only update contacts, so compact both schedules to their
+        # mapped contact slots once instead of skipping scalar slots every sweep.
+        tangent_forward_ids = vector()
+        tangent_reverse_ids = vector()
+        tangent_slots = int32(0)
+        for step in range(slots):
+            forward_uid = int32(_shuffle_lane_32(get_component(forward_ids, step / int32(32)), step % int32(32)))
+            if forward_uid >= scalar_count:
+                if lane == tangent_slots % int32(32):
+                    tangent_forward_ids = set_component(
+                        tangent_forward_ids, tangent_slots / int32(32), float32(forward_uid)
+                    )
+                tangent_slots += int32(1)
+        reverse_slot = int32(0)
+        for step in range(slots):
+            reverse_uid = int32(_shuffle_lane_32(get_component(reverse_ids, step / int32(32)), step % int32(32)))
+            if reverse_uid >= scalar_count:
+                if lane == reverse_slot % int32(32):
+                    tangent_reverse_ids = set_component(
+                        tangent_reverse_ids, reverse_slot / int32(32), float32(reverse_uid)
+                    )
+                reverse_slot += int32(1)
 
         # Each lane owns a fixed number of rows throughout the solve. Only Schur rows
         # are streamed during the serial update chain.
@@ -3162,10 +3201,13 @@ def make_compact_schur_pgs_kernel(max_rows: int):
         for sweep in range(sweep_count):
             for phase in range(2):
                 use_reverse = phase == int32(1) and (sweep % cfg.inequality_sweeps_per_iteration) % int32(2) != int32(0)
-                for step in range(slots):
-                    ids = wp.where(use_reverse, reverse_ids, forward_ids)
+                phase_slots = wp.where(phase == int32(0), slots, tangent_slots)
+                for step in range(phase_slots):
+                    ids = forward_ids
+                    if phase != int32(0):
+                        ids = wp.where(use_reverse, tangent_reverse_ids, tangent_forward_ids)
                     uid = int32(_shuffle_lane_32(get_component(ids, step / int32(32)), step % int32(32)))
-                    if uid < int32(0) or (uid < scalar_count and phase != int32(0)):
+                    if uid < int32(0):
                         continue
                     row = _compact_unilateral_row(uid, nbc, scalar_count, bcgo, lcgo, ccgo, njc)
                     component = _cooperative_unilateral_component(uid, scalar_count, phase)

@@ -8,7 +8,7 @@ from typing import Any
 
 import warp as wp
 
-from ...core import MAXVAL
+from ..core import MAXVAL
 
 # Knuth multiplicative hash constant (2^32 / golden ratio).
 # Typed uint32 so kernel codegen doesn't overflow an int32 constant.
