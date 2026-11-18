@@ -67,6 +67,7 @@ jobs:
             ubuntu-latest,
             ubuntu-24.04-arm,
             windows-latest,
+            windows-11-arm,
             macos-latest,
           ]
     runs-on: ${{ matrix.os }}
@@ -99,6 +100,9 @@ jobs:
       matrix:
         include:
           - &unittest-arm { os: ubuntu-24.04-arm, shard-index: 0, shard-count: 1 }
+          # pyproject.toml markers drop dependencies without wheels here, which
+          # catches tests that declare only some of their optional dependencies.
+          - &unittest-windows-arm { os: windows-11-arm, shard-index: 0, shard-count: 1 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -168,7 +172,9 @@ jobs:
           --shard-index ${{ matrix.shard-index }}
           --junit-report-xml rspec.xml
           ${{ env.UPLOAD_TO_CODECOV == 'true' && '--coverage --coverage-xml coverage.xml' || '' }}
+      # Benchmarks do not run on Windows ARM64, which lacks asv and MuJoCo.
       - name: Run ASV harness unit tests
+        if: matrix.os != 'windows-11-arm'
         run: >
           uv run --no-sync -m newton.tests
           --strict-warnings
@@ -406,6 +412,7 @@ jobs:
           - *unittest-ubuntu-0
           - *unittest-ubuntu-1
           - *unittest-arm
+          - *unittest-windows-arm
           - *unittest-windows-0
           - *unittest-windows-1
           - *unittest-macos-0

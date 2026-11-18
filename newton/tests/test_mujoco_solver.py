@@ -2064,6 +2064,12 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
         )
         template_builder.add_articulation([joint])
 
+        for add_joint in (template_builder.add_joint_free, template_builder.add_joint_ball):
+            body = template_builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            template_builder.add_shape_box(body=body, hx=0.05, hy=0.05, hz=0.05)
+            joint = add_joint(parent=-1, child=body)
+            template_builder.add_articulation([joint])
+
         world_count = 3
         builder = newton.ModelBuilder()
         builder.replicate(template_builder, world_count)
@@ -2088,14 +2094,18 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
 
         # Get mappings
         mjc_dof_to_newton_dof = solver.mjc_dof_to_newton_dof.numpy()
-        mjc_jnt_to_newton_dof = solver.mjc_jnt_to_newton_dof.numpy()
+        joint_dof_starts = model.joint_qd_start.numpy()[solver.mjc_jnt_to_newton_jnt.numpy()]
         nworld_mjc = mjc_dof_to_newton_dof.shape[0]
         nv_mjc = mjc_dof_to_newton_dof.shape[1]
-        njnt_mjc = mjc_jnt_to_newton_dof.shape[1]
+        njnt_mjc = joint_dof_starts.shape[1]
 
         def assert_passive_values(expected_stiffness: np.ndarray, expected_damping: np.ndarray):
             dof_damping = solver.mjw_model.dof_damping.numpy()
             jnt_stiffness = solver.mjw_model.jnt_stiffness.numpy()
+            np.testing.assert_array_equal(
+                solver.mjw_model.jnt_axis.numpy(),
+                np.broadcast_to(solver.mj_model.jnt_axis, (nworld_mjc, njnt_mjc, 3)),
+            )
 
             # Check DOF damping - iterate over MuJoCo DOFs
             for world_idx in range(nworld_mjc):
@@ -2113,7 +2123,7 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
             # Check joint stiffness - iterate over MuJoCo joints
             for world_idx in range(nworld_mjc):
                 for mjc_jnt in range(njnt_mjc):
-                    newton_dof = mjc_jnt_to_newton_dof[world_idx, mjc_jnt]
+                    newton_dof = joint_dof_starts[world_idx, mjc_jnt]
                     if newton_dof < 0:
                         continue
                     self.assertAlmostEqual(
@@ -2130,7 +2140,7 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
 
         model.joint_stiffness.assign(updated_stiffness)
         model.joint_damping.assign(updated_damping)
-        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_PROPERTIES)
 
         assert_passive_values(updated_stiffness, updated_damping)
 
