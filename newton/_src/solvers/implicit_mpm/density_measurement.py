@@ -466,8 +466,9 @@ def make_shielded_contact_kernel(pic):
     A contact is shielded when another active particle lies between half a
     particle diameter and half a diameter plus the gap (at most one diameter)
     below it along the collider normal, within one diameter laterally. Resting
-    contacts (negative gap) and contacts that bind at the particle's step-start
-    velocity, approaching faster than the collider velocity allows, are kept.
+    contacts (negative gap) and contacts that bind at the particle's free
+    velocity, its step-start velocity plus this step's gravity and applied
+    forces, approaching faster than the collider velocity allows, are kept.
     """
     domain = pic.domain
     grid = domain.geometry
@@ -490,6 +491,11 @@ def make_shielded_contact_kernel(pic):
         contact_gaps: wp.array[float],
         collider_ids: wp.array[int],
         velocities: wp.array[wp.vec3],
+        gravity: wp.array[wp.vec3],
+        particle_world: wp.array[wp.int32],
+        particle_f: wp.array[wp.vec3],
+        particle_inv_mass: wp.array[float],
+        dt: float,
         collider_velocities: wp.array[wp.vec3],
         h: float,
         shielded: wp.array[int],
@@ -502,8 +508,13 @@ def make_shielded_contact_kernel(pic):
         if sn < 0:
             return
         p = particle_indices[sn]
-        # The collider velocity holds the approach the gap allows this step: a particle already faster keeps its contact
-        if wp.dot(velocities[p] - collider_velocities[i], contact_normals[i]) < 0.0:
+        # The collider velocity holds the approach the gap allows this step: a particle whose free velocity
+        # is faster keeps its contact
+        acceleration = gravity[particle_world[p]]
+        if particle_f:
+            acceleration += particle_f[p] * particle_inv_mass[p]
+        free_velocity = velocities[p] + dt * acceleration
+        if wp.dot(free_velocity - collider_velocities[i], contact_normals[i]) < 0.0:
             return
         d = 2.0 * radii[p]
         lo = 0.5 * d

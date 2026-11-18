@@ -205,10 +205,15 @@ def test_sdf_gradient_normals_separate_worlds(test, device):
 
 
 def test_contact_shielding_keeps_binding_contacts(test, device):
-    """Deactivate a contact behind a particle closer to the floor, unless it approaches faster than its gap allows."""
+    """Deactivate a contact behind a particle closer to the floor, unless it approaches faster than its gap allows.
+
+    The approach counts the step's applied forces: a particle at rest that a force pushes into the floor keeps its
+    contact.
+    """
     with wp.ScopedDevice(device):
         radius = 0.01
-        for fall_speed, shielded in ((0.0, True), (5.0, False)):
+        # (initial fall speed, downward force on the unit-mass particle, contact shielded)
+        for fall_speed, push, shielded in ((0.0, 0.0, True), (5.0, 0.0, False), (0.0, 500.0, False)):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             SolverImplicitMPM.register_custom_attributes(builder)
             builder.add_ground_plane()
@@ -219,6 +224,7 @@ def test_contact_shielding_keeps_binding_contacts(test, device):
             solver = SolverImplicitMPM(model, config=_config(0.1))
             contacts = _capture_contacts(solver)
             state = model.state()
+            state.particle_f.assign(np.array([[0.0, 0.0, 0.0], [0.0, 0.0, -push]], dtype=np.float32))
             solver.step(state, state, None, None, 0.01)
             positions, normals, _gaps, _offsets = contacts[0]
             active = np.linalg.norm(normals, axis=1) > 0.5
