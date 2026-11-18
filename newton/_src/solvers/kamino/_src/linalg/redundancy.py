@@ -67,7 +67,7 @@ _SHIFTED_ROW_MARGIN = wp.constant(wp.float32(10.0))
 """Factor of the threshold above which the residual of a shifted row fails the check."""
 
 _REFERENCE_MARGIN = wp.constant(wp.float32(0.1))
-"""Factor of the reference eigenvalue below which the kept rows fail the check on the factor."""
+"""Factor of the reference eigenvalue below which the kept rows fail the check."""
 
 _ITERATE_SEED = wp.constant(wp.int32(5381))
 """Seed of the initial iterate of the inverse iterations."""
@@ -271,6 +271,31 @@ def _update_shifts(
     if shift_matrix and value != 0.0:
         row = row_offset[wid] + i
         A[wid, row * ld[wid] + row] += value
+
+
+@wp.kernel
+def _update_reference(
+    # Inputs:
+    num_rows: wp.array[wp.int32],
+    pivot_rows: wp.array[wp.int32],
+    shifted: wp.array2d[wp.int32],
+    shifts: wp.array2d[wp.float32],
+    eigenvalue: wp.array[wp.float32],
+    # Outputs:
+    reference: wp.array[wp.float32],
+):
+    """
+    Keep the eigenvalue of the eliminated worlds whose shifted rows did not change, given by their shifts before
+    the update, as the reference of their next checks.
+    """
+    wid = wp.tid()
+    if pivot_rows[wid] == 0:
+        return
+    changed = wp.int32(0)
+    for i in range(num_rows[wid]):
+        if wp.where(shifts[wid, i] != 0.0, 1, 0) != shifted[wid, i]:
+            changed = 1
+    reference[wid] = wp.where(changed == 0, eigenvalue[wid], wp.float32(0.0))
 
 
 @wp.kernel
@@ -552,6 +577,7 @@ def _make_check_kernel():
         L: wp.array2d[wp.float32],
         diagonal: wp.array2d[wp.float32],
         shifted: wp.array2d[wp.int32],
+        reference: wp.array[wp.float32],
         threshold: wp.float32,
         # Scratch:
         X: wp.array3d[wp.float32],
@@ -646,9 +672,12 @@ def _make_check_kernel():
                         independent = 1
             failed += wp.tile_sum(wp.tile(independent))[0]
 
-        # The kept rows are dependent if the smallest eigenvalue is small
+        # The kept rows are dependent if the smallest eigenvalue is small, or much smaller than its reference
         eigenvalue = 1.0 / rayleigh
-        if not (eigenvalue >= threshold):
+        limit = threshold
+        if reference[wid] > 0.0:
+            limit = wp.min(threshold, _REFERENCE_MARGIN * reference[wid])
+        if not (eigenvalue >= limit):
             failed += 1
 
         # Select the world for a new elimination
@@ -863,16 +892,17 @@ class RedundantRowShift:
     fails if the smallest eigenvalue of the Jacobi-scaled shifted block is below ``threshold``, i.e. if the
     kept rows became dependent, or if the Schur complement of a shifted row exceeds its shift by ten times
     ``threshold`` relative to its diagonal, i.e. if the shifted row became independent. The elimination is
-    then repeated for the failed worlds only.
+    then repeated for the failed worlds only. Since the relative pivots do not bound the smallest eigenvalue,
+    valid shifted rows can fail the check. So, when the elimination of a failed world keeps the same rows, its
+    eigenvalue becomes the reference of its next checks, which only fail below a tenth of it.
 
     When the loaded matrices are factorized anyway, the shifted rows can instead be checked from the Cholesky
     factor of the whole shifted and regularized matrix, which saves the factorization of the block: :meth:`shift`
     adds the shifts of the last elimination to the matrices before their factorization, :meth:`check_factor`
     checks the factor without the regularization of the block, and :meth:`eliminate` repeats the elimination of
     the failed worlds, which must then be refactorized. The coupling of the block with the other rows can also
-    lower the eigenvalue, e.g. with hyperstatic contacts, which the elimination of the block cannot fix. So, when
-    the elimination of a failed world keeps the same rows, its eigenvalue becomes the reference of its next checks
-    on the factor, which only fail below a tenth of it.
+    lower the eigenvalue, e.g. with hyperstatic contacts, which the elimination of the block cannot fix, and the
+    reference applies in the same way.
 
     Args:
         num_worlds: The number of worlds.
@@ -1106,6 +1136,14 @@ class RedundantRowShift:
             block_dim=self.block_dim,
             device=self.shifted.device,
         )
+        if reuse:
+            wp.launch(
+                _update_reference,
+                dim=self.num_worlds,
+                inputs=[self._num_rows, self.pivot_rows, self.shifted, self.shifts, self._eigenvalue],
+                outputs=[self._reference],
+                device=self.shifted.device,
+            )
         wp.launch(
             _update_shifts,
             dim=self.shifted.shape,
@@ -1161,6 +1199,7 @@ class RedundantRowShift:
                 self._factor,
                 self._diagonal,
                 self.shifted,
+                self._reference,
                 wp.float32(self.threshold),
                 self._rhs,
                 self._iterate,
