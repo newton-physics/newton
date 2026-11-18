@@ -116,6 +116,15 @@ def compute_box_complementarity_residual(
 
     Positive velocity complements the lower face and negative velocity
     complements the upper face.
+
+    Args:
+        lambda_value: Current multiplier value.
+        velocity: Constraint velocity.
+        lower: Lower multiplier bound.
+        upper: Upper multiplier bound.
+
+    Returns:
+        Directional complementarity residual.
     """
     return (lambda_value - lower) * wp.max(velocity, 0.0) + (upper - lambda_value) * wp.max(-velocity, 0.0)
 
@@ -293,7 +302,6 @@ def compute_cwise_vec_div(
 def compute_gemv(
     dim: wp.int32,
     vio: wp.int32,
-    mio: wp.int32,
     sigma: wp.float32,
     P: wp.array[wp.float32],
     A: wp.array[wp.float32],
@@ -304,16 +312,13 @@ def compute_gemv(
     """
     Computes the generalized matrix-vector product `c =  b + (A - sigma * I_n)@ x`.
 
-    The matrix `A` is stored using row-major order in flat array with allocation size `maxdim x maxdim`,
-    starting from the matrix index offset `mio`. The active dimensions of the matrix are `dim x dim`,
-    where `dim` is the number of rows and columns. The vectors `x, b, c` are stored in flat arrays with
-    dimensions `dim`, starting from the vector index offset `vio`.
+    `A` is one world's matrix row, containing the active `dim x dim` matrix in row-major order.
+    The vectors `x, b, c` are stored in flat arrays with dimensions `dim`, starting from the vector
+    index offset `vio`.
 
     Args:
-        maxdim: The maximum dimension of the matrix `A`.
         dim: The active dimension of the matrix `A` and the vectors `x, b, c`.
         vio: The vector index offset (i.e. start index) for the vectors `x, b, c`.
-        mio: The matrix index offset (i.e. start index) for the matrix `A`.
         A: Input matrix `A` stored in row-major order.
         x: Input array `x` to be multiplied with the matrix `A`.
         b: Input array `b` to be added to the product `A @ x`.
@@ -323,7 +328,7 @@ def compute_gemv(
     x_j = float(0.0)
     for i in range(dim):
         v_i = vio + i
-        m_i = mio + dim * i
+        m_i = dim * i
         b_i = b[v_i]
         for j in range(dim):
             x_j = x[vio + j]

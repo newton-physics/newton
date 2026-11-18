@@ -18,11 +18,25 @@ from .collision_primitive import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
+from .deformable_visual import DeformableVisualMesh, DeformableVisuals
 from .flags import ParticleFlags, ShapeFlags
 from .inertia import compute_inertia_shape, compute_inertia_sphere, transform_inertia
+from .particle_surface import ParticleSurface, extract_particle_surface
 from .raycast import intersect_ray as intersect_ray
 from .sdf_utils import SDF
 from .terrain_generator import create_mesh_heightfield, create_mesh_terrain
+from .tri_mesh_collision import (
+    TriMeshCollisionInfo,
+    build_tri_mesh_collision_info,
+    get_edge_colliding_edges,
+    get_edge_colliding_edges_count,
+    get_edge_collision_buffer_edge_index,
+    get_triangle_colliding_vertices,
+    get_triangle_colliding_vertices_count,
+    get_vertex_colliding_triangles,
+    get_vertex_colliding_triangles_count,
+    get_vertex_collision_buffer_vertex_index,
+)
 from .types import (
     Gaussian,
     GeoType,
@@ -37,13 +51,18 @@ __all__ = [
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
+    "DeformableVisualMesh",
+    "DeformableVisuals",
     "Gaussian",
     "GeoType",
     "Heightfield",
     "Mesh",
     "ParticleFlags",
+    "ParticleSurface",
     "ShapeFlags",
     "TetMesh",
+    "TriMeshCollisionInfo",
+    "build_tri_mesh_collision_info",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",
@@ -61,6 +80,15 @@ __all__ = [
     "compute_shape_radius",
     "create_mesh_heightfield",
     "create_mesh_terrain",
+    "extract_particle_surface",
+    "get_edge_colliding_edges",
+    "get_edge_colliding_edges_count",
+    "get_edge_collision_buffer_edge_index",
+    "get_triangle_colliding_vertices",
+    "get_triangle_colliding_vertices_count",
+    "get_vertex_colliding_triangles",
+    "get_vertex_colliding_triangles_count",
+    "get_vertex_collision_buffer_vertex_index",
     "test_group_pair",
     "test_world_and_group_pair",
     "transform_inertia",

@@ -1,30 +1,40 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Dahl Hysteresis Validation
-#
-# Four cantilever cables are driven through slow one-sided cycles:
-#
-#   1. bend elastic: cyclic transverse tip force
-#   2. bend Dahl:    same force, Dahl history enabled
-#   3. twist elastic: cyclic kinematic tip twist
-#   4. twist Dahl:    same kinematic twist, Dahl history enabled
-#
-# The bend pair validates visible force/deflection hysteresis and permanent
-# set. The twist pair validates torque/twist hysteresis in the split twist
-# subspace without the dynamic artifacts of a free moment-driven tip.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_dahl_hysteresis
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_dahl_hysteresis --test --viewer null
-#
-# Verification/report modes:
-#   --cable-dahl-mode {all,bend,twist}   (default: all)
-#
-###########################################################################
+"""Cable Dahl Hysteresis Validation
+
+Four cantilever cables are driven through slow one-sided cycles:
+
+  1. bend elastic: cyclic transverse tip force
+  2. bend Dahl:    same force, Dahl history enabled
+  3. twist elastic: cyclic kinematic tip twist
+  4. twist Dahl:    same kinematic twist, Dahl history enabled
+
+The bend pair validates visible force/deflection hysteresis and permanent
+set. The twist pair validates torque/twist hysteresis in the split twist
+subspace without the dynamic artifacts of a free moment-driven tip.
+
+Verification/report modes:
+  --cable-dahl-mode {all,bend,twist}   (default: all)
+
+Success criteria:
+- The displayed elastic and Dahl cables follow the prescribed slow loading and unloading cycles.
+- Inspect the final settling interval separately from the driven cycles.
+
+Runs:
+- `python -m newton.examples cable_dahl_hysteresis`
+  - Both bend and twist comparison pairs are displayed.
+  - Bend comparisons show force/deflection hysteresis and residual set for Dahl relative to the
+    elastic reference.
+  - Twist comparisons show torque/twist hysteresis without substantial unintended bending.
+- `python -m newton.examples cable_dahl_hysteresis --cable-dahl-mode bend`
+  - Only the bend comparison pair is displayed.
+  - Bend comparisons show force/deflection hysteresis and residual set for Dahl relative to the
+    elastic reference.
+- `python -m newton.examples cable_dahl_hysteresis --cable-dahl-mode twist`
+  - Only the twist comparison pair is displayed.
+  - Twist comparisons show torque/twist hysteresis without substantial unintended bending.
+"""
 
 import math
 from typing import ClassVar
@@ -124,7 +134,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
         self._configure_dahl_attributes()
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -190,19 +200,17 @@ class Example:
 
     def _add_cantilever(self, builder, name: str, mode: str) -> tuple[list[int], tuple[int, int]]:
         start = wp.vec3(0.0, self.CASE_Y[name], 0.0)
-        points = newton.utils.cable_straight_points(
+        rod = newton.Rod.create_straight(
             start=start,
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=self.cable_length,
-            num_segments=self.NUM_ELEMENTS,
+            segment_count=self.NUM_ELEMENTS,
+            radius=self.CABLE_RADIUS,
         )
-        quats = newton.utils.rod_parallel_transport_quaternions(points)
 
         joint_count_before = builder.joint_count
         rod_bodies, _ = builder.add_rod(
-            positions=points,
-            quaternions=quats,
-            radius=self.CABLE_RADIUS,
+            rod=rod,
             stretch_stiffness=self.STRETCH_STIFFNESS,
             stretch_damping=0.0,
             bend_stiffness=self.BEND_STIFFNESS,
@@ -210,7 +218,6 @@ class Example:
             twist_stiffness=self.TWIST_STIFFNESS,
             twist_damping=self.TWIST_DAMPING,
             label=f"dahl_{name}",
-            body_frame_origin="com",
         )
         joint_count_after = builder.joint_count
 

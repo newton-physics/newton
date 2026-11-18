@@ -5,24 +5,6 @@
 
 from __future__ import annotations
 
-DEFAULT_LIMIT_GAIN_RTOL = 1.0e-5
-"""Relative tolerance for detecting imported MuJoCo default joint-limit gains.
-
-Used to recognise the ``joint_limit_ke`` / ``joint_limit_kd`` values
-that result from importing MuJoCo's implicit default ``solreflimit``
-(``(0.02, 1.0)``), so that ``SOLREF_MODE_MJCF_DEFAULT`` joints stay in
-the "preserve compile-time default" state until the user actually
-edits the gains. A relative tolerance lets the threshold scale with the
-default magnitudes ``DEFAULT_LIMIT_KE = 2500`` and
-``DEFAULT_LIMIT_KD = 100`` instead of being invisible at ``ke≈2500``.
-"""
-
-DEFAULT_LIMIT_KD = 100.0
-"""Newton damping gain equivalent to MuJoCo's implicit default joint-limit solref."""
-
-DEFAULT_LIMIT_KE = 2500.0
-"""Newton stiffness gain equivalent to MuJoCo's implicit default joint-limit solref."""
-
 DEFAULT_LIMIT_SOLREF = (0.02, 1.0)
 """MuJoCo's implicit default joint-limit solref pair."""
 
@@ -32,11 +14,15 @@ DEFAULT_LIMIT_SOLREF_DAMPRATIO = DEFAULT_LIMIT_SOLREF[1]
 DEFAULT_LIMIT_SOLREF_TIMECONST = DEFAULT_LIMIT_SOLREF[0]
 """MuJoCo's implicit default joint-limit solref time-constant component."""
 
-HINGE_CONNECT_AXIS_OFFSET = 0.1
-"""Distance [m] along the hinge axis for the second CONNECT constraint point of a revolute loop joint."""
+HINGE_CONNECT_HALF_SPAN = 0.05
+"""Distance [m] along the hinge axis from a revolute loop joint's anchor to each of its two CONNECT points."""
 
-KINEMATIC_ARMATURE = 1.0e10
-"""Large MuJoCo armature value used to make kinematic-body DOFs effectively immovable."""
+KINEMATIC_LOCK_INERTIA_RATIO = 1.0e4
+"""Armature, relative to a DOF's own inertia (``dof_M0``), that locks kinematic root DOFs while MuJoCo computes its
+constants.
+
+Larger ratios make kinematic roots more rigid but slow the convergence of iterative solvers on their weld and
+contact rows."""
 
 MJ_MINMU = 1.0e-5
 """MuJoCo's minimum friction coefficient clamp."""
@@ -51,4 +37,4 @@ SOLREF_MODE_RAW = 1
 """Interpret ``mujoco.solreflimit`` as a raw MuJoCo-authored solref value."""
 
 SOLREF_MODE_MJCF_DEFAULT = 2
-"""Preserve MuJoCo's implicit joint-limit solref until imported default gains are edited."""
+"""Preserve MuJoCo's implicit joint-limit solref until Newton's generic gains are edited."""

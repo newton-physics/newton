@@ -70,6 +70,8 @@ class ViewerNull(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
+        opacity: float | None = None,
     ):
         """
         No-op implementation for logging a mesh.
@@ -89,6 +91,8 @@ class ViewerNull(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
+            opacity: Optional display opacity in [0, 1].
         """
         pass
 
@@ -102,6 +106,7 @@ class ViewerNull(ViewerBase):
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         No-op implementation for logging mesh instances.
@@ -114,10 +119,15 @@ class ViewerNull(ViewerBase):
             colors: Instance colors.
             materials: Instance materials.
             hidden: Whether the instances are hidden.
+            opacities: Instance opacities.
         """
         pass
 
     @override
+    def _log_deformable_visual_meshes(self, state):
+        # Nothing is drawn, so display options are no-ops here, as for the other show_* flags.
+        return
+
     def begin_frame(self, time: float):
         """
         No-op implementation for beginning a frame.

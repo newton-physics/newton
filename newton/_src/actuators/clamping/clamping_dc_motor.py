@@ -9,7 +9,8 @@ from typing import Any
 
 import warp as wp
 
-from .base import Clamping
+from ...exceptions import NewtonDeprecationWarning
+from .base import ClampingBase
 
 
 @wp.kernel(enable_backward=False)
@@ -94,10 +95,10 @@ def _clamp_dc_motor_kernel(
     dst[i] = wp.clamp(src[i], effort_min, effort_max)
 
 
-class ClampingDCMotor(Clamping):
+class ClampingDCMotor(ClampingBase):
     r"""DC motor four-quadrant effort-speed saturation.
 
-    Clips controller output using the linear effort-speed characteristic::
+    Clips drive output using the linear effort-speed characteristic::
 
         effort_max(vel) = min(saturation_effort * (1 - vel / velocity_limit),  max_motor_effort)
         effort_min(vel) = max(saturation_effort * (-1 - vel / velocity_limit), -max_motor_effort)
@@ -106,6 +107,11 @@ class ClampingDCMotor(Clamping):
     (capped by ``max_motor_effort``). As velocity approaches
     ``velocity_limit``, available effort in the direction of motion drops
     to zero.
+
+    This clamp models a DC motor by its effort-speed limit only. It cannot be
+    combined with a motor such as :class:`~newton.actuators.MotorDC`, which
+    models the motor itself including its back-EMF, so the effort-speed limit
+    would be applied a second time.
     """
 
     @classmethod
@@ -172,7 +178,7 @@ class ClampingDCMotor(Clamping):
             "The clamp derives the corner velocity from the live parameters instead, so a stored "
             "copy is no longer used; compute it as velocity_limit * (1 + max_motor_effort / "
             "saturation_effort) if you need the value.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         corner = wp.zeros_like(self.velocity_limit)

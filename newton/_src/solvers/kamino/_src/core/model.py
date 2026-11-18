@@ -24,7 +24,6 @@ from .conversions import (
 )
 from .data import DataKamino, DataKaminoInfo
 from .geometry import GeometriesData, GeometriesModel
-from .gravity import GravityModel
 from .joints import (
     JointsData,
     JointsModel,
@@ -225,6 +224,9 @@ class ModelKaminoInfo:
     Shape of ``(num_worlds,)``.
     """
 
+    num_joint_effort_cts: wp.array[wp.int32] | None = None
+    """The number of effort-limit implicit-PD constraint rows in each world."""
+
     max_limit_cts: wp.array[wp.int32] | None = None
     """
     The maximum number of active limit constraints of each world.
@@ -377,14 +379,22 @@ class ModelKaminoInfo:
     Shape of ``(num_worlds,)``.
     """
 
-    # TODO: We could make this an array of vec6i and store the absolute
+    joint_effort_cts_offset: wp.array[wp.int32] | None = None
+    """
+    The index offset of the effort limited implicit-PD actuator constraint block of each world.
+    Used to index into arrays that contain flattened effort limited implicit-PD actuator constraint data.
+    Shape of ``(num_worlds,)``.
+    """
+
+    # TODO: We could make this an array of vec7i and store the absolute
     #  startindex of each constraint group in the constraint array `lambda`:
     # - [0]: total_cts_offset
     # - [1]: joint_dynamic_cts_group_offset
     # - [2]: joint_kinematic_cts_group_offset
     # - [3]: joint_friction_cts_group_offset
-    # - [4]: limit_cts_group_offset
-    # - [5]: contact_cts_group_offset
+    # - [4]: joint_effort_cts_group_offset
+    # - [5]: limit_cts_group_offset
+    # - [6]: contact_cts_group_offset
     # TODO: We could then provide helper functions to get the start-end of each block
     total_cts_offset: wp.array[wp.int32] | None = None
     """
@@ -395,6 +405,7 @@ class ModelKaminoInfo:
     - joint_dynamic_cts_group_offset
     - joint_kinematic_cts_group_offset
     - joint_friction_cts_group_offset
+    - joint_effort_cts_group_offset
     - limit_cts_group_offset
     - contact_cts_group_offset
 
@@ -405,6 +416,7 @@ class ModelKaminoInfo:
     local_joint_dynamic_cts_start = model_info.joint_dynamic_cts_group_offset[w]
     local_joint_kinematic_cts_start = model_info.joint_kinematic_cts_group_offset[w]
     local_joint_friction_cts_start = model_info.joint_friction_cts_group_offset[w]
+    local_joint_effort_cts_start = model_info.joint_effort_cts_group_offset[w]
     local_limit_cts_start = model_info.limit_cts_group_offset[w]
     local_contact_cts_start = model_info.contact_cts_group_offset[w]
 
@@ -412,6 +424,7 @@ class ModelKaminoInfo:
     world_dynamic_joint_cts_start = world_cts_start + local_joint_dynamic_cts_start
     world_kinematic_joint_cts_start = world_cts_start + local_joint_kinematic_cts_start
     world_friction_cts_start = world_cts_start + local_joint_friction_cts_start
+    world_effort_cts_start = world_cts_start + local_joint_effort_cts_start
     world_limit_cts_start = world_cts_start + local_limit_cts_start
     world_contact_cts_start = world_cts_start + local_contact_cts_start
     ```
@@ -442,6 +455,13 @@ class ModelKaminoInfo:
     joint_friction_cts_group_offset: wp.array[wp.int32] | None = None
     """
     The index offset of the Coulomb joint friction constraint group within each world's total constraint block.
+    Used to index into constraint-space arrays, e.g. constraint residuals and reactions.
+    Shape of ``(num_worlds,)``.
+    """
+
+    joint_effort_cts_group_offset: wp.array[wp.int32] | None = None
+    """
+    The index offset of the effort-limit implicit-PD constraint group within each world's constraint block.
     Used to index into constraint-space arrays, e.g. constraint residuals and reactions.
     Shape of ``(num_worlds,)``.
     """
@@ -503,8 +523,12 @@ class ModelKamino:
     time: TimeModel | None = None
     """The time model container holding time-step of each world."""
 
-    gravity: GravityModel | None = None
-    """The gravity model container holding the gravity configurations for each world."""
+    gravity: wp.array[wp.vec3] | None = None
+    """
+    Per-world gravity vector [m/s²], aliasing :attr:`newton.Model.gravity`.
+    Shape of ``(num_worlds + 1,)``; the final entry holds global-world gravity. When
+    world 0 simulates global world ``-1``, shape ``(1,)`` aliasing the global entry.
+    """
 
     bodies: RigidBodiesModel | None = None
     """The rigid bodies model container holding all rigid body entities in the model."""
@@ -541,20 +565,6 @@ class ModelKamino:
         """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
         return self._requires_grad
 
-    @property
-    def use_coord_layout_targets(self) -> bool:
-        """Target-layout snapshot. Returns the wrapped
-        :class:`newton.Model`'s snapshot when this ``ModelKamino`` was built
-        via :meth:`from_newton`; falls back to the live module global
-        :data:`newton.use_coord_layout_targets` for native Kamino models built
-        through :class:`ModelBuilderKamino` (no wrapped Newton model).
-        """
-        if self._model is not None:
-            return self._model.use_coord_layout_targets
-        import newton  # noqa: PLC0415
-
-        return newton.use_coord_layout_targets
-
     ###
     # Factories
     ###
@@ -589,6 +599,7 @@ class ModelKamino:
         njdyncts = self.size.sum_of_num_dynamic_joint_cts
         njkincts = self.size.sum_of_num_kinematic_joint_cts
         njfccts = self.size.sum_of_num_friction_joint_cts
+        njeccts = self.size.sum_of_num_effort_joint_cts
 
         # Construct the model data on the specified device
         with wp.ScopedDevice(device=device):
@@ -637,9 +648,13 @@ class ModelKamino:
                 lambda_kin_j=wp.zeros(shape=njkincts, dtype=wp.float32, requires_grad=requires_grad),
                 lambda_dyn_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
                 lambda_f_j=wp.zeros(shape=njfccts, dtype=wp.float32, requires_grad=requires_grad),
+                lambda_tau_j=wp.zeros(shape=njeccts, dtype=wp.float32, requires_grad=requires_grad),
                 m_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
                 inv_m_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
                 dq_b_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
+                inv_m_a=wp.zeros(shape=njeccts, dtype=wp.float32, requires_grad=requires_grad),
+                dq_b_a=wp.zeros(shape=njeccts, dtype=wp.float32, requires_grad=requires_grad),
+                bound_a=wp.zeros(shape=njeccts, dtype=wp.float32, requires_grad=requires_grad),
                 # TODO: Should we make these optional and only include them when implicit joints are present?
                 q_j_ref=wp.clone(self.joints.q_j_0, requires_grad=requires_grad),
                 dq_j_ref=wp.clone(self.joints.dq_j_0, requires_grad=requires_grad),
@@ -707,6 +722,9 @@ class ModelKamino:
                 lambda_f_j=wp.zeros(
                     shape=self.size.sum_of_num_friction_joint_cts, dtype=wp.float32, requires_grad=requires_grad
                 ),
+                lambda_tau_j=wp.zeros(
+                    shape=self.size.sum_of_num_effort_joint_cts, dtype=wp.float32, requires_grad=requires_grad
+                ),
             )
 
         # Return the constructed state container
@@ -735,22 +753,25 @@ class ModelKamino:
                 ),
             )
 
-        # Post-processing to finalize the control container
-        # NOTE: This is currently necessary to handle the case when
-        # the total number of joint coordinates and DoFs differ, in
-        # which case a temporary buffer is allocated for the conversion.
-        control.finalize(self, device=device)
-
         # Return the constructed control container
         return control
 
     @staticmethod
-    def from_newton(model: Model | ModelView) -> ModelKamino:
+    def from_newton(
+        model: Model | ModelView,
+        *,
+        include_shape_contact_pairs: bool = True,
+        kinematic_only_immovable: bool = False,
+    ) -> ModelKamino:
         """
         Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
 
         Args:
             model: The source :class:`newton.Model` instance to be converted.
+            include_shape_contact_pairs: Include explicit collision-pair identities.
+                Required for primitive or explicit collision detection. Defaults to `True`.
+            kinematic_only_immovable: Whether only KINEMATIC bodies are immovable, see
+                :func:`convert_rigid_bodies`. Defaults to `False`.
 
         Returns:
             Kamino model converted from the input Newton model.
@@ -767,9 +788,14 @@ class ModelKamino:
 
         # Normalize conversion-only grouping metadata for single-world models.
         conversion_model = model
+        gravity = model.gravity
         if model.world_count == 1:
             conversion_model = ModelView(model, "kamino_worlds")
-            has_dedicated_global_gravity = model.gravity.shape[0] > model.world_count
+            # Without bodies in world 0, as in models built without explicit worlds, Kamino world 0
+            # simulates global world -1 and aliases its gravity entry.
+            global_world_bodies = model.body_count > 0 and not np.any(model.body_world.numpy() == 0)
+            if global_world_bodies:
+                gravity = model.gravity[model.world_count :]
             for attr, start_attr in (
                 ("body_world", "body_world_start"),
                 ("joint_world", "joint_world_start"),
@@ -778,8 +804,8 @@ class ModelKamino:
                 arr = getattr(model, attr)
                 arr_np = arr.numpy()
                 if np.any(arr_np < 0):
-                    # Preserve body -1 only when it selects a dedicated global gravity entry.
-                    if attr != "body_world" or not has_dedicated_global_gravity:
+                    # Otherwise preserve body -1, which selects the global gravity entry.
+                    if attr != "body_world" or global_world_bodies:
                         arr_np = arr_np.copy()
                         arr_np[arr_np < 0] = 0
                         setattr(conversion_model, attr, wp.array(arr_np, dtype=wp.int32, device=model.device))
@@ -815,17 +841,17 @@ class ModelKamino:
                 inv_dt=wp.zeros(shape=(model.world_count,), dtype=wp.float32),
             )
 
-            # Per-world gravity
-            model_gravity = GravityModel.from_newton(model)
-
             # Bodies
-            model_bodies = convert_rigid_bodies(conversion_model, model_size, model_info)
+            model_bodies = convert_rigid_bodies(
+                conversion_model, model_size, model_info, kinematic_only_immovable=kinematic_only_immovable
+            )
 
             # Joints
             model_joints = convert_joints(
                 conversion_model,
                 model_size,
                 model_info,
+                model_bodies,
             )
 
             # Geometries
@@ -834,6 +860,7 @@ class ModelKamino:
                 model_size=model_size,
                 model_bodies=model_bodies,
                 materials_manager=materials_manager,
+                include_shape_contact_pairs=include_shape_contact_pairs,
             )
 
             # Materials
@@ -848,7 +875,7 @@ class ModelKamino:
             size=model_size,
             info=model_info,
             time=model_time,
-            gravity=model_gravity,
+            gravity=gravity,
             bodies=model_bodies,
             joints=model_joints,
             geoms=model_geoms,

@@ -12,18 +12,64 @@ from typing import Any
 
 from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
-from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
-from .controllers import Controller, ControllerNeuralLSTM, ControllerNeuralMLP, ControllerPD, ControllerPID
-from .delay import Delay
-from .utils import load_metadata
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..utils.deprecation import RemovedAttribute, warn_deprecation
+from .batteries import BatteryBase, BatteryConstantResistance
+from .clamping import (
+    ClampingBase,
+    ClampingCurrentDuty,
+    ClampingDCMotor,
+    ClampingMaxEffort,
+    ClampingPositionBased,
+)
+from .drives import (
+    DriveBase,
+    DriveNeuralGRU,
+    DriveNeuralLSTM,
+    DriveNeuralMLP,
+    DrivePD,
+    DrivePID,
+)
+from .input_processors import InputProcessorBase, InputProcessorEncoder
+from .input_processors.input_processor_delay import InputProcessorDelay
+from .motor_dc import MotorDC
+from .utils import _ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG, _looks_like_torch_checkpoint, load_metadata
+
+_COMPONENT_KIND_DELAY_DEPRECATION_MSG = (
+    "ComponentKind.DELAY is deprecated in Newton 1.9; use ComponentKind.INPUT_PROCESSOR instead."
+)
 
 
-class ComponentKind(enum.Enum):
+class _ComponentKindMeta(enum.EnumMeta):
+    """Provide warning-producing compatibility member for ``DELAY``."""
+
+    def __getattr__(cls, name: str):
+        if name == "DELAY":
+            warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            return cls.INPUT_PROCESSOR
+        return super().__getattr__(name)
+
+    def __getitem__(cls, name: str):
+        if name == "DELAY":
+            warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            return cls.INPUT_PROCESSOR
+        return super().__getitem__(name)
+
+
+class ComponentKind(enum.Enum, metaclass=_ComponentKindMeta):
     """Classification of actuator component schemas."""
 
-    CONTROLLER = "controller"
+    DRIVE = "drive"
     CLAMPING = "clamping"
-    DELAY = "delay"
+    INPUT_PROCESSOR = "input_processor"
+    MOTOR = "motor"
+
+    @classmethod
+    def _missing_(cls, value: object):
+        if value == "delay":
+            warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            return cls.INPUT_PROCESSOR
+        return None
 
 
 @dataclass
@@ -31,15 +77,26 @@ class ActuatorParsed:
     """Result of parsing a USD actuator prim.
 
     Each detected API schema produces a (class, kwargs) entry.
-    The controller is separated out; everything else goes into
-    component_specs (delay, clamping, etc.).
+    The drive is separated out; everything else goes into
+    component_specs (input processors, clamping, motor, etc.).
     """
 
-    controller_class: type[Controller]
-    controller_kwargs: dict[str, Any] = field(default_factory=dict)
-    component_specs: list[tuple[type[Clamping | Delay], dict[str, Any]]] = field(default_factory=list)
+    drive_class: type[DriveBase]
+    drive_kwargs: dict[str, Any] = field(default_factory=dict)
+    component_specs: list[tuple[type[ClampingBase | InputProcessorBase | MotorDC], dict[str, Any]]] = field(
+        default_factory=list
+    )
     target_path: str = ""
     """Joint target path (USD prim path of the driven joint)."""
+    battery_path: str | None = None
+    """USD prim path of the battery the actuator draws from, or ``None``."""
+
+    controller_class = RemovedAttribute("drive_class", removed_in="1.8")
+    controller_kwargs = RemovedAttribute("drive_kwargs", removed_in="1.8")
+
+    def __post_init__(self) -> None:
+        if self.component_specs is None:
+            self.component_specs = []
 
 
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])([A-Z])")
@@ -48,6 +105,12 @@ _CAMEL_RE = re.compile(r"(?<=[a-z0-9])([A-Z])")
 def _camel_to_snake(name: str) -> str:
     """Convert a camelCase name to snake_case."""
     return _CAMEL_RE.sub(r"_\1", name).lower()
+
+
+def _is_registered_schema(schema_name: str) -> bool:
+    from pxr import Usd
+
+    return Usd.SchemaRegistry().FindAppliedAPIPrimDefinition(schema_name) is not None
 
 
 def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
@@ -63,6 +126,16 @@ def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
 
     defn = Usd.SchemaRegistry().FindAppliedAPIPrimDefinition(schema_name)
     schema_props = set(defn.GetPropertyNames()) if defn is not None else None
+
+    if schema_props is not None:
+        if schema_name in ("NewtonPDControlAPI", "NewtonPIDControlAPI", "NewtonNeuralControlAPI"):
+            schema_props.add("newton:outputSpace")
+        elif schema_name in (
+            "NewtonMaxEffortClampingAPI",
+            "NewtonDCMotorClampingAPI",
+            "NewtonPositionBasedClampingAPI",
+        ):
+            schema_props.add("newton:inputSpace")
 
     kwargs: dict[str, Any] = {}
     for prop in prim.GetAuthoredPropertiesInNamespace("newton"):
@@ -86,24 +159,26 @@ class _SchemaEntry:
 
     component_class: type | Callable[[dict[str, Any]], type]
     """Concrete class, or a callable that receives the parsed kwargs and
-    returns the concrete class (e.g. for neural controllers that pick
-    MLP vs LSTM at parse time).  The callable may also validate kwargs
+    returns the concrete class (e.g. for neural drives that pick
+    MLP, LSTM, or GRU at parse time).  The callable may also validate kwargs
     and raise :class:`ValueError`.
     """
     kind: ComponentKind
 
 
-_NEURAL_CONTROLLER_TYPES: dict[str, type[Controller]] = {
-    "mlp": ControllerNeuralMLP,
-    "lstm": ControllerNeuralLSTM,
+_NEURAL_DRIVE_TYPES: dict[str, type[DriveBase]] = {
+    "gru": DriveNeuralGRU,
+    "mlp": DriveNeuralMLP,
+    "lstm": DriveNeuralLSTM,
 }
 
 
-def _resolve_neural_control(kwargs: dict[str, Any]) -> type[Controller]:
-    """Validate neural-control kwargs and return the concrete controller class.
+def _resolve_neural_drive(kwargs: dict[str, Any]) -> type[DriveBase]:
+    """Validate neural-control kwargs and return the concrete drive class.
 
     Inspects the checkpoint's ``model_type`` metadata to choose between
-    :class:`ControllerNeuralMLP` and :class:`ControllerNeuralLSTM`.
+    :class:`DriveNeuralGRU`, :class:`DriveNeuralMLP`, or
+    :class:`DriveNeuralLSTM`.
 
     Raises:
         ValueError: If ``model_path`` is empty or the checkpoint's
@@ -119,13 +194,13 @@ def _resolve_neural_control(kwargs: dict[str, Any]) -> type[Controller]:
     if model_type is None:
         raise ValueError(
             f"Checkpoint at '{model_path}' is missing 'model_type' in metadata; "
-            f"expected one of {sorted(_NEURAL_CONTROLLER_TYPES)}"
+            f"expected one of {sorted(_NEURAL_DRIVE_TYPES)}"
         )
-    resolved_cls = _NEURAL_CONTROLLER_TYPES.get(model_type)
+    resolved_cls = _NEURAL_DRIVE_TYPES.get(model_type)
     if resolved_cls is None:
         raise ValueError(
             f"Unsupported model_type '{model_type}' in checkpoint metadata "
-            f"at '{model_path}'; expected one of {sorted(_NEURAL_CONTROLLER_TYPES)}"
+            f"at '{model_path}'; expected one of {sorted(_NEURAL_DRIVE_TYPES)}"
         )
     return resolved_cls
 
@@ -142,6 +217,8 @@ class SchemaNames:
     """Canonical USD tokens from ``newton-usd-schemas``"""
 
     ACTUATOR = "NewtonActuator"
+    BATTERY = "NewtonBattery"
+    CONSTANT_RESISTANCE_BATTERY = "NewtonConstantResistanceBattery"
 
     PD_CONTROL = "NewtonPDControlAPI"
     PID_CONTROL = "NewtonPIDControlAPI"
@@ -150,18 +227,32 @@ class SchemaNames:
     MAX_EFFORT_CLAMPING = "NewtonMaxEffortClampingAPI"
     DC_MOTOR_CLAMPING = "NewtonDCMotorClampingAPI"
     POSITION_BASED_CLAMPING = "NewtonPositionBasedClampingAPI"
+    CURRENT_DUTY_CLAMPING = "NewtonCurrentDutyClampingAPI"
+
+    DC_MOTOR = "NewtonDCMotorAPI"
 
     DELAY = "NewtonActuatorDelayAPI"
+    ENCODER = "NewtonActuatorEncoderAPI"
 
 
 _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
-    SchemaNames.PD_CONTROL: _SchemaEntry(ControllerPD, ComponentKind.CONTROLLER),
-    SchemaNames.PID_CONTROL: _SchemaEntry(ControllerPID, ComponentKind.CONTROLLER),
-    SchemaNames.NEURAL_CONTROL: _SchemaEntry(_resolve_neural_control, ComponentKind.CONTROLLER),
+    SchemaNames.PD_CONTROL: _SchemaEntry(DrivePD, ComponentKind.DRIVE),
+    SchemaNames.PID_CONTROL: _SchemaEntry(DrivePID, ComponentKind.DRIVE),
+    SchemaNames.NEURAL_CONTROL: _SchemaEntry(_resolve_neural_drive, ComponentKind.DRIVE),
     SchemaNames.MAX_EFFORT_CLAMPING: _SchemaEntry(ClampingMaxEffort, ComponentKind.CLAMPING),
     SchemaNames.DC_MOTOR_CLAMPING: _SchemaEntry(ClampingDCMotor, ComponentKind.CLAMPING),
     SchemaNames.POSITION_BASED_CLAMPING: _SchemaEntry(ClampingPositionBased, ComponentKind.CLAMPING),
-    SchemaNames.DELAY: _SchemaEntry(Delay, ComponentKind.DELAY),
+    SchemaNames.CURRENT_DUTY_CLAMPING: _SchemaEntry(ClampingCurrentDuty, ComponentKind.CLAMPING),
+    SchemaNames.DC_MOTOR: _SchemaEntry(MotorDC, ComponentKind.MOTOR),
+    SchemaNames.DELAY: _SchemaEntry(InputProcessorDelay, ComponentKind.INPUT_PROCESSOR),
+    SchemaNames.ENCODER: _SchemaEntry(InputProcessorEncoder, ComponentKind.INPUT_PROCESSOR),
+}
+
+_BASE_SCHEMAS = {
+    "NewtonActuatorControlBaseAPI",
+    "NewtonActuatorClampingBaseAPI",
+    "NewtonActuatorInputProcessorBaseAPI",
+    "NewtonActuatorMotorBaseAPI",
 }
 
 
@@ -179,7 +270,7 @@ def register_actuator_component(
             the parsed kwargs dict and returns the concrete class.
             A callable may also validate kwargs and raise
             :class:`ValueError`.
-        kind: Whether this schema is a controller, clamping, delay, etc.
+        kind: Whether this schema is a drive, clamping, input processor, etc.
 
     If *schema_name* is already registered, a warning is emitted and the
     existing entry is overwritten.
@@ -187,6 +278,7 @@ def register_actuator_component(
     if schema_name in _SCHEMA_REGISTRY:
         warnings.warn(
             f"Actuator schema {schema_name!r} is already registered; overwriting",
+            NewtonWarning,
             stacklevel=2,
         )
     _SCHEMA_REGISTRY[schema_name] = _SchemaEntry(
@@ -195,22 +287,85 @@ def register_actuator_component(
     )
 
 
-def parse_actuator_prim(prim) -> ActuatorParsed | None:
+_BATTERY_REGISTRY: dict[str, type[BatteryBase]] = {
+    SchemaNames.CONSTANT_RESISTANCE_BATTERY: BatteryConstantResistance,
+}
+
+
+@dataclass
+class BatteryParsed:
+    """Result of parsing a USD battery prim."""
+
+    battery_class: type[BatteryBase]
+    """Battery class of the prim's type, e.g. :class:`~newton.actuators.BatteryConstantResistance`."""
+    battery_kwargs: dict[str, Any] = field(default_factory=dict)
+    """Authored battery parameters as :meth:`~newton.ModelBuilder.add_battery` keyword arguments."""
+
+
+def parse_battery_prim(prim) -> BatteryParsed | None:
+    """Parse a USD battery prim into a battery class and its parameters.
+
+    The prim type selects the battery class, e.g. ``NewtonConstantResistanceBattery``
+    selects :class:`~newton.actuators.BatteryConstantResistance`, and the authored
+    ``newton:`` attributes become its keyword arguments; the class fills in
+    defaults when the battery is added. The actuators that draw from the
+    battery name it in their ``newton:battery`` relationship;
+    :func:`parse_actuator_prim` reports it as :attr:`ActuatorParsed.battery_path`.
+
+    Args:
+        prim: USD prim to parse.
+
+    Returns:
+        The parsed battery, or ``None`` if the prim is not a battery.
+
+    Raises:
+        ValueError: The prim is derived from ``NewtonBattery`` but its type is
+            not supported.
+    """
+    battery_class = _BATTERY_REGISTRY.get(prim.GetTypeName())
+    if battery_class is None:
+        if prim.IsA(SchemaNames.BATTERY):
+            raise ValueError(f"Battery prim '{prim.GetPath()}' has unsupported type '{prim.GetTypeName()}'")
+        return None
+    return BatteryParsed(battery_class, _read_schema_attrs(prim, prim.GetTypeName()))
+
+
+def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -> ActuatorParsed | None:
     """Parse a USD Actuator prim into a composed actuator specification.
 
     Each detected schema directly maps to a component class with its
-    extracted params. Returns ``None`` if the prim is not a
-    ``NewtonActuator``.
+    extracted params. A joint parameter of an input processor (see
+    :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`) is read from
+    the relationship of the same name, e.g. ``newton:outputJoint``.
+    Returns ``None`` if the prim is not a ``NewtonActuator``.
+
+    Args:
+        prim: USD prim to parse.
+        allow_unsafe_torch_checkpoints: Allow ``newton:modelPath`` to reference
+            a Torch checkpoint. Only use this for trusted USD assets and
+            checkpoints: ``torch.export.load`` may execute code during model
+            finalization. Defaults to ``False``.
+
+            .. deprecated:: 1.8
+                Torch checkpoints are deprecated; export the network to ONNX.
 
     Raises:
         ValueError: If the prim is a ``NewtonActuator`` but:
             - has no authored ``newton:targets`` relationship,
             - the target prim does not exist or is not a
               ``PhysicsRevoluteJoint`` / ``PhysicsPrismaticJoint``,
-            - has multiple controller schemas applied,
-            - has no controller schema, or
-            - has a ``NewtonNeuralControlAPI`` with an unsupported model.
+            - has multiple drive or motor schemas applied,
+            - has no drive schema, or
+            - has a ``NewtonNeuralControlAPI`` with an unsupported model or an
+              unapproved Torch checkpoint.
     """
+    if allow_unsafe_torch_checkpoints:
+        warn_deprecation(_ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG)
+    return _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints)
+
+
+def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> ActuatorParsed | None:
+    """Parse a USD Actuator prim like :func:`parse_actuator_prim`, without the deprecation warning."""
     if prim.GetTypeName() != SchemaNames.ACTUATOR:
         return None
 
@@ -224,6 +379,7 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
         warnings.warn(
             f"Actuator prim {prim.GetPath()} has {len(target_paths)} targets; "
             f"only the first is used, additional targets are ignored",
+            NewtonWarning,
             stacklevel=2,
         )
         target_paths = target_paths[:1]
@@ -243,18 +399,36 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
             f"are supported"
         )
 
-    controller_class = None
-    controller_kwargs: dict[str, Any] = {}
+    drive_class = None
+    drive_kwargs: dict[str, Any] = {}
+    drive_schema_registered = True
     component_specs: list[tuple[type, dict[str, Any]]] = []
+    motor_class: type | None = None
     detected: list[str] = []
 
     for schema_name in get_applied_api_schemas(prim):
         entry = _SCHEMA_REGISTRY.get(schema_name)
         if entry is None:
+            if schema_name.startswith("Newton") and schema_name not in _BASE_SCHEMAS:
+                warnings.warn(
+                    f"Actuator prim '{prim.GetPath()}' has unknown actuator schema '{schema_name}'; it is ignored",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
             continue
         detected.append(schema_name)
 
         kwargs = _read_schema_attrs(prim, schema_name)
+        if (
+            schema_name == SchemaNames.NEURAL_CONTROL
+            and not allow_unsafe_torch_checkpoints
+            and _looks_like_torch_checkpoint(kwargs.get("model_path") or "")
+        ):
+            raise ValueError(
+                f"Actuator prim '{prim.GetPath()}' references a Torch checkpoint via newton:modelPath; "
+                "export the network to ONNX (.onnx), or pass the deprecated allow_unsafe_torch_checkpoints=True "
+                "only for trusted USD assets and checkpoints"
+            )
 
         if isinstance(entry.component_class, type):
             cls = entry.component_class
@@ -264,23 +438,61 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
             except ValueError as exc:
                 raise ValueError(f"Actuator prim '{prim.GetPath()}': {exc}") from None
 
-        if entry.kind is ComponentKind.CONTROLLER:
-            if controller_class is not None:
+        for name in getattr(cls, "JOINT_PARAMS", ()):
+            head, *rest = name.split("_")
+            targets = _get_relationship_targets(prim, "newton:" + head + "".join(part.title() for part in rest))
+            if targets:
+                kwargs[name] = targets[0]
+
+        if entry.kind is ComponentKind.CLAMPING and "input_space" in kwargs:
+            input_space = kwargs.pop("input_space")
+            if input_space != cls.input_space.value:
                 raise ValueError(
-                    f"Actuator prim '{prim.GetPath()}' has multiple controllers: "
-                    f"{controller_class.__name__} and {cls.__name__}"
+                    f"Actuator prim '{prim.GetPath()}': newton:inputSpace '{input_space}' of {schema_name} "
+                    f"must be '{cls.input_space.value}', the space {cls.__name__} bounds"
                 )
-            controller_class = cls
-            controller_kwargs = kwargs
+
+        if entry.kind is ComponentKind.DRIVE:
+            if drive_class is not None:
+                raise ValueError(
+                    f"Actuator prim '{prim.GetPath()}' has multiple drives: {drive_class.__name__} and {cls.__name__}"
+                )
+            drive_class = cls
+            drive_kwargs = kwargs
+            drive_schema_registered = _is_registered_schema(schema_name)
         else:
+            if entry.kind is ComponentKind.MOTOR:
+                if motor_class is not None:
+                    raise ValueError(
+                        f"Actuator prim '{prim.GetPath()}' has multiple motors: {motor_class.__name__} and {cls.__name__}"
+                    )
+                motor_class = cls
             component_specs.append((cls, kwargs))
 
-    if controller_class is None:
-        raise ValueError(f"Actuator prim '{prim.GetPath()}' has no controller schema (detected schemas: {detected})")
+    if drive_class is None:
+        raise ValueError(f"Actuator prim '{prim.GetPath()}' has no drive schema (detected schemas: {detected})")
+
+    batteries = _get_relationship_targets(prim, "newton:battery")
+    if not drive_schema_registered:
+        claimed: set[str] = set()
+        for cls, kwargs in component_specs:
+            try:
+                claimed.update(cls.resolve_arguments({"supply_from_battery": bool(batteries), **kwargs}))
+            except ValueError as exc:
+                raise ValueError(f"Actuator prim '{prim.GetPath()}': {exc}") from None
+        drive_kwargs = {name: value for name, value in drive_kwargs.items() if name not in claimed}
+
+    if len(batteries) > 1:
+        warnings.warn(
+            f"Actuator prim {prim.GetPath()} has {len(batteries)} batteries; only the first is used",
+            NewtonWarning,
+            stacklevel=2,
+        )
 
     return ActuatorParsed(
-        controller_class=controller_class,
-        controller_kwargs=controller_kwargs,
+        drive_class=drive_class,
+        drive_kwargs=drive_kwargs,
         component_specs=component_specs,
         target_path=target_paths[0],
+        battery_path=batteries[0] if batteries else None,
     )

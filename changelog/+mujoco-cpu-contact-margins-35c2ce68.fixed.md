@@ -1,0 +1,1 @@
+Keep authored geom and pair contact margins with `SolverMuJoCo(use_mujoco_cpu=True)`. The margin zeroing that keeps NATIVECCD/MULTICCD compatible with MuJoCo Warp (#2106) now applies only to the MuJoCo Warp backend.

@@ -29,10 +29,10 @@ Typical usage example:
 
     # Create a model from the builder and construct additional
     # containers to hold joint-limits, contacts, Jacobians
-    model = builder.finalize()
+    model = ModelKamino.from_newton(builder.finalize())
     data = model.data()
     limits = LimitsKamino(model)
-    contacts = ContactsKamino(builder)
+    contacts = ContactsKamino(model)
     jacobians = DenseSystemJacobians(model, limits, contacts)
 
     # Define a linear solver type to use as a back-end for the
@@ -61,11 +61,12 @@ import warp as wp
 from .....core.types import override
 from ...config import ConfigBase, ConstrainedDynamicsConfig, ConstraintStabilizationConfig
 from ..core.data import DataKamino
-from ..core.math import FLOAT32_EPS
+from ..core.math import FLOAT32_EPS, compute_gyroscopic_torque
 from ..core.model import ModelKamino
 from ..core.size import SizeKamino
 from ..core.types import vec6f
 from ..dynamics.delassus import BlockSparseMatrixFreeDelassusOperator, DelassusOperator
+from ..dynamics.joint_decoupling import DynamicJointDecoupling
 from ..geometry.contacts import ContactsKamino
 from ..kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from ..kinematics.limits import LimitsKamino
@@ -109,6 +110,16 @@ class DualProblemConfigStruct:
     """Contact penetration margin used for unilateral contact constraints"""
     preconditioning: wp.bool
     """Flag to enable preconditioning of the dual problem."""
+    joint_recovery_time: wp.float32
+    joint_recovery_speed: wp.float32
+    limit_recovery_time: wp.float32
+    limit_recovery_speed: wp.float32
+    contact_recovery_time: wp.float32
+    contact_recovery_speed: wp.float32
+    contact_compliance: wp.bool
+    limit_compliance: wp.bool
+    position_update_fraction: wp.float32
+    """Fraction of the timestep remaining after evaluating compliant constraint positions."""
 
 
 @dataclass
@@ -119,6 +130,16 @@ class DualProblemData:
 
     num_worlds: int = 0
     """The number of worlds represented in the dual problem."""
+
+    compliance: wp.array[wp.float32] | None = None
+    """Physical impulse-space compliance in unscaled row coordinates; absent for hard constraints."""
+
+    v_b_friction: wp.array[wp.float32] | None = None
+    """Contact bias excluded from SCC friction loads; zero for physical spring forces.
+
+    Aliases ``v_b`` unless contact compliance is enabled. Only contact-normal
+    entries are used, in the same unscaled row coordinates as ``v_b``.
+    """
 
     max_of_maxdims: int = 0
     """The largest maximum number of dual problem dimensions (i.e. constraints) across all worlds."""
@@ -221,13 +242,6 @@ class DualProblemData:
     Shape of `(num_worlds,)`.
     """
 
-    mio: wp.array[wp.int32] | None = None
-    """
-    The matrix index offset of each Delassus matrix block.
-    This is applicable to `D` as well as to its (optional) factorizations.
-    Shape of `(num_worlds,)`.
-    """
-
     vio: wp.array[wp.int32] | None = None
     """
     The vector index offset of each constraint dimension vector block.
@@ -235,10 +249,10 @@ class DualProblemData:
     Shape of `(num_worlds,)`.
     """
 
-    D: wp.array[wp.float32] | None = None
+    D: wp.array2d[wp.float32] | None = None
     """
-    The flat array of Delassus matrix blocks (constraint-space apparent inertia).
-    Shape of `(sum_of_max_total_delassus_size,)`.
+    Delassus matrix blocks stored in one row per world.
+    Includes physical compliance when enabled, before numerical regularization.
     """
 
     P: wp.array[wp.float32] | None = None
@@ -290,7 +304,7 @@ class DualProblemData:
     """
     Stack of free-velocity constraint bias vectors (in constraint-space).
 
-    Computed as:
+    In the legacy stabilization mode, computed as:
     `v_b = [ v_b_dynamics;
              alpha * inv_dt * r_joints;
              beta * inv_dt * r_limits;
@@ -304,6 +318,11 @@ class DualProblemData:
     - `r_contacts` is the stack of contact constraint residuals
     - `alpha`, `beta`, `gamma` are the Baumgarte stabilization
         parameters for joints, limits and contacts, respectively
+
+    Recovery-time overrides use `r / (dt + time)`. Compliant rows use the
+    remaining pose-update interval instead of `dt`: a full step for Euler
+    and a half-step for Moreau. Positional biases are capped by their group's
+    recovery speed; positive speculative contact gaps retain `gap / dt`.
 
     Shape of `(sum_of_max_total_cts,)`.
     """
@@ -371,12 +390,12 @@ def gravity_plus_coriolis_wrench(
     m_i: wp.float32,
     I_i: wp.mat33f,
     omega_i: wp.vec3f,
+    dt: wp.float32,
 ) -> wp.spatial_vectorf:
     """
     Compute the gravitational + Coriolis wrench acting on a body.
     """
-    f_gi_i = m_i * g
-    tau_gi_i = -wp.skew(omega_i) @ (I_i @ omega_i)
+    f_gi_i, tau_gi_i = gravity_plus_coriolis_wrench_split(g, m_i, I_i, omega_i, dt)
     return wp.spatial_vectorf(*f_gi_i, *tau_gi_i)
 
 
@@ -386,12 +405,13 @@ def gravity_plus_coriolis_wrench_split(
     m_i: wp.float32,
     I_i: wp.mat33f,
     omega_i: wp.vec3f,
+    dt: wp.float32,
 ) -> tuple[wp.vec3f, wp.vec3f]:
     """
     Compute the gravitational+inertial wrench on a body.
     """
     f_gi_i = m_i * g
-    tau_gi_i = -wp.skew(omega_i) @ (I_i @ omega_i)
+    tau_gi_i = compute_gyroscopic_torque(dt, I_i, omega_i)
     return f_gi_i, tau_gi_i
 
 
@@ -485,7 +505,7 @@ def _build_nonlinear_generalized_force(
     omega_i = wp.spatial_bottom(u_i)
 
     # Compute the net external wrench on the body
-    h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i)
+    h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i, dt)
 
     # Store the generalized free-velocity vector
     problem_h[bid] = dt * h_i
@@ -529,7 +549,7 @@ def _build_generalized_free_velocity(
     omega_i = wp.spatial_bottom(u_i)
 
     # Compute the net external wrench on the body
-    h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i)
+    h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i, dt)
     f_h_i = wp.spatial_top(h_i)
     tau_h_i = wp.spatial_bottom(h_i)
 
@@ -570,6 +590,31 @@ def _build_free_velocity_bias_joint_dynamics(
         problem_v_b[cts_row_start_j + j] = -data_joints_dq_b_j[bias_row_start_j + j]
 
 
+@wp.func
+def _constraint_recovery_parameters(
+    stiffness: wp.float32,
+    damping: wp.float32,
+    recovery_time: wp.float32,
+    inv_dt: wp.float32,
+    legacy_fraction: wp.float32,
+    position_update_fraction: wp.float32,
+):
+    """Return positional bias per unit violation and physical impulse compliance."""
+    coefficient = legacy_fraction * inv_dt
+    compliance = wp.float32(0.0)
+    dt = 1.0 / inv_dt
+    if recovery_time >= 0.0:
+        coefficient = 1.0 / (dt + recovery_time)
+    if stiffness > 0.0 and wp.isfinite(stiffness):
+        time = recovery_time
+        if time < 0.0:
+            time = wp.max(damping, 0.0) / stiffness
+        # Moreau evaluates violations at the midpoint; impulses still span the full step.
+        coefficient = 1.0 / (position_update_fraction * dt + time)
+        compliance = coefficient * inv_dt / stiffness
+    return coefficient, compliance
+
+
 @wp.kernel
 def _build_free_velocity_bias_joint_kinematics(
     # Inputs:
@@ -602,11 +647,14 @@ def _build_free_velocity_bias_joint_kinematics(
     config = problem_config[wid]
 
     # Compute baumgarte constraint stabilization coefficient
-    c_b = config.alpha * inv_dt
+    c_b, _compliance = _constraint_recovery_parameters(
+        0.0, 0.0, config.joint_recovery_time, inv_dt, config.alpha, config.position_update_fraction
+    )
+    speed = config.joint_recovery_speed
 
     # Compute the free-velocity bias for the joint
     for j in range(num_kin_cts_j):
-        problem_v_b[cts_row_start_j + j] = c_b * data_joints_r_j[res_row_start_j + j]
+        problem_v_b[cts_row_start_j + j] = wp.clamp(c_b * data_joints_r_j[res_row_start_j + j], -speed, speed)
 
 
 @wp.kernel
@@ -617,6 +665,9 @@ def _build_joint_friction_bounds(
     model_joints_dofs_offset: wp.array[wp.int32],
     model_joints_num_friction_cts: wp.array[wp.int32],
     model_joints_friction_cts_offset: wp.array[wp.int32],
+    model_joints_friction_cts_axis: wp.array[wp.int32],
+    model_info_joint_friction_cts_offset: wp.array[wp.int32],
+    model_info_joint_bounded_cts_offset: wp.array[wp.int32],
     model_joints_f_j: wp.array[wp.float32],
     # Outputs:
     problem_bound_lower: wp.array[wp.float32],
@@ -624,14 +675,64 @@ def _build_joint_friction_bounds(
 ):
     """Build per-row Coulomb joint friction impulse bounds."""
     jid = wp.tid()
+    wid = model_joints_wid[jid]
     num_rows = model_joints_num_friction_cts[jid]
     dof_start = model_joints_dofs_offset[jid]
-    row_start = model_joints_friction_cts_offset[jid]
-    dt = model_time_dt[model_joints_wid[jid]]
+    friction_start = model_joints_friction_cts_offset[jid]
+    friction_cts_offset_world = friction_start - model_info_joint_friction_cts_offset[wid]
+    row_start = model_info_joint_bounded_cts_offset[wid] + friction_cts_offset_world
+    dt = model_time_dt[wid]
     for j in range(num_rows):
-        bound = dt * model_joints_f_j[dof_start + j]
+        axis = model_joints_friction_cts_axis[friction_start + j]
+        bound = dt * model_joints_f_j[dof_start + axis]
         problem_bound_lower[row_start + j] = -bound
         problem_bound_upper[row_start + j] = bound
+
+
+@wp.kernel
+def _build_joint_effort_bounds(
+    # Inputs:
+    model_joints_wid: wp.array[wp.int32],
+    model_joints_num_effort_cts: wp.array[wp.int32],
+    model_joints_effort_cts_offset: wp.array[wp.int32],
+    model_info_num_friction_cts: wp.array[wp.int32],
+    model_info_joint_effort_cts_offset: wp.array[wp.int32],
+    model_info_joint_bounded_cts_offset: wp.array[wp.int32],
+    data_joints_bound_a: wp.array[wp.float32],
+    # Outputs:
+    problem_bound_lower: wp.array[wp.float32],
+    problem_bound_upper: wp.array[wp.float32],
+):
+    """Scatter precomputed effort-limit implicit-PD impulse bounds."""
+    jid = wp.tid()
+    wid = model_joints_wid[jid]
+    effort_start = model_joints_effort_cts_offset[jid]
+    effort_cts_offset_world = effort_start - model_info_joint_effort_cts_offset[wid]
+    row_start = model_info_joint_bounded_cts_offset[wid] + model_info_num_friction_cts[wid] + effort_cts_offset_world
+    num_rows = model_joints_num_effort_cts[jid]
+    for j in range(num_rows):
+        bound = data_joints_bound_a[effort_start + j]
+        problem_bound_lower[row_start + j] = -bound
+        problem_bound_upper[row_start + j] = bound
+
+
+@wp.kernel
+def _build_joint_effort_bias(
+    # Inputs:
+    model_joints_num_effort_cts: wp.array[wp.int32],
+    model_joints_effort_cts_offset: wp.array[wp.int32],
+    model_joints_effort_cts_offset_total_cts: wp.array[wp.int32],
+    data_joints_dq_b_a: wp.array[wp.float32],
+    # Outputs:
+    problem_v_b: wp.array[wp.float32],
+):
+    """Scatter precomputed effort-row velocity biases into the dual problem."""
+    jid = wp.tid()
+    effort_start = model_joints_effort_cts_offset[jid]
+    row_start = model_joints_effort_cts_offset_total_cts[jid]
+    num_rows = model_joints_num_effort_cts[jid]
+    for j in range(num_rows):
+        problem_v_b[row_start + j] = -data_joints_dq_b_a[effort_start + j]
 
 
 @wp.kernel
@@ -644,10 +745,14 @@ def _build_free_velocity_bias_limits(
     limits_wid: wp.array[wp.int32],
     limits_lid: wp.array[wp.int32],
     limits_r_q: wp.array[wp.float32],
+    limits_dof: wp.array[wp.int32],
+    joint_limit_ke: wp.array[wp.float32],
+    joint_limit_kd: wp.array[wp.float32],
     problem_config: wp.array[DualProblemConfigStruct],
     problem_vio: wp.array[wp.int32],
     # Outputs:
     problem_v_b: wp.array[wp.float32],
+    problem_compliance: wp.array[wp.float32],
 ):
     # Retrieve the limit index as the thread index
     tid = wp.tid()
@@ -674,7 +779,18 @@ def _build_free_velocity_bias_limits(
     lcio_l = vio + lcio + lid
 
     # Compute the contact constraint stabilization bias
-    problem_v_b[lcio_l] = config.beta * inv_dt * wp.min(0.0, r_q)
+    dof = limits_dof[tid]
+    stiffness = wp.float32(0.0)
+    damping = wp.float32(0.0)
+    if config.limit_compliance:
+        stiffness = joint_limit_ke[dof]
+        damping = joint_limit_kd[dof]
+    coefficient, compliance = _constraint_recovery_parameters(
+        stiffness, damping, config.limit_recovery_time, inv_dt, config.beta, config.position_update_fraction
+    )
+    problem_v_b[lcio_l] = wp.max(-config.limit_recovery_speed, coefficient * wp.min(0.0, r_q))
+    if problem_compliance:
+        problem_compliance[lcio_l] = compliance
 
 
 @wp.kernel
@@ -689,12 +805,19 @@ def _build_free_velocity_bias_contacts(
     contacts_cid: wp.array[wp.int32],
     contacts_gapfunc: wp.array[wp.vec4f],
     contacts_material: wp.array[wp.vec2f],
+    contacts_gid: wp.array[wp.vec2i],
+    contacts_stiffness: wp.array[wp.float32],
+    contacts_damping: wp.array[wp.float32],
+    shape_stiffness: wp.array[wp.float32],
+    shape_damping: wp.array[wp.float32],
     problem_config: wp.array[DualProblemConfigStruct],
     problem_vio: wp.array[wp.int32],
     # Outputs:
     problem_v_b: wp.array[wp.float32],
     problem_v_i: wp.array[wp.float32],
     problem_mu: wp.array[wp.float32],
+    problem_compliance: wp.array[wp.float32],
+    problem_friction_bias: wp.array[wp.float32],
 ):
     # Retrieve the contact index as the thread index
     tid = wp.tid()
@@ -729,6 +852,32 @@ def _build_free_velocity_bias_contacts(
     mu_k = material_k.x  # Friction coefficient
     epsilon_k = material_k.y  # Restitution coefficient
 
+    stiffness = wp.float32(0.0)
+    damping = wp.float32(0.0)
+    if config.contact_compliance:
+        gids = contacts_gid[tid]
+        count = wp.float32(0.0)
+        for index in range(2):
+            gid = gids[index]
+            if gid >= 0:
+                stiffness += shape_stiffness[gid]
+                damping += shape_damping[gid]
+                count += 1.0
+        if count > 0.0:
+            stiffness /= count
+            damping /= count
+        if contacts_stiffness and contacts_stiffness[tid] > 0.0:
+            stiffness = contacts_stiffness[tid]
+            damping = contacts_damping[tid]
+    coefficient, compliance = _constraint_recovery_parameters(
+        stiffness, damping, config.contact_recovery_time, inv_dt, config.gamma, config.position_update_fraction
+    )
+    if compliance > 0.0:
+        # The compliant law obtains bounce from the material spring-damper.
+        epsilon_k = 0.0
+    if problem_compliance:
+        problem_compliance[ccio_k + 2] = compliance
+
     # The gap-function value (penetration_k) is the margin-shifted
     # signed distance: negative means penetration past the resting
     # separation, zero means at rest, positive means within the
@@ -742,7 +891,7 @@ def _build_free_velocity_bias_contacts(
     # NOTE#1: Penetrations are represented as penetration_k < 0
     # NOTE#2: xi corresponds to one-sided Baumgarte-like stabilization
     xi = inv_dt * penetration_k
-    xi_relaxed = config.gamma * wp.min(0.0, xi) + wp.max(0.0, xi)
+    xi_relaxed = wp.max(-config.contact_recovery_speed, coefficient * wp.min(0.0, penetration_k)) + wp.max(0.0, xi)
 
     # Gate contact stabilization for restitutive impacts with
     # critical restitution coefficients (i.e. epsilon_k >= 1.0)
@@ -754,6 +903,9 @@ def _build_free_velocity_bias_contacts(
     problem_v_b[ccio_k] = 0.0
     problem_v_b[ccio_k + 1] = 0.0
     problem_v_b[ccio_k + 2] = alpha * xi_relaxed
+    if problem_friction_bias:
+        # Spring forces support friction; only hard-contact stabilization is excluded.
+        problem_friction_bias[ccio_k + 2] = wp.where(compliance > 0.0, 0.0, alpha * xi_relaxed)
 
     # Initialize the restitutive Newton-type impact model term
     # NOTE: We still write zeros to overwrite previous values
@@ -770,8 +922,7 @@ def _build_free_velocity(
     # Inputs:
     model_info_bodies_offset: wp.array[wp.int32],
     data_bodies_u_i: wp.array[wp.spatial_vectorf],
-    jacobians_J_cts_offsets: wp.array[wp.int32],
-    jacobians_J_cts_data: wp.array[wp.float32],
+    jacobians_J_cts_data_storage: wp.array2d[wp.float32],
     problem_dim: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
     problem_u_f: wp.array[wp.spatial_vectorf],
@@ -782,6 +933,7 @@ def _build_free_velocity(
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
+    jacobians_J_cts_data = jacobians_J_cts_data_storage[wid]
 
     # Retrieve the problem dimensions and matrix block index offset
     ncts = problem_dim[wid]
@@ -793,7 +945,6 @@ def _build_free_velocity(
     # Retrieve the world-specific data
     bio = model_info_bodies_offset[wid]
     nb = model_info_bodies_offset[wid + 1] - bio
-    cjmio = jacobians_J_cts_offsets[wid]
     vio = problem_vio[wid]
 
     # Compute the number of Jacobian rows, i.e. the number of body DoFs
@@ -802,8 +953,8 @@ def _build_free_velocity(
     # Compute the thread-specific index offset
     cts_offset = vio + tid
 
-    # Append the column offset to the Jacobian index
-    cjmio += nbd * tid
+    # Compute the Jacobian row offset
+    cjmio = nbd * tid
 
     # Extract the cached impact bias scaling (i.e. restitution coefficient)
     # NOTE: This is a quick hack to avoid multiple kernels. The
@@ -904,17 +1055,17 @@ def _build_dual_preconditioner_all_constraints(
     # Inputs:
     problem_config: wp.array[DualProblemConfigStruct],
     problem_dim: wp.array[wp.int32],
-    problem_mio: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
     problem_njc: wp.array[wp.int32],
     problem_nbc: wp.array[wp.int32],
     problem_nl: wp.array[wp.int32],
-    problem_D: wp.array[wp.float32],
+    problem_D_storage: wp.array2d[wp.float32],
     # Outputs:
     problem_P: wp.array[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
+    problem_D = problem_D_storage[wid]
 
     # Retrieve the world-specific problem config
     config = problem_config[wid]
@@ -925,9 +1076,6 @@ def _build_dual_preconditioner_all_constraints(
     # Skip if row index exceed the problem size
     if tid >= ncts or not config.preconditioning:
         return
-
-    # Retrieve the matrix index offset of the world
-    mio = problem_mio[wid]
 
     # Retrieve the vector index offset of the world
     vio = problem_vio[wid]
@@ -942,7 +1090,7 @@ def _build_dual_preconditioner_all_constraints(
         tid,
         njlc,
         problem_D,
-        mio,
+        0,
         ncts + 1,
         vio,
         problem_P,
@@ -998,14 +1146,14 @@ def _build_dual_preconditioner_all_constraints_sparse(
 def _apply_dual_preconditioner_to_matrix(
     # Inputs:
     problem_dim: wp.array[wp.int32],
-    problem_mio: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
     problem_P: wp.array[wp.float32],
     # Outputs:
-    X: wp.array[wp.float32],
+    X_storage: wp.array2d[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
+    X = X_storage[wid]
 
     # Retrieve the number of active constraints in the world
     ncts = problem_dim[wid]
@@ -1022,14 +1170,11 @@ def _apply_dual_preconditioner_to_matrix(
     if i >= ncts or j >= ncts:
         return
 
-    # Retrieve the matrix index offset of the world
-    mio = problem_mio[wid]
-
     # Retrieve the vector index offset of the world
     vio = problem_vio[wid]
 
-    # Compute the global index of the matrix entry
-    m_ij = mio + ncts * i + j
+    # Compute the index within the world row
+    m_ij = ncts * i + j
 
     # Retrieve the i,j-th entry of the target matrix
     X_ij = X[m_ij]
@@ -1123,6 +1268,9 @@ class DualProblem:
         dynamics: ConstrainedDynamicsConfig = field(default_factory=ConstrainedDynamicsConfig)
         """Constrained dynamics problem construction configurations."""
 
+        position_update_fraction: float = field(default=1.0, kw_only=True)
+        """Remaining pose-update fraction: 1 for Euler, 1/2 for Moreau midpoint assembly."""
+
         def to_struct(self) -> DualProblemConfigStruct:
             """
             Converts the config to a DualProblemConfigStruct struct.
@@ -1133,6 +1281,18 @@ class DualProblem:
             config_struct.gamma = wp.float32(self.constraints.gamma)
             config_struct.delta = wp.float32(self.constraints.delta)
             config_struct.preconditioning = wp.bool(self.dynamics.preconditioning)
+            for name in ("joint_recovery_time", "limit_recovery_time", "contact_recovery_time"):
+                value = getattr(self.constraints, name)
+                setattr(config_struct, name, wp.float32(-1.0 if value is None else value))
+            for name in (
+                "joint_recovery_speed",
+                "limit_recovery_speed",
+                "contact_recovery_speed",
+            ):
+                setattr(config_struct, name, wp.float32(getattr(self.constraints, name)))
+            config_struct.contact_compliance = wp.bool(self.constraints.contact_compliance)
+            config_struct.limit_compliance = wp.bool(self.constraints.limit_compliance)
+            config_struct.position_update_fraction = wp.float32(self.position_update_fraction)
             return config_struct
 
         @override
@@ -1142,6 +1302,8 @@ class DualProblem:
             """
             self.constraints.validate()
             self.dynamics.validate()
+            if not 0.0 < self.position_update_fraction <= 1.0:
+                raise ValueError("Position update fraction must be in (0, 1].")
 
         @override
         def __post_init__(self):
@@ -1160,6 +1322,7 @@ class DualProblem:
         config: list[DualProblem.Config] | DualProblem.Config | None = None,
         compute_h: bool = False,
         sparse: bool = True,
+        decouple_joint_dynamics: bool = False,
     ):
         """
         Constructs a dual problem interface container.
@@ -1181,6 +1344,11 @@ class DualProblem:
                 Defaults to `None`, indicating that default config will be used for all worlds.
             compute_h: Set to `True` to enable the computation of the nonlinear
                 generalized forces vectors in construction of the dual problem.
+                Defaults to `False`.
+            sparse: Set to `True` to use the matrix-free sparse Delassus operator.
+            decouple_joint_dynamics: Set to `True` to decouple the Coulomb friction and effort-limit
+                rows of each joint DoF that also has a joint dynamics row (armature, damping, or
+                implicit PD) from that row by a change of variables, see :class:`DynamicJointDecoupling`.
                 Defaults to `False`.
         """
         # Ensure Jacobians are given if model is provided.
@@ -1204,6 +1372,12 @@ class DualProblem:
 
         self._sparse: bool = sparse
         """Flag to indicate whether the dual uses a sparse data representation."""
+
+        self._decouple_joint_dynamics: bool = decouple_joint_dynamics
+        """Flag to indicate whether joint friction and effort rows are decoupled from joint dynamics rows."""
+
+        self._joint_decoupling: DynamicJointDecoupling | None = None
+        """Helper for the decoupling of joint friction and effort rows from joint dynamics rows, if any."""
 
         # Finalize the dual problem data if a model is provided
         if model is not None:
@@ -1277,6 +1451,14 @@ class DualProblem:
         Returns whether the dual problem is using sparse operators.
         """
         return self._sparse
+
+    @property
+    def joint_decoupling(self) -> DynamicJointDecoupling | None:
+        """
+        Returns the decoupling of joint friction and effort rows from joint dynamics rows,
+        or ``None`` if the problem solves the original rows.
+        """
+        return self._joint_decoupling
 
     ###
     # Operations
@@ -1398,7 +1580,6 @@ class DualProblem:
                     # Capture references to arrays already create by the Delassus operator
                     maxdim=self._delassus.info.maxdim,
                     dim=self._delassus.info.dim,
-                    mio=None,
                     vio=self._delassus.info.vio,
                     D=None,
                     # Allocate new memory for the remaining dual problem quantities
@@ -1437,7 +1618,6 @@ class DualProblem:
                     # Capture references to arrays already create by the Delassus operator
                     maxdim=self._delassus.info.maxdim,
                     dim=self._delassus.info.dim,
-                    mio=self._delassus.info.mio,
                     vio=self._delassus.info.vio,
                     D=self._delassus.D,
                     # Allocate new memory for the remaining dual problem quantities
@@ -1455,6 +1635,24 @@ class DualProblem:
                     P=wp.ones(shape=(self._delassus.num_maxdims,), dtype=wp.float32),
                 )
 
+        if any(c.constraints.contact_compliance or c.constraints.limit_compliance for c in self._config):
+            self._data.compliance = wp.zeros_like(self._data.v_b)
+            if self._sparse:
+                self._delassus.set_compliance(self._data.compliance)
+        self._data.v_b_friction = self._data.v_b
+        if any(c.constraints.contact_compliance for c in self._config):
+            self._data.v_b_friction = wp.zeros_like(self._data.v_b)
+
+        # Pair the joint friction and effort rows with the joint dynamics rows of the same DoFs,
+        # dropping any decoupling of a previously finalized model
+        self._joint_decoupling = None
+        if self._decouple_joint_dynamics:
+            decoupling = DynamicJointDecoupling(model, device=self._device)
+            if decoupling.num_dofs > 0:
+                self._joint_decoupling = decoupling
+                if self._sparse:
+                    self._delassus.set_joint_decoupling(decoupling)
+
     def zero(self):
         if self._compute_h:
             self._data.h.zero_()
@@ -1466,6 +1664,10 @@ class DualProblem:
         self._data.bound_lower.zero_()
         self._data.bound_upper.zero_()
         self._data.P.fill_(1.0)
+        if self._data.compliance is not None:
+            self._data.compliance.zero_()
+        if self._data.v_b_friction is not self._data.v_b:
+            self._data.v_b_friction.zero_()
         if self._sparse:
             self._delassus.set_needs_update()
 
@@ -1506,7 +1708,16 @@ class DualProblem:
         self._build_generalized_free_velocity(model, data)
 
         # Build the free-velocity bias terms
+        if self._data.compliance is not None and not reset_to_zero:
+            self._data.compliance.zero_()
+        if self._data.v_b_friction is not self._data.v_b and not reset_to_zero:
+            self._data.v_b_friction.zero_()
         self._build_free_velocity_bias(model, data, limits, contacts)
+        if self._data.compliance is not None:
+            if self._sparse:
+                self._delassus.set_regularization_needs_update()
+            else:
+                self._delassus.regularize(self._data.compliance)
 
         # Build the free-velocity vector
         if isinstance(jacobians, SparseSystemJacobians):
@@ -1539,7 +1750,6 @@ class DualProblem:
                     # Inputs:
                     model.info.bodies_offset,
                     data.bodies.u_i,
-                    jacobians.data.J_cts_offsets,
                     jacobians.data.J_cts_data,
                     self._data.dim,
                     self._data.vio,
@@ -1551,6 +1761,10 @@ class DualProblem:
                 ],
                 device=self.device,
             )
+
+        # Decouple joint friction and effort rows from the joint dynamics rows of the same DoFs
+        if self._joint_decoupling is not None:
+            self._build_joint_decoupling(data)
 
         # Optionally build and apply the Delassus diagonal preconditioner
         if any(s.dynamics.preconditioning for s in self._config):
@@ -1606,6 +1820,23 @@ class DualProblem:
         else:
             raise TypeError(f"Expected List[DualProblem.Config] or DualProblem.Config, got {type(config)}")
 
+    def _build_joint_decoupling(self, data: DataKamino):
+        """
+        Applies the change of variables of :class:`DynamicJointDecoupling` to the Delassus operator
+        and the free velocity. The sparse Delassus operator applies it to its products itself.
+        """
+        decoupling = self._joint_decoupling
+        if self._sparse:
+            self._delassus.update_joint_decoupling()
+        else:
+            problem = self._data
+            decoupling.compute_body_share_dense(data.joints.inv_m_j, problem.dim, problem.vio, problem.D)
+            decoupling.scale_rows_dense(problem.dim, problem.vio, self._size.max_of_max_total_cts, problem.D)
+            decoupling.add_joint_terms_dense(
+                data.joints.inv_m_j, data.joints.inv_m_a, problem.dim, problem.vio, problem.D
+            )
+        decoupling.decouple_free_velocity(self._data.v_f)
+
     def _build_nonlinear_generalized_force(model: ModelKamino, data: DataKamino, problem: DualProblemData):
         """
         Builds the nonlinear generalized force vector `h`.
@@ -1616,7 +1847,7 @@ class DualProblem:
             inputs=[
                 # Inputs:
                 model.time.dt,
-                model.gravity.vector,
+                model.gravity,
                 model.bodies.wid,
                 model.bodies.m_i,
                 data.bodies.u_i,
@@ -1639,7 +1870,7 @@ class DualProblem:
             inputs=[
                 # Inputs:
                 model.time.dt,
-                model.gravity.vector,
+                model.gravity,
                 model.bodies.wid,
                 model.bodies.m_i,
                 model.bodies.inv_m_i,
@@ -1666,9 +1897,10 @@ class DualProblem:
 
         Primarily builds the free-velocity bias vector ``v_b`` (joint dynamics and
         kinematics, limits, contacts). Also fills auxiliary inequality data that is
-        zeroed in :meth:`zero` and consumed later by the solver: joint friction
-        impulse bounds (``bound_lower``, ``bound_upper``) and contact friction
-        coefficients (``mu``).
+        zeroed in :meth:`zero` and consumed later by the solver: joint-friction
+        and effort-limit impulse bounds (``bound_lower``, ``bound_upper``),
+        effort-row velocity biases in ``v_b``, and contact friction coefficients
+        (``mu``).
         """
 
         if model.size.sum_of_num_joints > 0:
@@ -1683,10 +1915,46 @@ class DualProblem:
                         model.joints.dofs_offset,
                         model.joints.num_friction_cts,
                         model.joints.friction_cts_offset,
+                        model.joints.friction_cts_axis,
+                        model.info.joint_friction_cts_offset,
+                        model.info.joint_bounded_cts_offset,
                         model.joints.f_j,
                         # Outputs:
                         self._data.bound_lower,
                         self._data.bound_upper,
+                    ],
+                    device=self.device,
+                )
+            if model.size.sum_of_num_effort_joint_cts > 0:
+                wp.launch(
+                    _build_joint_effort_bounds,
+                    dim=model.size.sum_of_num_joints,
+                    inputs=[
+                        # Inputs:
+                        model.joints.wid,
+                        model.joints.num_effort_cts,
+                        model.joints.effort_cts_offset,
+                        model.info.num_joint_friction_cts,
+                        model.info.joint_effort_cts_offset,
+                        model.info.joint_bounded_cts_offset,
+                        data.joints.bound_a,
+                        # Outputs:
+                        self._data.bound_lower,
+                        self._data.bound_upper,
+                    ],
+                    device=self.device,
+                )
+                wp.launch(
+                    _build_joint_effort_bias,
+                    dim=model.size.sum_of_num_joints,
+                    inputs=[
+                        # Inputs:
+                        model.joints.num_effort_cts,
+                        model.joints.effort_cts_offset,
+                        model.joints.effort_cts_offset_total_cts,
+                        data.joints.dq_b_a,
+                        # Outputs:
+                        self._data.v_b,
                     ],
                     device=self.device,
                 )
@@ -1735,10 +2003,14 @@ class DualProblem:
                     limits.wid,
                     limits.lid,
                     limits.r_q,
+                    limits.dof,
+                    model.joints.limit_ke,
+                    model.joints.limit_kd,
                     self._data.config,
                     self._data.vio,
                     # Outputs:
                     self._data.v_b,
+                    self._data.compliance,
                 ],
                 device=self.device,
             )
@@ -1758,12 +2030,19 @@ class DualProblem:
                     contacts.cid,
                     contacts.gapfunc,
                     contacts.material,
+                    contacts.gid_AB,
+                    contacts.stiffness,
+                    contacts.damping,
+                    model.geoms.stiffness,
+                    model.geoms.damping,
                     self._data.config,
                     self._data.vio,
                     # Outputs:
                     self._data.v_b,
                     self._data.v_i,
                     self._data.mu,
+                    self._data.compliance,
+                    self._data.v_b_friction if self._data.v_b_friction is not self._data.v_b else None,
                 ],
                 device=self.device,
             )
@@ -1779,7 +2058,6 @@ class DualProblem:
                 # Inputs:
                 model.info.bodies_offset,
                 data.bodies.u_i,
-                jacobians.data.J_cts_offsets,
                 jacobians.data.J_cts_data,
                 self._data.dim,
                 self._data.vio,
@@ -1822,7 +2100,6 @@ class DualProblem:
                     # Inputs:
                     self._data.config,
                     self._data.dim,
-                    self._data.mio,
                     self._data.vio,
                     self._data.njc,
                     self._data.nbc,
@@ -1849,7 +2126,6 @@ class DualProblem:
                 inputs=[
                     # Inputs:
                     self._data.dim,
-                    self._data.mio,
                     self._data.vio,
                     self._data.P,
                     # Outputs:
@@ -1882,7 +2158,6 @@ class DualProblem:
             inputs=[
                 # Inputs:
                 self._data.dim,
-                self._data.mio,
                 self._data.vio,
                 self._data.P,
                 # Outputs:

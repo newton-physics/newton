@@ -2,10 +2,23 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .controller import ControllerBase
-from .impl import ControllerJointImpedance, ControllerJointImpedanceModelFree
+from .impl import (
+    ControllerDifferentialIK,
+    ControllerDifferentialIKModelFree,
+    ControllerJointImpedance,
+    ControllerJointImpedanceModelFree,
+    ControllerOperationalSpace,
+    ControllerOperationalSpaceModelFree,
+    DifferentialIKMethod,
+)
 
 __all__ = [
     "ControllerBase",
+    "ControllerDifferentialIK",
+    "ControllerDifferentialIKModelFree",
     "ControllerJointImpedance",
     "ControllerJointImpedanceModelFree",
+    "ControllerOperationalSpace",
+    "ControllerOperationalSpaceModelFree",
+    "DifferentialIKMethod",
 ]

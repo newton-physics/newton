@@ -1,0 +1,1 @@
+Retain nearly touching G1 foot contacts in Kamino to prevent intermittent ankle velocity spikes, and keep the example's velocity comparison on one source line so Warp evaluates the intended settled-state check.

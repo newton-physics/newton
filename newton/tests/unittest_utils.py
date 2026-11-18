@@ -5,23 +5,124 @@ import contextlib
 import ctypes
 import ctypes.util
 import dataclasses
-import importlib.util
+import functools
+import importlib
 import io
+import linecache
 import os
+import platform
 import re
 import shlex
 import sys
 import tempfile
 import time
 import unittest
+import warnings
 import xml.etree.ElementTree as ET
 from typing import Any
 
 import numpy as np
 import warp as wp
 
-pxr = importlib.util.find_spec("pxr")
-USD_AVAILABLE = pxr is not None
+
+class BrokenTestDependencyError(RuntimeError):
+    """Not an ImportError, so a broken install fails tests instead of being skipped like a missing one."""
+
+
+@functools.cache
+def _import_error(name: str) -> ImportError | OSError | None:
+    try:
+        importlib.import_module(name)
+    except (ImportError, OSError) as exc:
+        return exc
+    return None
+
+
+def _broken_error(name: str) -> BrokenTestDependencyError | None:
+    exc = _import_error(name)
+    if exc is None:
+        return None
+    # Only the module itself or a parent package not being found means missing; anything else is a broken install.
+    if isinstance(exc, ModuleNotFoundError) and exc.name and (name == exc.name or name.startswith(exc.name + ".")):
+        return None
+    error = BrokenTestDependencyError(f"{name!r} is installed but fails to import: {exc}")
+    error.__cause__ = exc
+    return error
+
+
+def has_module(name: str) -> bool:
+    """Return whether ``name`` imports; unlike ``find_spec``, this rejects installs whose native libraries fail to load."""
+    return _import_error(name) is None
+
+
+MUJOCO_MODULES = ("mujoco", "mujoco_warp")
+
+
+def missing_modules(modules) -> list[str]:
+    """Return the ``modules`` that are not installed; raise if one is installed but fails to import."""
+    for module in modules:
+        error = _broken_error(module)
+        if error is not None:
+            raise error
+    return [module for module in modules if not has_module(module)]
+
+
+def _fail_with(error: BrokenTestDependencyError):
+    def raise_error(*args, **kwargs):
+        raise BrokenTestDependencyError(*error.args) from error.__cause__
+
+    def decorator(item):
+        if isinstance(item, type):
+            item.setUpClass = classmethod(raise_error)
+            return item
+        return functools.wraps(item)(raise_error)
+
+    return decorator
+
+
+def _skip_unless_modules(modules):
+    for module in modules:
+        error = _broken_error(module)
+        if error is not None:
+            return _fail_with(error)
+    missing = [module for module in modules if not has_module(module)]
+    return unittest.skipIf(bool(missing), f"Requires {', '.join(missing)}")
+
+
+def requires(*modules: str):
+    """Skip the decorated test, test function, or test class unless all ``modules`` import.
+
+    A module that is installed but fails to import fails the decorated tests instead, when they run.
+    """
+    return _skip_unless_modules(modules)
+
+
+MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?"
+
+# The batched transform helpers in newton._src.core.host_transform mirror the operation
+# order of Warp's native builtins, so they match bit for bit where neither side fuses
+# multiply-adds. That is verified on Linux x86-64; elsewhere, tests compare within
+# float32 round-off.
+HOST_TRANSFORMS_BIT_EXACT = platform.system() == "Linux" and platform.machine() == "x86_64"
+
+
+_PRE_RELEASE_RANK = {".dev": 0, "a": 1, "b": 2, "rc": 3, None: 4}
+
+
+def _version_key(version: str, *, exact: bool = False) -> tuple[int, ...]:
+    # Thresholds must match exactly: a dropped suffix such as a local label would change their ordering.
+    match = (re.fullmatch if exact else re.match)(r"(\d+)\.(\d+)\.(\d+)(?:(\.dev|a|b|rc)(\d+))?", version)
+    if match is None:
+        raise ValueError(f"Unsupported version: {version!r}")
+    major, minor, patch, pre, pre_number = match.groups()
+    # PEP 440 order: X.devN < XaN < XbN < XrcN < X.
+    return (int(major), int(minor), int(patch), _PRE_RELEASE_RANK[pre], int(pre_number or 0))
+
+
+def warp_version_at_least(version: str) -> bool:
+    """Compare ``wp.__version__`` with ``version`` without the undeclared ``packaging`` dependency."""
+    return _version_key(wp.__version__) >= _version_key(version, exact=True)
+
 
 # default test mode (see get_test_devices())
 #   "basic" - only run on CPU and first GPU device
@@ -35,14 +136,75 @@ coverage_temp_dir = None
 coverage_branch = None
 
 # Set by the test runner from the --strict-warnings flag. When True, the example
-# subprocesses spawned by test_examples.py escalate DeprecationWarnings to errors
-# (the in-process tests additionally escalate any warning attributed to a newton.*
-# module). Off by default so verifying an installation does not fail on warnings
-# the user cannot act on.
+# subprocesses spawned by test_examples.py escalate non-allowlisted
+# DeprecationWarnings to errors (the in-process tests additionally escalate any
+# warning attributed to a newton.* module). Off by default so verifying an
+# installation does not fail on warnings the user cannot act on.
 strict_warnings = False
+# Literal message prefixes loaded from --deprecation-allowlist and applied to
+# in-process output validation and Python subprocess warning filters.
+allowed_deprecation_warnings: tuple[str, ...] = ()
+
+
+def get_strict_warning_args() -> list[str]:
+    """Return Python interpreter arguments for the active warning policy."""
+    if not strict_warnings:
+        return []
+
+    arguments = ["-W", "error::DeprecationWarning"]
+    for message in allowed_deprecation_warnings:
+        arguments.extend(("-W", f"default:{message}:DeprecationWarning"))
+    return arguments
+
+
+def _deprecation_warning_output_regexes(stderr: str, message_prefix: str):
+    """Match allowed warning records with source context verified at their locations."""
+
+    def source_end(filename, lineno, offset, indent):
+        source = linecache.getline(filename, int(lineno))
+        context = f"{indent}{source.strip()}\n"
+        return offset + len(context) if source and stderr.startswith(context, offset) else offset
+
+    warp_header = rf"(?m)^Warp DeprecationWarning: (?i:{re.escape(message_prefix)})[^\n]*\n"
+    for match in re.finditer(warp_header, stderr):
+        end = match.end()
+        if location := re.search(r" \((.+):(\d+)\)\n$", match.group()):
+            end = source_end(*location.groups(), end, "  ")
+        yield "^" + re.escape(stderr[match.start() : end])
+
+    # Formatted stderr cannot establish a custom category's inheritance.
+    header = rf"(?m)^([^\n]+):(\d+): DeprecationWarning: (?i:{re.escape(message_prefix)})[^\n]*\n"
+
+    for match in re.finditer(header, stderr):
+        end = source_end(*match.groups(), match.end(), "  ")
+        yield "^" + re.escape(stderr[match.start() : end])
+
 
 # Extra --warp-config KEY=VALUE entries forwarded to example subprocesses.
 warp_config_overrides: list[str] = []
+
+
+def _restore_warning_filters(saved: list) -> None:
+    warnings.filters[:] = saved
+
+
+def ignore_sensor_tiled_camera_deprecation() -> None:
+    """Silence the whole-class ``SensorTiledCamera`` deprecation warning.
+
+    ``SensorTiledCamera`` is deprecated in favor of ``newton.sensors.SensorCamera``.
+    The tests that still exercise it call this from ``setUpModule`` so its
+    construction warning does not escalate to an error under ``--strict-warnings``.
+
+    The suppression is scoped to the calling module: the previous global filter
+    state is restored after ``tearDownModule`` so it does not leak into later
+    test modules.
+    """
+    unittest.addModuleCleanup(_restore_warning_filters, warnings.filters[:])
+    warnings.filterwarnings(
+        "ignore",
+        message="SensorTiledCamera is deprecated",
+        category=DeprecationWarning,
+    )
 
 
 @contextlib.contextmanager
@@ -60,6 +222,24 @@ def patch_sys_module(name: str, module: Any):
             sys.modules[name] = original
 
 
+def import_pyglet_window(*, shadow_window: bool = True):
+    """Import ``pyglet.window`` with GL error checks off, as ``RendererGL`` does.
+
+    pyglet reads ``debug_gl`` only on its first GL import, so a test importing it first
+    would otherwise leave the checks on for every later viewer in its worker.
+    """
+    import pyglet
+
+    pyglet.options["debug_gl"] = False
+    saved_shadow_window = pyglet.options["shadow_window"]
+    pyglet.options["shadow_window"] = shadow_window
+    try:
+        import pyglet.window
+    finally:
+        pyglet.options["shadow_window"] = saved_shadow_window
+    return pyglet
+
+
 try:
     if sys.platform == "win32":
         LIBC = ctypes.CDLL("ucrtbase.dll")
@@ -68,6 +248,26 @@ try:
 except OSError:
     print("Failed to load the standard C library")
     LIBC = None
+
+
+def count_initial_contacts(model):
+    """Rigid contacts in a model's initial pose from Newton's collision pipeline and from native MuJoCo.
+
+    Returns both counts and the :class:`~newton.solvers.SolverMuJoCo` built on the CPU to get
+    MuJoCo's, so a test can inspect the converted model as well.
+    """
+    import newton  # noqa: PLC0415  (deferred: keep unittest_utils import-light)
+    from newton.solvers import SolverMuJoCo  # noqa: PLC0415
+
+    mujoco, _ = SolverMuJoCo.import_mujoco()
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+    mujoco.mj_forward(solver.mj_model, solver.mj_data)
+    return int(contacts.rigid_contact_count.numpy()[0]), int(solver.mj_data.ncon), solver
 
 
 def get_selected_cuda_test_devices(mode: str | None = None):
@@ -172,6 +372,53 @@ def configure_sdf_for_collision_shapes(builder):
             builder.shape_force_sdf[i] = True
 
 
+def capture_with_cuda_driver(device, fn, auto_free_on_launch: bool = False):
+    """Capture ``fn`` with the CUDA driver alone, as another framework would; return launch and release functions.
+
+    ``launch`` replays the graph and synchronizes the stream. The capture loads ``libcuda.so.1``, so it runs only on Linux.
+    """
+    cuda = ctypes.CDLL("libcuda.so.1")
+    handle = ctypes.c_void_p
+    cuda.cuStreamBeginCapture_v2.argtypes = [handle, ctypes.c_int]
+    cuda.cuStreamEndCapture.argtypes = [handle, ctypes.POINTER(handle)]
+    cuda.cuGraphInstantiateWithFlags.argtypes = [ctypes.POINTER(handle), handle, ctypes.c_ulonglong]
+    cuda.cuGraphLaunch.argtypes = [handle, handle]
+    cuda.cuGraphExecDestroy.argtypes = [handle]
+    cuda.cuGraphDestroy.argtypes = [handle]
+    stream = handle(wp.get_stream(device).cuda_stream)
+    graph, graph_exec = handle(), handle()
+    thread_local_mode = 1
+    began = cuda.cuStreamBeginCapture_v2(stream, thread_local_mode)
+    if began != 0:
+        raise RuntimeError(f"cuStreamBeginCapture failed with {began}")
+    try:
+        fn()
+    except BaseException:
+        if cuda.cuStreamEndCapture(stream, ctypes.byref(graph)) == 0:
+            cuda.cuGraphDestroy(graph)
+        raise
+    ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
+    if ended != 0:
+        raise RuntimeError(f"cuStreamEndCapture failed with {ended}")
+    flags = ctypes.c_ulonglong(1 if auto_free_on_launch else 0)
+    instantiated = cuda.cuGraphInstantiateWithFlags(ctypes.byref(graph_exec), graph, flags)
+    if instantiated != 0:
+        cuda.cuGraphDestroy(graph)
+        raise RuntimeError(f"cuGraphInstantiateWithFlags failed with {instantiated}")
+
+    def launch():
+        launched = cuda.cuGraphLaunch(graph_exec, stream)
+        if launched != 0:
+            raise RuntimeError(f"cuGraphLaunch failed with {launched}")
+        wp.synchronize_stream(wp.get_stream(device))
+
+    def release():
+        cuda.cuGraphExecDestroy(graph_exec)
+        cuda.cuGraphDestroy(graph)
+
+    return launch, release
+
+
 class StreamCapture:
     def __init__(self, stream_name):
         self.stream_name = stream_name  # 'stdout' or 'stderr'
@@ -204,7 +451,16 @@ class StreamCapture:
             write_through=True,
         )
 
-        # Redirect the stream
+        self.resume()
+
+    def suspend(self):
+        if LIBC is not None:
+            LIBC.fflush(None)
+        os.dup2(self.target, self.stream_fd)
+        setattr(sys, self.stream_name, self.saved)
+
+    def resume(self):
+        self.saved.flush()
         os.dup2(self.tempfile.fileno(), self.stream_fd)
         setattr(sys, self.stream_name, self.tempfile)
 
@@ -251,6 +507,9 @@ class CheckOutput:
     def __enter__(self):
         # wp.force_load()
 
+        # Flush device printf output still pending from earlier tests so the
+        # capture holds only this test's output.
+        wp.synchronize()
         self.capture = StdOutCapture()
         self.capture.begin()
 
@@ -283,11 +542,13 @@ class _OutputRegex:
             ``"stderr"``, or ``"any"``.
         required: Whether the pattern must match (expected output) or is
             merely permitted (allowed output).
+        report: Whether to replay matching output after successful validation.
     """
 
     pattern: str
     stream: str
     required: bool
+    report: bool = False
 
 
 class _OutputCapture:
@@ -316,11 +577,25 @@ class _OutputCapture:
             raise
         self.active = True
 
-    def add_pattern(self, pattern: str, *, stream: str, required: bool):
+    @contextlib.contextmanager
+    def suspended(self):
+        if not self.active:
+            yield
+            return
+
+        self.stderr_capture.suspend()
+        self.stdout_capture.suspend()
+        try:
+            yield
+        finally:
+            self.stdout_capture.resume()
+            self.stderr_capture.resume()
+
+    def add_pattern(self, pattern: str, *, stream: str, required: bool, report: bool = False):
         if stream not in {"stdout", "stderr", "any"}:
             raise ValueError(f"Unknown stream {stream!r}; expected 'stdout', 'stderr', or 'any'")
 
-        self.patterns.append(_OutputRegex(pattern=pattern, stream=stream, required=required))
+        self.patterns.append(_OutputRegex(pattern=pattern, stream=stream, required=required, report=report))
 
     def record(self, stream: str, text: str | bytes | None):
         if text is None:
@@ -360,8 +635,22 @@ class _OutputCapture:
         output_by_stream = {stream: "".join(chunks) for stream, chunks in self.output.items()}
         unmatched_by_stream = output_by_stream.copy()
         missing = []
+        reported = []
 
-        for pattern in self.patterns:
+        patterns = list(self.patterns)
+        if strict_warnings:
+            regexes = {
+                regex
+                for message_prefix in allowed_deprecation_warnings
+                for regex in _deprecation_warning_output_regexes(output_by_stream["stderr"], message_prefix)
+            }
+            automatic_patterns = [
+                _OutputRegex(pattern=regex, stream="stderr", required=False, report=True)
+                for regex in sorted(regexes, key=len, reverse=True)
+            ]
+            patterns = automatic_patterns + patterns
+
+        for pattern in patterns:
             streams = ("stdout", "stderr") if pattern.stream == "any" else (pattern.stream,)
             matched = any(
                 re.search(pattern.pattern, output_by_stream[stream], flags=re.MULTILINE) for stream in streams
@@ -371,6 +660,11 @@ class _OutputCapture:
                 missing.append(pattern)
 
             for stream in streams:
+                if pattern.report:
+                    reported.extend(
+                        (stream, match.group())
+                        for match in re.finditer(pattern.pattern, unmatched_by_stream[stream], flags=re.MULTILINE)
+                    )
                 unmatched_by_stream[stream] = re.sub(
                     pattern.pattern,
                     "",
@@ -392,6 +686,9 @@ class _OutputCapture:
         if failures:
             return "\n\n".join(failures)
 
+        for stream, text in reported:
+            getattr(sys, stream).write(text)
+
         return None
 
 
@@ -404,6 +701,13 @@ class NewtonTestCase(unittest.TestCase):
     """
 
     _output_capture: _OutputCapture | None = None
+
+    def run(self, result=None):
+        if result is None:
+            return super().run()
+
+        super().run(_UncapturedReportingResult(result, self))
+        return result
 
     def _callSetUp(self):
         self._output_capture = _OutputCapture()
@@ -465,6 +769,26 @@ class NewtonTestCase(unittest.TestCase):
                 return True
 
         return False
+
+
+class _UncapturedReportingResult:
+    """Report outcomes outside the output capture, which is still active for subtest outcomes and skips."""
+
+    def __init__(self, result: unittest.TestResult, test: NewtonTestCase):
+        self._result = result
+        self._test = test
+
+    def __getattr__(self, name):
+        attr = getattr(self._result, name)
+        if not name.startswith("add") or not callable(attr):
+            return attr
+
+        def report(*args, **kwargs):
+            output_capture = self._test._output_capture
+            with output_capture.suspended() if output_capture is not None else contextlib.nullcontext():
+                return attr(*args, **kwargs)
+
+        return report
 
 
 def _format_command(command) -> str:
@@ -537,9 +861,16 @@ def create_test_func(func, device, check_output, **kwargs):
         else:
             func(self, device, **kwargs)
 
-    # Copy the __unittest_expecting_failure__ attribute from func to test_func
-    if hasattr(func, "__unittest_expecting_failure__"):
-        test_func.__unittest_expecting_failure__ = func.__unittest_expecting_failure__
+    # Copy unittest markers so expected failures and skips (e.g. from requires()) apply to the generated test.
+    for attr in ("__unittest_expecting_failure__", "__unittest_skip__", "__unittest_skip_why__"):
+        if hasattr(func, attr):
+            setattr(test_func, attr, getattr(func, attr))
+    # A skipped argument, such as a solver factory wrapped in requires(), skips the test before setup.
+    for value in kwargs.values():
+        if callable(value) and getattr(value, "__unittest_skip__", False):
+            test_func.__unittest_skip__ = True
+            test_func.__unittest_skip_why__ = value.__unittest_skip_why__
+            break
 
     return test_func
 
@@ -559,7 +890,9 @@ def sanitize_identifier(s):
         return re.sub(r"\W|^(?=\d)", "_", s)
 
 
-def add_function_test(cls, name, func, devices=None, check_output=True, **kwargs):
+def add_function_test(cls, name, func, devices=None, check_output=True, requires=(), **kwargs):
+    if requires:
+        func = _skip_unless_modules(requires)(func)
     if devices is None:
         setattr(cls, name, create_test_func(func, None, check_output, **kwargs))
     elif isinstance(devices, list):
@@ -697,28 +1030,46 @@ def cleanup_test_allocations():
             wp.set_mempool_release_threshold(device_name, 0)
 
 
-class AllocationCleanupTestResultMixin:
-    """Bound cleanup overhead while retaining per-test CUDA memory release."""
+@dataclasses.dataclass
+class _AllocationCleanupState:
+    tests_since_cleanup: int = 0
 
-    _CPU_CLEANUP_INTERVAL = 8
+
+class AllocationCleanupTestResultMixin:
+    """Batch allocation cleanup across suites in a worker process."""
+
+    _CLEANUP_INTERVAL = 8
+    _worker_cleanup_state: _AllocationCleanupState | None = None
+
+    @classmethod
+    def _start_worker(cls):
+        cls._worker_cleanup_state = _AllocationCleanupState()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._tests_since_cleanup = 0
+        self._cleanup_state = self._worker_cleanup_state or _AllocationCleanupState()
+        self.cleanup_count = 0
+        self.cleanup_seconds = 0.0
+
+    def _cleanup_allocations(self):
+        start = time.perf_counter()
+        cleanup_test_allocations()
+        self.cleanup_seconds += time.perf_counter() - start
+        self.cleanup_count += 1
+        self._cleanup_state.tests_since_cleanup = 0
 
     def stopTest(self, test):
         super().stopTest(test)
         if is_statically_skipped_test(test):
             return
-        self._tests_since_cleanup += 1
-        if wp.get_cuda_devices() or self._tests_since_cleanup >= self._CPU_CLEANUP_INTERVAL:
-            cleanup_test_allocations()
-            self._tests_since_cleanup = 0
+        self._cleanup_state.tests_since_cleanup += 1
+        if self._cleanup_state.tests_since_cleanup >= self._CLEANUP_INTERVAL:
+            self._cleanup_allocations()
 
     def stopTestRun(self):
-        if self._tests_since_cleanup:
-            cleanup_test_allocations()
-            self._tests_since_cleanup = 0
+        # Worker exit releases remaining allocations; standalone runs must flush.
+        if self._cleanup_state is not self._worker_cleanup_state and self._cleanup_state.tests_since_cleanup:
+            self._cleanup_allocations()
         super().stopTestRun()
 
 

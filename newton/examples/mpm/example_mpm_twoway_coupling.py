@@ -1,16 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example MPM 2-Way Coupling
-#
-# A simple scene spawning a dozen rigid shapes above a plane. The shapes
-# fall and collide using the MuJoCo solver. Demonstrates basic builder APIs
-# and the standard example structure.
-#
-# Command: python -m newton.examples mpm_twoway_coupling
-#
-###########################################################################
+"""Example MPM 2-Way Coupling
+
+A simple scene spawning a dozen rigid shapes above a plane. The shapes
+fall and collide using the MuJoCo solver. Demonstrates basic builder APIs
+and the standard example structure.
+
+Success criteria:
+- A vertical stack of 6 boxes is falling on a pile of particles.
+- The particles are acting on the boxes such that they do not completely sink.
+- The boxes are acting on the particles such that they are displaced by the boxes.
+
+Runs:
+- `python -m newton.examples mpm_twoway_coupling`
+"""
 
 from __future__ import annotations
 
@@ -87,7 +91,6 @@ def subtract_body_force(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps

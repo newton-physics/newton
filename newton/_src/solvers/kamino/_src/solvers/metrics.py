@@ -18,24 +18,25 @@ Usage
 A typical example for using this module is:
 
     # Import all relevant types from Kamino
-    from newton._src.solvers.kamino.core import ModelBuilderKamino
+    import newton
+    from newton._src.solvers.kamino._src.core import ModelKamino
     from newton._src.solvers.kamino._src.geometry import ContactsKamino
     from newton._src.solvers.kamino._src.kinematics import LimitsKamino
     from newton._src.solvers.kamino._src.kinematics import DenseSystemJacobians
     from newton._src.solvers.kamino._src.dynamics import DualProblem
     from newton._src.solvers.kamino.solvers import PADMMSolver
 
-    # Create a model builder and add bodies, joints, geoms, etc.
-    builder = ModelBuilderKamino()
+    # Create a model builder and add bodies, joints, shapes, etc.
+    builder = newton.ModelBuilder()
     ...
 
     # Create a model from the builder and construct additional
     # containers to hold joint-limits, contacts, Jacobians
-    model = builder.finalize()
+    model = ModelKamino.from_newton(builder.finalize())
     state_p = model.state()
     data = model.data()
     limits = LimitsKamino(model)
-    contacts = ContactsKamino(builder)
+    contacts = ContactsKamino(model)
     jacobians = DenseSystemJacobians(model, limits, contacts)
 
     # Build the Jacobians for the model and active limits and contacts
@@ -465,7 +466,6 @@ class SolutionMetricsData:
 def compute_v_plus(
     dim: wp.int32,
     vio: wp.int32,
-    mio: wp.int32,
     sigma: wp.float32,
     P: wp.array[wp.float32],
     D_p: wp.array[wp.float32],
@@ -484,19 +484,15 @@ def compute_v_plus(
     of constraint reactions (i.e. Lagrange multipliers), and `I_n`
     is the identity matrix of size `n x n`.
 
-    The preconditioned Delassus matrix `D_p` is stored using row-major order in a
-    flat array with allocation size `maxdim x maxdim`, starting from the matrix
-    index offset `mio`. The active dimensions of the `D_p` are `dim x dim`, where
-    `dim` is the number of active rows and columns.
+    `D_p` is one world's matrix row, containing the active `dim x dim` matrix
+    in row-major order.
 
     The vectors `v_f_p, lambdas, v_plus` are stored in flat arrays
     with dimensions `dim`, starting from the vector index offset `vio`.
 
     Args:
-        maxdim: The maximum dimension of the matrix `A`.
         dim: The active dimension of the matrix `A` and the vectors `x, b, c`.
         vio: The vector index offset (i.e. start index) for the vectors `x, b, c`.
-        mio: The matrix index offset (i.e. start index) for the matrix `A`.
         D_p: Input preconditioned Delassus matrix stored in row-major order.
         v_f_p: Input preconditioned unconstrained constraint-space velocity vector.
         lambdas: Input constraint reactions (i.e. Lagrange multipliers) vector.
@@ -506,7 +502,7 @@ def compute_v_plus(
     lambdas_j = float(0.0)
     for i in range(dim):
         v_i = vio + i
-        m_i = mio + dim * i
+        m_i = dim * i
         v_f_p_i = v_f_p[v_i]
         inv_P_i = 1.0 / P[v_i]
         lambdas_i = lambdas[v_i]
@@ -787,8 +783,7 @@ def _compute_joint_kinematics_residual_dense(
     model_joint_bid_B: wp.array[wp.int32],
     model_joint_bid_F: wp.array[wp.int32],
     data_bodies_u_i: wp.array[wp.spatial_vectorf],
-    jacobian_cts_offset: wp.array[wp.int32],
-    jacobian_cts_data: wp.array[wp.float32],
+    jacobian_cts_data_storage: wp.array2d[wp.float32],
     # Outputs:
     metric_r_kinematics: wp.array[wp.float32],
     metric_r_kinematics_argmax: wp.array[wp.int64],
@@ -798,6 +793,7 @@ def _compute_joint_kinematics_residual_dense(
 
     # Retrieve the world index of the joint
     wid = model_joint_wid[jid]
+    jacobian_cts_data = jacobian_cts_data_storage[wid]
 
     # Retrieve the body indices of the joint
     # NOTE: these indices are w.r.t the model
@@ -814,21 +810,20 @@ def _compute_joint_kinematics_residual_dense(
     bio = model_info_bodies_offset[wid]
     nbd = 6 * (model_info_bodies_offset[wid + 1] - bio)
     kgo = model_info_joint_kinematic_cts_group_offset[wid]
-    mio = jacobian_cts_offset[wid]
 
     # Compute the per-joint constraint Jacobian matrix-vector product
     j_v_j = wp.spatial_vectorf(0.0)
     u_i_F = data_bodies_u_i[bid_F_j]
     dio_F = 6 * (bid_F_j - bio)
     for j in range(num_cts_j):
-        mio_j = mio + nbd * (cts_offset_j + j) + dio_F
+        mio_j = nbd * (cts_offset_j + j) + dio_F
         for i in range(6):
             j_v_j[j] += jacobian_cts_data[mio_j + i] * u_i_F[i]
     if bid_B_j >= 0:
         u_i_B = data_bodies_u_i[bid_B_j]
         dio_B = 6 * (bid_B_j - bio)
         for j in range(num_cts_j):
-            mio_j = mio + nbd * (cts_offset_j + j) + dio_B
+            mio_j = nbd * (cts_offset_j + j) + dio_B
             for i in range(6):
                 j_v_j[j] += jacobian_cts_data[mio_j + i] * u_i_B[i]
 
@@ -917,12 +912,12 @@ def _compute_cts_joints_residual(
     wid = model_joint_wid[jid]
     num_cts_j = model_joint_num_kinematic_cts[jid]
     cio_j = model_joint_kinematic_cts_offset[jid]
+    # Early return for free joints
+    if num_cts_j == 0:
+        return
 
     # Compute the per-joint constraint residual (infinity-norm) and local argmax row
-    r_cts_joints_j = wp.float32(0.0)
-    argmax_j = wp.int32(0)
-    if num_cts_j > 0:
-        r_cts_joints_j, argmax_j = _vector_segment_abs_infnorm(num_cts_j, cio_j, data_joints_r_j)
+    r_cts_joints_j, argmax_j = _vector_segment_abs_infnorm(num_cts_j, cio_j, data_joints_r_j)
 
     cio_j_loc = cio_j - model_info_joint_kinematic_cts_offset[wid]
 
@@ -1017,16 +1012,16 @@ def _compute_dual_problem_metrics(
     problem_ccgo: wp.array[wp.int32],
     problem_dim: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
-    problem_mio: wp.array[wp.int32],
     problem_mu: wp.array[wp.float32],
     problem_v_f: wp.array[wp.float32],
-    problem_D: wp.array[wp.float32],
+    problem_D_storage: wp.array2d[wp.float32],
     problem_P: wp.array[wp.float32],
     problem_bound_lower: wp.array[wp.float32],
     problem_bound_upper: wp.array[wp.float32],
     solution_sigma: wp.array[wp.vec2f],
     solution_lambdas: wp.array[wp.float32],
     solution_v_plus: wp.array[wp.float32],
+    use_solution_velocity: wp.bool,
     # Buffers:
     buffer_s: wp.array[wp.float32],
     buffer_v: wp.array[wp.float32],
@@ -1046,6 +1041,7 @@ def _compute_dual_problem_metrics(
 ):
     # Retrieve the thread index as the world index
     wid = wp.tid()
+    problem_D = problem_D_storage[wid]
 
     # Retrieve the world-specific data
     nbc = problem_nbc[wid]
@@ -1058,7 +1054,6 @@ def _compute_dual_problem_metrics(
     lcgo = problem_lcgo[wid]
     ccgo = problem_ccgo[wid]
     vio = problem_vio[wid]
-    mio = problem_mio[wid]
     sigma = solution_sigma[wid]
 
     # Compute additional info
@@ -1066,10 +1061,15 @@ def _compute_dual_problem_metrics(
 
     # Compute the post-event constraint-space velocity from the current solution: v_plus = v_f + D @ lambda
     # NOTE: We assume the dual problem linear terms `D` and `v_f` have already been preconditioned in-place using `P`
-    compute_v_plus(ncts, vio, mio, sigma[0], problem_P, problem_D, problem_v_f, solution_lambdas, buffer_v)
+    compute_v_plus(ncts, vio, sigma[0], problem_P, problem_D, problem_v_f, solution_lambdas, buffer_v)
 
     # Compute the post-event constraint-space velocity error as: r_v_plus = || v_plus_est - v_plus_true ||_inf
     r_v_plus, r_v_plus_argmax = compute_vector_difference_infnorm(ncts, vio, solution_v_plus, buffer_v)
+
+    # If requested, test the NCP against the actually accepted output state rather than reconstructed velocity.
+    if use_solution_velocity:
+        for row in range(ncts):
+            buffer_v[vio + row] = solution_v_plus[vio + row]
 
     # Compute the De Saxce correction for each contact as: s = G(v_plus)
     compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, buffer_v, buffer_s)
@@ -1192,6 +1192,7 @@ def _compute_dual_problem_metrics_sparse(
     problem_bound_upper: wp.array[wp.float32],
     solution_lambdas: wp.array[wp.float32],
     solution_v_plus: wp.array[wp.float32],
+    use_solution_velocity: wp.bool,
     # Buffers:
     buffer_s: wp.array[wp.float32],
     buffer_v: wp.array[wp.float32],
@@ -1234,6 +1235,11 @@ def _compute_dual_problem_metrics_sparse(
 
     # Compute the post-event constraint-space velocity error as: r_v_plus = || v_plus_est - v_plus_true ||_inf
     r_v_plus, r_v_plus_argmax = compute_vector_difference_infnorm(ncts, vio, solution_v_plus, buffer_v)
+
+    # If requested, test the NCP against the actually accepted output state rather than reconstructed velocity.
+    if use_solution_velocity:
+        for row in range(ncts):
+            buffer_v[vio + row] = solution_v_plus[vio + row]
 
     # Compute the De Saxce correction for each contact as: s = G(v_plus)
     compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, buffer_v, buffer_s)
@@ -1462,6 +1468,7 @@ class SolutionMetrics:
         jacobians: DenseSystemJacobians | SparseSystemJacobians,
         limits: LimitsKamino | None = None,
         contacts: ContactsKamino | None = None,
+        use_solution_velocity: bool = False,
     ):
         """
         Evaluates all solution performance metrics.
@@ -1477,11 +1484,36 @@ class SolutionMetrics:
             sigma: The array diagonal regularization applied to the Delassus matrix of the current dual problem.
             lambdas: The array of constraint reactions (i.e. Lagrange multipliers) of the current dual problem solution.
             v_plus: The array of post-event constraint-space velocities of the current dual problem solution.
+            use_solution_velocity: Whether velocity-dependent NCP and VI residuals and objectives
+                use ``v_plus`` instead of the velocity implied by the dual problem.
+                ``r_v_plus`` compares both velocities in either case.
+        """
+        self._assert_has_data()
+        self.evaluate_primal(model, data, state_p, jacobians, limits, contacts)
+        self._evaluate_dual_problem_perf(sigma, lambdas, v_plus, problem, use_solution_velocity)
+
+    def evaluate_primal(
+        self,
+        model: ModelKamino,
+        data: DataKamino,
+        state_p: StateKamino,
+        jacobians: DenseSystemJacobians | SparseSystemJacobians,
+        limits: LimitsKamino | None = None,
+        contacts: ContactsKamino | None = None,
+    ) -> None:
+        """Evaluate backend-neutral EOM and constraint metrics.
+
+        Args:
+            model: The model containing time-invariant simulation data.
+            data: The model data containing the final simulation state.
+            state_p: The state at the beginning of the time step.
+            jacobians: The system Jacobians used by the dynamics solve.
+            limits: Active joint-limit constraints.
+            contacts: Active contact constraints.
         """
         self._assert_has_data()
         self._evaluate_constraint_violations_perf(model, data, limits, contacts)
         self._evaluate_primal_problem_perf(model, data, state_p, jacobians)
-        self._evaluate_dual_problem_perf(sigma, lambdas, v_plus, problem)
 
     ###
     # Internals
@@ -1598,7 +1630,7 @@ class SolutionMetrics:
             inputs=[
                 # Inputs:
                 model.time.dt,
-                model.gravity.vector,
+                model.gravity,
                 model.bodies.wid,
                 model.bodies.m_i,
                 data.bodies.I_i,
@@ -1630,7 +1662,6 @@ class SolutionMetrics:
                         model.joints.bid_B,
                         model.joints.bid_F,
                         data.bodies.u_i,
-                        jacobians.data.J_cts_offsets,
                         jacobians.data.J_cts_data,
                         # Outputs:
                         self._data.r_kinematics,
@@ -1668,6 +1699,7 @@ class SolutionMetrics:
         lambdas: wp.array[wp.float32],
         v_plus: wp.array[wp.float32],
         problem: DualProblem,
+        use_solution_velocity: bool = False,
     ):
         """
         Evaluates the dual problem performance metrics.
@@ -1677,6 +1709,9 @@ class SolutionMetrics:
             sigma: The array of sigma values for the dual problem.
             lambdas: The array of lambda values for the dual problem.
             v_plus: The array of v_plus values for the dual problem.
+            use_solution_velocity: Whether velocity-dependent NCP and
+                VI residuals and objectives use ``v_plus`` instead of the
+                velocity implied by the dual problem.
         """
         # Ensure metrics data is available
         self._assert_has_data()
@@ -1718,6 +1753,7 @@ class SolutionMetrics:
                     problem.data.bound_upper,
                     lambdas,
                     v_plus,
+                    use_solution_velocity,
                     # Buffers:
                     self._buffer_s,
                     self._buffer_v,
@@ -1753,7 +1789,6 @@ class SolutionMetrics:
                     problem.data.ccgo,
                     problem.data.dim,
                     problem.data.vio,
-                    problem.data.mio,
                     problem.data.mu,
                     problem.data.v_f,
                     problem.data.D,
@@ -1763,6 +1798,7 @@ class SolutionMetrics:
                     sigma,
                     lambdas,
                     v_plus,
+                    use_solution_velocity,
                     # Buffers:
                     self._buffer_s,
                     self._buffer_v,

@@ -13,6 +13,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import Vec2, Vec3
+from ...exceptions import NewtonWarning
 from ...geometry.flags import ParticleFlags
 from ...geometry.kernels import compute_edge_aabbs
 from ...utils.mesh import MeshAdjacency
@@ -142,15 +143,15 @@ def _compute_edge_bending_data(
         return a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
 
     if edge_aniso_values is not None:
-        angle_f0 = np.atan2(panel_x43_f0[:, 1], panel_x43_f0[:, 0])
-        angle_f1 = np.atan2(panel_x43_f1[:, 1], panel_x43_f1[:, 0])
+        angle_f0 = np.arctan2(panel_x43_f0[:, 1], panel_x43_f0[:, 0])
+        angle_f1 = np.arctan2(panel_x43_f1[:, 1], panel_x43_f1[:, 0])
         angle = (angle_f0 + angle_f1) * 0.5
         sin = np.sin(angle)
         cos = np.cos(angle)
-        sin2 = np.pow(sin, 2)
-        cos2 = np.pow(cos, 2)
-        sin12 = np.pow(sin, 12)
-        cos12 = np.pow(cos, 12)
+        sin2 = np.power(sin, 2)
+        cos2 = np.power(cos, 2)
+        sin12 = np.power(sin, 12)
+        cos12 = np.power(cos, 12)
         aniso_ke = np.array(edge_aniso_values, dtype=float).reshape(-1, 3)
         edge_ke = aniso_ke[:, 0] * sin12 + aniso_ke[:, 1] * cos12 + aniso_ke[:, 2] * 4.0 * sin2 * cos2
 
@@ -287,7 +288,7 @@ def add_cloth_mesh(
     panel_inv_D_all, panel_areas_all = _compute_panel_triangles(panel_verts_np, panel_indices_np)
     valid_inds = (panel_areas_all > 0.0).nonzero()[0]
     if len(valid_inds) < len(panel_areas_all):
-        warnings.warn("Inverted or degenerate triangle elements detected.", stacklevel=2)
+        warnings.warn("Inverted or degenerate triangle elements detected.", NewtonWarning, stacklevel=2)
     tri_indices_valid = tri_indices_np[valid_inds]
     panel_indices_valid = panel_indices_np[valid_inds]
 

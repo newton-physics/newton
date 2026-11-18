@@ -15,7 +15,8 @@ Use :class:`~newton.solvers.SolverStyle3D` as the canonical public solver class.
    Because ``newton.solvers`` is a module rather than a package, use
    ``from newton.solvers import style3d`` instead of ``import newton.solvers.style3d``.
 
-.. currentmodule:: newton._src.solvers.style3d
+.. py:module:: newton.solvers.style3d
+.. currentmodule:: newton.solvers.style3d
 
 .. rubric:: Functions
 

@@ -8,10 +8,15 @@
     upAxis = "Z"
 )
 
-def PhysicsScene "World"
+def PhysicsScene "World" (
+    prepend apiSchemas = ["NewtonKaminoSceneAPI"]
+)
 {
     float physics:gravityMagnitude = 9.8067
     vector3f physics:gravityDirection = (0, 0, -1)
+    uniform float newton:kamino:padmm:complementarityTolerance = 0.0001
+    uniform float newton:kamino:padmm:dualTolerance = 0.0001
+    uniform float newton:kamino:padmm:primalTolerance = 0.0001
 }
 
 def Xform "box_on_plane"
@@ -146,15 +151,6 @@ def Xform "box_on_plane"
             float physics:staticFriction = 0.5
             float physics:dynamicFriction = 0.5
         }
-    }
-
-    def PhysicsCollisionGroup "Collisions"
-    {
-        rel collection:colliders:includes = [
-            </box_on_plane/RigidBodies/box_body>,
-            </box_on_plane/StaticGeometry/plane>,
-        ]
-        rel physics:filteredGroups = </boxes_hinged/Collisions>
     }
 }
 

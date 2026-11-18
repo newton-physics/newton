@@ -1,19 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cable Y-Junction
-#
-# This example shows how to simulate a Y-junction using `builder.add_rod_graph(...)`
-# with a shared junction node.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction --test --viewer null
-#
-###########################################################################
+"""Example Cable Y-Junction
+
+This example shows how to simulate a Y-junction using `newton.Rod` with
+explicit graph topology and a shared junction node.
+
+Success criteria:
+- A suspended Y-shaped cable oscillates and reaches a stable hanging configuration.
+- Right-drag a free part of the cable and release it; motion damps back toward a stable
+  configuration.
+- The junction remains connected and the pinned tip stays fixed throughout the interaction.
+
+Runs:
+- `python -m newton.examples cable_y_junction`
+"""
 
 from __future__ import annotations
 
@@ -40,11 +41,13 @@ class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
         self.args = args
+        self.solver_type = getattr(args, "solver", "vbd") if args is not None else "vbd"
+        self.kamino_backend = getattr(args, "kamino_backend", "lox") if args is not None else "lox"
 
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 20
+        self.sim_substeps = 2 if self.solver_type == "kamino" else 20
         self.sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -59,6 +62,8 @@ class Example:
         bend_damping = 1.0e3
 
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
         builder.rigid_gap = contact_gap
         builder.default_shape_cfg.ke = 1.0e4
         builder.default_shape_cfg.kd = 0.0
@@ -84,17 +89,15 @@ class Example:
                 edges.append((prev, cur))
                 prev = cur
 
-        self.graph_bodies, self.graph_joints = builder.add_rod_graph(
-            node_positions=node_positions,
-            edges=edges,
-            radius=cable_radius,
+        rod = newton.Rod(node_positions, edges=edges, radius=cable_radius)
+        self.graph_bodies, self.graph_joints = builder.add_rod(
+            rod=rod,
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
             bend_stiffness=bend_stiffness,
             bend_damping=bend_damping,
             label="y_graph",
             wrap_in_articulation=True,
-            body_frame_origin="com",
         )
 
         # Pin one tip capsule (end of the first branch).
@@ -102,10 +105,19 @@ class Example:
         tip_edge_idx = num_segments_per_branch - 1
         pinned_body = int(self.graph_bodies[tip_edge_idx])
         self.pinned_body = pinned_body
-        builder.body_mass[pinned_body] = 0.0
-        builder.body_inv_mass[pinned_body] = 0.0
-        builder.body_inertia[pinned_body] = wp.mat33(0.0)
-        builder.body_inv_inertia[pinned_body] = wp.mat33(0.0)
+        if self.solver_type == "kamino":
+            # Kamino simulates massless bodies, so weld the tip to the world with a loop-closing joint
+            builder.add_joint_fixed(
+                parent=-1,
+                child=pinned_body,
+                parent_xform=builder.body_q[pinned_body],
+                label="pinned_tip",
+            )
+        else:
+            builder.body_mass[pinned_body] = 0.0
+            builder.body_inv_mass[pinned_body] = 0.0
+            builder.body_inertia[pinned_body] = wp.mat33(0.0)
+            builder.body_inv_inertia[pinned_body] = wp.mat33(0.0)
 
         if getattr(args, "ground", True):
             builder.add_ground_plane()
@@ -116,11 +128,15 @@ class Example:
         self.model.set_gravity((0.0, 0.0, float(getattr(args, "gravity_z", -9.81))))
 
         self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.solver = newton.solvers.SolverVBD(
-            self.model,
-            iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
-        )
+        if self.solver_type == "kamino":
+            config = newton.solvers.SolverKamino.Config.from_model(self.model, dynamics_solver=self.kamino_backend)
+            config.use_collision_detector = False
+            self.solver = newton.solvers.SolverKamino(self.model, config=config)
+        else:
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=self.sim_iterations,
+            )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -132,13 +148,6 @@ class Example:
         self.pinned_body_q0 = self.state_0.body_q.numpy()[self.pinned_body].copy()
 
         self.viewer.set_model(self.model)
-
-        picking = getattr(self.viewer, "picking", None)
-        if picking is not None:
-            pick_state = picking.pick_state.numpy()
-            pick_state[0]["pick_stiffness"] = 0.1
-            pick_state[0]["pick_damping"] = 0.01
-            picking.pick_state.assign(pick_state)
 
         self.viewer.set_camera(
             pos=wp.vec3(2.10, 0.0, z0 - 0.15),
@@ -183,9 +192,9 @@ class Example:
         # ---------------------------
         # Connectivity check
         # ---------------------------
-        # `add_rod_graph(wrap_in_articulation=True)` builds a joint forest over the edge bodies.
+        # Rod graph assembly builds a joint forest over the edge bodies when wrapped in articulations.
         # For this Y-junction (one connected component), all rod bodies should be connected via
-        # the joints returned by `add_rod_graph`.
+        # the joints returned by `add_rod`.
         joint_parent = self.model.joint_parent.numpy()
         joint_child = self.model.joint_child.numpy()
 
@@ -229,5 +238,10 @@ class Example:
 
 
 if __name__ == "__main__":
-    viewer, args = newton.examples.init()
+    parser = newton.examples.create_parser()
+    parser.add_argument("--solver", choices=["vbd", "kamino"], default="vbd", help="Cable dynamics solver.")
+    parser.add_argument(
+        "--kamino-backend", choices=["lox", "scc"], default="lox", help="Kamino dynamics solver backend."
+    )
+    viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

@@ -51,15 +51,18 @@ _NAN_THRESHOLD = wp.constant(1.0e16)
 _EIGENVALUE_FLOOR = wp.constant(1.0e-6)
 """Eigenvalues at or below this value are treated as zero (mode is dropped)"""
 
+GIMP_MIN_OVERLAP_FRACTION = wp.constant(1.0e-6)
+"""Particle-domain overlaps with a smaller volume fraction are left out"""
+
 vec6 = wp.types.vector(length=6, dtype=wp.float32)
 mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
 mat63 = wp.types.matrix(shape=(6, 3), dtype=wp.float32)
 mat36 = wp.types.matrix(shape=(3, 6), dtype=wp.float32)
 mat13 = wp.types.matrix(shape=(1, 3), dtype=wp.float32)
 mat31 = wp.types.matrix(shape=(3, 1), dtype=wp.float32)
-mat11 = wp.types.matrix(shape=(1, 1), dtype=wp.float32)
 
 YIELD_PARAM_LENGTH = type_size(YieldParamVec)
+YieldMomentVec = wp.types.vector(length=2 * YIELD_PARAM_LENGTH, dtype=wp.float32)
 
 
 @fem.integrand
@@ -145,6 +148,8 @@ def integrate_velocity(
     dt: float,
     gravity: wp.array[wp.vec3],
     particle_world: wp.array[wp.int32],
+    particle_f: wp.array[wp.vec3],
+    particle_inv_mass: wp.array[float],
     inv_cell_volume: float,
     particle_density: wp.array[float],
     particle_flags: wp.array[wp.int32],
@@ -154,12 +159,14 @@ def integrate_velocity(
 
     vel_adv = velocities[s.qp_index]
     world_idx = particle_world[s.qp_index]
-    world_g = gravity[world_idx]
+    accel = gravity[world_idx]
+    if particle_f:
+        accel += particle_f[s.qp_index] * particle_inv_mass[s.qp_index]
 
     rho = particle_density[s.qp_index]
     vel_adv = wp.where(
         rho > 0.0,
-        rho * (vel_adv + dt * world_g),
+        rho * (vel_adv + dt * accel),
         INFINITY * vel_adv,
     )
     return wp.dot(u(s), vel_adv) * inv_cell_volume
@@ -273,6 +280,19 @@ def integrate_elastic_parameters(
     return wp.dot(u(s), params_vec) * inv_cell_volume
 
 
+@wp.func
+def _yield_moment(
+    weights: YieldMomentVec,
+    i: int,
+    material_parameters: MaterialParameters,
+    particle_Jp: wp.array[float],
+    dt: float,
+):
+    parameters = YieldMomentVec(1.0)
+    parameters[:YIELD_PARAM_LENGTH] = get_yield_parameters(i, material_parameters, particle_Jp[i], dt)
+    return wp.dot(weights, parameters)
+
+
 @fem.integrand
 def integrate_yield_parameters(
     s: fem.Sample,
@@ -285,10 +305,34 @@ def integrate_yield_parameters(
 ):
     if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
         return 0.0
+    return _yield_moment(u(s), s.qp_index, material_parameters, particle_Jp, dt) * inv_cell_volume
 
-    i = s.qp_index
-    params_vec = get_yield_parameters(i, material_parameters, particle_Jp[i], dt)
-    return wp.dot(u(s), params_vec) * inv_cell_volume
+
+@fem.integrand
+def integrate_transformed_yield_parameters(
+    s: fem.Sample,
+    u: fem.Field,
+    modes: fem.Field,
+    inv_cell_volume: float,
+    material_parameters: MaterialParameters,
+    particle_Jp: wp.array[float],
+    dt: float,
+    particle_flags: wp.array[wp.int32],
+):
+    """Weigh yield parameters by the transformed strain mode of the current test node."""
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
+    # Discontinuous nodes are numbered by cell, so the local index selects the test node's mode.
+    mode = fem.node_index(u, s) % fem.node_count(u, s)
+    # Nodal test functions are one at their own node, giving the test component's direction.
+    value = u(fem.at_node(u, s)) * modes(s)[mode]
+    weights = wp.max(value, YieldMomentVec(0.0))
+    # Apply the same shear/viscosity weights to numerators and weight sums.
+    weights[2::YIELD_PARAM_LENGTH] = wp.abs(value[2::YIELD_PARAM_LENGTH])
+    viscosity_weights = value[5::YIELD_PARAM_LENGTH]
+    weights[5::YIELD_PARAM_LENGTH] = wp.cw_mul(viscosity_weights, viscosity_weights)
+    return _yield_moment(weights, s.qp_index, material_parameters, particle_Jp, dt) * inv_cell_volume
 
 
 @fem.integrand
@@ -360,6 +404,24 @@ def advect_particles(
     wp.atomic_add(vel_grad, s.qp_index, gimp_weight * p_vel_grad)
 
 
+@wp.func
+def particle_receives_strain_update(
+    i: int,
+    particle_flags: wp.array[wp.int32],
+    particle_density: wp.array[float],
+):
+    return (particle_flags[i] & newton.ParticleFlags.ACTIVE) != 0 and particle_density[i] != 0.0
+
+
+@wp.func
+def particle_is_binned(i: int, particle_cells: wp.array2d[int]):
+    """Whether particle ``i`` lies in at least one cell."""
+    for k in range(particle_cells.shape[1]):
+        if particle_cells[i, k] != fem.NULL_ELEMENT_INDEX:
+            return True
+    return False
+
+
 @fem.integrand
 def update_particle_strains(
     s: fem.Sample,
@@ -369,6 +431,7 @@ def update_particle_strains(
     elastic_strain_delta: fem.Field,
     stress: fem.Field,
     dt: float,
+    kinematic_elastic_strain: bool,
     particle_flags: wp.array[wp.int32],
     particle_density: wp.array[float],
     particle_volume: wp.array[float],
@@ -379,13 +442,8 @@ def update_particle_strains(
     particle_Jp: wp.array[float],
     particle_stress: wp.array[wp.mat33],
 ):
-    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
-        elastic_strain[s.qp_index] = elastic_strain_prev[s.qp_index]
-        particle_Jp[s.qp_index] = particle_Jp_prev[s.qp_index]
-        return
-    if particle_density[s.qp_index] == 0.0:
-        elastic_strain[s.qp_index] = elastic_strain_prev[s.qp_index]
-        particle_Jp[s.qp_index] = particle_Jp_prev[s.qp_index]
+    # Skipped particles keep the values copied by `reset_particle_values`
+    if not particle_receives_strain_update(s.qp_index, particle_flags, particle_density):
         return
 
     # plastic strain
@@ -410,8 +468,12 @@ def update_particle_strains(
     # elastic strain
     prev_strain = elastic_strain_prev[s.qp_index]
     vel_grad = fem.grad(grid_vel, s)
-    skew = 0.5 * dt * (vel_grad - wp.transpose(vel_grad))
-    strain_delta = elastic_strain_delta(s) + skew
+    if kinematic_elastic_strain:
+        # The particle's own strain increment, minus the plastic part, including strain the basis cannot represent
+        strain_delta = dt * vel_grad - p_strain_delta
+    else:
+        skew = 0.5 * dt * (vel_grad - wp.transpose(vel_grad))
+        strain_delta = elastic_strain_delta(s) + skew
 
     # The skew-symmetric part of the velocity gradient is used as a linearized
     # approximation of the finite rotation increment (matches standard deformation gradient update).
@@ -446,16 +508,22 @@ def update_particle_frames(
     dt: float,
     min_stretch: float,
     max_stretch: float,
+    particle_flags: wp.array[wp.int32],
     vel_grad: wp.array[wp.mat33],
     transform_prev: wp.array[wp.mat33],
     transform: wp.array[wp.mat33],
 ):
     i = wp.tid()
 
-    p_vel_grad = vel_grad[i]
-
     # transform, for grain-level rendering
     F_prev = transform_prev[i]
+
+    # Inactive particles keep their frame while frozen
+    if ~particle_flags[i] & newton.ParticleFlags.ACTIVE:
+        transform[i] = F_prev
+        return
+
+    p_vel_grad = vel_grad[i]
     # dX1/dx = dX1/dX0 dX0/dx
     F = F_prev + dt * p_vel_grad @ F_prev
 
@@ -603,66 +671,103 @@ def mass_form(
     return p(s) * q(s) * inv_cell_volume
 
 
-@wp.kernel(module="unique")
-def compute_eigenvalues(
+@wp.kernel(module="unique", module_options={"max_unroll": 4, "enable_backward": False})
+def compute_nodal_diagonalization(
     offsets: wp.array[int],
     columns: wp.array[int],
     values: wp.array[Any],
     ones: wp.array2d[float],
-    yield_parameters: wp.array[YieldParamVec],
-    eigenvalues: wp.array2d[float],
-    eigenvectors: wp.array3d[float],
-    rotated_volume: wp.array2d[float],
+    diagonal_mass: wp.array2d[float],
+    basis_transform: wp.array3d[float],
+    stress_transform: wp.array3d[float],
 ):
+    """Orthogonalize supported nodal mass blocks without changing reference P1d/Q1d cells.
+
+    Outputs the test transform R, its dual coefficient transform on the
+    supported subspace, and diagonal mass. Supported modes stay closest to the
+    nodal axes; singular blocks orthogonalize projected nodal axes. Each mode is
+    scaled so the unit field has unit coefficients, keeping yield bounds in
+    physical units in partially filled cells.
+    """
     row = wp.tid()
-
     diag_index = wps.bsr_block_index(row, row, offsets, columns)
+    transform = values.dtype(0.0)
+    coefficient_transform = values.dtype(0.0)
+    scales = type(transform[0])(1.0)
 
-    if diag_index == -1:
-        ev = values.dtype(0.0)
-        scales = type(ev[0])(0.0)
-        rv = type(ev[0])(0.0)
+    if diag_index != -1:
+        mass = values[diag_index]
+        # A uniform spectral shift avoids singular QR pivots without changing
+        # eigenvectors or regularizing the mass used by the solve.
+        shift = _EIGENVALUE_FLOOR
+        shifted_mass = mass + wp.identity(n=scales.length, dtype=float) * shift
+        scales, modes = fem.linalg.symmetric_eigenvalues_qr(shifted_mass, _QR_TOLERANCE)
+        scales -= type(scales)(shift)
+        if not (wp.ddot(modes, modes) < _NAN_THRESHOLD and wp.length_sq(scales) < _NAN_THRESHOLD):
+            scales = wp.get_diag(mass)
+            modes = wp.identity(n=scales.length, dtype=float)
 
-    else:
-        diag_block = values[diag_index]
-        scales, ev = fem.linalg.symmetric_eigenvalues_qr(diag_block, _QR_TOLERANCE)
+        full_rank = wp.min(scales) > _EIGENVALUE_FLOOR
 
-        # symmetric_eigenvalues_qr may return nans for small coefficients
-        if not (wp.ddot(ev, ev) < _NAN_THRESHOLD and wp.length_sq(scales) < _NAN_THRESHOLD):
-            scales = wp.get_diag(diag_block)
-            ev = wp.identity(n=scales.length, dtype=float)
-
-        rv = type(scales)(0.0)
-        nodes_per_elt = eigenvectors.shape[1]
+        reference_mass = 1.0 / float(scales.length)
+        active_count = int(scales.length)
+        test_scales = type(scales)(0.0)
+        coefficient_scales = type(scales)(0.0)
         for k in range(scales.length):
-            s = float(0.0)
-            if scales[k] <= _EIGENVALUE_FLOOR:
-                scales[k] = 1.0
-                rv[k] = 1.0
-                ev_s = 0.0
+            if scales[k] > _EIGENVALUE_FLOOR:
+                test_scales[k] = wp.sqrt(reference_mass / scales[k])
+                coefficient_scales[k] = 1.0 / test_scales[k]
             else:
-                ys = float(0.0)
+                active_count -= 1
+        completion = values.dtype(0.0)
+        if not full_rank and active_count > 0:
+            # The projector is independent of arbitrary rotations of null eigenvectors.
+            projector = values.dtype(0.0)
+            for k in range(scales.length):
+                if scales[k] > _EIGENVALUE_FLOOR:
+                    projector += wp.outer(modes[k], modes[k])
+            for i in range(active_count):
+                diagonal = wp.get_diag(projector)
+                pivot = int(wp.argmax(diagonal))
+                # Resolve roundoff-level pivot ties in nodal order.
+                pivot_tolerance = wp.static(32.0 * float(np.finfo(np.float32).eps)) * float(scales.length)
+                for j in range(pivot):
+                    if diagonal[j] >= diagonal[pivot] - pivot_tolerance:
+                        pivot = j
+                        break
+                direction = wp.normalize(projector[:, pivot])
+                completion[:, i] = direction
+                projector -= wp.outer(direction, direction)
+        for i in range(active_count):
+            coordinates = modes[:, i]
+            if not full_rank:
+                coordinates = modes * completion[:, i]
+            transform[i] = wp.cw_mul(coordinates, test_scales) * modes
+            coefficient_transform[i] = wp.cw_mul(coordinates, coefficient_scales) * modes
 
+        for k in range(scales.length):
+            if k >= active_count:
+                scales[k] = 1.0
+            else:
+                mean = float(0.0)
+                norm_sq = float(0.0)
                 for j in range(scales.length):
-                    node_index = row * nodes_per_elt + j
-                    s += ev[k, j] * ones[row, j]
-                    ys += ev[k, j] * yield_parameters[node_index][0]
+                    mean += transform[k, j] * ones[row, j]
+                    norm_sq += transform[k, j] * transform[k, j]
+                # Rescaling keeps modes orthogonal. Give the unit field unit coefficients, and
+                # zero-mean modes unit nodal norm, so yield bounds stay in physical units.
+                row_scale = wp.max(wp.abs(mean) / reference_mass, 1.0 / wp.sqrt(norm_sq))
+                scales[k] = reference_mass * row_scale * row_scale
+                orientation = wp.where(mean < 0.0, -1.0, 1.0)
+                for j in range(scales.length):
+                    transform[k, j] *= orientation * row_scale
+                    coefficient_transform[k, j] *= orientation / row_scale
 
-                ev_s = wp.sign(s)
-                rv[k] = ev_s * s
-
-                if ys * ev_s < 0.0:
-                    ev_s = 0.0
-
-            for j in range(scales.length):
-                ev[k, j] *= ev_s
-
-    size = int(scales.length)
-    for k in range(size):
-        eigenvalues[row, k] = scales[k]
-        rotated_volume[row, k] = rv[k]
+    for k in range(scales.length):
+        diagonal_mass[row, k] = scales[k]
         for j in range(scales.length):
-            eigenvectors[row, k, j] = ev[k, j]
+            basis_transform[row, k, j] = transform[k, j]
+            stress_transform[row, k, j] = coefficient_transform[k, j]
 
 
 @wp.kernel(module="unique")
@@ -702,9 +807,9 @@ def make_rotate_vectors(nodes_per_element: int):
     @fem.cache.dynamic_kernel(suffix=nodes_per_element, kernel_options={"enable_mathdx_gemm": False})
     def rotate_vectors(
         eigenvectors: wp.array3d[float],
+        stress_transform: wp.array3d[float],
         strain_rhs: wp.array2d[float],
         stress: wp.array2d[float],
-        yield_parameters: wp.array2d[float],
         unilateral_strain_offset: wp.array2d[float],
     ):
         elem = wp.tid()
@@ -715,14 +820,9 @@ def make_rotate_vectors(nodes_per_element: int):
         wp.tile_store(strain_rhs, rotated_strain_rhs, offset=(elem * nodes_per_element, 0))
 
         stress_tile = wp.tile_load(stress, shape=(nodes_per_element, 6), offset=(elem * nodes_per_element, 0))
-        rotated_stress = wp.tile_matmul(ev, stress_tile)
+        stress_basis = wp.tile_load(stress_transform[elem], shape=(nodes_per_element, nodes_per_element))
+        rotated_stress = wp.tile_matmul(stress_basis, stress_tile)
         wp.tile_store(stress, rotated_stress, offset=(elem * nodes_per_element, 0))
-
-        yield_tile = wp.tile_load(
-            yield_parameters, shape=(nodes_per_element, YIELD_PARAM_LENGTH), offset=(elem * nodes_per_element, 0)
-        )
-        rotated_yield = wp.tile_matmul(ev, yield_tile)
-        wp.tile_store(yield_parameters, rotated_yield, offset=(elem * nodes_per_element, 0))
 
         unilateral_strain_offset_tile = wp.tile_load(
             unilateral_strain_offset, shape=(nodes_per_element, 1), offset=(elem * nodes_per_element, 0)
@@ -765,18 +865,10 @@ def make_inverse_rotate_vectors(nodes_per_element: int):
 
 
 @wp.kernel(module="unique")
-def inverse_scale_vector(
-    eigenvalues: wp.array[float],
-    vector: wp.array[Any],
-):
-    node = wp.tid()
-    scale = eigenvalues[node]
-
-    zero = vector.dtype(0.0)
-    vector[node] = wp.where(scale == 0.0, zero, vector[node] / scale)
-
-
-wp.overload(inverse_scale_vector, {"vector": wp.array[YieldParamVec]})
+def inverse_scale_vector(weights: wp.array2d[float], vector: wp.array2d[float]):
+    node, component = wp.tid()
+    scale = weights[node, component]
+    vector[node, component] = wp.where(scale == 0.0, 0.0, vector[node, component] / scale)
 
 
 @wp.kernel
@@ -991,6 +1083,88 @@ wp.overload(reset_mpm_grid_warmstart, {"values": wp.array[wp.vec3]})
 wp.overload(reset_mpm_grid_warmstart, {"values": wp.array[vec6]})
 
 
+NODE_KEY_SENTINEL = wp.constant(wp.int64(0x7FFFFFFFFFFFFFFF))
+"""Key of nodes that have no lattice key; it sorts last and matches no saved node."""
+
+
+@wp.func
+def lattice_node_key(position: wp.vec3, inv_half_voxel: float, environment: int):
+    """Key a grid node by its environment and its coordinates on the half-voxel lattice."""
+    if position[0] == fem.OUTSIDE or environment < 0 or environment >= 32768:
+        return NODE_KEY_SENTINEL
+    key = wp.int64(environment)
+    for axis in range(3):
+        scaled = position[axis] * inv_half_voxel
+        coord = int(wp.round(scaled))
+        # Nodes off the lattice, or beyond 16-bit coordinates, keep a cold start.
+        if wp.abs(scaled - float(coord)) > 0.25 or coord < -32768 or coord > 32767:
+            return NODE_KEY_SENTINEL
+        key = key * wp.int64(65536) + wp.int64(coord + 32768)
+    return key
+
+
+@wp.kernel
+def compute_lattice_node_keys(
+    positions: wp.array[wp.vec3],
+    environment_offsets: wp.array[int],
+    inv_half_voxel: float,
+    keys: wp.array[wp.int64],
+    nodes: wp.array[int],
+):
+    i = wp.tid()
+    environment = int(0)
+    if environment_offsets:
+        environment = wp.lower_bound(environment_offsets, i + 1) - 1
+    keys[i] = lattice_node_key(positions[i], inv_half_voxel, environment)
+    nodes[i] = i
+
+
+@wp.kernel
+def gather_sorted_node_values(sorted_nodes: wp.array[int], values: wp.array[wp.vec3], sorted_values: wp.array[wp.vec3]):
+    j = wp.tid()
+    sorted_values[j] = values[sorted_nodes[j]]
+
+
+@wp.kernel
+def load_values_by_lattice_key(
+    positions: wp.array[wp.vec3],
+    environment_offsets: wp.array[int],
+    inv_half_voxel: float,
+    saved_keys: wp.array[wp.int64],
+    saved_values: wp.array[wp.vec3],
+    saved_count: int,
+    values: wp.array[wp.vec3],
+):
+    """Warm-start nodes from the saved node with the same lattice key, or zero."""
+    i = wp.tid()
+    environment = int(0)
+    if environment_offsets:
+        environment = wp.lower_bound(environment_offsets, i + 1) - 1
+    key = lattice_node_key(positions[i], inv_half_voxel, environment)
+    value = wp.vec3(0.0)
+    if key != NODE_KEY_SENTINEL:
+        j = wp.lower_bound(saved_keys, 0, saved_count, key)
+        if j < saved_count and saved_keys[j] == key:
+            value = saved_values[j]
+    values[i] = value
+
+
+@wp.kernel
+def reset_values_by_lattice_key(
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    saved_keys: wp.array[wp.int64],
+    saved_values: wp.array[wp.vec3],
+):
+    """Clear saved values of selected environments, keeping keys sorted."""
+    j = wp.tid()
+    key = saved_keys[j]
+    if key != NODE_KEY_SENTINEL:
+        environment = int(key // wp.int64(281474976710656))
+        if environment < world_count and world_mask[environment]:
+            saved_values[j] = wp.vec3(0.0)
+
+
 @wp.kernel
 def pad_voxels(particle_q: wp.array[wp.vec3i], padded_q: wp.array4d[wp.vec3i]):
     pid = wp.tid()
@@ -1155,6 +1329,8 @@ def node_color(
     space_node_indices: wp.array[int],
     stencil_size: int,
     voxels: wp.array[wp.vec3i],
+    node_env_offsets: wp.array[int],
+    env_offsets: wp.array[wp.vec3i],
     res: wp.vec3i,
     colors: wp.array[int],
     color_indices: wp.array[int],
@@ -1169,6 +1345,9 @@ def node_color(
 
     if voxels:
         c = voxels[vid]
+        if node_env_offsets:
+            # Color environment-local coordinates so every environment sweeps its nodes in the same order.
+            c -= env_offsets[wp.lower_bound(node_env_offsets, nid + 1) - 1]
     else:
         c = fem.Grid3D.get_cell(res, vid)
 
@@ -1186,6 +1365,8 @@ def make_cell_color_kernel(geo_partition: fem.GeometryPartition):
         partition_arg: geo_partition.CellArg,
         stencil_size: int,
         voxels: wp.array[wp.vec3i],
+        voxel_envs: wp.array[int],
+        env_offsets: wp.array[wp.vec3i],
         res: wp.vec3i,
         colors: wp.array[int],
         color_indices: wp.array[int],
@@ -1199,7 +1380,8 @@ def make_cell_color_kernel(geo_partition: fem.GeometryPartition):
             return
 
         if voxels:
-            c = voxels[cell]
+            # Color environment-local coordinates so every environment sweeps its cells in the same order.
+            c = voxels[cell] - env_offsets[voxel_envs[cell]]
         else:
             c = fem.Grid3D.get_cell(res, cell)
 
@@ -1224,22 +1406,65 @@ def fill_uniform_color_block_indices(
     color_indices[1, i] = (elem_idx + 1) * nodes_per_element
 
 
-def make_dynamic_color_block_indices_kernel(geo_partition: fem.GeometryPartition):
-    @fem.cache.dynamic_kernel(geo_partition.name)
-    def fill_dynamic_color_block_indices(
-        partition_arg: geo_partition.CellArg,
-        cell_node_offsets: wp.array[int],
+def make_discontinuous_color_block_indices_kernel(
+    geo_partition: fem.GeometryPartition, space_partition: fem.SpacePartition
+):
+    @fem.cache.dynamic_kernel((geo_partition.name, space_partition.name))
+    def fill_discontinuous_color_block_indices(
+        cell_arg: geo_partition.CellArg,
+        partition_arg: space_partition.PartitionArg,
+        nodes_per_element: int,
         color_indices: wp.array2d[int],
     ):
+        # A discontinuous cell's nodes stay contiguous in the partition, which
+        # may order them by environment.
         i = wp.tid()
         elem_idx = color_indices[0, i]
-        cell = geo_partition.cell_index(partition_arg, elem_idx)
-        if cell == -1:
+        cell = geo_partition.cell_index(cell_arg, elem_idx)
+        first = fem.NULL_NODE_INDEX
+        if cell != -1:
+            first = space_partition.partition_node_index(partition_arg, cell * nodes_per_element)
+        if first == fem.NULL_NODE_INDEX:
             color_indices[0, i] = 0
             color_indices[1, i] = 0
             return
-        color_indices[0, i] = cell_node_offsets[cell]
-        color_indices[1, i] = cell_node_offsets[cell + 1]
+        color_indices[0, i] = first
+        color_indices[1, i] = first + nodes_per_element
+
+    return fill_discontinuous_color_block_indices
+
+
+def make_dynamic_color_block_indices_kernel(
+    geo_partition: fem.GeometryPartition, space_partition: fem.SpacePartition, domain_indices: bool
+):
+    @fem.cache.dynamic_kernel((geo_partition.name, space_partition.name, domain_indices))
+    def fill_dynamic_color_block_indices(
+        cell_arg: geo_partition.CellArg,
+        partition_arg: space_partition.PartitionArg,
+        cell_node_offsets: wp.array[int],
+        max_nodes_per_cell: int,
+        color_indices: wp.array2d[int],
+    ):
+        # Point nodes are numbered by the quadrature's cell offsets, in domain or geometry
+        # cell order; a cell's nodes stay contiguous in the partition, which may order them
+        # by environment.
+        i = wp.tid()
+        elem_idx = color_indices[0, i]
+        cell = geo_partition.cell_index(cell_arg, elem_idx)
+        first = fem.NULL_NODE_INDEX
+        count = int(0)
+        if cell != -1:
+            offset_cell = wp.where(domain_indices, elem_idx, cell)
+            begin = cell_node_offsets[offset_cell]
+            count = wp.min(cell_node_offsets[offset_cell + 1] - begin, max_nodes_per_cell)
+            if count > 0:
+                first = space_partition.partition_node_index(partition_arg, begin)
+        if first == fem.NULL_NODE_INDEX:
+            color_indices[0, i] = 0
+            color_indices[1, i] = 0
+            return
+        color_indices[0, i] = first
+        color_indices[1, i] = first + count
 
     return fill_dynamic_color_block_indices
 
@@ -1320,3 +1545,227 @@ def scatter_field_dof_values(
 
 wp.overload(scatter_field_dof_values, {"src": wp.array[wp.vec3], "dest": wp.array[wp.vec3]})
 wp.overload(scatter_field_dof_values, {"src": wp.array[vec6], "dest": wp.array[vec6]})
+
+
+@wp.kernel
+def scatter_point_dof_values(
+    space_node_indices: wp.array[int],
+    cell_particle_indices: wp.array[int],
+    dof_values: wp.array[Any],
+    particle_values: wp.array[Any],
+):
+    """Store point-basis values on their particles; point nodes are cell-sorted particle positions."""
+    nid = wp.tid()
+    sid = space_node_indices[nid]
+    if sid != fem.NULL_NODE_INDEX:
+        particle_values[cell_particle_indices[sid]] = dof_values[nid]
+
+
+@wp.kernel
+def gather_point_dof_values(
+    space_node_indices: wp.array[int],
+    cell_particle_indices: wp.array[int],
+    particle_values: wp.array[Any],
+    dof_values: wp.array[Any],
+):
+    """Load point-basis values from their particles; point nodes are cell-sorted particle positions."""
+    nid = wp.tid()
+    sid = space_node_indices[nid]
+    if sid != fem.NULL_NODE_INDEX:
+        dof_values[nid] = particle_values[cell_particle_indices[sid]]
+    else:
+        dof_values[nid] = dof_values.dtype(0.0)
+
+
+@wp.kernel
+def reset_particle_values(
+    particle_cells: wp.array2d[int],
+    particle_flags: wp.array[wp.int32],
+    particle_density: wp.array[float],
+    keep_massless: bool,
+    previous_values: wp.array[Any],
+    values: wp.array[Any],
+):
+    """Zero the particle values that quadrature points accumulate into, and carry over the others.
+
+    Particles without a cell (e.g. outside the active cells of a rebuildable sparse grid
+    or outside a fixed grid) and inactive particles have no quadrature point accumulating
+    into them, so they keep their previous values. With ``keep_massless``, so do the massless
+    particles that ``update_particle_strains`` skips.
+    """
+    p = wp.tid()
+    reset = particle_is_binned(p, particle_cells) and (particle_flags[p] & newton.ParticleFlags.ACTIVE) != 0
+    if keep_massless:
+        reset = reset and particle_receives_strain_update(p, particle_flags, particle_density)
+    if reset:
+        values[p] = values.dtype(0.0)
+    else:
+        values[p] = previous_values[p]
+
+
+wp.overload(reset_particle_values, {"previous_values": wp.array[float], "values": wp.array[float]})
+wp.overload(reset_particle_values, {"previous_values": wp.array[wp.vec3], "values": wp.array[wp.vec3]})
+wp.overload(reset_particle_values, {"previous_values": wp.array[wp.mat33], "values": wp.array[wp.mat33]})
+
+
+wp.overload(scatter_point_dof_values, {"dof_values": wp.array[wp.vec3], "particle_values": wp.array[wp.vec3]})
+wp.overload(scatter_point_dof_values, {"dof_values": wp.array[vec6], "particle_values": wp.array[vec6]})
+wp.overload(gather_point_dof_values, {"dof_values": wp.array[wp.vec3], "particle_values": wp.array[wp.vec3]})
+wp.overload(gather_point_dof_values, {"dof_values": wp.array[vec6], "particle_values": wp.array[vec6]})
+
+
+@wp.func
+def gimp_half_size(particle_radius: float, voxel_size: float):
+    """Half edge of the cubic GIMP particle domain, capped at half a voxel (two cells per axis at most)."""
+    return wp.min(particle_radius, 0.5 * voxel_size)
+
+
+@wp.kernel
+def gimp_domain_corners(
+    positions: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    particle_environment: wp.array[int],
+    voxel_size: float,
+    corners: wp.array[wp.vec3],
+    corner_flags: wp.array[wp.int32],
+    corner_environment: wp.array[int],
+):
+    """Corners of each GIMP particle domain; the cells containing them are the cells the domain overlaps."""
+    p, v = wp.tid()
+    half = gimp_half_size(particle_radius[p], voxel_size)
+    signs = wp.vec3(float(2 * ((v >> 2) & 1) - 1), float(2 * ((v >> 1) & 1) - 1), float(2 * (v & 1) - 1))
+    corners[8 * p + v] = positions[p] + half * signs
+    corner_flags[8 * p + v] = particle_flags[p]
+    if particle_environment:
+        corner_environment[8 * p + v] = particle_environment[p]
+
+
+@wp.kernel
+def invert_point_particle_indices(
+    point_particle: wp.array[int],
+    node_indices: wp.array[int],
+    contact_normal: wp.array[wp.vec3],
+    particle_point: wp.array[int],
+):
+    """particle_point[p] = index of the quadrature point of particle p (one point per particle)."""
+    node = wp.tid()
+    point = node_indices[node]
+    if point != fem.NULL_NODE_INDEX and wp.length_sq(contact_normal[node]) > 0.0:
+        p = point_particle[point]
+        if p >= 0:
+            particle_point[p] = node
+
+
+@wp.kernel
+def transfer_gimp_impulses(
+    particle_point: wp.array[int],
+    particle_impulse: wp.array[wp.vec3],
+    node_impulse: wp.array[wp.vec3],
+    save: bool,
+):
+    """Transfer contact history through the particle-to-partition-node map."""
+    p = wp.tid()
+    node = particle_point[p]
+    if save:
+        value = wp.vec3(0.0)
+        if node >= 0:
+            value = node_impulse[node]
+        particle_impulse[p] = value
+    elif node >= 0:
+        node_impulse[node] = particle_impulse[p]
+
+
+@fem.integrand
+def gimp_store_point_stress(
+    s: fem.Sample,
+    domain: fem.Domain,
+    stress: fem.Field,
+    gimp_cells: wp.array2d[int],
+    point_stress: wp.array2d[wp.mat33],
+    point_valid: wp.array2d[float],
+    point_centers: wp.array2d[wp.vec3],
+    particle_flags: wp.array[int],
+):
+    """Store the solver stress at each GIMP sub-point on its particle, by slot."""
+    p = s.qp_index
+    if ~particle_flags[p] & newton.ParticleFlags.ACTIVE:
+        return
+    cell = fem.element_partition_index(domain, s.element_index)
+    for k in range(8):
+        if gimp_cells[p, k] == cell:
+            point_stress[p, k] = stress(s)
+            point_valid[p, k] = 1.0
+            point_centers[p, k] = domain(fem.make_free_sample(s.element_index, fem.Coords(0.5)))
+
+
+@fem.integrand
+def integrate_gimp_point_stress(
+    s: fem.Sample,
+    domain: fem.Domain,
+    tau: fem.Field,
+    inv_cell_volume: float,
+    gimp_cells: wp.array2d[int],
+    point_stress: wp.array2d[wp.mat33],
+    point_valid: wp.array2d[float],
+    point_centers: wp.array2d[wp.vec3],
+    voxel_size: float,
+    particle_stress: wp.array[wp.mat33],
+    particle_flags: wp.array[wp.int32],
+):
+    """Warm-start stress integral using the stress stored at this sub-point's slot."""
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
+    p = s.qp_index
+    cell = fem.element_partition_index(domain, s.element_index)
+    value = particle_stress[p]
+    center = domain(fem.make_free_sample(s.element_index, fem.Coords(0.5)))
+    # Partition indices change when the grid is rebuilt; cell centers lie on the voxel
+    # lattice, so the stored center either matches up to roundoff or is a voxel away.
+    match_distance_sq = 0.01 * voxel_size * voxel_size
+    for k in range(8):
+        if (
+            gimp_cells[p, k] == cell
+            and point_valid[p, k] > 0.0
+            and wp.length_sq(point_centers[p, k] - center) < match_distance_sq
+        ):
+            value = point_stress[p, k]
+    return wp.ddot(tau(s), value) * inv_cell_volume
+
+
+def make_contact_cell_keys_kernel(
+    domain: fem.GeometryDomain, partition: fem.SpacePartition, nodes_per_cell: int, domain_indices: bool
+):
+    @fem.cache.dynamic_kernel(suffix=(domain.name, partition.name, nodes_per_cell, domain_indices))
+    def contact_cell_keys(
+        domain_arg: domain.ElementIndexArg,
+        partition_arg: partition.PartitionArg,
+        space_node_indices: wp.array[int],
+        evaluation_particles: wp.array[int],
+        particle_cells: wp.array[int],
+        contact_offsets: wp.array[int],
+        keys: wp.array[int],
+        rows: wp.array[int],
+        cell_offsets: wp.array[int],
+    ):
+        i = wp.tid()
+        cell_count = cell_offsets.shape[0] - 1
+        cell = cell_count
+        node = space_node_indices[i]
+        if node >= 0 and contact_offsets[i] != contact_offsets[i + 1]:
+            particle = evaluation_particles[node]
+            domain_cell = particle_cells[particle]
+            if domain_cell >= 0:
+                geometry_cell = domain_cell
+                if wp.static(domain_indices):
+                    geometry_cell = domain.element_index(domain_arg, domain_cell)
+                node_index = partition.partition_node_index(partition_arg, geometry_cell * nodes_per_cell)
+                candidate = wp.where(node_index >= 0, node_index // nodes_per_cell, -1)
+                if candidate >= 0 and candidate < cell_count:
+                    cell = candidate
+                    wp.atomic_add(cell_offsets, cell + 1, 1)
+        keys[i] = cell
+        rows[i] = i
+
+    return contact_cell_keys
