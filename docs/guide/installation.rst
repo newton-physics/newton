@@ -73,6 +73,13 @@ such as ``examples``, require it too. RHEL 9 and Amazon Linux 2023 ship GLIBC
 2.34, so on x86-64 they can install ``importers`` and ``examples`` but not
 ``remesh`` or ``dev``.
 
+**Python 3.14**
+
+Python 3.14 supports the simulation, importers, examples, and notebook extras
+on Linux x86-64 and ARM64, Windows x86-64, and macOS ARM64. On Linux ARM64,
+Newton uses USD Core 26.11 for Python 3.14; earlier Python versions use USD
+Exchange. Windows ARM64 retains the optional-feature limitations below.
+
 **Linux aarch64 (ARM64)**
 
 The standard Warp 1.17 wheel omits ``sm_52``, ``sm_60``, ``sm_61``, and

@@ -10884,6 +10884,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ],
                 device=self.model.device,
             )
+            if self.use_mujoco_cpu:
+                for name in ("jnt_pos", "jnt_axis", "body_pos", "body_quat"):
+                    getattr(self.mj_model, name)[:] = getattr(self.mjw_model, name).numpy()[0]
 
         # BALL spring rest is stored in the child joint frame.
         nworld = self.mjw_model.qpos_spring.shape[0]

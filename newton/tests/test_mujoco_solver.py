@@ -2285,6 +2285,61 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
                 "Value did not change from initial!",
             )
 
+    def test_joint_frame_and_axis_updates_reach_native_mujoco_model(self):
+        """Joint axis and frame edits move the joint in the stepped MuJoCo model on both backends."""
+
+        def build_model():
+            builder = newton.ModelBuilder()
+            link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
+            builder.add_shape_sphere(link, radius=0.05)
+            joint = builder.add_joint_revolute(
+                parent=-1,
+                child=link,
+                axis=(1.0, 0.0, 0.0),
+                parent_xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
+                child_xform=wp.transform((0.5, 0.0, 0.0), wp.quat_identity()),
+            )
+            builder.add_articulation([joint])
+            return builder.finalize()
+
+        def edit(model):
+            model.joint_axis.assign([[0.0, 1.0, 0.0]])
+            model.joint_X_p.assign(
+                [wp.transform((0.0, 0.0, 2.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5))]
+            )
+            model.joint_X_c.assign([wp.transform((0.3, 0.0, 0.0), wp.quat_identity())])
+
+        def swing(model, solver):
+            state_in, state_out = model.state(), model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+            control = model.control()
+            for _ in range(20):
+                state_in.clear_forces()
+                solver.step(state_in, state_out, control, None, 0.002)
+                state_in, state_out = state_out, state_in
+            return state_in.joint_q.numpy().copy()
+
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                model = build_model()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                edit(model)
+                solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+
+                reference_model = build_model()
+                edit(reference_model)
+                reference = SolverMuJoCo(reference_model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+
+                if use_mujoco_cpu:
+                    for name in ("jnt_pos", "jnt_axis", "body_pos", "body_quat"):
+                        np.testing.assert_allclose(
+                            getattr(solver.mj_model, name), getattr(reference.mj_model, name), atol=1.0e-6, err_msg=name
+                        )
+                joint_q = swing(model, solver)
+                reference_q = swing(reference_model, reference)
+                self.assertGreater(abs(float(reference_q[0])), 1.0e-3)
+                np.testing.assert_allclose(joint_q, reference_q, atol=1.0e-5)
+
 
 @requires(*MUJOCO_MODULES)
 class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
