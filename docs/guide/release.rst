@@ -33,8 +33,8 @@ Dependency versioning strategy
 versions for reproducible installs.
 
 ``mujoco-core`` and ``mujoco-warp`` instead use **compatible-release** pins on
-both ``main`` and release branches (e.g. ``mujoco-core~=X.Y.Z``) to allow
-later ``X.Y`` releases while excluding the next minor version.  MuJoCo follows
+both ``main`` and release branches (e.g. ``mujoco~=3.5.0``) to allow
+``3.5.x`` updates while excluding ``3.6.0`` and later.  MuJoCo follows
 `custom versioning from 3.5.0 onward`_; its third component is
 ``MINOR_OR_PATCH`` and guarantees API backward compatibility.
 
