@@ -3494,8 +3494,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         from the Newton model; with the discrete integrator, springs with stiffness get
         ``edgeequality`` instead of edge stiffness and damping. Flexes collide with each other
         and with shapes flagged :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`, and with themselves
-        when ``selfcollide`` is set. Springs whose particles all belong to a 2D or 3D flex form a separate flex that does
-        not collide. Flexes with ``edgeequality`` get a MuJoCo flex equality constraint on their edge lengths.
+        when ``selfcollide`` is set. Springs whose particles all belong to a 2D or 3D flex form a
+        separate flex that does not collide. Flexes with ``edgeequality`` get a MuJoCo flex
+        equality constraint on their edge lengths.
 
         Args:
             model: The Newton model.
@@ -3615,7 +3616,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     ):
                         value = params[name]
                         if value < 0.0 and discrete:
-                            edgeequality |= name == "edgestiffness" and bool(values.numpy()[keep].any())
+                            stiff = values.numpy()[keep] > 0.0
+                            if name == "edgestiffness" and stiff.any():
+                                edgeequality = True
+                                if not stiff.all():
+                                    warnings.warn(
+                                        "A MuJoCo flex constrains all of its edges, including springs without "
+                                        "stiffness. Use newton.solvers.mujoco.add_flex to split them into "
+                                        "separate flexes.",
+                                        NewtonWarning,
+                                        stacklevel=_external_warning_stacklevel(),
+                                    )
                             value = 0.0
                         elif value < 0.0:
                             value = flex._uniform(values.numpy()[keep], name)

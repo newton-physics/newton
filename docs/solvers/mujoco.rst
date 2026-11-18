@@ -897,13 +897,16 @@ MuJoCo's ``"discrete"`` integrator, the default for models with flexes, does
 not support 1D edge stiffness and damping, and MuJoCo recommends edge
 constraints in their place. Springs with a positive stiffness therefore keep
 their rest lengths there, as with ``edgeequality=True`` in ``add_flex``, and
-their stiffness and damping values are not used. To simulate the springs
+their stiffness and damping values are not used. The constraint covers every
+edge of a flex, so springs without stiffness that share a flex with stiff ones
+are constrained too, with a warning. To simulate the springs
 themselves, pass ``integrator="euler"`` or ``"rk4"``, or ``"implicitfast"``
 for models without elastic flexes. MuJoCo then applies edge stiffness and
 damping as explicit passive forces, so a spring chain with stiffness ``k`` and
 particle mass ``m`` is stable only for time steps below about
-``sqrt(m / k)``. Edge stiffness and damping passed to ``add_flex`` always
-reach MuJoCo, which rejects them with the ``"discrete"`` integrator.
+``sqrt(m / k)``. Positive ``edgestiffness`` and ``edgedamping`` values passed
+to ``add_flex`` always reach MuJoCo, which rejects them with the ``"discrete"``
+integrator.
 
 A triangle whose particles all belong to a tetrahedral flex is skipped, so the
 surface triangles of a tetrahedral mesh do not form a second flex. Springs are

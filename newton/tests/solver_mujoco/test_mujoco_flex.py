@@ -90,6 +90,11 @@ class TestMuJoCoFlex(unittest.TestCase):
         np.testing.assert_allclose(mj_model.flex_edgestiffness, [0.0, 0.0, 50.0])
         np.testing.assert_allclose(mj_model.flex_edgedamping, [0.0, 0.0, 0.5])
 
+        # A flex constrains all of its edges, so a spring without stiffness in it is reported.
+        model.spring_stiffness.assign([0.0, 50.0])
+        with self.assertWarnsRegex(newton.NewtonWarning, "without stiffness"):
+            self.assertEqual(SolverMuJoCo(model).mj_model.neq, 1)
+
     def test_cloth_falls_onto_ground_in_each_world(self):
         """Replicated cloths rest on the ground while a massless particle stays pinned."""
         cloth = _builder()
