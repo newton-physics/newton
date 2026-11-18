@@ -365,7 +365,36 @@ def solve_cell_contacts_gs(
 
     first = cell_rows[beg]
     full_rows = bool(True)
-    for entry in range(beg, end):
+    check_end = end - (end - beg) % 8
+    for check_entry in range(beg, check_end, 8):
+        check_row0 = cell_rows[check_entry + 0]
+        check_row1 = cell_rows[check_entry + 1]
+        check_row2 = cell_rows[check_entry + 2]
+        check_row3 = cell_rows[check_entry + 3]
+        check_row4 = cell_rows[check_entry + 4]
+        check_row5 = cell_rows[check_entry + 5]
+        check_row6 = cell_rows[check_entry + 6]
+        check_row7 = cell_rows[check_entry + 7]
+        check_count0 = offsets[check_row0 + 1] - offsets[check_row0]
+        check_count1 = offsets[check_row1 + 1] - offsets[check_row1]
+        check_count2 = offsets[check_row2 + 1] - offsets[check_row2]
+        check_count3 = offsets[check_row3 + 1] - offsets[check_row3]
+        check_count4 = offsets[check_row4 + 1] - offsets[check_row4]
+        check_count5 = offsets[check_row5 + 1] - offsets[check_row5]
+        check_count6 = offsets[check_row6 + 1] - offsets[check_row6]
+        check_count7 = offsets[check_row7 + 1] - offsets[check_row7]
+        if (
+            check_count0 != 8
+            or check_count1 != 8
+            or check_count2 != 8
+            or check_count3 != 8
+            or check_count4 != 8
+            or check_count5 != 8
+            or check_count6 != 8
+            or check_count7 != 8
+        ):
+            full_rows = False
+    for entry in range(check_end, end):
         row = cell_rows[entry]
         if offsets[row + 1] - offsets[row] != 8:
             full_rows = False
@@ -405,23 +434,158 @@ def solve_cell_contacts_gs(
         vy[k] = v[1]
         vz[k] = v[2]
 
-    for entry in range(beg, end):
-        i = cell_rows[entry]
-        w = diagonal[i]
-        if w > 0.0 and friction[i] >= 0.0:
-            weights = _ContactScalar8()
-            for k in range(8):
-                weights[k] = values[offsets[i] + k]
-            u0 = wp.vec3(wp.dot(weights, vx), wp.dot(weights, vy), wp.dot(weights, vz)) - boundary_velocity[i]
-            n = normal[i]
-            u = solve_coulomb_isotropic(friction[i], n, u0 - (impulse[i] + adhesion[i] * n) * w)
-            delta = (u - u0) / w
-            impulse[i] += delta
-            delta_impulse[i] = delta
-            mw = wp.cw_mul(mass, weights)
-            vx += mw * delta[0]
-            vy += mw * delta[1]
-            vz += mw * delta[2]
+    contact_quad_end = end - (end - beg) % 4
+    for contact_entry in range(beg, contact_quad_end, 4):
+        contact_row0 = cell_rows[contact_entry + 0]
+        contact_row1 = cell_rows[contact_entry + 1]
+        contact_row2 = cell_rows[contact_entry + 2]
+        contact_row3 = cell_rows[contact_entry + 3]
+        distinct_rows = (
+            contact_row0 != contact_row1
+            and contact_row0 != contact_row2
+            and contact_row0 != contact_row3
+            and contact_row1 != contact_row2
+            and contact_row1 != contact_row3
+            and contact_row2 != contact_row3
+        )
+        contact_diagonal0 = diagonal[contact_row0]
+        contact_friction0 = friction[contact_row0]
+        contact_diagonal1 = diagonal[contact_row1]
+        contact_friction1 = friction[contact_row1]
+        contact_diagonal2 = diagonal[contact_row2]
+        contact_friction2 = friction[contact_row2]
+        contact_diagonal3 = diagonal[contact_row3]
+        contact_friction3 = friction[contact_row3]
+        contact_weights0 = _ContactScalar8()
+        contact_normal0 = wp.vec3(0.0)
+        contact_boundary0 = wp.vec3(0.0)
+        contact_adhesion0 = float(0.0)
+        contact_impulse0 = wp.vec3(0.0)
+        if contact_diagonal0 > 0.0 and contact_friction0 >= 0.0:
+            contact_impulse0 = impulse[contact_row0]
+            contact_normal0 = normal[contact_row0]
+            contact_boundary0 = boundary_velocity[contact_row0]
+            contact_adhesion0 = adhesion[contact_row0]
+            for contact_lane in range(8):
+                contact_weights0[contact_lane] = values[offsets[contact_row0] + contact_lane]
+        contact_weights1 = _ContactScalar8()
+        contact_normal1 = wp.vec3(0.0)
+        contact_boundary1 = wp.vec3(0.0)
+        contact_adhesion1 = float(0.0)
+        contact_impulse1 = wp.vec3(0.0)
+        if contact_diagonal1 > 0.0 and contact_friction1 >= 0.0:
+            contact_impulse1 = impulse[contact_row1]
+            contact_normal1 = normal[contact_row1]
+            contact_boundary1 = boundary_velocity[contact_row1]
+            contact_adhesion1 = adhesion[contact_row1]
+            for contact_lane in range(8):
+                contact_weights1[contact_lane] = values[offsets[contact_row1] + contact_lane]
+        contact_weights2 = _ContactScalar8()
+        contact_normal2 = wp.vec3(0.0)
+        contact_boundary2 = wp.vec3(0.0)
+        contact_adhesion2 = float(0.0)
+        contact_impulse2 = wp.vec3(0.0)
+        if contact_diagonal2 > 0.0 and contact_friction2 >= 0.0:
+            contact_impulse2 = impulse[contact_row2]
+            contact_normal2 = normal[contact_row2]
+            contact_boundary2 = boundary_velocity[contact_row2]
+            contact_adhesion2 = adhesion[contact_row2]
+            for contact_lane in range(8):
+                contact_weights2[contact_lane] = values[offsets[contact_row2] + contact_lane]
+        contact_weights3 = _ContactScalar8()
+        contact_normal3 = wp.vec3(0.0)
+        contact_boundary3 = wp.vec3(0.0)
+        contact_adhesion3 = float(0.0)
+        contact_impulse3 = wp.vec3(0.0)
+        if contact_diagonal3 > 0.0 and contact_friction3 >= 0.0:
+            contact_impulse3 = impulse[contact_row3]
+            contact_normal3 = normal[contact_row3]
+            contact_boundary3 = boundary_velocity[contact_row3]
+            contact_adhesion3 = adhesion[contact_row3]
+            for contact_lane in range(8):
+                contact_weights3[contact_lane] = values[offsets[contact_row3] + contact_lane]
+        for contact_slot in range(4):
+            contact_row = contact_row0
+            contact_diagonal = contact_diagonal0
+            contact_friction = contact_friction0
+            contact_weights = contact_weights0
+            contact_normal = contact_normal0
+            contact_boundary = contact_boundary0
+            contact_adhesion = contact_adhesion0
+            contact_previous_impulse = contact_impulse0
+            if wp.static(contact_slot == 1):
+                contact_row = contact_row1
+                contact_diagonal = contact_diagonal1
+                contact_friction = contact_friction1
+                contact_weights = contact_weights1
+                contact_normal = contact_normal1
+                contact_boundary = contact_boundary1
+                contact_adhesion = contact_adhesion1
+                contact_previous_impulse = contact_impulse1
+            if wp.static(contact_slot == 2):
+                contact_row = contact_row2
+                contact_diagonal = contact_diagonal2
+                contact_friction = contact_friction2
+                contact_weights = contact_weights2
+                contact_normal = contact_normal2
+                contact_boundary = contact_boundary2
+                contact_adhesion = contact_adhesion2
+                contact_previous_impulse = contact_impulse2
+            if wp.static(contact_slot == 3):
+                contact_row = contact_row3
+                contact_diagonal = contact_diagonal3
+                contact_friction = contact_friction3
+                contact_weights = contact_weights3
+                contact_normal = contact_normal3
+                contact_boundary = contact_boundary3
+                contact_adhesion = contact_adhesion3
+                contact_previous_impulse = contact_impulse3
+            if contact_diagonal > 0.0 and contact_friction >= 0.0:
+                if not distinct_rows:
+                    contact_previous_impulse = impulse[contact_row]
+                contact_velocity = (
+                    wp.vec3(wp.dot(contact_weights, vx), wp.dot(contact_weights, vy), wp.dot(contact_weights, vz))
+                    - contact_boundary
+                )
+                normal_vector = contact_normal
+                projected_velocity = solve_coulomb_isotropic(
+                    contact_friction,
+                    normal_vector,
+                    contact_velocity - (contact_previous_impulse + contact_adhesion * normal_vector) * contact_diagonal,
+                )
+                delta_velocity = (projected_velocity - contact_velocity) / contact_diagonal
+                impulse[contact_row] = contact_previous_impulse + delta_velocity
+                delta_impulse[contact_row] = delta_velocity
+                weighted_mass = wp.cw_mul(mass, contact_weights)
+                vx += weighted_mass * delta_velocity[0]
+                vy += weighted_mass * delta_velocity[1]
+                vz += weighted_mass * delta_velocity[2]
+    for contact_entry in range(contact_quad_end, end):
+        contact_row = cell_rows[contact_entry]
+        contact_diagonal = diagonal[contact_row]
+        contact_friction = friction[contact_row]
+        contact_weights = _ContactScalar8()
+        if contact_diagonal > 0.0 and contact_friction >= 0.0:
+            for contact_lane in range(8):
+                contact_weights[contact_lane] = values[offsets[contact_row] + contact_lane]
+        if contact_diagonal > 0.0 and contact_friction >= 0.0:
+            contact_velocity = (
+                wp.vec3(wp.dot(contact_weights, vx), wp.dot(contact_weights, vy), wp.dot(contact_weights, vz))
+                - boundary_velocity[contact_row]
+            )
+            normal_vector = normal[contact_row]
+            projected_velocity = solve_coulomb_isotropic(
+                contact_friction,
+                normal_vector,
+                contact_velocity - (impulse[contact_row] + adhesion[contact_row] * normal_vector) * contact_diagonal,
+            )
+            delta_velocity = (projected_velocity - contact_velocity) / contact_diagonal
+            impulse[contact_row] += delta_velocity
+            delta_impulse[contact_row] = delta_velocity
+            weighted_mass = wp.cw_mul(mass, contact_weights)
+            vx += weighted_mass * delta_velocity[0]
+            vy += weighted_mass * delta_velocity[1]
+            vz += weighted_mass * delta_velocity[2]
 
     for k in range(8):
         velocity[nodes[k]] = wp.vec3(vx[k], vy[k], vz[k])
