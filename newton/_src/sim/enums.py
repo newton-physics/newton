@@ -182,8 +182,9 @@ class ShapeFrictionMode(IntEnum):
     component, set its coefficient to zero; for example, ``ROLLING`` with
     :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` of zero gives rolling
     resistance without torsional friction. A contact uses the higher mode of its
-    two shapes (:class:`~newton.solvers.SolverMuJoCo` lets a higher
-    ``mujoco:geom_priority`` decide instead) and combines the coefficients of
+    two shapes (in :class:`~newton.solvers.SolverMuJoCo`, a higher
+    ``mujoco:geom_priority`` or an explicit contact pair decides instead) and
+    combines the coefficients of
     both shapes by the solver's usual rule, so disabling a component for a
     contact pair takes a zero coefficient on both shapes.
 

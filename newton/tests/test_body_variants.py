@@ -196,9 +196,12 @@ class TestBodyVariants(unittest.TestCase):
         grouped.shape_collision_group[0] = 2
         with self.assertRaisesRegex(ValueError, "collision groups"):
             builder.add_body_variants(builder.add_body(), [_variant("cube"), grouped])
-        frictionless = _variant("cube", friction_mode=newton.ShapeFrictionMode.NONE)
-        with self.assertRaisesRegex(ValueError, "friction modes"):
-            builder.add_body_variants(builder.add_body(), [_variant("cube"), frictionless])
+        # A row keeps its friction mode, so its colliders, including particle-only ones, must share it.
+        for flags in (newton.ShapeFlags.COLLIDE_SHAPES, newton.ShapeFlags.COLLIDE_PARTICLES):
+            cube, frictionless = _variant("cube"), _variant("cube", friction_mode=newton.ShapeFrictionMode.NONE)
+            cube.shape_flags[0] = frictionless.shape_flags[0] = int(flags)
+            with self.assertRaisesRegex(ValueError, "friction modes"):
+                builder.add_body_variants(builder.add_body(), [cube, frictionless])
         retyped = _variant("cube")
         retyped.custom_attributes["test:tag"] = replace(retyped.custom_attributes["test:tag"], dtype=wp.float32)
         with self.assertRaisesRegex(ValueError, "declared differently"):

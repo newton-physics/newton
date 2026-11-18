@@ -6554,7 +6554,8 @@ class ModelBuilder:
         A row takes everything authored on the variant shape it holds: geometry, flags, color,
         opacity, materials, and model-assigned shape custom attributes. It keeps its label, world,
         collision group, friction mode, and filter pairs, so the i-th colliders of all variants must
-        share a collision group and a :attr:`~ShapeConfig.friction_mode`. An
+        share a collision group and a :attr:`~ShapeConfig.friction_mode`, as must shapes that
+        collide with particles only. An
         empty row has its collision and visibility flags cleared, so it neither collides nor
         renders. Variant shapes are expressed in the variant body's frame, which maps onto
         ``body``'s frame; the variant body's pose, joints, and other entities are ignored, as are

@@ -7915,6 +7915,13 @@ class TestMuJoCoAttributes(unittest.TestCase):
         np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [1, 6, 4, 6])
         with self.assertWarns(NewtonDeprecationWarning), self.assertRaisesRegex(ValueError, "conflicts"):
             build({2: 1}).finalize()
+        # A changed default applies to the shapes left at the sliding mode
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.custom_attributes["mujoco:condim"].default = 4
+        builder.add_shape_box(body=builder.add_body(), hx=0.1, hy=0.1, hz=0.1)
+        with self.assertWarns(NewtonDeprecationWarning):
+            np.testing.assert_array_equal(builder.finalize().shape_material_friction_mode.numpy(), [mode.TORSIONAL])
 
         # The deprecated model attribute reads the modes, and values written to it reach the next solver
         with self.assertWarnsRegex(NewtonDeprecationWarning, "mujoco:condim custom attribute is deprecated"):

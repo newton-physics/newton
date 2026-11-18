@@ -2432,10 +2432,11 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
 :class:`~newton.ShapeFrictionMode` selects which friction components a
 contact applies: ``NONE`` (frictionless), ``SLIDING`` (``mu`` only),
 ``TORSIONAL`` (adds ``mu_torsional``), or ``ROLLING`` (adds ``mu_rolling``).
-A contact uses the higher mode of its two shapes
-(:class:`~newton.solvers.SolverMuJoCo` lets a higher ``mujoco:geom_priority``
-decide instead), so torsional and rolling
-coefficients take effect only on shapes whose mode enables them. To skip a
+A contact uses the higher mode of its two shapes (in
+:class:`~newton.solvers.SolverMuJoCo`, a higher ``mujoco:geom_priority`` or an
+explicit contact pair decides instead) and then combines the coefficients of
+both shapes by the solver's usual rule, so torsional and rolling coefficients
+take effect only in contacts where a shape's mode enables them. To skip a
 lower component, set its coefficient to zero on both shapes, for example
 ``ROLLING`` with ``mu_torsional=0``. A rigid contact is only frictionless
 when both shapes are ``NONE``. Particles have no mode and count as ``NONE``,

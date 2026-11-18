@@ -50,6 +50,8 @@ class Example:
         else:
             builder.default_shape_cfg.mu_torsional = 0.01  # Contact stiffness
             builder.default_shape_cfg.mu_rolling = 3e-3  # Contact stiffness
+            if self.solver_type == "xpbd":
+                builder.default_shape_cfg.friction_mode = newton.ShapeFrictionMode.ROLLING
 
         # add ground plane
         builder.add_ground_plane()
