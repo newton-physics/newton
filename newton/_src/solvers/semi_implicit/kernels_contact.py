@@ -710,9 +710,7 @@ def eval_body_contact_forces(
                 contacts.rigid_contact_stiffness,
                 contacts.rigid_contact_damping,
                 contacts.rigid_contact_friction,
-                contacts._mesh_recovery_contacts.data
-                if contacts._mesh_recovery_contacts
-                else empty_mesh_recovery(model.device.alias),
+                contacts._mesh_recovery_contacts or empty_mesh_recovery(model.device.alias),
                 contacts.contact_generation,
                 force_in_world_frame,
             ],

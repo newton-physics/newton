@@ -569,11 +569,6 @@ class SDF:
                 else:
                     texture_data, coarse_texture, subgrid_texture = result
 
-        # A rotation-independent outer bound for the surface used to cook this
-        # texture. Textures supplied without source geometry leave it at zero.
-        vertices = np.asarray(mesh.vertices, dtype=np.float64)
-        max_radius_sq = np.max(np.einsum("ij,ij->i", vertices, vertices), initial=0.0)
-        texture_data.mesh_radius = float(np.sqrt(max_radius_sq)) * (1.0 + 1e-6)
         sdf = SDF(
             data=create_empty_sdf_data(),
             sparse_volume=None,

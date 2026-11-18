@@ -5905,7 +5905,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
         compact_stale = bool(self.mjw_model.nacttrnbody or self.mjw_model.flg_adhesion)
         recovery_contacts = getattr(contacts, "_mesh_recovery_contacts", None)
-        recovery = recovery_contacts.data if recovery_contacts is not None else self._empty_mesh_recovery
+        recovery = recovery_contacts or self._empty_mesh_recovery
         wp.launch(
             convert_newton_contacts_to_mjwarp_kernel,
             dim=(launch_dim,),

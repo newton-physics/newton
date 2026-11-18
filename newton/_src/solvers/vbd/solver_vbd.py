@@ -3667,7 +3667,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     def _mesh_recovery_data(self, contacts: Contacts) -> MeshRecoveryData:
         recovery = contacts._mesh_recovery_contacts
-        return recovery.data if recovery is not None else self._empty_mesh_recovery
+        return recovery or self._empty_mesh_recovery
 
     def _step_body_body_contact_frame(
         self,

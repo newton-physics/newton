@@ -10,11 +10,11 @@ import newton
 from newton._src.geometry.hashtable import hashtable_find_or_insert
 from newton._src.geometry.sdf_planar_recovery import (
     MeshRecoveryContact,
-    MeshRecoveryContacts,
     MeshRecoveryData,
     PlanarExit,
     _pair_key,
     active_recovery_contact,
+    allocate_mesh_recovery,
     planar_exit,
     reset_mesh_recovery,
 )
@@ -34,6 +34,8 @@ def _find_exit(
         wp.vec3(1.0),
         wp.vec3(-0.004),
         wp.vec3(0.004),
+        wp.vec3(offset, 0.0, 0.0) - wp.vec3(0.004),
+        wp.vec3(offset, 0.0, 0.0) + wp.vec3(0.004),
         TextureSDFData(),
         TextureSDFData(),
         flags,
@@ -45,6 +47,10 @@ def test_thin_wall_exit(test, device):
     """Accept a unique exit only when its swept and lateral corridor is clear."""
     wall = newton.Mesh.create_box(0.0005, 0.015, 0.015, duplicate_vertices=False)
     probe = newton.Mesh.create_capsule(0.004, 0.0, segments=16)
+    dense = newton.Mesh.create_capsule(0.004, 0.0, segments=48)
+    flat_vertices = dense.vertices.copy()
+    flat_vertices[:, 0] = np.minimum(flat_vertices[:, 0], 0.0039)
+    broad = newton.Mesh(flat_vertices, dense.indices)
     obstacle = newton.Mesh.create_box(0.0002, 0.0002, 0.0002, duplicate_vertices=False)
     # The obstacle is outside the initial probe bounds but inside its swept footprint.
     obstructed = newton.Mesh(
@@ -59,17 +65,19 @@ def test_thin_wall_exit(test, device):
     )
     exits = wp.empty(1, dtype=PlanarExit, device=device)
     flags = wp.empty(0, dtype=wp.uint8, device=device)
-    for mesh, offset, expected in (
-        (wall, -0.0005, True),
-        (wall, 0.0, False),
-        (obstructed, -0.0005, False),
-        (obstructed_side, -0.0005, False),
+    for mesh, tip, offset, expected in (
+        (wall, probe, -0.0005, True),
+        (wall, dense, -0.0005, True),
+        (wall, broad, -0.0005, False),
+        (wall, probe, 0.0, False),
+        (obstructed, probe, -0.0005, False),
+        (obstructed_side, probe, -0.0005, False),
     ):
-        with test.subTest(offset=offset, obstructed=mesh is obstructed):
+        with test.subTest(offset=offset, vertices=len(tip.vertices), broad=tip is broad, obstructed=mesh is not wall):
             wp.launch(
                 _find_exit,
                 1,
-                inputs=[mesh.finalize(device), probe.finalize(device), offset, flags, exits],
+                inputs=[mesh.finalize(device), tip.finalize(device), offset, flags, exits],
                 device=device,
             )
             result = exits.numpy()[0]
@@ -109,20 +117,23 @@ def _check_held_contact(recovery: MeshRecoveryData, result: wp.array[int]):
     result[5] = active_recovery_contact(
         recovery, 0, 0, 1, wp.transform_identity(), rotated, wp.quat_rotate(rotated.q, normal)
     )
+    result[6] = active_recovery_contact(
+        recovery, 0, 1, 0, rotated, wp.transform_identity(), -wp.quat_rotate(rotated.q, normal)
+    )
     reset_mesh_recovery(recovery)
-    result[6] = active_recovery_contact(recovery, 0, 0, 1, wp.transform_identity(), wp.transform_identity(), normal)
+    result[7] = active_recovery_contact(recovery, 0, 0, 1, wp.transform_identity(), wp.transform_identity(), normal)
 
 
 def test_held_contact_corridor(test, device):
     """Use a held row only while the current poses remain inside its proven corridor."""
-    recovery = MeshRecoveryContacts(8, device)
-    result = wp.empty(7, dtype=int, device=device)
-    wp.launch(_check_held_contact, 1, inputs=[recovery.data, result], device=device)
+    recovery = allocate_mesh_recovery(8, device)
+    result = wp.empty(8, dtype=int, device=device)
+    wp.launch(_check_held_contact, 1, inputs=[recovery, result], device=device)
     slots = result.numpy()
     test.assertGreaterEqual(slots[0], 0)
     test.assertEqual(slots[1], slots[0])
-    np.testing.assert_array_equal(slots[2:], [slots[0], -2, -2, slots[0], -1])
-    test.assertTrue(np.all(recovery.table.keys.numpy() == np.iinfo(np.uint64).max))
+    np.testing.assert_array_equal(slots[2:], [slots[0], -2, -2, slots[0], slots[0], -1])
+    test.assertTrue(np.all(recovery.keys.numpy() == np.iinfo(np.uint64).max))
 
 
 class TestSDFPlanarRecovery(unittest.TestCase):

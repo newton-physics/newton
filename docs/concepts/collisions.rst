@@ -1111,6 +1111,8 @@ Two approaches available:
 When a rounded, closed mesh probe straddles a thin wall, Newton can publish a
 single contact on the shorter exit path. Both shapes need an SDF. A mesh
 query verifies the two locally planar wall faces and the swept probe footprint.
+Each collision update uses the current geometry. Once the overlap is shallow,
+the ordinary SDF contacts take over.
 Broad contact patches, ambiguous exits, and nearby features that intrude on the
 footprint use the ordinary manifold. The same fallback applies when the probe
 has more than 4,096 vertices or the swept query visits more than 128 wall

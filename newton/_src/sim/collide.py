@@ -40,8 +40,8 @@ from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.sdf_planar_recovery import (
-    MeshRecoveryContacts,
     MeshRecoveryData,
+    allocate_mesh_recovery,
     empty_mesh_recovery,
     reset_mesh_recovery,
 )
@@ -483,8 +483,7 @@ def compute_shape_aabbs(
     if shape_id == 0:
         for c in range(num_contact_counters):
             contact_counters[c] = 0
-        contact_generation_before = contact_generation[0]
-        g = contact_generation_before
+        g = contact_generation[0]
         if g == 2147483647:
             g = 0
         else:
@@ -492,7 +491,7 @@ def compute_shape_aabbs(
         contact_generation[0] = g
         broad_phase_pair_count[0] = 0
         if recovery.keys.shape[0] > 0:
-            reset_mesh_recovery(recovery, recovery.generation[0] == contact_generation_before)
+            reset_mesh_recovery(recovery)
             recovery.generation[0] = g
 
     # Empty variant rows have their collision flags cleared; give them an empty AABB because broad
@@ -3104,8 +3103,8 @@ class CollisionPipeline:
         if self._mesh_recovery_pair_max and contacts.rigid_contact_max > 0:
             capacity = 2 * min(self._mesh_recovery_pair_max, contacts.rigid_contact_max)
             storage = contacts._mesh_recovery_contacts
-            if storage is None or storage.table.capacity < capacity:
-                contacts._mesh_recovery_contacts = MeshRecoveryContacts(capacity, self.device)
+            if storage is None or storage.keys.shape[0] < capacity:
+                contacts._mesh_recovery_contacts = allocate_mesh_recovery(capacity, self.device)
             return contacts._mesh_recovery_contacts
         return None
 
@@ -3232,7 +3231,7 @@ class CollisionPipeline:
         # Compute AABBs for all shapes, zero counters, bump generation.
         # Fuses contacts.clear() + broad_phase_pair_count.zero_() + AABB update.
         recovery_contacts = self._prepare_mesh_recovery(contacts)
-        recovery = recovery_contacts.data if recovery_contacts is not None else self._empty_mesh_recovery
+        recovery = recovery_contacts or self._empty_mesh_recovery
         wp.launch(
             kernel=compute_shape_aabbs,
             dim=model.shape_count,

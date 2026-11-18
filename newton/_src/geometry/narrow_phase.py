@@ -78,7 +78,7 @@ from ..geometry.sdf_contact import (
 )
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.sdf_planar_recovery import (
-    MeshRecoveryContacts,
+    MeshRecoveryData,
     empty_mesh_recovery,
     get_compute_planar_recovery_contacts,
 )
@@ -3306,7 +3306,7 @@ class NarrowPhase:
         max_speculative_extension: float = 0.0,
         body_q: wp.array[wp.transform] | None = None,
         shape_body: wp.array[wp.int32] | None = None,
-        _mesh_recovery: MeshRecoveryContacts | None = None,
+        _mesh_recovery: MeshRecoveryData | None = None,
         writer_data: Any,
         device: Devicelike | None = None,  # Device to launch on
     ) -> None:
@@ -3381,7 +3381,7 @@ class NarrowPhase:
         """
         if device is None:
             device = self.device if self.device is not None else candidate_pair.device
-        mesh_recovery = self._empty_mesh_recovery if _mesh_recovery is None else _mesh_recovery.data
+        mesh_recovery = _mesh_recovery or self._empty_mesh_recovery
         if _mesh_recovery is not None:
             shape_count = shape_types.shape[0]
             if body_q is None or any(

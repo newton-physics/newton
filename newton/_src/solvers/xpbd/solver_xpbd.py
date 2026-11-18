@@ -510,7 +510,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         contact_recovery = self._empty_mesh_recovery
         if contacts is not None and contacts._mesh_recovery_contacts is not None:
-            contact_recovery = contacts._mesh_recovery_contacts.data
+            contact_recovery = contacts._mesh_recovery_contacts
         rigid_contact_inv_weight = None
         restitution_contact_active = None
         restitution_manifold_key = None

@@ -151,7 +151,6 @@ class TextureSDFData:
     # Spatial metadata
     voxel_size: wp.vec3
     voxel_radius: wp.float32
-    mesh_radius: wp.float32  # Source mesh radius about its local origin, before shape scale
 
     # Quantization parameters for subgrid values
     subgrids_min_sdf_value: float
