@@ -1,0 +1,1 @@
+Change the PADMM defaults of `SolverKamino` to `dual_residual_mode="delassus"`, `detect_redundant_kinematics=True` and `unpenalized_bilateral_rows=True`. The detection is skipped for models without closed kinematic loops. Restore the previous behavior with `dual_residual_mode="standard"`, `detect_redundant_kinematics=False` and `unpenalized_bilateral_rows=False`.

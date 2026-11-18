@@ -395,6 +395,30 @@ def _update_delassus_proximal_regularization(
 
 
 @wp.kernel
+def _add_unscaled_penalty_to_delassus(
+    # Inputs:
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    solver_penalty: wp.array[PADMMPenalty],
+    solver_state_rho_scale: wp.array[wp.float32],
+    # Outputs:
+    D_storage: wp.array2d[wp.float32],
+):
+    # Retrieve the thread index
+    wid, tid = wp.tid()
+    D = D_storage[wid]
+
+    # Skip if row index exceed the problem size
+    ncts = problem_dim[wid]
+    if tid >= ncts:
+        return
+
+    # Complete the regularization of the scaled rows to the uniform `sigma = eta + rho`
+    unscaled = 1.0 - solver_state_rho_scale[problem_vio[wid] + tid]
+    D[ncts * tid + tid] += unscaled * solver_penalty[wid].rho
+
+
+@wp.kernel
 def _update_delassus_proximal_regularization_sparse(
     # Inputs:
     problem_dim: wp.array[wp.int32],
@@ -1560,6 +1584,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         problem_bound_lower: wp.array[wp.float32],
         problem_bound_upper: wp.array[wp.float32],
         solver_state_sigma: wp.array[wp.vec2f],
+        solver_state_rho_scale: wp.array[wp.float32],
         solver_state_s: wp.array[wp.float32],
         solver_state_x: wp.array[wp.float32],
         solver_state_x_p: wp.array[wp.float32],
@@ -1640,7 +1665,12 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         compute_cwise_vec_mul(ncts, vio, problem_P, solver_state_y, solver_info_lambdas)
 
         # Compute the post-event constraint-space velocity from the current solution: v_plus = v_f + D @ lambda
+        # NOTE: The diagonal of `D` lacks the unscaled share of the penalty, see `_update_delassus_proximal_regularization`
         compute_gemv(ncts, vio, sigma[0], problem_P, problem_D, solver_state_y, problem_v_f, solver_info_v_plus)
+        for i in range(ncts):
+            v_i = vio + i
+            unscaled = 1.0 - solver_state_rho_scale[v_i]
+            solver_info_v_plus[v_i] += unscaled * penalty.rho * solver_state_y[v_i] / problem_P[v_i]
 
         # Compute the De Saxce correction for each contact as: s = G(v_plus)
         compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, solver_info_v_plus, solver_info_s)

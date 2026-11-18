@@ -593,7 +593,7 @@ class PADMMSolverConfig:
     Must be greater than zero. Defaults to `1e-6`.
     """
 
-    dual_residual_mode: Literal["standard", "delassus"] = "standard"
+    dual_residual_mode: Literal["standard", "delassus"] = "delassus"
     """
     The definition of the dual residual `r_dual` between consecutive iterates.\n
     - `"standard"`: The ADMM residual `eta * (x - x_p) + rho * (y - y_p)`.\n
@@ -602,7 +602,7 @@ class PADMMSolverConfig:
       to the drift of the impulses along the null space of the Delassus operator, e.g. due to redundant
       constraints, which may otherwise prevent convergence.\n
     Both are scaled by the inverse preconditioner. The setting of the first world applies to all worlds.
-    Defaults to `"standard"`.
+    Defaults to `"delassus"`.
     """
 
     compl_tolerance: float = 1e-6
@@ -736,43 +736,60 @@ class PADMMSolverConfig:
     Defaults to `key_and_position`.
     """
 
-    redundant_joint_tolerance: float = 0.0
+    detect_redundant_kinematics: bool = True
     """
-    The relative pivot below which a kinematic joint constraint is dropped as redundant from the Delassus matrix.\n
-    Redundant joint constraints, e.g. in closed kinematic loops, make the Delassus matrix singular. Before each
-    factorization, the kinematic joint rows are eliminated as in a Cholesky factorization, picking the row with
-    the largest relative pivot first. The relative pivot of a row is the squared sine of the angle between the
-    row and the span of the rows eliminated before it. The diagonal of each row whose relative pivot is below
-    this tolerance is doubled, which makes the Delassus matrix positive definite on the joint constraints. The
-    dropped rows then carry no impulse, while the other rows still enforce their constraints. The dropped rows
-    follow the changes of the redundancies across the configurations of the system, see
-    `redundant_joint_reuse`. The implicit joint dynamics rows are never dropped.\n
+    Whether to drop the numerically redundant kinematic joint constraints from the Delassus matrix
+    using a diagonal shift.\n
+    Redundant kinematic constraints, e.g. in closed kinematic loops, make the Delassus matrix singular, which
+    can prevent convergence and make long solves diverge. Before each factorization, the kinematic joint rows
+    of each world are eliminated as in a Cholesky factorization, picking the row with the largest relative
+    pivot first. The rows whose relative pivot is below `redundant_kinematics_pivot_threshold` are dropped by
+    doubling their diagonal, which makes the Delassus matrix positive definite on the joint constraints. The
+    dropped rows then carry no impulse, while the other rows still enforce their constraints, so the motion is
+    unchanged. The implicit joint dynamics rows are never dropped. See `reuse_redundant_kinematics_set` for how
+    the dropped rows follow the configurations of the system.\n
     With sparse dynamics, the kinematic joint block of the Delassus matrix is assembled from the constraint
-    Jacobian, and the doubled diagonal is added to the regularization of the linear solver.
-    The setting of the first world applies to all worlds.
-    Must be in the range [0, 1). Defaults to `0.0`, which disables the detection.
-    """
-
-    redundant_joint_reuse: bool = True
-    """
-    Whether to keep the dropped redundant joint constraints of the previous step while they remain valid.\n
-    The previously dropped rows are checked for kept rows that became dependent, or dropped rows that became
-    independent, at `redundant_joint_tolerance`. Only the worlds that fail the check repeat the detection, which
-    avoids most of its cost. Otherwise, the detection runs in every world at every step.\n
-    With the `LLTB` and `LLTBRCM` linear solvers and dense dynamics, the check reads the factors of the Delassus
-    matrix, and the failed worlds are factorized again. With other linear solvers, and with sparse dynamics, the
-    kinematic joint block is factorized separately for the check.\n
+    Jacobian, and the shift is added to the regularization of the linear solver.\n
+    The detection can be safely turned off for systems known to have no redundant kinematic constraints.
+    It is turned off automatically for models without closed kinematic loops, e.g. articulated systems,
+    whose kinematic constraints are never redundant.
     The setting of the first world applies to all worlds. Defaults to `True`.
     """
 
-    joint_rho_scale: float = 1.0
+    redundant_kinematics_pivot_threshold: float = 1e-5
     """
-    The scale of the ALM penalty on the bilateral joint constraints, i.e. the joint dynamics and kinematic rows.\n
+    The relative pivot below which `detect_redundant_kinematics` drops a kinematic joint constraint.\n
+    The relative pivot of a row is the squared sine of the angle between the row and the span of the rows
+    eliminated before it, in the metric of the inverse mass matrix, so it does not depend on the units or the
+    scaling of the rows. The default separates the exact redundancies, which float32 rounding lifts to about
+    `1e-6`, from the independent rows of a very large majority of systems, and should not need to be changed.
+    The setting of the first world applies to all worlds. Must be in the range (0, 1). Defaults to `1e-5`.
+    """
+
+    reuse_redundant_kinematics_set: bool = True
+    """
+    Whether to keep the set of kinematic joint constraints dropped at the previous step while it remains valid.\n
+    At every step, the previous set is checked for kept rows that became dependent, or dropped rows that became
+    independent, and only the worlds that fail the check repeat the detection, which avoids most of its cost.
+    A reused set is always valid, up to a hysteresis of ten times `redundant_kinematics_pivot_threshold` on the
+    dropped rows, so the reuse is safe. Disabling it repeats the detection in every world at every step, which
+    is mostly useful for debugging.\n
+    With the `LLTB` and `LLTBRCM` linear solvers and dense dynamics, the check reads the Cholesky factor of the
+    Delassus matrix, and the worlds that fail it are factorized again. Otherwise, the kinematic joint block is
+    factorized separately for the check.\n
+    The setting of the first world applies to all worlds. Defaults to `True`.
+    """
+
+    unpenalized_bilateral_rows: bool = True
+    """
+    Whether to remove the ALM penalty from the bilateral joint constraints, i.e. the joint dynamics and
+    kinematic rows.\n
     The projection onto the feasible set leaves the impulses of bilateral constraints unchanged, so the penalty
-    only acts as an additional proximal regularization of these rows. A scale of zero solves them exactly at
-    each iteration, up to the proximal regularization `eta`, which requires a well-conditioned Delassus matrix
-    on the joint constraints, e.g. by dropping the redundant ones with `redundant_joint_tolerance`.\n
-    Must be in the range [0, 1]. Defaults to `1.0`.
+    only acts as an additional proximal regularization of these rows, which slows down their convergence.
+    Without it, they are solved exactly at each iteration, up to the proximal regularization `eta`, and the
+    iterations only resolve the other constraints. This requires a well-conditioned Delassus matrix on the
+    joint constraints, i.e. a system without redundant kinematic constraints, or `detect_redundant_kinematics`.\n
+    Defaults to `True`.
     """
 
     @override
@@ -940,12 +957,11 @@ class PADMMSolverConfig:
             )
         if not 0.0 <= self.warmstart_scale <= 1.0:
             raise ValueError(f"Invalid warmstart scale: {self.warmstart_scale}. Must be in the range [0, 1].")
-        if not 0.0 <= self.redundant_joint_tolerance < 1.0:
+        if not 0.0 < self.redundant_kinematics_pivot_threshold < 1.0:
             raise ValueError(
-                f"Invalid redundant joint tolerance: {self.redundant_joint_tolerance}. Must be in the range [0, 1)."
+                f"Invalid redundant kinematics pivot threshold: {self.redundant_kinematics_pivot_threshold}. "
+                "Must be in the range (0, 1)."
             )
-        if not 0.0 <= self.joint_rho_scale <= 1.0:
-            raise ValueError(f"Invalid joint penalty scale: {self.joint_rho_scale}. Must be in the range [0, 1].")
         if self.dual_residual_mode not in ("standard", "delassus"):
             raise ValueError(
                 f"Invalid dual residual mode: {self.dual_residual_mode}. Must be either 'standard' or 'delassus'."

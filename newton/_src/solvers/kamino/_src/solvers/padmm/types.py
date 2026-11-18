@@ -274,7 +274,7 @@ class PADMMConfigStruct:
     """Scale applied to cached constraint forces during warm-starting. Defaults to `0.9`."""
 
     joint_rho_scale: wp.float32
-    """Scale of the ALM penalty on the bilateral joint constraints. Defaults to `1.0`."""
+    """Scale of the ALM penalty on the bilateral joint constraints, `0.0` if they are unpenalized and `1.0` otherwise."""
 
 
 @wp.struct
@@ -1305,5 +1305,5 @@ def convert_config_to_struct(config: PADMMSolverConfig) -> PADMMConfigStruct:
     config_struct.linear_solver_tolerance = config.linear_solver_tolerance
     config_struct.linear_solver_tolerance_ratio = config.linear_solver_tolerance_ratio
     config_struct.warmstart_scale = config.warmstart_scale
-    config_struct.joint_rho_scale = config.joint_rho_scale
+    config_struct.joint_rho_scale = 0.0 if config.unpenalized_bilateral_rows else 1.0
     return config_struct

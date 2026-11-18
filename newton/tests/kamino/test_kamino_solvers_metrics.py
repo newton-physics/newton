@@ -798,7 +798,9 @@ class TestSolverMetrics(unittest.TestCase):
         solver.solve(problem=test.problem)
         integrate_euler_semi_implicit(model=test.model, data=test.data)
 
+        # Match the uniform regularization of the dense Delassus matrix after the solve
         solver._initialize()
+        solver.data.state.rho_scale.fill_(1.0)
         solver._update_sparse_regularization(problem_sparse)
         problem_sparse.delassus.update()
 

@@ -531,6 +531,8 @@ class TestSolverKaminoJointFrictionHoldAndBreakaway(unittest.TestCase):
                 config = config_factory()
                 if config.padmm is not None:
                     config.padmm.use_acceleration = use_acceleration
+                    # Converge well below the velocity tolerance of the sticking checks
+                    config.padmm.dual_tolerance = 1.0e-7
                 _run_hold_and_breakaway_test(self, config_name, config)
 
 
@@ -632,6 +634,8 @@ class TestSolverKaminoJointFrictionSpinDown(unittest.TestCase):
                 config = config_factory()
                 if config.padmm is not None:
                     config.padmm.use_acceleration = use_acceleration
+                    # Converge well below the velocity tolerance of the sticking checks
+                    config.padmm.dual_tolerance = 1.0e-7
                 _run_spin_down_test(self, config_name, config)
 
 

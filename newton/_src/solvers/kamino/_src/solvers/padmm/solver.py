@@ -24,6 +24,7 @@ from ...kinematics.limits import LimitsKamino
 from ...linalg import LLTBlockedRCMSolver, LLTBlockedSolver, RedundantRowShift
 from ...utils.tile import get_block_dim, get_tile_size
 from .kernels import (
+    _add_unscaled_penalty_to_delassus,
     _apply_dual_preconditioner_to_solution,
     _apply_dual_preconditioner_to_state,
     _compute_complementarity_residuals,
@@ -70,6 +71,46 @@ __all__ = ["PADMMSolver"]
 ###
 
 wp.set_module_options({"enable_backward": False})
+
+
+###
+# Functions
+###
+
+
+def _has_kinematic_loops(model: ModelKamino) -> bool:
+    """
+    Returns whether the joints with kinematic constraints form a closed loop in any world of the model.
+
+    Without loops, each kinematic joint constrains a distinct body relative to the rest of its tree,
+    so the kinematic constraints are never redundant.
+    """
+    if model.size.sum_of_num_joints == 0:
+        return False
+
+    # Union-find over the bodies, with one node per world for the world body
+    num_bodies = model.size.sum_of_num_bodies
+    root = list(range(num_bodies + model.size.num_worlds))
+
+    def find(node: int) -> int:
+        while root[node] != node:
+            root[node] = root[root[node]]
+            node = root[node]
+        return node
+
+    # Detect a loop when a joint connects two bodies that are already connected
+    joints = model.joints
+    for wid, bid_B, bid_F, num_cts in zip(
+        joints.wid.numpy(), joints.bid_B.numpy(), joints.bid_F.numpy(), joints.num_kinematic_cts.numpy(), strict=True
+    ):
+        if num_cts == 0:
+            continue
+        base = find(int(bid_B) if bid_B >= 0 else num_bodies + int(wid))
+        follower = find(int(bid_F) if bid_F >= 0 else num_bodies + int(wid))
+        if base == follower:
+            return True
+        root[follower] = base
+    return False
 
 
 ###
@@ -273,7 +314,7 @@ class PADMMSolver:
         )
 
         # Check if any world scales the penalty of the bilateral joint rows
-        self._scale_joint_rho = any(c.joint_rho_scale != 1.0 for c in self._config)
+        self._scale_joint_rho = any(c.unpenalized_bilateral_rows for c in self._config)
 
         # Compute the largest max iterations across all worlds
         # NOTE: This is needed to allocate the solver
@@ -309,13 +350,12 @@ class PADMMSolver:
             block_dim, delassus_dual_residual
         )
 
-        # Allocate the detection of redundant kinematic joint constraints if enabled
+        # Allocate the detection of redundant kinematic joint constraints if enabled and the model has loops
         self._redundant_joints = None
-        tolerance = self._config[0].redundant_joint_tolerance
-        if tolerance > 0.0:
+        if self._config[0].detect_redundant_kinematics and _has_kinematic_loops(model):
             self._kinematic_cts_offset = model.info.joint_kinematic_cts_group_offset
             self._num_kinematic_cts = model.info.num_joint_kinematic_cts
-            self._reuse_redundant_joints = self._config[0].redundant_joint_reuse
+            self._reuse_redundant_joints = self._config[0].reuse_redundant_kinematics_set
 
             # Check the reused rows on the factor of the blocked Cholesky solvers, and on the joint block otherwise
             sparse = problem is not None and problem.sparse
@@ -326,7 +366,7 @@ class PADMMSolver:
             self._redundant_joints = RedundantRowShift(
                 num_worlds=self._size.num_worlds,
                 max_rows=self._size.max_of_num_kinematic_joint_cts,
-                threshold=tolerance,
+                threshold=self._config[0].redundant_kinematics_pivot_threshold,
                 check=self._reuse_redundant_joints and not self._check_factor,
                 sparse=sparse,
                 max_dim=self._size.max_of_max_total_cts if self._check_factor else 0,
@@ -512,6 +552,16 @@ class PADMMSolver:
 
         # Update the final solution from the terminal PADMM state
         self._update_solution(problem)
+
+        # Restore the uniform regularization of the dense Delassus matrix, as expected by the solution metrics
+        if self._scale_joint_rho and not problem.sparse:
+            wp.launch(
+                kernel=_add_unscaled_penalty_to_delassus,
+                dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
+                inputs=[problem.data.dim, problem.data.vio, self._data.penalty, self._data.state.rho_scale],
+                outputs=[problem.data.D],
+                device=self._device,
+            )
 
         # The solution is in the variables of the current joint decoupling, which an internal
         # warm-start must know to rebase it, whichever way this solve was started
@@ -1546,6 +1596,7 @@ class PADMMSolver:
                     problem.data.bound_lower,
                     problem.data.bound_upper,
                     self._data.state.sigma,
+                    self._data.state.rho_scale,
                     self._data.state.s,
                     self._data.state.x,
                     self._data.state.x_p,

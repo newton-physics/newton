@@ -144,11 +144,6 @@ class Example:
         self.config.padmm.dual_tolerance = 1e-4
         self.config.padmm.compl_tolerance = 1e-4
         self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", None) is not False
-        if self.dynamics_solver == "padmm":
-            # Handle the redundant constraints of the closed leg linkages
-            self.config.padmm.redundant_joint_tolerance = 1e-5
-            self.config.padmm.joint_rho_scale = 0.0
-            self.config.padmm.dual_residual_mode = "delassus"
         if self.dynamics_solver == "scc":
             self.config.use_fk_solver = False
             if self.use_kamino_contacts:

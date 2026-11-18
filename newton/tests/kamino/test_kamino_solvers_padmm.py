@@ -941,6 +941,7 @@ class TestPADMMSolver(unittest.TestCase):
             compl_tolerance=0.0,
             restart_tolerance=1.0e-6,
             max_iterations=6,
+            unpenalized_bilateral_rows=False,
         )
 
         test.build()
@@ -1085,6 +1086,7 @@ class TestPADMMSolver(unittest.TestCase):
                         dual_tolerance=0.0,
                         compl_tolerance=0.0,
                         max_iterations=budget,
+                        unpenalized_bilateral_rows=False,
                     )
                     for budget in budgets
                 ]
@@ -1214,6 +1216,8 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
                                 test = make_test(sparse)
                                 config = PADMMSolver.Config(
                                     dual_residual_mode="delassus",
+                                    detect_redundant_kinematics=False,
+                                    unpenalized_bilateral_rows=False,
                                     max_iterations=max_iterations,
                                     penalty_update_method=penalty,
                                     penalty_update_freq=1,
@@ -1247,7 +1251,12 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
                     status = {}
                     for mode in ("standard", "delassus"):
                         test = make_redundant_fourbar(self.default_device, sparse)
-                        config = PADMMSolver.Config(dual_residual_mode=mode, max_iterations=500)
+                        config = PADMMSolver.Config(
+                            dual_residual_mode=mode,
+                            detect_redundant_kinematics=False,
+                            unpenalized_bilateral_rows=False,
+                            max_iterations=500,
+                        )
                         solver = PADMMSolver(model=test.model, config=config, use_acceleration=use_acceleration)
                         test.build()
                         bases = delassus_null_bases(test.problem)
@@ -1264,9 +1273,11 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
                 v_plus, lambdas = [], []
-                for tolerance in (0.0, 1e-5):
+                for detect in (False, True):
                     test = make_redundant_fourbar(self.default_device, sparse)
-                    config = PADMMSolver.Config(redundant_joint_tolerance=tolerance, max_iterations=500)
+                    config = PADMMSolver.Config(
+                        detect_redundant_kinematics=detect, unpenalized_bilateral_rows=False, max_iterations=500
+                    )
                     solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
 
                     # Remove the null-space components of the free velocity
@@ -1299,7 +1310,7 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
         blocks, shifts = [], []
         for sparse in (False, True):
             test = make_redundant_fourbar(self.default_device, sparse)
-            config = PADMMSolver.Config(redundant_joint_tolerance=1e-5, max_iterations=1)
+            config = PADMMSolver.Config(max_iterations=1)
             solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
             test.build()
             D = extract_delassus(test.problem.delassus, only_active_dims=True)
@@ -1330,34 +1341,36 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
                 self.assertEqual(int(kept.sum()), rank)
                 self.assertEqual(np.linalg.matrix_rank(B[np.ix_(kept, kept)], tol=1e-6 * np.abs(B).max()), rank)
 
-    def test_04_joint_rho_scale(self):
+    def test_04_unpenalized_bilateral_rows(self):
         """Removing the penalty of the bilateral joint rows preserves the solution and speeds up convergence."""
         for use_acceleration in (False, True):
             with self.subTest(use_acceleration=use_acceleration):
                 status, v_plus, lambdas = {}, {}, {}
-                for scale in (1.0, 0.0):
+                for unpenalized in (False, True):
                     test = make_redundant_fourbar(self.default_device, sparse=False)
-                    config = PADMMSolver.Config(
-                        redundant_joint_tolerance=1e-5, joint_rho_scale=scale, max_iterations=500
-                    )
+                    config = PADMMSolver.Config(unpenalized_bilateral_rows=unpenalized, max_iterations=500)
                     solver = PADMMSolver(
                         model=test.model, config=config, problem=test.problem, use_acceleration=use_acceleration
                     )
                     test.build()
                     solver.coldstart()
                     solver.solve(problem=test.problem)
-                    status[scale] = solver.data.status.numpy()[0]
-                    v_plus[scale] = solver.data.solution.v_plus.numpy()
-                    lambdas[scale] = solver.data.solution.lambdas.numpy()
+                    status[unpenalized] = solver.data.status.numpy()[0]
+                    v_plus[unpenalized] = solver.data.solution.v_plus.numpy()
+                    lambdas[unpenalized] = solver.data.solution.lambdas.numpy()
 
                 # Check that both converge to the same solution, the unpenalized one in fewer iterations
-                self.assertTrue(bool(status[1.0]["converged"]))
-                self.assertTrue(bool(status[0.0]["converged"]))
-                self.assertLess(status[0.0]["iterations"], status[1.0]["iterations"])
-                np.testing.assert_allclose(v_plus[0.0], v_plus[1.0], rtol=0.0, atol=1e-3 * np.abs(v_plus[1.0]).max())
-                np.testing.assert_allclose(lambdas[0.0], lambdas[1.0], rtol=0.0, atol=1e-3 * np.abs(lambdas[1.0]).max())
+                self.assertTrue(bool(status[False]["converged"]))
+                self.assertTrue(bool(status[True]["converged"]))
+                self.assertLess(status[True]["iterations"], status[False]["iterations"])
+                np.testing.assert_allclose(
+                    v_plus[True], v_plus[False], rtol=0.0, atol=1e-3 * np.abs(v_plus[False]).max()
+                )
+                np.testing.assert_allclose(
+                    lambdas[True], lambdas[False], rtol=0.0, atol=1e-3 * np.abs(lambdas[False]).max()
+                )
 
-    def test_05_redundant_joint_reuse(self):
+    def test_05_reuse_redundant_kinematics_set(self):
         """Reusing the dropped joint rows that pass the check gives the solution of the detection at every step."""
         for sparse, linear_solver in (
             (False, LLTBlockedSolver),
@@ -1372,12 +1385,7 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
                 status, v_plus, lambdas, shifted = {}, {}, {}, {}
                 for reuse in (False, True):
                     test = make_redundant_fourbar(self.default_device, sparse, linear_solver=linear_solver)
-                    config = PADMMSolver.Config(
-                        redundant_joint_tolerance=1e-5,
-                        redundant_joint_reuse=reuse,
-                        joint_rho_scale=0.0,
-                        max_iterations=500,
-                    )
+                    config = PADMMSolver.Config(reuse_redundant_kinematics_set=reuse, max_iterations=500)
                     solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
 
                     # The first solve detects the redundant rows, and the second one reuses them if enabled
@@ -1411,6 +1419,21 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
                 np.testing.assert_allclose(
                     lambdas[True], lambdas[False], rtol=0.0, atol=1e-4 * np.abs(lambdas[False]).max()
                 )
+
+    def test_06_redundant_kinematics_detection_requires_loops(self):
+        """The detection of redundant kinematic constraints is only allocated for models with closed loops."""
+        for name, builder_fn, kwargs, has_loops in (
+            ("fourbar_fixed", basics.build_boxes_fourbar, {"fixedbase": True, "limits": False}, True),
+            ("fourbar_floating", basics.build_boxes_fourbar, {"fixedbase": False, "limits": False}, True),
+            ("nunchaku", basics.build_boxes_nunchaku, {}, False),
+            ("cartpole", basics.build_cartpole, {"limits": False}, False),
+        ):
+            with self.subTest(model=name):
+                test = TestSetup(
+                    builder_fn=builder_fn, max_world_contacts=8, device=self.default_device, ground=False, **kwargs
+                )
+                solver = PADMMSolver(model=test.model, config=PADMMSolver.Config(), problem=test.problem)
+                self.assertEqual(solver._redundant_joints is not None, has_loops)
 
 
 ###
