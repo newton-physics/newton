@@ -350,7 +350,8 @@ LOX contact extensions
 ----------------------
 
 Enable these features through ``config.lox`` after selecting
-``dynamics_solver="lox"``. They are disabled by default.
+``dynamics_solver="lox"``. They are disabled by default, except spatial
+friction, which follows the shapes' friction modes.
 
 * ``contact_compliance=True`` turns contacts with a positive per-contact
   stiffness ``k`` [N/m] (:attr:`newton.Contacts.rigid_contact_stiffness`) into

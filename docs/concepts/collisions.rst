@@ -2432,13 +2432,17 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
 :class:`~newton.ShapeFrictionMode` selects which friction components a
 contact applies: ``NONE`` (frictionless), ``SLIDING`` (``mu`` only),
 ``TORSIONAL`` (adds ``mu_torsional``), or ``ROLLING`` (adds ``mu_rolling``).
-A contact uses the higher mode of its two shapes, so torsional and rolling
+A contact uses the higher mode of its two shapes
+(:class:`~newton.solvers.SolverMuJoCo` lets a higher ``mujoco:geom_priority``
+decide instead), so torsional and rolling
 coefficients take effect only on shapes whose mode enables them. To skip a
 lower component, set its coefficient to zero on both shapes, for example
 ``ROLLING`` with ``mu_torsional=0``. A rigid contact is only frictionless
 when both shapes are ``NONE``. Particles have no mode and count as ``NONE``,
 so particle contacts follow the shape's mode, and the modes above ``SLIDING``
-act as sliding friction because particles do not rotate. Solvers cache the modes when they
+act as sliding friction because particles do not rotate
+(:class:`~newton.solvers.SolverMuJoCo` flexes keep sliding friction, see
+:ref:`mujoco-flexes`). Solvers cache the modes when they
 are constructed. See :ref:`Contact material support` for the modes each solver
 supports.
 

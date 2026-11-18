@@ -2626,8 +2626,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 (model.shape_material_friction_mode.numpy() >= int(ShapeFrictionMode.TORSIONAL)) & (radii <= 0.0)
             ):
                 warnings.warn(
-                    "SolverSteel applies torsional friction only to shapes with a positive "
-                    "steel:min_torsional_patch_radius; the other shapes use sliding friction.",
+                    "SolverSteel applies torsional friction only to contacts of shapes with a positive "
+                    "steel:min_torsional_patch_radius; the other contacts use sliding friction.",
                     NewtonWarning,
                     stacklevel=2,
                 )

@@ -917,7 +917,11 @@ warning. Flex rest shapes come from ``Model.particle_q``, and flex radius and
 friction come from ``particle_radius`` and ``particle_mu``. Flexes collide with
 each other and with shapes that have :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`,
 including shapes that do not collide with other shapes. A flex collides with
-itself only when ``selfcollide`` is set through ``add_flex``. Flex
+itself only when ``selfcollide`` is set through ``add_flex``. Flexes have
+sliding friction (MuJoCo ``condim`` 3) and a contact uses the higher
+``condim`` of its flex and shape, so a
+:attr:`~newton.ShapeFrictionMode.NONE` shape does not make flex contacts
+frictionless. Flex
 contacts require ``use_mujoco_contacts=True``; the solver rejects models with
 flexes otherwise. In exported contacts, the flex side has shape
 ``-1``; :class:`~newton.sensors.SensorContact` and the viewer skip these
@@ -1450,7 +1454,7 @@ Geom ``condim`` maps to :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`:
 converts the modes back. USD ``mjc:condim`` maps through
 :class:`~newton.usd.SchemaResolverMjc`, or through the registered MuJoCo
 custom attributes. The ``mujoco:condim`` custom attribute is deprecated:
-values set in code are folded into the friction mode at
+values other than the default 3 set in code are folded into the friction mode at
 :meth:`~newton.ModelBuilder.finalize` with a deprecation warning, and
 ``model.mujoco.condim`` is a read-only copy derived from the friction mode.
 

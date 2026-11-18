@@ -196,6 +196,8 @@ class ShapeFrictionMode(IntEnum):
     Particles have no friction mode, so they count as ``NONE`` and a contact
     between a particle and a shape follows the shape's mode. Because particles
     do not rotate, the modes above ``SLIDING`` act as sliding friction for them.
+    :class:`~newton.solvers.SolverMuJoCo` flexes keep sliding friction against
+    every shape.
     A rigid contact is only frictionless when both shapes are ``NONE``.
     """
 
