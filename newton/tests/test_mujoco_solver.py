@@ -3156,6 +3156,7 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
 
         return bool(solver.mj_model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT))
 
+    @requires(*MUJOCO_MODULES)
     def test_weld_group_filters_match_mujoco(self):
         """MuJoCo filters a body pair exactly when Newton does, across welds and shapeless bodies.
 
