@@ -9458,8 +9458,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             kinematic_welds.append(eq)
 
         with warnings.catch_warnings():
-            # MuJoCo 3.17 counts flex elasticity as a passive force, but the discrete
-            # integrator solves it in the constraint solver, so elastic flexes trip this check.
+            # MuJoCo's check does not count stretch elasticity, so elastic flexes without bending trip it.
             warnings.filterwarnings(
                 "ignore", message=r".*is not rigid and has no equality constraints or passive forces"
             )
