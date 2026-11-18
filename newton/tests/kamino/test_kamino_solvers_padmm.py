@@ -5,6 +5,7 @@
 
 import logging
 import unittest
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -469,7 +470,7 @@ class TestPADMMSolver(NewtonTestCase):
 
         self.savefig = test_context.verbose  # Set to True to generate solver info plots
         self.default_device = wp.get_device(test_context.device)
-        self.output_path = test_context.output_path / "test_solvers_padmm"
+        self.output_path = Path(__file__).parent / "output" / "test_solvers_padmm"
 
         # Create output directory if saving figures
         if self.savefig:

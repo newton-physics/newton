@@ -94,8 +94,3 @@ def setup_tests(verbose: bool = False, device: wp.DeviceLike | str | None = None
     test_context.verbose = verbose
     test_context.device = wp.get_device(device)
     test_context.setup_done = True
-
-    # Set the cache directory for optional test output, if any
-    # Data directory (contains perfprof.csv)
-    test_context.output_path = Path(__file__).parent / "output"
-    test_context.output_path.mkdir(parents=True, exist_ok=True)
