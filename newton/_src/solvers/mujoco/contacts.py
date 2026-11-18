@@ -38,7 +38,7 @@ def add_contact_pair(
         geom2: Second Newton shape index.
         condim: MuJoCo contact dimensionality.
         solref: Normal constraint reference parameters.
-        solreffriction: Friction constraint reference parameters; ``(0, 0)`` uses ``solref``.
+        solreffriction: Friction constraint reference parameters for elliptic cones; ``(0, 0)`` uses ``solref``.
         solimp: Constraint impedance parameters.
         margin: Contact inclusion margin [m].
         gap: Inactive contact gap [m].
