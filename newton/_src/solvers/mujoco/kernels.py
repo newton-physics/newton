@@ -33,12 +33,6 @@ from .constants import (
 from .enums import EqType
 
 
-def _constraint_contact_type():
-    from mujoco_warp._src.types import ContactType
-
-    return int(ContactType.CONSTRAINT)
-
-
 def _import_contact_force_fn():
     from mujoco_warp._src.support import contact_force_fn
 
@@ -487,6 +481,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
     contact_type_out: wp.array[int],
+    constraint_contact_type: int,
     # Fast-path generation tracking
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
@@ -740,7 +735,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         tid_to_cid[tid] = cid
         # Keep a stable compacted slot for a held certificate. Its validity
         # can change at each predictor pose without moving ordinary rows.
-        contact_type_out[cid] = 0 if recovery_slot < -1 else wp.static(_constraint_contact_type())
+        contact_type_out[cid] = 0 if recovery_slot < -1 else constraint_contact_type
 
         write_contact(
             dist_in=dist,
@@ -823,7 +818,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         if recovery.keys.shape[0]:
             slot = active_recovery_contact(recovery, gen, shape_a, shape_b, X_wb_a, X_wb_b, n)
             if slot != -1:
-                contact_type_out[cid] = wp.static(_constraint_contact_type()) if slot >= 0 else 0
+                contact_type_out[cid] = constraint_contact_type if slot >= 0 else 0
                 depth = contact_includemargin_out[cid] - dist
                 if slot >= 0 and depth > 0.0:
                     world = contact_worldid_out[cid]

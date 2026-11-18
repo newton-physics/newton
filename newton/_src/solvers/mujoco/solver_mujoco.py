@@ -881,6 +881,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
                     import mujoco
                     import mujoco_warp
+                    from mujoco_warp._src.types import ContactType
 
                     # Inspect every member so a stale ALL mask cannot hide a new flag.
                     overflow_bits = 0
@@ -895,6 +896,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
                     cls._mujoco = mujoco
                     cls._mujoco_warp = mujoco_warp
+                    cls._constraint_contact_type = int(ContactType.CONSTRAINT)
             except ImportError as e:
                 raise ImportError(
                     "MuJoCo backend not installed. Please refer to https://github.com/google-deepmind/mujoco_warp for installation instructions."
@@ -5963,6 +5965,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_data.contact.efc_address,
                 self.mjw_data.contact.worldid,
                 self.mjw_data.contact.type,
+                self._constraint_contact_type,
                 # Fast-path generation tracking
                 contacts.contact_generation,
                 self._last_contact_generation,
