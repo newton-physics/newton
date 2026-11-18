@@ -1,1 +1,0 @@
-Fix `SolverMuJoCo` applying `mujoco:pair_*` properties to the wrong contact pairs when MuJoCo reorders the pairs during compilation, when invalid pair rows are skipped, or when the model has global pairs.
