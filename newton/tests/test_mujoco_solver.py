@@ -1341,6 +1341,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 eq_enabled = np.array([False, True])
                 tendon_stiffness = np.array([123.0, 321.0], dtype=np.float32)
                 gain = np.array([2.0, 7.0], dtype=np.float32)
+                gear_ratio = np.array([3.0, 0.5], dtype=np.float32)
 
                 model.body_flags.assign(per_world([kinematic, dynamic], model.body_count).astype(np.int32))
                 model.joint_friction.assign(per_world(friction, model.joint_dof_count))
@@ -1357,7 +1358,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 model.mujoco.actuator_gainprm.assign(gainprm)
                 # Gears stay editable on damped actuators, also during replay.
                 gear = model.mujoco.actuator_gear.numpy()
-                gear[:, 0] = per_world(gain, gear.shape[0])
+                gear[:, 0] = per_world(gear_ratio, gear.shape[0])
                 model.mujoco.actuator_gear.assign(gear)
                 wp.capture_launch(capture.graph)
 
@@ -1381,7 +1382,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 mjw_gain = solver.mjw_model.actuator_gainprm.numpy()[..., 0]
                 np.testing.assert_allclose(mjw_gain, np.broadcast_to(gain[:, None], mjw_gain.shape))
                 mjw_gear = solver.mjw_model.actuator_gear.numpy()[..., 0]
-                np.testing.assert_allclose(mjw_gear, np.broadcast_to(gain[:, None], mjw_gear.shape))
+                np.testing.assert_allclose(mjw_gear, np.broadcast_to(gear_ratio[:, None], mjw_gear.shape))
 
                 model.body_flags.assign(per_world([dynamic, kinematic], model.body_count).astype(np.int32))
                 wp.capture_launch(capture.graph)
