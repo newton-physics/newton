@@ -1266,6 +1266,14 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestMuJoCoExamples,
+    name="mujoco.example_mujoco_flex",
+    devices=cuda_test_devices,
+    test_options={"requires": MUJOCO_MODULES, "world-count": 2, "num-frames": 200},
+    use_viewer=True,
+)
+
 
 class TestSteelExamples(NewtonTestCase):
     pass
