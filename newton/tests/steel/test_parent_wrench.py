@@ -23,7 +23,13 @@ from newton.tests.steel._fixtures import (
     set_torsion_radius,
 )
 from newton.tests.steel.test_articulation import _build_world_hinged_swing, _prescribe_carrier
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 FLAGS = {SolverBase.ObservableKind.BODY_PARENT_F}
 DT_parent_wrench = 1.0 / 120.0
@@ -997,6 +1003,7 @@ def test_parent_wrench_of_a_held_kinematic_joint(test, device):
             np.testing.assert_allclose(wrench[0], [0.0, 0.0, 2.0 * 9.81, 0.0, -9.81, 0.0], rtol=1.0e-5, atol=1.0e-4)
 
 
+@requires(*MUJOCO_MODULES)
 def test_parent_wrench_matches_mujoco_with_armature(test, device):
     """Publish the same joint wrenches as SolverMuJoCo on one step of the armature scene, with and without armature."""
     for armature in (0.0, 9.0):

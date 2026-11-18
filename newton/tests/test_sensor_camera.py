@@ -10,12 +10,12 @@ import warp as wp
 
 import newton
 from newton._src.geometry.types import SH_C0
-from newton._src.sensors.sensor_camera_render.types import LightType
-from newton._src.sensors.sensor_camera_render.utils import Utils
+from newton._src.render.types import LightType
+from newton._src.render.utils import Utils
 from newton.sensors import (
     SensorCamera,
 )
-from newton.tests.unittest_utils import get_test_devices
+from newton.tests.unittest_utils import get_test_devices, requires
 
 # Transform placing a camera at the origin looking down -Z (identity pose). A
 # camera with this transform sees a sphere placed at z = -2.
@@ -731,21 +731,23 @@ class TestSensorCamera(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "camera_rays must be on the model device"):
             camera.update(state, cuda_transforms, cpu_rays)
 
-    def test_fully_transparent_shape_does_not_occlude(self) -> None:
+    def test_fully_transparent_shape_does_not_occlude(self, device: str = "cpu", backend: str = "warp") -> None:
         """A shape with opacity 0 is skipped, so the shape behind it stays visible."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         ball_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -3.0), q=wp.quat_identity()))
         ball = builder.add_shape_sphere(ball_body, radius=0.5, color=(1.0, 0.0, 0.0))
         helper_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -1.5), q=wp.quat_identity()))
         helper = builder.add_shape_box(helper_body, hx=1.0, hy=1.0, hz=0.05, opacity=0.0)
-        model = builder.finalize(device="cpu")
-        camera = SensorCamera(model)
-        rays = self._rays(8, 8, fov=math.radians(40.0))
-        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device="cpu")
-        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device="cpu")
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        camera = SensorCamera(model, backend=backend)
+        rays = self._rays(8, 8, fov=math.radians(40.0), device=device)
+        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device=device)
+        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device=device)
         camera.update(
             model.state(),
-            self._identity_transforms(1),
+            self._identity_transforms(1, device),
             rays,
             depth_image=depth,
             shape_index_image=shape_index,
@@ -754,6 +756,27 @@ class TestSensorCamera(unittest.TestCase):
         self.assertEqual(int(shape_index.numpy()[0, 4, 4]), ball)
         self.assertNotIn(helper, np.unique(shape_index.numpy()))
         self.assertAlmostEqual(float(depth.numpy()[0, 4, 4]), 2.5, delta=0.05)
+
+    def test_camera_inside_box_sees_its_walls(self, device: str = "cpu", backend: str = "warp") -> None:
+        """A camera inside a box sees the box's walls with the default backface culling."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        box = builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=1.0)
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        camera = SensorCamera(model, backend=backend)
+        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device=device)
+        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device=device)
+        camera.update(
+            model.state(),
+            self._identity_transforms(1, device),
+            self._rays(8, 8, fov=math.radians(40.0), device=device),
+            depth_image=depth,
+            shape_index_image=shape_index,
+        )
+
+        np.testing.assert_array_equal(shape_index.numpy(), box)
+        self.assertAlmostEqual(float(depth.numpy()[0, 4, 4]), 1.0, delta=0.05)
 
     def test_update_renders_from_camera_transforms(self) -> None:
         """Verify SensorCamera renders from the camera transforms passed to update."""
@@ -783,7 +806,7 @@ class TestSensorCamera(unittest.TestCase):
         camera.update(state, camera_transforms, rays, depth_image=depth)
         self.assertEqual(float(depth.numpy()[center]), 0.0)
 
-    def test_convex_hull_renders_like_its_mesh(self) -> None:
+    def test_convex_hull_renders_like_its_mesh(self, device: str = "cpu", backend: str = "warp") -> None:
         """Verify convex-hull shapes render, matching the same geometry added as a triangle mesh.
 
         The box mesh has per-face vertices with normals and UVs, which the hull's collision mesh
@@ -798,16 +821,18 @@ class TestSensorCamera(unittest.TestCase):
                 builder.add_shape_convex_hull(-1, mesh=mesh)
             else:
                 builder.add_shape_mesh(-1, mesh=mesh)
-            model = builder.finalize(device="cpu")
-            camera = SensorCamera(model)
+            model = builder.finalize(device=device)
+            if backend == "optix":
+                model.bvh_build_shapes(model.state(), backend="optix")
+            camera = SensorCamera(model, backend=backend)
             # Camera 2 m above the origin looking down -Z at the box's top face (z = 0.1 m).
             above = np.array([[0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
             depth = camera.allocate_image_depth(1, width, height)
             normal = camera.allocate_image_normal(1, width, height)
             camera.update(
                 model.state(),
-                wp.array(above, dtype=wp.transformf, device="cpu"),
-                self._rays(width, height, math.radians(30.0)),
+                wp.array(above, dtype=wp.transformf, device=device),
+                self._rays(width, height, math.radians(30.0), device=device),
                 depth_image=depth,
                 normal_image=normal,
             )
@@ -1679,6 +1704,23 @@ class TestSensorCamera(unittest.TestCase):
         ) / 0.75
         self.assertGreater(abs(expected - per_splat_decode), 0.05)
         np.testing.assert_allclose(color, [expected] * 3, atol=1e-4)
+
+
+def _optix_variant(test):
+    @requires("warp_optix")
+    @unittest.skipUnless(wp.is_cuda_available(), "requires CUDA")
+    def run(self):
+        test(self, device="cuda:0", backend="optix")
+
+    return run
+
+
+for _name in (
+    "test_fully_transparent_shape_does_not_occlude",
+    "test_convex_hull_renders_like_its_mesh",
+    "test_camera_inside_box_sees_its_walls",
+):
+    setattr(TestSensorCamera, f"{_name}_optix", _optix_variant(getattr(TestSensorCamera, _name)))
 
 
 class TestSensorCameraDeformable(unittest.TestCase):

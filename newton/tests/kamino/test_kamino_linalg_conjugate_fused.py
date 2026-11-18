@@ -16,6 +16,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
@@ -325,4 +326,5 @@ class TestFusedCRIntegration(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     unittest.main()

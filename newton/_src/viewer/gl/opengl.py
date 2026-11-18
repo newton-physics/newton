@@ -1196,17 +1196,6 @@ class RendererGL:
         self.ambient_sky = (0.8, 0.8, 0.85)
         self.ambient_ground = (0.3, 0.3, 0.35)
 
-        # On Wayland, PyOpenGL defaults to EGL which cannot see the GLX context
-        # that pyglet creates via XWayland. Force GLX so both libraries agree.
-        # Must be set before PyOpenGL is first imported (platform is selected
-        # once at import time).
-        if "PYOPENGL_PLATFORM" not in os.environ:
-            # WAYLAND_DISPLAY is the primary indicator; XDG_SESSION_TYPE is
-            # checked as a fallback for sessions where the socket is not yet set.
-            is_wayland = bool(os.environ.get("WAYLAND_DISPLAY")) or os.environ.get("XDG_SESSION_TYPE") == "wayland"
-            if is_wayland:
-                os.environ["PYOPENGL_PLATFORM"] = "glx"
-
         try:
             import pyglet
 
