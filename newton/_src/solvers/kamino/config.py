@@ -756,10 +756,12 @@ class PADMMSolverConfig:
     redundant_joint_reuse: bool = True
     """
     Whether to keep the dropped redundant joint constraints of the previous step while they remain valid.\n
-    The kinematic joint block of the Delassus matrix is factorized with the previously dropped rows, and its
-    factors are checked for kept rows that became dependent, or dropped rows that became independent, at
-    `redundant_joint_tolerance`. Only the worlds that fail the check repeat the detection, which avoids most
-    of its cost. Otherwise, the detection runs in every world at every step.\n
+    The previously dropped rows are checked for kept rows that became dependent, or dropped rows that became
+    independent, at `redundant_joint_tolerance`. Only the worlds that fail the check repeat the detection, which
+    avoids most of its cost. Otherwise, the detection runs in every world at every step.\n
+    With the `LLTB` and `LLTBRCM` linear solvers and dense dynamics, the check reads the factors of the Delassus
+    matrix, and the failed worlds are factorized again. With other linear solvers, and with sparse dynamics, the
+    kinematic joint block is factorized separately for the check.\n
     The setting of the first world applies to all worlds. Defaults to `True`.
     """
 
