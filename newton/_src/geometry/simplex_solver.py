@@ -491,20 +491,22 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                 break
 
             # Inline simplex_add_vertex
-            # Count used vertices and find free slot
-            use_count = 0
-            free_slot = 0
-            indices = wp.vec4i(0)
+            # A two-bit field for each occupancy mask encodes the occupied
+            # slots in ascending order, followed by the last free slot. This
+            # preserves insertion order without a scan and indexed vector writes
+            # on every GJK iteration. The final table encodes the occupied count.
+            # A full tetrahedron exits before the next insertion, so mask 15 is
+            # unused. Keep constants unsigned during Warp codegen.
+            shift = wp.uint32(2) * simplex_usage_mask
+            index0 = int((wp.static(wp.uint32(303239699)) >> shift) & wp.uint32(3))
+            index1 = int((wp.static(wp.uint32(1803447164)) >> shift) & wp.uint32(3))
+            index2 = int((wp.static(wp.uint32(3186146496)) >> shift) & wp.uint32(3))
+            index3 = int((wp.static(wp.uint32(3296772096)) >> shift) & wp.uint32(3))
+            free_slot = int((wp.static(wp.uint32(95092735)) >> shift) & wp.uint32(3))
+            used_count = int((wp.static(wp.uint32(1055517076)) >> shift) & wp.uint32(3))
+            indices = wp.vec4i(index0, index1, index2, index3)
+            use_count = used_count + 1
 
-            for i in range(4):
-                if (simplex_usage_mask & (wp.uint32(1) << wp.uint32(i))) != wp.uint32(0):
-                    indices[use_count] = i
-                    use_count += 1
-                else:
-                    free_slot = i
-
-            indices[use_count] = free_slot
-            use_count += 1
             # Set vertex in simplex using new storage convention: B, then BtoA
             simplex_v[2 * free_slot] = w.B
             simplex_v[2 * free_slot + 1] = w.BtoA
