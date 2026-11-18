@@ -1,1 +1,0 @@
-Fix the ANYmal backflip example phase-loss gradients: the differentiable loss kernels no longer carry running minima, maxima, or prefix sums through runtime-bound loops, which Warp auto-adjoint differentiates as zero or last-index-garbage; minima now use static unrolls or an argmin pre-pass with a differentiable gather, and prefix values are chained per-element launches.

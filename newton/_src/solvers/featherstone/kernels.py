@@ -1485,12 +1485,8 @@ def eval_rigid_tau(
         force = wp.spatial_top(f_ext_public)
         torque_com = wp.spatial_bottom(f_ext_public)
         x_com_s = wp.transform_get_translation(body_q_com[child]) - body_solve_origin[child]
-        # Shift the public-frame wrench into the internal solve frame. This
-        # must stay a pure local computation: writing the shifted wrench back
-        # into body_f_ext would mutate a kernel input, and the recompute-based
-        # adjoint would then re-derive force/f_s from the overwritten values
-        # (wrong frame and sign), corrupting every gradient that flows through
-        # this kernel.
+        # shift the public wrench into the solve frame locally; writing it back
+        # into body_f_ext would corrupt the recompute-based adjoint
         f_ext = -wp.spatial_vector(force, torque_com + wp.cross(x_com_s, force))
         f_s = f_b_s + f_t_s + f_ext
 
@@ -1933,10 +1929,8 @@ def adj_dense_cholesky(
     # outputs
     L: wp.array[float],
 ):
-    # nop: the factorization is differentiated through (A^-1)b = x - the
-    # solve adjoint (adj_dense_solve) deposits the product gradient into
-    # adjoint[A] and its diagonal directly into adjoint[R]. adjoint[L] stays
-    # untouched: L is internal.
+    # nop: adj_dense_solve differentiates through (A^-1)b = x and deposits
+    # directly into adjoint[A] and adjoint[R]
     pass
 
 
@@ -2032,13 +2026,9 @@ def adj_dense_solve(
     for i in range(n):
         wp.adjoint[b][b_start + i] += tmp[b_start + i]
 
-    # dense_cholesky reads only the lower triangle of A, so the factorized
-    # matrix is the lower-symmetrization of A: perturbing A[i, j] with i > j
-    # moves both the (i, j) and the (j, i) entry of L L^T. Deposit the
-    # symmetrized product gradient -(tmp x^T + x tmp^T) on the lower triangle
-    # and diagonal; the upper triangle is never read, so its gradient is 0.
-    # The Cholesky factor is internal: the factorization is differentiated
-    # through (A^-1)b = x via this deposit, so adjoint[L] must stay untouched.
+    # dense_cholesky reads only the lower triangle of A, so deposit the
+    # symmetrized gradient -(tmp x^T + x tmp^T) there; L is internal and gets
+    # no adjoint
     for i in range(n):
         for j in range(i + 1):
             g = -tmp[b_start + i] * x[b_start + j]
@@ -2046,13 +2036,8 @@ def adj_dense_solve(
                 g -= tmp[b_start + j] * x[b_start + i]
             wp.adjoint[A][L_start + dense_index(n, i, j)] += g
 
-    # R regularizes the diagonal (B_jj = A_jj + R_j before factorization), so
-    # R's gradient is the diagonal of the product gradient above. Depositing
-    # it here keeps the solve's own contribution separate from any other
-    # gradient that later lands on adjoint[A] (a relay in adj_dense_cholesky
-    # would misattribute a direct reader's contribution to R), and it is the
-    # only armature route on the fused tile path, where no
-    # adj_dense_cholesky launch exists at all.
+    # R (armature) is added to the diagonal before factorization; this is also
+    # its only gradient route on the fused tile path
     if wp.adjoint[R]:
         for i in range(n):
             wp.adjoint[R][R_start + i] += -tmp[b_start + i] * x[b_start + i]
@@ -2621,11 +2606,9 @@ def compute_body_parent_f(
       body COM -- ``State.body_f`` plus contact and FREE/DISTANCE wrenches)
 
     ``body_f_s`` and ``body_ft_s`` are in Featherstone's internal solve
-    frame, but ``body_f_ext`` is not: ``eval_rigid_tau`` keeps its
-    public -> solve-frame shift a pure local computation (writing the
-    shifted wrench back into ``body_f_ext`` would mutate a kernel input
-    and corrupt the recompute-based adjoint), so this kernel repeats the
-    same shift + negation locally before summing. Their sum is the spatial
+    frame, but ``body_f_ext`` is not, so this kernel applies the same
+    solve-frame shift and negation as ``eval_rigid_tau`` before summing.
+    Their sum is the spatial
     wrench transmitted from the parent through the inbound joint, still in
     the solve frame. For floating-root articulations this frame is
     translated to the root COM; for other roots it remains at the world
@@ -2648,8 +2631,7 @@ def compute_body_parent_f(
     force = wp.spatial_top(f_ext_public)
     torque_com = wp.spatial_bottom(f_ext_public)
     r_com = wp.transform_get_translation(body_q_com[tid]) - body_solve_origin[tid]
-    # Same public -> solve-frame shift + negation as eval_rigid_tau, whose
-    # result that kernel no longer leaves behind in body_f_ext.
+    # same solve-frame shift and negation as eval_rigid_tau
     f_ext = -wp.spatial_vector(force, torque_com + wp.cross(r_com, force))
 
     f_s = body_f_s[tid] + body_ft_s[tid] + f_ext

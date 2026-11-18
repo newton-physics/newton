@@ -399,10 +399,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             self._group_to_art = {
                 size: wp.array(arts, dtype=wp.int32, device=model.device) for size, arts in group_to_art.items()
             }
-            # host copy of the per-size group metadata (first-articulation
-            # offsets into J/M/H and the group batch size). The articulation
-            # layout is topology-static, so this is computed once here and
-            # reused by every system-matrix allocation without host syncs.
+            # host copy of each size group's J/M/H offsets and batch size, so
+            # per-state allocations need no device syncs
             self._tile_group_meta = {
                 size: (
                     int(J_start_host[arts[0]]),
@@ -440,13 +438,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         P 1404 + H 324 + L 324 floats) that is ~76 KB per world per step, so
         a 1601-step tape for one world holds ~120 MB of solver scratch.
 
-        The views alias the flat arrays and cost nothing; they serve the
-        ``use_tile_gemm`` path, which produces H and its Cholesky factor in
-        one fused launch per distinct articulation size (compiled once at
-        solver construction) instead of the default path's three batched
-        launches (P, H, Cholesky). Measured on a single 13-joint
-        articulation (ANYmal-D, RTX 4060): the full step drops from
-        2.94 ms to 0.84 ms.
+        The per-size views alias the flat arrays and serve the
+        ``use_tile_gemm`` path.
         """
         model = self.model
         target.J = wp.zeros((self.J_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
@@ -560,11 +553,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             target.body_f_s = wp.zeros(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
-            # External/contact body-force buffer, storing public COM/world
-            # wrenches. eval_rigid_tau reads it to build the solve-frame
-            # joint forces; the buffer itself is left unmodified so the
-            # recompute-based adjoint always sees the values its forward
-            # pass read.
+            # external/contact wrenches in the public COM/world convention;
+            # eval_rigid_tau reads but never modifies it
             target.body_f_ext = wp.empty(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
@@ -1073,9 +1063,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     # solve for qdd
                     state_aug.joint_qdd.zero_()
                     solve_H = self._mass_scratch_holder.H
-                    # the R the factorization regularized with; the solve
-                    # adjoint deposits the diagonal product gradient here
-                    # (also the armature route on the fused tile path)
+                    # the armature the factorization used; the solve adjoint
+                    # deposits its gradient here
                     solve_armature = self.joint_armature_effective
                     solve_tau = state_aug.joint_tau
                     if self._has_joint_mimics:
