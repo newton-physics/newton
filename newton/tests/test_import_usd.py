@@ -6534,6 +6534,21 @@ def Xform "Articulation" (
         self.assertIsNotNone(material_props["color"])
         np.testing.assert_allclose(material_props["color"], newton.utils.color_linear_to_srgb(linear), atol=1e-6)
 
+        existing_color = (0.7, 0.3, 0.1)
+        for name in ("diffuseColor", "baseColor", "diffuse_color", "base_color", "displayColor"):
+            material.CreateInput(name, Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*existing_color))
+            for order in (
+                ["inputs:base_color_factor", f"inputs:{name}"],
+                [f"inputs:{name}", "inputs:base_color_factor"],
+            ):
+                with self.subTest(name=name, order=order):
+                    material.GetPrim().SetPropertyOrder(order)
+                    material_props = resolve_material_properties_for_prim(mesh.GetPrim())
+                    np.testing.assert_allclose(
+                        material_props["color"], newton.utils.color_linear_to_srgb(existing_color), atol=1e-6
+                    )
+            material.GetPrim().RemoveProperty(f"inputs:{name}")
+
     @requires("pxr.Usd")
     def test_usd_transform2d_mapping_is_preserved(self):
         """Preserve standard UsdTransform2d order and its upstream primvar reader."""

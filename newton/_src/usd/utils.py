@@ -2497,7 +2497,9 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
     if material is None:
         return properties
 
-    for inp in material.GetInputs():
+    # Resolve existing inputs before the glTF color fallback.
+    inputs = sorted(material.GetInputs(), key=lambda inp: inp.GetBaseName().lower() == "base_color_factor")
+    for inp in inputs:
         name = inp.GetBaseName()
         name_lower = name.lower()
         try:
