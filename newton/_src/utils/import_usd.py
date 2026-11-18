@@ -3178,9 +3178,8 @@ def parse_usd(
 
         for dof, joint_path in drive_merged_dofs.items():
             logger.warning(
-                "Joint '%s' has both a UsdPhysics drive and an MjcActuator; their gains are merged, each "
-                "MjcActuator gain replacing the drive's matching gain (mode %s, ke=%g, kd=%g). Remove one of "
-                "them to use the other alone.",
+                "Joint '%s' has both a UsdPhysics drive and an MjcActuator; using mode %s, ke=%g, kd=%g. "
+                "Remove one of them to use the other alone.",
                 joint_path,
                 JointTargetMode(builder.joint_target_mode[dof]).name,
                 builder.joint_target_ke[dof],

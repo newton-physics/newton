@@ -391,7 +391,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertEqual(builder.joint_target_ke[dof], 12.0)
         self.assertEqual(builder.joint_target_kd[dof], 4.0)
         # The message reports the configuration after both rows were merged.
-        self.assertIn("mode POSITION_VELOCITY, ke=12, kd=4", logs.output[0])
+        self.assertIn("using mode POSITION_VELOCITY, ke=12, kd=4", logs.output[0])
 
     @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_usd_mjc_actuator_without_drive_does_not_log(self):
