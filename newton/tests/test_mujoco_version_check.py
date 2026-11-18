@@ -61,6 +61,16 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
                     types.SimpleNamespace(),
                 )
 
+    def test_warns_when_imported_module_mismatches_metadata(self):
+        # Another distribution can overwrite the module while the required one's metadata still matches.
+        versions = {package: _matching_version(specifier) for package, specifier in _mujoco_dependency_specs().items()}
+        with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.get):
+            with self.assertWarnsRegex(NewtonWarning, r"mujoco-core==0\.0\.0"):
+                solver_mujoco._warn_if_mujoco_versions_mismatch(
+                    types.SimpleNamespace(__version__="0.0.0"),
+                    types.SimpleNamespace(),
+                )
+
     def test_import_mujoco_warns_for_cached_mismatched_versions(self):
         specs = _mujoco_dependency_specs()
         versions = {
