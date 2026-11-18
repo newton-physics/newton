@@ -67,9 +67,18 @@ Platform-Specific Requirements
 
 **Linux**
 
-On Linux, the ``importers`` and ``remesh`` extras (and extras that include them,
-such as ``examples`` and ``dev``) require GLIBC 2.35 or newer, e.g. Ubuntu
-22.04+. RHEL 9 and Amazon Linux 2023 can install only the base package.
+On Linux, the ``remesh`` and ``dev`` extras require GLIBC 2.35 or newer, e.g.
+Ubuntu 22.04+. On Linux ARM64, ``importers`` and the extras that include it,
+such as ``examples``, require it too. RHEL 9 and Amazon Linux 2023 ship GLIBC
+2.34, so on x86-64 they can install ``importers`` and ``examples`` but not
+``remesh`` or ``dev``.
+
+**Python 3.14**
+
+Python 3.14 supports the simulation, importers, examples, and notebook extras
+on Linux x86-64 and ARM64, Windows x86-64, and macOS ARM64. On Linux ARM64,
+Newton uses USD Core 26.11 for Python 3.14; earlier Python versions use USD
+Exchange. Windows ARM64 retains the optional-feature limitations below.
 
 **Linux aarch64 (ARM64)**
 
@@ -272,7 +281,7 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``notebook``
      - Jupyter notebook support with Rerun visualization (includes ``examples``)
    * - ``dev``
-     - Dependencies for development and testing (includes ``examples``)
+     - Dependencies for development and testing (includes ``examples`` + ``remesh``)
    * - ``docs``
      - Dependencies for building the documentation
 

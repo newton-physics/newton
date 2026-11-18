@@ -76,7 +76,9 @@ def accumulate_contact_forces_kernel(
 
     shape0 = contact_shape0[contact_index]
     shape1 = contact_shape1[contact_index]
-    assert shape0 >= 0 and shape1 >= 0
+    # A side without a shape, such as a MuJoCo flex, has shape -1.
+    if shape0 < 0 or shape1 < 0:
+        return
     force = wp.spatial_top(contact_force[contact_index])
 
     # Decompose into normal and friction (tangential) components

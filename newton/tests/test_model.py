@@ -5,6 +5,8 @@ import ast
 import hashlib
 import inspect
 import math
+import os
+import tempfile
 import textwrap
 import types
 import unittest
@@ -310,6 +312,28 @@ class TestGaussian(unittest.TestCase):
         linear = newton.Gaussian(**kwargs, sh_color_space=newton.utils.ColorSpace.LINEAR)
         self.assertNotEqual(srgb, linear)
         self.assertNotEqual(hash(srgb), hash(linear))
+
+    @requires("meshio")
+    def test_gaussian_create_from_ply(self):
+        """Read a 3DGS PLY: reorder wxyz rotations, exponentiate scales, squash opacities, keep the SH order."""
+        names = ["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", *(f"f_rest_{i}" for i in range(9))]
+        names += ["opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
+        data = np.random.default_rng(0).standard_normal((4, len(names))).astype("<f4")
+        header = "ply\nformat binary_little_endian 1.0\nelement vertex 4\n"
+        header += "".join(f"property float {name}\n" for name in names) + "end_header\n"
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "splats.ply")
+            with open(path, "wb") as file:
+                file.write(header.encode() + data.tobytes())
+            with patch_sys_module("open3d", None):  # importers no longer installs Open3D
+                gaussian = newton.Gaussian.create_from_ply(path)
+
+        xyzw = data[:, [20, 21, 22, 19]]
+        assert_np_equal(gaussian.positions, data[:, :3])
+        assert_np_equal(gaussian.sh_coeffs, data[:, 3:15])
+        np.testing.assert_allclose(gaussian.opacities, 1.0 / (1.0 + np.exp(-data[:, 15])), rtol=1e-6)
+        np.testing.assert_allclose(gaussian.scales, np.exp(data[:, 16:19]), rtol=1e-6)
+        np.testing.assert_allclose(gaussian.rotations, xyzw / np.linalg.norm(xyzw, axis=1, keepdims=True), rtol=1e-6)
 
 
 class TestModelMesh(unittest.TestCase):
@@ -2757,7 +2781,7 @@ class TestModelJoints(unittest.TestCase):
         builder = newton.ModelBuilder()
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
         rod = newton.Rod(pts, radius=0.02)
-        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
+        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True)
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att")
         labels_before = sorted(builder.joint_label)
         builder.collapse_fixed_joints()
@@ -2774,7 +2798,7 @@ class TestModelJoints(unittest.TestCase):
         builder = newton.ModelBuilder()
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
         rod = newton.Rod(pts, radius=0.02)
-        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
+        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True)
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att_a")
         with self.assertWarnsRegex(UserWarning, "undefined semantics"):
             builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
@@ -2832,7 +2856,7 @@ class TestModelJoints(unittest.TestCase):
         builder.add_joint_fixed(b0, b1)
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
         rod = newton.Rod(pts, radius=0.02)
-        bodies, _ = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
+        bodies, _ = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True)
         self.assertEqual(builder.curve_label, ["cable"])
         builder.add_joint_ball(parent=-1, child=bodies[-1], label="att")
         cable_labels_before = [builder.body_label[b] for b in bodies]
