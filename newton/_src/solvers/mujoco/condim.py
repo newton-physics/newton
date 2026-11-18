@@ -67,30 +67,30 @@ class _DeprecatedCondim:
 
 
 def finalize_condim(builder: ModelBuilder, model: Model, attr: ModelBuilder.CustomAttribute) -> None:
-    """Fold builder-authored ``mujoco:condim`` values into the friction modes and alias them on the model."""
+    """Apply builder-authored ``mujoco:condim`` values to the friction modes and alias them on the model."""
     modes = model.shape_material_friction_mode.numpy()
-    # The values the attribute would hold. Body variants store their shapes past the model's shapes.
+    sliding = _FRICTION_MODE_CONDIM[ShapeFrictionMode.SLIDING]
+    # The values the attribute would hold: authored ones and a changed default override the mode.
     condim = np.full(builder.shape_count, attr.default, dtype=np.int32)
+    authored = condim != sliding
     for shape, value in (attr.values or {}).items():
         if value is not None:
             condim[shape] = value
-    # MuJoCo's default is not distinguishable from an unset value, and body variants fill it in.
-    authored = np.flatnonzero(condim != _FRICTION_MODE_CONDIM[ShapeFrictionMode.SLIDING])
-    if authored.size and authored[-1] >= len(modes):
-        # A variant row keeps its friction mode, which the shapes it can hold must share.
+            authored[shape] = True
+    # Body variants fill in the default for their rows, which keep their mode, and for their
+    # shapes, which are stored past the model's shapes.
+    variant = np.zeros(builder.shape_count, dtype=bool)
+    variant[len(modes) :] = True
+    for variants in builder._body_variants.values():
+        variant[variants.row_start : variants.row_start + variants.variant_set.row_count] = True
+    if np.any(variant & (condim != sliding)):
         raise ValueError(
             "mujoco:condim is not supported on body variant shapes; set ModelBuilder.ShapeConfig.friction_mode instead."
         )
-    if authored.size:
+    authored &= ~variant
+    if authored.any():
         warn_deprecation(_DEPRECATION_MSG)
-        for shape in authored:
-            mode = int(friction_mode_from_condim(int(condim[shape])))
-            if modes[shape] != mode and modes[shape] != int(ShapeFrictionMode.SLIDING):
-                raise ValueError(
-                    f"mujoco:condim {condim[shape]} of shape {builder.shape_label[shape]!r} conflicts with its "
-                    f"friction mode {ShapeFrictionMode(modes[shape]).name}."
-                )
-            modes[shape] = mode
+        modes[authored[: len(modes)]] = [friction_mode_from_condim(int(value)) for value in condim[authored]]
         model.shape_material_friction_mode.assign(modes)
 
     if not hasattr(model, "mujoco"):

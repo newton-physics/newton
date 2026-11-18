@@ -2438,7 +2438,8 @@ explicit contact pair decides instead) and then combines the coefficients of
 both shapes by the solver's usual rule, so torsional and rolling coefficients
 take effect only in contacts where a shape's mode enables them. To skip a
 lower component, set its coefficient to zero on both shapes, for example
-``ROLLING`` with ``mu_torsional=0``. A rigid contact is only frictionless
+``ROLLING`` with ``mu_torsional=0``
+(:class:`~newton.solvers.SolverMuJoCo` keeps its minimum coefficient of 1e-5). A rigid contact is only frictionless
 when both shapes are ``NONE``. Particles have no mode and count as ``NONE``,
 so particle contacts follow the shape's mode, and the modes above ``SLIDING``
 act as sliding friction because particles do not rotate

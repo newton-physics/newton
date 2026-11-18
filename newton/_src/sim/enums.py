@@ -186,7 +186,8 @@ class ShapeFrictionMode(IntEnum):
     ``mujoco:geom_priority`` or an explicit contact pair decides instead) and
     combines the coefficients of
     both shapes by the solver's usual rule, so disabling a component for a
-    contact pair takes a zero coefficient on both shapes.
+    contact pair takes a zero coefficient on both shapes
+    (:class:`~newton.solvers.SolverMuJoCo` keeps its minimum coefficient of 1e-5).
 
     The mode fixes which friction constraints a solver creates when it is
     constructed; the coefficients :attr:`~newton.Model.shape_material_mu`,

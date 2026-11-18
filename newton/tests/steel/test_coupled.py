@@ -518,8 +518,8 @@ def test_unsupported_options_raise(test, device):
             set_torsion_radius(model, torsion_radius)
         # ADMM treats a NotImplementedError from its effective-mass query as an unsupported hook.
         with warnings.catch_warnings(), test.assertRaisesRegex(NotImplementedError, name):
-            # SolverVBD applies sliding friction to the shapes that a torsion radius makes torsional.
-            warnings.filterwarnings("ignore", "SolverVBD does not support TORSIONAL", newton.NewtonWarning)
+            # SolverVBD and the coupler apply sliding friction to the shapes that a torsion radius makes torsional.
+            warnings.filterwarnings("ignore", "Solver.* does not support TORSIONAL", newton.NewtonWarning)
             _admm(model, box, rod_bodies, lambda v, kwargs=kwargs: _steel(v, **kwargs))
         # Without a coupler a view is ordinary standalone use.
         model, _, _ = _build_box_rod(device, rod=False)

@@ -134,6 +134,8 @@ class _VariantRow:
     """Variant shapes the row can hold."""
     label: str
     """Label of the row."""
+    friction_mode: int
+    """Friction mode of the row, which its colliding candidates share."""
 
 
 def _custom_shape_value(attribute: Any, shape: int) -> Any:
@@ -256,7 +258,8 @@ def _plan_variant_rows(variant_set: _VariantSet, initial: int, body_label: str) 
             )
         initial_shape = variant_set.row_shapes[initial][r]
         seed = variant_set.variants[initial].shapes[initial_shape] if initial_shape >= 0 else candidates[0]
-        rows.append(_VariantRow(seed, candidates, label))
+        friction_mode = modes.pop() if modes else int(seed.values["shape_material_friction_mode"])
+        rows.append(_VariantRow(seed, candidates, label, friction_mode))
     return rows
 
 

@@ -6641,6 +6641,7 @@ class ModelBuilder:
             for candidate in row.candidates:
                 flags |= int(candidate.values["shape_flags"])
             self.shape_flags[shape] = flags
+            self.shape_material_friction_mode[shape] = row.friction_mode
             self.body_shapes[body].append(shape)
             if flags & ShapeFlags.COLLIDE_SHAPES:
                 self._add_joint_collision_filter_pairs(shape, body)

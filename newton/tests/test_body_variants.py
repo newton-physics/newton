@@ -202,6 +202,11 @@ class TestBodyVariants(unittest.TestCase):
             cube.shape_flags[0] = frictionless.shape_flags[0] = int(flags)
             with self.assertRaisesRegex(ValueError, "friction modes"):
                 builder.add_body_variants(builder.add_body(), [cube, frictionless])
+        # A visual shape has no say: the row takes the mode of the particle-only collider it can hold.
+        cube.shape_flags[0] = int(newton.ShapeFlags.VISIBLE)
+        mixed = newton.ModelBuilder()
+        mixed.add_body_variants(mixed.add_body(), [cube, frictionless])
+        self.assertEqual(mixed.shape_material_friction_mode, [newton.ShapeFrictionMode.NONE])
         retyped = _variant("cube")
         retyped.custom_attributes["test:tag"] = replace(retyped.custom_attributes["test:tag"], dtype=wp.float32)
         with self.assertRaisesRegex(ValueError, "declared differently"):

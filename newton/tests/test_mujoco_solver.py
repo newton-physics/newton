@@ -7907,14 +7907,12 @@ class TestMuJoCoAttributes(unittest.TestCase):
         solver = SolverMuJoCo(model, separate_worlds=False)
         np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [1, 3, 4, 6])
 
-        # Values matching the mode are accepted; others only replace the default sliding mode
+        # Deprecated values override the mode, including MuJoCo's default of 3
         with self.assertWarnsRegex(NewtonDeprecationWarning, "mujoco:condim custom attribute is deprecated"):
-            model = build({1: 6, 2: 4}).finalize()
-        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 3, 2, 3])
+            model = build({1: 6, 2: 4, 3: 3}).finalize()
+        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 3, 2, 1])
         solver = SolverMuJoCo(model, separate_worlds=False)
-        np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [1, 6, 4, 6])
-        with self.assertWarns(NewtonDeprecationWarning), self.assertRaisesRegex(ValueError, "conflicts"):
-            build({2: 1}).finalize()
+        np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [1, 6, 4, 3])
         # A changed default applies to the shapes left at the sliding mode
         builder = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
@@ -7925,7 +7923,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
         # The deprecated model attribute reads the modes, and values written to it reach the next solver
         with self.assertWarnsRegex(NewtonDeprecationWarning, "mujoco:condim custom attribute is deprecated"):
-            np.testing.assert_array_equal(model.mujoco.condim.numpy(), [1, 6, 4, 6])
+            np.testing.assert_array_equal(model.mujoco.condim.numpy(), [1, 6, 4, 3])
         with self.assertWarns(NewtonDeprecationWarning):
             model.mujoco.condim.fill_(4)
         solver = SolverMuJoCo(model, separate_worlds=False)
@@ -7964,6 +7962,12 @@ class TestMuJoCoAttributes(unittest.TestCase):
             model.shape_material_friction_mode.numpy(), [mode.ROLLING, mode.TORSIONAL, mode.SLIDING]
         )
         np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
+
+        # The importer leaves the deprecated attribute unset, so a value set in code still overrides the mode
+        builder.custom_attributes["mujoco:condim"].values = {0: 3}
+        with self.assertWarns(NewtonDeprecationWarning):
+            model = builder.finalize()
+        self.assertEqual(model.shape_material_friction_mode.numpy()[0], mode.SLIDING)
 
     @requires(*MUJOCO_MODULES)
     def test_custom_attributes_from_urdf(self):
