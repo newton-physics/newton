@@ -5901,9 +5901,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         bodies_per_world = self.model.body_count // self.model.world_count
         mujoco_attrs = getattr(model, "mujoco", None)
         shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
-        if contacts.rigid_contact_surface_velocity is not None:
-            # MuJoCo Warp applies contact.surfacevel only with this flag.
-            self.mjw_model.flg_surfacevel = True
+        # MuJoCo Warp applies contact.surfacevel only with this flag.
+        self.mjw_model.flg_surfacevel = contacts.rigid_contact_surface_velocity is not None
         wp.launch(
             convert_newton_contacts_to_mjwarp_kernel,
             dim=(launch_dim,),
