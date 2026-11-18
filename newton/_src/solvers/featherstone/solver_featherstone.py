@@ -102,7 +102,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
     Joint limitations:
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE (treated as FREE), D6.
           ROD joints are not supported.
-        - FREE and DISTANCE joints ignore passive damping set via :attr:`~newton.Model.joint_damping`.
+        - FREE and DISTANCE joints ignore :attr:`~newton.Model.joint_damping` on all six degrees of freedom
+          (three linear and three angular).
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and :attr:`~newton.Control.joint_f`
           are supported.
