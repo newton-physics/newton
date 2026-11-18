@@ -383,11 +383,20 @@ def parse_joint(
         # for drive in joint_desc.jointDrives:
         #     print("joint_path :", joint_path, drive.first, drive.second.targetPosition, drive.second.targetVelocity)
 
-        for limit in joint_desc.jointLimits:
-            dof = limit.first
-            if limit.second.enabled:
-                limit_lower = limit.second.lower
-                limit_upper = limit.second.upper
+        limits = {limit.first: limit.second for limit in joint_desc.jointLimits}
+        # USD leaves unauthored axes free; keep the builder's linear-then-angular DOF order.
+        for dof in (
+            UsdPhysics.JointDOF.TransX,
+            UsdPhysics.JointDOF.TransY,
+            UsdPhysics.JointDOF.TransZ,
+            UsdPhysics.JointDOF.RotX,
+            UsdPhysics.JointDOF.RotY,
+            UsdPhysics.JointDOF.RotZ,
+        ):
+            limit = limits.get(dof)
+            if limit is not None and limit.enabled:
+                limit_lower = limit.lower
+                limit_upper = limit.upper
             else:
                 limit_lower = builder.default_joint_cfg.limit_lower
                 limit_upper = builder.default_joint_cfg.limit_upper
@@ -592,6 +601,8 @@ def parse_joint(
             else:
                 _warn_irreversible_joint(f"joint {joint_path}")
 
+        if "mujoco:joint_dof_label" in builder.custom_attributes:
+            joint_custom_attrs["mujoco:joint_dof_label"] = [f"{joint_path}:{axis}" for axis in d6_dof_axes]
         joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
     elif key == UsdPhysics.ObjectType.DistanceJoint:
         joint_index = builder.add_joint_distance(
