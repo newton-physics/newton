@@ -431,7 +431,8 @@ class SensorContact:
             verbose: If True, log details. If False, suppress details. If None, log details when
                 ``wp.config.log_level`` is configured for debug logging.
             request_contact_attributes: If True, request the deprecated ``contacts.force`` extended attribute
-                for compatibility. If False (default), :meth:`update` must receive solver observables.
+                for compatibility. If False (default), :meth:`update` must receive solver observables
+                or contacts whose ``force`` array was allocated through a separate legacy request.
 
                 .. deprecated:: 1.7
                     Passing True is deprecated. Omit this argument, which will be removed together
