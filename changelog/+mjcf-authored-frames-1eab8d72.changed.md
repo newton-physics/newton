@@ -1,0 +1,1 @@
+Warn with `NewtonWarning` when importing an MJCF body whose hinge axes do not pass through a common point, or are nearly parallel without lying on one line. Such bodies are imported with all hinges rotating about the first hinge's position. Filter the warning if that approximation is acceptable, or give each hinge its own body to import the authored motion.
