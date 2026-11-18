@@ -13242,7 +13242,7 @@ class ModelBuilder:
         start_vertex = len(self.particle_q)
         start_tet = self.tet_count
 
-        pos = wp.vec3(pos[0], pos[1], pos[2])
+        pos = _as_vec3(pos)
         rot = _as_quat(rot)
         # add particles
         for vi, v in enumerate(vertices):
