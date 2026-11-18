@@ -4697,7 +4697,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 flags map ``RUN_TO_RUN`` to ``DeterminismType.ALL`` before
                 model-constant initialization. This requests the backend's
                 available deterministic operations, not an end-to-end guarantee.
-                In MuJoCo Warp 4.0.0, contact and constraint sorting are still
+                MuJoCo Warp's contact and constraint sorting are still
                 unimplemented hooks; enabling their flags does not sort rows.
                 With Newton contacts, separately enable deterministic ordering on
                 :class:`newton.CollisionPipeline`. Neither setting guarantees

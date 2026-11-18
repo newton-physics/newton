@@ -66,7 +66,7 @@ using the model flags. The temporary global configuration is restored on exit,
 including exceptions. Newton's contact-conversion kernels retain the requested
 Warp mode separately.
 
-In 3.17.0/4.0.0, ``ATOMICS`` selects backend-authored reduction paths in
+``ATOMICS`` selects backend-authored reduction paths in
 smooth dynamics (including mass/inertia and force accumulation), supported
 constraint/solver operations, passive forces, derivatives, sleeping, and
 selected sensors. This is per-kernel coverage, not a promise that every
@@ -77,7 +77,7 @@ backend sorts nor broadens native atomic coverage with global compilation.
 .. important::
 
    This is a request for the backend's available determinism features, **not
-   a certification of bitwise-identical trajectories**. MuJoCo Warp 4.0.0
+   a certification of bitwise-identical trajectories**. MuJoCo Warp
    exposes ``CONTACTS``, ``CONSTRAINT``, and ``ATOMICS`` bits, but its contact
    and constraint sorting functions are still unimplemented hooks. Reading
    back ``ALL`` only confirms configuration. See `MJWarp issue #1925
@@ -1096,7 +1096,7 @@ see :ref:`Geometry Pair Contact Behavior`.
 
 **Margin zeroing.** Earlier ``mujoco_warp`` releases rejected non-zero geom
 margins on box-box pairs (its default NATIVECCD path) and on any box/mesh pair
-when ``enable_multiccd=True``. MuJoCo Warp 3.17 accepts them, but the MuJoCo Warp
+when ``enable_multiccd=True``. Current releases accept them, but the MuJoCo Warp
 backend of :class:`~newton.solvers.SolverMuJoCo` still zeroes ``geom_margin`` and
 ``pair_margin`` model-wide at compile time whenever a box geom exists and NATIVECCD
 or multi-CCD is enabled, or whenever ``enable_multiccd=True`` is combined with mesh
