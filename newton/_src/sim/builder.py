@@ -14,11 +14,11 @@ import logging
 import math
 import warnings
 import weakref
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from os import PathLike
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -73,6 +73,7 @@ from ..geometry.inertia import (
     _INERTIA_ABS_FLOOR,
     _INERTIA_REL_TOL,
     _inverse_inertia,
+    _validate_hollow_thickness,
     compute_body_inverses_kernel,
     validate_and_correct_inertia_kernel,
     verify_and_correct_inertia,
@@ -116,8 +117,11 @@ from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
 if TYPE_CHECKING:
     from pxr import Usd
 
+    from ..actuators.batteries.base import BatteryBase
     from ..actuators.clamping.base import ClampingBase
     from ..actuators.drives.base import DriveBase
+    from ..actuators.input_processors.base import InputProcessorBase
+    from ..actuators.motor_dc import MotorDC
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -125,6 +129,16 @@ else:
     UsdStage = Any
 
 logger = logging.getLogger(__name__)
+
+
+class _BodyFrameOriginUnset:
+    """Mark an omitted deprecated ``add_rod`` body-frame origin."""
+
+    def __repr__(self) -> str:
+        return "_DEPRECATED_BODY_FRAME_ORIGIN_UNSET"
+
+
+_DEPRECATED_BODY_FRAME_ORIGIN_UNSET: Any = _BodyFrameOriginUnset()
 
 
 def _convex_hull_interior_point(vertices: np.ndarray, indices: np.ndarray | None) -> np.ndarray:
@@ -197,6 +211,14 @@ def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray
     return opacities
 
 
+_ACTUATOR_DELAY_STEPS_DEPRECATION_MSG = (
+    "ModelBuilder.add_actuator(delay_steps=...) is deprecated in Newton 1.9; "
+    "use input_processors=[(InputProcessorDelay, {'delay_steps': ...})] instead."
+)
+_ACTUATOR_ENTRY_DELAY_ARGS_UNSET = object()
+_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG = (
+    "ModelBuilder.ActuatorEntry.delay_args is deprecated in Newton 1.9; use input_processor_args instead."
+)
 _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "ModelBuilder.joint_twist_lower and ModelBuilder.joint_twist_upper are deprecated in Newton 1.7 and "
     "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
@@ -869,15 +891,6 @@ class ModelBuilder:
         return (float(color[0]), float(color[1]), float(color[2]))
 
     @staticmethod
-    def _resolve_rod_body_frame_origin(
-        method_name: str,
-        body_frame_origin: Literal["start", "com"],
-    ) -> Literal["start", "com"]:
-        if body_frame_origin not in ("start", "com"):
-            raise ValueError(f"{method_name}: body_frame_origin must be 'start' or 'com', got {body_frame_origin!r}")
-        return body_frame_origin
-
-    @staticmethod
     def _rod_segment_direction(start: Vec3, end: Vec3) -> tuple[wp.vec3, float]:
         """Return the unit direction and length of a rod segment."""
         dx = float(end[0]) - float(start[0])
@@ -954,14 +967,23 @@ class ModelBuilder:
         )
 
     @dataclass
+    class BatteryEntry:
+        """Stores accumulated specs for the batteries of one battery class."""
+
+        battery_class: type  # BatteryBase subclass (e.g. BatteryConstantResistance)
+        args: list[dict[str, Any]] = field(default_factory=list)  # Per-battery array params
+        actuators: list[list[int]] = field(default_factory=list)  # Per-battery actuators
+        world: list[int] = field(default_factory=list)  # Per-battery world
+
+    @dataclass(init=False)
     class ActuatorEntry:
         """Stores accumulated specs for one group of compatible composed actuators.
 
         Each element in ``indices`` is a single DOF index.  The entry key is
-        ``(drive_class, delay_steps is not None, clamping_key, drive_shared_key)``
+        ``(drive_class, input_processor_key, clamping_key, drive_shared_key, motor_key)``
         where shared params (e.g. ``model_path``, lookup tables) must
-        be identical across all actuators in a group.  Delay step values
-        are per-DOF; the buffer is sized to ``max(delay_step_values) + 1``.
+        be identical across all actuators in a group.  Per-actuator params
+        such as delay step values may differ within a group.
         """
 
         drive_class: type  # DriveBase subclass (e.g. DrivePD)
@@ -971,8 +993,122 @@ class ModelBuilder:
         indices: list[int]  # Per-actuator DOF indices (joint_qd layout)
         pos_indices: list[int]  # Per-actuator position indices (joint_q layout)
         drive_args: list[dict[str, Any]]  # Per-actuator drive array params
-        delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
+        input_processor_classes: tuple = ()  # Tuple of InputProcessorBase subclass types (in order)
+        input_processor_shared_kwargs: tuple = ()  # Tuple of dicts: shared kwargs per input processor class
+        input_processor_args: list[list[dict[str, Any]]] = field(default_factory=list)  # Per-actuator params
+        actuator_indices: list[int] = field(default_factory=list)  # Per-actuator rows of per-actuator arrays
+        motor_class: type | None = None  # Motor class (e.g. MotorDC), or None
+        motor_shared_kwargs: dict = field(default_factory=dict)  # Shared motor kwargs
+        motor_args: list[dict[str, Any]] = field(default_factory=list)  # Per-actuator motor array params
+
+        def __init__(
+            self,
+            drive_class: type,
+            clamping_classes: tuple,
+            clamping_shared_kwargs: tuple,
+            drive_shared_kwargs: dict,
+            indices: list[int],
+            pos_indices: list[int],
+            drive_args: list[dict[str, Any]],
+            delay_args: list[dict[str, Any]] | object = _ACTUATOR_ENTRY_DELAY_ARGS_UNSET,
+            clamping_args: list[list[dict[str, Any]]] | None = None,
+            *,
+            input_processor_classes: tuple = (),
+            input_processor_shared_kwargs: tuple = (),
+            input_processor_args: list[list[dict[str, Any]]] | None = None,
+            actuator_indices: list[int] | None = None,
+            motor_class: type | None = None,
+            motor_shared_kwargs: dict | None = None,
+            motor_args: list[dict[str, Any]] | None = None,
+        ):
+            """Initialize an actuator entry.
+
+            Args:
+                delay_args: Deprecated in Newton 1.9; pass an
+                    :class:`~newton.actuators.InputProcessorDelay` in
+                    *input_processor_classes* and its per-actuator params in
+                    *input_processor_args* instead.
+                actuator_indices: Index of each actuator in per-actuator
+                    arrays, as returned by :meth:`ModelBuilder.add_actuator`.
+                    Entries built by hand without it get no per-actuator
+                    arrays.
+            """
+            self.drive_class = drive_class
+            self.clamping_classes = clamping_classes
+            self.clamping_shared_kwargs = clamping_shared_kwargs
+            self.drive_shared_kwargs = drive_shared_kwargs
+            self.indices = indices
+            self.pos_indices = pos_indices
+            self.drive_args = drive_args
+            self.clamping_args = clamping_args if clamping_args is not None else []
+            self.input_processor_classes = input_processor_classes
+            self.input_processor_shared_kwargs = input_processor_shared_kwargs
+            self.input_processor_args = input_processor_args if input_processor_args is not None else []
+            self.actuator_indices = actuator_indices if actuator_indices is not None else []
+            self.motor_class = motor_class
+            self.motor_shared_kwargs = motor_shared_kwargs if motor_shared_kwargs is not None else {}
+            self.motor_args = motor_args if motor_args is not None else []
+            if delay_args is _ACTUATOR_ENTRY_DELAY_ARGS_UNSET:
+                return
+            warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            if not delay_args:
+                return
+            from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
+
+            self.input_processor_classes = (InputProcessorDelay, *self.input_processor_classes)
+            self.input_processor_shared_kwargs = ({}, *self.input_processor_shared_kwargs)
+            others = self.input_processor_args or [[] for _ in delay_args]
+            self.input_processor_args = [[dict(delay), *rest] for delay, rest in zip(delay_args, others, strict=True)]
+
+        @property
+        def delay_args(self) -> list[dict[str, Any]]:
+            """Deprecated alias for the delay entries of :attr:`input_processor_args`.
+
+            The returned list is a new list holding the per-actuator delay
+            dicts: changing a dict changes the entry, but appending to the
+            list does not. Assign a new list to replace the delay entries.
+
+            .. deprecated:: 1.9
+                Use :attr:`input_processor_args` instead.
+            """
+            warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            slot = self._delay_slot()
+            if slot is None:
+                return []
+            return [per_actuator[slot] for per_actuator in self.input_processor_args]
+
+        @delay_args.setter
+        def delay_args(self, value: list[dict[str, Any]]) -> None:
+            from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
+
+            warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            value = [dict(delay) for delay in value]
+            if not self.input_processor_args:
+                self.input_processor_args = [[] for _ in value]
+            if len(value) != len(self.input_processor_args):
+                raise ValueError(
+                    f"delay_args has {len(value)} entries but the entry has {len(self.input_processor_args)} actuators"
+                )
+            slot = self._delay_slot()
+            if slot is None:
+                self.input_processor_classes = (InputProcessorDelay, *self.input_processor_classes)
+                self.input_processor_shared_kwargs = ({}, *self.input_processor_shared_kwargs)
+                self.input_processor_args = [
+                    [delay, *rest] for delay, rest in zip(value, self.input_processor_args, strict=True)
+                ]
+                return
+            for per_actuator, delay in zip(self.input_processor_args, value, strict=True):
+                per_actuator[slot] = delay
+
+        def _delay_slot(self) -> int | None:
+            """Return the position of the delay among the input processors, or ``None``."""
+            from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
+
+            for i, proc_class in enumerate(self.input_processor_classes):
+                if issubclass(proc_class, InputProcessorDelay):
+                    return i
+            return None
 
     @dataclass
     class BvhConfig:
@@ -1036,7 +1172,13 @@ class ModelBuilder:
         :class:`~newton.solvers.SolverFeatherstone`. ``0`` disables adhesion. See
         :ref:`Contact friction gain and adhesion`."""
         mu: float = 1.0
-        """The coefficient of friction."""
+        """The coefficient of friction [dimensionless]; the dynamic (kinetic) coefficient when
+        :attr:`mu_static` is set."""
+        mu_static: float | None = None
+        """The coefficient of static friction [dimensionless], the break-away threshold for sticking
+        contacts. ``None`` uses :attr:`mu` (no static/dynamic distinction); a set value must not be
+        below :attr:`mu`, so code that overrides :attr:`mu` alone has to resolve this field as well.
+        No built-in solver models stick-slip friction yet; the value is stored for solvers that do."""
         restitution: float = 0.0
         """The coefficient of restitution.
 
@@ -1189,6 +1331,14 @@ class ModelBuilder:
                 )
             if not math.isfinite(self.density) or self.density < 0.0:
                 raise ValueError(f"density must be finite and >= 0 (got {self.density}).")
+            if self.mu_static is not None:
+                if not math.isfinite(self.mu_static) or self.mu_static < 0.0:
+                    raise ValueError(f"mu_static must be finite and >= 0 (got mu_static={self.mu_static}).")
+                if self.mu_static < self.mu:
+                    raise ValueError(
+                        f"mu_static must be >= mu (got mu_static={self.mu_static}, mu={self.mu}). "
+                        "Leave mu_static as None for a single friction coefficient."
+                    )
 
             if self.sdf_target_voxel_size is not None and (
                 not math.isfinite(self.sdf_target_voxel_size) or self.sdf_target_voxel_size <= 0.0
@@ -1510,6 +1660,9 @@ class ModelBuilder:
         """Storage for specific values (overrides).
 
         For enum frequencies (BODY, SHAPE, etc.): dict[int, Any] mapping entity indices to values.
+        For ``WORLD``, keys are world indices, and key ``-1`` is global world ``-1``, whose value is
+        also the default of local worlds without one unless the attribute stores
+        references through :attr:`references` or :attr:`reference_value_transformer`.
         For string frequencies ("mujoco:pair", etc.): list[Any] for sequential custom data.
 
         If None, the attribute is not initialized with any values. Values can be assigned in subsequent
@@ -1695,6 +1848,15 @@ class ModelBuilder:
             else:
                 # Enum frequency: vals is a dict, use get() to fill gaps with defaults
                 arr = [self.values.get(i, self.default) for i in range(count)]
+                if self.frequency == Model.AttributeFrequency.WORLD and count > 0 and -1 in self.values:
+                    # Key -1 is global world -1, stored after the local worlds. Like builder
+                    # gravity, it is also the default of local worlds without their own value.
+                    global_value = self.values[-1]
+                    if self.references is None and self.reference_value_transformer is None:
+                        arr = [self.values.get(i, global_value) for i in range(count - 1)]
+                        arr.append(global_value)
+                    else:
+                        arr[-1] = global_value
 
             # String dtype: return as Python list instead of warp array
             if self.dtype is str:
@@ -2032,6 +2194,10 @@ class ModelBuilder:
         """Friction coefficients accumulated for :attr:`Model.shape_material_mu`."""
         self.shape_material_restitution: list[float] = []
         """Restitution coefficients accumulated for :attr:`Model.shape_material_restitution`."""
+        self.shape_material_mu_static: list[float | None] = []
+        """Static friction coefficients accumulated for :attr:`Model.shape_material_mu_static`. ``None`` means
+        "same as ``mu``" and is resolved in :meth:`finalize`, so a direct edit of :attr:`shape_material_mu` keeps a
+        single coefficient for such shapes; an explicit value is checked against the final ``mu`` there."""
         self.shape_material_mu_torsional: list[float] = []
         """Torsional friction coefficients accumulated for :attr:`Model.shape_material_mu_torsional`."""
         self.shape_material_mu_rolling: list[float] = []
@@ -2444,6 +2610,8 @@ class ModelBuilder:
         """Total joint coordinate count propagated to :attr:`Model.joint_coord_count`."""
         self.joint_constraint_count: int = 0
         """Total joint constraint count propagated to :attr:`Model.joint_constraint_count`."""
+        self.actuator_count: int = 0
+        """Total actuator count propagated to :attr:`Model.actuator_count`."""
 
         self._current_world: int = -1
         """Internal world context backing the read-only :attr:`current_world` property."""
@@ -2524,6 +2692,8 @@ class ModelBuilder:
         # Key is (drive_class, delay is not None, clamping_key, drive_shared_key) to group compatible actuators
         self.actuator_entries: dict[tuple, ModelBuilder.ActuatorEntry] = {}
         """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by drive class and shared params."""
+        self.battery_entries: dict[type, ModelBuilder.BatteryEntry] = {}
+        """Battery entry groups accumulated from :meth:`add_battery`, keyed by battery class."""
 
         # Equality constraints are canonical MuJoCo custom attributes and must be available
         # independently of SolverMuJoCo. Lazy import avoids a module-level solver dependency.
@@ -3324,17 +3494,20 @@ class ModelBuilder:
         clamping: list[tuple[type[ClampingBase], dict[str, Any]]] | None = None,
         delay_steps: int | None = None,
         pos_index: int | None = None,
+        *,
+        input_processors: list[tuple[type[InputProcessorBase], dict[str, Any]]] | None = None,
+        motor: tuple[type[MotorDC], dict[str, Any]] | None = None,
         **kwargs: Any,
-    ) -> None:
+    ) -> int:
         """Add an external actuator for a single DOF.
 
         External actuators apply forces computed outside the physics engine.
-        Multiple calls with the same *drive_class*, *clamping*
-        types, and identical shared parameters are accumulated into one
+        Multiple calls with the same *drive_class*, *clamping*, input
+        processor and *motor* types, and identical shared parameters are
+        accumulated into one
         :class:`~newton.actuators.Actuator` instance during
-        :meth:`finalize <ModelBuilder.finalize>`.  Different delay
-        values are supported within the same group; the buffer is
-        sized to ``max(delay_step_values)``.
+        :meth:`finalize <ModelBuilder.finalize>`.  Per-actuator parameters,
+        such as delay step values, may differ within the same group.
 
         Args:
             drive_class: Drive class (e.g. :class:`~newton.actuators.DrivePD`).
@@ -3342,20 +3515,57 @@ class ModelBuilder:
                 velocity targets, feedforward, forces).
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
                 post-drive. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
-            delay_steps: Optional number of timesteps [timesteps] to delay inputs.
+                Clamps must accept the drive output space. DUTY clamps run
+                before the motor; EFFORT clamps require an actuator without a motor.
+            delay_steps: Deprecated in Newton 1.9; use
+                ``input_processors=[(InputProcessorDelay, {"delay_steps": ...})]`` instead.
             pos_index: DOF index into ``joint_q``-shaped arrays (positions,
                 position targets). Defaults to *index*. Differs from
                 *index* for floating-base or ball-joint articulations
                 where ``joint_q`` and ``joint_qd`` have different layouts.
+            input_processors: Optional list of ``(InputProcessorClass, kwargs)``
+                tuples applied in order before the drive. E.g.
+                ``[(InputProcessorDelay, {"delay_steps": 3})]``. Parameters listed in the
+                class's :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`
+                take a joint index or a joint label; ``None`` selects the
+                actuated joint.
+            motor: Optional ``(MotorClass, kwargs)`` tuple applied after DUTY
+                clamping and duty-to-voltage conversion. E.g. ``(MotorDC, {"kt": 1.0, "resistance": 2.0, "vin": 12.0})``.
             **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
+
+        Returns:
+            The index of the actuator in per-actuator arrays, e.g. for
+            :meth:`add_battery`.
+
+        Raises:
+            ValueError: *index* belongs to another world than the current
+                one, a joint parameter of an input
+                processor does not identify a single-DOF joint of the current
+                world or a global joint, of the same type as the actuated joint,
+                or the
+                drive and clamps do not match the modeling path: DUTY with
+                a motor, EFFORT without one.
         """
         if drive_class is None:
             raise TypeError("add_actuator() requires 'drive_class'")
 
         if index is None:
             raise TypeError("add_actuator() missing required argument: 'index'")
+        if 0 <= index < self.joint_dof_count:
+            dof_world = self.joint_world[bisect_right(self.joint_qd_start, index) - 1]
+            if dof_world not in (-1, self.current_world):
+                raise ValueError(
+                    f"add_actuator: DOF index {index} belongs to world {dof_world}, "
+                    f"but the actuator is added to world {self.current_world}"
+                )
 
         clamping = clamping or []
+        input_processors = list(input_processors or [])
+        if delay_steps is not None:
+            from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
+
+            warnings.warn(_ACTUATOR_DELAY_STEPS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            input_processors.insert(0, (InputProcessorDelay, {"delay_steps": delay_steps}))
 
         # --- Resolve drive kwargs and separate shared from per-DOF ---
         resolved_drive = drive_class.resolve_arguments(kwargs)
@@ -3385,10 +3595,66 @@ class ModelBuilder:
 
         clamping_shared_kwargs = tuple(clamping_shared_list)
 
+        # --- Resolve per-input-processor kwargs and separate shared from per-DOF ---
+        input_processor_classes = tuple(pc for pc, _ in input_processors)
+        input_processor_shared_list = []
+        input_processor_array_params_list = []
+        for proc_class, proc_kwargs in input_processors:
+            resolved_proc = proc_class.resolve_arguments(proc_kwargs)
+            for name in proc_class.JOINT_PARAMS:
+                joint = resolved_proc.pop(name)
+                if joint is None:
+                    resolved_proc[f"{name}_indices"] = index
+                    resolved_proc[f"{name}_pos_indices"] = pos_index if pos_index is not None else index
+                    continue
+                joint = self._resolve_actuator_joint(joint, proc_class.__name__, name, world=self.current_world)
+                if index < self.joint_dof_count:
+                    actuated = bisect_right(self.joint_qd_start, index) - 1
+                    if self.joint_type[joint] != self.joint_type[actuated]:
+                        raise ValueError(
+                            f"{proc_class.__name__}: '{name}' joint '{self.joint_label[joint]}' must have the type "
+                            f"of the actuated joint '{self.joint_label[actuated]}'"
+                        )
+                resolved_proc[f"{name}_indices"] = self.joint_qd_start[joint]
+                resolved_proc[f"{name}_pos_indices"] = self.joint_q_start[joint]
+            proc_shared_names = getattr(proc_class, "SHARED_PARAMS", set())
+            proc_shared = {k: resolved_proc[k] for k in proc_shared_names if k in resolved_proc}
+            proc_array = {k: v for k, v in resolved_proc.items() if k not in proc_shared_names}
+            input_processor_shared_list.append(proc_shared)
+            input_processor_array_params_list.append(proc_array)
+
+        input_processor_shared_kwargs = tuple(input_processor_shared_list)
+
+        # --- Resolve motor kwargs and separate shared from per-DOF ---
+        motor_class = None
+        motor_shared = {}
+        motor_array_params = {}
+        if motor is not None:
+            motor_class, motor_kwargs = motor
+            resolved_motor = motor_class.resolve_arguments(motor_kwargs)
+            unrecognized = set(motor_kwargs) - set(resolved_motor)
+            if unrecognized:
+                warnings.warn(
+                    f"add_actuator: {motor_class.__name__} ignoring "
+                    f"unrecognized parameter(s): {', '.join(sorted(unrecognized))}",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+            motor_shared_names = getattr(motor_class, "SHARED_PARAMS", set())
+            motor_shared = {k: resolved_motor[k] for k in motor_shared_names if k in resolved_motor}
+            motor_array_params = {k: v for k, v in resolved_motor.items() if k not in motor_shared_names}
+        from ..actuators.space import _validate_spaces  # noqa: PLC0415
+
+        _validate_spaces(
+            resolved_drive.get("output_space", drive_class.output_space),
+            (cc.input_space for cc in clamping_classes),
+            motor is not None,
+        )
+
         # --- Build entry key: identifies a group of compatible actuators ---
-        # Groups differ when drive class, presence of delay, clamping
-        # types/shared-params, or drive shared params differ.
-        # Delay values are per-DOF; the buffer is sized to max(delays).
+        # Groups differ when drive class, input processor types/shared-params,
+        # clamping types/shared-params, drive shared params, or motor
+        # type/shared-params differ.
         def _make_hashable(v: Any) -> Any:
             if isinstance(v, list):
                 return tuple(v)
@@ -3399,7 +3665,12 @@ class ModelBuilder:
             (cc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
             for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
         )
-        entry_key = (drive_class, delay_steps is not None, clamping_key, drive_shared_key)
+        input_processor_key = tuple(
+            (pc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
+            for pc, shared in zip(input_processor_classes, input_processor_shared_list, strict=True)
+        )
+        motor_key = (motor_class, tuple(sorted((k, _make_hashable(v)) for k, v in motor_shared.items())))
+        entry_key = (drive_class, input_processor_key, clamping_key, drive_shared_key, motor_key)
 
         entry = self.actuator_entries.setdefault(
             entry_key,
@@ -3411,17 +3682,120 @@ class ModelBuilder:
                 indices=[],
                 pos_indices=[],
                 drive_args=[],
-                delay_args=[],
                 clamping_args=[],
+                input_processor_classes=input_processor_classes,
+                input_processor_shared_kwargs=input_processor_shared_kwargs,
+                input_processor_args=[],
+                motor_class=motor_class,
+                motor_shared_kwargs=motor_shared,
             ),
         )
 
+        actuator = self.actuator_count
+        self.actuator_count += 1
         entry.indices.append(index)
         entry.pos_indices.append(pos_index if pos_index is not None else index)
         entry.drive_args.append(drive_array_params)
-        if delay_steps is not None:
-            entry.delay_args.append({"delay_steps": delay_steps})
         entry.clamping_args.append(clamping_array_params_list)
+        entry.input_processor_args.append(input_processor_array_params_list)
+        entry.actuator_indices.append(actuator)
+        if motor_class is not None:
+            entry.motor_args.append(motor_array_params)
+        return actuator
+
+    def add_battery(self, battery_class: type[BatteryBase], actuators: Sequence[int], **kwargs: Any) -> None:
+        """Add a battery shared by several actuators of the current world.
+
+        Multiple calls with the same *battery_class* are accumulated into one
+        :class:`~newton.actuators.BatteryBase` instance during
+        :meth:`finalize <ModelBuilder.finalize>`.  Per-battery parameters,
+        such as the nominal voltage, may differ within the same group.
+
+        Args:
+            battery_class: Battery class (e.g. :class:`~newton.actuators.BatteryConstantResistance`).
+            actuators: Actuator indices returned by :meth:`add_actuator`. At
+                least one is required, and each must belong to the current
+                world and have a motor that draws from a battery (e.g.
+                :class:`~newton.actuators.MotorDC` with ``supply_from_battery=True``).
+            **kwargs: Per-battery parameters (e.g. ``nominal_voltage``, ``resistance``).
+
+        Raises:
+            ValueError: *actuators* is empty or lists an actuator twice, an
+                actuator does not exist, belongs to another world, does not
+                draw from a battery or already has a battery, or a battery
+                parameter is invalid.
+        """
+        args = battery_class.resolve_arguments(kwargs)
+        actuators = [int(actuator) for actuator in actuators]
+        if not actuators:
+            raise ValueError("add_battery: at least one actuator is required")
+        if len(set(actuators)) != len(actuators):
+            raise ValueError("add_battery: an actuator is listed more than once")
+        with_battery = self._actuators_with_battery()
+        rows = {
+            row: (dof, entry.motor_args[i] if entry.motor_args else {})
+            for entry in self.actuator_entries.values()
+            for i, (row, dof) in enumerate(zip(entry.actuator_indices, entry.indices, strict=False))
+        }
+        for actuator in actuators:
+            if not 0 <= actuator < self.actuator_count:
+                raise ValueError(f"add_battery: actuator {actuator} does not exist")
+            dof, motor_args = rows.get(actuator, (None, {}))
+            if dof is not None:
+                world = self.joint_world[bisect_right(self.joint_qd_start, dof) - 1]
+                if world != self.current_world:
+                    raise ValueError(f"add_battery: actuator {actuator} belongs to world {world}")
+            if not motor_args.get("supply_from_battery"):
+                raise ValueError(
+                    f"add_battery: actuator {actuator} does not draw from a battery; "
+                    "add it with a motor with supply_from_battery=True"
+                )
+            if actuator in with_battery:
+                raise ValueError(f"add_battery: actuator {actuator} already draws from a battery")
+        entry = self.battery_entries.setdefault(battery_class, ModelBuilder.BatteryEntry(battery_class=battery_class))
+        entry.args.append(args)
+        entry.actuators.append(actuators)
+        entry.world.append(self.current_world)
+
+    def _actuators_with_battery(self) -> set[int]:
+        """Return the actuators that draw from a battery added with :meth:`add_battery`."""
+        return {
+            actuator
+            for entry in self.battery_entries.values()
+            for actuators in entry.actuators
+            for actuator in actuators
+        }
+
+    def _resolve_actuator_joint(self, joint: int | str, owner: str, name: str, world: int | None = None) -> int:
+        """Resolve a joint index or joint label to a single-DOF joint index.
+
+        With *world* given, the joint must belong to that world or be global
+        (world ``-1``), and a label is looked up among those joints only.
+        """
+        if isinstance(joint, str):
+            matches = [
+                i
+                for i, label in enumerate(self.joint_label)
+                if label == joint and (world is None or self.joint_world[i] in (-1, world))
+            ]
+            if len(matches) != 1:
+                problem = "unknown" if not matches else f"ambiguous ({len(matches)} joints with this)"
+                raise ValueError(f"{owner}: '{name}' references {problem} joint label '{joint}'")
+            joint = matches[0]
+        if not 0 <= joint < self.joint_count:
+            raise ValueError(f"{owner}: '{name}' joint index {joint} is out of range")
+        if world is not None and self.joint_world[joint] not in (-1, world):
+            raise ValueError(
+                f"{owner}: '{name}' joint index {joint} belongs to world {self.joint_world[joint]}, "
+                f"but the actuator is added to world {world}"
+            )
+        next_start = self.joint_qd_start[joint + 1] if joint + 1 < self.joint_count else self.joint_dof_count
+        if next_start - self.joint_qd_start[joint] != 1:
+            raise ValueError(
+                f"{owner}: '{name}' must reference a single-DOF joint, "
+                f"but joint '{self.joint_label[joint]}' has {next_start - self.joint_qd_start[joint]} DOFs"
+            )
+        return joint
 
     def _stack_args_to_arrays(
         self,
@@ -3461,8 +3835,7 @@ class ModelBuilder:
             if default_dtype == wp.int32 and all(isinstance(v, int) for v in values):
                 result[key] = wp.array(values, dtype=wp.int32, device=device)
             else:
-                rg = requires_grad and default_dtype != wp.int32
-                result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=rg)
+                result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=requires_grad)
 
         return result
 
@@ -3835,7 +4208,8 @@ class ModelBuilder:
                 self._merge_builder_copies(builder, worlds, xforms, label_prefixes, array_backed=True)
 
             if separate_worlds:
-                self.world_gravity.extend(builder._gravity_as_vector() for _ in range(copy_count))
+                gravity = tuple(builder._gravity_as_vector())
+                self.world_gravity.extend(wp.vec3(*gravity) for _ in range(copy_count))
                 self.world_count += copy_count
             else:
                 self._adopt_builder_gravity(builder)
@@ -3899,6 +4273,10 @@ class ModelBuilder:
 
         counts = self._builder_merge_counts(builder)
         self._validate_builder_merge(builder, set(counts))
+        # Values can change without a schema change, so check them before copying entities.
+        for full_key, attr in builder.custom_attributes.items():
+            if attr.frequency == Model.AttributeFrequency.WORLD:
+                self._check_merged_world_values(full_key, attr.values)
         attribute_specs = self._builder_merge_attribute_specs()
         bases = self._builder_merge_counts(self)
 
@@ -4229,15 +4607,44 @@ class ModelBuilder:
         self.joint_constraint_count += copy_count * counts["joint_constraint"]
 
         custom_attributes = self._prepare_builder_custom_attributes(builder)
+        kinds = tuple(counts)
+        offset_rows = np.stack([starts(kind) for kind in kinds], axis=1).tolist()
+        has_actuators = bool(builder.actuator_entries)
+        has_batteries = bool(builder.battery_entries)
         for copy_index, world in enumerate(worlds.tolist()):
-            entity_offsets = {kind: int(starts(kind)[copy_index]) for kind in counts}
+            entity_offsets = dict(zip(kinds, offset_rows[copy_index], strict=True))
             self._merge_builder_custom_attributes(
                 builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes
             )
-            self._merge_builder_actuators(
-                builder,
-                int(joint_dof_starts[copy_index]),
-                int(joint_coord_starts[copy_index]),
+            if has_actuators:
+                self._merge_builder_actuators(
+                    builder,
+                    int(joint_dof_starts[copy_index]),
+                    int(joint_coord_starts[copy_index]),
+                    entity_offsets["actuator"],
+                )
+            if has_batteries:
+                self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
+        self.actuator_count += copy_count * counts["actuator"]
+
+    def _model_value_key(self, attribute: CustomAttribute) -> int:
+        """Return the value key of a ``ONCE`` or ``WORLD`` attribute in the current world context.
+
+        ``WORLD`` keys are world indices, so outside a world context values belong to
+        global world ``-1``.
+        """
+        return self.current_world if attribute.frequency == Model.AttributeFrequency.WORLD else 0
+
+    def _check_merged_world_values(self, key: str, values: dict[int, Any] | None) -> None:
+        """Reject different source ``WORLD`` values, which a merge into one destination world cannot keep."""
+        if not values:
+            return
+        worlds = sorted(values)
+        first = values[worlds[0]]
+        if any(not self._custom_attribute_defaults_match(first, values[world]) for world in worlds[1:]):
+            raise ValueError(
+                f"Custom attribute '{key}' has different values for source worlds {worlds}, which merge into "
+                "one destination world."
             )
 
     @staticmethod
@@ -4339,7 +4746,8 @@ class ModelBuilder:
         try:
             matches = existing == incoming
             if hasattr(matches, "__iter__") and not isinstance(matches, (str, bytes)):
-                matches = all(matches)
+                # np.all also reduces multidimensional comparisons, such as of matrices.
+                matches = np.all(matches)
         except (ValueError, TypeError):
             return False
         return bool(matches)
@@ -4875,7 +5283,7 @@ class ModelBuilder:
                         - ``body_idx``
                         - ❌ Error: FREE joints require world frame
 
-            only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
+            only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded. With OpenUSD 26.11 or newer, disabled rigid bodies are never loaded, since OpenUSD assigns their colliders and joints to the nearest enabled ancestor body.
             only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
             verbose: If True, log additional information about the parsed USD file. Default is False.
@@ -5259,7 +5667,7 @@ class ModelBuilder:
                 ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
                 ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or target a multi-DoF
                 joint (such as joints sharing a body) are preserved this way even when True, with a
-                :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
+                :class:`~newton.NewtonWarning`; only SolverMuJoCo enforces them.
             convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
                 Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
                 an identity rest orientation. Default is False.
@@ -5269,10 +5677,18 @@ class ModelBuilder:
                 See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
                 actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
                 from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
-                For position-only drives using ``dampratio``, constructing
+                A scalar ``gear`` on a one-DOF (hinge or slide) position/velocity actuator is folded into the
+                joint-target drive, so the targets stay in joint units: the actuator is imported with unit gear, ``kp``,
+                ``kv``, ``damping`` and ``armature`` are scaled by ``gear**2``, ``forcerange`` by ``gear`` and ``ctrlrange``
+                by ``1 / gear`` (bounds swapped for a negative ``gear``). Position/velocity actuators whose gear cannot be
+                folded (a gear on a multi-DOF joint, a vector gear or a zero gear) are imported as
+                :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` so that MuJoCo applies the gear.
+                For position-only joint-target drives using ``dampratio``, constructing
                 :class:`~newton.solvers.SolverMuJoCo` initializes zero entries in
                 :attr:`newton.Model.joint_target_kd` with the resolved damping coefficients.
                 Subsequent damping edits use ``joint_target_kd`` as usual.
+                This does not apply to ``CTRL_DIRECT`` actuators: their gains stay in the MuJoCo actuator (in actuator
+                units), and ``joint_target_kd`` is neither written nor read for them.
             path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. By default, assets are searched relative to the main model with the compiler asset directory, then relative to the included file without that directory prefix, and finally relative to the included file with it. Custom resolvers receive the authoring file's directory and the file path with that file's compiler asset directory prefix.
             legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
                 where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
@@ -5551,12 +5967,14 @@ class ModelBuilder:
                 reference = Model._normalize_attribute_reference(reference)
 
             freq_key = attr.frequency
-            if isinstance(freq_key, str):
+            is_custom_frequency = isinstance(freq_key, str)
+            if is_custom_frequency:
                 index_offset = custom_frequency_offsets.get(freq_key, 0)
             elif attr.frequency == Model.AttributeFrequency.ONCE:
                 index_offset = 0
             elif attr.frequency == Model.AttributeFrequency.WORLD:
-                index_offset = 0 if world == -1 else world
+                # The destination entry: the destination world, or global world -1.
+                index_offset = world
             else:
                 index_offset = get_offset(attr.frequency)
 
@@ -5679,21 +6097,39 @@ class ModelBuilder:
                         # Implicit source defaults must not replace an existing global value.
                         count = int(full_key not in self.custom_attributes)
                     elif freq_key == Model.AttributeFrequency.WORLD:
-                        # Each copy uses one destination world, or none for global entities.
-                        count = int(world >= 0)
+                        # Each copy fills its destination world. Like ONCE, an implicit source
+                        # default must not replace an existing global value.
+                        existing = self.custom_attributes.get(full_key)
+                        count = int(world >= 0 or existing is None or -1 not in (existing.values or {}))
                     else:
                         if source_counts is None:
                             source_counts = self._builder_merge_counts(builder)
                         count = (
                             builder._custom_frequency_counts.get(freq_key, 0)
-                            if isinstance(freq_key, str)
+                            if is_custom_frequency
                             else source_counts.get(self._builder_frequency_key(freq_key), 0)
                         )
                     source_values = attr._values_with_defaults(count)
 
+            if freq_key == Model.AttributeFrequency.WORLD:
+                # All source entities join one destination entry. Explicit source values agree,
+                # so take the global value, or else that of an explicit world, or else the default.
+                enum_values = {}
+                if source_values:
+                    source_key = -1 if -1 in source_values else min(attr.values or source_values)
+                    value = source_values[source_key]
+                    enum_values[index_offset] = transform_enum_value(source_key, value) if needs_remap else value
+            elif not is_custom_frequency:
+                if needs_remap:
+                    enum_values = {
+                        index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()
+                    }
+                else:
+                    enum_values = {index_offset + idx: value for idx, value in source_values.items()}
+
             merged = self.custom_attributes.get(full_key)
             if merged is None:
-                if isinstance(freq_key, str):
+                if is_custom_frequency:
                     mapped_values = [None] * index_offset
                     if needs_remap:
                         mapped_values.extend(
@@ -5701,12 +6137,8 @@ class ModelBuilder:
                         )
                     else:
                         mapped_values.extend(source_values)
-                elif needs_remap:
-                    mapped_values = {
-                        index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()
-                    }
                 else:
-                    mapped_values = {index_offset + idx: value for idx, value in source_values.items()}
+                    mapped_values = enum_values
                 merged = replace(attr, values=mapped_values)
                 self.custom_attributes[full_key] = merged
                 self._custom_schema_epoch += 1
@@ -5720,21 +6152,17 @@ class ModelBuilder:
                 )
 
             if merged.values is None:
-                merged.values = [] if isinstance(freq_key, str) else {}
+                merged.values = [] if is_custom_frequency else {}
 
-            if isinstance(freq_key, str):
+            if is_custom_frequency:
                 if len(merged.values) < index_offset:
                     merged.values.extend([None] * (index_offset - len(merged.values)))
                 if needs_remap:
                     merged.values.extend(transform_enum_value(idx, value) for idx, value in enumerate(source_values))
                 else:
                     merged.values.extend(source_values)
-            elif needs_remap:
-                merged.values.update(
-                    {index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()}
-                )
             else:
-                merged.values.update({index_offset + idx: value for idx, value in source_values.items()})
+                merged.values.update(enum_values)
 
         if label_prefix:
             for frequency_key, frequency in builder.custom_frequencies.items():
@@ -5786,11 +6214,21 @@ class ModelBuilder:
         for key, finalizer in builder._custom_attribute_model_finalizers.items():
             self._add_custom_attribute_model_finalizer(key, finalizer)
 
+    def _merge_builder_batteries(self, builder: ModelBuilder, actuator_offset: int, world: int) -> None:
+        for battery_class, sub_entry in builder.battery_entries.items():
+            entry = self.battery_entries.setdefault(
+                battery_class, ModelBuilder.BatteryEntry(battery_class=battery_class)
+            )
+            entry.args.extend(sub_entry.args)
+            entry.actuators.extend([idx + actuator_offset for idx in actuators] for actuators in sub_entry.actuators)
+            entry.world.extend([world] * len(sub_entry.world))
+
     def _merge_builder_actuators(
         self,
         builder: ModelBuilder,
         joint_dof_offset: int,
         joint_coord_offset: int,
+        actuator_offset: int,
     ) -> None:
         for entry_key, sub_entry in builder.actuator_entries.items():
             entry = self.actuator_entries.setdefault(
@@ -5803,15 +6241,29 @@ class ModelBuilder:
                     indices=[],
                     pos_indices=[],
                     drive_args=[],
-                    delay_args=[],
                     clamping_args=[],
+                    input_processor_classes=sub_entry.input_processor_classes,
+                    input_processor_shared_kwargs=sub_entry.input_processor_shared_kwargs,
+                    input_processor_args=[],
+                    motor_class=sub_entry.motor_class,
+                    motor_shared_kwargs=sub_entry.motor_shared_kwargs,
                 ),
             )
             entry.indices.extend(idx + joint_dof_offset for idx in sub_entry.indices)
+            entry.actuator_indices.extend(idx + actuator_offset for idx in sub_entry.actuator_indices)
             entry.pos_indices.extend(idx + joint_coord_offset for idx in sub_entry.pos_indices)
             entry.drive_args.extend(sub_entry.drive_args)
-            entry.delay_args.extend(sub_entry.delay_args)
             entry.clamping_args.extend(sub_entry.clamping_args)
+            entry.motor_args.extend(sub_entry.motor_args)
+            for per_actuator in sub_entry.input_processor_args:
+                offset_args = []
+                for proc_class, sub_args in zip(sub_entry.input_processor_classes, per_actuator, strict=True):
+                    proc_args = dict(sub_args)
+                    for name in proc_class.JOINT_PARAMS:
+                        proc_args[f"{name}_indices"] += joint_dof_offset
+                        proc_args[f"{name}_pos_indices"] += joint_coord_offset
+                    offset_args.append(proc_args)
+                entry.input_processor_args.append(offset_args)
 
     def add_builder(
         self,
@@ -8137,17 +8589,17 @@ class ModelBuilder:
                 if last_dynamic_body > -1:
                     source_m = body_data[last_dynamic_body]["mass"]
                     source_com = body_data[last_dynamic_body]["com"]
-                    # add inertia to last_dynamic_body
                     m = body_data[child_body]["mass"]
                     com = wp.transform_point(incoming_xform, body_data[child_body]["com"])
                     inertia = body_data[child_body]["inertia"]
-                    body_data[last_dynamic_body]["inertia"] += transform_inertia(
-                        m, inertia, incoming_xform.p, incoming_xform.q
-                    )
-                    body_data[last_dynamic_body]["mass"] += m
                     total_mass = m + source_m
+                    merged_com = (m * com + source_m * source_com) / total_mass if total_mass > 0.0 else source_com
+                    # Both tensors must be expressed about the merged COM.
+                    body_data[last_dynamic_body]["inertia"] = transform_inertia(
+                        source_m, body_data[last_dynamic_body]["inertia"], source_com - merged_com, wp.quat_identity()
+                    ) + transform_inertia(m, inertia, com - merged_com, incoming_xform.q)
+                    body_data[last_dynamic_body]["mass"] = total_mass
                     if total_mass > 0.0:
-                        merged_com = (m * com + source_m * source_com) / total_mass
                         qd = body_data[last_dynamic_body]["qd"]
                         angular_velocity = wp.spatial_bottom(qd)
                         # Preserve the velocity field when shifting the COM reference.
@@ -9062,6 +9514,7 @@ class ModelBuilder:
         self.shape_material_kf.append(cfg.kf)
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
+        self.shape_material_mu_static.append(cfg.mu_static)
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_material_mu_torsional.append(cfg.mu_torsional)
         self.shape_material_mu_rolling.append(cfg.mu_rolling)
@@ -10145,6 +10598,7 @@ class ModelBuilder:
                             kf=self.shape_material_kf[shape],
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
+                            mu_static=self.shape_material_mu_static[shape],
                             restitution=self.shape_material_restitution[shape],
                             mu_torsional=self.shape_material_mu_torsional[shape],
                             mu_rolling=self.shape_material_mu_rolling[shape],
@@ -10312,6 +10766,7 @@ class ModelBuilder:
         rod: Rod,
         *,
         cfg: ShapeConfig | None,
+        total_mass: float | None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
         shear_stiffness: float | None,
@@ -10324,7 +10779,7 @@ class ModelBuilder:
         wrap_in_articulation: bool,
         junction_collision_filter: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"],
+        warn_deprecated_body_frame_origin: bool = False,
     ) -> tuple[list[int], list[int]]:
         """Add a Rod object through the established chain or graph path."""
         radius = rod._resolve_radius()
@@ -10338,7 +10793,6 @@ class ModelBuilder:
             bend_stiffness=bend_stiffness,
             twist_stiffness=twist_stiffness,
         )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
 
         rod_points, rod_edges, rod_frames = rod._normalize_and_validate_geometry()
         rest_positions, rest_quaternions = rod._normalize_and_validate_rest_geometry(rod_points, rod_edges)
@@ -10384,6 +10838,7 @@ class ModelBuilder:
                 quaternions=rod_quaternions,
                 radius=radius,
                 cfg=cfg,
+                total_mass=total_mass,
                 stretch_stiffness=stretch_stiffness,
                 stretch_damping=stretch_damping,
                 shear_stiffness=shear_stiffness,
@@ -10396,7 +10851,7 @@ class ModelBuilder:
                 label=label,
                 wrap_in_articulation=wrap_in_articulation,
                 color=color,
-                body_frame_origin=body_frame_origin,
+                warn_deprecated_body_frame_origin=warn_deprecated_body_frame_origin,
             )
         else:
             link_bodies, link_joints = self._add_rod_graph(
@@ -10406,6 +10861,7 @@ class ModelBuilder:
                 edges=[(int(edge[0]), int(edge[1])) for edge in rod_edges],
                 radius=radius,
                 cfg=cfg,
+                total_mass=total_mass,
                 stretch_stiffness=stretch_stiffness,
                 stretch_damping=stretch_damping,
                 shear_stiffness=shear_stiffness,
@@ -10419,7 +10875,7 @@ class ModelBuilder:
                 quaternions=rod_quaternions,
                 junction_collision_filter=junction_collision_filter,
                 color=color,
-                body_frame_origin=body_frame_origin,
+                warn_deprecated_body_frame_origin=warn_deprecated_body_frame_origin,
             )
 
         # Material rigidities are discretized using structural-rest lengths.
@@ -10450,6 +10906,7 @@ class ModelBuilder:
         rest_straight: bool = False,
         radius: float,
         cfg: ShapeConfig | None,
+        total_mass: float | None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
         shear_stiffness: float | None,
@@ -10462,7 +10919,7 @@ class ModelBuilder:
         label: str | None,
         wrap_in_articulation: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"],
+        warn_deprecated_body_frame_origin: bool = False,
     ) -> tuple[list[int], list[int]]:
         """Add an ordered point chain through the established graph path."""
         if cfg is None:
@@ -10496,6 +10953,7 @@ class ModelBuilder:
             rest_node_positions=rest_positions_wp if rest_positions is not None else None,
             radius=radius,
             cfg=cfg,
+            total_mass=total_mass,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
             shear_stiffness=shear_stiffness,
@@ -10510,7 +10968,7 @@ class ModelBuilder:
             rest_quaternions=rest_quaternions,
             junction_collision_filter=True,
             color=color,
-            body_frame_origin=body_frame_origin,
+            warn_deprecated_body_frame_origin=warn_deprecated_body_frame_origin,
         )
 
         # For closed loops, add one extra loop-closing rod joint that is intentionally
@@ -10539,12 +10997,8 @@ class ModelBuilder:
                 if L_first <= min_segment_length:
                     L_first = min_segment_length
 
-                if body_frame_origin == "com":
-                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * L_last), wp.quat_identity())
-                    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * L_first), wp.quat_identity())
-                else:
-                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
-                    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+                parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * L_last), wp.quat_identity())
+                child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * L_first), wp.quat_identity())
 
                 def _closed_rest_quaternion(segment: int) -> wp.quat:
                     rest_dir, _ = self._rod_segment_direction(
@@ -10611,6 +11065,7 @@ class ModelBuilder:
         *,
         rod: Rod,
         cfg: ShapeConfig | None = None,
+        total_mass: float | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
         shear_stiffness: float | None = None,
@@ -10622,7 +11077,7 @@ class ModelBuilder:
         label: str | None = None,
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] = "com",
+        body_frame_origin: Literal["com"] = _DEPRECATED_BODY_FRAME_ORIGIN_UNSET,
         junction_collision_filter: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
@@ -10642,6 +11097,11 @@ class ModelBuilder:
         Args:
             rod: Initial/rest geometry, frame, topology, and constitutive-data source.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
+            total_mass: Optional total rod mass [kg], distributed in proportion to each segment's
+                rest volume (equivalently, rest length for the uniform cross section).
+                Overrides ``cfg.density``. Must be finite and nonnegative; zero sets every
+                segment's mass and inertia to zero without setting the kinematic body flag.
+                If None, mass is derived from density.
             stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, it is derived locally from Rod material or section rigidity;
                 otherwise it defaults to 1.0e5.
@@ -10672,17 +11132,14 @@ class ModelBuilder:
                 See the Articulations section below.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
                 capsule shapes. If None, the rod uses the default rod color.
-            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` places
-                the origin at the local start of the rest-sized capsule, with the COM/shape
-                offset by half its rest length. The world-space origin equals the initial
-                segment start only when initial and rest lengths match. ``"com"`` places
-                the body origin at the initial segment midpoint so the
-                body origin and COM coincide. Defaults to ``"com"``.
+            body_frame_origin: Deprecated; omit it. Explicit ``"com"`` uses the default
+                body origin at the initial segment midpoint and emits a
+                :class:`~newton.NewtonDeprecationWarning`. The ``"start"``
+                origin, deprecated in 1.8, has been removed and raises
+                :class:`ValueError`; for manually authored body-local anchors, subtract
+                the old ``body_com`` offset.
 
-                .. deprecated:: 1.8
-                    ``"start"`` emits a :class:`~newton.exceptions.NewtonDeprecationWarning`.
-                    Use ``"com"`` instead. For manually authored body-local anchors,
-                    subtract the old ``body_com`` offset.
+                .. deprecated:: 1.9
             junction_collision_filter: Whether to suppress self-collisions
                 between incident, non-jointed segments at graph junctions.
                 Has no effect for an ordered chain.
@@ -10713,7 +11170,11 @@ class ModelBuilder:
                 non-finite or too-short edges, or invalid frame alignment.
             ValueError: If the structural-rest centerline of a closed chain does not close.
             ValueError: If the Rod uses ``rest_straight`` with explicit rest inputs or a graph.
-            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
+            ValueError: If ``body_frame_origin`` is passed with a value other than ``"com"``.
+            ValueError: If ``total_mass`` is negative or non-finite.
+            ValueError: If a hollow rod with positive assigned mass has a negative or non-finite
+                wall thickness ``cfg.margin``, or one at least as large as the stored radius.
+                A positive ``total_mass`` also requires nonzero hollow wall thickness.
             ValueError: If automatic section-rigidity discretization is requested
                 for branching topology or for a wrapped explicit cycle.
 
@@ -10728,22 +11189,35 @@ class ModelBuilder:
               arguments override the derived value per mode.
             - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
               the cylindrical centerline, excluding the hemispherical caps.
-            - With ``body_frame_origin="start"``, the body origin is at the local start of the rest-sized
-              capsule centerline. The COM and shape are at local ``(0, 0, half_height)``, and the other
-              centerline endpoint is at ``(0, 0, 2 * half_height)``. These offsets use rest lengths; the
-              world-space body origin equals the initial segment start only when the initial and rest lengths match.
-            - With ``body_frame_origin="com"``, the body origin and COM coincide at the segment
-              midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
-              ``(0, 0, half_height)``.
+            - Density-based mass is ``cfg.density * area * rest_length`` per segment, excluding the
+              overlapping caps. ``area`` is the circular cross section ``pi * radius**2``, as in USD
+              cable import, or for hollow rods the tube wall of thickness ``cfg.margin``.
+            - Inertia uses the solid-cylinder or open-tube tensor at each segment's assigned mass
+              and rest length, as in USD cable import for solid sections. Collision geometry and
+              the caller's ``cfg`` are unchanged.
+            - The body origin and COM coincide at the segment midpoint, and centerline endpoints are at
+              local ``(0, 0, -half_height)`` and ``(0, 0, half_height)``.
         """
         if not isinstance(rod, Rod):
             raise TypeError(f"add_rod: rod must be a Rod, got {type(rod).__name__}")
+        if body_frame_origin is not _DEPRECATED_BODY_FRAME_ORIGIN_UNSET:
+            if body_frame_origin == "start":
+                raise ValueError(
+                    'add_rod: body_frame_origin="start" was deprecated in Newton 1.8 and has been removed. '
+                    'Omit the argument to use the "com" origin. For manually authored body-local anchors, '
+                    "subtract the old body_com offset."
+                )
+            if body_frame_origin != "com":
+                raise ValueError(
+                    f"add_rod: body_frame_origin={body_frame_origin!r} is not supported; omit the argument."
+                )
 
         start_body = self.body_count
         start_joint = self.joint_count
         result = self._add_rod_object(
             rod,
             cfg=cfg,
+            total_mass=total_mass,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
             shear_stiffness=shear_stiffness,
@@ -10756,10 +11230,31 @@ class ModelBuilder:
             wrap_in_articulation=wrap_in_articulation,
             junction_collision_filter=junction_collision_filter,
             color=color,
-            body_frame_origin=body_frame_origin,
+            warn_deprecated_body_frame_origin=body_frame_origin is not _DEPRECATED_BODY_FRAME_ORIGIN_UNSET,
         )
         self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
         return result
+
+    def _set_rod_segment_mass(self, body: int, mass: float) -> None:
+        """Assign mass and cylinder or open-tube inertia to a generated single-capsule rod segment."""
+        inertia = wp.mat33(0.0)
+        if mass > 0.0:
+            shape = self.body_shapes[body][0]
+            scale = self.shape_scale[shape]
+            radius, half_height = float(scale[0]), float(scale[1])
+            inner_radius = 0.0
+            if not self.shape_is_solid[shape]:
+                thickness = _validate_hollow_thickness("capsule", self.shape_margin[shape], (("radius", radius),))
+                inner_radius = radius - thickness
+            # Use assigned mass directly: subtracting shell tensors loses precision for thin walls.
+            radial_sum = radius * radius + inner_radius * inner_radius
+            transverse = mass * (radial_sum / 4.0 + half_height * half_height / 3.0)
+            axial = mass * radial_sum / 2.0
+            inertia = wp.mat33(transverse, 0.0, 0.0, 0.0, transverse, 0.0, 0.0, 0.0, axial)
+        self.body_mass[body] = mass
+        self.body_inv_mass[body] = 1.0 / mass if mass > 0.0 else 0.0
+        self.body_inertia[body] = inertia
+        self.body_inv_inertia[body] = _inverse_inertia(inertia) if mass > 0.0 else wp.mat33(0.0)
 
     def _add_rod_graph(
         self,
@@ -10770,6 +11265,7 @@ class ModelBuilder:
         rest_quaternions: list[Quat] | np.ndarray | None = None,
         radius: float,
         cfg: ShapeConfig | None,
+        total_mass: float | None = None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
         shear_stiffness: float | None,
@@ -10783,13 +11279,15 @@ class ModelBuilder:
         quaternions: list[Quat] | None,
         junction_collision_filter: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"],
         articulation_root_node: int | None = None,
         articulation_root_joint_factory: Callable[[int, Transform], int] | None = None,
+        warn_deprecated_body_frame_origin: bool = False,
     ) -> tuple[list[int], list[int]]:
         """Build a rod graph, optionally using an importer-provided articulation root joint."""
         if cfg is None:
             cfg = self.default_shape_cfg
+        if total_mass is not None and (not math.isfinite(total_mass) or total_mass < 0.0):
+            raise ValueError("add_rod: total_mass must be finite and >= 0")
 
         # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
         stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
@@ -10806,7 +11304,6 @@ class ModelBuilder:
             bend_stiffness=bend_stiffness,
             twist_stiffness=twist_stiffness,
         )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
         if len(node_positions) < 2:
             raise ValueError("add_rod: node_positions must contain at least 2 nodes")
         if len(edges) < 1:
@@ -10858,10 +11355,9 @@ class ModelBuilder:
         edge_v: list[int] = []
         edge_len: list[float] = []
         edge_rest_q: list[wp.quat] = []
-        edge_body_data: list[tuple[wp.transform, wp.vec3, wp.transform]] = []
+        edge_body_q: list[wp.transform] = []
         edge_bodies: list[int] = []
         rod_color = color if color is not None else ModelBuilder._DEFAULT_ROD_COLOR
-        use_com_origin = body_frame_origin == "com"
 
         # Validate all edge geometry and frames before adding bodies.
         for e_idx, (u, v) in enumerate(edges):
@@ -10922,24 +11418,13 @@ class ModelBuilder:
                 q_rest = q
             edge_rest_q.append(q_rest)
 
-            half_height = 0.5 * rest_seg_length
+            # Place the body origin at the initial segment center so origin and COM coincide.
             initial_center = wp.vec3(*(0.5 * (float(p0[i]) + float(p1[i])) for i in range(3)))
-
-            if use_com_origin:
-                # Place the body origin at the segment center so origin and COM coincide.
-                body_q = wp.transform(initial_center, q)
-                com_offset = wp.vec3(0.0)
-                capsule_xform = wp.transform()
-            else:
-                body_origin = wp.vec3(*(float(initial_center[i]) - float(seg_dir[i]) * half_height for i in range(3)))
-                body_q = wp.transform(body_origin, q)
-                com_offset = wp.vec3(0.0, 0.0, half_height)
-                capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
 
             edge_u.append(u)
             edge_v.append(v)
             edge_len.append(rest_seg_length)
-            edge_body_data.append((body_q, com_offset, capsule_xform))
+            edge_body_q.append(wp.transform(initial_center, q))
 
             node_incidence[u].append(e_idx)
             node_incidence[v].append(e_idx)
@@ -10949,32 +11434,47 @@ class ModelBuilder:
             shape_label = f"{label}_edge_capsule_0" if label else f"shape_{self.shape_count}"
             cfg._validate_site(shape_label)
 
+        # Assigned rod mass replaces the primitive contribution; leave the caller's config intact.
+        segment_cfg = replace(cfg, density=0.0)
+        # Resolve mass per rest length in Python precision, including NumPy scalar inputs.
+        linear_density = (
+            float(total_mass) / sum(edge_len) if total_mass is not None else float(cfg.density) * math.pi * radius**2
+        )
+        if linear_density > 0.0 and not cfg.is_solid:
+            if total_mass is not None and cfg.margin == 0.0:
+                raise ValueError("add_rod: positive total_mass requires positive hollow wall thickness")
+            # Validate the stored float32 radius before adding bodies; zero thickness warns and leaves zero mass.
+            _validate_hollow_thickness("capsule", cfg.margin, (("radius", np.float32(radius)),))
+            if total_mass is None:
+                # Hollow density mass covers the tube wall of thickness ``cfg.margin``.
+                thickness_ratio = float(cfg.margin) / radius
+                linear_density *= thickness_ratio * (2.0 - thickness_ratio)
+
         # Warn after validation but before mutating the builder.
-        if body_frame_origin == "start":
+        if warn_deprecated_body_frame_origin:
             warnings.warn(
-                'add_rod(body_frame_origin="start") is deprecated as of Newton 1.8. '
-                'Use the default "com" origin. For manually authored body-local anchors, '
-                "subtract the old body_com offset.",
+                'add_rod(body_frame_origin="com") is deprecated as of Newton 1.9 and has no effect; '
+                "omit the argument. Rod body frames are always centered at the segment midpoint.",
                 NewtonDeprecationWarning,
                 stacklevel=_external_warning_stacklevel(),
             )
 
         # Create all edge bodies first.
-        for e_idx, (body_q, com_offset, capsule_xform) in enumerate(edge_body_data):
+        for e_idx, body_q in enumerate(edge_body_q):
             body_label = f"{label}_edge_body_{e_idx}" if label else None
             shape_label = f"{label}_edge_capsule_{e_idx}" if label else None
 
-            body_id = self.add_link(xform=body_q, com=com_offset, label=body_label)
+            body_id = self.add_link(xform=body_q, label=body_label)
 
             self.add_shape_capsule(
                 body_id,
-                xform=capsule_xform,
                 radius=radius,
                 half_height=0.5 * edge_len[e_idx],
-                cfg=cfg,
+                cfg=segment_cfg,
                 label=shape_label,
                 color=rod_color,
             )
+            self._set_rod_segment_mass(body_id, linear_density * edge_len[e_idx])
 
             edge_bodies.append(body_id)
 
@@ -10983,9 +11483,9 @@ class ModelBuilder:
 
         def _edge_anchor_xform(e_idx: int, node_idx: int, reverse_tangent: bool = False) -> wp.transform:
             if node_idx == edge_u[e_idx]:
-                z = -0.5 * edge_len[e_idx] if use_com_origin else 0.0
+                z = -0.5 * edge_len[e_idx]
             elif node_idx == edge_v[e_idx]:
-                z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
+                z = 0.5 * edge_len[e_idx]
             else:
                 raise RuntimeError("add_rod: internal error (node not incident to edge)")
             rotation = _reverse_tangent_rotation if reverse_tangent else _identity_rotation
@@ -14882,6 +15382,27 @@ class ModelBuilder:
         batches.meshes = tuple(meshes)
         return batches.meshes, batches
 
+    def _resolve_shape_material_mu_static(self) -> list[float]:
+        """Static friction coefficients for :attr:`Model.shape_material_mu_static`.
+
+        An unset :attr:`ShapeConfig.mu_static` follows the shape's final ``mu``, including direct edits of
+        :attr:`shape_material_mu` made after :meth:`add_shape`. An explicit value below that ``mu`` is rejected
+        rather than corrected quietly.
+        """
+        shape_material_mu = _list_for_iteration(self.shape_material_mu)
+        shape_material_mu_static = _list_for_iteration(self.shape_material_mu_static)
+        resolved = [
+            mu if mu_static is None else mu_static
+            for mu, mu_static in zip(shape_material_mu, shape_material_mu_static, strict=True)
+        ]
+        for shape, (mu, mu_static) in enumerate(zip(shape_material_mu, resolved, strict=True)):
+            if mu_static < mu:
+                raise ValueError(
+                    f"shape_material_mu_static[{shape}] = {mu_static} is below shape_material_mu[{shape}] = {mu}. "
+                    "Update both when editing mu after add_shape, or leave mu_static None for a single coefficient."
+                )
+        return resolved
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -15008,13 +15529,18 @@ class ModelBuilder:
         # static particles (with zero mass) have zero inverse mass
         particle_inv_mass = np.divide(1.0, ms, out=np.zeros_like(ms), where=ms != 0.0)
 
-        # Keep the compact arrays for device transfer, while using Python lists in the
-        # large per-shape loops below. Iterating NumPy rows and scalars from Python is
-        # substantially more expensive than iterating their built-in equivalents.
-        shape_flags_list = _list_for_iteration(self.shape_flags)
-        shape_scale_list = _list_for_iteration(self.shape_scale)
-        shape_margin_list = _list_for_iteration(self.shape_margin)
-        shape_gap_list = _list_for_iteration(self.shape_gap)
+        n_shapes = len(self.shape_type)
+        shape_type_arr = np.asarray(self.shape_type, dtype=np.int32)
+        shape_flags_arr = (
+            np.asarray(self.shape_flags, dtype=np.int32)
+            if isinstance(self.shape_flags, np.ndarray)
+            else np.asarray([flag_to_int(f) for f in self.shape_flags], dtype=np.int32)
+        )
+        shape_scale_arr = (
+            pack_warp_values(self.shape_scale, wp.vec3) if n_shapes > 0 else np.empty((0, 3), dtype=np.float32)
+        )
+        shape_margin_arr = np.asarray(self.shape_margin, dtype=np.float32)
+        shape_gap_arr = np.asarray(self.shape_gap, dtype=np.float32)
 
         shape_collision_filter_packed = self._build_shape_collision_filter_packed()
         with wp.ScopedDevice(device):
@@ -15080,9 +15606,10 @@ class ModelBuilder:
 
             def _shape_requests_planar_sdf(shape_idx: int) -> bool:
                 """Whether a shape needs texture SDF data for planar-faced contact."""
-                if not (shape_flags_list[shape_idx] & ShapeFlags.COLLIDE_SHAPES):
+                sflags = int(shape_flags_arr[shape_idx])
+                if not (sflags & ShapeFlags.COLLIDE_SHAPES):
                     return False
-                stype = self.shape_type[shape_idx]
+                stype = int(shape_type_arr[shape_idx])
                 if stype in (GeoType.MESH, GeoType.CONVEX_MESH):
                     src = self.shape_source[shape_idx]
                     return src is not None and (
@@ -15093,14 +15620,14 @@ class ModelBuilder:
                 return stype == GeoType.BOX and (
                     self.shape_sdf_max_resolution[shape_idx] is not None
                     or self.shape_sdf_target_voxel_size[shape_idx] is not None
-                    or bool(shape_flags_list[shape_idx] & ShapeFlags.HYDROELASTIC)
+                    or bool(sflags & ShapeFlags.HYDROELASTIC)
                 )
 
             generated_shape_sources = list(self.shape_source)
             deduplicated_convex_sources = {}
-            for shape_idx, shape_type in enumerate(self.shape_type):
+            for shape_idx in np.flatnonzero(shape_type_arr == GeoType.CONVEX_MESH).tolist():
                 source = generated_shape_sources[shape_idx]
-                if shape_type != GeoType.CONVEX_MESH or not isinstance(source, Mesh):
+                if not isinstance(source, Mesh):
                     continue
                 source_identity = id(source)
                 if source_identity in deduplicated_convex_sources:
@@ -15111,8 +15638,11 @@ class ModelBuilder:
                 generated_shape_sources[shape_idx] = deduplicated_source
             generated_sdf_edge_meshes = []
             unit_box_edge_mesh = None
-            for shape_idx, shape_type in enumerate(self.shape_type):
-                if shape_type == GeoType.BOX and _shape_requests_planar_sdf(shape_idx):
+            colliding_box_indices = np.flatnonzero(
+                (shape_type_arr == GeoType.BOX) & ((shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0)
+            )
+            for shape_idx in colliding_box_indices.tolist():
+                if _shape_requests_planar_sdf(shape_idx):
                     if unit_box_edge_mesh is None:
                         # The edge mesh is intentionally unscaled; per-shape box
                         # half-extents are still applied through shape_scale.
@@ -15135,16 +15665,15 @@ class ModelBuilder:
                         generated_sdf_edge_meshes.append(unit_box_edge_mesh)
                     generated_shape_sources[shape_idx] = unit_box_edge_mesh
 
-            # build list of ids for geometry sources (meshes, sdfs, heightfields)
-            geo_sources = []
+            # build array of ids for geometry sources (meshes, sdfs, heightfields)
+            geo_sources = np.zeros(n_shapes, dtype=np.uint64)
             finalized_geos = {}  # content hash -> finalized geometry
             finalized_geos_by_identity = {}  # object id -> finalized geometry
             gaussians = []
             heightfield_meshes = []
             mesh_keep_alive = []
-            for geo in generated_shape_sources:
+            for shape_idx, geo in enumerate(generated_shape_sources):
                 if not geo:
-                    geo_sources.append(0)
                     continue
 
                 # Replicated builders reuse geometry objects across worlds. Use
@@ -15152,7 +15681,7 @@ class ModelBuilder:
                 # equivalent geometry objects share one finalized representation.
                 geo_identity = id(geo)
                 if geo_identity in finalized_geos_by_identity:
-                    geo_sources.append(finalized_geos_by_identity[geo_identity])
+                    geo_sources[shape_idx] = finalized_geos_by_identity[geo_identity]
                     continue
 
                 geo_hash = hash(geo)
@@ -15206,28 +15735,30 @@ class ModelBuilder:
 
                 finalized_geo = finalized_geos[geo_cache_key]
                 finalized_geos_by_identity[geo_identity] = finalized_geo
-                geo_sources.append(finalized_geo)
+                geo_sources[shape_idx] = finalized_geo
 
             # Mesh properties consumed by the collision kernels: watertightness
             # is checked once per unique collidable mesh (content-keyed like
             # finalized_geos above); visual-only shapes are skipped.
-            shape_mesh_properties = []
+            shape_mesh_properties = np.zeros(n_shapes, dtype=np.int32)
             mesh_properties_by_geo_hash: dict[int, int] = {}
-            for shape_type, geo, shape_flags in zip(
-                self.shape_type, generated_shape_sources, shape_flags_list, strict=True
-            ):
-                mesh_properties = 0
-                is_collidable = bool(shape_flags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES))
-                if is_collidable and shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and isinstance(geo, Mesh):
-                    mesh_properties = mesh_properties_by_geo_hash.get(hash(geo))
+            collidable_mesh_indices = np.flatnonzero(
+                ((shape_type_arr == GeoType.MESH) | (shape_type_arr == GeoType.CONVEX_MESH))
+                & ((shape_flags_arr & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)) != 0)
+            )
+            for shape_idx in collidable_mesh_indices.tolist():
+                geo = generated_shape_sources[shape_idx]
+                if isinstance(geo, Mesh):
+                    geo_hash = hash(geo)
+                    mesh_properties = mesh_properties_by_geo_hash.get(geo_hash)
                     if mesh_properties is None:
-                        mesh_properties = MeshProperties.WATERTIGHT if geo.is_watertight else 0
-                        mesh_properties_by_geo_hash[hash(geo)] = mesh_properties
-                    if shape_type == GeoType.MESH and geo.enable_surface_velocity:
-                        mesh_properties |= MeshProperties.SURFACE_VELOCITY
-                shape_mesh_properties.append(mesh_properties)
+                        mesh_properties = int(MeshProperties.WATERTIGHT) if geo.is_watertight else 0
+                        mesh_properties_by_geo_hash[geo_hash] = mesh_properties
+                    if shape_type_arr[shape_idx] == GeoType.MESH and geo.enable_surface_velocity:
+                        mesh_properties |= int(MeshProperties.SURFACE_VELOCITY)
+                    shape_mesh_properties[shape_idx] = mesh_properties
 
-            m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
+            m.shape_type = wp.array(shape_type_arr, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
             m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
@@ -15241,35 +15772,35 @@ class ModelBuilder:
             boundary_chunks = []
             boundary_offset = 0
             boundary_starts = {}
-            shape_mesh_boundary_start = []
-            for shape_type, source, shape_flags, mesh_properties in zip(
-                self.shape_type, geo_sources, shape_flags_list, shape_mesh_properties, strict=True
-            ):
-                start = -1
-                if (
-                    shape_type == GeoType.MESH
-                    and source in finalized_meshes
-                    and shape_flags & ShapeFlags.COLLIDE_SHAPES
-                    and not mesh_properties & MeshProperties.WATERTIGHT
-                ):
-                    start = boundary_starts.get(source)
-                    if start is None:
-                        flags = compute_mesh_boundary_flags(finalized_meshes[source])
-                        start = boundary_starts[source] = boundary_offset
-                        boundary_chunks.append(flags)
-                        boundary_offset += len(flags)
-                shape_mesh_boundary_start.append(start)
+            shape_mesh_boundary_start = np.full(max(n_shapes, 1), -1, dtype=np.int32)
+            if finalized_meshes and n_shapes > 0:
+                open_mesh_indices = np.flatnonzero(
+                    (shape_type_arr == GeoType.MESH)
+                    & ((shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0)
+                    & ((shape_mesh_properties & int(MeshProperties.WATERTIGHT)) == 0)
+                )
+                for shape_idx in open_mesh_indices.tolist():
+                    source = int(geo_sources[shape_idx])
+                    if source in finalized_meshes:
+                        start = boundary_starts.get(source)
+                        if start is None:
+                            flags = compute_mesh_boundary_flags(finalized_meshes[source])
+                            start = boundary_starts[source] = boundary_offset
+                            boundary_chunks.append(flags)
+                            boundary_offset += len(flags)
+                        shape_mesh_boundary_start[shape_idx] = start
             m._mesh_boundary_flags = wp.array(
                 np.concatenate(boundary_chunks) if boundary_offset > 0 else np.zeros(1, dtype=np.uint8),
                 dtype=wp.uint8,
                 device=device,
             )
-            m._shape_mesh_boundary_start = wp.array(
-                shape_mesh_boundary_start if shape_mesh_boundary_start else [-1], dtype=wp.int32, device=device
-            )
+            m._shape_mesh_boundary_start = wp.array(shape_mesh_boundary_start, dtype=wp.int32, device=device)
 
             # Compact convex support data (one copy per shared geometry).
-            shape_support_data = []
+            shape_support_data = np.empty((n_shapes, 4), dtype=np.int32)
+            if n_shapes > 0:
+                shape_support_data[:, :3] = -1
+                shape_support_data[:, 3] = 0
             support_lut_chunks = []
             support_offset_chunks = []
             support_neighbor_chunks = []
@@ -15277,15 +15808,12 @@ class ModelBuilder:
             lut_offset = 0
             vertex_offset = 0
             neighbor_offset = 0
-            for shape_type, source, shape_flags in zip(
-                self.shape_type, generated_shape_sources, shape_flags_list, strict=True
-            ):
-                metadata = (-1, -1, -1, 0)
-                if (
-                    shape_type == GeoType.CONVEX_MESH
-                    and isinstance(source, Mesh)
-                    and shape_flags & ShapeFlags.COLLIDE_SHAPES
-                ):
+            colliding_convex_indices = np.flatnonzero(
+                (shape_type_arr == GeoType.CONVEX_MESH) & ((shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0)
+            )
+            for shape_idx in colliding_convex_indices.tolist():
+                source = generated_shape_sources[shape_idx]
+                if isinstance(source, Mesh):
                     source_key = hash(source)
                     if source_key not in support_cache:
                         topology = _convex_hull_adjacency(source)
@@ -15319,8 +15847,7 @@ class ModelBuilder:
                             support_neighbor_chunks.append(np.concatenate((edge_block, neighbors)).astype(np.int32))
                             neighbor_offset += len(support_neighbor_chunks[-1])
                         support_cache[source_key] = cached
-                    metadata = support_cache[source_key]
-                shape_support_data.append(metadata)
+                    shape_support_data[shape_idx] = support_cache[source_key]
 
             m._shape_support_data = wp.array(shape_support_data, dtype=wp.vec4i, device=device)
             m._convex_support_lut = wp.array(
@@ -15361,6 +15888,9 @@ class ModelBuilder:
             m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_material_mu_static = wp.array(
+                self._resolve_shape_material_mu_static(), dtype=wp.float32, requires_grad=requires_grad
+            )
             m.shape_material_mu_torsional = wp.array(
                 self.shape_material_mu_torsional, dtype=wp.float32, requires_grad=requires_grad
             )
@@ -15374,155 +15904,145 @@ class ModelBuilder:
 
             # ---------------------
             # Compute local AABBs and voxel resolutions for contact reduction
-            local_aabb_lower = []
-            local_aabb_upper = []
-            local_interior_point = []
-            voxel_resolution = []
-            from ..geometry.contact_reduction import NUM_VOXEL_DEPTH_SLOTS  # noqa: PLC0415
+            from ..geometry.contact_reduction import (  # noqa: PLC0415
+                NUM_VOXEL_DEPTH_SLOTS,
+                compute_voxel_resolution_from_aabb,
+            )
 
             voxel_budget = NUM_VOXEL_DEPTH_SLOTS
 
-            # Cache per unique (shape_type, shape_params, margin) to avoid redundant AABB computation
-            # for instanced shapes (e.g., 256 robots sharing the same shape parameters)
+            # Cache per unique (shape_type, id(shape_src), scale) for source-dependent shapes
             shape_aabb_cache = {}
 
-            def compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget):
-                """Compute voxel resolution from AABB with given budget."""
-                size = aabb_upper - aabb_lower
-                size = np.maximum(size, 1e-6)  # Avoid division by zero
+            if n_shapes == 0:
+                local_aabb_lower = np.empty((0, 3), dtype=np.float32)
+                local_aabb_upper = np.empty((0, 3), dtype=np.float32)
+                local_interior_point = np.empty((0, 3), dtype=np.float32)
+                voxel_resolution = np.empty((0, 3), dtype=np.int32)
+            else:
+                scale_clean = np.ascontiguousarray(shape_scale_arr, dtype=np.float32) + np.float32(0.0)
+                src_dependent_mask = (
+                    (shape_type_arr == GeoType.MESH)
+                    | (shape_type_arr == GeoType.CONVEX_MESH)
+                    | (shape_type_arr == GeoType.HFIELD)
+                )
+                primitive_indices = np.flatnonzero(~src_dependent_mask)
+                local_interior_point = np.zeros((n_shapes, 3), dtype=np.float32)
 
-                # Target voxel size for approximately cubic voxels
-                volume = size[0] * size[1] * size[2]
-                v = (volume / voxel_budget) ** (1.0 / 3.0)
-                v = max(v, 1e-6)
+                if len(primitive_indices) > 0:
+                    prim_types = (
+                        shape_type_arr if len(primitive_indices) == n_shapes else shape_type_arr[primitive_indices]
+                    )
+                    prim_scales = scale_clean if len(primitive_indices) == n_shapes else scale_clean[primitive_indices]
+                    key_buf = np.empty((len(primitive_indices), 4), dtype=np.uint32)
+                    key_buf[:, 0] = prim_types.view(np.uint32)
+                    key_buf[:, 1:] = prim_scales.view(np.uint32)
+                    key_16 = key_buf.view(np.dtype((np.void, 16))).ravel()
+                    _, first_idx, inv_idx = np.unique(key_16, return_index=True, return_inverse=True)
+                    n_uniq = len(first_idx)
+                    uniq_lo = np.empty((n_uniq, 3), dtype=np.float32)
+                    uniq_hi = np.empty((n_uniq, 3), dtype=np.float32)
+                    uniq_vox = np.ones((n_uniq, 3), dtype=np.int32)
+                    for u_i, p_idx in enumerate(first_idx.tolist()):
+                        st = int(prim_types[p_idx])
+                        sx = float(prim_scales[p_idx, 0])
+                        sy = float(prim_scales[p_idx, 1])
+                        sz = float(prim_scales[p_idx, 2])
+                        if st in (GeoType.ELLIPSOID, GeoType.BOX):
+                            lo64 = np.array([-sx, -sy, -sz])
+                            hi64 = np.array([sx, sy, sz])
+                            nx, ny, nz = compute_voxel_resolution_from_aabb(lo64, hi64, voxel_budget)
+                        elif st == GeoType.SPHERE:
+                            lo64 = np.array([-sx, -sx, -sx])
+                            hi64 = np.array([sx, sx, sx])
+                            nx, ny, nz = compute_voxel_resolution_from_aabb(lo64, hi64, voxel_budget)
+                        elif st == GeoType.CAPSULE:
+                            lo64 = np.array([-sx, -sx, -sy - sx])
+                            hi64 = np.array([sx, sx, sy + sx])
+                            nx, ny, nz = compute_voxel_resolution_from_aabb(lo64, hi64, voxel_budget)
+                        elif st == GeoType.CYLINDER:
+                            radial_extent = sx
+                            if sz > 0.0:
+                                radial_extent += (sy * sy) / (sz + np.sqrt(sz * sz - sy * sy))
+                            lo64 = np.array([-radial_extent, -radial_extent, -sy])
+                            hi64 = np.array([radial_extent, radial_extent, sy])
+                            nx, ny, nz = compute_voxel_resolution_from_aabb(lo64, hi64, voxel_budget)
+                        elif st == GeoType.CONE:
+                            lo64 = np.array([-sx, -sx, -sy])
+                            hi64 = np.array([sx, sx, sy])
+                            nx, ny, nz = compute_voxel_resolution_from_aabb(lo64, hi64, voxel_budget)
+                        else:
+                            lo64 = np.array([-1.0, -1.0, -1.0])
+                            hi64 = np.array([1.0, 1.0, 1.0])
+                            nx, ny, nz = 1, 1, 1
+                        uniq_lo[u_i] = lo64
+                        uniq_hi[u_i] = hi64
+                        uniq_vox[u_i] = (nx, ny, nz)
 
-                # Initial resolution
-                nx = max(1, round(size[0] / v))
-                ny = max(1, round(size[1] / v))
-                nz = max(1, round(size[2] / v))
-
-                # Reduce until under budget (reduce largest axis first for more cubic voxels)
-                while nx * ny * nz > voxel_budget:
-                    if nx >= ny and nx >= nz and nx > 1:
-                        nx -= 1
-                    elif ny >= nz and ny > 1:
-                        ny -= 1
-                    elif nz > 1:
-                        nz -= 1
+                    if len(primitive_indices) == n_shapes:
+                        local_aabb_lower = uniq_lo[inv_idx]
+                        local_aabb_upper = uniq_hi[inv_idx]
+                        voxel_resolution = uniq_vox[inv_idx]
                     else:
-                        break
-
-                return nx, ny, nz
-
-            for shape_type, shape_src, shape_scale in zip(
-                self.shape_type, self.shape_source, shape_scale_list, strict=True
-            ):
-                # Create cache key based on shape type and parameters
-                if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
-                    cache_key = (shape_type, id(shape_src), tuple(shape_scale))
+                        local_aabb_lower = np.full((n_shapes, 3), -1.0, dtype=np.float32)
+                        local_aabb_upper = np.ones((n_shapes, 3), dtype=np.float32)
+                        voxel_resolution = np.ones((n_shapes, 3), dtype=np.int32)
+                        local_aabb_lower[primitive_indices] = uniq_lo[inv_idx]
+                        local_aabb_upper[primitive_indices] = uniq_hi[inv_idx]
+                        voxel_resolution[primitive_indices] = uniq_vox[inv_idx]
                 else:
-                    cache_key = (shape_type, tuple(shape_scale))
+                    local_aabb_lower = np.full((n_shapes, 3), -1.0, dtype=np.float32)
+                    local_aabb_upper = np.ones((n_shapes, 3), dtype=np.float32)
+                    voxel_resolution = np.ones((n_shapes, 3), dtype=np.int32)
 
-                # Check cache first
-                if cache_key in shape_aabb_cache:
-                    aabb_lower, aabb_upper, interior_point, nx, ny, nz = shape_aabb_cache[cache_key]
-                else:
-                    # Primitive origins are interior. A hull's AABB center can lie
-                    # outside it, and its vertex mean follows the tessellation, so
-                    # hulls use their volume centroid.
-                    interior_point = np.zeros(3)
-                    # Compute AABB based on shape type
-                    if shape_type == GeoType.MESH and shape_src is not None:
-                        # Compute local AABB from mesh vertices
-                        vertices = shape_src.vertices
-                        lo = vertices.min(axis=0) * np.array(shape_scale)
-                        hi = vertices.max(axis=0) * np.array(shape_scale)
-                        aabb_lower = np.minimum(lo, hi)
-                        aabb_upper = np.maximum(lo, hi)
-
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
-                        lo = shape_src.vertices.min(axis=0) * np.array(shape_scale)
-                        hi = shape_src.vertices.max(axis=0) * np.array(shape_scale)
-                        centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
-                        interior_point = centroid * np.array(shape_scale)
-                        aabb_lower = np.minimum(lo, hi)
-                        aabb_upper = np.maximum(lo, hi)
-
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.ELLIPSOID:
-                        # Ellipsoid: shape_scale = (semi_axis_x, semi_axis_y, semi_axis_z)
-                        sx, sy, sz = shape_scale
-                        aabb_lower = np.array([-sx, -sy, -sz])
-                        aabb_upper = np.array([sx, sy, sz])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.BOX:
-                        # Box: shape_scale = (hx, hy, hz) half-extents
-                        hx, hy, hz = shape_scale
-                        aabb_lower = np.array([-hx, -hy, -hz])
-                        aabb_upper = np.array([hx, hy, hz])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.SPHERE:
-                        # Sphere: shape_scale = (radius, radius, radius)
-                        r = shape_scale[0]
-                        aabb_lower = np.array([-r, -r, -r])
-                        aabb_upper = np.array([r, r, r])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.CAPSULE:
-                        # Capsule: shape_scale = (radius, half_height, radius)
-                        # Capsule is along Z axis with hemispherical caps (matches SDF in kernels.py)
-                        r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r, -r, -half_height - r])
-                        aabb_upper = np.array([r, r, half_height + r])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.CYLINDER:
-                        # Cylinder: shape_scale = (end_radius, half_height, barrel_radius)
-                        r, half_height, barrel_radius = shape_scale
-                        radial_extent = r
-                        if barrel_radius > 0.0:
-                            radial_extent += (half_height * half_height) / (
-                                barrel_radius + np.sqrt(barrel_radius * barrel_radius - half_height * half_height)
-                            )
-                        aabb_lower = np.array([-radial_extent, -radial_extent, -half_height])
-                        aabb_upper = np.array([radial_extent, radial_extent, half_height])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.CONE:
-                        # Cone: shape_scale = (radius, half_height, radius)
-                        # Cone is along Z axis (matches SDF in kernels.py)
-                        r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r, -r, -half_height])
-                        aabb_upper = np.array([r, r, half_height])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.HFIELD and shape_src is not None:
-                        hx = abs(shape_src.hx * shape_scale[0])
-                        hy = abs(shape_src.hy * shape_scale[1])
-                        z_lo = shape_src.min_z * shape_scale[2]
-                        z_hi = shape_src.max_z * shape_scale[2]
-                        aabb_lower = np.array([-hx, -hy, min(z_lo, z_hi)])
-                        aabb_upper = np.array([hx, hy, max(z_lo, z_hi)])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    else:
-                        # Other shapes (PLANE, etc.): use default unit cube with 1x1x1 voxel grid
-                        aabb_lower = np.array([-1.0, -1.0, -1.0])
-                        aabb_upper = np.array([1.0, 1.0, 1.0])
-                        nx, ny, nz = 1, 1, 1
-
-                    # Cache the result for reuse by identical shapes
-                    shape_aabb_cache[cache_key] = (aabb_lower, aabb_upper, interior_point, nx, ny, nz)
-
-                local_aabb_lower.append(aabb_lower)
-                local_aabb_upper.append(aabb_upper)
-                local_interior_point.append(interior_point)
-                voxel_resolution.append([nx, ny, nz])
+                src_dependent_indices = np.flatnonzero(src_dependent_mask)
+                for s_idx in src_dependent_indices.tolist():
+                    shape_src = self.shape_source[s_idx]
+                    if shape_src is None:
+                        continue
+                    st = int(shape_type_arr[s_idx])
+                    sc_tuple = (
+                        float(scale_clean[s_idx, 0]),
+                        float(scale_clean[s_idx, 1]),
+                        float(scale_clean[s_idx, 2]),
+                    )
+                    cache_key = (st, id(shape_src), sc_tuple)
+                    cached_aabb = shape_aabb_cache.get(cache_key)
+                    if cached_aabb is None:
+                        interior_pt = np.zeros(3, dtype=np.float32)
+                        sc_np = np.array(sc_tuple)
+                        if st == GeoType.MESH:
+                            vertices = shape_src.vertices
+                            lo64 = vertices.min(axis=0) * sc_np
+                            hi64 = vertices.max(axis=0) * sc_np
+                            aabb_lo = np.minimum(lo64, hi64)
+                            aabb_hi = np.maximum(lo64, hi64)
+                        elif st == GeoType.CONVEX_MESH:
+                            lo64 = shape_src.vertices.min(axis=0) * sc_np
+                            hi64 = shape_src.vertices.max(axis=0) * sc_np
+                            centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
+                            interior_pt = (centroid * sc_np).astype(np.float32)
+                            aabb_lo = np.minimum(lo64, hi64)
+                            aabb_hi = np.maximum(lo64, hi64)
+                        else:
+                            hx = abs(shape_src.hx * sc_tuple[0])
+                            hy = abs(shape_src.hy * sc_tuple[1])
+                            z_lo = shape_src.min_z * sc_tuple[2]
+                            z_hi = shape_src.max_z * sc_tuple[2]
+                            aabb_lo = np.array([-hx, -hy, min(z_lo, z_hi)])
+                            aabb_hi = np.array([hx, hy, max(z_lo, z_hi)])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lo, aabb_hi, voxel_budget)
+                        cached_aabb = (
+                            aabb_lo.astype(np.float32),
+                            aabb_hi.astype(np.float32),
+                            interior_pt,
+                            (nx, ny, nz),
+                        )
+                        shape_aabb_cache[cache_key] = cached_aabb
+                    local_aabb_lower[s_idx] = cached_aabb[0]
+                    local_aabb_upper[s_idx] = cached_aabb[1]
+                    local_interior_point[s_idx] = cached_aabb[2]
+                    voxel_resolution[s_idx] = cached_aabb[3]
 
             m.shape_collision_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
             m.shape_collision_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
@@ -15533,34 +16053,29 @@ class ModelBuilder:
             # Compute and compact texture SDF resources (shared table + per-shape index indirection)
             is_gpu = current_device.is_cuda
 
+            collidable_sdf_mask = (shape_flags_arr & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)) != 0
+            hydro_collidable_mask = ((shape_flags_arr & ShapeFlags.HYDROELASTIC) != 0) & (
+                (shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0
+            )
             has_mesh_sdf = any(
-                stype in (GeoType.MESH, GeoType.CONVEX_MESH)
-                and ssrc is not None
-                and sflags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
-                and getattr(ssrc, "sdf", None) is not None
-                for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, shape_flags_list, strict=True)
+                self.shape_source[idx] is not None and getattr(self.shape_source[idx], "sdf", None) is not None
+                for idx in collidable_mesh_indices.tolist()
             )
             # Catch meshes whose SDF is still deferred (built during finalize) so
             # the CPU-runs-into-build_sdf path also raises here, not deeper down.
+            collidable_box_sdf_indices = np.flatnonzero(collidable_sdf_mask & (shape_type_arr == GeoType.BOX))
             has_deferred_mesh_sdf = any(
-                stype in (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.BOX)
-                and (stype == GeoType.BOX or ssrc is not None)
-                and sflags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
-                and (stype == GeoType.BOX or getattr(ssrc, "sdf", None) is None)
-                and (smax is not None or svox is not None)
-                for stype, ssrc, sflags, smax, svox in zip(
-                    self.shape_type,
-                    generated_shape_sources,
-                    shape_flags_list,
-                    self.shape_sdf_max_resolution,
-                    self.shape_sdf_target_voxel_size,
-                    strict=True,
+                generated_shape_sources[idx] is not None
+                and getattr(generated_shape_sources[idx], "sdf", None) is None
+                and (
+                    self.shape_sdf_max_resolution[idx] is not None or self.shape_sdf_target_voxel_size[idx] is not None
                 )
+                for idx in collidable_mesh_indices.tolist()
+            ) or any(
+                self.shape_sdf_max_resolution[idx] is not None or self.shape_sdf_target_voxel_size[idx] is not None
+                for idx in collidable_box_sdf_indices.tolist()
             )
-            has_hydroelastic_shapes = any(
-                (sflags & ShapeFlags.HYDROELASTIC) and (sflags & ShapeFlags.COLLIDE_SHAPES)
-                for sflags in shape_flags_list
-            )
+            has_hydroelastic_shapes = bool(np.any(hydro_collidable_mask))
             if (has_mesh_sdf or has_deferred_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
                 raise ValueError(
                     "Building texture SDFs requires a CUDA-capable GPU device. "
@@ -15586,7 +16101,7 @@ class ModelBuilder:
             compact_texture_sdf_coarse_textures = []
             compact_texture_sdf_subgrid_textures = []
             compact_texture_sdf_subgrid_start_slots = []
-            shape_sdf_index = [-1] * len(self.shape_type)
+            shape_sdf_index = np.full(n_shapes, -1, dtype=np.int32)
             sdf_cache = {}
             # Deferred-mesh SDFs are built into a temporary Mesh clone keyed by
             # the parameter tuple. This avoids mutating the user's shared Mesh
@@ -15597,12 +16112,25 @@ class ModelBuilder:
             deferred_collision_edges_cache: dict[tuple, Any] = {}
             deferred_collision_edges: dict[int, Any] = {}
 
-            for i in range(len(self.shape_type)):
-                shape_type = self.shape_type[i]
+            sdf_candidate_indices = np.flatnonzero(
+                collidable_sdf_mask
+                & (
+                    (shape_type_arr == GeoType.MESH)
+                    | (shape_type_arr == GeoType.CONVEX_MESH)
+                    | (shape_type_arr == GeoType.BOX)
+                    | hydro_collidable_mask
+                )
+            )
+            for i in sdf_candidate_indices.tolist():
+                shape_type = int(shape_type_arr[i])
                 shape_src = self.shape_source[i]
-                shape_flags = shape_flags_list[i]
-                shape_scale = shape_scale_list[i]
-                shape_gap = shape_gap_list[i]
+                shape_flags = int(shape_flags_arr[i])
+                shape_scale = (
+                    float(shape_scale_arr[i, 0]),
+                    float(shape_scale_arr[i, 1]),
+                    float(shape_scale_arr[i, 2]),
+                )
+                shape_gap = float(shape_gap_arr[i])
                 sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
                 sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
@@ -15611,9 +16139,9 @@ class ModelBuilder:
                 is_hydroelastic = bool(
                     shape_flags & ShapeFlags.HYDROELASTIC and shape_flags & ShapeFlags.COLLIDE_SHAPES
                 )
-                required_sdf_padding = shape_gap + shape_margin_list[i] if is_hydroelastic else shape_gap
+                required_sdf_padding = shape_gap + float(shape_margin_arr[i]) if is_hydroelastic else shape_gap
                 sdf_gen_margin = sdf_padding if sdf_padding is not None else required_sdf_padding
-                has_sdf_collision = bool(shape_flags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES))
+                has_sdf_collision = True
 
                 cache_key = None
                 mesh_sdf = None
@@ -15757,18 +16285,16 @@ class ModelBuilder:
             # CollisionPipeline rejects rather than silently degrading.
             if any(self.shape_force_sdf):
                 wt_sdf_cache = {}
-                for i in range(len(self.shape_type)):
-                    if (
-                        shape_sdf_index[i] >= 0
-                        or self.shape_type[i] not in (GeoType.MESH, GeoType.CONVEX_MESH)
-                        or not (shape_flags_list[i] & ShapeFlags.COLLIDE_PARTICLES)
-                        or self.shape_source[i] is None
-                        or not self.shape_force_sdf[i]
-                    ):
+                force_sdf_candidates = np.flatnonzero(
+                    ((shape_flags_arr & ShapeFlags.COLLIDE_PARTICLES) != 0)
+                    & ((shape_type_arr == GeoType.MESH) | (shape_type_arr == GeoType.CONVEX_MESH))
+                )
+                for i in force_sdf_candidates.tolist():
+                    if shape_sdf_index[i] >= 0 or self.shape_source[i] is None or not self.shape_force_sdf[i]:
                         continue
                     src = self.shape_source[i]
                     sdf_padding_i = self.shape_sdf_padding[i]
-                    wt_margin = sdf_padding_i if sdf_padding_i is not None else shape_gap_list[i]
+                    wt_margin = sdf_padding_i if sdf_padding_i is not None else float(shape_gap_arr[i])
                     # Mirror the rigid SDF cache key: shapes sharing one Mesh get distinct SDFs when any
                     # baked generation parameter differs (margin/narrow-band/resolution/voxel/format).
                     # scale stays out (scale_baked=False applies it at query time; the rigid path bakes it).
@@ -15834,7 +16360,8 @@ class ModelBuilder:
 
             # ---------------------
             # heightfield collision data
-            hfield_count = sum(1 for t in self.shape_type if t == GeoType.HFIELD)
+            hfield_indices = np.flatnonzero(shape_type_arr == GeoType.HFIELD)
+            hfield_count = int(len(hfield_indices))
             m.heightfield_count = hfield_count
             if hfield_count > 1:
                 warnings.warn(
@@ -15847,11 +16374,11 @@ class ModelBuilder:
 
             compact_heightfield_data = []
             elevation_chunks = []
-            shape_heightfield_index = [-1] * len(self.shape_type)
+            shape_heightfield_index = np.full(max(n_shapes, 1), -1, dtype=np.int32)
             offset = 0
             if hfield_count > 0:
-                for i in range(len(self.shape_type)):
-                    if self.shape_type[i] == GeoType.HFIELD and self.shape_source[i] is not None:
+                for i in hfield_indices.tolist():
+                    if self.shape_source[i] is not None:
                         hf = self.shape_source[i]
                         hd = HeightfieldData()
                         hd.data_offset = offset
@@ -15863,7 +16390,9 @@ class ModelBuilder:
                         # parallel-slab checks assume non-negative planar extents;
                         # z uses raw multiplication so ``sz < 0`` inverts the surface
                         # (``min_z > max_z`` already encodes an inverted heightfield).
-                        sx, sy, sz = shape_scale_list[i]
+                        sx = float(shape_scale_arr[i, 0])
+                        sy = float(shape_scale_arr[i, 1])
+                        sz = float(shape_scale_arr[i, 2])
                         hd.hx = abs(hf.hx * sx)
                         hd.hy = abs(hf.hy * sy)
                         hd.min_z = hf.min_z * sz
@@ -15874,7 +16403,7 @@ class ModelBuilder:
                         offset += hf.nrow * hf.ncol
 
             m.shape_heightfield_index = wp.array(
-                shape_heightfield_index if shape_heightfield_index else [-1],
+                shape_heightfield_index,
                 dtype=wp.int32,
                 device=device,
             )
@@ -15892,27 +16421,35 @@ class ModelBuilder:
             # ---------------------
             # mesh edges (packed array + per-shape slice)
 
-            shape_edge_ranges = []
+            shape_edge_ranges = np.empty((max(n_shapes, 1), 2), dtype=np.int32)
+            shape_edge_ranges[:, 0] = -1
+            shape_edge_ranges[:, 1] = 0
             edge_chunks = []
             edge_center_chunks = []
             edge_half_chunks = []
             edge_offset = 0
             edge_cache = {}  # mesh python id → (start, count)
 
-            for i in range(len(self.shape_type)):
-                if (
-                    self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.BOX)
-                    and generated_shape_sources[i] is not None
-                    and (shape_flags_list[i] & ShapeFlags.COLLIDE_SHAPES)
-                ):
+            if n_shapes > 0:
+                edge_candidate_indices = np.flatnonzero(
+                    (
+                        (shape_type_arr == GeoType.MESH)
+                        | (shape_type_arr == GeoType.CONVEX_MESH)
+                        | (shape_type_arr == GeoType.BOX)
+                    )
+                    & ((shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0)
+                )
+                for i in edge_candidate_indices.tolist():
                     mesh = generated_shape_sources[i]
+                    if mesh is None:
+                        continue
                     deferred_edges = deferred_collision_edges.get(i)
                     if deferred_edges is not None:
                         mesh_key = ("deferred", id(deferred_edges), id(mesh))
                     else:
                         mesh_key = id(mesh)
                     if mesh_key in edge_cache:
-                        shape_edge_ranges.append(edge_cache[mesh_key])
+                        shape_edge_ranges[i] = edge_cache[mesh_key]
                     else:
                         # ``Mesh.build_sdf()`` caches a simplified edge set on
                         # the mesh for SDF-mesh contact generation; fall back
@@ -15954,12 +16491,10 @@ class ModelBuilder:
                         edge_offset += count
                         entry = (start, count)
                         edge_cache[mesh_key] = entry
-                        shape_edge_ranges.append(entry)
-                else:
-                    shape_edge_ranges.append((-1, 0))
+                        shape_edge_ranges[i] = entry
 
             m._shape_edge_range = wp.array(
-                shape_edge_ranges if shape_edge_ranges else [(-1, 0)],
+                shape_edge_ranges,
                 dtype=wp.vec2i,
                 device=device,
             )
@@ -16391,6 +16926,7 @@ class ModelBuilder:
             m.mujoco.equality_constraint_count = self._equality_constraint_count
             m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
+            m.actuator_count = self.actuator_count
 
             m._shape_contact_pair_data = _ShapeContactPairs(
                 self.shape_body[:shape_count],
@@ -16408,13 +16944,10 @@ class ModelBuilder:
             # enable ground plane
             m.up_axis = self.up_axis
 
-            # Explicit local worlds need a trailing global entry. Implicit
-            # single-world models retain their legacy shared gravity entry.
+            # Local worlds followed by a distinct entry for global world -1.
             global_gravity = self._gravity_as_vector()
-            if self.world_gravity:
-                gravity_vecs = [*self.world_gravity, global_gravity]
-            else:
-                gravity_vecs = [global_gravity for _ in range(self.world_count)]
+            local_gravity = self.world_gravity or [global_gravity] * self.world_count
+            gravity_vecs = [*local_gravity, global_gravity]
             m.gravity = wp.array(
                 gravity_vecs,
                 dtype=wp.vec3,
@@ -16424,9 +16957,10 @@ class ModelBuilder:
 
             # Create actuators from accumulated entries
             from ..actuators.actuator import Actuator  # noqa: PLC0415
-            from ..actuators.delay import Delay  # noqa: PLC0415
+            from ..actuators.clamping.clamping_current_duty import ClampingCurrentDuty  # noqa: PLC0415
 
             m.actuators = []
+            with_battery = self._actuators_with_battery()
             for entry in self.actuator_entries.values():
                 indices = self._build_index_array(entry.indices, device)
 
@@ -16438,11 +16972,41 @@ class ModelBuilder:
                 drive_arrays = self._stack_args_to_arrays(entry.drive_args, device=device, requires_grad=requires_grad)
                 drive = entry.drive_class(**drive_arrays, **entry.drive_shared_kwargs)
 
-                delay_obj = None
-                if entry.delay_args:
-                    delay_arrays = self._stack_args_to_arrays(entry.delay_args, device=device, default_dtype=wp.int32)
-                    max_delay = max(d["delay_steps"] for d in entry.delay_args)
-                    delay_obj = Delay(**delay_arrays, max_delay=max_delay)
+                # Build input processors from per-DOF arrays + shared kwargs
+                input_processor_objs = []
+                for i, (proc_class, shared_kw) in enumerate(
+                    zip(entry.input_processor_classes, entry.input_processor_shared_kwargs, strict=True)
+                ):
+                    proc_args_per_actuator = [dict(per_act[i]) for per_act in entry.input_processor_args]
+                    index_arrays = {}
+                    for name in proc_class.JOINT_PARAMS:
+                        for key in (f"{name}_indices", f"{name}_pos_indices"):
+                            index_arrays[key] = self._build_index_array(
+                                [args.pop(key) for args in proc_args_per_actuator], device
+                            )
+                    proc_arrays = self._stack_args_to_arrays(
+                        proc_args_per_actuator, device=device, requires_grad=requires_grad, default_dtype=wp.int32
+                    )
+                    input_processor_objs.append(proc_class(**proc_arrays, **index_arrays, **shared_kw))
+
+                motor_obj = None
+                if entry.motor_class is not None:
+                    motor_arrays = self._stack_args_to_arrays(
+                        entry.motor_args, device=device, requires_grad=requires_grad
+                    )
+                    motor_obj = entry.motor_class(**motor_arrays, **entry.motor_shared_kwargs)
+                    missing = [
+                        row
+                        for row, args in zip(entry.actuator_indices, entry.motor_args, strict=False)
+                        if args.get("supply_from_battery") and row not in with_battery
+                    ]
+                    if missing:
+                        warnings.warn(
+                            f"{entry.motor_class.__name__} draws from a battery, but actuator(s) {missing} "
+                            "have no battery; their supply voltage stays 0 V",
+                            NewtonWarning,
+                            stacklevel=2,
+                        )
 
                 # Build clamping objects from per-DOF arrays + shared kwargs
                 clamping_objs = []
@@ -16450,22 +17014,48 @@ class ModelBuilder:
                     zip(entry.clamping_classes, entry.clamping_shared_kwargs, strict=True)
                 ):
                     comp_args_per_actuator = [per_act[i] for per_act in entry.clamping_args]
+                    if issubclass(comp_class, ClampingCurrentDuty):
+                        comp_args_per_actuator = ClampingCurrentDuty._complete_estimates(
+                            comp_args_per_actuator, entry.motor_args
+                        )
                     comp_arrays = self._stack_args_to_arrays(
                         comp_args_per_actuator, device=device, requires_grad=requires_grad
                     )
                     clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
 
+                has_rows = len(entry.actuator_indices) == len(entry.indices)
                 actuator = Actuator(
                     indices=indices,
                     drive=drive,
-                    delay=delay_obj,
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
                     requires_grad=requires_grad,
+                    input_processors=input_processor_objs,
+                    motor=motor_obj,
+                    actuator_indices=self._build_index_array(entry.actuator_indices, device) if has_rows else None,
                 )
 
                 actuator.register_custom_attributes(self)
                 m.actuators.append(actuator)
+
+            m.batteries = []
+            for entry in self.battery_entries.values():
+                actuator_counts = [len(actuators) for actuators in entry.actuators]
+                m.batteries.append(
+                    entry.battery_class(
+                        **self._stack_args_to_arrays(entry.args, device=device, requires_grad=requires_grad),
+                        actuator_start=wp.array(
+                            np.concatenate(([0], np.cumsum(actuator_counts))), dtype=wp.int32, device=device
+                        ),
+                        actuators=wp.array(
+                            [actuator for actuators in entry.actuators for actuator in actuators],
+                            dtype=wp.int32,
+                            device=device,
+                        ),
+                        world=wp.array(entry.world, dtype=wp.int32, device=device),
+                        world_count=m.world_count,
+                    )
+                )
 
             # Add custom attributes onto the model (with lazy evaluation)
             self._resolve_custom_frequency_articulation_owners()
@@ -16539,6 +17129,9 @@ class ModelBuilder:
 
             self._finalize_custom_frequency_metadata(m, device)
             self._variant_shape_rows.finalize(self, m, validate_inertia=validate_inertia)
+
+            for battery in m.batteries:
+                battery.reset(m)
 
             m.bvh_build_shapes(
                 m,
@@ -16644,6 +17237,8 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "shape_material_kf": wp.float32,
     "shape_material_ka": wp.float32,
     "shape_material_mu": wp.float32,
+    # Holds None for "same as mu" until finalize() resolves it, so the merged array is an object array.
+    "shape_material_mu_static": wp.float32,
     "shape_material_restitution": wp.float32,
     "shape_material_mu_torsional": wp.float32,
     "shape_material_mu_rolling": wp.float32,

@@ -113,9 +113,9 @@ Supported Features
      - Explicit, Semi-implicit, Implicit-in-velocity
      - ✅ :sup:`1`
      - ✅ generalized coordinates
-     - ❌
-     - ❌
-     - ❌
+     - 🟨 element vertices only :sup:`4`
+     - ✅ :sup:`4`
+     - ✅ :sup:`4`
      - ❌
      - 🟨 CPU only
    * - :class:`~newton.solvers.SolverSemiImplicit`
@@ -171,6 +171,8 @@ Supported Features
 | :sup:`3` Run-to-run determinism with ``deterministic=wp.DeterministicMode.RUN_TO_RUN``
   (MuJoCo's CPU backend is deterministic regardless of that argument);
   see :doc:`/concepts/determinism` for limitations and performance trade-offs.
+| :sup:`4` Simulated as MuJoCo flexes; particles that belong to no spring,
+  triangle, or tetrahedron are not simulated. See :ref:`mujoco-flexes`.
 
 .. experimental::
     :class:`~newton.solvers.SolverSteel`'s public API and behavior may change without prior notice.
@@ -215,6 +217,10 @@ formulation.
   :class:`~newton.solvers.SolverKamino`.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
   :class:`~newton.solvers.SolverMuJoCo`.
+- ``mu_static``: stored as :attr:`~newton.Model.shape_material_mu_static` and
+  carried into :class:`~newton.solvers.SolverKamino`'s material tables, but no
+  built-in solver distinguishes static from dynamic friction in its contact
+  model yet; all of them use ``mu``.
 - ``kh``: consumed by hydroelastic contact generation for Newton-generated
   contacts used by :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`, and
@@ -235,7 +241,7 @@ The maximal-coordinate solvers (:class:`~newton.solvers.SolverSemiImplicit`,
 :class:`~newton.solvers.SolverXPBD`, and :class:`~newton.solvers.SolverKamino`)
 enforce joints as pairwise body constraints but do not use the articulation kinematic-tree structure.
 :class:`~newton.solvers.SolverVBD` supports a subset of joint types through maximal-coordinate
-constraints, with unified compliant ALM by default and a deprecated legacy AVBD path.
+constraints, using a compliant augmented-Lagrangian (ALM) formulation.
 :class:`~newton.solvers.SolverStyle3D` and :class:`~newton.solvers.SolverImplicitMPM` do not support joints.
 
 **Joint types**

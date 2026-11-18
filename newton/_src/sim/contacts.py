@@ -581,13 +581,13 @@ class Contacts:
                 self.rigid_contact_match_index.fill_(-1)
                 self.rigid_contact_match_generation.fill_(GENERATION_SENTINEL)
 
-            self.soft_contact_indices.fill_(wp.vec3i(-1, -1, -1))
-            self.soft_contact_rigid_indices.fill_(wp.vec3i(-1, -1, -1))
+            self.soft_contact_indices.view(wp.int32).fill_(-1)
+            self.soft_contact_rigid_indices.view(wp.int32).fill_(-1)
             self.soft_contact_particle.fill_(-1)
             self.soft_contact_shape.fill_(-1)
             self.soft_contact_tids.fill_(-1)
             if self._soft_contact_mesh_features is not None:
-                self._soft_contact_mesh_features.fill_(wp.vec3i(-1, -1, -1))
+                self._soft_contact_mesh_features.view(wp.int32).fill_(-1)
         # else: Optimized path (default) - only counter clear needed
         #   Collision detection overwrites all active contacts [0, contact_count)
         #   Solvers only read [0, contact_count), so stale data is never accessed
@@ -598,9 +598,9 @@ class Contacts:
 
         Fixed when :meth:`newton.CollisionPipeline.contacts` allocates the buffer
         from a pipeline with body-pair reduction whose scene has primitive or
-        convex contact pairs. Only such a pipeline can
-        collide into it, and solvers that are not validated for reduced contacts
-        reject it, eagerly or under CUDA graph capture alike.
+        convex contact pairs. The stamp records pipeline ownership and selection;
+        the kept rows use the ordinary contact layout accepted by built-in
+        Newton-contact consumers, eagerly and under CUDA graph capture alike.
 
         .. experimental::
         """

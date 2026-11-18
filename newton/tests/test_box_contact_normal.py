@@ -14,9 +14,17 @@ import warp as wp
 import newton
 from newton._src.geometry.collision_core import post_process_minkowski_only
 from newton._src.geometry.contact_data import ContactData
-from newton._src.geometry.multicontact import create_build_manifold
+from newton._src.geometry.multicontact import (
+    EPS,
+    IncrementalPlaneTracker,
+    _SamplePoints,
+    add_contact_feature_point,
+    create_build_manifold,
+    trim_all_in_place,
+    update_incremental_plane_tracker,
+)
 from newton._src.geometry.support_function import GenericShapeData, SupportMapDataProvider, support_map
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices, requires
 
 
 def test_box_contact_nearby_face(test, device, *, split=False):
@@ -99,6 +107,7 @@ class TestBoxContactNormal(unittest.TestCase):
     pass
 
 
+@requires("scipy")
 def test_box_mesh_minimum_depth(test, device):
     """Match an independent Minkowski hull for oblique and edge contacts."""
     from scipy.spatial import ConvexHull
@@ -157,6 +166,7 @@ add_function_test(
 )
 
 
+@requires("scipy")
 def test_box_mesh_minimum_depth_split(test, device):
     """Check the cooperative axis search against the independent hull oracle."""
     if not device.is_cuda:
@@ -831,6 +841,145 @@ add_function_test(
     "test_crossed_plank_sliver_contact_split",
     test_crossed_plank_sliver_contact_split,
     devices=get_test_devices(),
+)
+
+
+def test_near_parallel_plank_edge_contact(test, device):
+    """Keep a line contact between nearly parallel plank edges.
+
+    Neighboring planks in a resting Kapla arena touch along vertical edges
+    whose normal is far from every face, so both sampled features are
+    lines. Simulated edges are never parallel to float precision: a 0.1
+    degree crossing must still give contacts spread along the edges, while
+    a steep crossing keeps the single deepest contact.
+    """
+    hx, hy, hz = 0.004, 0.04995, 0.0125
+    yaw = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3)
+    pose_a = wp.transform(wp.vec3(3.95, 0.07, 0.05), yaw)
+    corner = wp.transform_point(pose_a, wp.vec3(hx, hy, 0.0))
+    normal = wp.quat_rotate(yaw, wp.normalize(wp.vec3(1.0, 1.0, 0.0)))
+    flipped = yaw * wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(wp.pi + np.radians(5.0)))
+    for crossing, expected_spread in ((np.radians(0.1), True), (np.radians(30.0), False)):
+        with test.subTest(crossing=crossing):
+            # Rotate plank B about the normal through its touching corner.
+            rotation = wp.quat_from_axis_angle(normal, float(crossing)) * flipped
+            corner_b = corner + 1.0e-4 * normal
+            pose_b = wp.transform(corner_b - wp.quat_rotate(rotation, wp.vec3(hx, hy, 0.0)), rotation)
+            builder = newton.ModelBuilder()
+            cfg = newton.ModelBuilder.ShapeConfig(gap=0.01)
+            builder.add_shape_box(-1, xform=pose_a, hx=hx, hy=hy, hz=hz, cfg=cfg)
+            body = builder.add_body(xform=pose_b)
+            builder.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg)
+            model = builder.finalize(device)
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0)
+            normals = contacts.rigid_contact_normal.numpy()[:count]
+            np.testing.assert_allclose(np.abs(normals @ np.asarray(normal)), 1.0, atol=1.0e-3)
+            # Static-shape points are world positions on plank A's edge.
+            shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+            points = np.where(
+                (shape0 == 0)[:, None],
+                contacts.rigid_contact_point0.numpy()[:count],
+                contacts.rigid_contact_point1.numpy()[:count],
+            )
+            spread = float(np.ptp(points[:, 2]))
+            if expected_spread:
+                test.assertGreaterEqual(count, 2)
+                test.assertGreater(spread, 5.0e-3)
+                # Allow four float32 ulps at the scene's 4 m offset; the small
+                # crossing angle amplifies projected error into band length.
+                band_half_length = (EPS + 4.0 * np.spacing(np.float32(4.0))) / np.sin(crossing)
+                np.testing.assert_allclose(points[:, 2], 0.05, rtol=0.0, atol=band_half_length)
+            else:
+                test.assertEqual(count, 1)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_near_parallel_plank_edge_contact",
+    test_near_parallel_plank_edge_contact,
+    devices=get_test_devices(),
+)
+
+
+@wp.kernel(enable_backward=False)
+def _trim_lines_kernel(trim: wp.array[wp.vec2], loop: wp.array[wp.vec2], count: wp.array[int]):
+    count[0] = trim_all_in_place(trim, 2, loop, 2)
+
+
+def test_offset_line_contacts_across_parallel_threshold(test, device):
+    """Keep offset line contacts continuous across the parallel-line threshold.
+
+    Normal error can offset projected supporting lines by more than EPS. The
+    parallel branch tolerates this offset, so a crossing just above its angle
+    threshold must keep the overlap too, while a steep crossing outside the
+    overlap still collapses to the single deepest contact.
+    """
+    length, offset = 0.1, 20.0 * EPS
+    trim = wp.array([wp.vec2(0.0, 0.0), wp.vec2(length, 0.0)], dtype=wp.vec2, device=device)
+    for rise, expected in ((0.0, 2), (1.0e-5 * length, 2), (length, 0)):
+        with test.subTest(rise=rise):
+            loop = wp.array([wp.vec2(0.0, offset), wp.vec2(length, offset + rise)], dtype=wp.vec2, device=device)
+            count = wp.zeros(1, dtype=int, device=device)
+            wp.launch(_trim_lines_kernel, 1, inputs=[trim, loop], outputs=[count], device=device)
+            test.assertEqual(int(count.numpy()[0]), expected)
+            if expected == 2:
+                np.testing.assert_allclose(loop.numpy()[:, 0], [0.0, length], atol=1.0e-7)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_offset_line_contacts_across_parallel_threshold",
+    test_offset_line_contacts_across_parallel_threshold,
+    devices=get_test_devices(),
+)
+
+
+@wp.kernel(enable_backward=False)
+def _contact_feature_duplicates_kernel(counts: wp.array[int], segment: wp.array[wp.vec3]):
+    projected = wp.zeros(shape=(5,), dtype=wp.vec2)
+    points = _SamplePoints()
+    count = int(0)
+    for i in range(3):
+        point = wp.vec3(float(i), float(i % 2), 0.0)
+        count, added = add_contact_feature_point(projected, points, count, wp.vec2(point[0], point[1]), point, EPS)
+        if added:
+            points[count - 1] = point
+    # Revisit both the reference and a non-reference vertex with the captured projection-rounding error.
+    for i in range(2):
+        point = points[i]
+        count, added = add_contact_feature_point(
+            projected, points, count, wp.vec2(point[0], point[1] + 1.52587890625e-5), point, EPS
+        )
+        if added:
+            points[count - 1] = point
+        counts[i] = count
+    # A different 3D point with the same projection must still be merged.
+    count, _ = add_contact_feature_point(projected, points, count, wp.vec2(0.0), wp.vec3(0.0, 0.0, 1.0), EPS)
+    counts[2] = count
+    tracker = IncrementalPlaneTracker()
+    tracker = update_incremental_plane_tracker(tracker, wp.vec3(-20.0, 0.0, 0.0), 0)
+    tracker = update_incremental_plane_tracker(tracker, wp.vec3(0.0, 160.0, 0.0), 1)
+    tracker = update_incremental_plane_tracker(tracker, wp.vec3(-20.0, 0.0, 0.0), 2)
+    segment[0] = tracker.previous_point - tracker.reference_point
+
+
+def test_contact_feature_duplicates(test, device):
+    """Merge repeated support vertices without losing the existing line segment."""
+    counts = wp.zeros(3, dtype=int, device=device)
+    segment = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(_contact_feature_duplicates_kernel, 1, outputs=[counts, segment], device=device)
+    with test.subTest(feature="support identity"):
+        np.testing.assert_array_equal(counts.numpy(), [3, 3, 3])
+    with test.subTest(feature="line segment"):
+        np.testing.assert_array_equal(segment.numpy(), [[20.0, 160.0, 0.0]])
+
+
+add_function_test(
+    TestBoxContactNormal, "test_contact_feature_duplicates", test_contact_feature_duplicates, devices=get_test_devices()
 )
 
 

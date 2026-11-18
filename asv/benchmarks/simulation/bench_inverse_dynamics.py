@@ -95,6 +95,9 @@ class _InverseDynamicsBenchmark:
                 joint_f=self.joint_f,
             )
         self.force_graph = cap_force.graph
+        # Keep one-time device work out of the samples.
+        wp.capture_launch(self.force_graph)
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_eval_inverse_dynamics_passive(self):

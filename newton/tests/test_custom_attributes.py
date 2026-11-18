@@ -2446,7 +2446,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         np.testing.assert_array_equal(scene.finalize(device=self.device).root_body.numpy(), [5])
 
     def test_world_frequency_merge_add_world(self):
-        """Copy world rows without letting a global merge overwrite their reference defaults."""
+        """Copy world rows, and write a global merge to the global-world entry instead of world 0."""
         sub = ModelBuilder()
         sub.add_body()
         sub.add_body()
@@ -2464,6 +2464,17 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
 
         ground = ModelBuilder()
         ground.add_body()
+        ground.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="world_data",
+                dtype=wp.int32,
+                frequency=AttributeFrequency.WORLD,
+                namespace="test",
+                default=-999,
+            )
+        )
+        # Ground's own world entry describes its entities, which become global.
+        ground.custom_attributes["test:world_data"].values = {0: 7}
         for builder in (sub, ground):
             builder.add_custom_attribute(
                 ModelBuilder.CustomAttribute(
@@ -2483,10 +2494,26 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
                 else:
                     main.replicate(sub, 2)
                 main.add_builder(ground)
+                # A second global merge keeps the global entry rather than its own reference default.
+                main.add_builder(ground)
                 model = main.finalize(device=self.device)
                 self.assertEqual(model.world_count, 2)
-                np.testing.assert_array_equal(model.test.world_data.numpy(), [42, 42])
-                np.testing.assert_array_equal(model.world_root_body.numpy(), [0, 2])
+                # The global merge writes only the global-world entry, which follows the local
+                # worlds; ground's root-body default references its own body 4.
+                np.testing.assert_array_equal(model.test.world_data.numpy(), [42, 42, 7])
+                np.testing.assert_array_equal(model.world_root_body.numpy(), [0, 2, 4])
+
+        # A merge places all source entities in one world: agreeing source values merge, and
+        # different ones raise before any entity is copied.
+        sub.custom_attributes["test:world_data"].values = {0: 5, 1: 5}
+        merged = ModelBuilder()
+        merged.add_builder(sub)
+        np.testing.assert_array_equal(merged.finalize(device=self.device).test.world_data.numpy(), [5, 5])
+        sub.custom_attributes["test:world_data"].values = {-1: 5, 1: 6}
+        rejected = ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "different values for source worlds \\[-1, 1\\]"):
+            rejected.add_world(sub)
+        self.assertEqual((rejected.body_count, rejected.world_count), (0, 0))
 
     def test_custom_attribute_model_finalizer_rejects_conflicting_registration(self):
         builder = ModelBuilder()

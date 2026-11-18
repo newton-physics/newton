@@ -1,0 +1,1 @@
+Add optional `total_mass` [kg] to `ModelBuilder.add_rod()` to set the whole rod's mass, distributed by segment rest length and overriding `ShapeConfig.density`. Use `None` for density-derived mass or zero for zero segment mass and inertia.
