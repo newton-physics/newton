@@ -16,7 +16,7 @@ from newton._src.viewer import viewer_gl
 from newton._src.viewer.gl import opengl
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
-from newton.tests.unittest_utils import import_pyglet_window
+from newton.tests.unittest_utils import import_pyglet_window, requires
 
 
 def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
@@ -182,12 +182,10 @@ class _FakeGL:
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
+    @requires("pyglet")
     def test_backend_error_types_do_not_force_window_import(self):
         """Verify backend error discovery does not import pyglet.window."""
-        try:
-            import pyglet
-        except ImportError as exc:
-            self.skipTest(f"ViewerGL dependencies not available: {exc}")
+        import pyglet
 
         class _WindowProxy:
             _module = None
