@@ -221,8 +221,8 @@ def _plan_variant_rows(variant_set: _VariantSet, initial: int, body_label: str) 
     """The shape rows a body needs to hold any variant of ``variant_set``.
 
     A row is built from the shape the initial variant places there, or from the first variant that
-    places one, until the first selection. A collider row keeps its collision group, so its shapes
-    must agree on one.
+    places one, until the first selection. A collider row keeps its collision group and friction
+    mode, so its shapes must agree on both.
     """
     rows = []
     role_rows = [0] * len(_VARIANT_ROW_ROLES)
@@ -240,6 +240,13 @@ def _plan_variant_rows(variant_set: _VariantSet, initial: int, body_label: str) 
             raise ValueError(
                 f"Variant shapes held by row '{label}' have different collision groups {sorted(groups)}; "
                 "the i-th colliders of all variants must share a collision group."
+            )
+        modes = {int(candidate.values["shape_material_friction_mode"]) for candidate in candidates}
+        if role == 0 and len(modes) > 1:
+            # Solvers build their friction constraints from the mode, so a selection cannot change it.
+            raise ValueError(
+                f"Variant shapes held by row '{label}' have different friction modes {sorted(modes)}; "
+                "the i-th colliders of all variants must share a friction mode."
             )
         initial_shape = variant_set.row_shapes[initial][r]
         seed = variant_set.variants[initial].shapes[initial_shape] if initial_shape >= 0 else candidates[0]

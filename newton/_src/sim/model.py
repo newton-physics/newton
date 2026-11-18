@@ -83,7 +83,6 @@ _SHAPE_VARIANT_ATTRIBUTES = (
     "shape_material_restitution",
     "shape_material_mu_torsional",
     "shape_material_mu_rolling",
-    "shape_material_friction_mode",
     "shape_material_kh",
 )
 """Per-shape model arrays a variant row takes from the variant shape it holds: geometry, the collision
@@ -917,16 +916,11 @@ class Model:
             )
             self._add_deprecated_alias(name, getter, message)
 
-        def _add_deprecated_alias(
-            self, name: str, getter: Callable[[], Any], message: str, setter: Callable[[Any], None] | None = None
-        ) -> None:
-            """Register an internal compatibility alias without warning during model construction.
-
-            ``setter`` replaces assignment into the array ``getter`` returns, for aliases of derived values.
-            """
+        def _add_deprecated_alias(self, name: str, getter: Callable[[], Any], message: str) -> None:
+            """Register an internal compatibility alias without warning during model construction."""
             if name in self.__dict__ or name in self._deprecated_aliases:
                 raise AttributeError(f"Attribute already exists: {self._name}.{name}")
-            self._deprecated_aliases[name] = (getter, message, setter)
+            self._deprecated_aliases[name] = (getter, message)
 
         def __getattr__(self, name: str) -> Any:
             removed = self.__dict__.get("_removed_attributes", {}).get(name)
@@ -934,7 +928,7 @@ class Model:
                 return removed.__get__(self)
             aliases = self.__dict__.get("_deprecated_aliases", {})
             if name in aliases:
-                getter, message, _ = aliases[name]
+                getter, message = aliases[name]
                 warn_deprecation(message)
                 return getter()
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
@@ -946,11 +940,8 @@ class Model:
                     removed.__set__(self, value)
                 aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
                 if name in aliases:
-                    getter, message, setter = aliases[name]
+                    getter, message = aliases[name]
                     warn_deprecation(message)
-                    if setter is not None:
-                        setter(value)
-                        return
                     target = getter()
                     if isinstance(target, wp.array):
                         target.assign(value)

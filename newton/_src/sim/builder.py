@@ -6553,8 +6553,8 @@ class ModelBuilder:
 
         A row takes everything authored on the variant shape it holds: geometry, flags, color,
         opacity, materials, and model-assigned shape custom attributes. It keeps its label, world,
-        collision group, and filter pairs, so the i-th colliders of all variants must share a
-        collision group. An
+        collision group, friction mode, and filter pairs, so the i-th colliders of all variants must
+        share a collision group and a :attr:`~ShapeConfig.friction_mode`. An
         empty row has its collision and visibility flags cleared, so it neither collides nor
         renders. Variant shapes are expressed in the variant body's frame, which maps onto
         ``body``'s frame; the variant body's pose, joints, and other entities are ignored, as are
@@ -6580,7 +6580,7 @@ class ModelBuilder:
         Raises:
             IndexError: If ``body`` or ``initial`` is out of range.
             ValueError: If ``body`` already has variants, ``labels`` does not match ``variants``,
-                colliders held by the same row have different collision groups, a shape custom
+                colliders held by the same row have different collision groups or friction modes, a shape custom
                 attribute is declared differently than here or in another variant, shapes of a later
                 world or trailing global shapes were added after ``body``'s world, or a variant
                 builder is this builder, declares variants itself, uses a different up axis, does

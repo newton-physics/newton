@@ -33,18 +33,15 @@ from ...sim import (
     Model,
     ModelBuilder,
     ModelFlags,
-    ShapeFrictionMode,
     State,
     StateFlags,
 )
 from ...sim.articulation import eval_fk
 from ...sim.collide import _estimate_rigid_contact_max, _estimate_rigid_contact_max_per_world
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
-from ...sim.enums import FRICTION_MODE_CONDIM, friction_mode_from_condim
 from ...sim.graph_coloring import color_graph, plot_graph
 from ...utils import topological_sort, tree_joint_mask
 from ...utils.benchmark import event_scope
-from ...utils.deprecation import warn_deprecation
 from ...utils.import_utils import string_to_warp
 from ..coupled.interface import CouplingEndpointKind, CouplingInterface
 from ..solver import SolverBase
@@ -56,6 +53,7 @@ from .collision_masks import (
     compile_newton_collision_graph,
     mujoco_mask_to_signed,
 )
+from .condim import finalize_condim, resolve_shape_condim, skip_imported_condim
 from .constants import (
     DEFAULT_LIMIT_SOLREF,
     KINEMATIC_LOCK_INERTIA_RATIO,
@@ -73,7 +71,7 @@ from .equality import (
     _register_equality_tendon_attributes,
     equality_loop_joint_mask,
 )
-from .geometry import build_shape_layout, compile_layout_collision_masks, resolve_shape_condim
+from .geometry import build_shape_layout, compile_layout_collision_masks
 from .joint_springs import finalize_springref, finalize_stiffness
 from .kernels import (
     _sync_nacon_count,
@@ -494,58 +492,6 @@ _MJW_BATCHED_MODEL_FIELDS = (
     "tendon_invweight0",  # Derived from inertia, computed by set_const_0
     # "mat_rgba",
 )
-
-
-_CONDIM_DEPRECATION_MSG = (
-    "The mujoco:condim custom attribute is deprecated in Newton 1.9; set ModelBuilder.ShapeConfig.friction_mode "
-    "and read Model.shape_material_friction_mode instead. Model.mujoco.condim returns a copy derived from the "
-    "friction mode, so changes to it have no effect."
-)
-
-
-def _skip_imported_condim(_value: Any, _context: dict[str, Any] | None = None) -> None:
-    """Leave the deprecated ``mujoco:condim`` unset; importers set the shape friction mode."""
-    return None
-
-
-def _reject_condim_assignment(_value: Any) -> None:
-    raise AttributeError(
-        "Model.mujoco.condim is deprecated and read-only; set Model.shape_material_friction_mode instead."
-    )
-
-
-def _finalize_deprecated_condim(builder: ModelBuilder, model: Model, custom_attr: ModelBuilder.CustomAttribute) -> None:
-    """Fold builder-authored ``mujoco:condim`` values into the friction mode and expose the read alias."""
-    values = custom_attr.values or {}
-    modes = model.shape_material_friction_mode.numpy()
-    # Body variants fill in the default for their shapes, which they store past the model's shapes.
-    authored = [
-        (int(shape), int(value))
-        for shape, value in (values.items() if isinstance(values, dict) else enumerate(values))
-        if value is not None and value != custom_attr.default and shape < len(modes)
-    ]
-    if authored:
-        warn_deprecation(_CONDIM_DEPRECATION_MSG)
-        for shape, condim in authored:
-            mode = int(friction_mode_from_condim(condim))
-            if modes[shape] != mode and modes[shape] != int(ShapeFrictionMode.SLIDING):
-                raise ValueError(
-                    f"mujoco:condim {condim} of shape {builder.shape_label[shape]!r} conflicts with its friction mode "
-                    f"{ShapeFrictionMode(modes[shape]).name}."
-                )
-            modes[shape] = mode
-        model.shape_material_friction_mode.assign(modes)
-
-    def condim() -> wp.array:
-        modes = model.shape_material_friction_mode.numpy()
-        return wp.array(np.asarray(FRICTION_MODE_CONDIM, dtype=np.int32)[modes], device=model.device)
-
-    if not hasattr(model, "mujoco"):
-        model.mujoco = Model.AttributeNamespace("mujoco")
-    # A read-only copy derived from the friction mode, since condim and the mode encode differently.
-    model.mujoco._add_deprecated_alias("condim", condim, _CONDIM_DEPRECATION_MSG, _reject_condim_assignment)
-    model._set_attribute_spec(custom_attr.key, Model.AttributeSpec(Model.AttributeFrequency.SHAPE, deprecated=True))
-
 
 _UPDATE_DATA_INTERVAL_DEPRECATION_MSG = (
     "SolverMuJoCo update_data_interval is deprecated in Newton 1.8 and will be removed; "
@@ -1639,10 +1585,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 default=3,
                 namespace="mujoco",
                 usd_attribute_name="mjc:condim",
-                mjcf_value_transformer=_skip_imported_condim,
+                mjcf_value_transformer=skip_imported_condim,
             )
         )
-        builder._add_custom_attribute_model_finalizer("mujoco:condim", _finalize_deprecated_condim)
+        builder._add_custom_attribute_model_finalizer("mujoco:condim", finalize_condim)
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="geom_group",

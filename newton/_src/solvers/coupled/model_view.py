@@ -50,16 +50,16 @@ class _AttributeNamespaceView(Model.AttributeNamespace):
         super().__init__(object.__getattribute__(parent, "_name"))
         object.__setattr__(self, "_parent_namespace", parent)
         self._removed_attributes.update(parent._removed_attributes)
-        for name, (getter, message, setter) in parent._deprecated_aliases.items():
+        for name, (getter, message) in parent._deprecated_aliases.items():
             spec = view.parent._attribute_spec(f"{self._name}:{name}")
             view_getter = (
                 partial(getattr, view, spec.alias_of) if spec is not None and spec.alias_of is not None else getter
             )
-            self._add_deprecated_alias(name, view_getter, message, setter)
+            self._add_deprecated_alias(name, view_getter, message)
 
     def __getattr__(self, name: str):
         if name in self._deprecated_aliases:
-            getter, message, _ = self._deprecated_aliases[name]
+            getter, message = self._deprecated_aliases[name]
             warn_deprecation(message)
             return getter()
         try:

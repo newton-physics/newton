@@ -9,21 +9,12 @@ import numpy as np
 
 from ...geometry import GeoType, ShapeFlags
 from ...sim import Model
-from ...sim.enums import FRICTION_MODE_CONDIM
 from .collision_masks import (
     NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT,
     CollisionGraphCompileResult,
     compile_newton_collision_graph,
 )
-
-_FRICTION_MODE_CONDIM = np.array(FRICTION_MODE_CONDIM, dtype=np.int32)
-
-
-def resolve_shape_condim(model: Model) -> np.ndarray:
-    """Return each shape's MuJoCo ``condim`` from :attr:`~newton.Model.shape_material_friction_mode`."""
-    if model.shape_material_friction_mode is None:
-        return np.full(model.shape_count, 3, dtype=np.int32)
-    return _FRICTION_MODE_CONDIM[model.shape_material_friction_mode.numpy()]
+from .condim import resolve_shape_condim
 
 
 @dataclass(frozen=True)

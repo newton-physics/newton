@@ -97,9 +97,9 @@ class TestBodyVariants(unittest.TestCase):
     def test_select_body_variants(self):
         env = newton.ModelBuilder()
         body = env.add_body(xform=wp.transform((0.0, 0.0, 0.2), wp.quat_identity()), label="object")
-        mode = newton.ShapeFrictionMode
-        cube = _variant("cube", mu=0.9, tag=1, friction_mode=mode.NONE)
-        spheres = _variant("spheres", mu=0.2, mu_static=0.6, tag=2, friction_mode=mode.ROLLING)
+        rolling = newton.ShapeFrictionMode.ROLLING
+        cube = _variant("cube", mu=0.9, tag=1, friction_mode=rolling)
+        spheres = _variant("spheres", mu=0.2, mu_static=0.6, tag=2, friction_mode=rolling)
         spheres.shape_opacity[:] = [0.5, 0.5]
         # Variant rows hold the default of the deprecated mujoco:condim, which must not override their modes.
         for builder in (env, cube, spheres):
@@ -127,9 +127,8 @@ class TestBodyVariants(unittest.TestCase):
         # mu_static resolved to its mu.
         np.testing.assert_allclose(model.shape_material_mu.numpy()[:3], [0.2, 0.2, 0.9])
         np.testing.assert_allclose(model.shape_material_mu_static.numpy()[:3], [0.6, 0.6, 0.9])
-        np.testing.assert_array_equal(
-            model.shape_material_friction_mode.numpy()[:3], [mode.ROLLING, mode.ROLLING, mode.NONE]
-        )
+        # Rows keep their friction mode, which solvers build their constraints from.
+        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [rolling] * 6)
         np.testing.assert_allclose(model.shape_opacity.numpy()[:3], [0.5, 0.5, 1.0])
         np.testing.assert_array_equal(model.test.tag.numpy()[:3], [2, 2, 1])
         self.assertLess(model.body_mass.numpy()[0], initial_mass[0])
@@ -197,6 +196,9 @@ class TestBodyVariants(unittest.TestCase):
         grouped.shape_collision_group[0] = 2
         with self.assertRaisesRegex(ValueError, "collision groups"):
             builder.add_body_variants(builder.add_body(), [_variant("cube"), grouped])
+        frictionless = _variant("cube", friction_mode=newton.ShapeFrictionMode.NONE)
+        with self.assertRaisesRegex(ValueError, "friction modes"):
+            builder.add_body_variants(builder.add_body(), [_variant("cube"), frictionless])
         retyped = _variant("cube")
         retyped.custom_attributes["test:tag"] = replace(retyped.custom_attributes["test:tag"], dtype=wp.float32)
         with self.assertRaisesRegex(ValueError, "declared differently"):
@@ -228,6 +230,14 @@ class TestBodyVariants(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected a finite value"):
             invalid.finalize(device="cpu")
         self.assertEqual(invalid.shape_count, 1)
+        # A variant row keeps its friction mode, so the deprecated per-shape condim cannot set it.
+        legacy, env = _variant("cube"), newton.ModelBuilder()
+        for mujoco_builder in (legacy, env):
+            newton.solvers.SolverMuJoCo.register_custom_attributes(mujoco_builder)
+        legacy.custom_attributes["mujoco:condim"].values = {0: 6}
+        env.add_body_variants(env.add_body(), [legacy])
+        with self.assertRaisesRegex(ValueError, "body variant shapes"):
+            env.finalize(device="cpu")
         # The rows were checked before any was appended.
         self.assertEqual(builder.shape_count, 1)
         with self.assertRaises(NotImplementedError):
@@ -487,13 +497,11 @@ def test_steel_torsion_covers_variants(test, device):
     """SolverSteel checks the torsion radius of every variant shape and follows the selected shape types."""
     steel = newton.solvers.SolverSteel
 
-    def variant(kind, radius, torsional=None):
+    def variant(kind, radius, friction_mode):
         builder = newton.ModelBuilder()
         steel.register_custom_attributes(builder)
         body = builder.add_body(label=kind)
-        torsional = radius > 0.0 if torsional is None else torsional
-        mode = newton.ShapeFrictionMode.TORSIONAL if torsional else newton.ShapeFrictionMode.SLIDING
-        cfg = newton.ModelBuilder.ShapeConfig(friction_mode=mode)
+        cfg = newton.ModelBuilder.ShapeConfig(friction_mode=friction_mode)
         attributes = {"steel:min_torsional_patch_radius": radius}
         if kind == "mesh":
             builder.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.25), cfg=cfg, custom_attributes=attributes)
@@ -501,24 +509,25 @@ def test_steel_torsion_covers_variants(test, device):
             builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, cfg=cfg, custom_attributes=attributes)
         return builder
 
-    def model(mesh_radius, cube_radius, initial, **cube_kwargs):
+    def model(mesh_radius, cube_radius, initial, friction_mode=newton.ShapeFrictionMode.TORSIONAL):
         env = newton.ModelBuilder()
         steel.register_custom_attributes(env)
         body = env.add_body(label="object")
-        variants = [variant("mesh", mesh_radius), variant("cube", cube_radius, **cube_kwargs)]
+        variants = [variant("mesh", mesh_radius, friction_mode), variant("cube", cube_radius, friction_mode)]
         env.add_body_variants(body, variants, initial=initial)
         return env.finalize(device=device)
 
     options = {"contact_warmstart": False, "contact_torsion_device": True}
     # A torsion radius needs a torsional friction mode, even on a variant that is not selected at construction.
     with test.assertRaisesRegex(ValueError, r"friction_mode of shapes \[0\]"):
-        steel(model(0.0, 0.01, initial=0, torsional=False), **options)
+        steel(model(0.0, 0.01, initial=0, friction_mode=newton.ShapeFrictionMode.SLIDING), **options)
     # Torsion does not support meshes, even ones that are not selected at construction.
     with test.assertRaisesRegex(ValueError, r"geometry of shapes \[0\]"):
         steel(model(0.01, 0.0, initial=1), **options)
     # A cube with a torsion radius enables torsion while the mesh is selected.
     variants = model(0.0, 0.01, initial=0)
-    solver = steel(variants, **options)
+    with test.assertWarnsRegex(newton.NewtonWarning, "positive steel:min_torsional_patch_radius"):
+        solver = steel(variants, **options)
     test.assertEqual(solver._device_torsion.supported.numpy().tolist(), [0])
     solver.notify_model_changed(_select(variants, [1]))
     test.assertEqual(solver._device_torsion.supported.numpy().tolist(), [1])

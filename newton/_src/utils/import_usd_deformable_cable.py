@@ -18,14 +18,14 @@ import warnings
 from dataclasses import dataclass, replace
 from functools import partial
 from itertools import pairwise
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..sim.rod import _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION, Rod
 from ..usd import utils as usd
-from ..usd._resolution_policy import _resolve_shape_contact
+from ..usd._resolution_policy import _resolve_shape_contact, _resolve_shape_friction_mode
 from ..usd.schema_resolver import PrimType
 
 if TYPE_CHECKING:
@@ -64,12 +64,17 @@ from .import_usd_deformable_visual import _record_cable_visual_bind_poses
 logger = logging.getLogger(__name__)
 
 
-def _resolve_cable_contact(ctx: _DeformableImportContext, prim: Usd.Prim) -> dict[str, float]:
-    """Resolve capsule contact properties through the rigid collider material policy."""
+def _resolve_cable_contact(ctx: _DeformableImportContext, prim: Usd.Prim) -> dict[str, Any]:
+    """Resolve capsule contact properties and friction mode through the rigid collider material policy."""
     material_prim = usd._find_physics_material_prim(prim)
     material_path = str(material_prim.GetPath()) if material_prim is not None else ""
     material = ctx.material_specs.get(material_path, ctx.material_specs[""])
-    return _resolve_shape_contact(prim, ctx.resolver, material, ctx.builder.default_shape_cfg, verbose=ctx.verbose)
+    defaults = ctx.builder.default_shape_cfg
+    contact = _resolve_shape_contact(prim, ctx.resolver, material, defaults, verbose=ctx.verbose)
+    contact["friction_mode"] = _resolve_shape_friction_mode(
+        prim, ctx.resolver, material, defaults, contact, {}, verbose=ctx.verbose
+    )
+    return contact
 
 
 def _authored_cable_self_collision(ctx: _DeformableImportContext, prim: Usd.Prim) -> bool | None:

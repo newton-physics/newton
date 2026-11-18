@@ -7916,14 +7916,17 @@ class TestMuJoCoAttributes(unittest.TestCase):
         with self.assertWarns(NewtonDeprecationWarning), self.assertRaisesRegex(ValueError, "conflicts"):
             build({2: 1}).finalize()
 
-        # The deprecated model attribute reads the modes and rejects writes
+        # The deprecated model attribute reads the modes, and values written to it reach the next solver
         with self.assertWarnsRegex(NewtonDeprecationWarning, "mujoco:condim custom attribute is deprecated"):
             np.testing.assert_array_equal(model.mujoco.condim.numpy(), [1, 6, 4, 6])
-        with (
-            self.assertWarns(NewtonDeprecationWarning),
-            self.assertRaisesRegex(AttributeError, "shape_material_friction_mode"),
-        ):
-            model.mujoco.condim = wp.zeros(4, dtype=wp.int32)
+        with self.assertWarns(NewtonDeprecationWarning):
+            model.mujoco.condim.fill_(4)
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [4, 4, 4, 4])
+        with self.assertWarns(NewtonDeprecationWarning):
+            model.mujoco.condim = wp.array([1, 3, 4, 6], dtype=wp.int32)
+            np.testing.assert_array_equal(model.mujoco.condim.numpy(), [1, 3, 4, 6])
+        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 1, 2, 3])
 
     @requires(*MUJOCO_MODULES)
     def test_custom_attributes_from_mjcf(self):
