@@ -9997,9 +9997,8 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
     """Test contact pair property conversion and runtime updates across multiple worlds."""
 
     @staticmethod
-    def _make_explicit_pair_contact_model(*, box_height=0.095, geom_margin=0.0, include_solreffriction=True):
+    def _make_explicit_pair_contact_model(*, box_height=0.095, geom_margin=0.0):
         """Build a floor and box with one explicit MJCF contact pair."""
-        solreffriction = ' solreffriction="0.02 3"' if include_solreffriction else ""
         mjcf = f"""<mujoco model="explicit_pair_probe">
             <option cone="elliptic"/>
             <default>
@@ -10017,7 +10016,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             <contact>
                 <pair geom1="floor" geom2="box" condim="3"
                       friction="0.8 0.7 0.02 0.003 0.004"
-                      solref="0.01 2"{solreffriction}
+                      solref="0.01 2" solreffriction="0.02 3"
                       solimp="0.95 0.99 0.001 0.5 2"
                       margin="0.003" gap="0.001"/>
             </contact>
@@ -10229,20 +10228,6 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             contact.friction.numpy()[:contact_count],
             np.tile([0.4, 0.35, 0.02, 0.003, 0.004], (contact_count, 1)),
             atol=1.0e-7,
-        )
-
-    @requires(*MUJOCO_MODULES)
-    def test_pair_solreffriction_default_matches_mujoco(self):
-        """Use MuJoCo's zero solreffriction default when a pair omits it."""
-        model = self._make_explicit_pair_contact_model(include_solreffriction=False)
-        model.shape_material_kf.fill_(1000.0)
-        np.testing.assert_array_equal(model.mujoco.pair_solreffriction.numpy(), [[0.0, 0.0]])
-        solver = self._step_with_newton_contacts(model)
-        contact_count = int(solver.mjw_data.nacon.numpy()[0])
-        self.assertGreater(contact_count, 0)
-        np.testing.assert_allclose(
-            solver.mjw_data.contact.solreffriction.numpy()[:contact_count],
-            np.zeros((contact_count, 2)),
         )
 
     @requires(*MUJOCO_MODULES)

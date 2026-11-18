@@ -2212,7 +2212,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 name="pair_solreffriction",
                 frequency="mujoco:pair",
                 dtype=wp.vec2,
-                default=wp.vec2(0.0, 0.0),
+                default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
                 mjcf_attribute_name="solreffriction",
             )
