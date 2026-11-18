@@ -315,10 +315,9 @@ def _certified_bound(
 def _exclude_inertia_free_dofs(
     # Inputs:
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     # Outputs:
-    matrix: wp.array[wp.float32],
+    matrix: wp.array2d[wp.float32],
     dof_excluded: wp.array[wp.int32],
 ):
     """Give each DOF without inertia a unit pivot and exclude it from the structural Jacobians.
@@ -330,10 +329,10 @@ def _exclude_inertia_free_dofs(
     n = dim[block]
     if i >= n:
         return
-    diagonal = mio[block] + i * n + i
-    excluded = wp.where(matrix[diagonal] == 0.0, 1, 0)
+    diagonal = i * n + i
+    excluded = wp.where(matrix[block, diagonal] == 0.0, 1, 0)
     if excluded != 0:
-        matrix[diagonal] = 1.0
+        matrix[block, diagonal] = 1.0
     dof_excluded[vio[block] + i] = excluded
 
 
