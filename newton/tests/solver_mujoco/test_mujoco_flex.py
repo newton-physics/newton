@@ -271,14 +271,15 @@ class TestMuJoCoFlex(unittest.TestCase):
             SolverMuJoCo(model, use_mujoco_contacts=False)
 
     def test_cloth_springs_are_kept(self):
-        """Cloth springs form their own 1D flex even though the cloth covers their particles."""
-        builder = _builder()
+        """Cloth springs form their own 1D flex, which does not collide with the cloth, so a cloth
+        at rest with the default particle radius stays put."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 1.0),
             rot=wp.quat_identity(),
             vel=wp.vec3(0.0, 0.0, 0.0),
-            dim_x=2,
-            dim_y=2,
+            dim_x=4,
+            dim_y=4,
             cell_x=0.1,
             cell_y=0.1,
             mass=0.01,
@@ -287,10 +288,19 @@ class TestMuJoCoFlex(unittest.TestCase):
         )
         model = builder.finalize()
 
-        mj_model = SolverMuJoCo(model).mj_model
+        solver = SolverMuJoCo(model)
+        mj_model = solver.mj_model
         np.testing.assert_array_equal(mj_model.flex_dim, [2, 1])
         self.assertEqual(mj_model.flex_elemnum[1], model.spring_count)
         np.testing.assert_allclose(mj_model.flex_edgestiffness[1], 10.0)
+        self.assertEqual(mj_model.flex_contype[1], 0)
+        self.assertEqual(mj_model.flex_conaffinity[1], 0)
+
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        for _ in range(100):
+            solver.step(state_0, state_1, control, None, 2.0e-3)
+            state_0, state_1 = state_1, state_0
+        np.testing.assert_allclose(state_0.particle_q.numpy(), model.particle_q.numpy(), atol=1.0e-5)
 
     def test_pins_and_contacts_in_each_world(self):
         """Pins stay at each world's position, particle-only colliders hold the cloth, and

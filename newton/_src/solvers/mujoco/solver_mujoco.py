@@ -3563,7 +3563,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ``edgestiffness``, ``edgedamping``, ``radius``, and sliding ``friction`` values are derived
         from the Newton model. Flexes collide with each other and with shapes flagged
         :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`, and with themselves when ``selfcollide`` is
-        set. Flexes with ``edgeequality`` get a MuJoCo flex equality constraint on their edge lengths.
+        set. Springs whose particles all belong to a 2D or 3D flex form a separate flex that does
+        not collide. Flexes with ``edgeequality`` get a MuJoCo flex equality constraint on their edge lengths.
 
         Args:
             model: The Newton model.
@@ -3634,15 +3635,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             materials = element_materials[dim]
             owner = getattr(attrs, attribute).numpy() if flex_count else np.full(len(elems), -1)
             selected = convert & np.all(local[elems] >= 0, axis=1)
+            # Elements whose particles all belong to a higher-dimensional flex already collide through it.
+            covered = np.all(claimed[elems], axis=1)
             groups = [(row, selected & (owner == row)) for row in np.unique(owner[selected & (owner >= 0)])]
             unowned = selected & (owner < 0)
             if dim == 2:
                 # Surface triangles of a tetrahedral mesh would duplicate its 3D flex.
-                unowned &= ~np.all(claimed[elems], axis=1)
+                unowned &= ~covered
+            if dim == 1:
+                # Cloth springs keep their stiffness in a separate flex that does not collide, since
+                # colliding with the cloth flex over the same particles would push the cloth apart.
+                groups.append((-1, unowned & covered))
+                unowned &= ~covered
             groups.append((-1, unowned))
             for row, keep in groups:
                 if not np.any(keep):
                     continue
+                collide = dim > 1 or not np.all(covered[keep])
                 params = defaults if row < 0 else {name: values[row] for name, values in rows.items()}
                 claimed[elems[keep]] = True
                 verts = np.unique(elems[keep])
@@ -3652,8 +3661,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mj_flex.dim = dim
                 mj_flex.vertbody = [bodies[i].name for i in local[verts]]
                 mj_flex.elem = np.searchsorted(verts, elems[keep]).ravel().tolist()
-                mj_flex.contype = bit
-                mj_flex.conaffinity = bit
+                mj_flex.contype = bit if collide else 0
+                mj_flex.conaffinity = bit if collide else 0
                 mj_flex.selfcollide = int(params["selfcollide"])
                 mj_flex.radius = params["radius"] if params["radius"] >= 0.0 else radius[local[verts]].max()
                 mj_flex.friction = params["friction"]

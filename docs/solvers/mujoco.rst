@@ -809,7 +809,9 @@ stiffness with a constraint on edge lengths.
 
 A triangle whose particles all belong to a tetrahedral flex is skipped, so the
 surface triangles of a tetrahedral mesh do not form a second flex. Springs are
-always converted, as in Newton's other solvers.
+always converted, as in Newton's other solvers. Springs whose particles all
+belong to a 2D or 3D flex, such as cloth springs, form a separate flex that
+does not collide, so it does not push the cloth apart.
 MuJoCo stores one material per flex, so non-uniform values are averaged with a
 warning. Flex rest shapes come from ``Model.particle_q``, and flex radius and
 friction come from ``particle_radius`` and ``particle_mu``. Flexes collide with
