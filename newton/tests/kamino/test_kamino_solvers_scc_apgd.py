@@ -6,6 +6,7 @@
 import math
 import tempfile
 import unittest
+from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -17,7 +18,7 @@ import newton
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.geometry.aggregation import ContactAggregation
-from newton._src.solvers.kamino._src.linalg import LLTBlockedSolver
+from newton._src.solvers.kamino._src.linalg import LDLBlockSparseSolver, LLTBlockedSolver
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.scc import SCCSolver
 from newton._src.solvers.kamino._src.solvers.scc.apgd import UnilateralAPGD
@@ -103,7 +104,7 @@ def _problem(matrices, biases, families, friction, device, *, options=None, lowe
     return UnilateralAPGD(owner), SimpleNamespace(data=data, sparse=False)
 
 
-def _model_problem(builder, device, sparse, *, schur=False, max_contacts=64, iterations=24):
+def _model_problem(builder, device, sparse, *, schur=False, max_contacts=64, iterations=24, ordering=None):
     """Assemble an actual Kamino model with rigid, unpreconditioned dynamics."""
     model = ModelKamino.from_newton(builder.finalize(device=device))
     model, data, state, limits, detector, jacobians = make_containers(
@@ -132,6 +133,8 @@ def _model_problem(builder, device, sparse, *, schur=False, max_contacts=64, ite
         jacobians=jacobians,
         problem=problem,
         config=SCCSolverConfig(
+            bilateral_solver_type="LDL" if ordering else "LLTB",
+            bilateral_solver_kwargs={"ordering": ordering} if ordering else {},
             unilateral_solver="apgd",
             use_schur_complement=schur,
             max_alternating_iterations=iterations,
@@ -805,8 +808,10 @@ class TestSCCAPGD(unittest.TestCase):
                 np.testing.assert_allclose(outputs[0], outputs[1], atol=2e-5)
 
     def test_schur_operator_and_recovered_bilaterals(self):
-        """Match dense and sparse Schur solves and independently eliminate bilateral rows."""
-        for device in _devices():
+        """Match LLT and both LDL orderings to independent Schur elimination and graph replay."""
+        # Reuse this small closed loop for ordering coverage instead of repeating
+        # the 580-frame DR Legs support/reset rollout for each factorization.
+        for device, ordering in product(_devices(), (None, "meca", "rcm")):
             outputs = []
             for sparse in (False, True):
                 solver, problem = _model_problem(
@@ -814,7 +819,11 @@ class TestSCCAPGD(unittest.TestCase):
                     device,
                     sparse,
                     schur=True,
+                    ordering=ordering,
                 )
+                self.assertIsInstance(solver._bilateral_solver, LDLBlockSparseSolver if ordering else LLTBlockedSolver)
+                if ordering is not None:
+                    self.assertEqual(solver._bilateral_solver.ordering, ordering)
                 solver.coldstart()
                 solver.solve(problem)
                 if solver.device.is_cuda:
@@ -847,7 +856,7 @@ class TestSCCAPGD(unittest.TestCase):
                     actual = solver._apgd.product.numpy()[nb:n]
                     expected = schur_matrix @ x[nb:n]
                     np.testing.assert_allclose(actual, expected, atol=1e-4, rtol=1e-4)
-            with self.subTest(device=device):
+            with self.subTest(device=device, ordering=ordering):
                 np.testing.assert_allclose(outputs[0][1], outputs[1][1], atol=3e-4)
 
     def test_heterogeneous_schur_worlds(self):
