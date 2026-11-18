@@ -23,6 +23,7 @@ from ...linalg import (
     LLTBlockedRCMSolver,
     LLTBlockedSolver,
 )
+from ...linalg.core import validate_dense_matrix_shape
 from ..common import (
     WarmStartMode,
     apply_dual_preconditioner_to_solution,
@@ -381,7 +382,8 @@ class SCCSolver:
             rows, edges = sparse_factor.joint_block_pattern(model, capacities)
             kwargs.update(block_rows=rows, block_edges=edges)
         else:
-            operator.mat = wp.zeros(shape=(operator.info.total_mat_size,), dtype=float32, device=self._device)
+            validate_dense_matrix_shape(operator.info.matrix_shape, float32)
+            operator.mat = wp.zeros(shape=operator.info.matrix_shape, dtype=float32, device=self._device)
         self._data.state.bilateral_rhs = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
         self._data.state.bilateral_solution = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
         self._data.state.bilateral_preconditioner = wp.zeros(
@@ -525,8 +527,7 @@ class SCCSolver:
         block_iteration: int,
         *,
         enable_adaptive: bool,
-        mio: wp.array | None = None,
-        D: wp.array | None = None,
+        D: wp.array2d[float32] | None = None,
     ) -> None:
         """Launch dense colored PGS on ``D`` (default: the problem's Delassus matrix)."""
         state = self._data.state
@@ -536,7 +537,6 @@ class SCCSolver:
             dim=self._size.num_worlds * threads_per_world,
             inputs=[
                 problem.data.dim,
-                problem.data.mio if mio is None else mio,
                 problem.data.vio,
                 problem.data.nbc,
                 problem.data.nl,
@@ -672,7 +672,6 @@ class SCCSolver:
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     problem.data.dim,
-                    problem.data.mio,
                     problem.data.vio,
                     problem.data.D,
                     problem.data.v_f,
@@ -890,7 +889,6 @@ class SCCSolver:
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[
                 problem.data.dim,
-                problem.data.mio,
                 problem.data.vio,
                 problem.data.nbc,
                 problem.data.nl,
@@ -922,7 +920,6 @@ class SCCSolver:
             dim=(self._size.num_worlds, self._size.max_of_num_bilateral_joint_cts),
             inputs=[
                 problem.data.dim,
-                problem.data.mio,
                 problem.data.vio,
                 problem.data.njc,
                 problem.data.D,
@@ -970,10 +967,8 @@ class SCCSolver:
             ),
             inputs=[
                 problem.data.dim,
-                problem.data.mio,
                 problem.data.njc,
                 problem.data.D,
-                operator.info.mio,
                 operator.info.maxdim,
                 operator.info.vio,
                 operator.mat,
@@ -1011,7 +1006,6 @@ class SCCSolver:
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     problem.data.dim,
-                    problem.data.mio,
                     problem.data.vio,
                     problem.data.nbc,
                     problem.data.nl,
@@ -1055,7 +1049,7 @@ class SCCSolver:
 
         operator = self._data.bilateral_operator
         use_permutation = isinstance(self._bilateral_solver, LLTBlockedRCMSolver)
-        permutation = self._bilateral_solver.P if use_permutation else self._data.state.projected_mio
+        permutation = self._bilateral_solver.P if use_permutation else self._data.state.dummy_permutation
         unilateral_begin = 0
         unilateral_count = self._max_unilateral_rows
         if isinstance(self._bilateral_solver, LDLBlockSparseSolver):
@@ -1066,13 +1060,10 @@ class SCCSolver:
                 dim=(self._size.num_worlds, unilateral_count),
                 inputs=[
                     problem.data.dim,
-                    problem.data.mio,
                     problem.data.njc,
-                    operator.info.mio,
                     operator.info.maxdim,
                     operator.info.vio,
                     self._data.state.bilateral_preconditioner,
-                    self._data.state.projected_mio,
                     problem.data.D,
                     self._bilateral_solver.L,
                     permutation,
@@ -1091,11 +1082,9 @@ class SCCSolver:
             ),
             inputs=[
                 problem.data.dim,
-                problem.data.mio,
                 problem.data.njc,
                 operator.info.vio,
                 self._data.state.bilateral_preconditioner,
-                self._data.state.projected_mio,
                 problem.data.D,
                 permutation,
                 use_permutation,
@@ -1120,7 +1109,6 @@ class SCCSolver:
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[
                 problem.data.dim,
-                problem.data.mio,
                 problem.data.vio,
                 problem.data.nbc,
                 problem.data.nl,
@@ -1137,7 +1125,6 @@ class SCCSolver:
             problem,
             _FUSED_BILATERAL_BLOCK,
             enable_adaptive=self.device.is_cuda,
-            mio=self._data.state.projected_mio,
             D=self._data.state.projected_D,
         )
 
